@@ -18,10 +18,7 @@ import { StoreLogo } from "@/components/StoreLogo";
 import { WaveformThrobber } from "@/components/WaveformThrobber";
 import { WisherAvatars } from "@/components/WisherAvatars";
 import { useRegisterShelvesChangeListener } from "@/components/usePreferences";
-import {
-  CatalogTitleDetailModal,
-  type TitleMetaSearchKind,
-} from "@/components/TitleDetailModal";
+import { CatalogTitleDetailModal, type TitleMetaSearchKind } from "@/components/TitleDetailModal";
 import { type TitleDetail } from "@/lib/titleDetail";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -78,10 +75,7 @@ import {
   type UserPreferences,
 } from "@/lib/api";
 import { formatDuration } from "@/lib/libraryFilters";
-import {
-  takeQueuedDiscoverSearch,
-  type DiscoverSearchHandoff,
-} from "@/lib/routes";
+import { takeQueuedDiscoverSearch, type DiscoverSearchHandoff } from "@/lib/routes";
 import { descriptionPlainText } from "@/lib/safeHtml";
 
 const SHELF_CHUNK = 8;
@@ -191,9 +185,7 @@ export function DiscoverPage({
   const [sortKey, setSortKey] = useState<CatalogSortKey>("relevance");
   const [sortDir, setSortDir] = useState<CatalogSortDir>("desc");
   const [hideVirtualVoice, setHideVirtualVoice] = useState(true);
-  const [filterLanguage, setFilterLanguage] = useState(() =>
-    preferredCatalogLanguage(),
-  );
+  const [filterLanguage, setFilterLanguage] = useState(() => preferredCatalogLanguage());
   const [filterAuthors, setFilterAuthors] = useState<string[]>([]);
   const [filterNarrators, setFilterNarrators] = useState<string[]>([]);
   const [filterSeries, setFilterSeries] = useState<string[]>([]);
@@ -231,9 +223,7 @@ export function DiscoverPage({
     try {
       await refreshFeed();
     } catch (err) {
-      setError(
-        userFacingApiError(err, "Couldn't load Discover shelves. Try again."),
-      );
+      setError(userFacingApiError(err, "Couldn't load Discover shelves. Try again."));
     } finally {
       setBusy(false);
     }
@@ -328,24 +318,14 @@ export function DiscoverPage({
     const prefs = discoverPrefsRef.current;
     const authors =
       opts?.authors ??
-      (opts?.filterKind === "authors" && opts.filterValue
-        ? [opts.filterValue]
-        : []);
+      (opts?.filterKind === "authors" && opts.filterValue ? [opts.filterValue] : []);
     const narrators =
       opts?.narrators ??
-      (opts?.filterKind === "narrators" && opts.filterValue
-        ? [opts.filterValue]
-        : []);
+      (opts?.filterKind === "narrators" && opts.filterValue ? [opts.filterValue] : []);
     const series =
-      opts?.series ??
-      (opts?.filterKind === "series" && opts.filterValue
-        ? [opts.filterValue]
-        : []);
+      opts?.series ?? (opts?.filterKind === "series" && opts.filterValue ? [opts.filterValue] : []);
     const genres =
-      opts?.genres ??
-      (opts?.filterKind === "genres" && opts.filterValue
-        ? [opts.filterValue]
-        : []);
+      opts?.genres ?? (opts?.filterKind === "genres" && opts.filterValue ? [opts.filterValue] : []);
     setFilterAuthors(authors);
     setFilterNarrators(narrators);
     setFilterSeries(series);
@@ -360,25 +340,15 @@ export function DiscoverPage({
     setMinRating(opts?.minRating ?? null);
     setRuntimeBucket(opts?.runtimeBucket ?? "any");
     setHideVirtualVoice(opts?.hideVirtualVoice ?? true);
-    setFilterLanguage(
-      opts?.language ??
-        prefs?.discover_language ??
-        preferredCatalogLanguage(),
-    );
+    setFilterLanguage(opts?.language ?? prefs?.discover_language ?? preferredCatalogLanguage());
     const nextSort = parseSortKey(opts?.sort ?? opts?.sortKey ?? prefs?.discover_sort);
     setSortKey(nextSort);
-    setSortDir(
-      opts?.sortDir ??
-        prefs?.discover_sort_dir ??
-        defaultSortDirFor(nextSort),
-    );
+    setSortDir(opts?.sortDir ?? prefs?.discover_sort_dir ?? defaultSortDirFor(nextSort));
     setResultsField(opts?.field);
   }
 
   async function enrichResultMeta(hits: CatalogSearchHit[]) {
-    const sparse = hits
-      .map((hit) => catalogTitleFromHit(hit))
-      .filter(titleNeedsMeta);
+    const sparse = hits.map((hit) => catalogTitleFromHit(hit)).filter(titleNeedsMeta);
     if (sparse.length === 0) return;
     try {
       const metas = await fetchTitleMetaBatch(
@@ -414,41 +384,23 @@ export function DiscoverPage({
     setSearchQ(trimmed);
     handoffToFilterState(opts);
     const prefs = discoverPrefsRef.current;
-    const sort = parseSortKey(
-      opts?.sort ?? opts?.sortKey ?? prefs?.discover_sort,
-    );
+    const sort = parseSortKey(opts?.sort ?? opts?.sortKey ?? prefs?.discover_sort);
     const dir: CatalogSortDir =
       opts?.sortDir ?? prefs?.discover_sort_dir ?? defaultSortDirFor(sort);
     const hideVV = opts?.hideVirtualVoice ?? true;
-    const language =
-      opts?.language ??
-      prefs?.discover_language ??
-      preferredCatalogLanguage();
+    const language = opts?.language ?? prefs?.discover_language ?? preferredCatalogLanguage();
     const langOpts = catalogLanguageSearchOpts(language);
     const authors =
       opts?.authors ??
-      (opts?.filterKind === "authors" && opts.filterValue
-        ? [opts.filterValue]
-        : []);
+      (opts?.filterKind === "authors" && opts.filterValue ? [opts.filterValue] : []);
     const narrators =
       opts?.narrators ??
-      (opts?.filterKind === "narrators" && opts.filterValue
-        ? [opts.filterValue]
-        : []);
+      (opts?.filterKind === "narrators" && opts.filterValue ? [opts.filterValue] : []);
     const series =
-      opts?.series ??
-      (opts?.filterKind === "series" && opts.filterValue
-        ? [opts.filterValue]
-        : []);
+      opts?.series ?? (opts?.filterKind === "series" && opts.filterValue ? [opts.filterValue] : []);
     const genres =
-      opts?.genres ??
-      (opts?.filterKind === "genres" && opts.filterValue
-        ? [opts.filterValue]
-        : []);
-    const exclude =
-      opts?.excludeSources ??
-      prefs?.discover_excluded_sources ??
-      [];
+      opts?.genres ?? (opts?.filterKind === "genres" && opts.filterValue ? [opts.filterValue] : []);
+    const exclude = opts?.excludeSources ?? prefs?.discover_excluded_sources ?? [];
     const rating = opts?.minRating ?? null;
     const runtime = opts?.runtimeBucket ?? "any";
     const seq = ++resultsSeq.current;
@@ -495,10 +447,7 @@ export function DiscoverPage({
       setResults([]);
       setResultMeta({});
       setError(
-        userFacingApiError(
-          err,
-          "Couldn't search the catalog. Try again, or narrow your filters.",
-        ),
+        userFacingApiError(err, "Couldn't search the catalog. Try again, or narrow your filters."),
       );
     } finally {
       if (seq === resultsSeq.current) setResultsBusy(false);
@@ -599,10 +548,8 @@ export function DiscoverPage({
     setBusy(true);
     setError(null);
     try {
-      const workKey =
-        "work_key" in title && title.work_key ? title.work_key : undefined;
-      const editions =
-        "store_editions" in title ? title.store_editions ?? undefined : undefined;
+      const workKey = "work_key" in title && title.work_key ? title.work_key : undefined;
+      const editions = "store_editions" in title ? (title.store_editions ?? undefined) : undefined;
       const created = await createWishlistItem({
         title: title.title,
         authors: title.authors ?? undefined,
@@ -610,8 +557,7 @@ export function DiscoverPage({
         isbn: title.isbn ?? undefined,
         work_key: workKey || undefined,
         store_editions: editions,
-        purchase_hints:
-          "purchase_hints" in title ? title.purchase_hints ?? undefined : undefined,
+        purchase_hints: "purchase_hints" in title ? (title.purchase_hints ?? undefined) : undefined,
         cover_url: title.cover_url ?? undefined,
         description: title.description ?? undefined,
         subtitle: title.subtitle ?? undefined,
@@ -628,26 +574,15 @@ export function DiscoverPage({
         language: title.language ?? undefined,
         notes: "Wishlisted from Discover",
       });
-      const [, queue] = await Promise.all([
-        refreshFeed(),
-        fetchRequestQueue(),
-      ]);
+      const [, queue] = await Promise.all([refreshFeed(), fetchRequestQueue()]);
       setSelected((prev) => {
-        if (
-          !prev ||
-          !(prev.work_key === workKey || prev.title === title.title)
-        ) {
+        if (!prev || !(prev.work_key === workKey || prev.title === title.title)) {
           return prev;
         }
-        return attachWishersFromQueue(
-          { ...prev, wishlist_uuid: created.uuid },
-          queue,
-        );
+        return attachWishersFromQueue({ ...prev, wishlist_uuid: created.uuid }, queue);
       });
     } catch (err) {
-      setError(
-        userFacingApiError(err, "Couldn't add that title to your wishlist."),
-      );
+      setError(userFacingApiError(err, "Couldn't add that title to your wishlist."));
     } finally {
       setBusy(false);
     }
@@ -659,18 +594,13 @@ export function DiscoverPage({
     setError(null);
     try {
       await removeWishlistItem(title.wishlist_uuid);
-      const [, queue] = await Promise.all([
-        refreshFeed(),
-        fetchRequestQueue(),
-      ]);
+      const [, queue] = await Promise.all([refreshFeed(), fetchRequestQueue()]);
       setSelected((prev) => {
         if (!prev || prev.wishlist_uuid !== title.wishlist_uuid) return prev;
         return attachWishersFromQueue({ ...prev, wishlist_uuid: null }, queue);
       });
     } catch (err) {
-      setError(
-        userFacingApiError(err, "Couldn't remove that title from your wishlist."),
-      );
+      setError(userFacingApiError(err, "Couldn't remove that title from your wishlist."));
     } finally {
       setBusy(false);
     }
@@ -689,9 +619,7 @@ export function DiscoverPage({
     const obs = new IntersectionObserver(
       (entries) => {
         if (!entries.some((e) => e.isIntersecting)) return;
-        setVisibleShelvesCount((n) =>
-          Math.min(n + SHELVES_INITIAL, feed.shelves.length),
-        );
+        setVisibleShelvesCount((n) => Math.min(n + SHELVES_INITIAL, feed.shelves.length));
       },
       { rootMargin: "160px" },
     );
@@ -713,13 +641,8 @@ export function DiscoverPage({
   const facetOptions = useMemo(() => {
     const withSeed = (kind: CatalogFilterKind, selected: string[]) => {
       const opts = catalogFilterValues(resultTitles, kind);
-      const missing = selected.filter(
-        (v) => !opts.some((o) => o.value === v),
-      );
-      return [
-        ...missing.map((v) => ({ value: v, label: v })),
-        ...opts,
-      ];
+      const missing = selected.filter((v) => !opts.some((o) => o.value === v));
+      return [...missing.map((v) => ({ value: v, label: v })), ...opts];
     };
     return {
       authors: withSeed("authors", filterAuthors),
@@ -728,13 +651,7 @@ export function DiscoverPage({
       genres: withSeed("genres", filterGenres),
       sources: catalogFilterValues(resultTitles, "sources"),
     };
-  }, [
-    resultTitles,
-    filterAuthors,
-    filterNarrators,
-    filterSeries,
-    filterGenres,
-  ]);
+  }, [resultTitles, filterAuthors, filterNarrators, filterSeries, filterGenres]);
 
   useEffect(() => {
     if (panel !== "results" || !resultsHasMore) return;
@@ -750,14 +667,7 @@ export function DiscoverPage({
     obs.observe(el);
     return () => obs.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sentinel reload when page state changes
-  }, [
-    panel,
-    resultsHasMore,
-    resultsCursor,
-    resultsBusy,
-    resultsLoadingMore,
-    results.length,
-  ]);
+  }, [panel, resultsHasMore, resultsCursor, resultsBusy, resultsLoadingMore, results.length]);
 
   return (
     <div className="flex h-full flex-col">
@@ -767,11 +677,7 @@ export function DiscoverPage({
             nav={nav}
             onSignOut={onSignOut}
             actions={
-              <Button
-                variant="secondary"
-                onClick={() => void refresh()}
-                disabled={busy}
-              >
+              <Button variant="secondary" onClick={() => void refresh()} disabled={busy}>
                 <Sparkles className="h-4 w-4" />
                 Refresh
               </Button>
@@ -798,10 +704,7 @@ export function DiscoverPage({
                   if (e.key === "Escape") setSearchOpen(false);
                 }}
                 placeholder="Search Book Stores... (Enter for results)"
-                className={cn(
-                  "h-11 pl-9",
-                  searchBusy || resultsBusy ? "pr-10" : null,
-                )}
+                className={cn("h-11 pl-9", searchBusy || resultsBusy ? "pr-10" : null)}
                 aria-label="Search store catalogs"
                 aria-autocomplete="list"
                 aria-expanded={searchOpen}
@@ -827,10 +730,7 @@ export function DiscoverPage({
                     role="status"
                     aria-live="polite"
                   >
-                    <Loader2
-                      className="h-4 w-4 shrink-0 animate-spin text-teal"
-                      aria-hidden
-                    />
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-teal" aria-hidden />
                     Searching catalogs…
                   </li>
                 ) : null}
@@ -852,9 +752,7 @@ export function DiscoverPage({
                         className="flex min-w-0 flex-1 items-center gap-3 text-left"
                         onClick={() => {
                           setSearchOpen(false);
-                          setSelected(
-                            catalogTitleFromHit(hit, wishlistUuidForHit(wishlist, hit)),
-                          );
+                          setSelected(catalogTitleFromHit(hit, wishlistUuidForHit(wishlist, hit)));
                         }}
                       >
                         <CoverThumb url={hit.cover_url} />
@@ -947,9 +845,7 @@ export function DiscoverPage({
                       : "border-ink/15 bg-card-strong text-ink hover:bg-paper",
                   )}
                   disabled={sortKey === "relevance"}
-                  aria-label={
-                    sortDir === "asc" ? "Sort ascending" : "Sort descending"
-                  }
+                  aria-label={sortDir === "asc" ? "Sort ascending" : "Sort descending"}
                   title={
                     sortKey === "relevance"
                       ? "Relevance uses store ranking order"
@@ -958,8 +854,7 @@ export function DiscoverPage({
                         : "Descending — click for ascending"
                   }
                   onClick={() => {
-                    const next: CatalogSortDir =
-                      sortDir === "asc" ? "desc" : "asc";
+                    const next: CatalogSortDir = sortDir === "asc" ? "desc" : "asc";
                     setSortDir(next);
                     refetchWithFilters({ sortDir: next });
                   }}
@@ -969,9 +864,7 @@ export function DiscoverPage({
                   ) : (
                     <ArrowDownAZ className="h-4 w-4" />
                   )}
-                  <span className="hidden sm:inline">
-                    {sortDir === "asc" ? "Asc" : "Desc"}
-                  </span>
+                  <span className="hidden sm:inline">{sortDir === "asc" ? "Asc" : "Desc"}</span>
                 </button>
                 <select
                   value={filterLanguage}
@@ -983,15 +876,11 @@ export function DiscoverPage({
                   className={selectClassName}
                   aria-label="Language"
                 >
-                  {catalogLanguageSelectOptions(preferredCatalogLanguage()).map(
-                    (opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.value === CATALOG_LANGUAGE_ALL
-                          ? opt.label
-                          : `Language: ${opt.label}`}
-                      </option>
-                    ),
-                  )}
+                  {catalogLanguageSelectOptions(preferredCatalogLanguage()).map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.value === CATALOG_LANGUAGE_ALL ? opt.label : `Language: ${opt.label}`}
+                    </option>
+                  ))}
                 </select>
                 <button
                   type="button"
@@ -1124,18 +1013,14 @@ export function DiscoverPage({
                   >
                     <WaveformThrobber size="lg" />
                     <div className="space-y-1">
-                      <p className="text-sm font-medium text-ink/70">
-                        Searching storefronts
-                      </p>
+                      <p className="text-sm font-medium text-ink/70">Searching storefronts</p>
                       <p className="text-xs text-ink/45">
                         Querying enabled book stores — usually a few seconds
                       </p>
                     </div>
                   </div>
                 ) : resultTitles.length === 0 ? (
-                  <p className="text-sm text-ink/50">
-                    No catalog matches for this view.
-                  </p>
+                  <p className="text-sm text-ink/50">No catalog matches for this view.</p>
                 ) : (
                   <>
                     <ul className="divide-y divide-ink/10 border border-ink/10 bg-card">
@@ -1156,10 +1041,7 @@ export function DiscoverPage({
                       >
                         {resultsLoadingMore ? (
                           <>
-                            <Loader2
-                              className="h-4 w-4 animate-spin text-teal"
-                              aria-hidden
-                            />
+                            <Loader2 className="h-4 w-4 animate-spin text-teal" aria-hidden />
                             <span>Loading more…</span>
                           </>
                         ) : (
@@ -1203,8 +1085,7 @@ export function DiscoverPage({
                       wishlist={wishlist}
                       busy={busy}
                       onOpen={(title) => setSelected(title)}
-                      onWishlist={(title) => void onWishlistTitle(title)
-                      }
+                      onWishlist={(title) => void onWishlistTitle(title)}
                     />
                   ))}
                   {shownShelves.length < feed.shelves.length ? (
@@ -1291,11 +1172,7 @@ function ResultRow({
         {uniqueSources.length > 0 || shownGenres.length > 0 ? (
           <div className="mt-1.5 flex items-center gap-1.5 overflow-hidden">
             {uniqueSources.map((source) => (
-              <StoreLogo
-                key={source}
-                source={source}
-                className="h-4 w-4 shrink-0"
-              />
+              <StoreLogo key={source} source={source} className="h-4 w-4 shrink-0" />
             ))}
             {shownGenres.map((genre, i) => (
               <span
@@ -1324,9 +1201,7 @@ function ResultRow({
         aria-label={wishlisted ? "Wishlisted" : "Add to wishlist"}
       >
         <Bookmark className={`h-3.5 w-3.5 ${wishlisted ? "fill-current" : ""}`} />
-        <span className="hidden sm:inline">
-          {wishlisted ? "Wishlisted" : "Wishlist"}
-        </span>
+        <span className="hidden sm:inline">{wishlisted ? "Wishlisted" : "Wishlist"}</span>
       </Button>
     </li>
   );
@@ -1348,10 +1223,7 @@ function ShelfSection({
   const [visible, setVisible] = useState(SHELF_CHUNK);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
-  const orderedItems = useMemo(
-    () => preferCatalogLanguageOrder(shelf.items),
-    [shelf.items],
-  );
+  const orderedItems = useMemo(() => preferCatalogLanguageOrder(shelf.items), [shelf.items]);
 
   useEffect(() => {
     setVisible(SHELF_CHUNK);
@@ -1375,14 +1247,9 @@ function ShelfSection({
     <section className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold text-ink">{shelf.title}</h2>
-        {shelf.subtitle ? (
-          <p className="text-sm text-ink/55">{shelf.subtitle}</p>
-        ) : null}
+        {shelf.subtitle ? <p className="text-sm text-ink/55">{shelf.subtitle}</p> : null}
       </div>
-      <div
-        ref={scrollerRef}
-        className="-mx-4 flex gap-3 overflow-x-auto px-4 pb-2 snap-x"
-      >
+      <div ref={scrollerRef} className="-mx-4 flex gap-3 overflow-x-auto px-4 pb-2 snap-x">
         {items.map((r, i) => (
           <ShelfCard
             key={`${shelf.id}-${r.asin ?? r.isbn ?? r.title}-${i}`}
@@ -1395,9 +1262,7 @@ function ShelfSection({
           />
         ))}
         {visible < orderedItems.length ? (
-          <div className="flex w-8 shrink-0 items-center justify-center text-xs text-ink/35">
-            …
-          </div>
+          <div className="flex w-8 shrink-0 items-center justify-center text-xs text-ink/35">…</div>
         ) : null}
       </div>
     </section>
@@ -1421,13 +1286,9 @@ function ShelfCard({
 }) {
   const cardRef = useRef<HTMLElement | null>(null);
   const [inView, setInView] = useState(false);
-  const [title, setTitle] = useState(() =>
-    catalogTitleFromRec(rec, wishlistUuid),
-  );
+  const [title, setTitle] = useState(() => catalogTitleFromRec(rec, wishlistUuid));
   const [, setHints] = useState<PurchaseHint[]>(rec.purchase_hints);
-  const [best, setBest] = useState<PurchaseHint | null>(
-    rec.purchase_hints[0] ?? null,
-  );
+  const [best, setBest] = useState<PurchaseHint | null>(rec.purchase_hints[0] ?? null);
   const [pricing, setPricing] = useState<"idle" | "loading" | "done">("idle");
 
   useEffect(() => {
@@ -1483,12 +1344,7 @@ function ShelfCard({
         setHints(res.hints);
         setBest(res.best);
         if (meta) {
-          setTitle((prev) =>
-            applyTitleMeta(
-              { ...prev, purchase_hints: res.hints },
-              meta,
-            ),
-          );
+          setTitle((prev) => applyTitleMeta({ ...prev, purchase_hints: res.hints }, meta));
         } else {
           setTitle((prev) => ({ ...prev, purchase_hints: res.hints }));
         }
@@ -1501,11 +1357,7 @@ function ShelfCard({
     return () => {
       cancelled = true;
     };
-  }, [
-    inView,
-    rec,
-    wishlistUuid,
-  ]);
+  }, [inView, rec, wishlistUuid]);
 
   const blurb = descriptionPlainText(title.description);
   const seriesLabel = formatSeriesLabel(title.series, title.series_index);
@@ -1516,29 +1368,15 @@ function ShelfCard({
       ref={cardRef}
       className="w-40 shrink-0 snap-start rounded-lg bg-card-mid p-2.5 shadow-sm ring-1 ring-ink/5 sm:w-44"
     >
-      <button
-        type="button"
-        className="w-full text-left"
-        onClick={() => onOpen(title)}
-      >
-        <CoverThumb
-          url={title.cover_url}
-          className="aspect-square w-full rounded-md shadow-sm"
-        />
+      <button type="button" className="w-full text-left" onClick={() => onOpen(title)}>
+        <CoverThumb url={title.cover_url} className="aspect-square w-full rounded-md shadow-sm" />
         <p className="mt-2.5 line-clamp-2 text-sm font-semibold leading-snug text-ink hover:underline">
           {title.title}
         </p>
-        <p className="mt-1 line-clamp-1 text-xs text-ink/55">
-          {title.authors ?? "Unknown author"}
-        </p>
+        <p className="mt-1 line-clamp-1 text-xs text-ink/55">{title.authors ?? "Unknown author"}</p>
         {seriesLabel || title.length_minutes ? (
           <p className="mt-0.5 line-clamp-1 text-[11px] text-ink/45">
-            {[
-              seriesLabel,
-              title.length_minutes
-                ? formatDuration(title.length_minutes)
-                : null,
-            ]
+            {[seriesLabel, title.length_minutes ? formatDuration(title.length_minutes) : null]
               .filter(Boolean)
               .join(" · ")}
           </p>
@@ -1568,10 +1406,7 @@ function ShelfCard({
             (title.wishers?.length ?? 0) > 0 ? "mt-1" : "mt-1.5",
           )}
         >
-          <StarRating
-            value={title.rating_overall}
-            starClassName="h-3 w-3"
-          />
+          <StarRating value={title.rating_overall} starClassName="h-3 w-3" />
           <span className="text-[11px] tabular-nums text-ink/55">
             {title.rating_overall.toFixed(1)}
           </span>
@@ -1581,9 +1416,7 @@ function ShelfCard({
       {best || pricing === "loading" ? (
         <div
           className={
-            title.rating_overall != null || (title.wishers?.length ?? 0) > 0
-              ? "mt-1"
-              : "mt-2"
+            title.rating_overall != null || (title.wishers?.length ?? 0) > 0 ? "mt-1" : "mt-2"
           }
         >
           {best?.url ? (

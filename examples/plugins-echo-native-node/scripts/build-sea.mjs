@@ -16,7 +16,9 @@ const outDir = join("dist", "sea");
 mkdirSync(outDir, { recursive: true });
 
 const isWin = process.platform === "win32";
-const exeName = isWin ? "bookclerk-plugin-echo-native-node.exe" : "bookclerk-plugin-echo-native-node";
+const exeName = isWin
+  ? "bookclerk-plugin-echo-native-node.exe"
+  : "bookclerk-plugin-echo-native-node";
 const exePath = join(outDir, exeName);
 
 copyFileSync(process.execPath, exePath);
@@ -37,8 +39,5 @@ if (process.platform === "darwin") {
 
 // Inject the SEA blob (postject). Publishers must install postject and follow
 // the current Node docs — flags change across Node majors.
-console.error(
-  "Experimental: run postject per Node SEA docs to inject sea-prep.blob into",
-  exePath,
-);
+console.error("Experimental: run postject per Node SEA docs to inject sea-prep.blob into", exePath);
 console.error("Then pack plugin.toml + binary as {crate}-{version}-{bookclerk_target}.{ext}");

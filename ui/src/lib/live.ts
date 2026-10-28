@@ -27,14 +27,7 @@ export const BACKOFF_MAX_MS = 30_000;
 
 /** What the daemon reports changes for. */
 export type LiveTopic =
-  | "library"
-  | "jobs"
-  | "deliveries"
-  | "nodes"
-  | "config"
-  | "consents"
-  | "clusters"
-  | "users";
+  "library" | "jobs" | "deliveries" | "nodes" | "config" | "consents" | "clusters" | "users";
 
 /** Connection state of a {@link LiveClient}. */
 export type LiveState = "idle" | "connecting" | "open" | "closed";
@@ -218,9 +211,7 @@ export class LiveClient {
     if (this.subscribers.size === 0) return;
     // Signed out: the panels' own requests notice and sign the page out;
     // keep trying only slowly in case the session comes back.
-    const delay = unauthorized
-      ? BACKOFF_MAX_MS
-      : backoffDelay(this.failures, this.env.random());
+    const delay = unauthorized ? BACKOFF_MAX_MS : backoffDelay(this.failures, this.env.random());
     this.failures += 1;
     this.retry = setTimeout(() => this.open(), delay);
   }

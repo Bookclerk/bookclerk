@@ -11,7 +11,9 @@ import { classify, OPERATIONS } from "../src/routes.ts";
 
 /** Every (method, path) in the API description. */
 function apiOperations() {
-  const spec = JSON.parse(readFileSync(new URL("../../../crates/bookclerkd/openapi.json", import.meta.url), "utf8")) as {
+  const spec = JSON.parse(
+    readFileSync(new URL("../../../crates/bookclerkd/openapi.json", import.meta.url), "utf8"),
+  ) as {
     paths: Record<string, Record<string, unknown>>;
   };
   const out: string[] = [];
@@ -29,7 +31,11 @@ describe("route list", () => {
     const api = apiOperations();
     const missing = api.filter((op) => !listed.includes(op));
     const extra = listed.filter((op) => !api.includes(op));
-    assert.deepEqual(missing, [], `classify these new operations in src/routes.ts: ${missing.join(", ")}`);
+    assert.deepEqual(
+      missing,
+      [],
+      `classify these new operations in src/routes.ts: ${missing.join(", ")}`,
+    );
     assert.deepEqual(extra, [], `these operations are no longer in the API: ${extra.join(", ")}`);
     assert.equal(new Set(listed).size, listed.length, "an operation is listed twice");
   });
@@ -103,7 +109,14 @@ describe("route list", () => {
   });
 
   it("serves the web app's pages and files, read-only", () => {
-    for (const p of ["/", "/library", "/accounts", "/assets/index-abc.js", "/favicon.ico", "/join/approve"]) {
+    for (const p of [
+      "/",
+      "/library",
+      "/accounts",
+      "/assets/index-abc.js",
+      "/favicon.ico",
+      "/join/approve",
+    ]) {
       assert.equal(classify("GET", p).verdict, "allow", p);
       assert.equal(classify("HEAD", p).verdict, "allow", p);
       assert.equal(classify("POST", p).verdict, "deny", p);
@@ -111,7 +124,13 @@ describe("route list", () => {
   });
 
   it("refuses API paths the description does not list", () => {
-    for (const p of ["/api/unknown", "/api/library", "/oidc/other", "/.well-known/x", "/integrations/a/b"]) {
+    for (const p of [
+      "/api/unknown",
+      "/api/library",
+      "/oidc/other",
+      "/.well-known/x",
+      "/integrations/a/b",
+    ]) {
       assert.equal(classify("GET", p).verdict, "deny", p);
     }
     assert.equal(classify("OPTIONS", "/api/status").verdict, "deny");

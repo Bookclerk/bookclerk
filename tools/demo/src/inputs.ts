@@ -123,7 +123,8 @@ export function rewriteSetCookie(line: string): string | null {
   if (eq <= 0) return null;
   const name = first.slice(0, eq);
   const value = first.slice(eq + 1);
-  if (!COOKIE_NAME_RE.test(name) || reservedCookieName(name) || !COOKIE_VALUE_RE.test(value)) return null;
+  if (!COOKIE_NAME_RE.test(name) || reservedCookieName(name) || !COOKIE_VALUE_RE.test(value))
+    return null;
   const attrs: string[] = [];
   for (const attr of parts) {
     if (attr === "") continue;
@@ -191,7 +192,12 @@ function isObject(v: unknown): v is Record<string, unknown> {
  * @returns True when it can be put in a revoke URL.
  */
 function isId(s: unknown): s is string {
-  return typeof s === "string" && s.length > 0 && s.length <= MAX_ID_CHARS && !/[\u0000-\u001f\u007f]/.test(s);
+  return (
+    typeof s === "string" &&
+    s.length > 0 &&
+    s.length <= MAX_ID_CHARS &&
+    !/[\u0000-\u001f\u007f]/.test(s)
+  );
 }
 
 /**
@@ -202,7 +208,9 @@ function isId(s: unknown): s is string {
  *   accounts (deduplicated, at most {@link MAX_CONNECTIONS}), or null when
  *   the body is not the expected shape.
  */
-export function decodeConnections(text: string): Array<{ source: string; accountId: string; }> | null {
+export function decodeConnections(
+  text: string,
+): Array<{ source: string; accountId: string }> | null {
   const body = parseJson(text);
   if (!isObject(body) || !Array.isArray(body.connections)) return null;
   const out: Array<{ source: string; accountId: string }> = [];
@@ -229,7 +237,10 @@ export function decodeConnections(text: string): Array<{ source: string; account
  *   well-formed entry wins); null when the body is not an object with a
  *   well-formed `node_id` and an `instances` array.
  */
-export function decodeInstances(text: string, aliases: string[]): { nodeId: string; instances: Map<string, string>; } | null {
+export function decodeInstances(
+  text: string,
+  aliases: string[],
+): { nodeId: string; instances: Map<string, string> } | null {
   const body = parseJson(text);
   if (!isObject(body) || !isId(body.node_id) || !Array.isArray(body.instances)) return null;
   const wanted = new Set(aliases);
@@ -258,7 +269,9 @@ export function decodeLaunchForm(bytes: Uint8Array): string | null {
   // Keep a leading BOM, as the form-urlencoded parser does.
   const text = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }).decode(bytes);
   const token = new URLSearchParams(text).get(TURNSTILE_FIELD);
-  return token !== null && token.length <= MAX_TURNSTILE_TOKEN_CHARS && TURNSTILE_TOKEN_RE.test(token)
+  return token !== null &&
+    token.length <= MAX_TURNSTILE_TOKEN_CHARS &&
+    TURNSTILE_TOKEN_RE.test(token)
     ? token
     : null;
 }
@@ -287,7 +300,10 @@ export function decodeClaimTicket(text: string): string | null {
  * @returns True only for `success: true` with the same hostname
  *   and action.
  */
-export function siteverifyPassed(text: string, expect: { hostname: string; action: string; }): boolean {
+export function siteverifyPassed(
+  text: string,
+  expect: { hostname: string; action: string },
+): boolean {
   const body = parseJson(text);
   return (
     isObject(body) &&

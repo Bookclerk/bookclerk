@@ -1,0 +1,47 @@
+{
+  // markdownlint-cli2 settings for every Markdown file in the repository
+  // (the `lint` CI check). Docs are written for GitHub's renderer first
+  // (docs/contributing/writing-docs.md), so rules that fight that style are
+  // off or relaxed here; a page that needs an exception says so in place
+  // with `<!-- markdownlint-disable-next-line MDxxx -->`.
+  "config": {
+    "default": true,
+    // Line length: prose is not wrapped at a fixed width.
+    "MD013": false,
+    // Inline HTML: README headers, <picture>, <details> and <kbd>.
+    "MD033": false,
+    // A page may open with a badge row or HTML header before its H1.
+    "MD041": false,
+    // Repeated headings are fine under different parents (e.g. "Arguments").
+    "MD024": { "siblings_only": true },
+    // Bare URLs are fine in prose and tables.
+    "MD034": false,
+    // Console examples keep their `$` prompt; the site's Copy button strips it.
+    "MD014": false,
+    // Two GitHub alerts (`> [!NOTE]`) in a row need a blank line between them.
+    "MD028": false,
+    // Table pipe spacing is cosmetic and GitHub renders every style alike.
+    "MD060": false,
+  },
+  "globs": ["**/*.md"],
+  "gitignore": true,
+  "ignores": [
+    "**/node_modules/**",
+    "third_party/**",
+    "target/**",
+    "fuzz/corpus/**",
+    "**/corpus/**",
+    "**/*_corpus/**",
+    "**/testdata/**",
+    "**/tests/fixtures/**",
+    // Generated: regenerate, never hand-edit.
+    "docs/server/cli-reference.md",
+    "docs/api/**",
+    // Website page templates: Mustache sections ({{#demo}}) sit between
+    // Markdown blocks, so block-spacing rules misread them.
+    "tools/site/src/*.md",
+    // Legal texts kept verbatim.
+    "LICENSE*",
+    "**/LICENSE*",
+  ],
+}

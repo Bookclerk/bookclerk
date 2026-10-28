@@ -2,11 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Download, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  coverUrl,
-  type AcquireStatus,
-  type BookRecord,
-} from "@/lib/api";
+import { coverUrl, type AcquireStatus, type BookRecord } from "@/lib/api";
 import { formatDate, formatDuration } from "@/lib/libraryFilters";
 import { cn } from "@/lib/utils";
 
@@ -67,8 +63,7 @@ export function BookDetailModal({
   const src = candidates[Math.min(coverIndex, candidates.length - 1)]!;
   const isFallback = src === FALLBACK_COVER;
   const series =
-    book.series &&
-    `${book.series}${book.series_index ? ` #${book.series_index}` : ""}`;
+    book.series && `${book.series}${book.series_index ? ` #${book.series_index}` : ""}`;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -139,25 +134,18 @@ export function BookDetailModal({
                   {book.acquire_status.replaceAll("_", " ")}
                 </Badge>
                 <Badge className="bg-ink/8 text-ink/70">{book.source}</Badge>
-                {book.is_finished ? (
-                  <Badge className="bg-teal/15 text-teal">Finished</Badge>
-                ) : null}
+                {book.is_finished ? <Badge className="bg-teal/15 text-teal">Finished</Badge> : null}
                 {book.is_abridged ? (
                   <Badge className="bg-parchment text-ink">Abridged</Badge>
                 ) : null}
               </div>
-              {book.subtitle ? (
-                <p className="text-sm text-ink/70">{book.subtitle}</p>
-              ) : null}
+              {book.subtitle ? <p className="text-sm text-ink/70">{book.subtitle}</p> : null}
               <dl className="space-y-2">
                 <MetaRow label="Authors" value={book.authors} />
                 <MetaRow label="Narrators" value={book.narrators} />
                 <MetaRow label="Series" value={series} />
                 <MetaRow label="Publisher" value={book.publisher} />
-                <MetaRow
-                  label="Duration"
-                  value={formatDuration(book.length_minutes)}
-                />
+                <MetaRow label="Duration" value={formatDuration(book.length_minutes)} />
                 <MetaRow label="Published" value={formatDate(book.published_at)} />
                 <MetaRow label="Purchased" value={formatDate(book.purchased_at)} />
                 <MetaRow label="Genres" value={book.categories} />
@@ -188,7 +176,10 @@ export function BookDetailModal({
                   }
                 />
                 <MetaRow label="Storage" value={book.storage_key} />
-                <MetaRow label="PDF" value={book.pdf_status !== "not_acquired" ? book.pdf_status : null} />
+                <MetaRow
+                  label="PDF"
+                  value={book.pdf_status !== "not_acquired" ? book.pdf_status : null}
+                />
                 <MetaRow label="Added" value={formatDate(book.created_at)} />
                 <MetaRow label="Updated" value={formatDate(book.updated_at)} />
                 <MetaRow label="UUID" value={book.uuid} />

@@ -186,9 +186,7 @@ def run_smoke(plugin_dir: Path) -> str:
         raise ValueError(f"expected workerd binary, got {validated_bin.name}")
     validated_cfg = validate_spawn_executable(config_path, generated.state_dir)
     if validated_cfg.name != _WORKERD_SMOKE_CONFIG:
-        raise ValueError(
-            f"expected {_WORKERD_SMOKE_CONFIG}, got {validated_cfg.name}"
-        )
+        raise ValueError(f"expected {_WORKERD_SMOKE_CONFIG}, got {validated_cfg.name}")
     import_path = validate_spawn_executable(generated.import_path)
     env["PATH"] = f"{validated_bin.parent}{os.pathsep}{env.get('PATH', '')}"
     # Literal argv: workerd serve + config under session cwd; import-path = RO plugin root.
@@ -219,9 +217,7 @@ def run_smoke(plugin_dir: Path) -> str:
             health_iface = "RemoteLibrary"
         else:
             health_iface = None
-        health = (
-            _invoke_health(base, health_iface, bridge_token) if health_iface else None
-        )
+        health = _invoke_health(base, health_iface, bridge_token) if health_iface else None
         detail = {
             "plugin": manifest["id"],
             "listen": listen_addr,

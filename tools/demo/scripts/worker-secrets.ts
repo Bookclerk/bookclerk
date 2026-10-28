@@ -57,7 +57,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *   `result` when the status is 2xx and `success` is true; otherwise the
  *   numeric error codes (at most ten, comma-separated) for the log.
  */
-export function decodeApiResponse(status: number, text: string): { ok: true; result: unknown; } | { ok: false; codes: string; } {
+export function decodeApiResponse(
+  status: number,
+  text: string,
+): { ok: true; result: unknown } | { ok: false; codes: string } {
   let body: unknown;
   try {
     body = text.length <= MAX_RESPONSE_CHARS ? JSON.parse(text) : undefined;
@@ -65,7 +68,8 @@ export function decodeApiResponse(status: number, text: string): { ok: true; res
     body = undefined;
   }
   const obj = isRecord(body) ? body : {};
-  if (status >= 200 && status < 300 && obj.success === true) return { ok: true, result: obj.result };
+  if (status >= 200 && status < 300 && obj.success === true)
+    return { ok: true, result: obj.result };
   const codes = Array.isArray(obj.errors)
     ? obj.errors
         .map((e: unknown) => (isRecord(e) ? e.code : undefined))
@@ -85,16 +89,29 @@ export function decodeApiResponse(status: number, text: string): { ok: true; res
  *   well-formed hostnames (deduplicated, at most {@link MAX_DOMAINS}) and its
  *   mode (`managed` unless a known one). Null when there is none.
  */
-export function findWidget(result: unknown): { sitekey: string; domains: string[]; mode: string; } | null {
+export function findWidget(
+  result: unknown,
+): { sitekey: string; domains: string[]; mode: string } | null {
   if (!Array.isArray(result)) return null;
   for (const w of result) {
     if (!isRecord(w)) continue;
-    if (w.name !== WIDGET_NAME || typeof w.sitekey !== "string" || !KEY_RE.test(w.sitekey)) continue;
+    if (w.name !== WIDGET_NAME || typeof w.sitekey !== "string" || !KEY_RE.test(w.sitekey))
+      continue;
     const domains: string[] = [];
     for (const d of Array.isArray(w.domains) ? (w.domains as unknown[]) : []) {
-      if (typeof d === "string" && HOST_RE.test(d) && !domains.includes(d) && domains.length < MAX_DOMAINS) domains.push(d);
+      if (
+        typeof d === "string" &&
+        HOST_RE.test(d) &&
+        !domains.includes(d) &&
+        domains.length < MAX_DOMAINS
+      )
+        domains.push(d);
     }
-    return { sitekey: w.sitekey, domains, mode: typeof w.mode === "string" && MODES.includes(w.mode) ? w.mode : "managed" };
+    return {
+      sitekey: w.sitekey,
+      domains,
+      mode: typeof w.mode === "string" && MODES.includes(w.mode) ? w.mode : "managed",
+    };
   }
   return null;
 }
@@ -106,10 +123,15 @@ export function findWidget(result: unknown): { sitekey: string; domains: string[
  * @returns Both keys when each is
  *   well-formed; otherwise null.
  */
-export function widgetKeys(result: unknown): { siteKey: string; secret: string; } | null {
+export function widgetKeys(result: unknown): { siteKey: string; secret: string } | null {
   if (!isRecord(result)) return null;
   const { sitekey, secret } = result;
-  if (typeof sitekey !== "string" || typeof secret !== "string" || !KEY_RE.test(sitekey) || !KEY_RE.test(secret)) {
+  if (
+    typeof sitekey !== "string" ||
+    typeof secret !== "string" ||
+    !KEY_RE.test(sitekey) ||
+    !KEY_RE.test(secret)
+  ) {
     return null;
   }
   return { siteKey: sitekey, secret };
@@ -126,14 +148,21 @@ export function widgetKeys(result: unknown): { siteKey: string; secret: string; 
  * @throws {Error} When the call fails; the message names the path and
  *   Cloudflare's error codes, never a secret.
  */
-async function api(fetchFn: FetchFn, token: string, path: string, init: RequestInit = {}): Promise<unknown> {
+async function api(
+  fetchFn: FetchFn,
+  token: string,
+  path: string,
+  init: RequestInit = {},
+): Promise<unknown> {
   const res = await fetchFn(`https://api.cloudflare.com/client/v4${path}`, {
     ...init,
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
   });
   const answer = decodeApiResponse(res.status, await res.text());
   if (!answer.ok) {
-    throw new Error(`Cloudflare API ${init.method ?? "GET"} ${path.replace(/\/widgets\/.+$/, "/widgets/…")} failed: ${res.status} ${answer.codes}`);
+    throw new Error(
+      `Cloudflare API ${init.method ?? "GET"} ${path.replace(/\/widgets\/.+$/, "/widgets/…")} failed: ${res.status} ${answer.codes}`,
+    );
   }
   return answer.result;
 }
@@ -147,7 +176,17 @@ async function api(fetchFn: FetchFn, token: string, path: string, init: RequestI
  * @throws {Error} When the API refuses, answers without keys, or the widget
  *   already has the most hostnames it can take.
  */
-export async function turnstileKeys({ fetchFn, token, account, host }: { fetchFn: FetchFn; token: string; account: string; host: string; }): Promise<{ siteKey: string; secret: string; }> {
+export async function turnstileKeys({
+  fetchFn,
+  token,
+  account,
+  host,
+}: {
+  fetchFn: FetchFn;
+  token: string;
+  account: string;
+  host: string;
+}): Promise<{ siteKey: string; secret: string }> {
   const base = `/accounts/${encodeURIComponent(account)}/challenges/widgets`;
   const found = findWidget(await api(fetchFn, token, `${base}?per_page=100`));
   let result;
@@ -158,10 +197,15 @@ export async function turnstileKeys({ fetchFn, token, account, host }: { fetchFn
     });
   } else {
     if (!found.domains.includes(host)) {
-      if (found.domains.length >= MAX_DOMAINS) throw new Error("Turnstile widget already allows the most hostnames");
+      if (found.domains.length >= MAX_DOMAINS)
+        throw new Error("Turnstile widget already allows the most hostnames");
       await api(fetchFn, token, `${base}/${encodeURIComponent(found.sitekey)}`, {
         method: "PUT",
-        body: JSON.stringify({ name: WIDGET_NAME, domains: [...found.domains, host], mode: found.mode }),
+        body: JSON.stringify({
+          name: WIDGET_NAME,
+          domains: [...found.domains, host],
+          mode: found.mode,
+        }),
       });
     }
     result = await api(fetchFn, token, `${base}/${encodeURIComponent(found.sitekey)}`);
@@ -190,7 +234,10 @@ export function newSessionKey(): string {
  * @returns Secret names and values.
  * @throws {Error} When a required variable is missing or the API fails.
  */
-export async function workerSecrets(env: Record<string, string | undefined>, fetchFn: FetchFn): Promise<Record<string, string>> {
+export async function workerSecrets(
+  env: Record<string, string | undefined>,
+  fetchFn: FetchFn,
+): Promise<Record<string, string>> {
   const required = (name: string): string => {
     const value = env[name];
     if (!value) throw new Error(`${name} is not set`);

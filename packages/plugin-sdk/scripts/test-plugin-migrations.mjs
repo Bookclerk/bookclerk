@@ -12,9 +12,7 @@ const {
   MAX_PLUGIN_MIGRATION_TOTAL_OPS,
   MAX_SCALAR_BYTES,
 } = await import(join(dist, "abi.js"));
-const { requirePluginMigrationRegistration } = await import(
-  join(dist, "plugin-migrations.js")
-);
+const { requirePluginMigrationRegistration } = await import(join(dist, "plugin-migrations.js"));
 
 function mig(id, sql = "x", ops = 1) {
   return {
@@ -40,9 +38,7 @@ requirePluginMigrationRegistration(
 {
   const err = tooLarge(() =>
     requirePluginMigrationRegistration(
-      Array.from({ length: MAX_LIST_PAGE + 1 }, (_, i) =>
-        mig(`m${String(i).padStart(3, "0")}`),
-      ),
+      Array.from({ length: MAX_LIST_PAGE + 1 }, (_, i) => mig(`m${String(i).padStart(3, "0")}`)),
     ),
   );
   assert.match(err.message, /maxListPage/);
@@ -94,9 +90,7 @@ requirePluginMigrationRegistration([mig("", "x".repeat(MAX_SCALAR_BYTES))]);
 {
   const half = Math.floor(MAX_SCALAR_BYTES / 2) + 1;
   const sql = "x".repeat(half);
-  const err = tooLarge(() =>
-    requirePluginMigrationRegistration([mig("a", sql), mig("b", sql)]),
-  );
+  const err = tooLarge(() => requirePluginMigrationRegistration([mig("a", sql), mig("b", sql)]));
   assert.match(err.message, /maxPluginMigrationRegistrationBytes/);
 }
 

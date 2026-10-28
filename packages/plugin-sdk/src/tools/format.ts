@@ -91,11 +91,14 @@ function emitQueues(lines: string[], queues: QueuesToml | undefined): void {
     lines.push("[[queues.consumers]]");
     lines.push(`queue = ${esc(consumer.queue)}`);
     if (consumer.max_batch_size != null) lines.push(`max_batch_size = ${consumer.max_batch_size}`);
-    if (consumer.max_batch_timeout != null) lines.push(`max_batch_timeout = ${consumer.max_batch_timeout}`);
+    if (consumer.max_batch_timeout != null)
+      lines.push(`max_batch_timeout = ${consumer.max_batch_timeout}`);
     if (consumer.max_retries != null) lines.push(`max_retries = ${consumer.max_retries}`);
-    if (consumer.dead_letter_queue != null) lines.push(`dead_letter_queue = ${esc(consumer.dead_letter_queue)}`);
+    if (consumer.dead_letter_queue != null)
+      lines.push(`dead_letter_queue = ${esc(consumer.dead_letter_queue)}`);
     if (consumer.retry_delay != null) lines.push(`retry_delay = ${consumer.retry_delay}`);
-    if (consumer.max_concurrency != null) lines.push(`max_concurrency = ${consumer.max_concurrency}`);
+    if (consumer.max_concurrency != null)
+      lines.push(`max_concurrency = ${consumer.max_concurrency}`);
   }
 }
 
@@ -147,9 +150,7 @@ export function formatManifest(m: Manifest): string {
     lines.push("[workerd]");
     lines.push(`compatibility_date = ${esc(m.workerd.compatibility_date)}`);
     if (m.workerd.compatibility_flags?.length) {
-      lines.push(
-        `compatibility_flags = ${emitStringArray(m.workerd.compatibility_flags)}`,
-      );
+      lines.push(`compatibility_flags = ${emitStringArray(m.workerd.compatibility_flags)}`);
     }
     lines.push(`main_module = ${esc(m.workerd.main_module)}`);
     const modulesDir = m.workerd.modules_dir ?? "modules";
@@ -219,7 +220,9 @@ export function formatManifest(m: Manifest): string {
     if (spec.default !== undefined) {
       const literal = emitValue(spec.default);
       if (literal === null) {
-        throw new Error(`plugin.toml: [[settings]] default for \`${spec.key}\` cannot be formatted`);
+        throw new Error(
+          `plugin.toml: [[settings]] default for \`${spec.key}\` cannot be formatted`,
+        );
       }
       lines.push(`default = ${literal}`);
     }
@@ -241,9 +244,7 @@ export function formatManifest(m: Manifest): string {
   lines.push("[capabilities.network]");
   lines.push(`mode = ${esc(m.capabilities.network.mode)}`);
   if (m.capabilities.network.domains?.length) {
-    lines.push(
-      `domains = ${emitStringArray(m.capabilities.network.domains)}`,
-    );
+    lines.push(`domains = ${emitStringArray(m.capabilities.network.domains)}`);
   }
 
   const cli = m.cli as
@@ -287,13 +288,9 @@ export function formatManifest(m: Manifest): string {
     }
     lines.push(`callback_path = ${esc(String(client.callback_path))}`);
     lines.push(`public_client = ${client.public_client === false ? "false" : "true"}`);
-    const scopes = Array.isArray(client.default_scopes)
-      ? (client.default_scopes as string[])
-      : [];
+    const scopes = Array.isArray(client.default_scopes) ? (client.default_scopes as string[]) : [];
     if (scopes.length) lines.push(`default_scopes = ${emitStringArray(scopes)}`);
-    lines.push(
-      `issue_refresh_token = ${client.issue_refresh_token === false ? "false" : "true"}`,
-    );
+    lines.push(`issue_refresh_token = ${client.issue_refresh_token === false ? "false" : "true"}`);
     lines.push(`origin_config_key = ${esc(String(client.origin_config_key))}`);
   }
 

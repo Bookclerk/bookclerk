@@ -232,7 +232,16 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
  * app, compared in lower case. A path under one of these that no operation
  * matches is refused, so an undocumented route is never reachable.
  */
-const API_ROOTS = new Set([".well-known", "acquire", "api", "integrations", "jobs", "oidc", "scan", "status"]);
+const API_ROOTS = new Set([
+  ".well-known",
+  "acquire",
+  "api",
+  "integrations",
+  "jobs",
+  "oidc",
+  "scan",
+  "status",
+]);
 
 /** Longest path the Worker classifies; anything longer is refused. */
 export const MAX_PATH_CHARS = 2048;
@@ -295,7 +304,10 @@ export function decodeSegment(raw: string): string | null {
  * @returns The verdict, and the
  *   matched operation's template (null for app files and refused unknowns).
  */
-export function classify(method: string, pathname: string): { verdict: Verdict; template: string | null; } {
+export function classify(
+  method: string,
+  pathname: string,
+): { verdict: Verdict; template: string | null } {
   const deny: { verdict: Verdict; template: string | null } = { verdict: "deny", template: null };
   if (typeof method !== "string" || typeof pathname !== "string") return deny;
   if (!pathname.startsWith("/") || pathname.length > MAX_PATH_CHARS) return deny;

@@ -98,9 +98,6 @@ export function applyResolvedTheme(resolved: ResolvedTheme): void {
   root.style.colorScheme = resolved;
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) {
-    meta.setAttribute(
-      "content",
-      resolved === "dark" ? THEME_COLOR_DARK : THEME_COLOR_LIGHT,
-    );
+    meta.setAttribute("content", resolved === "dark" ? THEME_COLOR_DARK : THEME_COLOR_LIGHT);
   }
 }

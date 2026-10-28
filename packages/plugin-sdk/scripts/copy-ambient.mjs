@@ -15,7 +15,7 @@ const ref = 'import "./cloudflare-workers.d.ts";\n';
 for (const name of ["index.d.ts", "workerd.d.ts", "plugin.d.ts"]) {
   const path = resolve(dist, name);
   const text = readFileSync(path, "utf8");
-  if (!text.includes('cloudflare-workers.d.ts')) {
+  if (!text.includes("cloudflare-workers.d.ts")) {
     writeFileSync(path, ref + text);
   }
 }

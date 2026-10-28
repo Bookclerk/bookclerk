@@ -11,7 +11,15 @@ import { join, relative, sep } from "node:path";
 import { buildNav, renderDoc } from "./render.ts";
 import type { NavGroup, RenderedDoc } from "./render.ts";
 
-export { docMarkdownUrl, docUrl, GENERATED_TITLES, NAV, rewriteLink, siteMarkdown, slugify } from "./render.ts";
+export {
+  docMarkdownUrl,
+  docUrl,
+  GENERATED_TITLES,
+  NAV,
+  rewriteLink,
+  siteMarkdown,
+  slugify,
+} from "./render.ts";
 
 /**
  * Directories under docs/ that scripts/generate-api-docs.sh fills with
@@ -26,7 +34,12 @@ export interface RenderedDocs {
   docs: (RenderedDoc & { key: string })[];
 }
 
-export const GENERATED_DIRS: readonly string[] = ["api/rust", "api/typescript", "api/ui", "api/python"];
+export const GENERATED_DIRS: readonly string[] = [
+  "api/rust",
+  "api/typescript",
+  "api/ui",
+  "api/python",
+];
 
 /**
  * Lists every Markdown file under a directory, skipping GENERATED_DIRS.
@@ -60,15 +73,26 @@ export function markdownFiles(root: string): string[] {
  *   (see render.ts).
  * @throws {Error} When the docs index (`README.md`) is missing.
  */
-export function renderDocs(docsRoot: string, blobBase: string, generatedTitles: Readonly<Record<string, string>> = {}): RenderedDocs {
+export function renderDocs(
+  docsRoot: string,
+  blobBase: string,
+  generatedTitles: Readonly<Record<string, string>> = {},
+): RenderedDocs {
   const files = markdownFiles(docsRoot);
-  const keys = new Set([...files.map((f) => f.slice(0, -".md".length)), ...Object.keys(generatedTitles)]);
+  const keys = new Set([
+    ...files.map((f) => f.slice(0, -".md".length)),
+    ...Object.keys(generatedTitles),
+  ]);
   if (!keys.has("README")) throw new Error(`no README.md in ${docsRoot}`);
   const docs = files.map((file) => {
     const key = file.slice(0, -".md".length);
-    return { key, ...renderDoc(readFileSync(join(docsRoot, file), "utf8"), key, { keys, blobBase }) };
+    return {
+      key,
+      ...renderDoc(readFileSync(join(docsRoot, file), "utf8"), key, { keys, blobBase }),
+    };
   });
   const titles = new Map(docs.map((d) => [d.key, d.title]));
-  for (const [key, title] of Object.entries(generatedTitles)) if (!titles.has(key)) titles.set(key, title);
+  for (const [key, title] of Object.entries(generatedTitles))
+    if (!titles.has(key)) titles.set(key, title);
   return { nav: buildNav(titles), docs };
 }

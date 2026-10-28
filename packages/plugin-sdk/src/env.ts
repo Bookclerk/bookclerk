@@ -191,7 +191,11 @@ export interface KvNamespaceBinding {
    * @param value - String (stored as UTF-8) or bytes.
    * @param options - Expiration and metadata.
    */
-  put(key: string, value: string | ArrayBuffer | ArrayBufferView, options?: KvPutOptionsBinding): Promise<void>;
+  put(
+    key: string,
+    value: string | ArrayBuffer | ArrayBufferView,
+    options?: KvPutOptionsBinding,
+  ): Promise<void>;
   /**
    * Delete one key; a missing key is not an error.
    *
@@ -218,7 +222,9 @@ export interface StorageBinding {
    * @param key - Object key.
    * @returns Metadata, or `null` when the key does not exist.
    */
-  head(key: string): Promise<{ key: string; size: number; contentType?: string; etag?: string } | null>;
+  head(
+    key: string,
+  ): Promise<{ key: string; size: number; contentType?: string; etag?: string } | null>;
   /**
    * One page of keys under `prefix`.
    *
@@ -287,5 +293,6 @@ export interface BookclerkEnv {
    * Named `[[databases]]` bindings, `[[queues.producers]]` bindings, and any
    * renamed `binding = "..."` entries.
    */
-  [binding: string]: DatabaseBinding | EventPublisherBinding | QueueBinding | StorageBinding | JsonObject | unknown;
+  [binding: string]:
+    DatabaseBinding | EventPublisherBinding | QueueBinding | StorageBinding | JsonObject | unknown;
 }

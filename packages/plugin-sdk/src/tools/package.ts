@@ -153,11 +153,10 @@ export function packagePlugin(pluginDir: string, outDir: string): string {
   try {
     const fd = fs.openSync(tmpPath, "wx");
     try {
-      const tar = spawnSync(
-        "tar",
-        ["-C", staging, "-czf", "-", "."],
-        { encoding: "buffer", maxBuffer: 512 * 1024 * 1024 },
-      );
+      const tar = spawnSync("tar", ["-C", staging, "-czf", "-", "."], {
+        encoding: "buffer",
+        maxBuffer: 512 * 1024 * 1024,
+      });
       if (tar.status !== 0) {
         throw new Error(
           `tar failed: ${tar.stderr?.toString() || tar.stdout?.toString() || "status " + tar.status}`,
@@ -183,10 +182,7 @@ export function packagePlugin(pluginDir: string, outDir: string): string {
   }
   fs.rmSync(staging, { recursive: true, force: true });
 
-  const digest = crypto
-    .createHash("sha256")
-    .update(fs.readFileSync(archivePath))
-    .digest("hex");
+  const digest = crypto.createHash("sha256").update(fs.readFileSync(archivePath)).digest("hex");
   const sumsPath = assertPathInside(outRoot, "SHA256SUMS");
   refuseSymlinkPath(outRoot, sumsPath);
   let body = "";

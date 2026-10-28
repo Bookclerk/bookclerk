@@ -79,11 +79,7 @@ def require_plugin_migration_registration(migrations: Any) -> list[Any]:
             ops = getattr(migration, "operations", None)
         if not isinstance(ops, list):
             ops = []
-        ident = (
-            migration.get("id")
-            if isinstance(migration, dict)
-            else getattr(migration, "id", "")
-        )
+        ident = migration.get("id") if isinstance(migration, dict) else getattr(migration, "id", "")
         if len(ops) > MAX_PLUGIN_MIGRATION_OPS:
             raise _too_large(
                 f"plugin migration `{ident}` has {len(ops)} operations; "

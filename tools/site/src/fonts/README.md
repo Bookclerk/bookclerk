@@ -19,7 +19,7 @@ cache `/fonts/*` for a year: a new version must get a new name.
 
 SHA-256:
 
-```
+```text
 6bc0f226a5b7884a8170e3f62c63d7675609d4631bdc5931b5cdab81821f00eb  ibm-plex-mono-v20-400-latin-ext.woff2
 08949f728dc52d528e69b1667d15c89a5686a4ee9a296ff90983985f99c380f7  ibm-plex-mono-v20-400-latin.woff2
 6bb06407c97584b0867a959e05e8874693bfeb8c317de190811c51598f2d99ea  ibm-plex-mono-v20-500-latin-ext.woff2

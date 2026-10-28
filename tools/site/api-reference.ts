@@ -11,7 +11,16 @@
 import type { Token } from "markdown-it";
 
 /** HTTP methods an operation heading can start with. */
-export const HTTP_METHODS = ["GET", "PUT", "POST", "DELETE", "OPTIONS", "HEAD", "PATCH", "TRACE"] as const;
+export const HTTP_METHODS = [
+  "GET",
+  "PUT",
+  "POST",
+  "DELETE",
+  "OPTIONS",
+  "HEAD",
+  "PATCH",
+  "TRACE",
+] as const;
 
 /** One of {@link HTTP_METHODS}. */
 export type HttpMethod = (typeof HTTP_METHODS)[number];
@@ -124,7 +133,9 @@ export function methodClass(method: HttpMethod): string {
  */
 export function statusClass(status: string): string {
   const first = status[0];
-  return first !== undefined && /^[1-5]\d\d$|^[1-5]XX$/i.test(status) ? `api-status api-status-${first}xx` : "api-status";
+  return first !== undefined && /^[1-5]\d\d$|^[1-5]XX$/i.test(status)
+    ? `api-status api-status-${first}xx`
+    : "api-status";
 }
 
 /**
@@ -194,8 +205,13 @@ export function layoutOperations(tokens: readonly Token[], make: MakeToken): Tok
       target.push(token);
     }
     markStatuses(main, make);
-    out.push(html('<div class="api-op-body">\n<div class="api-op-main">\n'), ...main, html("</div>\n"));
-    if (examples.length > 0) out.push(html('<div class="api-op-examples">\n'), ...examples, html("</div>\n"));
+    out.push(
+      html('<div class="api-op-body">\n<div class="api-op-main">\n'),
+      ...main,
+      html("</div>\n"),
+    );
+    if (examples.length > 0)
+      out.push(html('<div class="api-op-examples">\n'), ...examples, html("</div>\n"));
     out.push(html("</div>\n</section>\n"));
     at = end;
   }
@@ -228,7 +244,8 @@ export function layoutIndex(tokens: readonly Token[], make: MakeToken): Token[] 
   };
   // Top-level h2 and h3 headings bound the sections; one that opened inside
   // a list or quote would close outside it.
-  const isHeading = (t: Token | undefined, tag: string): boolean => t?.type === "heading_open" && t.tag === tag && t.level === 0;
+  const isHeading = (t: Token | undefined, tag: string): boolean =>
+    t?.type === "heading_open" && t.tag === tag && t.level === 0;
   const bounds = tokens.flatMap((t, i) => (isHeading(t, "h2") || isHeading(t, "h3") ? [i] : []));
   const nextBound = (after: number, tags: readonly string[]): number =>
     bounds.find((i) => i > after && tags.includes(tokens[i]?.tag ?? "")) ?? tokens.length;
@@ -251,12 +268,16 @@ export function layoutIndex(tokens: readonly Token[], make: MakeToken): Token[] 
     at = end;
   }
   for (const start of bounds) {
-    if (start < at || !isHeading(tokens[start], "h3") || !isLinkHeading(tokens[start + 1])) continue;
+    if (start < at || !isHeading(tokens[start], "h3") || !isLinkHeading(tokens[start + 1]))
+      continue;
     const end = nextBound(start, ["h2", "h3"]);
     const open = tokens[start];
     if (open === undefined) continue;
     open.meta = { group: true };
-    out.push(...tokens.slice(at, start), html(`<section class="api-group" aria-labelledby="${String(open.attrGet("id") ?? "")}">\n`));
+    out.push(
+      ...tokens.slice(at, start),
+      html(`<section class="api-group" aria-labelledby="${String(open.attrGet("id") ?? "")}">\n`),
+    );
     for (const token of tokens.slice(start, end)) {
       if (token.type === "inline") badgeRouteLinks(token, make);
       out.push(token);
@@ -276,7 +297,8 @@ export function layoutIndex(tokens: readonly Token[], make: MakeToken): Token[] 
  */
 function isLinkHeading(inline: Token | undefined): boolean {
   const children = inline?.children ?? [];
-  if (children[0]?.type !== "link_open" || children[children.length - 1]?.type !== "link_close") return false;
+  if (children[0]?.type !== "link_open" || children[children.length - 1]?.type !== "link_close")
+    return false;
   return children.filter((t) => t.type === "link_open").length === 1;
 }
 
@@ -293,7 +315,8 @@ function badgeRouteLinks(inline: Token, make: MakeToken): void {
   children.forEach((token, i) => {
     const open = children[i - 1];
     const close = children[i + 1];
-    const op = open?.type === "link_open" && close?.type === "link_close" ? operationOfCode(token) : null;
+    const op =
+      open?.type === "link_open" && close?.type === "link_close" ? operationOfCode(token) : null;
     if (op === null || open === undefined) {
       out.push(token);
       return;
@@ -309,7 +332,12 @@ function badgeRouteLinks(inline: Token, make: MakeToken): void {
 }
 
 /** Entities for the characters markdown-it escapes in a code span. */
-const CODE_ENTITIES: Readonly<Record<string, string>> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+const CODE_ENTITIES: Readonly<Record<string, string>> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+};
 
 /**
  * Escapes text as markdown-it escapes a code span's content.
@@ -342,9 +370,18 @@ export function indexRoutes(tokens: readonly Token[]): ApiRouteGroup[] {
   const groups: ApiRouteGroup[] = [];
   tokens.forEach((token, i) => {
     const meta: unknown = token.meta;
-    if (token.type === "heading_open" && typeof meta === "object" && meta !== null && "group" in meta) {
+    if (
+      token.type === "heading_open" &&
+      typeof meta === "object" &&
+      meta !== null &&
+      "group" in meta
+    ) {
       const children = tokens[i + 1]?.children ?? [];
-      const title = children.filter((t) => t.type === "text" || t.type === "code_inline").map((t) => t.content).join("").trim();
+      const title = children
+        .filter((t) => t.type === "text" || t.type === "code_inline")
+        .map((t) => t.content)
+        .join("")
+        .trim();
       groups.push({ title, href: String(children[0]?.attrGet("href") ?? ""), routes: [] });
       return;
     }

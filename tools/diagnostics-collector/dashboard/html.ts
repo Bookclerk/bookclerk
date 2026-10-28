@@ -38,7 +38,13 @@ export function escapeHtml(value: unknown): string {
 }
 
 /** Replacement for each character that is special in HTML. */
-const ESCAPES: Readonly<Record<"&" | "<" | ">" | '"' | "'", string>> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+const ESCAPES: Readonly<Record<"&" | "<" | ">" | '"' | "'", string>> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
 
 /**
  * Renders one interpolated value: `SafeHtml` as is, arrays joined, anything
@@ -109,7 +115,12 @@ export const SECURITY_HEADERS = {
  * @param cookies - `Set-Cookie` values.
  * @returns The response.
  */
-export function htmlResponse(body: SafeHtml, status: number = 200, extra: Record<string, string> = {}, cookies: string[] = []): Response {
+export function htmlResponse(
+  body: SafeHtml,
+  status: number = 200,
+  extra: Record<string, string> = {},
+  cookies: string[] = [],
+): Response {
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
     ...SECURITY_HEADERS,

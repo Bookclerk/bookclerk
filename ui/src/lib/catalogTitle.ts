@@ -51,13 +51,7 @@ export type CatalogTitle = {
 /**
  * Client-side catalog filter categories (legacy / local lists).
  */
-export type CatalogFilterKind =
-  | "all"
-  | "authors"
-  | "series"
-  | "narrators"
-  | "genres"
-  | "sources";
+export type CatalogFilterKind = "all" | "authors" | "series" | "narrators" | "genres" | "sources";
 /**
  * Alias of {@link CatalogSearchSort} for Discover UI state.
  */
@@ -135,12 +129,7 @@ export const CATALOG_SORT_OPTIONS: { value: CatalogSortKey; label: string }[] = 
 /**
  * Known storefront ids for prefs / empty facet fallbacks.
  */
-export const CATALOG_SOURCE_IDS = [
-  "audible",
-  "chirp",
-  "libro",
-  "graphicaudio",
-] as const;
+export const CATALOG_SOURCE_IDS = ["audible", "chirp", "libro", "graphicaudio"] as const;
 
 /**
  * Discover runtime length buckets for server filters.
@@ -289,9 +278,7 @@ export function buildCatalogSearchFilters(opts: {
     series: opts.series,
     genres: opts.genres,
     sources: opts.sources?.length ? opts.sources : undefined,
-    exclude_sources: opts.excludeSources?.length
-      ? opts.excludeSources
-      : undefined,
+    exclude_sources: opts.excludeSources?.length ? opts.excludeSources : undefined,
     languages: opts.languages?.length ? opts.languages : undefined,
     exclude_narrators: opts.hideVirtualVoice ? [VIRTUAL_VOICE_EXCLUDE] : [],
     min_rating: opts.minRating && opts.minRating > 0 ? opts.minRating : undefined,
@@ -361,8 +348,7 @@ export function storeFaviconUrl(source: string): string | undefined {
 export function preferredCatalogLanguage(): string {
   try {
     const raw =
-      (typeof navigator !== "undefined" &&
-        (navigator.languages?.[0] || navigator.language)) ||
+      (typeof navigator !== "undefined" && (navigator.languages?.[0] || navigator.language)) ||
       "en";
     const primary = String(raw).trim().toLowerCase().split(/[-_]/)[0];
     if (primary && /^[a-z]{2,3}$/.test(primary)) return primary;
@@ -442,8 +428,7 @@ export function preferCatalogLanguageOrder<T extends { language?: string | null 
 ): T[] {
   return [...items].sort(
     (a, b) =>
-      catalogLanguageRank(a.language, preferred) -
-      catalogLanguageRank(b.language, preferred),
+      catalogLanguageRank(a.language, preferred) - catalogLanguageRank(b.language, preferred),
   );
 }
 
@@ -508,12 +493,7 @@ export function formatPurchasePrices(hint: {
   if (member && list && member !== list) {
     return `${member} member · ${list}`;
   }
-  return (
-    hint.price_label?.trim() ||
-    member ||
-    list ||
-    null
-  );
+  return hint.price_label?.trim() || member || list || null;
 }
 
 /**
@@ -630,10 +610,7 @@ export function catalogTitleFromRec(
  */
 export function catalogTitleFromRequest(req: TitleRequest): CatalogTitle {
   const editions = req.store_editions ?? [];
-  const sources =
-    editions.length > 0
-      ? [...new Set(editions.map((e) => e.source))]
-      : [];
+  const sources = editions.length > 0 ? [...new Set(editions.map((e) => e.source))] : [];
   return withAudibleEditionFromAsin({
     work_key: req.work_key || `soft:${req.title.trim().toLowerCase()}`,
     title: req.title,
@@ -682,20 +659,14 @@ export function attachWishersFromQueue(
       wish_count: undefined,
     };
   }
-  const store_editions = mergeStoreEditions(
-    title.store_editions,
-    entry.store_editions ?? [],
-  );
+  const store_editions = mergeStoreEditions(title.store_editions, entry.store_editions ?? []);
   return withAudibleEditionFromAsin({
     ...title,
     asin: pickStr(title.asin, entry.asin),
     isbn: pickStr(title.isbn, entry.isbn),
     store_editions,
     sources: [
-      ...new Set([
-        ...(title.sources ?? []),
-        ...store_editions.map((edition) => edition.source),
-      ]),
+      ...new Set([...(title.sources ?? []), ...store_editions.map((edition) => edition.source)]),
     ],
     purchase_hints: mergePurchaseHints(title.purchase_hints, entry.purchase_hints),
     wishers: entry.wishers,
@@ -766,15 +737,10 @@ export function attachWishlistCommerce(
   title: CatalogTitle,
   wishlist: readonly TitleRequest[],
 ): CatalogTitle {
-  const req = wishlist.find(
-    (row) => row.status === "open" && catalogIdentityMatches(title, row),
-  );
+  const req = wishlist.find((row) => row.status === "open" && catalogIdentityMatches(title, row));
   if (!req) return title;
   const fromWish = catalogTitleFromRequest(req);
-  const store_editions = mergeStoreEditions(
-    title.store_editions,
-    fromWish.store_editions,
-  );
+  const store_editions = mergeStoreEditions(title.store_editions, fromWish.store_editions);
   return withAudibleEditionFromAsin({
     ...title,
     asin: pickStr(title.asin, fromWish.asin),
@@ -788,10 +754,7 @@ export function attachWishlistCommerce(
         ...store_editions.map((edition) => edition.source),
       ]),
     ],
-    purchase_hints: mergePurchaseHints(
-      title.purchase_hints,
-      fromWish.purchase_hints,
-    ),
+    purchase_hints: mergePurchaseHints(title.purchase_hints, fromWish.purchase_hints),
     wishlist_uuid: title.wishlist_uuid ?? fromWish.wishlist_uuid,
   });
 }
@@ -807,9 +770,7 @@ function mergeStoreEditions(
     if (!source || !productId) continue;
     if (
       out.some(
-        (row) =>
-          row.source.trim().toLowerCase() === source &&
-          row.product_id.trim() === productId,
+        (row) => row.source.trim().toLowerCase() === source && row.product_id.trim() === productId,
       )
     ) {
       continue;
@@ -830,9 +791,7 @@ function mergePurchaseHints(
     if (!source || !productId) continue;
     if (
       out.some(
-        (row) =>
-          row.source.trim().toLowerCase() === source &&
-          row.product_id.trim() === productId,
+        (row) => row.source.trim().toLowerCase() === source && row.product_id.trim() === productId,
       )
     ) {
       continue;
@@ -865,7 +824,7 @@ function pickStr(
   const cur = current?.trim();
   if (cur) return current ?? null;
   const next = incoming?.trim();
-  return next ? incoming! : current ?? null;
+  return next ? incoming! : (current ?? null);
 }
 
 function hasHtmlMarkup(raw: string): boolean {
@@ -903,7 +862,11 @@ export function pickBetterDescription(
  * @returns True when length and ending look complete.
  */
 export function descriptionLooksComplete(raw: string | null | undefined): boolean {
-  const t = raw?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() ?? "";
+  const t =
+    raw
+      ?.replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim() ?? "";
   if (t.length < 480) return false;
   // Catalog / merchandising blurbs often end mid-sentence with an ellipsis.
   if (/(\.\.\.|…)\s*$/.test(t)) return false;
@@ -920,7 +883,10 @@ export function descriptionLooksComplete(raw: string | null | undefined): boolea
  * @param meta - Fetched metadata (no-op when nullish).
  * @returns Merged title.
  */
-export function applyTitleMeta(title: CatalogTitle, meta: TitleMeta | null | undefined): CatalogTitle {
+export function applyTitleMeta(
+  title: CatalogTitle,
+  meta: TitleMeta | null | undefined,
+): CatalogTitle {
   if (!meta) return title;
   return withAudibleEditionFromAsin({
     ...title,
@@ -981,15 +947,14 @@ export function withAudibleEditionFromAsin<
 export function titleNeedsMeta(title: CatalogTitle): boolean {
   const hasCore = Boolean(
     descriptionLooksComplete(title.description) &&
-      title.length_minutes != null &&
-      title.publisher?.trim() &&
-      title.narrators?.trim(),
+    title.length_minutes != null &&
+    title.publisher?.trim() &&
+    title.narrators?.trim(),
   );
   // Series without a book number still needs enrichment for ordered series views.
   // Genres are nice-to-have and must not force enrichment of every search hit
   // (that stacked Audnexus calls and could empty the results page on failure).
-  const seriesComplete =
-    !title.series?.trim() || Boolean(title.series_index?.trim());
+  const seriesComplete = !title.series?.trim() || Boolean(title.series_index?.trim());
   return !(hasCore && seriesComplete);
 }
 
@@ -1015,10 +980,7 @@ export function catalogTitleFromQueueEntry(
   wishlistUuid?: string | null,
 ): CatalogTitle {
   const editions = entry.store_editions ?? [];
-  const sources =
-    editions.length > 0
-      ? [...new Set(editions.map((e) => e.source))]
-      : [];
+  const sources = editions.length > 0 ? [...new Set(editions.map((e) => e.source))] : [];
   return withAudibleEditionFromAsin({
     work_key: entry.work_key,
     title: entry.title,
@@ -1111,9 +1073,11 @@ export function catalogMatchesFilter(
       );
     case "series":
       if (value === "__none__") return !title.series?.trim();
-      return (title.series ?? "").localeCompare(value, undefined, {
-        sensitivity: "base",
-      }) === 0;
+      return (
+        (title.series ?? "").localeCompare(value, undefined, {
+          sensitivity: "base",
+        }) === 0
+      );
     case "narrators":
       return splitList(title.narrators).some(
         (a) => a.localeCompare(value, undefined, { sensitivity: "base" }) === 0,
@@ -1136,27 +1100,17 @@ export function catalogMatchesFilter(
  * @param sortKey - Sort key.
  * @returns Sorted copy or original order for server-ranked keys.
  */
-export function sortCatalogTitles(
-  titles: CatalogTitle[],
-  sortKey: CatalogSortKey,
-): CatalogTitle[] {
+export function sortCatalogTitles(titles: CatalogTitle[], sortKey: CatalogSortKey): CatalogTitle[] {
   // Server already ranks relevance/popularity/rating; keep stable order.
-  if (
-    sortKey === "relevance" ||
-    sortKey === "popularity" ||
-    sortKey === "rating"
-  ) {
+  if (sortKey === "relevance" || sortKey === "popularity" || sortKey === "rating") {
     return titles;
   }
   const copy = [...titles];
-  const cmp = (a: string, b: string) =>
-    a.localeCompare(b, undefined, { sensitivity: "base" });
+  const cmp = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base" });
   copy.sort((a, b) => {
     switch (sortKey) {
       case "author":
-        return (
-          cmp(a.authors ?? "", b.authors ?? "") || cmp(a.title, b.title)
-        );
+        return cmp(a.authors ?? "", b.authors ?? "") || cmp(a.title, b.title);
       case "title":
       default:
         return cmp(a.title, b.title);

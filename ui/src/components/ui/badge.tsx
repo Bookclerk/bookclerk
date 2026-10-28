@@ -6,13 +6,7 @@ import { cn } from "@/lib/utils";
  *
  * @param props - Optional className and children.
  */
-export function Badge({
-  className,
-  children,
-}: {
-  className?: string;
-  children: ReactNode;
-}) {
+export function Badge({ className, children }: { className?: string; children: ReactNode }) {
   return (
     <span
       className={cn(

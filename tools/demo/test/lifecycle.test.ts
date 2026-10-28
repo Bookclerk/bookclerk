@@ -4,7 +4,12 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { enableStorefronts, signInVisitor, signOutStores, waitForHealth } from "../src/lifecycle.ts";
+import {
+  enableStorefronts,
+  signInVisitor,
+  signOutStores,
+  waitForHealth,
+} from "../src/lifecycle.ts";
 import { type Sent, sent } from "../test-support/requests.ts";
 
 /**
@@ -27,14 +32,18 @@ function scripted(routes: Record<string, (init: RequestInit) => Response>) {
 describe("signInVisitor", () => {
   const redeemed = () => {
     const h = new Headers();
-    h.append("Set-Cookie", `bookclerk_portal_session=${"a".repeat(64)}; Path=/; HttpOnly; SameSite=Lax`);
+    h.append(
+      "Set-Cookie",
+      `bookclerk_portal_session=${"a".repeat(64)}; Path=/; HttpOnly; SameSite=Lax`,
+    );
     return new Response('{"ok":true}', { headers: h });
   };
 
   it("makes the visitor the Owner and redeems its ticket", async () => {
     const ticket = "0b6e2d1c-3c54-4f0e-9c1e-1b0e7b8a9d10";
     const { call, seen } = scripted({
-      "POST /api/auth/bootstrap": () => Response.json({ ok: true, user_id: 1, claim_ticket: ticket }),
+      "POST /api/auth/bootstrap": () =>
+        Response.json({ ok: true, user_id: 1, claim_ticket: ticket }),
       "POST /api/portal/redeem": redeemed,
     });
     assert.equal(await signInVisitor(call, "op-token"), "a".repeat(64));
@@ -52,17 +61,26 @@ describe("signInVisitor", () => {
 
   it("fails when bootstrap or redeem goes wrong", async () => {
     await assert.rejects(
-      signInVisitor(scripted({ "POST /api/auth/bootstrap": () => new Response("", { status: 409 }) }).call, "t"),
+      signInVisitor(
+        scripted({ "POST /api/auth/bootstrap": () => new Response("", { status: 409 }) }).call,
+        "t",
+      ),
       /bootstrap answered 409/,
     );
     await assert.rejects(
-      signInVisitor(scripted({ "POST /api/auth/bootstrap": () => Response.json({ ok: true, claim_ticket: "short" }) }).call, "t"),
+      signInVisitor(
+        scripted({
+          "POST /api/auth/bootstrap": () => Response.json({ ok: true, claim_ticket: "short" }),
+        }).call,
+        "t",
+      ),
       /bootstrap answered 200/,
     );
     await assert.rejects(
       signInVisitor(
         scripted({
-          "POST /api/auth/bootstrap": () => Response.json({ ok: true, claim_ticket: "x".repeat(36) }),
+          "POST /api/auth/bootstrap": () =>
+            Response.json({ ok: true, claim_ticket: "x".repeat(36) }),
           "POST /api/portal/redeem": () => new Response("{}"),
         }).call,
         "t",
@@ -83,31 +101,48 @@ describe("signOutStores", () => {
             { source: "audible", account_id: "amzn1.account.X" },
           ],
         }),
-      "POST /api/portal/sources/audible/connections/amzn1.account.X/revoke": () => Response.json({ ok: true }),
-      "POST /api/portal/sources/libro/connections/me%40example.test/revoke": () => new Response("", { status: 500 }),
+      "POST /api/portal/sources/audible/connections/amzn1.account.X/revoke": () =>
+        Response.json({ ok: true }),
+      "POST /api/portal/sources/libro/connections/me%40example.test/revoke": () =>
+        new Response("", { status: 500 }),
     });
-    assert.deepEqual(await signOutStores(call, "s".repeat(64), 1000, "https://demo.example.test"), { revoked: 1, failed: 1 });
+    assert.deepEqual(await signOutStores(call, "s".repeat(64), 1000, "https://demo.example.test"), {
+      revoked: 1,
+      failed: 1,
+    });
     assert.equal(seen.length, 3);
-    for (const s of seen) assert.equal(s.init.headers.Cookie, `bookclerk_portal_session=${"s".repeat(64)}`);
+    for (const s of seen)
+      assert.equal(s.init.headers.Cookie, `bookclerk_portal_session=${"s".repeat(64)}`);
     for (const s of seen.slice(1)) assert.equal(s.init.headers.Origin, "https://demo.example.test");
   });
 
   it("reports one failure when the account list cannot be read", async () => {
-    const { call } = scripted({ "GET /api/portal/connections": () => new Response("nope", { status: 500 }) });
-    assert.deepEqual(await signOutStores(call, "s".repeat(64), 1000, "https://demo.example.test"), { revoked: 0, failed: 1 });
+    const { call } = scripted({
+      "GET /api/portal/connections": () => new Response("nope", { status: 500 }),
+    });
+    assert.deepEqual(await signOutStores(call, "s".repeat(64), 1000, "https://demo.example.test"), {
+      revoked: 0,
+      failed: 1,
+    });
   });
 });
 
 describe("waitForHealth", () => {
   it("returns once bookclerkd answers 200", async () => {
     let n = 0;
-    await waitForHealth(async () => new Response("", { status: ++n < 3 ? 503 : 200 }), { timeoutMs: 1000, intervalMs: 1 });
+    await waitForHealth(async () => new Response("", { status: ++n < 3 ? 503 : 200 }), {
+      timeoutMs: 1000,
+      intervalMs: 1,
+    });
     assert.equal(n, 3);
   });
 
   it("gives up after the timeout", async () => {
     await assert.rejects(
-      waitForHealth(async () => new Response("", { status: 503 }), { timeoutMs: 20, intervalMs: 5 }),
+      waitForHealth(async () => new Response("", { status: 503 }), {
+        timeoutMs: 20,
+        intervalMs: 5,
+      }),
       /did not become healthy: status 503/,
     );
   });
@@ -158,6 +193,9 @@ describe("enableStorefronts", () => {
       ),
       /no default instance for chirp/,
     );
-    await assert.rejects(enableStorefronts(scripted({}).call, "op", ["audible"]), /consent for audible answered 404/);
+    await assert.rejects(
+      enableStorefronts(scripted({}).call, "op", ["audible"]),
+      /consent for audible answered 404/,
+    );
   });
 });

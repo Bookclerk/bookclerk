@@ -125,7 +125,10 @@ function ConsentSection({
           )}
           aria-hidden
         />
-        <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center text-teal" aria-hidden>
+        <span
+          className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center text-teal"
+          aria-hidden
+        >
           {icon}
         </span>
         <span className="min-w-0 flex-1">
@@ -191,8 +194,7 @@ export function PluginConsentDialog({
   const [tcpDraft, setTcpDraft] = useState("");
   const [addressCidrs, setAddressCidrs] = useState<string[]>([]);
   const [cidrDraft, setCidrDraft] = useState("");
-  const [allowUndeclaredPublicRedirects, setAllowUndeclaredPublicRedirects] =
-    useState(false);
+  const [allowUndeclaredPublicRedirects, setAllowUndeclaredPublicRedirects] = useState(false);
   const [bindings, setBindings] = useState<string[]>([]);
   const [compatibilityFlags, setCompatibilityFlags] = useState<string[]>([]);
   const [flagDraft, setFlagDraft] = useState("");
@@ -201,44 +203,27 @@ export function PluginConsentDialog({
   const [diskMib, setDiskMib] = useState("");
   const [memoryMib, setMemoryMib] = useState("");
   const [cpuCores, setCpuCores] = useState(limits.cpu_cores ?? 0.8);
-  const [extraProcesses, setExtraProcesses] = useState(
-    String(limits.extra_processes ?? 2),
-  );
+  const [extraProcesses, setExtraProcesses] = useState(String(limits.extra_processes ?? 2));
 
   useEffect(() => {
     setNetworkMode(existing?.networkMode || request.networkMode || "deny");
     setDomains(initialList(request.domains, existing?.domains));
-    setTcp(
-      (existing?.tcp && existing.tcp.length > 0 ? existing.tcp : request.tcp) ?? [],
-    );
-    setAddressCidrs(
-      initialList(request.addressCidrs ?? [], existing?.addressCidrs),
-    );
+    setTcp((existing?.tcp && existing.tcp.length > 0 ? existing.tcp : request.tcp) ?? []);
+    setAddressCidrs(initialList(request.addressCidrs ?? [], existing?.addressCidrs));
     setAllowUndeclaredPublicRedirects(
-      existing?.allowUndeclaredPublicRedirects ??
-        request.allowUndeclaredPublicRedirects ??
-        false,
+      existing?.allowUndeclaredPublicRedirects ?? request.allowUndeclaredPublicRedirects ?? false,
     );
     setBindings(initialList(request.bindings, existing?.bindings));
-    setCompatibilityFlags(
-      initialList(request.compatibilityFlags, existing?.compatibilityFlags),
-    );
+    setCompatibilityFlags(initialList(request.compatibilityFlags, existing?.compatibilityFlags));
     setCpuMs(String(existing?.cpuMs ?? request.cpuMs ?? limits.cpu_ms ?? ""));
     setSubrequests(
       String(existing?.subrequests ?? request.subrequests ?? limits.subrequests ?? ""),
     );
     setDiskMib(String(existing?.diskMib ?? request.diskMib ?? limits.disk_mib ?? ""));
-    setMemoryMib(
-      String(existing?.memoryMib ?? request.memoryMib ?? limits.memory_mib ?? ""),
-    );
+    setMemoryMib(String(existing?.memoryMib ?? request.memoryMib ?? limits.memory_mib ?? ""));
     setCpuCores(existing?.cpuCores ?? request.cpuCores ?? limits.cpu_cores ?? 0.8);
     setExtraProcesses(
-      String(
-        existing?.extraProcesses ??
-          request.extraProcesses ??
-          limits.extra_processes ??
-          2,
-      ),
+      String(existing?.extraProcesses ?? request.extraProcesses ?? limits.extra_processes ?? 2),
     );
     setDomainDraft("");
     setTcpDraft("");
@@ -309,8 +294,7 @@ export function PluginConsentDialog({
     const parts = [`${memory} MiB memory`, `${disk} MiB disk`];
     if (!isWorkerd) {
       const extra =
-        parseNonNegInt(extraProcesses, limits.max_extra_processes) ??
-        limits.extra_processes;
+        parseNonNegInt(extraProcesses, limits.max_extra_processes) ?? limits.extra_processes;
       parts.splice(
         1,
         0,
@@ -335,10 +319,16 @@ export function PluginConsentDialog({
 
   const workerdSummary = useMemo(() => {
     const cpu = parsePositiveInt(cpuMs, limits.max_cpu_ms) ?? limits.cpu_ms;
-    const subs =
-      parsePositiveInt(subrequests, limits.max_subrequests) ?? limits.subrequests;
+    const subs = parsePositiveInt(subrequests, limits.max_subrequests) ?? limits.subrequests;
     return `Isolate budget of ${cpu.toLocaleString()} ms CPU and ${subs.toLocaleString()} subrequests`;
-  }, [cpuMs, limits.cpu_ms, limits.max_cpu_ms, limits.max_subrequests, limits.subrequests, subrequests]);
+  }, [
+    cpuMs,
+    limits.cpu_ms,
+    limits.max_cpu_ms,
+    limits.max_subrequests,
+    limits.subrequests,
+    subrequests,
+  ]);
 
   const flagsSummary = useMemo(() => {
     if (compatibilityFlags.length === 0) return "No compatibility flags";
@@ -455,7 +445,10 @@ export function PluginConsentDialog({
                   .join(" · ")}
               </p>
               {consent.plugin_key ? (
-                <p className="mt-1 truncate font-mono text-[10px] text-ink/40" title={consent.plugin_key}>
+                <p
+                  className="mt-1 truncate font-mono text-[10px] text-ink/40"
+                  title={consent.plugin_key}
+                >
                   {consent.plugin_key}
                 </p>
               ) : null}
@@ -469,8 +462,8 @@ export function PluginConsentDialog({
             Permissions requested
           </h2>
           <p className="mt-1.5 text-sm text-ink/60">
-            Review the requested grants, then accept to enable. Expand a section to
-            adjust advanced configuration.
+            Review the requested grants, then accept to enable. Expand a section to adjust advanced
+            configuration.
           </p>
         </div>
 
@@ -484,7 +477,13 @@ export function PluginConsentDialog({
             title="Network access"
             summary={networkSummary}
             preview={networkDomainPreview}
-            icon={networkMode === "deny" ? <Shield className="h-4 w-4" /> : <Globe className="h-4 w-4" />}
+            icon={
+              networkMode === "deny" ? (
+                <Shield className="h-4 w-4" />
+              ) : (
+                <Globe className="h-4 w-4" />
+              )
+            }
             open={openSection === "network"}
             onToggle={() => toggleSection("network")}
           >
@@ -579,9 +578,7 @@ export function PluginConsentDialog({
                         className="rounded-md border border-teal/40 bg-teal/15 px-2 py-1 text-xs font-medium text-ink"
                         onClick={() =>
                           setTcp((current) =>
-                            current.filter(
-                              (item) => formatTcp(item) !== formatTcp(grant),
-                            ),
+                            current.filter((item) => formatTcp(item) !== formatTcp(grant)),
                           )
                         }
                       >
@@ -617,8 +614,8 @@ export function PluginConsentDialog({
                 <div className="space-y-2">
                   <p className="text-xs font-medium text-ink/70">Address-space CIDRs</p>
                   <p className="text-xs text-ink/50">
-                    Default is public Internet only. Grant loopback, RFC1918, or
-                    link-local explicitly (`127.0.0.1/32`, `10.0.0.0/8`).
+                    Default is public Internet only. Grant loopback, RFC1918, or link-local
+                    explicitly (`127.0.0.1/32`, `10.0.0.0/8`).
                   </p>
                   <div className="flex flex-wrap gap-1.5">
                     {addressCidrs.map((cidr) => (
@@ -628,9 +625,7 @@ export function PluginConsentDialog({
                         disabled={busy}
                         className="rounded-md border border-teal/40 bg-teal/15 px-2 py-1 font-mono text-xs text-ink"
                         onClick={() =>
-                          setAddressCidrs((current) =>
-                            current.filter((item) => item !== cidr),
-                          )
+                          setAddressCidrs((current) => current.filter((item) => item !== cidr))
                         }
                       >
                         {cidr}
@@ -669,15 +664,13 @@ export function PluginConsentDialog({
                       className="mt-0.5 h-4 w-4 accent-teal"
                       checked={allowUndeclaredPublicRedirects}
                       disabled={busy}
-                      onChange={(e) =>
-                        setAllowUndeclaredPublicRedirects(e.target.checked)
-                      }
+                      onChange={(e) => setAllowUndeclaredPublicRedirects(e.target.checked)}
                     />
                     <span>
                       Allow redirects to undeclared public destinations
                       <span className="mt-0.5 block text-xs text-ink/50">
-                        Still cannot reach loopback, RFC1918, link-local, or
-                        metadata without a CIDR grant.
+                        Still cannot reach loopback, RFC1918, link-local, or metadata without a CIDR
+                        grant.
                       </span>
                     </span>
                   </label>
@@ -695,8 +688,8 @@ export function PluginConsentDialog({
             onToggle={() => toggleSection("bindings")}
           >
             <p className="text-xs text-ink/55">
-              Shared by native and workerd guests. Grant or remove bindings relative
-              to the plugin request.
+              Shared by native and workerd guests. Grant or remove bindings relative to the plugin
+              request.
             </p>
             <ul className="space-y-2">
               {knownBindings.map((binding) => {
@@ -719,13 +712,9 @@ export function PluginConsentDialog({
                         }
                       />
                       <span className="flex items-center gap-1.5">
-                        {checked ? (
-                          <Check className="h-3.5 w-3.5 text-teal" aria-hidden />
-                        ) : null}
+                        {checked ? <Check className="h-3.5 w-3.5 text-teal" aria-hidden /> : null}
                         <span>{binding}</span>
-                        {!requested ? (
-                          <span className="text-xs text-ink/40">extra</span>
-                        ) : null}
+                        {!requested ? <span className="text-xs text-ink/40">extra</span> : null}
                       </span>
                     </label>
                   </li>
@@ -818,8 +807,8 @@ export function PluginConsentDialog({
             >
               <p className="text-xs text-ink/55">
                 Workerd CPU soft budget and egress subrequest budget. Host maxes:{" "}
-                {limits.max_cpu_ms.toLocaleString()} ms /{" "}
-                {limits.max_subrequests.toLocaleString()} subrequests.
+                {limits.max_cpu_ms.toLocaleString()} ms / {limits.max_subrequests.toLocaleString()}{" "}
+                subrequests.
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="space-y-1.5 text-sm font-medium text-ink">
@@ -861,32 +850,31 @@ export function PluginConsentDialog({
                 Workerd-only. Add or remove flags relative to the plugin request.
               </p>
               <ul className="space-y-2">
-                {uniqueValues([
-                  ...request.compatibilityFlags,
-                  ...compatibilityFlags,
-                ]).map((flag) => (
-                  <li key={flag}>
-                    <label className="flex cursor-pointer items-center gap-2.5 text-sm text-ink">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 accent-teal"
-                        checked={compatibilityFlags.some(
-                          (item) => item.toLowerCase() === flag.toLowerCase(),
-                        )}
-                        disabled={busy}
-                        onChange={(e) =>
-                          toggleValue(
-                            flag,
-                            e.target.checked,
-                            setCompatibilityFlags,
-                            compatibilityFlags,
-                          )
-                        }
-                      />
-                      {flag}
-                    </label>
-                  </li>
-                ))}
+                {uniqueValues([...request.compatibilityFlags, ...compatibilityFlags]).map(
+                  (flag) => (
+                    <li key={flag}>
+                      <label className="flex cursor-pointer items-center gap-2.5 text-sm text-ink">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 accent-teal"
+                          checked={compatibilityFlags.some(
+                            (item) => item.toLowerCase() === flag.toLowerCase(),
+                          )}
+                          disabled={busy}
+                          onChange={(e) =>
+                            toggleValue(
+                              flag,
+                              e.target.checked,
+                              setCompatibilityFlags,
+                              compatibilityFlags,
+                            )
+                          }
+                        />
+                        {flag}
+                      </label>
+                    </li>
+                  ),
+                )}
               </ul>
               <div className="flex gap-2">
                 <Input
@@ -916,9 +904,9 @@ export function PluginConsentDialog({
           ) : null}
 
           <p className="border-t border-ink/10 py-4 text-xs leading-relaxed text-ink/55">
-            Approving enables this plugin under the grant you configure. Removing
-            capabilities the guest needs may break it. Bookclerk enforces the grant;
-            it does not guarantee guest behaviour afterward.
+            Approving enables this plugin under the grant you configure. Removing capabilities the
+            guest needs may break it. Bookclerk enforces the grant; it does not guarantee guest
+            behaviour afterward.
             {consent.covered ? (
               <span className="mt-1 block text-teal">
                 A covering grant is already stored; saving updates it.
@@ -945,9 +933,7 @@ export function PluginConsentDialog({
                   networkMode === "deny" ? false : allowUndeclaredPublicRedirects,
                 bindings,
                 compatibilityFlags: isWorkerd ? compatibilityFlags : [],
-                cpuMs: isWorkerd
-                  ? parsePositiveInt(cpuMs, limits.max_cpu_ms)
-                  : undefined,
+                cpuMs: isWorkerd ? parsePositiveInt(cpuMs, limits.max_cpu_ms) : undefined,
                 subrequests: isWorkerd
                   ? parsePositiveInt(subrequests, limits.max_subrequests)
                   : undefined,

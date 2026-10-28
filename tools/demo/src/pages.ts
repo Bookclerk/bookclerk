@@ -74,13 +74,26 @@ function hostOf(site: string): string {
  *   (the launch page).
  * @returns The document.
  */
-function documentHtml(title: string, description: string, body: string, opts: { scripts?: string[]; siteUrl?: string; card?: boolean; } = {}): string {
-  const scripts = (opts.scripts ?? []).map((src) => `<script src="${esc(src)}" defer></script>`).join("");
+function documentHtml(
+  title: string,
+  description: string,
+  body: string,
+  opts: { scripts?: string[]; siteUrl?: string; card?: boolean } = {},
+): string {
+  const scripts = (opts.scripts ?? [])
+    .map((src) => `<script src="${esc(src)}" defer></script>`)
+    .join("");
   const site = opts.siteUrl ?? "";
   const home = site ? esc(site) : "/";
-  const back = site ? `<a class="demo-back" href="${esc(site)}">Back to ${esc(hostOf(site))}</a>` : "";
-  const privacy = site ? `<p><a href="${esc(site.replace(/\/+$/, ""))}/privacy">Privacy</a></p>` : "";
-  const main = opts.card ? `<main class="demo-card">\n${body}\n</main>` : `<main class="demo-launch">\n${body}\n</main>`;
+  const back = site
+    ? `<a class="demo-back" href="${esc(site)}">Back to ${esc(hostOf(site))}</a>`
+    : "";
+  const privacy = site
+    ? `<p><a href="${esc(site.replace(/\/+$/, ""))}/privacy">Privacy</a></p>`
+    : "";
+  const main = opts.card
+    ? `<main class="demo-card">\n${body}\n</main>`
+    : `<main class="demo-launch">\n${body}\n</main>`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -115,7 +128,11 @@ ${main}
  * @param extra - More headers.
  * @returns The response.
  */
-export function htmlResponse(html: string, status: number = 200, extra: Record<string, string> = {}): Response {
+export function htmlResponse(
+  html: string,
+  status: number = 200,
+  extra: Record<string, string> = {},
+): Response {
   return new Response(html, {
     status,
     headers: {
@@ -151,7 +168,9 @@ function icon(paths: string): string {
 }
 
 /** Lucide `lock`: the private copy. */
-const LOCK = icon('<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>');
+const LOCK = icon(
+  '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+);
 
 /** Lucide `key-round`: sign-ins. */
 const KEY = icon(
@@ -164,7 +183,9 @@ const NO_DOWNLOAD = icon(
 );
 
 /** Lucide `log-out`: signed out at the end. */
-const LOG_OUT = icon('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>');
+const LOG_OUT = icon(
+  '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+);
 
 /** The stores a visitor can sign in to, in the website's order. */
 const STORES = ["Audible", "Libro.fm", "Chirp", "GraphicAudio"];
@@ -204,7 +225,9 @@ export function launchPage(p: {
 }): string {
   const message = p.message ? `<p class="demo-message" role="alert">${esc(p.message)}</p>` : "";
   const estimate =
-    p.estimateSeconds === null ? "" : `<p class="demo-estimate">Usually ready in ${aboutHowLong(p.estimateSeconds)}</p>`;
+    p.estimateSeconds === null
+      ? ""
+      : `<p class="demo-estimate">Usually ready in ${aboutHowLong(p.estimateSeconds)}</p>`;
   const form = p.siteKey
     ? `<form method="post" action="/_demo/start" class="demo-start">
 ${message}
@@ -259,9 +282,11 @@ const WAVEFORM_THROBBER = `<svg id="demo-wait-throbber" class="demo-throbber" vi
  *   known), and the website to link back to.
  * @returns The document.
  */
-export function waitPage(p: { estimateSeconds: number | null; siteUrl: string; }): string {
+export function waitPage(p: { estimateSeconds: number | null; siteUrl: string }): string {
   const typical =
-    p.estimateSeconds === null ? "This usually takes under a minute." : `This usually takes ${aboutHowLong(p.estimateSeconds)}.`;
+    p.estimateSeconds === null
+      ? "This usually takes under a minute."
+      : `This usually takes ${aboutHowLong(p.estimateSeconds)}.`;
   return documentHtml(
     "Starting your demo",
     "Your private copy of Bookclerk is starting.",
@@ -279,7 +304,7 @@ export function waitPage(p: { estimateSeconds: number | null; siteUrl: string; }
  * @param p - The website to link back to.
  * @returns The document.
  */
-export function endedPage(p: { siteUrl: string; }): string {
+export function endedPage(p: { siteUrl: string }): string {
   return documentHtml(
     "Demo ended",
     "Your Bookclerk demo has ended and your copy has been deleted.",

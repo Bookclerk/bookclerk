@@ -92,7 +92,10 @@ export interface TextModel {
    * @param inputs - Messages and sampling limits.
    * @returns The model's answer, in whichever shape the model uses.
    */
-  run(model: string, inputs: { messages: ChatMessage[]; max_tokens: number; temperature: number }): Promise<unknown>;
+  run(
+    model: string,
+    inputs: { messages: ChatMessage[]; max_tokens: number; temperature: number },
+  ): Promise<unknown>;
 }
 
 /** A Worker's way to keep work running after the response (`ctx`). */

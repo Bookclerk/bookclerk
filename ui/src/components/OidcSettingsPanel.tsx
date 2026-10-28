@@ -32,10 +32,7 @@ const PRESETS = [
   ["discord", "Discord"],
 ] as const;
 
-const SOCIAL_PRESETS: Record<
-  string,
-  { id: string; name: string; scopes: string[] }
-> = {
+const SOCIAL_PRESETS: Record<string, { id: string; name: string; scopes: string[] }> = {
   google: { id: "google", name: "Google", scopes: ["openid", "profile", "email"] },
   github: { id: "github", name: "GitHub", scopes: ["read:user", "user:email"] },
   apple: { id: "apple", name: "Apple", scopes: ["openid", "profile", "email"] },
@@ -58,9 +55,7 @@ function canonicalSocialPreset(preset: string | null | undefined): string | null
   if (!trimmed) {
     return null;
   }
-  const match = PRESETS.find(
-    ([value]) => value && value.toLowerCase() === trimmed.toLowerCase(),
-  );
+  const match = PRESETS.find(([value]) => value && value.toLowerCase() === trimmed.toLowerCase());
   return match ? match[0] : trimmed;
 }
 
@@ -366,18 +361,10 @@ function ProviderCard({
       (provider.allowed_email_domains.length > 0 || provider.allowed_emails.length > 0));
   const showDefaultRole = provider.provision !== "invite_only";
   const provisionOptions =
-    isSocial && !providerUsesMappedRole(provider)
-      ? SOCIAL_PROVISIONS
-      : ENTERPRISE_PROVISIONS;
-  const title =
-    provider.name.trim() ||
-    provider.id.trim() ||
-    meta?.name ||
-    "New provider";
+    isSocial && !providerUsesMappedRole(provider) ? SOCIAL_PROVISIONS : ENTERPRISE_PROVISIONS;
+  const title = provider.name.trim() || provider.id.trim() || meta?.name || "New provider";
   const [expanded, setExpanded] = useState(provider.startsOpen);
-  const [advancedOpen, setAdvancedOpen] = useState(
-    () => isSocial && socialAdvancedOpen(provider),
-  );
+  const [advancedOpen, setAdvancedOpen] = useState(() => isSocial && socialAdvancedOpen(provider));
   const status = providerStatus(provider, preset);
 
   function patch(next: Partial<DraftProvider>) {
@@ -552,9 +539,7 @@ function ProviderCard({
                     clearAppleKey: false,
                   })
                 }
-                placeholder={
-                  provider.has_apple_private_key ? "unchanged" : "PEM private key"
-                }
+                placeholder={provider.has_apple_private_key ? "unchanged" : "PEM private key"}
                 disabled={provider.clearAppleKey}
               />
               {provider.has_apple_private_key ? (
@@ -565,9 +550,7 @@ function ProviderCard({
                     onChange={(e) =>
                       patch({
                         clearAppleKey: e.target.checked,
-                        apple_private_key: e.target.checked
-                          ? ""
-                          : provider.apple_private_key,
+                        apple_private_key: e.target.checked ? "" : provider.apple_private_key,
                       })
                     }
                   />
@@ -582,9 +565,7 @@ function ProviderCard({
           <select
             className={selectClassName}
             value={provider.provision}
-            onChange={(e) =>
-              patch({ provision: e.target.value as OidcProvisionMode })
-            }
+            onChange={(e) => patch({ provision: e.target.value as OidcProvisionMode })}
           >
             {provisionOptions.map(([value, label]) => (
               <option key={value} value={value}>
@@ -618,9 +599,9 @@ function ProviderCard({
             Link by verified email
           </span>
           <span className="text-xs font-normal text-ink/50">
-            When this provider marks the email verified, attach the login to the existing
-            Bookclerk user with that address. On for Google, GitHub, Apple, and Discord;
-            leave off for custom issuers that may not verify email.
+            When this provider marks the email verified, attach the login to the existing Bookclerk
+            user with that address. On for Google, GitHub, Apple, and Discord; leave off for custom
+            issuers that may not verify email.
           </span>
         </label>
         {showAllowlist ? (
@@ -629,9 +610,7 @@ function ProviderCard({
               Allowed email domains
               <Input
                 value={csv(provider.allowed_email_domains)}
-                onChange={(e) =>
-                  patch({ allowed_email_domains: splitCsv(e.target.value) })
-                }
+                onChange={(e) => patch({ allowed_email_domains: splitCsv(e.target.value) })}
                 placeholder="family.example"
               />
             </label>
@@ -672,11 +651,7 @@ function ProviderCard({
         ) : null}
       </div>
       <details
-        className={
-          expanded
-            ? "rounded-md border border-ink/10 bg-card-mid px-3 py-2"
-            : "hidden"
-        }
+        className={expanded ? "rounded-md border border-ink/10 bg-card-mid px-3 py-2" : "hidden"}
         open={advancedOpen}
         onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}
       >
@@ -691,8 +666,7 @@ function ProviderCard({
                 placeholder={meta?.id || "google"}
               />
               <span className="text-xs font-normal text-ink/50">
-                Stored as{" "}
-                <code>{`oidc:${provider.id.trim() || meta?.id || "id"}`}</code>. Leave as
+                Stored as <code>{`oidc:${provider.id.trim() || meta?.id || "id"}`}</code>. Leave as
                 the preset name unless you run more than one app of this kind.
               </span>
             </label>
@@ -895,7 +869,11 @@ function ClientCard({
       );
     } catch (err) {
       onError(
-        isApiError(err) ? err.message : err instanceof Error ? err.message : "Failed to save client",
+        isApiError(err)
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Failed to save client",
       );
     } finally {
       setBusy(false);
@@ -1006,126 +984,131 @@ function ClientCard({
           Enabled
         </label>
         {pluginOwned ? null : (
-        <Button
-          type="button"
-          variant="ghost"
-          onClick={() => void onDelete()}
-          aria-label="Remove client"
-          disabled={busy}
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => void onDelete()}
+            aria-label="Remove client"
+            disabled={busy}
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
         )}
       </div>
       <div className={open ? "grid gap-3 sm:grid-cols-2" : "hidden"}>
-          <label className={fieldLabelClass}>
-            Display name
-            <Input
-              value={client.name}
-              onChange={(e) => patch({ name: e.target.value })}
-              placeholder="Audiobook player"
-            />
-          </label>
-          <label className={fieldLabelClass}>
-            Client id
-            <Input
-              value={client.client_id}
-              onChange={(e) => patch({ client_id: e.target.value })}
-              placeholder="player"
-              required
-              disabled={client.persisted}
-            />
-          </label>
-          <label className={`${fieldLabelClass} sm:col-span-2`}>
-            Redirect URIs
-            <textarea
-              className={
-                pluginOwned
-                  ? `${textareaClassName} cursor-not-allowed bg-ink/5 text-ink/70`
-                  : textareaClassName
-              }
-              value={client.redirectText}
-              onChange={(e) => patch({ redirectText: e.target.value })}
-              placeholder={"https://player.example/callback"}
-              readOnly={pluginOwned}
-            />
-            <span className="text-xs font-normal text-ink/50">
-              {pluginOwned
-                ? "Redirect URIs come from this plugin’s server URL in Settings → Plugins (plus the plugin’s callback path). They cannot be edited here."
-                : "One absolute http(s) URL per line. Player callbacks use the player’s own origin and path, not Bookclerk’s listen port."}
-            </span>
-          </label>
-          <label className="flex items-center gap-2 text-sm font-medium text-ink sm:col-span-2">
-            <input
-              type="checkbox"
-              checked={client.confidential}
-              onChange={(e) => patch({ confidential: e.target.checked })}
-            />
-            Confidential client (client secret)
-          </label>
-          {client.confidential ? (
-            <div className="sm:col-span-2 space-y-2">
-              {client.plaintextSecret ? (
-                <CopyableValue label="Client secret (shown once)" value={client.plaintextSecret} />
-              ) : (
-                <p className="text-xs text-ink/55">
-                  {client.has_secret
-                    ? "A secret is stored. Rotate to mint a new one — the previous value cannot be shown."
-                    : "Saving will generate a secret and show it once."}
-                </p>
-              )}
-              {client.persisted && client.has_secret ? (
-                <Button type="button" variant="secondary" disabled={busy} onClick={() => void onRotate()}>
-                  {busy ? "Working…" : "Rotate secret"}
-                </Button>
-              ) : null}
-            </div>
-          ) : (
-            <p className="text-xs text-ink/55 sm:col-span-2">
-              Public PKCE client (token endpoint auth: none). No client secret is issued.
-            </p>
-          )}
-          <label className="flex items-center gap-2 text-sm font-medium text-ink sm:col-span-2">
-            <input
-              type="checkbox"
-              checked={client.issue_refresh_token}
-              onChange={(e) => patch({ issue_refresh_token: e.target.checked })}
-            />
-            Issue refresh tokens
-          </label>
-          <fieldset className="sm:col-span-2 space-y-1">
-            <legend className="text-sm font-medium text-ink">Scopes</legend>
-            <p className="text-xs text-ink/50">
-              Access and ID tokens are always issued. Honor these scopes on userinfo / ID token
-              claims.
-            </p>
-            <label className="flex items-center gap-2 text-sm text-ink">
-              <input type="checkbox" checked disabled />
-              openid
-            </label>
-            <label className="flex items-center gap-2 text-sm text-ink">
-              <input
-                type="checkbox"
-                checked={client.scopeProfile}
-                onChange={(e) => patch({ scopeProfile: e.target.checked })}
-              />
-              profile
-            </label>
-            <label className="flex items-center gap-2 text-sm text-ink">
-              <input
-                type="checkbox"
-                checked={client.scopeEmail}
-                onChange={(e) => patch({ scopeEmail: e.target.checked })}
-              />
-              email
-            </label>
-          </fieldset>
-          <div className="sm:col-span-2">
-            <Button type="button" disabled={busy} onClick={() => void onSave()}>
-              {busy ? "Saving…" : client.persisted ? "Save client" : "Create client"}
-            </Button>
+        <label className={fieldLabelClass}>
+          Display name
+          <Input
+            value={client.name}
+            onChange={(e) => patch({ name: e.target.value })}
+            placeholder="Audiobook player"
+          />
+        </label>
+        <label className={fieldLabelClass}>
+          Client id
+          <Input
+            value={client.client_id}
+            onChange={(e) => patch({ client_id: e.target.value })}
+            placeholder="player"
+            required
+            disabled={client.persisted}
+          />
+        </label>
+        <label className={`${fieldLabelClass} sm:col-span-2`}>
+          Redirect URIs
+          <textarea
+            className={
+              pluginOwned
+                ? `${textareaClassName} cursor-not-allowed bg-ink/5 text-ink/70`
+                : textareaClassName
+            }
+            value={client.redirectText}
+            onChange={(e) => patch({ redirectText: e.target.value })}
+            placeholder={"https://player.example/callback"}
+            readOnly={pluginOwned}
+          />
+          <span className="text-xs font-normal text-ink/50">
+            {pluginOwned
+              ? "Redirect URIs come from this plugin’s server URL in Settings → Plugins (plus the plugin’s callback path). They cannot be edited here."
+              : "One absolute http(s) URL per line. Player callbacks use the player’s own origin and path, not Bookclerk’s listen port."}
+          </span>
+        </label>
+        <label className="flex items-center gap-2 text-sm font-medium text-ink sm:col-span-2">
+          <input
+            type="checkbox"
+            checked={client.confidential}
+            onChange={(e) => patch({ confidential: e.target.checked })}
+          />
+          Confidential client (client secret)
+        </label>
+        {client.confidential ? (
+          <div className="sm:col-span-2 space-y-2">
+            {client.plaintextSecret ? (
+              <CopyableValue label="Client secret (shown once)" value={client.plaintextSecret} />
+            ) : (
+              <p className="text-xs text-ink/55">
+                {client.has_secret
+                  ? "A secret is stored. Rotate to mint a new one — the previous value cannot be shown."
+                  : "Saving will generate a secret and show it once."}
+              </p>
+            )}
+            {client.persisted && client.has_secret ? (
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={busy}
+                onClick={() => void onRotate()}
+              >
+                {busy ? "Working…" : "Rotate secret"}
+              </Button>
+            ) : null}
           </div>
+        ) : (
+          <p className="text-xs text-ink/55 sm:col-span-2">
+            Public PKCE client (token endpoint auth: none). No client secret is issued.
+          </p>
+        )}
+        <label className="flex items-center gap-2 text-sm font-medium text-ink sm:col-span-2">
+          <input
+            type="checkbox"
+            checked={client.issue_refresh_token}
+            onChange={(e) => patch({ issue_refresh_token: e.target.checked })}
+          />
+          Issue refresh tokens
+        </label>
+        <fieldset className="sm:col-span-2 space-y-1">
+          <legend className="text-sm font-medium text-ink">Scopes</legend>
+          <p className="text-xs text-ink/50">
+            Access and ID tokens are always issued. Honor these scopes on userinfo / ID token
+            claims.
+          </p>
+          <label className="flex items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked disabled />
+            openid
+          </label>
+          <label className="flex items-center gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={client.scopeProfile}
+              onChange={(e) => patch({ scopeProfile: e.target.checked })}
+            />
+            profile
+          </label>
+          <label className="flex items-center gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={client.scopeEmail}
+              onChange={(e) => patch({ scopeEmail: e.target.checked })}
+            />
+            email
+          </label>
+        </fieldset>
+        <div className="sm:col-span-2">
+          <Button type="button" disabled={busy} onClick={() => void onSave()}>
+            {busy ? "Saving…" : client.persisted ? "Save client" : "Create client"}
+          </Button>
         </div>
+      </div>
     </li>
   );
 }
@@ -1192,10 +1175,7 @@ export function OidcSettingsPanel() {
     setError(null);
     setNotice(null);
     try {
-      const saved = await putMfaPolicy(
-        requireSecondFactor,
-        currentPassword.trim() || undefined,
-      );
+      const saved = await putMfaPolicy(requireSecondFactor, currentPassword.trim() || undefined);
       setRequireSecondFactor(saved.require_second_factor);
       setCurrentPassword("");
       setNotice("Password sign-in policy saved.");
@@ -1295,8 +1275,8 @@ export function OidcSettingsPanel() {
         <div className="space-y-1">
           <h2 className="text-lg font-semibold text-ink">Password sign-in</h2>
           <p className="text-sm text-ink/55">
-            Require a passkey or authenticator app instead of a password alone. Users without
-            either can still sign in once to enroll. Passkey and SSO sign-in are unchanged.
+            Require a passkey or authenticator app instead of a password alone. Users without either
+            can still sign in once to enroll. Passkey and SSO sign-in are unchanged.
           </p>
         </div>
         <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
@@ -1322,17 +1302,13 @@ export function OidcSettingsPanel() {
         <div className="flex flex-col gap-1">
           <h2 className="text-lg font-semibold text-ink">SSO into Bookclerk</h2>
           <p className="text-sm text-ink/55">
-            Optional Google, GitHub, Apple, Discord, or company IdP buttons on the Bookclerk
-            sign-in page. Bookclerk is the client. The operator token is local break-glass and
-            is never an SSO account.
+            Optional Google, GitHub, Apple, Discord, or company IdP buttons on the Bookclerk sign-in
+            page. Bookclerk is the client. The operator token is local break-glass and is never an
+            SSO account.
           </p>
         </div>
         <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-          />
+          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           Show SSO buttons on the Bookclerk sign-in page
         </label>
         <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
@@ -1343,8 +1319,8 @@ export function OidcSettingsPanel() {
             placeholder="family.example, corp.example"
           />
           <span className="text-xs font-normal text-ink/50">
-            Extra filter on every SSO provider below. Empty means only each provider’s own
-            policy applies.
+            Extra filter on every SSO provider below. Empty means only each provider’s own policy
+            applies.
           </span>
         </label>
         <p className="text-xs text-ink/55">
@@ -1358,8 +1334,8 @@ export function OidcSettingsPanel() {
           <div>
             <h3 className="text-base font-semibold text-ink">SSO providers</h3>
             <p className="mt-1 text-sm text-ink/55">
-              Apps that people use to sign into Bookclerk. Google, GitHub, Apple, and Discord
-              only need a client ID and secret. Custom OIDC still asks for an issuer URL.
+              Apps that people use to sign into Bookclerk. Google, GitHub, Apple, and Discord only
+              need a client ID and secret. Custom OIDC still asks for an issuer URL.
             </p>
           </div>
           <Button
@@ -1382,9 +1358,7 @@ export function OidcSettingsPanel() {
                 onChange={(next) =>
                   setProviders((prev) => prev.map((row, i) => (i === index ? next : row)))
                 }
-                onRemove={() =>
-                  setProviders((prev) => prev.filter((_, i) => i !== index))
-                }
+                onRemove={() => setProviders((prev) => prev.filter((_, i) => i !== index))}
               />
             ))}
           </ul>
@@ -1395,8 +1369,8 @@ export function OidcSettingsPanel() {
         <div className="flex flex-col gap-1">
           <h2 className="text-lg font-semibold text-ink">Bookclerk as identity provider</h2>
           <p className="text-sm text-ink/55">
-            Players and other relying parties sign into Bookclerk. Bookclerk is the OpenID
-            issuer. Register each app as a client below.
+            Players and other relying parties sign into Bookclerk. Bookclerk is the OpenID issuer.
+            Register each app as a client below.
           </p>
         </div>
         <label className="flex flex-col gap-1.5 text-sm font-medium text-ink">
@@ -1417,10 +1391,7 @@ export function OidcSettingsPanel() {
         </label>
         <div className="grid gap-3">
           <CopyableValue label="Issuer" value={issuer} />
-          <CopyableValue
-            label="Discovery"
-            value={`${issuer}/.well-known/openid-configuration`}
-          />
+          <CopyableValue label="Discovery" value={`${issuer}/.well-known/openid-configuration`} />
           <CopyableValue label="Authorization" value={`${issuer}/oidc/authorize`} />
           <CopyableValue label="Token" value={`${issuer}/oidc/token`} />
           <CopyableValue label="Userinfo" value={`${issuer}/oidc/userinfo`} />
@@ -1433,9 +1404,9 @@ export function OidcSettingsPanel() {
             <h3 className="text-base font-semibold text-ink">OIDC clients</h3>
             <p className="mt-1 text-sm text-ink/55">
               Apps that trust Bookclerk as their identity provider. Installed player plugins
-              contribute a client (disabled until you enable it). Custom clients can still be
-              added. Public PKCE clients omit a secret; confidential clients receive a generated
-              secret once.
+              contribute a client (disabled until you enable it). Custom clients can still be added.
+              Public PKCE clients omit a secret; confidential clients receive a generated secret
+              once.
             </p>
           </div>
           <Button
@@ -1462,9 +1433,7 @@ export function OidcSettingsPanel() {
                 onSaved={(next) =>
                   setClients((prev) => prev.map((row, i) => (i === index ? next : row)))
                 }
-                onRemoved={() =>
-                  setClients((prev) => prev.filter((_, i) => i !== index))
-                }
+                onRemoved={() => setClients((prev) => prev.filter((_, i) => i !== index))}
                 onError={setError}
                 onNotice={setNotice}
               />

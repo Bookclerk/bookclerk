@@ -1,0 +1,11 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "oxc", "jsdoc", "node"],
+  "rules": {
+    "jsdoc/check-property-names": "error",
+    "jsdoc/check-tag-names": ["error", { "definedTags": ["typeParam"] }],
+    "jsdoc/require-param-name": "error",
+    "no-control-regex": "off"
+  },
+  "ignorePatterns": ["node_modules/**", "dist/**", "corpus/**", "fuzz/*/**"]
+}

@@ -673,7 +673,9 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
           merged[entry.name] = entry.database;
         } else if (entry.transport) {
           const transport = entry.transport;
-          merged[entry.name] = createDatabaseBinding({ execute: (request) => transport.execute(request) });
+          merged[entry.name] = createDatabaseBinding({
+            execute: (request) => transport.execute(request),
+          });
         }
       }
     }
@@ -1025,7 +1027,8 @@ export interface QueueRetryOptions {
 }
 
 /** Recorded per-message outcome of a `queue()` handler (bridge projection of `QueueResult`). */
-export type QueueOutcome = { kind: "ack" } | { kind: "retry"; delaySeconds: number; reason: string };
+export type QueueOutcome =
+  { kind: "ack" } | { kind: "retry"; delaySeconds: number; reason: string };
 
 /**
  * One delivered queue message (`QueueMessage` struct), Workers `Message`-shaped.
@@ -1281,7 +1284,13 @@ export class JobController {
 
   constructor(invocation: Partial<JobInvocation> | undefined, granted?: GrantedJobCapabilities) {
     const inv = (invocation && typeof invocation === "object" ? invocation : {}) as Partial<
-      JobInvocation & { invocationSequence: number; stepId: string; deadlineUnixMs: number; causationId: string; checkpointJson: string }
+      JobInvocation & {
+        invocationSequence: number;
+        stepId: string;
+        deadlineUnixMs: number;
+        causationId: string;
+        checkpointJson: string;
+      }
     >;
     this.invocation = Object.freeze({ ...inv });
     this.id = String(inv.invocationId ?? "");
@@ -1464,7 +1473,9 @@ export interface WireQueueBatch {
  * }
  * ```
  */
-export class BookclerkEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends WorkerEntrypoint<Env> {
+export class BookclerkEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends WorkerEntrypoint<Env> {
   /**
    * Rejects HTTP fetch — workerd guests are Workers-RPC only.
    *
@@ -1525,7 +1536,10 @@ export class BookclerkEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extend
    * @returns One outcome per event, in order.
    * @internal
    */
-  async bookclerkEvent(context: GrantedContext, wireBatch: WireEventBatch): Promise<EventOutcome[]> {
+  async bookclerkEvent(
+    context: GrantedContext,
+    wireBatch: WireEventBatch,
+  ): Promise<EventOutcome[]> {
     if (typeof this.event !== "function") {
       throw unsupported("event");
     }
@@ -1548,7 +1562,10 @@ export class BookclerkEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extend
    * @returns One outcome per message, in order.
    * @internal
    */
-  async bookclerkQueue(context: GrantedContext, wireBatch: WireQueueBatch): Promise<QueueOutcome[]> {
+  async bookclerkQueue(
+    context: GrantedContext,
+    wireBatch: WireQueueBatch,
+  ): Promise<QueueOutcome[]> {
     if (typeof this.queue !== "function") {
       throw unsupported("queue");
     }
@@ -1619,7 +1636,9 @@ export class BookclerkEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extend
  * `bookclerkMethods`; the adapter reaches them only through `bookclerkInvoke`,
  * which installs the granted bindings on `env` before dispatching.
  */
-export class NamedEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends WorkerEntrypoint<Env> {
+export class NamedEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends WorkerEntrypoint<Env> {
   /** Methods the adapter may dispatch on this entrypoint. */
   static bookclerkMethods: readonly string[] = [];
 
@@ -1645,7 +1664,11 @@ export class NamedEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends Wo
    * @returns Method result.
    * @internal
    */
-  async bookclerkInvoke(context: GrantedContext, method: string, ...args: unknown[]): Promise<unknown> {
+  async bookclerkInvoke(
+    context: GrantedContext,
+    method: string,
+    ...args: unknown[]
+  ): Promise<unknown> {
     const allowed = (this.constructor as typeof NamedEntrypoint).bookclerkMethods ?? [];
     const target = (this as unknown as Record<string, unknown>)[method];
     if (!allowed.includes(method) || typeof target !== "function") {
@@ -1679,7 +1702,9 @@ const STOREFRONT_METHODS = Object.freeze([
  * `export class Storefront extends StorefrontEntrypoint`. Every method takes
  * and returns the typed ABI structs generated from `schema/plugin.capnp`.
  */
-export class StorefrontEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends NamedEntrypoint<Env> {
+export class StorefrontEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends NamedEntrypoint<Env> {
   static override bookclerkMethods = STOREFRONT_METHODS;
 
   /**
@@ -1827,7 +1852,9 @@ const STORAGE_METHODS = Object.freeze([
  * writes acquired media into. Export it as
  * `export class Storage extends StorageEntrypoint`.
  */
-export class StorageEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends NamedEntrypoint<Env> {
+export class StorageEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends NamedEntrypoint<Env> {
   static override bookclerkMethods = STORAGE_METHODS;
 
   /**
@@ -1866,7 +1893,11 @@ export class StorageEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends 
    * @param _options - Optional content type / length.
    * @returns Bytes written and optional etag / sha256.
    */
-  put(_key: string, _body: ReadableStream<Uint8Array>, _options?: WriteOptions): Promise<PutResult> {
+  put(
+    _key: string,
+    _body: ReadableStream<Uint8Array>,
+    _options?: WriteOptions,
+  ): Promise<PutResult> {
     return Promise.reject(unsupported("put"));
   }
   /**
@@ -1925,7 +1956,9 @@ const REMOTE_LIBRARY_METHODS = Object.freeze([
  * polling for a remote library server. Export it as
  * `export class RemoteLibrary extends RemoteLibraryEntrypoint`.
  */
-export class RemoteLibraryEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends NamedEntrypoint<Env> {
+export class RemoteLibraryEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends NamedEntrypoint<Env> {
   static override bookclerkMethods = REMOTE_LIBRARY_METHODS;
 
   /**
@@ -2029,7 +2062,9 @@ function freshSessionId(): string {
  * fresh session id, and `session(id, method, ...params)` calls `method` on
  * the retained {@link AdapterDatabaseSession}; `close` releases the entry.
  */
-export class DatabaseAdapterEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends NamedEntrypoint<Env> {
+export class DatabaseAdapterEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends NamedEntrypoint<Env> {
   static override bookclerkMethods = Object.freeze(["openSession", "dropUnit"]);
 
   /**
@@ -2061,9 +2096,16 @@ export class DatabaseAdapterEntrypoint<Env extends BookclerkEnv = BookclerkEnv> 
    * @returns Session id for `openSession`, else the session method result.
    * @internal
    */
-  override async bookclerkInvoke(context: GrantedContext, method: string, ...args: unknown[]): Promise<unknown> {
+  override async bookclerkInvoke(
+    context: GrantedContext,
+    method: string,
+    ...args: unknown[]
+  ): Promise<unknown> {
     if (method === "openSession") {
-      const session = (await super.bookclerkInvoke(context, "openSession")) as AdapterDatabaseSession;
+      const session = (await super.bookclerkInvoke(
+        context,
+        "openSession",
+      )) as AdapterDatabaseSession;
       if (!session || typeof session !== "object") {
         throw PluginError.fromWire("internal", "openSession returned no session");
       }
@@ -2160,12 +2202,7 @@ export class OidcEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends Nam
 
 /** Wire name of each named entrypoint (`plugin.toml` `entrypoints`). */
 export type EntrypointName =
-  | "storefront"
-  | "storage"
-  | "databaseAdapter"
-  | "remoteLibrary"
-  | "cli"
-  | "oidc";
+  "storefront" | "storage" | "databaseAdapter" | "remoteLibrary" | "cli" | "oidc";
 
 /** Adapter binding name for each named entrypoint. */
 export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Object.freeze({
@@ -2319,7 +2356,11 @@ class GrantedDestination extends Destination {
     this.#signal = signal;
   }
 
-  async put(key: string, body: ReadableStream<Uint8Array>, options?: WriteOptions): Promise<PutResult> {
+  async put(
+    key: string,
+    body: ReadableStream<Uint8Array>,
+    options?: WriteOptions,
+  ): Promise<PutResult> {
     const headers: Record<string, string> = { ...this.#auth };
     if (options?.contentType) headers["content-type"] = options.contentType;
     if (options?.contentLength != null) {
@@ -2446,7 +2487,10 @@ class GrantedEvents extends RpcTarget implements EventPublisherBinding {
  * @param contentType - `json` (default), `text`, or `bytes`.
  * @returns Body bytes and the normalized content type.
  */
-function queueBodyBytes(body: unknown, contentType: string | undefined): { body: Uint8Array; contentType: string } {
+function queueBodyBytes(
+  body: unknown,
+  contentType: string | undefined,
+): { body: Uint8Array; contentType: string } {
   const kind = contentType || "json";
   if (kind === "bytes") {
     if (body instanceof Uint8Array) return { body, contentType: kind };
@@ -2510,7 +2554,10 @@ class GrantedQueue extends RpcTarget implements QueueBinding {
       throw PluginError.fromWire("invalid_params", "sendBatch requires at least one message");
     }
     if (messages.length > MAX_LIST_PAGE) {
-      throw PluginError.fromWire("payload_too_large", `queue batch of ${messages.length} exceeds ${MAX_LIST_PAGE}`);
+      throw PluginError.fromWire(
+        "payload_too_large",
+        `queue batch of ${messages.length} exceeds ${MAX_LIST_PAGE}`,
+      );
     }
     const wireMessages = messages.map((entry) => {
       const encoded = queueBodyBytes(entry?.body, entry?.contentType);
@@ -2545,7 +2592,9 @@ class GrantedQueue extends RpcTarget implements QueueBinding {
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `queue send HTTP ${resp.status}`);
     }
-    return { messageIds: Array.isArray(value.messageIds) ? value.messageIds.map((id) => String(id)) : [] };
+    return {
+      messageIds: Array.isArray(value.messageIds) ? value.messageIds.map((id) => String(id)) : [],
+    };
   }
 }
 
@@ -2561,7 +2610,10 @@ function checkKvKey(key: unknown): string {
   }
   const bytes = new TextEncoder().encode(key).byteLength;
   if (bytes > MAX_KV_KEY_BYTES) {
-    throw PluginError.fromWire("payload_too_large", `kv key of ${bytes} bytes exceeds ${MAX_KV_KEY_BYTES}`);
+    throw PluginError.fromWire(
+      "payload_too_large",
+      `kv key of ${bytes} bytes exceeds ${MAX_KV_KEY_BYTES}`,
+    );
   }
   return key;
 }
@@ -2647,7 +2699,10 @@ class GrantedKv extends RpcTarget implements KvNamespaceBinding {
   getWithMetadata(key: string, type?: "text"): Promise<KvValueWithMetadata<string>>;
   getWithMetadata<T = unknown>(key: string, type: "json"): Promise<KvValueWithMetadata<T>>;
   getWithMetadata(key: string, type: "arrayBuffer"): Promise<KvValueWithMetadata<ArrayBuffer>>;
-  async getWithMetadata(key: string, type: KvValueType = "text"): Promise<KvValueWithMetadata<unknown>> {
+  async getWithMetadata(
+    key: string,
+    type: KvValueType = "text",
+  ): Promise<KvValueWithMetadata<unknown>> {
     return this.#read(key, type);
   }
 
@@ -2671,7 +2726,10 @@ class GrantedKv extends RpcTarget implements KvNamespaceBinding {
     } else if (ArrayBuffer.isView(value)) {
       bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     } else {
-      throw PluginError.fromWire("invalid_params", "kv value must be a string, ArrayBuffer, or view");
+      throw PluginError.fromWire(
+        "invalid_params",
+        "kv value must be a string, ArrayBuffer, or view",
+      );
     }
     if (bytes.byteLength > MAX_KV_VALUE_BYTES) {
       throw PluginError.fromWire(
@@ -2703,7 +2761,10 @@ class GrantedKv extends RpcTarget implements KvNamespaceBinding {
   async list(options?: KvListOptionsBinding): Promise<KvListResultBinding> {
     const limit = Math.max(0, Math.floor(Number(options?.limit ?? 0) || 0));
     if (limit > MAX_LIST_PAGE) {
-      throw PluginError.fromWire("invalid_params", `kv list limit of ${limit} exceeds ${MAX_LIST_PAGE}`);
+      throw PluginError.fromWire(
+        "invalid_params",
+        `kv list limit of ${limit} exceeds ${MAX_LIST_PAGE}`,
+      );
     }
     const reply = await this.#call("list", {
       options: { prefix: options?.prefix ?? "", cursor: options?.cursor ?? "", limit },
@@ -2771,7 +2832,11 @@ class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
       throw PluginError.fromWire(
-        resp.status === 401 ? "unauthorized" : resp.status === 413 ? "payload_too_large" : "unavailable",
+        resp.status === 401
+          ? "unauthorized"
+          : resp.status === 413
+            ? "payload_too_large"
+            : "unavailable",
         `database grant: ${resp.status} ${text}`.trim(),
       );
     }
@@ -2793,7 +2858,10 @@ class CancelWatch extends RpcTarget implements CancelWatchLike {
     this.#promise = new Promise<void>((resolve) => {
       const poll = async (): Promise<void> => {
         while (!stop.aborted) {
-          const resp = await granted.fetch("http://granted/cancel", { headers: auth, signal: stop });
+          const resp = await granted.fetch("http://granted/cancel", {
+            headers: auth,
+            signal: stop,
+          });
           if (resp.status === 200) {
             resolve();
             return;
@@ -2879,7 +2947,11 @@ function parseHeaderJson(text: string | null | undefined, name: string): unknown
   try {
     return JSON.parse(String(text)) as unknown;
   } catch (err) {
-    throw new InvokeError(400, "invalid_params", `${name} header is not JSON: ${errorMessage(err)}`);
+    throw new InvokeError(
+      400,
+      "invalid_params",
+      `${name} header is not JSON: ${errorMessage(err)}`,
+    );
   }
 }
 
@@ -2922,12 +2994,13 @@ export function wrapPluginFromNative() {
 }
 
 /** Wire names of the trigger families the launcher may ask `openInvocation` about. */
-export const TRIGGER_FAMILIES: Readonly<Record<"eventConsumer" | "queueConsumer" | "jobRunner", string>> =
-  Object.freeze({
-    eventConsumer: "eventConsumer",
-    queueConsumer: "queueConsumer",
-    jobRunner: "jobRunner",
-  });
+export const TRIGGER_FAMILIES: Readonly<
+  Record<"eventConsumer" | "queueConsumer" | "jobRunner", string>
+> = Object.freeze({
+  eventConsumer: "eventConsumer",
+  queueConsumer: "queueConsumer",
+  jobRunner: "jobRunner",
+});
 
 /**
  * Filters requested entrypoint / trigger family names against the manifest
@@ -2948,7 +3021,9 @@ export function allowedEntrypointFamilies(
   if (!capabilities || typeof capabilities !== "object") return [];
   const entrypoints = Array.isArray(capabilities.entrypoints) ? capabilities.entrypoints : [];
   const consumes = Array.isArray(capabilities.consumes) ? capabilities.consumes : [];
-  const queueConsumers = Array.isArray(capabilities.queueConsumers) ? capabilities.queueConsumers : [];
+  const queueConsumers = Array.isArray(capabilities.queueConsumers)
+    ? capabilities.queueConsumers
+    : [];
   const jobs = Array.isArray(capabilities.jobs) ? capabilities.jobs : [];
   const exportsStorage = entrypoints.includes("storage");
   const out: string[] = [];
@@ -2985,14 +3060,14 @@ function mergeDescribe(
   const cli =
     guestCli && Array.isArray(guestCli.commands) && guestCli.commands.length > 0
       ? guestCli
-      : base.cli ?? guestCli;
+      : (base.cli ?? guestCli);
   // `[[settings]]` is the authority for configOptions; an empty guest list
   // defers to the manifest projection and the host rejects a differing one.
   const guestOptions = guest.configOptions;
   const configOptions =
     Array.isArray(guestOptions) && guestOptions.length > 0
       ? guestOptions
-      : base.configOptions ?? guestOptions;
+      : (base.configOptions ?? guestOptions);
   return {
     ...base,
     ...guest,
@@ -3057,7 +3132,10 @@ function createInvocationAdapter() {
         const named: NamedQueue[] = [];
         for (const [name, token] of Object.entries(queues)) {
           if (!name || typeof token !== "string" || !token) continue;
-          named.push({ name, queue: new GrantedQueue(granted, { Authorization: `Bearer ${token}` }) });
+          named.push({
+            name,
+            queue: new GrantedQueue(granted, { Authorization: `Bearer ${token}` }),
+          });
         }
         if (named.length > 0) bound.queues = named;
       }
@@ -3158,14 +3236,21 @@ function createInvocationAdapter() {
     ): Promise<unknown> {
       switch (op) {
         case "get":
-          return this.invokeEntrypoint("storage", ctx, "get", [String(args.key ?? ""), args.options]);
+          return this.invokeEntrypoint("storage", ctx, "get", [
+            String(args.key ?? ""),
+            args.options,
+          ]);
         case "put": {
           if (!body) {
             throw PluginError.fromWire("invalid_params", "put missing body stream");
           }
           const options = args.options as WriteOptions | undefined;
           const bounded = exactLengthBody(body, options?.contentLength);
-          return this.invokeEntrypoint("storage", ctx, "put", [String(args.key ?? ""), bounded, options]);
+          return this.invokeEntrypoint("storage", ctx, "put", [
+            String(args.key ?? ""),
+            bounded,
+            options,
+          ]);
         }
         default:
           throw PluginError.fromWire("unsupported", `destination.${op} is not a stream route`);
@@ -3247,7 +3332,10 @@ function createInvocationAdapter() {
       };
       try {
         const context = parseHeaderJson(contextJson, "context");
-        if (context !== undefined && (context === null || typeof context !== "object" || Array.isArray(context))) {
+        if (
+          context !== undefined &&
+          (context === null || typeof context !== "object" || Array.isArray(context))
+        ) {
           throw new InvokeError(400, "invalid_params", "context header must be a JSON object");
         }
         const caps = parseHeaderJson(capsJson, "caps") ?? [];

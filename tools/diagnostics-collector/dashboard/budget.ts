@@ -170,7 +170,9 @@ export class MeteredD1 implements D1Database {
    */
   batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
     this.budget.take();
-    return this.inner.batch<T>(statements.map((s) => (s instanceof MeteredStatement ? s.inner : s)));
+    return this.inner.batch<T>(
+      statements.map((s) => (s instanceof MeteredStatement ? s.inner : s)),
+    );
   }
 
   /**
@@ -213,7 +215,10 @@ export class MeteredD1 implements D1Database {
  *   left out.
  * @returns The metered handle.
  */
-export function metered(db: D1Database, budget: Budget = new Budget(D1_QUERIES_PER_INVOCATION)): MeteredD1 {
+export function metered(
+  db: D1Database,
+  budget: Budget = new Budget(D1_QUERIES_PER_INVOCATION),
+): MeteredD1 {
   if (db instanceof MeteredD1) return db;
   return new MeteredD1(db, budget);
 }

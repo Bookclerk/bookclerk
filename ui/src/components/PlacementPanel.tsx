@@ -37,7 +37,9 @@ export function PlacementBadge({ plugin }: { plugin: PluginSettingsGroup }) {
   const placement = plugin.placement;
   if (!placement) return null;
   const short =
-    placement.replicas === "all" ? Boolean(placement.detail) : placement.placed < placement.replicas;
+    placement.replicas === "all"
+      ? Boolean(placement.detail)
+      : placement.placed < placement.replicas;
   return (
     <Badge
       className={
@@ -57,7 +59,12 @@ export function PlacementBadge({ plugin }: { plugin: PluginSettingsGroup }) {
 /**
  * Placement controls inside an expanded instance row.
  */
-export function PlacementPanel({ plugin, onChanged, onError, onSessionExpired }: PlacementPanelProps) {
+export function PlacementPanel({
+  plugin,
+  onChanged,
+  onError,
+  onSessionExpired,
+}: PlacementPanelProps) {
   const placement = plugin.placement;
   const [replicas, setReplicas] = useState(String(placement?.replicas ?? 1));
   const [constraints, setConstraints] = useState((placement?.constraints ?? []).join(", "));

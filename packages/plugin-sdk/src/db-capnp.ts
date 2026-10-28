@@ -119,15 +119,10 @@ export class CapnpMessage {
     this.setWord(ptrWord, 3n | (BigInt(index) << 32n));
   }
 
-  writeEmptyCompositeList(
-    ptrWord: number,
-    dataWords: number,
-    pointerWords: number,
-  ): void {
+  writeEmptyCompositeList(ptrWord: number, dataWords: number, pointerWords: number): void {
     const tagWord = this.alloc(1);
     this.writeListPointer(ptrWord, tagWord, 7, 0);
-    const tag =
-      0n | (BigInt(dataWords) << 32n) | (BigInt(pointerWords) << 48n);
+    const tag = 0n | (BigInt(dataWords) << 32n) | (BigInt(pointerWords) << 48n);
     this.setWord(tagWord, tag);
   }
 
@@ -146,16 +141,11 @@ export class CapnpMessage {
     const tagWord = this.alloc(1 + payloadWords);
     this.writeListPointer(ptrWord, tagWord, 7, payloadWords);
     const tag =
-      0n |
-      (BigInt(count) << 2n) |
-      (BigInt(dataWords) << 32n) |
-      (BigInt(pointerWords) << 48n);
+      0n | (BigInt(count) << 2n) | (BigInt(dataWords) << 32n) | (BigInt(pointerWords) << 48n);
     this.setWord(tagWord, tag);
     const out: CapnpStruct[] = [];
     for (let i = 0; i < count; i++) {
-      out.push(
-        new CapnpStruct(this, tagWord + 1 + i * elemWords, dataWords, pointerWords),
-      );
+      out.push(new CapnpStruct(this, tagWord + 1 + i * elemWords, dataWords, pointerWords));
     }
     return out;
   }
@@ -401,19 +391,10 @@ export class CapnpStruct {
     dataWords: number,
     pointerWords: number,
   ): CapnpStruct[] {
-    return this.msg.initStructList(
-      this.pointerWord(pointerIndex),
-      count,
-      dataWords,
-      pointerWords,
-    );
+    return this.msg.initStructList(this.pointerWord(pointerIndex), count, dataWords, pointerWords);
   }
 
-  initStruct(
-    pointerIndex: number,
-    dataWords: number,
-    pointerWords: number,
-  ): CapnpStruct {
+  initStruct(pointerIndex: number, dataWords: number, pointerWords: number): CapnpStruct {
     const ptrWord = this.pointerWord(pointerIndex);
     const off = this.msg.alloc(dataWords + pointerWords);
     this.msg.writeStructPointer(ptrWord, off, dataWords, pointerWords);
@@ -636,11 +617,7 @@ export class CapnpReader {
     return out;
   }
 
-  readStructList(
-    ptrWord: number,
-    dataWords: number,
-    pointerWords: number,
-  ): StructReader[] {
+  readStructList(ptrWord: number, dataWords: number, pointerWords: number): StructReader[] {
     void dataWords;
     void pointerWords;
     const lp = this.listPointer(ptrWord, 7);
@@ -775,20 +752,12 @@ export class StructReader {
     return ptr === null ? [] : this.reader.readUintList(ptr, 4);
   }
 
-  getStructList(
-    pointerIndex: number,
-    dataWords: number,
-    pointerWords: number,
-  ): StructReader[] {
+  getStructList(pointerIndex: number, dataWords: number, pointerWords: number): StructReader[] {
     const ptr = this.pointerWord(pointerIndex);
     return ptr === null ? [] : this.reader.readStructList(ptr, dataWords, pointerWords);
   }
 
-  getStruct(
-    pointerIndex: number,
-    dataWords: number,
-    pointerWords: number,
-  ): StructReader {
+  getStruct(pointerIndex: number, dataWords: number, pointerWords: number): StructReader {
     const ptr = this.pointerWord(pointerIndex);
     if (ptr === null) {
       return new StructReader(this.reader, 0, 0, 0);

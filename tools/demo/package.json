@@ -9,6 +9,7 @@
   "scripts": {
     "deploy": "wrangler deploy",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json",
+    "lint": "oxlint --deny-warnings",
     "test": "node --test \"test/*.test.ts\""
   },
   "dependencies": {
@@ -17,6 +18,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261019.1",
     "@types/node": "26.6.5",
+    "oxlint": "1.90.0",
     "typescript": "7.0.2",
     "wrangler": "4.151.2"
   },

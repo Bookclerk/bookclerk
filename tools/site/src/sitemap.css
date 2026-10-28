@@ -4,9 +4,27 @@
    clickable; the page points people to /sitemap for links. Colors and fonts
    follow site.css. */
 
-@font-face { font-family: "Source Sans 3"; font-style: normal; font-weight: 200 900; font-display: swap; src: url("/fonts/source-sans-3-v20-latin.woff2") format("woff2"); }
-@font-face { font-family: "Literata"; font-style: normal; font-weight: 400 900; font-display: swap; src: url("/fonts/literata-v40-latin.woff2") format("woff2"); }
-@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/ibm-plex-mono-v20-400-latin.woff2") format("woff2"); }
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: swap;
+  src: url("/fonts/source-sans-3-v20-latin.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Literata";
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url("/fonts/literata-v40-latin.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-v20-400-latin.woff2") format("woff2");
+}
 
 :root {
   --paper: #fbf7ee;
@@ -23,7 +41,11 @@
   padding: 48px 24px 88px;
   background: var(--paper);
   color: var(--ink);
-  font: 17px/1.6 "Source Sans 3", "Segoe UI", Candara, sans-serif;
+  font:
+    17px/1.6 "Source Sans 3",
+    "Segoe UI",
+    Candara,
+    sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -35,16 +57,27 @@
   }
 }
 
-urlset::before, sitemapindex::before {
+urlset::before,
+sitemapindex::before {
   display: block;
   order: -2;
   margin-bottom: 8px;
-  font: 600 40px/1.15 "Literata", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+  font:
+    600 40px/1.15 "Literata",
+    "Iowan Old Style",
+    "Palatino Linotype",
+    Palatino,
+    serif;
 }
-urlset::before { content: "Sitemap section"; }
-sitemapindex::before { content: "Sitemap"; }
+urlset::before {
+  content: "Sitemap section";
+}
+sitemapindex::before {
+  content: "Sitemap";
+}
 
-urlset::after, sitemapindex::after {
+urlset::after,
+sitemapindex::after {
   display: block;
   order: -1;
   margin-bottom: 24px;
@@ -52,7 +85,8 @@ urlset::after, sitemapindex::after {
   content: "This is the list search engines read. For a page with links, open /sitemap on this site.";
 }
 
-url, sitemap {
+url,
+sitemap {
   display: block;
   padding: 10px 0;
   border-bottom: 1px solid var(--line);
@@ -61,7 +95,12 @@ url, sitemap {
 loc {
   display: block;
   color: var(--teal-text);
-  font: 15px/1.5 "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  font:
+    15px/1.5 "IBM Plex Mono",
+    ui-monospace,
+    Menlo,
+    Consolas,
+    monospace;
   overflow-wrap: anywhere;
 }
 
@@ -70,4 +109,6 @@ lastmod {
   color: var(--soft);
   font-size: 14px;
 }
-lastmod::before { content: "Last updated "; }
+lastmod::before {
+  content: "Last updated ";
+}

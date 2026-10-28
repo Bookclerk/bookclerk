@@ -56,7 +56,13 @@ import {
   type ReportBriefRow,
   type ReportFilter,
 } from "./db.ts";
-import { githubConfig, writeSummaryComment, type AttachLink, type GitHubConfig, type SummaryWrite } from "./github.ts";
+import {
+  githubConfig,
+  writeSummaryComment,
+  type AttachLink,
+  type GitHubConfig,
+  type SummaryWrite,
+} from "./github.ts";
 import { MAX_FORM_CHARS, issueNumber, parseLinkAction } from "./links.ts";
 import { dashboardOrigin, renderSummary } from "./summary.ts";
 import { announceChange, closeAllLive, connectLive } from "./live.ts";
@@ -75,11 +81,31 @@ import {
 } from "./pages.ts";
 import { currentMember, endAllSessions, sameOrigin, type Member } from "./session.ts";
 import { readStoredReport, type B2Access } from "./storage.ts";
-import { indexSubmitted, reindexSlice, syncIssueNow, syncIssues, type SubmittedReport } from "./sync.ts";
+import {
+  indexSubmitted,
+  reindexSlice,
+  syncIssueNow,
+  syncIssues,
+  type SubmittedReport,
+} from "./sync.ts";
 import type { Background, DashboardEnv, Env } from "../env.ts";
 
 /** Paths the dashboard owns (exact). */
-const PATHS = new Set(["/", "/auth/github", "/auth/callback", "/auth/logout", "/dash", "/reports", "/issues", "/issues/link", "/admin/reindex", "/admin/sync", "/admin/sign-out-all", "/admin/update-issue", "/live"]);
+const PATHS = new Set([
+  "/",
+  "/auth/github",
+  "/auth/callback",
+  "/auth/logout",
+  "/dash",
+  "/reports",
+  "/issues",
+  "/issues/link",
+  "/admin/reindex",
+  "/admin/sync",
+  "/admin/sign-out-all",
+  "/admin/update-issue",
+  "/live",
+]);
 
 /** `/reports/<uuid>`. */
 const REPORT_PATH = /^\/reports\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
@@ -106,10 +132,20 @@ const UPDATE_NOTE_TTL_MS = 10 * 60_000;
  * @param now - Unix time in milliseconds.
  * @returns The note, or null.
  */
-function updateNoteFor(stored: string | null, issue: number, now: number): { at: number; text: string; } | null {
+function updateNoteFor(
+  stored: string | null,
+  issue: number,
+  now: number,
+): { at: number; text: string } | null {
   const [forIssue, at, ...rest] = (stored ?? "").split("\t");
   const when = Number(at);
-  if (forIssue !== String(issue) || !Number.isFinite(when) || now - when > UPDATE_NOTE_TTL_MS || rest.length === 0) return null;
+  if (
+    forIssue !== String(issue) ||
+    !Number.isFinite(when) ||
+    now - when > UPDATE_NOTE_TTL_MS ||
+    rest.length === 0
+  )
+    return null;
   return { at: when, text: rest.join("\t") };
 }
 
@@ -142,7 +178,13 @@ function updateFailure(err: unknown): string {
  * @param now - Unix time in milliseconds.
  * @returns The note for the issue page.
  */
-async function updateIssueNow(env: DashboardEnv, cfg: GitHubConfig, request: Request, issue: number, now: number): Promise<string> {
+async function updateIssueNow(
+  env: DashboardEnv,
+  cfg: GitHubConfig,
+  request: Request,
+  issue: number,
+  now: number,
+): Promise<string> {
   const db = env.DASHBOARD_DB;
   // The ingest run and this press take turns per issue, so neither writes
   // over the other's comment and then records the other's figures.
@@ -156,12 +198,15 @@ async function updateIssueNow(env: DashboardEnv, cfg: GitHubConfig, request: Req
     // origin (the custom domain, or workers.dev without one), which is the
     // collector URL the ingest run renders with, so both write the same links.
     const rendered = renderSummary(summary, dashboardOrigin(new URL(request.url).origin));
-    if (!rendered) return "The summary could not be rendered; the scheduled ingest run will report it.";
+    if (!rendered)
+      return "The summary could not be rendered; the scheduled ingest run will report it.";
     let result: SummaryWrite;
     try {
       result = await writeSummaryComment(cfg, now, issue, rendered.body);
     } catch (err) {
-      console.error(`summary comment write failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `summary comment write failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return updateFailure(err);
     }
     await markSummarySent(db, issue, rendered.fingerprint, now);
@@ -290,9 +335,12 @@ function rangeOf(q: URLSearchParams): RangeId {
  * @param now - Unix time in milliseconds.
  * @returns Neurons.
  */
-async function triageBudget(env: Env, now: number): Promise<{ spent: number; cap: number; }> {
+async function triageBudget(env: Env, now: number): Promise<{ spent: number; cap: number }> {
   const n = Number(env.TRIAGE_DAILY_NEURONS);
-  const cap = Math.min(Number.isSafeInteger(n) && n > 0 ? n : DEFAULT_DAILY_NEURONS, MAX_DAILY_NEURONS);
+  const cap = Math.min(
+    Number.isSafeInteger(n) && n > 0 ? n : DEFAULT_DAILY_NEURONS,
+    MAX_DAILY_NEURONS,
+  );
   if (!env.TRIAGE_BUDGET) return { spent: 0, cap };
   try {
     return { spent: await new BudgetLedger(env.TRIAGE_BUDGET).spent(utcDay(now)), cap };
@@ -313,9 +361,21 @@ async function triageBudget(env: Env, now: number): Promise<{ spent: number; cap
  * @returns The response, or null when the path is
  *   not the dashboard's or the dashboard is off.
  */
-export async function dashboardFetch(request: Request, bindings: Env, ctx: Background, path: string, b2: B2Access, now: number = Date.now()): Promise<Response | null> {
+export async function dashboardFetch(
+  request: Request,
+  bindings: Env,
+  ctx: Background,
+  path: string,
+  b2: B2Access,
+  now: number = Date.now(),
+): Promise<Response | null> {
   const cfg = dashboardConfig(bindings);
-  if (!cfg || !bindings.DASHBOARD_DB || !(PATHS.has(path) || REPORT_PATH.test(path) || ISSUE_PATH.test(path))) return null;
+  if (
+    !cfg ||
+    !bindings.DASHBOARD_DB ||
+    !(PATHS.has(path) || REPORT_PATH.test(path) || ISSUE_PATH.test(path))
+  )
+    return null;
   // One D1 call budget for the whole request; the reindex stops within it.
   const env: DashboardEnv = { ...bindings, DASHBOARD_DB: metered(bindings.DASHBOARD_DB) };
   const db = env.DASHBOARD_DB;
@@ -323,7 +383,8 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
   const url = new URL(request.url);
 
   if (path === "/auth/github" && method === "GET") return startSignIn(request, cfg);
-  if (path === "/auth/callback" && method === "GET") return finishSignIn(request, env, cfg, ctx, now);
+  if (path === "/auth/callback" && method === "GET")
+    return finishSignIn(request, env, cfg, ctx, now);
   if (path === "/auth/logout" && method === "POST") return signOut(request, env);
 
   const member = await currentMember(db, request, now);
@@ -342,26 +403,50 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
       if (here && crossSiteNavigation(request)) return sameSiteReload(here);
       return redirect(homeWith(here));
     }
-    return htmlResponse(messagePage("Signed out", html`<p>Your session ended. Sign in again.</p>`), 401);
+    return htmlResponse(
+      messagePage("Signed out", html`<p>Your session ended. Sign in again.</p>`),
+      401,
+    );
   }
 
   if (method === "POST" && path === "/issues/link") {
     if (!sameOrigin(request)) {
-      return htmlResponse(messagePage("Request refused", html`<p>Corrections are made from the dashboard's own buttons.</p>`), 403);
+      return htmlResponse(
+        messagePage(
+          "Request refused",
+          html`<p>Corrections are made from the dashboard's own buttons.</p>`,
+        ),
+        403,
+      );
     }
     return correctLinks(request, env, member, now);
   }
 
-  if (method === "POST" && (path === "/admin/reindex" || path === "/admin/sync" || path === "/admin/sign-out-all" || path === "/admin/update-issue")) {
+  if (
+    method === "POST" &&
+    (path === "/admin/reindex" ||
+      path === "/admin/sync" ||
+      path === "/admin/sign-out-all" ||
+      path === "/admin/update-issue")
+  ) {
     if (member.role !== "admin" || !sameOrigin(request)) {
-      return htmlResponse(messagePage("Request refused", html`<p>Only organization owners can do this, from the dashboard's own buttons.</p>`), 403);
+      return htmlResponse(
+        messagePage(
+          "Request refused",
+          html`<p>Only organization owners can do this, from the dashboard's own buttons.</p>`,
+        ),
+        403,
+      );
     }
     if (path === "/admin/update-issue") {
       const form = await readForm(request);
       const back = safeNext(formField(form, "back")) ?? "/issues";
       const issue = issueNumber(formField(form, "issue") ?? "");
       if (issue === null) {
-        return htmlResponse(messagePage("Request refused", html`<p>The form names no issue.</p>`), 400);
+        return htmlResponse(
+          messagePage("Request refused", html`<p>The form names no issue.</p>`),
+          400,
+        );
       }
       const note = await updateIssueNow(env, cfg, request, issue, now);
       await setState(db, UPDATE_NOTE, `${issue}\t${now}\t${note}`);
@@ -383,7 +468,11 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
         console.error(`issue sync failed: ${err instanceof Error ? err.message : String(err)}`);
         note = "Issue sync could not reach GitHub; try again.";
       }
-      await setState(db, "reindex_note", `${new Date(now).toISOString().slice(0, 16).replace("T", " ")} UTC: ${note}`);
+      await setState(
+        db,
+        "reindex_note",
+        `${new Date(now).toISOString().slice(0, 16).replace("T", " ")} UTC: ${note}`,
+      );
       await logAccess(db, member, "sync", null, now);
       return redirect("/dash");
     }
@@ -397,7 +486,11 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
     } catch {
       note = "Reindex could not read storage; try again.";
     }
-    await setState(db, "reindex_note", `${new Date(now).toISOString().slice(0, 16).replace("T", " ")} UTC: ${note}`);
+    await setState(
+      db,
+      "reindex_note",
+      `${new Date(now).toISOString().slice(0, 16).replace("T", " ")} UTC: ${note}`,
+    );
     await logAccess(db, member, "reindex", null, now);
     return redirect("/dash");
   }
@@ -408,7 +501,10 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
     // Same-origin pages only: a cookie alone would let another site's page
     // open the socket (cross-site WebSocket hijacking), though it would
     // learn nothing but when the numbers change.
-    if ((request.headers.get("upgrade") || "").toLowerCase() !== "websocket" || !sameOrigin(request)) {
+    if (
+      (request.headers.get("upgrade") || "").toLowerCase() !== "websocket" ||
+      !sameOrigin(request)
+    ) {
       return new Response("expected a same-origin WebSocket upgrade", { status: 400 });
     }
     return connectLive(env, member.expiresAt);
@@ -421,7 +517,18 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
     const range = RANGES[rangeId];
     const since = now - range.ms;
     const filter = { version: param(q, "version") };
-    const [stats, counts, platforms, versions, signatures, recent, afterFix, budget, versionOptions, capReached] = await Promise.all([
+    const [
+      stats,
+      counts,
+      platforms,
+      versions,
+      signatures,
+      recent,
+      afterFix,
+      budget,
+      versionOptions,
+      capReached,
+    ] = await Promise.all([
       overviewStats(db, now, since, filter),
       countsByBucket(db, since, range.bucket, filter),
       topBy(db, "platform", since, filter, 6),
@@ -430,7 +537,9 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
       listReports(db, since, filter, 8, 0).then((r) => r.rows),
       fixStatus(db),
       triageBudget(env, now),
-      topBy(db, "version", now - 90 * DAY_MS, {}, 30).then((r) => r.map((x) => String(x.key)).filter(Boolean)),
+      topBy(db, "version", now - 90 * DAY_MS, {}, 30).then((r) =>
+        r.map((x) => String(x.key)).filter(Boolean),
+      ),
       indexCapReached(db, now, indexCap(env)),
     ]);
     const totals = await all(
@@ -445,8 +554,24 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
       : [[], null];
     return htmlResponse(
       overviewPage({
-        cfg, member, url, now, rangeId, filter, stats, counts, platforms, versions, signatures, recent,
-        afterFix, budget, versionOptions, capReached, access, reindexNote: reindexNote ?? "",
+        cfg,
+        member,
+        url,
+        now,
+        rangeId,
+        filter,
+        stats,
+        counts,
+        platforms,
+        versions,
+        signatures,
+        recent,
+        afterFix,
+        budget,
+        versionOptions,
+        capReached,
+        access,
+        reindexNote: reindexNote ?? "",
         totalSeries: dailySeries(now, 14, new Map(totals.map((t) => [Number(t.day), Number(t.n)]))),
       }),
     );
@@ -470,7 +595,18 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
       filterOptions(db, since),
     ]);
     return htmlResponse(
-      reportsPage({ cfg, member, url, rangeId, filter, options, page, pageSize: PAGE_SIZE, rows: list.rows, total: list.total }),
+      reportsPage({
+        cfg,
+        member,
+        url,
+        rangeId,
+        filter,
+        options,
+        page,
+        pageSize: PAGE_SIZE,
+        rows: list.rows,
+        total: list.total,
+      }),
     );
   }
 
@@ -478,20 +614,42 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
   if (m) {
     const found = await getReport(db, m[1] ?? "");
     if (!found) {
-      return htmlResponse(messagePage("Report not found", html`<p>No indexed report has that ID. It may be older than the index; an owner can index older reports from the overview.</p>`), 404);
+      return htmlResponse(
+        messagePage(
+          "Report not found",
+          html`<p>No indexed report has that ID. It may be older than the index; an owner can index older reports from the overview.</p>`,
+        ),
+        404,
+      );
     }
     const r = found.report;
     // A live refresh (dashboard.js after a push) swaps in only the links and
     // counts, so it skips the stored report. It still logs the view unless
     // this member's view of this report is already logged in the last 8
     // hours (a session's length), so the header cannot hide a first view.
-    const liveRefresh = request.headers.get("bookclerk-live") === "1"
-      && Boolean(await first(db, "SELECT 1 AS seen FROM access_log WHERE user_id = ? AND action = 'view-report' AND report_id = ? AND at > ? LIMIT 1", member.userId, r.report_id, now - 8 * 3_600_000));
+    const liveRefresh =
+      request.headers.get("bookclerk-live") === "1" &&
+      Boolean(
+        await first(
+          db,
+          "SELECT 1 AS seen FROM access_log WHERE user_id = ? AND action = 'view-report' AND report_id = ? AND at > ? LIMIT 1",
+          member.userId,
+          r.report_id,
+          now - 8 * 3_600_000,
+        ),
+      );
     const [stored, afterFix, similar, days, sameSignature] = await Promise.all([
-      liveRefresh ? Promise.resolve(null) : readStoredReport(b2, String(r.object_key)).catch(() => null),
+      liveRefresh
+        ? Promise.resolve(null)
+        : readStoredReport(b2, String(r.object_key)).catch(() => null),
       fixStatus(db),
       r.signature
-        ? all<ReportBriefRow>(db, "SELECT report_id, received_at, version, os, arch FROM reports WHERE signature = ? AND report_id <> ? ORDER BY received_at DESC LIMIT 8", r.signature, r.report_id)
+        ? all<ReportBriefRow>(
+            db,
+            "SELECT report_id, received_at, version, os, arch FROM reports WHERE signature = ? AND report_id <> ? ORDER BY received_at DESC LIMIT 8",
+            r.signature,
+            r.report_id,
+          )
         : Promise.resolve([]),
       r.signature ? signatureDays(db, r.signature, now - 14 * DAY_MS) : Promise.resolve(new Map()),
       r.signature ? issuesTrackingSignature(db, r.signature) : Promise.resolve([]),
@@ -502,29 +660,51 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
     // yet shows the fix of an issue tracking its signature (one with a
     // fixed-in version first, since it can tell a regression, then the
     // newest merge), so a regression is visible before anyone links it.
-    const pick = (numbers: number[]): ReportFix | undefined => numbers
-      .flatMap((n) => {
-        const status = afterFix.get(n);
-        return status ? [{ ...status, issue: n }] : [];
-      })
-      .sort((a, b) => Number(Boolean(b.fixedIn)) - Number(Boolean(a.fixedIn)) || (b.fixAt ?? 0) - (a.fixAt ?? 0))[0];
-    const fix = (r.issue_number == null ? pick(sameSignature) : pick([Number(r.issue_number)])) ?? null;
+    const pick = (numbers: number[]): ReportFix | undefined =>
+      numbers
+        .flatMap((n) => {
+          const status = afterFix.get(n);
+          return status ? [{ ...status, issue: n }] : [];
+        })
+        .sort(
+          (a, b) =>
+            Number(Boolean(b.fixedIn)) - Number(Boolean(a.fixedIn)) ||
+            (b.fixAt ?? 0) - (a.fixAt ?? 0),
+        )[0];
+    const fix =
+      (r.issue_number == null ? pick(sameSignature) : pick([Number(r.issue_number)])) ?? null;
     const regression = Boolean(fix?.fixedIn && isRegressionVersion(String(r.version), fix.fixedIn));
     const today = Math.floor(now / DAY_MS);
     const counts = dailySeries(now, 14, days);
     const sigDays = counts.map((n, i) => {
       const day = today - 13 + i;
-      return { label: fmtDay(day * DAY_MS), n, after: Boolean(fix?.fixAt && (day + 1) * DAY_MS > fix.fixAt) };
+      return {
+        label: fmtDay(day * DAY_MS),
+        n,
+        after: Boolean(fix?.fixAt && (day + 1) * DAY_MS > fix.fixAt),
+      };
     });
     const markerIndex = fix?.fixAt ? Math.floor(fix.fixAt / DAY_MS) - (today - 13) : -1;
-    const fixPr = found.prs.filter((p) => p.state === "merged").sort((a, b) => Number(b.merged_at) - Number(a.merged_at))[0];
+    const fixPr = found.prs
+      .filter((p) => p.state === "merged")
+      .sort((a, b) => Number(b.merged_at) - Number(a.merged_at))[0];
     // A report no issue tracks gets a picker to attach it; one issue is the
     // normal case and needs none.
     const openIssues = found.issues.length === 0 ? await openIssueOptions(db) : [];
     return htmlResponse(
       reportPage({
-        cfg, member, report: r, stored, issues: found.issues, prs: found.prs, fix, regression, similar, sigDays,
-        sigMarker: fix?.fixAt && fixPr ? { index: markerIndex, label: `#${fixPr.pr_number} merged` } : null,
+        cfg,
+        member,
+        report: r,
+        stored,
+        issues: found.issues,
+        prs: found.prs,
+        fix,
+        regression,
+        similar,
+        sigDays,
+        sigMarker:
+          fix?.fixAt && fixPr ? { index: markerIndex, label: `#${fixPr.pr_number} merged` } : null,
         openIssues,
       }),
     );
@@ -538,7 +718,17 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
       fixStatus(db),
       getState(db, "issues_synced_at"),
     ]);
-    return htmlResponse(issuesPage({ cfg, member, now, state, issues, afterFix, syncedAt: syncedAt ? Number(syncedAt) : null }));
+    return htmlResponse(
+      issuesPage({
+        cfg,
+        member,
+        now,
+        state,
+        issues,
+        afterFix,
+        syncedAt: syncedAt ? Number(syncedAt) : null,
+      }),
+    );
   }
 
   const im = ISSUE_PATH.exec(path);
@@ -551,11 +741,22 @@ export async function dashboardFetch(request: Request, bindings: Env, ctx: Backg
       member.role === "admin" ? getState(db, UPDATE_NOTE) : Promise.resolve(null),
     ]);
     if (!detail) {
-      return htmlResponse(messagePage("Issue not found", html`<p>No diagnostics issue with that number is synced. The sync lists issues labeled <code>diagnostics</code>; an owner can run it from the overview.</p>`), 404);
+      return htmlResponse(
+        messagePage(
+          "Issue not found",
+          html`<p>No diagnostics issue with that number is synced. The sync lists issues labeled <code>diagnostics</code>; an owner can run it from the overview.</p>`,
+        ),
+        404,
+      );
     }
     return htmlResponse(
       issuePage({
-        cfg, member, now, detail, fix: afterFix.get(number) ?? null, updateNote: updateNoteFor(updateNote, number, now),
+        cfg,
+        member,
+        now,
+        detail,
+        fix: afterFix.get(number) ?? null,
+        updateNote: updateNoteFor(updateNote, number, now),
         openIssues: openIssues.filter((i) => i.number !== number),
       }),
     );
@@ -610,27 +811,59 @@ function formField(body: string | null, name: string): string | null {
  * @returns A redirect back to the page the form named
  *   (a dashboard page), else to the issue's page.
  */
-async function correctLinks(request: Request, env: DashboardEnv, member: Member, now: number): Promise<Response> {
+async function correctLinks(
+  request: Request,
+  env: DashboardEnv,
+  member: Member,
+  now: number,
+): Promise<Response> {
   const db = env.DASHBOARD_DB;
   const body = await readForm(request);
   const change = parseLinkAction(body);
   if (!change) {
-    return htmlResponse(messagePage("Request not understood", html`<p>The correction form was incomplete. Go back and try again.</p>`), 400);
+    return htmlResponse(
+      messagePage(
+        "Request not understood",
+        html`<p>The correction form was incomplete. Go back and try again.</p>`,
+      ),
+      400,
+    );
   }
   const numbers = change.to === null ? [change.issue] : [change.issue, change.to];
   const [issues, report] = await Promise.all([
-    all(db, `SELECT number, kind FROM issues WHERE number IN (${numbers.map(() => "?").join(", ")})`, ...numbers),
-    change.report === null ? Promise.resolve({ ok: 1 }) : first(db, "SELECT 1 AS ok FROM reports WHERE report_id = ?", change.report),
+    all(
+      db,
+      `SELECT number, kind FROM issues WHERE number IN (${numbers.map(() => "?").join(", ")})`,
+      ...numbers,
+    ),
+    change.report === null
+      ? Promise.resolve({ ok: 1 })
+      : first(db, "SELECT 1 AS ok FROM reports WHERE report_id = ?", change.report),
   ]);
   if (issues.length !== numbers.length || !report) {
-    return htmlResponse(messagePage("Not found", html`<p>That issue is not synced or that report is not indexed, so nothing was changed.</p>`), 404);
+    return htmlResponse(
+      messagePage(
+        "Not found",
+        html`<p>That issue is not synced or that report is not indexed, so nothing was changed.</p>`,
+      ),
+      404,
+    );
   }
   // Reports are attached to triaged issues only: the holding issue for
   // untriaged reports is ingest's, and a report given to it by hand would
   // never reach a summary comment.
   const destination = change.action === "attach" ? change.issue : change.to;
-  if (destination !== null && issues.some((i) => Number(i.number) === destination && i.kind === "fallback")) {
-    return htmlResponse(messagePage("Request refused", html`<p>Reports cannot be attached to the holding issue for untriaged reports; attach them to a triaged issue instead.</p>`), 400);
+  if (
+    destination !== null &&
+    issues.some((i) => Number(i.number) === destination && i.kind === "fallback")
+  ) {
+    return htmlResponse(
+      messagePage(
+        "Request refused",
+        html`<p>Reports cannot be attached to the holding issue for untriaged reports; attach them to a triaged issue instead.</p>`,
+      ),
+      400,
+    );
   }
   await applyLinkAction(db, change, member.login, now);
   await logAccess(db, member, change.action, change.report, now);
@@ -671,7 +904,9 @@ async function announceIfLinksChanged<T>(env: DashboardEnv, work: () => Promise<
     try {
       if ((await linkFingerprint(env.DASHBOARD_DB)) !== before) await announceChange(env);
     } catch (err) {
-      console.error(`live update check failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `live update check failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 }
@@ -684,7 +919,11 @@ async function announceIfLinksChanged<T>(env: DashboardEnv, work: () => Promise<
  * @param now - Unix time in milliseconds.
  * @returns The sync's counts.
  */
-function syncAndAnnounce(env: DashboardEnv, cfg: GitHubConfig, now: number): Promise<{ issues: number; refreshed: number; }> {
+function syncAndAnnounce(
+  env: DashboardEnv,
+  cfg: GitHubConfig,
+  now: number,
+): Promise<{ issues: number; refreshed: number }> {
   return announceIfLinksChanged(env, () => syncIssues(env, cfg, now));
 }
 
@@ -698,7 +937,11 @@ function syncAndAnnounce(env: DashboardEnv, cfg: GitHubConfig, now: number): Pro
  * @returns What happened, or null
  *   when the dashboard is off.
  */
-export async function dashboardIssueNotify(bindings: Env, number: number, now: number): Promise<"linked" | "dropped" | null> {
+export async function dashboardIssueNotify(
+  bindings: Env,
+  number: number,
+  now: number,
+): Promise<"linked" | "dropped" | null> {
   const cfg = dashboardConfig(bindings);
   if (!cfg || !bindings.DASHBOARD_DB) return null;
   const env: DashboardEnv = { ...bindings, DASHBOARD_DB: metered(bindings.DASHBOARD_DB) };
@@ -716,7 +959,11 @@ export async function dashboardIssueNotify(bindings: Env, number: number, now: n
  * @returns What `attachByTriage` did, or null when the dashboard database
  *   is not bound.
  */
-export async function dashboardTriageAttach(bindings: Env, links: readonly AttachLink[], now: number): Promise<{ linked: number; existing: number; unlinked: string[]; } | null> {
+export async function dashboardTriageAttach(
+  bindings: Env,
+  links: readonly AttachLink[],
+  now: number,
+): Promise<{ linked: number; existing: number; unlinked: string[] } | null> {
   if (!bindings.DASHBOARD_DB) return null;
   const env: DashboardEnv = { ...bindings, DASHBOARD_DB: metered(bindings.DASHBOARD_DB) };
   return announceIfLinksChanged(env, () => attachByTriage(env.DASHBOARD_DB, links, now));
@@ -730,7 +977,10 @@ export async function dashboardTriageAttach(bindings: Env, links: readonly Attac
  * @param now - Unix time in milliseconds.
  * @returns Summaries, or null when the dashboard database is not bound.
  */
-export async function dashboardIssueSummaries(env: Env, now: number): Promise<IssueSummary[] | null> {
+export async function dashboardIssueSummaries(
+  env: Env,
+  now: number,
+): Promise<IssueSummary[] | null> {
   if (!env.DASHBOARD_DB) return null;
   const db = metered(env.DASHBOARD_DB);
   return handOutSummaries(db, await issueSummaries(db, SUMMARY_BATCH), now);
@@ -746,7 +996,11 @@ export async function dashboardIssueSummaries(env: Env, now: number): Promise<Is
  * @returns Whether the issue exists, or null when
  *   the dashboard database is not bound.
  */
-export async function dashboardSummarySent(env: Env, done: { issue: number; fingerprint: string; }, now: number): Promise<boolean | null> {
+export async function dashboardSummarySent(
+  env: Env,
+  done: { issue: number; fingerprint: string },
+  now: number,
+): Promise<boolean | null> {
   if (!env.DASHBOARD_DB) return null;
   return markSummarySent(metered(env.DASHBOARD_DB), done.issue, done.fingerprint, now);
 }
@@ -762,7 +1016,10 @@ export async function dashboardSummarySent(env: Env, done: { issue: number; fing
  */
 export async function dashboardFiledReportIds(env: Env): Promise<Set<string> | null> {
   if (!env.DASHBOARD_DB) return null;
-  const rows = await all(env.DASHBOARD_DB, "SELECT DISTINCT report_id FROM report_issue WHERE source <> 'excluded'");
+  const rows = await all(
+    env.DASHBOARD_DB,
+    "SELECT DISTINCT report_id FROM report_issue WHERE source <> 'excluded'",
+  );
   return new Set(rows.map((r) => String(r.report_id)));
 }
 
@@ -777,7 +1034,11 @@ export async function dashboardFiledReportIds(env: Env): Promise<Set<string> | n
  * @returns Report ID → issue number linked;
  *   empty when the dashboard database is not bound.
  */
-export async function dashboardLinkBySignature(env: Env, reportIds: string[], now: number): Promise<Map<string, number>> {
+export async function dashboardLinkBySignature(
+  env: Env,
+  reportIds: string[],
+  now: number,
+): Promise<Map<string, number>> {
   if (!env.DASHBOARD_DB || reportIds.length === 0) return new Map();
   const linked = await linkBySignature(env.DASHBOARD_DB, reportIds, now);
   if (linked.size) await announceChange(env);
@@ -798,8 +1059,13 @@ export async function dashboardLinkBySignature(env: Env, reportIds: string[], no
  * @returns As `matchClosedBySignature`; both maps empty when the dashboard
  *   database is not bound.
  */
-export async function dashboardMatchClosed(env: Env, reportIds: string[], now: number): Promise<Awaited<ReturnType<typeof matchClosedBySignature>>> {
-  if (!env.DASHBOARD_DB || reportIds.length === 0) return { regressions: new Map(), linked: new Map() };
+export async function dashboardMatchClosed(
+  env: Env,
+  reportIds: string[],
+  now: number,
+): Promise<Awaited<ReturnType<typeof matchClosedBySignature>>> {
+  if (!env.DASHBOARD_DB || reportIds.length === 0)
+    return { regressions: new Map(), linked: new Map() };
   const out = await matchClosedBySignature(env.DASHBOARD_DB, reportIds, now);
   if (out.linked.size) await announceChange(env);
   return out;
@@ -814,7 +1080,11 @@ export async function dashboardMatchClosed(env: Env, reportIds: string[], now: n
  * @param objectKey - Its key.
  * @returns What happened.
  */
-export async function dashboardIndexSubmitted(env: DashboardEnv, enriched: SubmittedReport, objectKey: string): Promise<"indexed" | "capped"> {
+export async function dashboardIndexSubmitted(
+  env: DashboardEnv,
+  enriched: SubmittedReport,
+  objectKey: string,
+): Promise<"indexed" | "capped"> {
   const result = await indexSubmitted(env.DASHBOARD_DB, enriched, objectKey, indexCap(env));
   if (result === "indexed") await announceChange(env);
   return result;

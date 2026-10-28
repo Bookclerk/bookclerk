@@ -219,7 +219,8 @@ function withoutParams<P, R>(
 const asList = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
 
 const okHits = (value: unknown) => okValue({ hits: asList<CatalogHit>(value) });
-const okLines = (value: unknown) => okValue({ lines: asList<unknown>(value).map((l) => String(l)) });
+const okLines = (value: unknown) =>
+  okValue({ lines: asList<unknown>(value).map((l) => String(l)) });
 const okHealth = (value: unknown) => {
   const v = (value ?? {}) as { ok?: unknown; detail?: unknown };
   return okValue({ ok: Boolean(v.ok), detail: String(v.detail ?? "") });
@@ -232,7 +233,10 @@ function queueResult(outcome: QueueOutcome): QueueResult {
     case "retry":
       return {
         kind: "retry",
-        value: { delaySeconds: Number(outcome.delaySeconds) || 0, reason: String(outcome.reason ?? "") },
+        value: {
+          delaySeconds: Number(outcome.delaySeconds) || 0,
+          reason: String(outcome.reason ?? ""),
+        },
       };
     default:
       return { kind: "retry", value: { delaySeconds: 0, reason: "unknown queue outcome" } };
@@ -246,7 +250,10 @@ function eventResult(outcome: EventOutcome): EventResult {
     case "retry":
       return {
         kind: "retry",
-        value: { retryAtUnixMs: Number(outcome.retryAtUnixMs) || 0, reason: String(outcome.reason ?? "") },
+        value: {
+          retryAtUnixMs: Number(outcome.retryAtUnixMs) || 0,
+          reason: String(outcome.reason ?? ""),
+        },
       };
     case "reject":
       return { kind: "reject", value: { reason: String(outcome.reason ?? "") } };
@@ -264,7 +271,10 @@ function eventResult(outcome: EventOutcome): EventResult {
         },
       };
     default:
-      throw PluginError.fromWire("internal", `unknown event outcome ${String((outcome as { kind: unknown }).kind)}`);
+      throw PluginError.fromWire(
+        "internal",
+        `unknown event outcome ${String((outcome as { kind: unknown }).kind)}`,
+      );
   }
 }
 
@@ -273,12 +283,18 @@ function jobOutcome(record: JobOutcomeRecord): JobOutcome {
     case "completed":
       return {
         kind: "completed",
-        value: { message: String(record.message ?? ""), bytesCopied: Number(record.bytesCopied) || 0 },
+        value: {
+          message: String(record.message ?? ""),
+          bytesCopied: Number(record.bytesCopied) || 0,
+        },
       };
     case "retryable":
       return {
         kind: "retryable",
-        value: { message: String(record.message ?? ""), retryAfterUnixMs: Number(record.retryAfterUnixMs) || 0 },
+        value: {
+          message: String(record.message ?? ""),
+          retryAfterUnixMs: Number(record.retryAfterUnixMs) || 0,
+        },
       };
     case "rejected":
       return { kind: "rejected", value: { message: String(record.message ?? "") } };
@@ -294,7 +310,10 @@ function jobOutcome(record: JobOutcomeRecord): JobOutcome {
         },
       };
     default:
-      throw PluginError.fromWire("internal", `unknown job outcome ${String((record as { kind: unknown }).kind)}`);
+      throw PluginError.fromWire(
+        "internal",
+        `unknown job outcome ${String((record as { kind: unknown }).kind)}`,
+      );
   }
 }
 
@@ -306,13 +325,19 @@ function wireMigration(migration: PluginMigration): WirePluginMigration {
       const o = (op ?? {}) as { kind?: unknown; value?: unknown; schema?: unknown; data?: unknown };
       if (typeof o.schema === "string") return { kind: "schema", value: o.schema };
       if (typeof o.data === "string") return { kind: "data", value: o.data };
-      if (o.kind === "schema" || o.kind === "data") return { kind: o.kind, value: String(o.value ?? "") };
-      throw PluginError.fromWire("invalid_params", `migration \`${String(migration?.id)}\` has an op without schema/data`);
+      if (o.kind === "schema" || o.kind === "data")
+        return { kind: o.kind, value: String(o.value ?? "") };
+      throw PluginError.fromWire(
+        "invalid_params",
+        `migration \`${String(migration?.id)}\` has an op without schema/data`,
+      );
     }),
   };
 }
 
-function listOptions(options: Partial<W.DestinationListParams["options"]> | undefined): ListOptions {
+function listOptions(
+  options: Partial<W.DestinationListParams["options"]> | undefined,
+): ListOptions {
   return {
     prefix: options?.prefix || undefined,
     cursor: options?.cursor || undefined,
@@ -323,7 +348,11 @@ function listOptions(options: Partial<W.DestinationListParams["options"]> | unde
 function sessionCall(method: string): AnySpec["call"] {
   return (s, p, cx) => {
     if (!cx.target) {
-      throw new InvokeError(400, "invalid_params", `AdapterDatabaseSession.${method} requires X-Bookclerk-Target`);
+      throw new InvokeError(
+        400,
+        "invalid_params",
+        `AdapterDatabaseSession.${method} requires X-Bookclerk-Target`,
+      );
     }
     const params = p as Record<string, unknown>;
     const args =
@@ -349,7 +378,10 @@ function session<P, R>(
 
 const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
   PluginWorker: {
-    databaseMigrations: spec<W.PluginWorkerDatabaseMigrationsParams, W.PluginWorkerDatabaseMigrationsResults["result"]>({
+    databaseMigrations: spec<
+      W.PluginWorkerDatabaseMigrationsParams,
+      W.PluginWorkerDatabaseMigrationsResults["result"]
+    >({
       params: W.PluginWorkerDatabaseMigrationsParamsCodec,
       results: W.PluginWorkerDatabaseMigrationsResultsCodec,
       stub: "author",
@@ -358,8 +390,20 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
     }),
   },
   ContentSource: {
-    login: withParams("storefront", "login", W.ContentSourceLoginParamsCodec, W.ContentSourceLoginResultsCodec, okPass),
-    scan: withParams("storefront", "scan", W.ContentSourceScanParamsCodec, W.ContentSourceScanResultsCodec, okPass),
+    login: withParams(
+      "storefront",
+      "login",
+      W.ContentSourceLoginParamsCodec,
+      W.ContentSourceLoginResultsCodec,
+      okPass,
+    ),
+    scan: withParams(
+      "storefront",
+      "scan",
+      W.ContentSourceScanParamsCodec,
+      W.ContentSourceScanResultsCodec,
+      okPass,
+    ),
     fetchTitle: withParams(
       "storefront",
       "fetchTitle",
@@ -453,7 +497,10 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "head", [String(p.key ?? "")]),
       ok: (value) => {
         const meta = (value ?? null) as ObjectMetadata | null;
-        return okValue({ found: meta != null, meta: (meta ?? undefined) as unknown as WireObjectMetadata });
+        return okValue({
+          found: meta != null,
+          meta: (meta ?? undefined) as unknown as WireObjectMetadata,
+        });
       },
     }),
     list: spec<W.DestinationListParams, W.DestinationListResults["result"]>({
@@ -467,7 +514,8 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       params: W.DestinationCopyParamsCodec,
       results: W.DestinationCopyResultsCodec,
       stub: "storage",
-      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "copy", [String(p.from ?? ""), String(p.to ?? "")]),
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "copy", [String(p.from ?? ""), String(p.to ?? "")]),
       ok: okPass,
     }),
     delete: spec<W.DestinationDeleteParams, W.DestinationDeleteResults["result"]>({
@@ -482,7 +530,10 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       results: W.DestinationCommitResultsCodec,
       stub: "storage",
       call: (s, p, cx) =>
-        named(s, cx.host.bindContext(cx.ctx), "commit", [String(p.key ?? ""), String(p.commitToken ?? "")]),
+        named(s, cx.host.bindContext(cx.ctx), "commit", [
+          String(p.key ?? ""),
+          String(p.commitToken ?? ""),
+        ]),
       ok: okPass,
     }),
     abortStage: spec<W.DestinationAbortStageParams, W.DestinationAbortStageResults["result"]>({
@@ -490,7 +541,10 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       results: W.DestinationAbortStageResultsCodec,
       stub: "storage",
       call: (s, p, cx) =>
-        named(s, cx.host.bindContext(cx.ctx), "abortStage", [String(p.key ?? ""), String(p.commitToken ?? "")]),
+        named(s, cx.host.bindContext(cx.ctx), "abortStage", [
+          String(p.key ?? ""),
+          String(p.commitToken ?? ""),
+        ]),
       ok: okEmpty,
     }),
   },
@@ -502,8 +556,20 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.RemoteLibraryHealthResultsCodec,
       okHealth,
     ),
-    start: withoutParams("remoteLibrary", "start", W.RemoteLibraryStartParamsCodec, W.RemoteLibraryStartResultsCodec, okEmpty),
-    stop: withoutParams("remoteLibrary", "stop", W.RemoteLibraryStopParamsCodec, W.RemoteLibraryStopResultsCodec, okEmpty),
+    start: withoutParams(
+      "remoteLibrary",
+      "start",
+      W.RemoteLibraryStartParamsCodec,
+      W.RemoteLibraryStartResultsCodec,
+      okEmpty,
+    ),
+    stop: withoutParams(
+      "remoteLibrary",
+      "stop",
+      W.RemoteLibraryStopParamsCodec,
+      W.RemoteLibraryStopResultsCodec,
+      okEmpty,
+    ),
     diagnose: withoutParams(
       "remoteLibrary",
       "diagnose",
@@ -571,18 +637,38 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
           progress: (controller.progress ?? null) as GrantedJobCapabilities["progress"],
           cancel: (controller.cancel ?? null) as GrantedJobCapabilities["cancel"],
         };
-        return (s as AuthorStub).bookclerkJob(cx.host.bindContext(cx.ctx), controller.invocation ?? {}, granted);
+        return (s as AuthorStub).bookclerkJob(
+          cx.host.bindContext(cx.ctx),
+          controller.invocation ?? {},
+          granted,
+        );
       },
       ok: (value) => okValue(jobOutcome(value as JobOutcomeRecord)),
     }),
   },
   PluginCli: {
-    describe: withoutParams("cli", "describe", W.PluginCliDescribeParamsCodec, W.PluginCliDescribeResultsCodec, okPass),
-    invoke: withParams("cli", "invoke", W.PluginCliInvokeParamsCodec, W.PluginCliInvokeResultsCodec, okPass),
+    describe: withoutParams(
+      "cli",
+      "describe",
+      W.PluginCliDescribeParamsCodec,
+      W.PluginCliDescribeResultsCodec,
+      okPass,
+    ),
+    invoke: withParams(
+      "cli",
+      "invoke",
+      W.PluginCliInvokeParamsCodec,
+      W.PluginCliInvokeResultsCodec,
+      okPass,
+    ),
   },
   Oidc: {
-    clients: withoutParams("oidc", "clients", W.OidcClientsParamsCodec, W.OidcClientsResultsCodec, (value) =>
-      okValue({ clients: asList<OidcClientTemplate>(value) }),
+    clients: withoutParams(
+      "oidc",
+      "clients",
+      W.OidcClientsParamsCodec,
+      W.OidcClientsResultsCodec,
+      (value) => okValue({ clients: asList<OidcClientTemplate>(value) }),
     ),
     authenticateUser: withParams(
       "oidc",
@@ -611,7 +697,8 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       params: W.DatabaseDropUnitParamsCodec,
       results: W.DatabaseDropUnitResultsCodec,
       stub: "databaseAdapter",
-      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "dropUnit", [String(p.unitRef ?? "")]),
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "dropUnit", [String(p.unitRef ?? "")]),
       ok: okEmpty,
     }),
   },
@@ -679,7 +766,12 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
   },
 };
 
-const CAP_KINDS: ReadonlySet<string> = new Set(["source", "destination", "progress", "cancellation"]);
+const CAP_KINDS: ReadonlySet<string> = new Set([
+  "source",
+  "destination",
+  "progress",
+  "cancellation",
+]);
 
 function requestCapTable(caps: CapDescriptor[], host: InvokeHost, stop: AbortSignal): CapTable {
   const resolved = new Map<number, unknown>();
@@ -695,11 +787,19 @@ function requestCapTable(caps: CapDescriptor[], host: InvokeHost, stop: AbortSig
         throw new InvokeError(400, "invalid_params", `capability index ${index} has no descriptor`);
       }
       if (!CAP_KINDS.has(descriptor.kind)) {
-        throw new InvokeError(400, "invalid_params", `unsupported request capability kind ${descriptor.kind}`);
+        throw new InvokeError(
+          400,
+          "invalid_params",
+          `unsupported request capability kind ${descriptor.kind}`,
+        );
       }
       const value = host.importCap(descriptor, stop);
       if (value === undefined) {
-        throw new InvokeError(400, "invalid_params", `unsupported request capability kind ${descriptor.kind}`);
+        throw new InvokeError(
+          400,
+          "invalid_params",
+          `unsupported request capability kind ${descriptor.kind}`,
+        );
       }
       resolved.set(index, value);
       return value;
@@ -782,7 +882,11 @@ export async function dispatchInvoke(
   } catch (err) {
     stop.abort();
     if (err instanceof InvokeError) throw err;
-    throw new InvokeError(400, "invalid_params", `malformed ${iface}.${method} params: ${wireError(err).message}`);
+    throw new InvokeError(
+      400,
+      "invalid_params",
+      `malformed ${iface}.${method} params: ${wireError(err).message}`,
+    );
   }
   let reply: unknown;
   try {

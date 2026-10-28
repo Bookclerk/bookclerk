@@ -51,10 +51,7 @@ export function TotpSetupHint({
           {copied ? "Copied" : "Copy"}
         </Button>
       </div>
-      <a
-        className="text-sm text-teal underline-offset-2 hover:underline"
-        href={otpauthUrl}
-      >
+      <a className="text-sm text-teal underline-offset-2 hover:underline" href={otpauthUrl}>
         Open in authenticator app
       </a>
     </>

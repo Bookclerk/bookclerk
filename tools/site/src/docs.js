@@ -148,7 +148,12 @@
     // the click, so the text is handed over as a promise where it can be.
     const write =
       typeof window.ClipboardItem === "function" && typeof navigator.clipboard.write === "function"
-        ? () => navigator.clipboard.write([new window.ClipboardItem({ "text/plain": read().then((text) => new Blob([text], { type: "text/plain" })) })])
+        ? () =>
+            navigator.clipboard.write([
+              new window.ClipboardItem({
+                "text/plain": read().then((text) => new Blob([text], { type: "text/plain" })),
+              }),
+            ])
         : typeof navigator.clipboard.writeText === "function"
           ? () => read().then((text) => navigator.clipboard.writeText(text))
           : null;
@@ -216,7 +221,11 @@
       const top = list.getBoundingClientRect().top;
       const items = links.map((link) => {
         const rect = link.getBoundingClientRect();
-        return { x: link.parentElement.classList.contains("sub") ? 15 : 1, top: rect.top - top, bottom: rect.bottom - top };
+        return {
+          x: link.parentElement.classList.contains("sub") ? 15 : 1,
+          top: rect.top - top,
+          bottom: rect.bottom - top,
+        };
       });
       if (items.length === 0) return;
       // Each stretch ends 4px before its link does when the next one steps
@@ -226,7 +235,14 @@
         const next = items[i + 1];
         const start = i === 0 ? item.top : item.top + (items[i - 1].x === item.x ? 0 : 4);
         const end = next && next.x !== item.x ? item.bottom - 4 : item.bottom;
-        parts.push({ line: `L ${item.x} ${end}`, from: `${item.x} ${start}`, curve: next && next.x !== item.x ? `C ${item.x} ${item.bottom}, ${next.x} ${item.bottom}, ${next.x} ${item.bottom + 4}` : "" });
+        parts.push({
+          line: `L ${item.x} ${end}`,
+          from: `${item.x} ${start}`,
+          curve:
+            next && next.x !== item.x
+              ? `C ${item.x} ${item.bottom}, ${next.x} ${item.bottom}, ${next.x} ${item.bottom + 4}`
+              : "",
+        });
       });
       let d = `M ${parts[0].from}`;
       spans = [];
@@ -351,7 +367,9 @@
     }
     document.addEventListener("keydown", (event) => {
       const target = event.target;
-      const typing = target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
+      const typing =
+        target instanceof HTMLElement &&
+        (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
       if (event.key !== "/" || typing || event.ctrlKey || event.metaKey || event.altKey) return;
       if (input.offsetParent === null) return;
       event.preventDefault();

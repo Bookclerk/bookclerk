@@ -51,11 +51,7 @@ async function freeLoopbackPort(): Promise<number> {
   });
 }
 
-async function waitForHealth(
-  base: string,
-  token: string,
-  timeoutMs = 15_000,
-): Promise<void> {
+async function waitForHealth(base: string, token: string, timeoutMs = 15_000): Promise<void> {
   const url = `${base}/health`;
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -74,11 +70,7 @@ async function waitForHealth(
   }
 }
 
-async function postJson(
-  url: string,
-  body: unknown,
-  token: string,
-): Promise<unknown> {
+async function postJson(url: string, body: unknown, token: string): Promise<unknown> {
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -116,8 +108,10 @@ async function invokeHealth(
   iface: "ContentSource" | "RemoteLibrary",
   token: string,
 ): Promise<HealthReply> {
-  const params = iface === "ContentSource" ? ContentSourceHealthParamsCodec : RemoteLibraryHealthParamsCodec;
-  const results = iface === "ContentSource" ? ContentSourceHealthResultsCodec : RemoteLibraryHealthResultsCodec;
+  const params =
+    iface === "ContentSource" ? ContentSourceHealthParamsCodec : RemoteLibraryHealthParamsCodec;
+  const results =
+    iface === "ContentSource" ? ContentSourceHealthResultsCodec : RemoteLibraryHealthResultsCodec;
   const res = await fetch(`${base}/invoke`, {
     method: "POST",
     headers: {
@@ -186,9 +180,7 @@ export async function runSmoke(pluginDir: string): Promise<string> {
   const manifest = loadManifest(root);
   const runtime = manifest.runtime ?? "native";
   if (runtime !== "workerd") {
-    throw new Error(
-      `smoke requires runtime = "workerd" (got ${JSON.stringify(runtime)})`,
-    );
+    throw new Error(`smoke requires runtime = "workerd" (got ${JSON.stringify(runtime)})`);
   }
 
   const workerdBin = await ensureWorkerd(defaultCacheDir());
@@ -204,31 +196,22 @@ export async function runSmoke(pluginDir: string): Promise<string> {
   if (binBase !== "workerd" && binBase !== "workerd.exe") {
     throw new Error(`expected workerd binary, got ${binBase}`);
   }
-  const validatedConfig = validateSpawnExecutable(
-    generated.configPath,
-    generated.stateDir,
-  );
+  const validatedConfig = validateSpawnExecutable(generated.configPath, generated.stateDir);
   if (path.basename(validatedConfig) !== WORKERD_SMOKE_CONFIG) {
-    throw new Error(
-      `expected ${WORKERD_SMOKE_CONFIG}, got ${path.basename(validatedConfig)}`,
-    );
+    throw new Error(`expected ${WORKERD_SMOKE_CONFIG}, got ${path.basename(validatedConfig)}`);
   }
   const importPath = validateSpawnExecutable(generated.importPath);
   // Literal argv: workerd serve + config under session cwd; import-path = RO plugin root.
-  const child = spawn(
-    "workerd",
-    ["serve", WORKERD_SMOKE_CONFIG, `--import-path=${importPath}`],
-    {
-      cwd: generated.stateDir,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
-      env: {
-        ...process.env,
-        BOOKCLERK_PLUGIN_ROOT: root,
-        PATH: `${path.dirname(validatedBin)}${path.delimiter}${process.env.PATH ?? ""}`,
-      },
+  const child = spawn("workerd", ["serve", WORKERD_SMOKE_CONFIG, `--import-path=${importPath}`], {
+    cwd: generated.stateDir,
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: false,
+    env: {
+      ...process.env,
+      BOOKCLERK_PLUGIN_ROOT: root,
+      PATH: `${path.dirname(validatedBin)}${path.delimiter}${process.env.PATH ?? ""}`,
     },
-  );
+  });
 
   const logs: string[] = [];
   const onChunk = (buf: Buffer) => {

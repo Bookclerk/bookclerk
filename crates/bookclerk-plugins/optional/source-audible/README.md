@@ -14,7 +14,7 @@ allowlists). Prefer a workerd guest when you need enforceable domain filtering.
 
 ## audible-rs pin
 
-```
+```toml
 git = "https://github.com/mkb79/audible-rs"
 rev = "5a28f507072022ae7fd7f95a62e3bdc5e515d678"
 ```

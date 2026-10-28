@@ -151,7 +151,13 @@ export type {
   StorageBinding,
 } from "./env.js";
 export { InvokeError, dispatchInvoke } from "./invoke.js";
-export type { CapDescriptor, InvokeFailure, InvokeHost, InvokeOutcome, InvokeReply } from "./invoke.js";
+export type {
+  CapDescriptor,
+  InvokeFailure,
+  InvokeHost,
+  InvokeOutcome,
+  InvokeReply,
+} from "./invoke.js";
 export type {
   CliSchema,
   CliInvokeParams,

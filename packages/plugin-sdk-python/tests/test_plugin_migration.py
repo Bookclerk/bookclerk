@@ -21,16 +21,12 @@ def _mig(ident: str, sql: str = "x", ops: int = 1) -> dict:
 
 
 def test_max_migration_count_ok():
-    require_plugin_migration_registration(
-        [_mig(f"m{i:03}") for i in range(MAX_LIST_PAGE)]
-    )
+    require_plugin_migration_registration([_mig(f"m{i:03}") for i in range(MAX_LIST_PAGE)])
 
 
 def test_migration_count_plus_one_payload_too_large():
     with pytest.raises(PluginError) as exc:
-        require_plugin_migration_registration(
-            [_mig(f"m{i:03}") for i in range(MAX_LIST_PAGE + 1)]
-        )
+        require_plugin_migration_registration([_mig(f"m{i:03}") for i in range(MAX_LIST_PAGE + 1)])
     assert exc.value.code == "payload_too_large"
     assert "maxListPage" in str(exc.value)
 
@@ -41,9 +37,7 @@ def test_max_ops_ok():
 
 def test_ops_plus_one_payload_too_large():
     with pytest.raises(PluginError) as exc:
-        require_plugin_migration_registration(
-            [_mig("ops", ops=MAX_PLUGIN_MIGRATION_OPS + 1)]
-        )
+        require_plugin_migration_registration([_mig("ops", ops=MAX_PLUGIN_MIGRATION_OPS + 1)])
     assert exc.value.code == "payload_too_large"
     assert "maxPluginMigrationOps" in str(exc.value)
 
@@ -51,9 +45,7 @@ def test_ops_plus_one_payload_too_large():
 def test_max_total_ops_ok():
     per = MAX_PLUGIN_MIGRATION_OPS // 2
     n = MAX_PLUGIN_MIGRATION_TOTAL_OPS // per
-    require_plugin_migration_registration(
-        [_mig(f"t{i:03}", ops=per) for i in range(n)]
-    )
+    require_plugin_migration_registration([_mig(f"t{i:03}", ops=per) for i in range(n)])
 
 
 def test_total_ops_plus_one_payload_too_large():
@@ -73,9 +65,7 @@ def test_max_sql_ok():
 
 def test_sql_plus_one_payload_too_large():
     with pytest.raises(PluginError) as exc:
-        require_plugin_migration_registration(
-            [_mig("sql", sql="x" * (MAX_SCALAR_BYTES + 1))]
-        )
+        require_plugin_migration_registration([_mig("sql", sql="x" * (MAX_SCALAR_BYTES + 1))])
     assert exc.value.code == "payload_too_large"
     assert "maxScalarBytes" in str(exc.value)
 

@@ -29,7 +29,7 @@ Each `/submit` is assigned a **`report_id` UUID**; the B2 object is
 `diagnostics/<version>/<report_id>.json`. Triage issues list these IDs
 for manual review.
 
-### `/report` version filter
+## `/report` version filter
 
 Before downloading objects, `/report` keeps only versions that match the latest
 **stable** GitHub release for `GITHUB_REPOSITORY` (from `releases/latest`):

@@ -1,11 +1,6 @@
 {
   "$schema": "https://typedoc.org/schema.json",
-  "entryPoints": [
-    "src/index.ts",
-    "src/workerd.ts",
-    "src/sparse-workerd/index.ts",
-    "src/cli.ts"
-  ],
+  "entryPoints": ["src/index.ts", "src/workerd.ts", "src/sparse-workerd/index.ts", "src/cli.ts"],
   "entryPointStrategy": "resolve",
   "out": "../../docs/api/typescript",
   "name": "@bookclerk/plugin-sdk",

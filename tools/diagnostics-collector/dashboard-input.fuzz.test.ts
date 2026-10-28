@@ -49,7 +49,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { URL } from "node:url";
-import { DEFAULT_NEXT, MAX_CODE_CHARS, MAX_NEXT_CHARS, OAUTH_COOKIE, parseCallback, safeNext } from "./dashboard/auth.ts";
+import {
+  DEFAULT_NEXT,
+  MAX_CODE_CHARS,
+  MAX_NEXT_CHARS,
+  OAUTH_COOKIE,
+  parseCallback,
+  safeNext,
+} from "./dashboard/auth.ts";
 import {
   DIAGNOSTICS_LABEL,
   decodeAccessToken,
@@ -73,11 +80,21 @@ import {
   decodeUser,
   membershipDecision,
 } from "./dashboard/github.ts";
-import { LINK_ACTIONS, MAX_FORM_CHARS, MAX_ISSUE_NUMBER, parseLinkAction } from "./dashboard/links.ts";
+import {
+  LINK_ACTIONS,
+  MAX_FORM_CHARS,
+  MAX_ISSUE_NUMBER,
+  parseLinkAction,
+} from "./dashboard/links.ts";
 import { eventLog } from "./dashboard/pages.ts";
 import { decodeListPage } from "./dashboard/storage.ts";
 import { memberFromRow, SESSION_COOKIE, sessionToken } from "./dashboard/session.ts";
-import { FALLBACK_MARKER, MAX_IDS_PER_ISSUE, TRIAGE_MARKER, parseIssueReportIds } from "./dashboard/report-ids.ts";
+import {
+  FALLBACK_MARKER,
+  MAX_IDS_PER_ISSUE,
+  TRIAGE_MARKER,
+  parseIssueReportIds,
+} from "./dashboard/report-ids.ts";
 import { MAX_FIELD_CHARS, MAX_LABEL_CHARS, summarizeReport } from "./dashboard/signature.ts";
 import { choose, mutate, rng, seedsIn } from "./test-support/fuzz.ts";
 
@@ -119,7 +136,9 @@ function seedNamed(all: [string, string][], name: string): string {
  * @returns The object, or null.
  */
 function fields(v: unknown): Record<string, unknown> | null {
-  return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  return v !== null && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
 }
 
 /**
@@ -170,33 +189,58 @@ function checkIds(body: string, label: string) {
   const firstLine = (lines[0] ?? "").trim();
   // A regression marker names an issue number: 1 to 9 digits, no leading zero.
   const regression = /^<!-- bookclerk-diagnostics: regression of #(\d+) -->$/.exec(firstLine);
-  const regressionOf = regression?.[1] !== undefined && /^[1-9]\d{0,8}$/.test(regression[1]) ? Number(regression[1]) : null;
+  const regressionOf =
+    regression?.[1] !== undefined && /^[1-9]\d{0,8}$/.test(regression[1])
+      ? Number(regression[1])
+      : null;
   assert.equal(
     got.kind,
-    firstLine === TRIAGE_MARKER ? "triage" : firstLine === FALLBACK_MARKER ? "fallback" : regressionOf !== null ? "regression" : "other",
+    firstLine === TRIAGE_MARKER
+      ? "triage"
+      : firstLine === FALLBACK_MARKER
+        ? "fallback"
+        : regressionOf !== null
+          ? "regression"
+          : "other",
     label,
   );
   assert.equal(got.regressionOf, regressionOf, label);
-  if (regressionOf !== null) assert.ok(got.regressionOf !== null && Number.isSafeInteger(got.regressionOf) && got.regressionOf > 0, label);
+  if (regressionOf !== null)
+    assert.ok(
+      got.regressionOf !== null && Number.isSafeInteger(got.regressionOf) && got.regressionOf > 0,
+      label,
+    );
   const uuidOf = (raw: string): string | null => {
     const id = raw.toLowerCase();
     const fromKey = id.match(/^diagnostics\/[a-z0-9._+-]{1,64}\/(.{36})\.json$/);
-    return UUID.test(id) ? id : fromKey?.[1] !== undefined && UUID.test(fromKey[1]) ? fromKey[1] : null;
+    return UUID.test(id)
+      ? id
+      : fromKey?.[1] !== undefined && UUID.test(fromKey[1])
+        ? fromKey[1]
+        : null;
   };
   const expected: string[] = [];
   const add = (raw: string): void => {
     const uuid = uuidOf(raw);
-    if (uuid && !expected.includes(uuid) && expected.length < MAX_IDS_PER_ISSUE) expected.push(uuid);
+    if (uuid && !expected.includes(uuid) && expected.length < MAX_IDS_PER_ISSUE)
+      expected.push(uuid);
   };
   // The hidden block wins over the legacy heading wherever either sits.
   const trimmed = lines.map((l) => l.replace(/[ \t]+$/, ""));
   const block = trimmed.lastIndexOf("<!-- bookclerk-diagnostics: report ids");
-  const headings = lines.map((l, i) => (/^###\s+Report IDs\s*$/.test(l) ? i : -1)).filter((i) => i >= 0);
+  const headings = lines
+    .map((l, i) => (/^###\s+Report IDs\s*$/.test(l) ? i : -1))
+    .filter((i) => i >= 0);
   const last = headings[headings.length - 1];
   if (block >= 0) {
     const run: string[] = [];
     let end = block + 1;
-    for (let line = trimmed[end]; line !== undefined && /^[A-Za-z0-9._:/+-]{1,160}$/.test(line); line = trimmed[++end]) run.push(line);
+    for (
+      let line = trimmed[end];
+      line !== undefined && /^[A-Za-z0-9._:/+-]{1,160}$/.test(line);
+      line = trimmed[++end]
+    )
+      run.push(line);
     // An unclosed block lists nothing: GitHub would hide the rest of the body.
     if (trimmed[end] === "-->") run.forEach(add);
   } else if (last !== undefined) {
@@ -241,7 +285,10 @@ async function checkSummary(input: unknown, label: string) {
     assert.match(got.signature, /^[0-9a-f]{16}$/, label);
     const sigLabel = got.signatureLabel ?? "";
     assert.ok(sigLabel.length <= MAX_LABEL_CHARS, label);
-    assert.ok(!/\d/.test(sigLabel.split(" · ").slice(1).join(" · ")), `${label}: digits left in the message`);
+    assert.ok(
+      !/\d/.test(sigLabel.split(" · ").slice(1).join(" · ")),
+      `${label}: digits left in the message`,
+    );
   }
   for (const k of ["version", "os", "arch", "distro", "trigger"] as const) {
     assert.equal(typeof got[k], "string", label);
@@ -266,24 +313,83 @@ function checkEventLog(events: unknown, label: string) {
   const out = String(log.rows);
   const expected = Array.isArray(events) ? Math.min(events.length, 500) : 0;
   assert.equal((out.match(/<div class="row /g) ?? []).length, expected, label);
-  assert.equal(Object.values(log.counts).reduce((a, b) => a + b, 0), expected, label);
+  assert.equal(
+    Object.values(log.counts).reduce((a, b) => a + b, 0),
+    expected,
+    label,
+  );
   assert.deepEqual(Object.keys(log.counts), ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"], label);
   assert.ok(!/<script/i.test(out), `${label}: unescaped markup`);
 }
 
 const ID_FRAGMENTS = [
-  "\n", "\r\n", "### Report IDs", "###  Report IDs ", "- `", "* `", "`", "\n- `7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4`",
-  "diagnostics/", ".json", "../", "/", "-", "A", "f", " ", TRIAGE_MARKER, FALLBACK_MARKER, "é", "\0",
-  "<!-- bookclerk-diagnostics: regression of #412 -->", "regression of #", "#0", "#9999999999", "1",
-  " · [dashboard](https://d.test/reports/x)", " · ", "[dashboard]", "(", ")", "\t",
-  "<!-- bookclerk-diagnostics: report ids", "\n<!-- bookclerk-diagnostics: report ids\n", "-->", "\n-->", "--", ">",
-  "\n7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", "\ndiagnostics/0.1.0/7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4.json",
+  "\n",
+  "\r\n",
+  "### Report IDs",
+  "###  Report IDs ",
+  "- `",
+  "* `",
+  "`",
+  "\n- `7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4`",
+  "diagnostics/",
+  ".json",
+  "../",
+  "/",
+  "-",
+  "A",
+  "f",
+  " ",
+  TRIAGE_MARKER,
+  FALLBACK_MARKER,
+  "é",
+  "\0",
+  "<!-- bookclerk-diagnostics: regression of #412 -->",
+  "regression of #",
+  "#0",
+  "#9999999999",
+  "1",
+  " · [dashboard](https://d.test/reports/x)",
+  " · ",
+  "[dashboard]",
+  "(",
+  ")",
+  "\t",
+  "<!-- bookclerk-diagnostics: report ids",
+  "\n<!-- bookclerk-diagnostics: report ids\n",
+  "-->",
+  "\n-->",
+  "--",
+  ">",
+  "\n7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4",
+  "\ndiagnostics/0.1.0/7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4.json",
 ];
 
 const JSON_FRAGMENTS = [
-  "[", "]", "{", "}", ",", ":", '"', "\\", "null", "true", "1e308", '"level":"ERROR"', '"level":"warn"',
-  '"message":"', '"target":"', "0xff", "/tmp/a", "12345678", "C:\\\\x", "😀", "\\u0000",
-  '"fields":[["k",{"toString":null}]]', '"ts_unix_ms":1e20', '"level":"__proto__"', "<script>",
+  "[",
+  "]",
+  "{",
+  "}",
+  ",",
+  ":",
+  '"',
+  "\\",
+  "null",
+  "true",
+  "1e308",
+  '"level":"ERROR"',
+  '"level":"warn"',
+  '"message":"',
+  '"target":"',
+  "0xff",
+  "/tmp/a",
+  "12345678",
+  "C:\\\\x",
+  "😀",
+  "\\u0000",
+  '"fields":[["k",{"toString":null}]]',
+  '"ts_unix_ms":1e20',
+  '"level":"__proto__"',
+  "<script>",
 ];
 
 describe("parseIssueReportIds", () => {
@@ -303,7 +409,10 @@ describe("parseIssueReportIds", () => {
   });
 
   it("caps the IDs read from one issue", () => {
-    const ids = Array.from({ length: 600 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+    const ids = Array.from(
+      { length: 600 },
+      (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+    );
     const body = `### Report IDs\n${ids.map((i) => `- \`${i}\``).join("\n")}`;
     assert.equal(parseIssueReportIds(body).ids.length, MAX_IDS_PER_ISSUE);
     checkIds(body, "cap");
@@ -317,8 +426,16 @@ describe("parseIssueReportIds", () => {
     const b = "5cee862c-0309-4786-8778-6b2b124087e6";
     const body = `${TRIAGE_MARKER}\nText.\n\n### Report IDs\n- \`${a}\`\n\n<!-- bookclerk-diagnostics: report ids\n${b}\n-->\n`;
     assert.deepEqual(parseIssueReportIds(body), { kind: "triage", ids: [b], regressionOf: null });
-    assert.deepEqual(parseIssueReportIds(body.replace("\n-->\n", "\n")).ids, [], "an unclosed block lists nothing");
-    assert.deepEqual(parseIssueReportIds(`<!-- bookclerk-diagnostics: report ids\n${b} · x\n-->`).ids, [], "a stray line ends the block unclosed");
+    assert.deepEqual(
+      parseIssueReportIds(body.replace("\n-->\n", "\n")).ids,
+      [],
+      "an unclosed block lists nothing",
+    );
+    assert.deepEqual(
+      parseIssueReportIds(`<!-- bookclerk-diagnostics: report ids\n${b} · x\n-->`).ids,
+      [],
+      "a stray line ends the block unclosed",
+    );
   });
 });
 
@@ -366,9 +483,10 @@ function isDashboardPage(next: string): boolean {
     return false;
   }
   const pages = new Set(["/dash", "/reports", "/issues"]);
-  const page = pages.has(url.pathname)
-    || (url.pathname.startsWith("/reports/") && UUID.test(url.pathname.slice(9)))
-    || (url.pathname.startsWith("/issues/") && /^[1-9][0-9]{0,8}$/.test(url.pathname.slice(8)));
+  const page =
+    pages.has(url.pathname) ||
+    (url.pathname.startsWith("/reports/") && UUID.test(url.pathname.slice(9))) ||
+    (url.pathname.startsWith("/issues/") && /^[1-9][0-9]{0,8}$/.test(url.pathname.slice(8)));
   return (
     url.origin === ORACLE_ORIGIN &&
     page &&
@@ -404,8 +522,41 @@ function checkNext(input: unknown, label: string) {
 }
 
 const NEXT_FRAGMENTS = [
-  "/", "//", "\\", "..", ".", "?", "&", "=", "%", "%2F", "%2f", "%5C", "%0d%0a", "#", ":", "@", "https:", "javascript:",
-  "dash", "reports", "issues", "auth", "@", "/:", "live", "admin", "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", " ", "\t", "\n", "\0", "é", "'", '"', "<",
+  "/",
+  "//",
+  "\\",
+  "..",
+  ".",
+  "?",
+  "&",
+  "=",
+  "%",
+  "%2F",
+  "%2f",
+  "%5C",
+  "%0d%0a",
+  "#",
+  ":",
+  "@",
+  "https:",
+  "javascript:",
+  "dash",
+  "reports",
+  "issues",
+  "auth",
+  "@",
+  "/:",
+  "live",
+  "admin",
+  "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4",
+  " ",
+  "\t",
+  "\n",
+  "\0",
+  "é",
+  "'",
+  '"',
+  "<",
 ];
 
 describe("safeNext", () => {
@@ -416,7 +567,15 @@ describe("safeNext", () => {
     const byName = (name: string): string => seedNamed(all, name);
     assert.equal(safeNext(byName("report.txt")), byName("report.txt"));
     assert.equal(safeNext(byName("reports_query.txt")), byName("reports_query.txt"));
-    for (const off of ["protocol_relative.txt", "absolute.txt", "backslash.txt", "dot_segments.txt", "javascript.txt", "auth.txt", "live.txt"]) {
+    for (const off of [
+      "protocol_relative.txt",
+      "absolute.txt",
+      "backslash.txt",
+      "dot_segments.txt",
+      "javascript.txt",
+      "auth.txt",
+      "live.txt",
+    ]) {
       assert.equal(safeNext(byName(off)), null, off);
     }
     assert.equal(safeNext(byName("quote_query.txt")), "/dash", "an unsafe query is dropped");
@@ -456,18 +615,30 @@ function checkCallback(input: CallbackInput, label: string) {
   const token = /^[A-Za-z0-9_-]{43}$/;
   const cm = /^([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})(?:\.([^.]*))?$/.exec(value);
   const accept =
-    cm !== null && token.test(state) && cm[1] === state && /^[A-Za-z0-9_-]+$/.test(code) && code.length <= MAX_CODE_CHARS;
+    cm !== null &&
+    token.test(state) &&
+    cm[1] === state &&
+    /^[A-Za-z0-9_-]+$/.test(code) &&
+    code.length <= MAX_CODE_CHARS;
   assert.equal(got !== null, accept, label);
   if (got && cm) {
     assert.equal(got.code, code, label);
     assert.equal(got.verifier, cm[2], label);
-    assert.ok(got.next === DEFAULT_NEXT || isDashboardPage(got.next), `${label}: next ${JSON.stringify(got.next)}`);
+    assert.ok(
+      got.next === DEFAULT_NEXT || isDashboardPage(got.next),
+      `${label}: next ${JSON.stringify(got.next)}`,
+    );
     const tail = cm[3];
     // Only canonical base64url decodes to one answer; Buffer is lenient
     // where atob is not, so compare on those only.
-    if (tail && /^[A-Za-z0-9_-]+$/.test(tail) && Buffer.from(tail, "base64url").toString("base64url") === tail) {
+    if (
+      tail &&
+      /^[A-Za-z0-9_-]+$/.test(tail) &&
+      Buffer.from(tail, "base64url").toString("base64url") === tail
+    ) {
       const decoded = Buffer.from(tail, "base64url").toString("latin1");
-      if (decoded.length <= MAX_NEXT_CHARS && isDashboardPage(decoded)) assert.equal(got.next, decoded, label);
+      if (decoded.length <= MAX_NEXT_CHARS && isDashboardPage(decoded))
+        assert.equal(got.next, decoded, label);
     } else if (tail === undefined) {
       assert.equal(got.next, DEFAULT_NEXT, label);
     }
@@ -475,8 +646,29 @@ function checkCallback(input: CallbackInput, label: string) {
 }
 
 const CALLBACK_FRAGMENTS = [
-  "&", "=", "?", "%", "%41", "+", ";", " ", ".", "state=", "code=", `${OAUTH_COOKIE}=`, "__Host-bc_session=",
-  "A", "_", "-", "/", "é", "\0", "\n", "Ly9ldmlsLmV4YW1wbGU", "L2Rhc2g", "L2lzc3Vlcw",
+  "&",
+  "=",
+  "?",
+  "%",
+  "%41",
+  "+",
+  ";",
+  " ",
+  ".",
+  "state=",
+  "code=",
+  `${OAUTH_COOKIE}=`,
+  "__Host-bc_session=",
+  "A",
+  "_",
+  "-",
+  "/",
+  "é",
+  "\0",
+  "\n",
+  "Ly9ldmlsLmV4YW1wbGU",
+  "L2Rhc2g",
+  "L2lzc3Vlcw",
 ];
 
 describe("parseCallback", () => {
@@ -493,9 +685,10 @@ describe("parseCallback", () => {
     const rand = rng(20261026);
     for (let n = 0; n < 4000; n++) {
       const base = choose(rand, all);
-      const input = rand() < 0.5
-        ? { search: mutate(rand, base.search, CALLBACK_FRAGMENTS), cookie: base.cookie }
-        : { search: base.search, cookie: mutate(rand, base.cookie, CALLBACK_FRAGMENTS) };
+      const input =
+        rand() < 0.5
+          ? { search: mutate(rand, base.search, CALLBACK_FRAGMENTS), cookie: base.cookie }
+          : { search: base.search, cookie: mutate(rand, base.cookie, CALLBACK_FRAGMENTS) };
       checkCallback(input, `iteration ${n}: ${JSON.stringify(input).slice(0, 300)}`);
     }
   });
@@ -537,8 +730,29 @@ function checkSession(input: SessionInput, label: string) {
 }
 
 const SESSION_FRAGMENTS = [
-  ";", "=", " ", "__Host-bc_session=", "__Host-bc_oauth=", "A", "-", "_", ".", "%", "\n", "\"", "0", "-1",
-  '"admin"', '"member"', "null", "1e400", "{}", "[]", '"expires_at":', '"role":', "é",
+  ";",
+  "=",
+  " ",
+  "__Host-bc_session=",
+  "__Host-bc_oauth=",
+  "A",
+  "-",
+  "_",
+  ".",
+  "%",
+  "\n",
+  '"',
+  "0",
+  "-1",
+  '"admin"',
+  '"member"',
+  "null",
+  "1e400",
+  "{}",
+  "[]",
+  '"expires_at":',
+  '"role":',
+  "é",
 ];
 
 describe("session decision", () => {
@@ -603,7 +817,12 @@ function checkMembership(input: MembershipInput, label: string) {
   const id = isObj(user) ? user.id : undefined;
   let expected: "admin" | "member" | null;
   if (status === 404) {
-    expected = typeof login === "string" && typeof owner === "string" && login.toLowerCase() === owner.toLowerCase() ? "admin" : null;
+    expected =
+      typeof login === "string" &&
+      typeof owner === "string" &&
+      login.toLowerCase() === owner.toLowerCase()
+        ? "admin"
+        : null;
   } else if (typeof status !== "number" || status < 200 || status > 299) {
     assert.throws(() => membershipDecision(status, body, asUser(user), owner), label);
     return;
@@ -629,8 +848,32 @@ function checkMembership(input: MembershipInput, label: string) {
 }
 
 const MEMBERSHIP_FRAGMENTS = [
-  '"active"', '"pending"', '"admin"', '"member"', '"state":', '"role":', '"user":', '"id":', "7", "8", "-7", "0", "1e400",
-  "null", "{}", "[]", ",", ":", '"', "{", "}", "Bookclerk", "octo", "OCTO", "é", " ",
+  '"active"',
+  '"pending"',
+  '"admin"',
+  '"member"',
+  '"state":',
+  '"role":',
+  '"user":',
+  '"id":',
+  "7",
+  "8",
+  "-7",
+  "0",
+  "1e400",
+  "null",
+  "{}",
+  "[]",
+  ",",
+  ":",
+  '"',
+  "{",
+  "}",
+  "Bookclerk",
+  "octo",
+  "OCTO",
+  "é",
+  " ",
 ];
 
 describe("membership decision", () => {
@@ -639,7 +882,10 @@ describe("membership decision", () => {
     assert.ok(all.length > 0);
     for (const [name, raw] of all) checkMembership(parseSeed<MembershipInput>(raw), name);
     const admin = parseSeed<MembershipInput>(seedNamed(all, "active_admin.json"));
-    assert.equal(membershipDecision(admin.status, admin.body, asUser(admin.user), admin.owner), "admin");
+    assert.equal(
+      membershipDecision(admin.status, admin.body, asUser(admin.user), admin.owner),
+      "admin",
+    );
   });
 
   it("holds the oracle under seeded mutation", () => {
@@ -693,22 +939,44 @@ function checkPullRequests(input: PullRequestsInput, label: string) {
     return;
   }
   const got = decodePullRequests(data, numbers, repository);
-  const states = new Map([["OPEN", "open"], ["CLOSED", "closed"], ["MERGED", "merged"]]);
+  const states = new Map([
+    ["OPEN", "open"],
+    ["CLOSED", "closed"],
+    ["MERGED", "merged"],
+  ]);
   const expected = new Map<number, { labeled: boolean; prs: unknown[] }>();
   numbers.forEach((n, i) => {
     const issue = repo["i" + i];
     if (!isObj(issue)) return;
     const prs = new Map<number, unknown>();
     const consider = (pr: unknown): void => {
-      if (!isObj(pr) || typeof pr.number !== "number" || !Number.isInteger(pr.number) || pr.number < 1 || pr.number > Number.MAX_SAFE_INTEGER) return;
+      if (
+        !isObj(pr) ||
+        typeof pr.number !== "number" ||
+        !Number.isInteger(pr.number) ||
+        pr.number < 1 ||
+        pr.number > Number.MAX_SAFE_INTEGER
+      )
+        return;
       const where = isObj(pr.repository) ? str(pr.repository.nameWithOwner) : "";
       if (where.toLowerCase() !== repository.toLowerCase()) return;
       const state = typeof pr.state === "string" ? states.get(pr.state) : undefined;
       if (state === undefined) return;
       const t = Date.parse(str(pr.mergedAt));
       const oid = isObj(pr.mergeCommit) ? str(pr.mergeCommit.oid) : "";
-      const sha = pr.state === "MERGED" && oid.length === 40 && [...oid].every((c) => "0123456789abcdef".includes(c)) ? oid : null;
-      prs.set(pr.number, { number: pr.number, title: str(pr.title).slice(0, 300), state, mergedAt: Number.isNaN(t) ? null : t, mergeSha: sha });
+      const sha =
+        pr.state === "MERGED" &&
+        oid.length === 40 &&
+        [...oid].every((c) => "0123456789abcdef".includes(c))
+          ? oid
+          : null;
+      prs.set(pr.number, {
+        number: pr.number,
+        title: str(pr.title).slice(0, 300),
+        state,
+        mergedAt: Number.isNaN(t) ? null : t,
+        mergeSha: sha,
+      });
     };
     const nodes = (v: unknown): unknown[] => (isObj(v) && Array.isArray(v.nodes) ? v.nodes : []);
     for (const pr of nodes(issue.closedByPullRequestsReferences)) consider(pr);
@@ -717,20 +985,60 @@ function checkPullRequests(input: PullRequestsInput, label: string) {
       consider(ev.source !== undefined && ev.source !== null ? ev.source : ev.subject);
     }
     const labelList = issue.labels;
-    const labels: unknown[] | null = isObj(labelList) && Array.isArray(labelList.nodes) ? labelList.nodes : null;
-    const complete = labels !== null && isObj(labelList) && isObj(labelList.pageInfo) && labelList.pageInfo.hasNextPage === false;
-    const labeled = !complete || labels.some((l) => isObj(l) && str(l.name).toLowerCase() === DIAGNOSTICS_LABEL);
+    const labels: unknown[] | null =
+      isObj(labelList) && Array.isArray(labelList.nodes) ? labelList.nodes : null;
+    const complete =
+      labels !== null &&
+      isObj(labelList) &&
+      isObj(labelList.pageInfo) &&
+      labelList.pageInfo.hasNextPage === false;
+    const labeled =
+      !complete || labels.some((l) => isObj(l) && str(l.name).toLowerCase() === DIAGNOSTICS_LABEL);
     expected.set(n, { labeled, prs: [...prs.values()] });
   });
   assert.deepEqual(got, expected, label);
 }
 
 const PR_FRAGMENTS = [
-  '"OPEN"', '"CLOSED"', '"MERGED"', '"__proto__"', '"diagnostics"', '"DIAGNOSTICS"', '"Bookclerk/bookclerk"', '"other/repo"',
-  '"number":', '"state":', '"nodes":', '"errors":', '"repository":', '"mergedAt":', '"2026-10-20T00:00:00Z"', '"toString"',
-  '"mergeCommit":', '"oid":', '"' + "a".repeat(40) + '"', '"' + "A".repeat(40) + '"', '"abc"',
-  "null", "{}", "[]", "0", "-1", "1e400", "9007199254740993", '"5"', ",", ":", "{", "}", "[", "]", '"',
-  '"hasNextPage":', "true", "false",
+  '"OPEN"',
+  '"CLOSED"',
+  '"MERGED"',
+  '"__proto__"',
+  '"diagnostics"',
+  '"DIAGNOSTICS"',
+  '"Bookclerk/bookclerk"',
+  '"other/repo"',
+  '"number":',
+  '"state":',
+  '"nodes":',
+  '"errors":',
+  '"repository":',
+  '"mergedAt":',
+  '"2026-10-20T00:00:00Z"',
+  '"toString"',
+  '"mergeCommit":',
+  '"oid":',
+  '"' + "a".repeat(40) + '"',
+  '"' + "A".repeat(40) + '"',
+  '"abc"',
+  "null",
+  "{}",
+  "[]",
+  "0",
+  "-1",
+  "1e400",
+  "9007199254740993",
+  '"5"',
+  ",",
+  ":",
+  "{",
+  "}",
+  "[",
+  "]",
+  '"',
+  '"hasNextPage":',
+  "true",
+  "false",
 ];
 
 describe("pull request decoding", () => {
@@ -740,7 +1048,10 @@ describe("pull request decoding", () => {
     for (const [name, raw] of all) checkPullRequests(parseSeed<PullRequestsInput>(raw), name);
     const normal = parseSeed<PullRequestsInput>(seedNamed(all, "normal.json"));
     const got = decodePullRequests(normal.data, normal.numbers, normal.repository);
-    assert.deepEqual(got.get(5)?.prs.map((p) => p.number), [10, 11, 12]);
+    assert.deepEqual(
+      got.get(5)?.prs.map((p) => p.number),
+      [10, 11, 12],
+    );
     assert.equal(got.get(6)?.labeled, false);
   });
 
@@ -774,18 +1085,55 @@ function checkListPage(data: unknown, label: string) {
   const files: unknown[] = [];
   if (isObj(data) && Array.isArray(data.files)) {
     for (const f of data.files) {
-      if (!isObj(f) || f.action !== "upload" || typeof f.fileName !== "string" || typeof f.fileId !== "string") continue;
+      if (
+        !isObj(f) ||
+        f.action !== "upload" ||
+        typeof f.fileName !== "string" ||
+        typeof f.fileId !== "string"
+      )
+        continue;
       const t = f.uploadTimestamp;
-      files.push({ fileName: f.fileName, fileId: f.fileId, uploadTimestamp: typeof t === "number" && t - t === 0 ? t : 0 });
+      files.push({
+        fileName: f.fileName,
+        fileId: f.fileId,
+        uploadTimestamp: typeof t === "number" && t - t === 0 ? t : 0,
+      });
     }
   }
-  const next = isObj(data) && typeof data.nextFileName === "string" && data.nextFileName.length > 0 ? data.nextFileName : null;
+  const next =
+    isObj(data) && typeof data.nextFileName === "string" && data.nextFileName.length > 0
+      ? data.nextFileName
+      : null;
   assert.deepEqual(got, { files, nextFileName: next }, label);
 }
 
 const LIST_FRAGMENTS = [
-  '"upload"', '"hide"', '"folder"', '"start"', '"fileName":', '"fileId":', '"action":', '"uploadTimestamp":', '"nextFileName":',
-  '"files":', '"diagnostics/0.9.0/x.json"', '""', "1e400", "-1", "0", "null", "{}", "[]", ",", ":", "{", "}", "[", "]", '"', "é",
+  '"upload"',
+  '"hide"',
+  '"folder"',
+  '"start"',
+  '"fileName":',
+  '"fileId":',
+  '"action":',
+  '"uploadTimestamp":',
+  '"nextFileName":',
+  '"files":',
+  '"diagnostics/0.9.0/x.json"',
+  '""',
+  "1e400",
+  "-1",
+  "0",
+  "null",
+  "{}",
+  "[]",
+  ",",
+  ":",
+  "{",
+  "}",
+  "[",
+  "]",
+  '"',
+  "é",
 ];
 
 describe("B2 listing decoding", () => {
@@ -834,7 +1182,13 @@ function checkIssuePage(data: unknown, label: string) {
     const t = new Date(str(i.updated_at)).getTime();
     if (!Number.isNaN(t) && (newest === null || t > newest)) newest = t;
     if (i.pull_request != null) continue;
-    if (typeof i.number !== "number" || !Number.isInteger(i.number) || i.number < 1 || i.number > Number.MAX_SAFE_INTEGER) continue;
+    if (
+      typeof i.number !== "number" ||
+      !Number.isInteger(i.number) ||
+      i.number < 1 ||
+      i.number > Number.MAX_SAFE_INTEGER
+    )
+      continue;
     issues.push({
       number: i.number,
       title: str(i.title),
@@ -846,7 +1200,15 @@ function checkIssuePage(data: unknown, label: string) {
       fixed_in_label: expectedFixedIn(i.labels),
     });
   }
-  assert.deepEqual(got, { issues, full: list.length >= 100, newest: newest === null ? "" : new Date(newest).toISOString() }, label);
+  assert.deepEqual(
+    got,
+    {
+      issues,
+      full: list.length >= 100,
+      newest: newest === null ? "" : new Date(newest).toISOString(),
+    },
+    label,
+  );
 }
 
 /**
@@ -861,8 +1223,10 @@ function checkIssuePage(data: unknown, label: string) {
  */
 function expectedFixedIn(labels: unknown): string | null {
   if (!Array.isArray(labels)) return null;
-  const ident = (t: string): boolean => t.length >= 1 && t.length <= 64 && [...t].every((c) => /[0-9A-Za-z.-]/.test(c));
-  const num = (t: string): boolean => t.length >= 1 && t.length <= 6 && [...t].every((c) => c >= "0" && c <= "9");
+  const ident = (t: string): boolean =>
+    t.length >= 1 && t.length <= 64 && [...t].every((c) => /[0-9A-Za-z.-]/.test(c));
+  const num = (t: string): boolean =>
+    t.length >= 1 && t.length <= 6 && [...t].every((c) => c >= "0" && c <= "9");
   for (const l of labels) {
     const name = typeof l === "string" ? l : isObj(l) ? str(l.name) : "";
     if (name.length > 100 || !name.startsWith("fixed-in:")) continue;
@@ -875,7 +1239,11 @@ function expectedFixedIn(labels: unknown): string | null {
     const pre = dash >= 0 ? beforeBuild.slice(dash + 1) : null;
     const core = dash >= 0 ? beforeBuild.slice(0, dash) : beforeBuild;
     const parts = core.split(".");
-    const ok = parts.length === 3 && parts.every(num) && (pre === null || ident(pre)) && (build === null || ident(build));
+    const ok =
+      parts.length === 3 &&
+      parts.every(num) &&
+      (pre === null || ident(pre)) &&
+      (build === null || ident(build));
     if (ok) return v;
   }
   return null;
@@ -899,13 +1267,21 @@ function checkReleases(data: unknown, label: string) {
   for (const r of list) {
     if (!isObj(r) || r.draft === true) continue;
     const tag = typeof r.tag_name === "string" ? r.tag_name : "";
-    if (tag.length < 1 || tag.length > 100 || ![...tag].every((c) => /[A-Za-z0-9._-]/.test(c)) || seen.has(tag)) continue;
+    if (
+      tag.length < 1 ||
+      tag.length > 100 ||
+      ![...tag].every((c) => /[A-Za-z0-9._-]/.test(c)) ||
+      seen.has(tag)
+    )
+      continue;
     const t = typeof r.published_at === "string" ? new Date(r.published_at).getTime() : NaN;
     if (Number.isNaN(t)) continue;
     seen.add(tag);
     expected.push({ tag, publishedAt: t, prerelease: r.prerelease === true });
   }
-  expected.sort((a, b) => a.publishedAt - b.publishedAt || (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
+  expected.sort(
+    (a, b) => a.publishedAt - b.publishedAt || (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0),
+  );
   assert.deepEqual(got, expected, label);
 }
 
@@ -918,19 +1294,73 @@ function checkReleases(data: unknown, label: string) {
  */
 function checkCompare(data: unknown, label: string) {
   const status = isObj(data) ? str(data.status) : "";
-  const answers: Record<string, boolean> = { identical: true, behind: true, ahead: false, diverged: false };
+  const answers: Record<string, boolean> = {
+    identical: true,
+    behind: true,
+    ahead: false,
+    diverged: false,
+  };
   const expected = Object.hasOwn(answers, status) ? answers[status] : undefined;
   assert.equal(decodeCompare(data), expected === undefined ? null : expected, label);
 }
 
 const RELEASE_FRAGMENTS = [
-  '"tag_name":', '"published_at":', '"draft":', '"prerelease":', '"status":', '"behind"', '"ahead"', '"identical"', '"diverged"',
-  '"v0.4.0"', '"0.4.0-rc.1"', '"release/x"', '"2026-10-21T00:00:00Z"', '"zzz"', "true", "false", "null", "{}", "[]", "0", ",", ":", "{", "}", "[", "]", '"', "é",
+  '"tag_name":',
+  '"published_at":',
+  '"draft":',
+  '"prerelease":',
+  '"status":',
+  '"behind"',
+  '"ahead"',
+  '"identical"',
+  '"diverged"',
+  '"v0.4.0"',
+  '"0.4.0-rc.1"',
+  '"release/x"',
+  '"2026-10-21T00:00:00Z"',
+  '"zzz"',
+  "true",
+  "false",
+  "null",
+  "{}",
+  "[]",
+  "0",
+  ",",
+  ":",
+  "{",
+  "}",
+  "[",
+  "]",
+  '"',
+  "é",
 ];
 
 const LABEL_FRAGMENTS = [
-  '"fixed-in:', '"fixed-in:v0.4.2"', '"fixed-in:0.4.2-rc.1+build.7"', '"fixed-in:1.2"', '"fixed-in:v"', '"diagnostics"', '"name":', '"labels":',
-  "0", "1234567", ".", "-", "+", "v", "é", "null", "{}", "[]", ",", ":", "{", "}", "[", "]", '"',
+  '"fixed-in:',
+  '"fixed-in:v0.4.2"',
+  '"fixed-in:0.4.2-rc.1+build.7"',
+  '"fixed-in:1.2"',
+  '"fixed-in:v"',
+  '"diagnostics"',
+  '"name":',
+  '"labels":',
+  "0",
+  "1234567",
+  ".",
+  "-",
+  "+",
+  "v",
+  "é",
+  "null",
+  "{}",
+  "[]",
+  ",",
+  ":",
+  "{",
+  "}",
+  "[",
+  "]",
+  '"',
 ];
 
 /**
@@ -939,10 +1369,11 @@ const LABEL_FRAGMENTS = [
  * @param input - Decoder and body.
  * @param label - Input name for failure messages.
  */
-function checkAuthResponse(input: { kind: string; data: unknown; }, label: string) {
+function checkAuthResponse(input: { kind: string; data: unknown }, label: string) {
   const d = input.data;
   const o: Record<string, unknown> = isObj(d) ? d : {};
-  const posInt = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v > 0 && v <= Number.MAX_SAFE_INTEGER;
+  const posInt = (v: unknown): v is number =>
+    typeof v === "number" && Number.isInteger(v) && v > 0 && v <= Number.MAX_SAFE_INTEGER;
   switch (input.kind) {
     case "installation":
       assert.equal(decodeInstallationId(d), posInt(o.id) ? o.id : null, label);
@@ -950,19 +1381,37 @@ function checkAuthResponse(input: { kind: string; data: unknown; }, label: strin
     case "token": {
       const t = typeof o.expires_at === "string" ? new Date(o.expires_at).getTime() : NaN;
       const ok = typeof o.token === "string" && o.token.length > 0 && !Number.isNaN(t);
-      assert.deepEqual(decodeInstallationToken(d), ok ? { token: o.token, expiresAt: t } : null, label);
+      assert.deepEqual(
+        decodeInstallationToken(d),
+        ok ? { token: o.token, expiresAt: t } : null,
+        label,
+      );
       break;
     }
     case "access":
-      assert.equal(decodeAccessToken(d), typeof o.access_token === "string" && o.access_token.length > 0 ? o.access_token : null, label);
+      assert.equal(
+        decodeAccessToken(d),
+        typeof o.access_token === "string" && o.access_token.length > 0 ? o.access_token : null,
+        label,
+      );
       assert.equal(
         oauthErrorCode(d),
-        typeof o.error === "string" && o.error.length >= 1 && o.error.length <= 40 && [...o.error].every((c) => c === "_" || (c >= "a" && c <= "z")) ? o.error : null,
+        typeof o.error === "string" &&
+          o.error.length >= 1 &&
+          o.error.length <= 40 &&
+          [...o.error].every((c) => c === "_" || (c >= "a" && c <= "z"))
+          ? o.error
+          : null,
         label,
       );
       break;
     case "user": {
-      const ok = posInt(o.id) && typeof o.login === "string" && o.login.length >= 1 && o.login.length <= 39 && [...o.login].every((c) => /[A-Za-z0-9-]/.test(c));
+      const ok =
+        posInt(o.id) &&
+        typeof o.login === "string" &&
+        o.login.length >= 1 &&
+        o.login.length <= 39 &&
+        [...o.login].every((c) => /[A-Za-z0-9-]/.test(c));
       assert.deepEqual(decodeUser(d), ok ? { id: o.id, login: o.login } : null, label);
       break;
     }
@@ -972,10 +1421,45 @@ function checkAuthResponse(input: { kind: string; data: unknown; }, label: strin
 }
 
 const REST_FRAGMENTS = [
-  '"number":', '"state":', '"closed"', '"open"', '"pull_request":', '"updated_at":', '"2026-10-21T00:00:00Z"', '"9999-99-99"', '"zzz"',
-  '"title":', '"body":', '"id":', '"login":', '"token":', '"expires_at":', '"access_token":', '"octo"', '"a b"', '""',
-  '"labels":', '"name":', '"fixed-in:v0.4.2"', '"fixed-in:0.4"',
-  "null", "{}", "[]", "0", "-1", "7.5", "1e400", "9007199254740993", ",", ":", "{", "}", "[", "]", '"', "é",
+  '"number":',
+  '"state":',
+  '"closed"',
+  '"open"',
+  '"pull_request":',
+  '"updated_at":',
+  '"2026-10-21T00:00:00Z"',
+  '"9999-99-99"',
+  '"zzz"',
+  '"title":',
+  '"body":',
+  '"id":',
+  '"login":',
+  '"token":',
+  '"expires_at":',
+  '"access_token":',
+  '"octo"',
+  '"a b"',
+  '""',
+  '"labels":',
+  '"name":',
+  '"fixed-in:v0.4.2"',
+  '"fixed-in:0.4"',
+  "null",
+  "{}",
+  "[]",
+  "0",
+  "-1",
+  "7.5",
+  "1e400",
+  "9007199254740993",
+  ",",
+  ":",
+  "{",
+  "}",
+  "[",
+  "]",
+  '"',
+  "é",
 ];
 
 /**
@@ -1004,13 +1488,22 @@ describe("GitHub REST decoding", () => {
     const auth = seeds("github_auth");
     assert.ok(auth.length > 0);
     for (const [name, raw] of auth) checkAuthResponse(JSON.parse(raw), name);
-    assert.deepEqual(decodeUser(JSON.parse(seedNamed(auth, "user.json")).data), { id: 7, login: "octo" });
+    assert.deepEqual(decodeUser(JSON.parse(seedNamed(auth, "user.json")).data), {
+      id: 7,
+      login: "octo",
+    });
     const labeled = decodeIssuePage(JSON.parse(seedNamed(pages, "labels.json"))).issues;
-    assert.deepEqual(labeled.map((i) => i.fixed_in_label), ["0.4.2", "0.4.2-rc.1+build.7", null, null]);
+    assert.deepEqual(
+      labeled.map((i) => i.fixed_in_label),
+      ["0.4.2", "0.4.2-rc.1+build.7", null, null],
+    );
     const releases = seeds("releases");
     assert.ok(releases.length > 0);
     for (const [name, raw] of releases) checkReleases(JSON.parse(raw), name);
-    assert.deepEqual(decodeReleases(JSON.parse(seedNamed(releases, "normal.json"))).map((r) => r.tag), ["v0.3.2", "v0.4.0-rc.1", "v0.4.0"]);
+    assert.deepEqual(
+      decodeReleases(JSON.parse(seedNamed(releases, "normal.json"))).map((r) => r.tag),
+      ["v0.3.2", "v0.4.0-rc.1", "v0.4.0"],
+    );
     const compares = seeds("compare");
     assert.ok(compares.length > 0);
     for (const [name, raw] of compares) checkCompare(JSON.parse(raw), name);
@@ -1020,7 +1513,13 @@ describe("GitHub REST decoding", () => {
   it("holds the release, compare and label oracles under seeded mutation", () => {
     const releases = seeds("releases").map(([, raw]) => JSON.parse(raw));
     const compares = seeds("compare").map(([, raw]) => JSON.parse(raw));
-    const labels = [["diagnostics", "fixed-in:v0.4.2"], [{ name: "fixed-in:0.4.2-rc.1+build.7" }, { name: "bug" }], [{ name: "fixed-in:1.2" }], ["fixed-in:v1.2.3.4"], [{ name: `fixed-in:1.0.0-${"a".repeat(64)}` }]];
+    const labels = [
+      ["diagnostics", "fixed-in:v0.4.2"],
+      [{ name: "fixed-in:0.4.2-rc.1+build.7" }, { name: "bug" }],
+      [{ name: "fixed-in:1.2" }],
+      ["fixed-in:v1.2.3.4"],
+      [{ name: `fixed-in:1.0.0-${"a".repeat(64)}` }],
+    ];
     const rand = rng(20261101);
     for (let n = 0; n < 3000; n++) {
       const pick = rand();
@@ -1050,7 +1549,11 @@ describe("GitHub REST decoding", () => {
         } catch {
           data = text;
         }
-        assert.equal(fixedInLabel(data), expectedFixedIn(data), `labels ${n}: ${text.slice(0, 300)}`);
+        assert.equal(
+          fixedInLabel(data),
+          expectedFixedIn(data),
+          `labels ${n}: ${text.slice(0, 300)}`,
+        );
       }
     }
   });
@@ -1090,7 +1593,8 @@ function checkIssueNotify(text: string, label: string) {
     }
     if (ok && v !== null && typeof v === "object" && !Array.isArray(v)) {
       const n = v.issue;
-      if (typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 1_000_000_000) expected = n;
+      if (typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 1_000_000_000)
+        expected = n;
     }
   }
   assert.equal(parseIssueNotify(text), expected, label);
@@ -1116,8 +1620,12 @@ function checkSummaryDone(text: string, label: string) {
     if (ok && v !== null && typeof v === "object" && !Array.isArray(v)) {
       const n = v.issue;
       const fp = v.fingerprint;
-      const hex = typeof fp === "string" && fp.length === 64 && [...fp].every((c) => "0123456789abcdef".includes(c));
-      if (typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 1_000_000_000 && hex) expected = { issue: n, fingerprint: fp };
+      const hex =
+        typeof fp === "string" &&
+        fp.length === 64 &&
+        [...fp].every((c) => "0123456789abcdef".includes(c));
+      if (typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 1_000_000_000 && hex)
+        expected = { issue: n, fingerprint: fp };
     }
   }
   assert.deepEqual(parseSummaryDone(text), expected, label);
@@ -1149,21 +1657,47 @@ function checkAttachRequest(text: string, label: string) {
     const ids = new Set<string>();
     let valid = true;
     for (const entry of v.links) {
-      if (!isObj(entry) || typeof entry.issue !== "number" || !Number.isInteger(entry.issue) || entry.issue < 1 || entry.issue > 1_000_000_000 || issues.has(entry.issue)) { valid = false; break; }
-      if (!Array.isArray(entry.report_ids) || entry.report_ids.length === 0) { valid = false; break; }
+      if (
+        !isObj(entry) ||
+        typeof entry.issue !== "number" ||
+        !Number.isInteger(entry.issue) ||
+        entry.issue < 1 ||
+        entry.issue > 1_000_000_000 ||
+        issues.has(entry.issue)
+      ) {
+        valid = false;
+        break;
+      }
+      if (!Array.isArray(entry.report_ids) || entry.report_ids.length === 0) {
+        valid = false;
+        break;
+      }
       issues.add(entry.issue);
       const mine: string[] = [];
       for (const raw of entry.report_ids) {
-        if (typeof raw !== "string" || raw.length > 160) { valid = false; break; }
+        if (typeof raw !== "string" || raw.length > 160) {
+          valid = false;
+          break;
+        }
         const lower = raw.toLowerCase();
         const m = /^diagnostics\/[a-z0-9._+-]{1,64}\/([0-9a-f-]{36})\.json$/.exec(lower);
-        const id = UUID.test(lower) ? lower : m !== null && UUID.test(m[1] ?? "") ? m[1] ?? "" : null;
-        if (id === null) { valid = false; break; }
+        const id = UUID.test(lower)
+          ? lower
+          : m !== null && UUID.test(m[1] ?? "")
+            ? (m[1] ?? "")
+            : null;
+        if (id === null) {
+          valid = false;
+          break;
+        }
         if (ids.has(id)) continue;
         ids.add(id);
         mine.push(id);
       }
-      if (!valid || ids.size > MAX_ATTACH_IDS) { valid = false; break; }
+      if (!valid || ids.size > MAX_ATTACH_IDS) {
+        valid = false;
+        break;
+      }
       if (mine.length) links.push({ issue: entry.issue, reportIds: mine });
     }
     if (valid) expected = links;
@@ -1186,8 +1720,14 @@ function checkAttachRequest(text: string, label: string) {
  */
 function checkIssue(data: unknown, label: string) {
   const got = decodeIssue(data);
-  const valid = isObj(data) && !Array.isArray(data) && data.pull_request == null
-    && typeof data.number === "number" && Number.isInteger(data.number) && data.number >= 1 && data.number <= Number.MAX_SAFE_INTEGER;
+  const valid =
+    isObj(data) &&
+    !Array.isArray(data) &&
+    data.pull_request == null &&
+    typeof data.number === "number" &&
+    Number.isInteger(data.number) &&
+    data.number >= 1 &&
+    data.number <= Number.MAX_SAFE_INTEGER;
   if (!valid) {
     assert.equal(got, null, label);
     return;
@@ -1218,10 +1758,33 @@ describe("issue notice decoding", () => {
     const attach = seeds("triage_attach");
     assert.ok(attach.length > 0);
     for (const [name, raw] of attach) checkAttachRequest(raw, name);
-    assert.deepEqual(parseAttachRequest(seedNamed(attach, "normal.json"))?.map((l) => [l.issue, l.reportIds.length]), [[412, 2], [408, 1]]);
-    assert.deepEqual(parseAttachRequest(seedNamed(attach, "object_name.json")), [{ issue: 412, reportIds: ["7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4"] }]);
-    assert.deepEqual(parseAttachRequest(seedNamed(attach, "duplicate_id.json"))?.map((l) => l.issue), [412], "the first issue naming a report keeps it");
-    for (const name of ["duplicate_issue.json", "no_ids.json", "bad_id.json", "zero.json", "string_number.json", "array.json", "not_json.txt"]) {
+    assert.deepEqual(
+      parseAttachRequest(seedNamed(attach, "normal.json"))?.map((l) => [
+        l.issue,
+        l.reportIds.length,
+      ]),
+      [
+        [412, 2],
+        [408, 1],
+      ],
+    );
+    assert.deepEqual(parseAttachRequest(seedNamed(attach, "object_name.json")), [
+      { issue: 412, reportIds: ["7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4"] },
+    ]);
+    assert.deepEqual(
+      parseAttachRequest(seedNamed(attach, "duplicate_id.json"))?.map((l) => l.issue),
+      [412],
+      "the first issue naming a report keeps it",
+    );
+    for (const name of [
+      "duplicate_issue.json",
+      "no_ids.json",
+      "bad_id.json",
+      "zero.json",
+      "string_number.json",
+      "array.json",
+      "not_json.txt",
+    ]) {
       assert.equal(parseAttachRequest(seedNamed(attach, name)), null, name);
     }
     assert.equal(parseAttachRequest(seedNamed(attach, "exponent.json"))?.[0]?.issue, 1_000_000_000);
@@ -1240,13 +1803,57 @@ describe("issue notice decoding", () => {
     for (let n = 0; n < 4000; n++) {
       const pick = rand();
       if (pick < 0.25) {
-        const text = mutate(rand, choose(rand, notices), ['"issue"', "1e9", "-1", "null", "{}", "[]", "9007199254740993", '"', ":"]);
+        const text = mutate(rand, choose(rand, notices), [
+          '"issue"',
+          "1e9",
+          "-1",
+          "null",
+          "{}",
+          "[]",
+          "9007199254740993",
+          '"',
+          ":",
+        ]);
         checkIssueNotify(text, `notice ${n}: ${text.slice(0, 200)}`);
       } else if (pick < 0.5) {
-        const text = mutate(rand, choose(rand, attach), ['"links"', '"issue"', '"report_ids"', "1e9", "-1", "0", "null", "{}", "[]", '"', ":", ",", "diagnostics/", ".json", "/", "A", "-", "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", "\u0000"]);
+        const text = mutate(rand, choose(rand, attach), [
+          '"links"',
+          '"issue"',
+          '"report_ids"',
+          "1e9",
+          "-1",
+          "0",
+          "null",
+          "{}",
+          "[]",
+          '"',
+          ":",
+          ",",
+          "diagnostics/",
+          ".json",
+          "/",
+          "A",
+          "-",
+          "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4",
+          "\u0000",
+        ]);
         checkAttachRequest(text, `attach ${n}: ${text.slice(0, 200)}`);
       } else if (pick < 0.7) {
-        const text = mutate(rand, choose(rand, done), ['"issue"', '"fingerprint"', "1e9", "-1", "null", "{}", "[]", '"', ":", "A", "g", "0", "\u0000"]);
+        const text = mutate(rand, choose(rand, done), [
+          '"issue"',
+          '"fingerprint"',
+          "1e9",
+          "-1",
+          "null",
+          "{}",
+          "[]",
+          '"',
+          ":",
+          "A",
+          "g",
+          "0",
+          "\u0000",
+        ]);
         checkSummaryDone(text, `summary done ${n}: ${text.slice(0, 200)}`);
       } else {
         const data = mutateJson(rand, choose(rand, issues));
@@ -1287,13 +1894,18 @@ function checkLinkAction(body: unknown, label: string) {
     if (!fields.has(name)) fields.set(name, decode(rawValue));
   }
   const action = fields.get("action");
-  const number = (t: string | undefined): number | null => (t !== undefined && /^[1-9][0-9]{0,9}$/.test(t) && Number(t) <= MAX_ISSUE_NUMBER ? Number(t) : null);
+  const number = (t: string | undefined): number | null =>
+    t !== undefined && /^[1-9][0-9]{0,9}$/.test(t) && Number(t) <= MAX_ISSUE_NUMBER
+      ? Number(t)
+      : null;
   const issue = number(fields.get("issue"));
   const report = fields.get("report");
   const to = number(fields.get("to"));
-  const ok = LINK_ACTIONS.some((a) => a === action) && issue !== null
-    && (action === "merge" || (report !== undefined && UUID.test(report)))
-    && (!(action === "move" || action === "merge") || (to !== null && to !== issue));
+  const ok =
+    LINK_ACTIONS.some((a) => a === action) &&
+    issue !== null &&
+    (action === "merge" || (report !== undefined && UUID.test(report))) &&
+    (!(action === "move" || action === "merge") || (to !== null && to !== issue));
   if (!ok) {
     assert.equal(got, null, label);
     return;
@@ -1311,8 +1923,33 @@ function checkLinkAction(body: unknown, label: string) {
 }
 
 const LINK_FRAGMENTS = [
-  "&", "=", "+", "%", "%2", "%30", "action=", "issue=", "report=", "to=", "back=", "attach", "detach", "move", "merge",
-  "400", "403", "0", "-1", "1000000001", "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", "A", "f", "-", " ", "\u0000", "é",
+  "&",
+  "=",
+  "+",
+  "%",
+  "%2",
+  "%30",
+  "action=",
+  "issue=",
+  "report=",
+  "to=",
+  "back=",
+  "attach",
+  "detach",
+  "move",
+  "merge",
+  "400",
+  "403",
+  "0",
+  "-1",
+  "1000000001",
+  "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4",
+  "A",
+  "f",
+  "-",
+  " ",
+  "\u0000",
+  "é",
 ];
 
 /** The marker the summary comment starts with (spelled out, not imported). */
@@ -1338,13 +1975,40 @@ function checkComments(data: unknown, label: string) {
     if (summary !== null || c === null || typeof c !== "object") continue;
     const idOk = typeof c.id === "number" && Number.isSafeInteger(c.id) && c.id >= 1;
     const userOk = c.user !== null && typeof c.user === "object" && c.user.type === "Bot";
-    const bodyOk = typeof c.body === "string" && c.body.slice(0, ORACLE_MARKER.length) === ORACLE_MARKER;
+    const bodyOk =
+      typeof c.body === "string" && c.body.slice(0, ORACLE_MARKER.length) === ORACLE_MARKER;
     if (idOk && userOk && bodyOk) summary = c.id;
   }
   assert.deepEqual(got, { summary, count: page.length }, label);
 }
 
-const COMMENT_FRAGMENTS = ['"id"', '"user"', '"type"', '"Bot"', '"User"', '"body"', ORACLE_MARKER, "<!-- ", "-->", " ", "\n", "0", "-1", "1.5", "9007199254740993", "null", "[", "]", "{", "}", ",", ":", '"', "é", "\u0000"];
+const COMMENT_FRAGMENTS = [
+  '"id"',
+  '"user"',
+  '"type"',
+  '"Bot"',
+  '"User"',
+  '"body"',
+  ORACLE_MARKER,
+  "<!-- ",
+  "-->",
+  " ",
+  "\n",
+  "0",
+  "-1",
+  "1.5",
+  "9007199254740993",
+  "null",
+  "[",
+  "]",
+  "{",
+  "}",
+  ",",
+  ":",
+  '"',
+  "é",
+  "\u0000",
+];
 
 describe("ledger correction form", () => {
   it("replays the seed corpus", () => {
@@ -1352,10 +2016,31 @@ describe("ledger correction form", () => {
     assert.ok(all.length > 0);
     for (const [name, raw] of all) checkLinkAction(raw, name);
     const byName = (name: string): string => seedNamed(all, name);
-    assert.deepEqual(parseLinkAction(byName("move.txt")), { action: "move", issue: 400, report: "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", to: 403 });
-    assert.deepEqual(parseLinkAction(byName("merge.txt")), { action: "merge", issue: 400, report: null, to: 403 });
+    assert.deepEqual(parseLinkAction(byName("move.txt")), {
+      action: "move",
+      issue: 400,
+      report: "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4",
+      to: 403,
+    });
+    assert.deepEqual(parseLinkAction(byName("merge.txt")), {
+      action: "merge",
+      issue: 400,
+      report: null,
+      to: 403,
+    });
     assert.equal(parseLinkAction(byName("encoded_digits.txt"))?.issue, 400);
-    for (const off of ["merge_self.txt", "missing_report.txt", "upper_uuid.txt", "bad_action.txt", "zero_issue.txt", "huge_target.txt", "plus_issue.txt", "too_long.txt", "empty.txt", "json.txt"]) {
+    for (const off of [
+      "merge_self.txt",
+      "missing_report.txt",
+      "upper_uuid.txt",
+      "bad_action.txt",
+      "zero_issue.txt",
+      "huge_target.txt",
+      "plus_issue.txt",
+      "too_long.txt",
+      "empty.txt",
+      "json.txt",
+    ]) {
       assert.equal(parseLinkAction(byName(off)), null, off);
     }
     for (const v of [null, undefined, 7, {}, ["action=merge"]]) checkLinkAction(v, String(v));
@@ -1387,14 +2072,39 @@ function checkLockedMessage(data: unknown, label: string) {
   if (typeof message === "string" && message.length <= 1000) {
     const text = message.replace(/[A-Z]/g, (c) => c.toLowerCase());
     const isWord = (ch: string | undefined): boolean => ch !== undefined && /[a-z0-9_]/.test(ch);
-    for (let at = text.indexOf("issue is locked"); at !== -1 && !want; at = text.indexOf("issue is locked", at + 1)) {
+    for (
+      let at = text.indexOf("issue is locked");
+      at !== -1 && !want;
+      at = text.indexOf("issue is locked", at + 1)
+    ) {
       want = !isWord(text[at - 1]) && !isWord(text[at + "issue is locked".length]);
     }
   }
   assert.equal(got, want, label);
 }
 
-const LOCKED_FRAGMENTS = ['"message"', "issue is locked", "ISSUE IS LOCKED", "issue", "is", "locked", "unlocked", "issues", "_", " ", ".", '"', "{", "}", "[", "]", "null", "é", "\u0000", "x".repeat(200)];
+const LOCKED_FRAGMENTS = [
+  '"message"',
+  "issue is locked",
+  "ISSUE IS LOCKED",
+  "issue",
+  "is",
+  "locked",
+  "unlocked",
+  "issues",
+  "_",
+  " ",
+  ".",
+  '"',
+  "{",
+  "}",
+  "[",
+  "]",
+  "null",
+  "é",
+  "\u0000",
+  "x".repeat(200),
+];
 
 describe("issue comments decoding", () => {
   it("replays the seed corpus", () => {
@@ -1403,19 +2113,42 @@ describe("issue comments decoding", () => {
     for (const [name, raw] of all) checkComments(JSON.parse(raw), name);
     const byName = (name: string): string => seedNamed(all, name);
     assert.deepEqual(decodeComments(JSON.parse(byName("normal.json"))), { summary: 202, count: 3 });
-    assert.deepEqual(decodeComments(JSON.parse(byName("user_marker.json"))), { summary: 205, count: 2 }, "a member's forged marker is not the summary");
-    assert.deepEqual(decodeComments(JSON.parse(byName("first_wins.json"))), { summary: 207, count: 2 });
+    assert.deepEqual(
+      decodeComments(JSON.parse(byName("user_marker.json"))),
+      { summary: 205, count: 2 },
+      "a member's forged marker is not the summary",
+    );
+    assert.deepEqual(decodeComments(JSON.parse(byName("first_wins.json"))), {
+      summary: 207,
+      count: 2,
+    });
     assert.deepEqual(decodeComments(JSON.parse(byName("bad_id.json"))), { summary: 210, count: 5 });
-    assert.deepEqual(decodeComments(JSON.parse(byName("full_page.json"))), { summary: 399, count: 100 });
-    assert.deepEqual(decodeComments(JSON.parse(byName("over_page.json"))), { summary: null, count: 100 }, "past the page size is not read");
-    for (const none of ["empty.json", "no_marker.json", "marker_inside.json", "no_user.json", "body_not_string.json"]) {
+    assert.deepEqual(decodeComments(JSON.parse(byName("full_page.json"))), {
+      summary: 399,
+      count: 100,
+    });
+    assert.deepEqual(
+      decodeComments(JSON.parse(byName("over_page.json"))),
+      { summary: null, count: 100 },
+      "past the page size is not read",
+    );
+    for (const none of [
+      "empty.json",
+      "no_marker.json",
+      "marker_inside.json",
+      "no_user.json",
+      "body_not_string.json",
+    ]) {
       assert.equal(decodeComments(JSON.parse(byName(none)))?.summary, null, none);
     }
-    for (const off of ["not_array.json", "null.json", "string.json"]) assert.equal(decodeComments(JSON.parse(byName(off))), null, off);
+    for (const off of ["not_array.json", "null.json", "string.json"])
+      assert.equal(decodeComments(JSON.parse(byName(off))), null, off);
   });
 
   it("holds the oracle under seeded mutation", () => {
-    const all = seeds("issue_comments").filter(([n]) => n !== "full_page.json" && n !== "over_page.json").map(([, raw]) => raw);
+    const all = seeds("issue_comments")
+      .filter(([n]) => n !== "full_page.json" && n !== "over_page.json")
+      .map(([, raw]) => raw);
     const rand = rng(20261026);
     for (let n = 0; n < 3000; n++) {
       const text = mutate(rand, choose(rand, all), COMMENT_FRAGMENTS);
@@ -1438,10 +2171,20 @@ describe("locked issue message", () => {
     const byName = (name: string): string => seedNamed(all, name);
     assert.equal(isLockedMessage(JSON.parse(byName("locked.json"))), true);
     assert.equal(isLockedMessage(JSON.parse(byName("locked_edit.json"))), true);
-    for (const off of ["rate_limit.json", "secondary_limit.json", "forbidden.json", "account_locked.json", "message_not_string.json", "array.json", "null.json", "long.json"]) {
+    for (const off of [
+      "rate_limit.json",
+      "secondary_limit.json",
+      "forbidden.json",
+      "account_locked.json",
+      "message_not_string.json",
+      "array.json",
+      "null.json",
+      "long.json",
+    ]) {
       assert.equal(isLockedMessage(JSON.parse(byName(off))), false, off);
     }
-    for (const v of [undefined, "issue is locked", 7, {}, { message: null }]) assert.equal(isLockedMessage(v), false, String(v));
+    for (const v of [undefined, "issue is locked", 7, {}, { message: null }])
+      assert.equal(isLockedMessage(v), false, String(v));
   });
 
   it("holds the oracle under seeded mutation", () => {

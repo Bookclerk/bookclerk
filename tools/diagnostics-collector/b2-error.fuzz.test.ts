@@ -44,7 +44,10 @@ function check(text: string, label: string): void {
   if (text.length <= LIMIT) {
     try {
       const body: unknown = JSON.parse(text);
-      const code = body !== null && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>)["code"] : undefined;
+      const code =
+        body !== null && typeof body === "object" && !Array.isArray(body)
+          ? (body as Record<string, unknown>)["code"]
+          : undefined;
       expected = typeof code === "string" && isShortIdentifier(code) ? code : undefined;
     } catch {
       expected = undefined;
@@ -58,8 +61,31 @@ function check(text: string, label: string): void {
 
 /** Fragments mutations splice in: JSON syntax and code-shaped text. */
 const FRAGMENTS = [
-  "{", "}", "[", "]", ",", ":", '"', "\\", "\\u0041", '"code"', '"code":', '"unauthorized"',
-  '"bad_auth_token"', "null", "true", "1", "<", ">", "\n", " ", "é", "😀", "\0", "_", "A",
+  "{",
+  "}",
+  "[",
+  "]",
+  ",",
+  ":",
+  '"',
+  "\\",
+  "\\u0041",
+  '"code"',
+  '"code":',
+  '"unauthorized"',
+  '"bad_auth_token"',
+  "null",
+  "true",
+  "1",
+  "<",
+  ">",
+  "\n",
+  " ",
+  "é",
+  "😀",
+  "\0",
+  "_",
+  "A",
 ];
 
 describe("b2ErrorCode", () => {
@@ -67,7 +93,10 @@ describe("b2ErrorCode", () => {
     const all = seeds();
     assert.ok(all.length > 0);
     for (const [name, text] of all) check(text, name);
-    assert.equal(b2ErrorCode(readFileSync(new URL("unauthorized.json", CORPUS), "utf8")), "unauthorized");
+    assert.equal(
+      b2ErrorCode(readFileSync(new URL("unauthorized.json", CORPUS), "utf8")),
+      "unauthorized",
+    );
     assert.equal(b2ErrorCode(readFileSync(new URL("markup_code.json", CORPUS), "utf8")), undefined);
   });
 

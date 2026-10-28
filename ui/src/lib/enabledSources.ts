@@ -19,5 +19,4 @@ export async function loadEnabledSources(): Promise<PortalSource[]> {
 /**
  * Placeholder for the Discover search field when store names are unknown.
  */
-export const DISCOVER_SEARCH_PLACEHOLDER =
-  "Search Book Stores... (Enter for results)";
+export const DISCOVER_SEARCH_PLACEHOLDER = "Search Book Stores... (Enter for results)";
