@@ -14,12 +14,16 @@ Nobody edits it by hand. The CLA check writes it:
 - A contributor signs by commenting the sentence the check's comment asks
   for on a pull request they are part of. The check then adds one entry to
   `signatures/cla.json` in one commit.
-- The first signature created this branch. Each commit is made through the
-  GitHub API with a GitHub App's token, so GitHub signs it for the App.
+- The first signature started this branch with a commit that holds these
+  files and an empty `signatures/cla.json`, then added itself in the next
+  commit, so no signer's name is attached to the files here. Each commit
+  is made through the GitHub API with a GitHub App's token, so GitHub signs
+  it for the App.
 
 Each entry records the GitHub account (`name`, `id`), the signing comment
 (`comment_id`, `created_at`), where it was made (`repoId`,
-`pullRequestNo`) and the version of the CLA it accepts (`claVersion`).
+`pullRequestNo`) and a permalink to the CLA text it accepts (`claUrl`,
+`CLA.md` at the last default-branch commit that changed it).
 
 ## Set up the check in a repository
 
@@ -37,9 +41,13 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
    so change that text to match, or signature comments will not run the
    check.
 2. Create a GitHub App (**Settings → Developer settings → GitHub Apps**,
-   for a user or an organization) and give it one repository permission:
+   for a user or an organization) and give it three repository permissions:
    - **Contents: read and write**, to create this branch and add
      signatures.
+   - **Pull requests: read and write**, to post the check's comment under
+     the App's name and avatar.
+   - **Commit statuses: read and write**, to post the `CLA` status as the
+     App.
 
    It needs no webhook. Install it on the repository, then generate a
    private key.
@@ -48,9 +56,10 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
    - `AUTOMATION_APP_CLIENT_ID`: the App's client ID.
    - `AUTOMATION_APP_PRIVATE_KEY`: the private key.
 
-   The workflow mints a short-lived token from them, narrowed to Contents
-   on this repository. Without them, the check still decides, but it
-   cannot record a signature and reports an error instead.
+   The workflow mints a short-lived token from them, narrowed to those
+   permissions on this repository. Without them, the check still decides
+   and reports as `github-actions[bot]`, but it cannot record a signature
+   and reports an error instead.
 4. Protect this branch. As a repository administrator, with the GitHub CLI
    signed in as yourself, run:
 
@@ -71,7 +80,7 @@ Each entry records the GitHub account (`name`, `id`), the signing comment
    Administration permission. Every check run reads the rules that apply
    to this branch and warns when one is missing.
 5. After the check has run once, require the **CLA** status in the default
-   branch's ruleset, with **GitHub Actions** as its expected source.
+   branch's ruleset, with the App as its expected source.
 
 ## Start over
 

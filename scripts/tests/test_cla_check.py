@@ -21,7 +21,10 @@ import io
 import json
 import random
 import sys
+import tempfile
 import unittest
+from unittest import mock
+import urllib.error
 import urllib.parse
 from pathlib import Path
 
@@ -44,6 +47,9 @@ cla = _load("cla_check", ROOT / "scripts" / "cla_check.py")
 SHA_A = "a" * 40
 SHA_B = "b" * 40
 SHA_C = "c" * 40
+SHA_D = "d" * 40
+#: The recheck command for the App the tests report as.
+RECHECK = "@bookclerk recheck"
 CLA_URL = "https://github.com/bookclerk/bookclerk/blob/main/CLA.md"
 RUN_URL = "https://github.com/bookclerk/bookclerk/actions/runs/1"
 
@@ -275,6 +281,8 @@ def oracle(kind: str, raw: bytes) -> object:
         return (data, sha)
     if kind == "gitobject":
         return o_sha(o_obj(o_json(raw)).get("sha"))
+    if kind == "reaction":
+        return o_id(o_obj(o_json(raw)).get("id"))
     if kind == "branchrules":
         rules = o_json(raw)
         if not isinstance(rules, list) or len(rules) > 200:
@@ -332,6 +340,8 @@ def module(kind: str, raw: bytes) -> object:
         return cla.parse_contents(raw)
     if kind == "gitobject":
         return cla.parse_git_object(raw)
+    if kind == "reaction":
+        return cla.parse_reaction(raw)
     if kind == "branchrules":
         return cla.parse_branch_rules(raw)
     raise AssertionError(kind)
@@ -387,6 +397,7 @@ class CorpusTests(unittest.TestCase):
             "coauthors__errors", "coauthors__too_many", "coauthors__count_mismatch", "coauthors__repeat",
             "coauthors__no_cursor", "coauthors__bad_bot_login", "coauthors__null_pull",
             "coauthors__email_not_string", "gitobject__no_sha", "gitobject__upper_sha", "gitobject__not_object",
+            "reaction__no_id", "reaction__string_id", "reaction__not_object",
             "branchrules__not_list", "branchrules__upper_type", "branchrules__no_type",
         ):
             kind = name.partition("__")[0]
@@ -400,6 +411,7 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(module("pull", load("pull__login_trailing_dash"))[1], (1, "alice-", "User"))
         self.assertEqual(module("signatures", load("signatures__two")), (2, frozenset({101, 2})))
         self.assertEqual(module("gitobject", load("gitobject__commit")), SHA_B)
+        self.assertEqual(module("reaction", load("reaction__eyes")), 31)
         self.assertEqual(module("branchrules", load("branchrules__all")), cla.SIGNATURE_BRANCH_RULES)
         data, blob = cla.parse_contents(load("contents__seed"))
         self.assertEqual(data, load("signatures__seed"))
@@ -584,6 +596,7 @@ ALICE = account("alice", 101)
 BOB = account("bob", 102)
 DEPENDABOT = account("dependabot[bot]", 49699333, "Bot")
 ACTIONS = account("github-actions[bot]", 41898282, "Bot")
+APP = account("bookclerk[bot]", 900, "Bot")
 
 
 class FakeGitHub:
@@ -602,6 +615,8 @@ class FakeGitHub:
         self.blob = 1
         self.comments: list[dict] = []
         self.statuses: list[tuple[str, dict]] = []
+        #: Who posted each of ``statuses``, in order.
+        self.status_creators: list[dict] = []
         self.conflicts = 0
         self.requests: list[tuple[str, str]] = []
         #: Runs once, just before the next status is recorded, to stand in
@@ -610,6 +625,9 @@ class FakeGitHub:
         #: True while a request comes through ``write``, the signature
         #: token's transport; only those may change the signature file.
         self.writing = False
+        #: True while a request comes through ``comment``, the App's comment
+        #: transport; comments made then are the App's.
+        self.commenting = False
         #: Whether ``cla-signatures`` exists, and holds the signature file.
         self.branch = True
         self.has_file = True
@@ -617,6 +635,16 @@ class FakeGitHub:
         #: branch was started with, by path.
         self.objects: dict[str, dict] = {}
         self.branch_tree: dict[str, dict] = {}
+        #: The message of the commit that started the branch, and of each
+        #: signature written through the contents API.
+        self.branch_message: str | None = None
+        self.put_messages: list[str] = []
+        #: The commits that changed ``CLA.md``, newest first.
+        self.cla_commits = [SHA_D]
+        #: Reactions on comments by id: ``(comment id, content, login)``, and
+        #: the ones removed, in order.
+        self.reactions: dict[int, tuple[int, str, str]] = {}
+        self.removed_reactions: list[tuple[int, str, str]] = []
         #: The ruleset rule types that apply to ``cla-signatures``.
         self.rules: set[str] = set(cla.SIGNATURE_BRANCH_RULES)
         #: Runs once, just before the branch is created, to stand in for a
@@ -678,6 +706,16 @@ class FakeGitHub:
         finally:
             self.writing = False
 
+    def comment(self, method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+        self.commenting = True
+        try:
+            return self.send(method, path, body)
+        finally:
+            self.commenting = False
+
+    def commenter_account(self) -> dict:
+        return APP if self.commenting else ACTIONS
+
     def send(self, method: str, path: str, body: dict | None) -> tuple[int, bytes]:
         self.requests.append((method, path))
         if (method, path) == ("POST", "graphql"):
@@ -709,6 +747,8 @@ class FakeGitHub:
             for n, o in self.others.items():
                 refs.append({"number": n, "state": o.get("state", "open"), "head": {"sha": o.get("head", SHA_C)}})
             return 200, json.dumps(refs).encode()
+        if method == "GET" and route == "commits" and params.get("path") == "CLA.md":
+            return 200, json.dumps([{"sha": sha, "author": None} for sha in self.cla_commits]).encode()
         if method == "GET" and route == "issues/7/comments":
             return 200, page_of(self.comments)
         if method == "GET" and len(parts) == 3 and parts[0] == "issues" and int(parts[1]) in self.others:
@@ -739,6 +779,7 @@ class FakeGitHub:
                 assert sorted(tree) == ["README.md", "setup-rulesets.sh", "signatures/cla.json"], sorted(tree)
                 assert tree["setup-rulesets.sh"]["mode"] == "100755"
                 self.branch_tree = tree
+                self.branch_message = commit_obj["message"]
                 self.file = tree["signatures/cla.json"]["content"].encode("utf-8")
                 self.branch = self.has_file = True
                 self.blob += 1
@@ -749,6 +790,7 @@ class FakeGitHub:
         if method == "PUT" and route == "contents/signatures/cla.json":
             assert self.writing, "the signature file must be written with the signature token"
             assert body is not None and body["branch"] == "cla-signatures"
+            self.put_messages.append(body["message"])
             if not self.branch:
                 return 404, b'{"message": "Branch not found"}'
             if not self.has_file:
@@ -767,16 +809,29 @@ class FakeGitHub:
             self.blob += 1
             return 200, b"{}"
         if method == "POST" and route == "issues/7/comments":
-            self.comments.append({"id": 1000 + len(self.comments), "user": ACTIONS, "body": body["body"], "created_at": "t"})
+            self.comments.append({"id": 1000 + len(self.comments), "user": self.commenter_account(), "body": body["body"], "created_at": "t"})
             return 201, b"{}"
         if method == "POST" and len(parts) == 3 and parts[0] == "issues" and int(parts[1]) in self.others:
             thread = self.others[int(parts[1])].setdefault("comments", [])
-            thread.append({"id": 2000 + len(thread), "user": ACTIONS, "body": body["body"], "created_at": "t"})
+            thread.append({"id": 2000 + len(thread), "user": self.commenter_account(), "body": body["body"], "created_at": "t"})
             return 201, b"{}"
+        if len(parts) >= 4 and parts[:2] == ["issues", "comments"] and parts[3] == "reactions":
+            comment_id = int(parts[2])
+            if method == "POST":
+                assert body is not None
+                reaction_id = 5000 + len(self.reactions) + len(self.removed_reactions)
+                self.reactions[reaction_id] = (comment_id, body["content"], self.commenter_account()["login"])
+                return 201, json.dumps({"id": reaction_id, "content": body["content"]}).encode()
+            if method == "DELETE" and len(parts) == 5:
+                reaction_id = int(parts[4])
+                assert self.reactions[reaction_id][2] == self.commenter_account()["login"]
+                self.removed_reactions.append(self.reactions.pop(reaction_id))
+                return 204, b""
         if method == "PATCH" and route.startswith("issues/comments/"):
             target = int(route.rsplit("/", 1)[1])
             for c in self.comments:
                 if c["id"] == target:
+                    assert c["user"] == self.commenter_account(), "only a comment's author may edit it"
                     c["body"] = body["body"]
             return 200, b"{}"
         if method == "POST" and route.startswith("statuses/"):
@@ -784,6 +839,7 @@ class FakeGitHub:
                 hook, self.before_status = self.before_status, None
                 hook()
             self.statuses.append((route.rsplit("/", 1)[1], body))
+            self.status_creators.append(self.commenter_account())
             return 201, b"{}"
         return 404, b"{}"
 
@@ -841,7 +897,8 @@ BRANCH_FILES = cla.load_branch_files(str(Path(cla.__file__).resolve().parent / "
 
 
 def drive(fake: FakeGitHub, event: object) -> None:
-    cla.run(event, cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES), CLA_URL, RUN_URL)
+    reporter = cla.Reporter(fake.comment, APP["login"])
+    cla.run(event, cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES, reporter), CLA_URL, RUN_URL)
 
 
 class EndToEndTests(unittest.TestCase):
@@ -859,7 +916,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(len(fake.comments), 1)
         self.assertNotIn("@alice", fake.comments[0]["body"])
         entry = json.loads(fake.file)["signedContributors"][0]
-        self.assertEqual(entry, {"name": "alice", "id": 101, "comment_id": 900, "created_at": "2026-10-27T17:00:00Z", "repoId": 555, "pullRequestNo": 7, "claVersion": "1.0"})
+        self.assertEqual(entry, {"name": "alice", "id": 101, "comment_id": 900, "created_at": "2026-10-27T17:00:00Z", "repoId": 555, "pullRequestNo": 7, "claUrl": f"https://github.com/bookclerk/bookclerk/blob/{SHA_D}/CLA.md"})
+        # The agreement's history is read once per run, not per signature.
+        self.assertEqual(sum(1 for m, p in fake.requests if p.startswith("repos/bookclerk/bookclerk/commits?path=CLA.md")), 1)
 
     def test_a_missing_branch_counts_as_nobody_signed(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
@@ -876,9 +935,14 @@ class EndToEndTests(unittest.TestCase):
         self.assertTrue(fake.branch)
         self.assertEqual(fake.signed_ids(), {101})
         self.assertEqual(fake.last_status(), "failure")
-        # The branch explains itself with the default branch's templates.
+        # The branch explains itself with the default branch's templates,
+        # in a commit that names no signer; the signature is the next one.
         for name, _ in cla.BRANCH_FILES:
             self.assertEqual(fake.branch_tree[name]["content"].encode(), BRANCH_FILES[name])
+        self.assertEqual(json.loads(fake.branch_tree["signatures/cla.json"]["content"]), {"signedContributors": []})
+        self.assertEqual(fake.branch_message, cla.BRANCH_START_MESSAGE)
+        self.assertNotIn("alice", cla.BRANCH_START_MESSAGE)
+        self.assertEqual(fake.put_messages, ["chore(cla): record @alice's signature from #7"])
         # Later signatures append to it through the contents API.
         objects = len(fake.objects)
         drive(fake, comment_event(BOB, cla.SIGN_PHRASE))
@@ -958,7 +1022,7 @@ class EndToEndTests(unittest.TestCase):
         # turn the shared status green while bob has not signed.
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
         fake.others[8] = {"author": BOB, "commits": [commit(SHA_A, ALICE)]}
-        drive(fake, comment_event(ALICE, cla.RECHECK_PHRASE))
+        drive(fake, comment_event(ALICE, RECHECK))
         self.assertEqual(fake.last_status(), "failure")
         self.assertIn("#8", fake.statuses[-1][1]["description"])
         self.assertLessEqual(len(fake.statuses[-1][1]["description"]), 140)
@@ -966,7 +1030,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(len(fake.comments), 1)
         body = fake.comments[0]["body"]
         self.assertIn("#8", body)
-        self.assertNotIn("@", body)
+        self.assertNotIn("@alice", body)
+        self.assertNotIn("@bob", body)
         # Once #8 is closed, its closing run lets #7 decide alone.
         fake.others[8]["state"] = "closed"
         drive(fake, pr_event_for(fake, 8))
@@ -1028,7 +1093,7 @@ class EndToEndTests(unittest.TestCase):
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
         fake.state = "closed"
         fake.others[8] = {"author": BOB, "commits": [commit(SHA_A, ALICE)]}
-        drive(fake, comment_event(ALICE, cla.RECHECK_PHRASE))
+        drive(fake, comment_event(ALICE, RECHECK))
         self.assertEqual(fake.last_status(), "failure")
         self.assertEqual(fake.comments, [])
 
@@ -1075,13 +1140,16 @@ class EndToEndTests(unittest.TestCase):
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
         fake.comments += [{"id": n, "user": None, "body": "ghost", "created_at": "t"} for n in range(1, 101)]
         fake.comments.append({"id": 500, "user": ALICE, "body": cla.SIGN_PHRASE, "created_at": "t"})
-        drive(fake, comment_event(BOB, cla.RECHECK_PHRASE))
+        drive(fake, comment_event(BOB, RECHECK))
         self.assertEqual(fake.signed_ids(), {101})
         self.assertEqual(fake.last_status(), "success")
 
-    def test_the_recorded_version_matches_the_agreement(self) -> None:
-        text = (ROOT / "CLA.md").read_text(encoding="utf-8")
-        self.assertIn(f"\nVersion {cla.CLA_VERSION}\n", text)
+    def test_without_the_agreements_history_a_signature_fails_closed(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        fake.cla_commits = []
+        with self.assertRaises(cla.ApiError):
+            drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertEqual(fake.signed_ids(), set())
 
     def test_a_failed_comment_run_still_knows_the_head(self) -> None:
         # main() reports ``error`` on ``api.head_sha``; a comment event
@@ -1205,7 +1273,7 @@ class EndToEndTests(unittest.TestCase):
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE), commit(SHA_B, BOB)])
         for i, user in enumerate((ALICE, BOB, ALICE)):
             fake.comments.append({"id": 50 + i, "user": user, "body": cla.SIGN_PHRASE, "created_at": f"t{i}"})
-        drive(fake, comment_event(BOB, cla.RECHECK_PHRASE, comment_id=60))
+        drive(fake, comment_event(BOB, RECHECK, comment_id=60))
         self.assertEqual(fake.signed_ids(), {101, 102})
         entries = json.loads(fake.file)["signedContributors"]
         self.assertEqual([e["comment_id"] for e in entries], [50, 51])
@@ -1245,8 +1313,80 @@ class EndToEndTests(unittest.TestCase):
         fake.comments = [{"id": i, "user": BOB, "body": "hi", "created_at": "t"} for i in range(1, 151)]
         drive(fake, pr_event(fake))
         drive(fake, pr_event(fake))
-        ours = [c for c in fake.comments if c["user"] == ACTIONS]
+        ours = [c for c in fake.comments if c["user"] == APP]
         self.assertEqual(len(ours), 1)
+
+    def test_the_comment_is_posted_as_the_app(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        drive(fake, pr_event(fake))
+        self.assertEqual([c["user"] for c in fake.comments], [APP])
+        self.assertTrue(fake.comments[0]["body"].startswith(cla.COMMENT_MARKER))
+
+    def test_a_signature_comment_is_reacted_to_as_it_is_recorded(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        event = comment_event(ALICE, cla.SIGN_PHRASE)
+        drive(fake, event)
+        self.assertEqual(fake.signed_ids(), {101})
+        self.assertEqual(list(fake.reactions.values()), [(event.comment.id, "+1", "bookclerk[bot]")])
+        self.assertEqual(fake.removed_reactions, [(event.comment.id, "eyes", "bookclerk[bot]")])
+        # An already recorded signature is not reacted to again.
+        drive(fake, event)
+        self.assertEqual(len(fake.reactions), 1)
+
+    def test_refused_reactions_do_not_stop_the_signature(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        real_send = fake.send
+
+        def refuse_reactions(method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+            if "/reactions" in path:
+                return 403, b"{}"
+            return real_send(method, path, body)
+
+        fake.send = refuse_reactions  # type: ignore[method-assign]
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertEqual(fake.signed_ids(), {101})
+        self.assertEqual(fake.last_status(), "success")
+        self.assertIn("::warning::cannot add the eyes reaction", out.getvalue())
+
+    def test_reaction_network_failures_do_not_stop_the_signature(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        real_send = fake.send
+
+        def drop_reactions(method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+            if "/reactions" in path:
+                raise urllib.error.URLError("timed out")
+            return real_send(method, path, body)
+
+        fake.send = drop_reactions  # type: ignore[method-assign]
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertEqual(fake.signed_ids(), {101})
+        self.assertEqual(fake.last_status(), "success")
+        self.assertIn("timed out", out.getvalue())
+
+    def test_the_status_is_posted_as_the_app(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        drive(fake, pr_event(fake))
+        drive(fake, cla.parse_event("merge_group", load("event_merge_group__queued")))
+        self.assertEqual(len(fake.statuses), 2)
+        self.assertEqual(fake.status_creators, [APP, APP])
+
+    def test_without_an_app_the_workflow_reports(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        api = cla.GitHub(fake.send, "bookclerk/bookclerk", fake.write, BRANCH_FILES)
+        cla.run(pr_event(fake), api, CLA_URL, RUN_URL)
+        cla.run(pr_event(fake), api, CLA_URL, RUN_URL)
+        self.assertEqual([c["user"] for c in fake.comments], [ACTIONS])
+        self.assertEqual(set(map(str, fake.status_creators)), {str(ACTIONS)})
+
+    def test_the_workflows_old_comment_is_left_for_the_apps(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        old = cla.COMMENT_MARKER + "\nold"
+        fake.comments = [{"id": 1, "user": ACTIONS, "body": old, "created_at": "t"}]
+        drive(fake, pr_event(fake))
+        self.assertEqual(fake.comments[0]["body"], old)
+        self.assertEqual([c["user"] for c in fake.comments], [ACTIONS, APP])
 
     def test_spoofed_marker_comment_is_not_edited(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
@@ -1259,6 +1399,26 @@ class EndToEndTests(unittest.TestCase):
         fake = FakeGitHub(ALICE, [])
         drive(fake, cla.parse_event("merge_group", load("event_merge_group__queued")))
         self.assertEqual(fake.statuses, [(SHA_B, {"state": "success", "context": "CLA", "description": "Checked on each pull request in the group.", "target_url": RUN_URL})])
+
+    def test_only_the_bots_recheck_command_runs_the_check(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
+        for body in ("recheck", "please recheck this", "@someone-else recheck", "@bookclerk recheck now"):
+            drive(fake, comment_event(BOB, body))
+        self.assertEqual(fake.requests, [])
+        drive(fake, comment_event(BOB, "  @Bookclerk RECHECK\n"))
+        self.assertEqual(fake.last_status(), "success")
+
+    def test_the_workflow_filter_matches_the_checker(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "cla.yml").read_text(encoding="utf-8")
+        self.assertIn(f"contains(github.event.comment.body, '{cla.SIGN_TRIGGER}')", workflow)
+        self.assertIn(f"contains(github.event.comment.body, '{cla.RECHECK_WORD}')", workflow)
+        self.assertTrue(cla.SIGN_PHRASE.startswith(cla.SIGN_TRIGGER))
+
+    def test_the_comment_names_the_recheck_command(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        drive(fake, pr_event(fake))
+        self.assertIn("Comment `@bookclerk recheck` to run the check again.", fake.comments[0]["body"])
+        self.assertEqual(cla.recheck_command("github-actions[bot]"), "@github-actions recheck")
 
     def test_plain_issue_comment_does_nothing(self) -> None:
         fake = FakeGitHub(ALICE, [])
@@ -1281,6 +1441,29 @@ class MainTests(unittest.TestCase):
     def test_unreadable_event(self) -> None:
         env = {"GITHUB_REPOSITORY": "bookclerk/bookclerk", "GITHUB_TOKEN": "t", "GITHUB_EVENT_NAME": "push",
                "GITHUB_EVENT_PATH": str(CORPUS / "pull__basic")}
+        self.assertEqual(cla.main(env), 1)
+
+    def test_a_refused_app_status_still_leaves_an_error_on_a_merge_group(self) -> None:
+        sent: list[tuple[str, str, str]] = []
+
+        def transport(token: str, api_url: str):
+            def send(method: str, path: str, body: dict | None) -> tuple[int, bytes]:
+                sent.append((token, method, path))
+                return (403, b"{}") if token == "app" else (201, b"{}")
+            return send
+
+        with tempfile.TemporaryDirectory() as folder:
+            event_path = Path(folder) / "event.json"
+            event_path.write_bytes(load("event_merge_group__queued"))
+            env = {"GITHUB_REPOSITORY": "bookclerk/bookclerk", "GITHUB_TOKEN": "workflow", "CLA_SIGNATURE_TOKEN": "app",
+                   "CLA_APP_SLUG": "bookclerk", "GITHUB_EVENT_NAME": "merge_group", "GITHUB_EVENT_PATH": str(event_path)}
+            with mock.patch.object(cla, "urllib_transport", transport), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(cla.main(env), 1)
+        self.assertIn(("workflow", "POST", f"repos/bookclerk/bookclerk/statuses/{SHA_B}"), sent)
+
+    def test_bad_app_slug(self) -> None:
+        env = {"GITHUB_REPOSITORY": "bookclerk/bookclerk", "GITHUB_TOKEN": "t", "CLA_SIGNATURE_TOKEN": "s",
+               "CLA_APP_SLUG": "evil/../x"}
         self.assertEqual(cla.main(env), 1)
 
 

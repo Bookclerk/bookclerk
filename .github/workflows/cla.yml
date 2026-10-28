@@ -12,11 +12,16 @@
 #   `signatures/cla.json` on the `cla-signatures` branch, so main is never
 #   written. Each write is an API commit made with a token from the
 #   automation App, which GitHub signs for the App; the branch's ruleset lets
-#   only that App update it. The first signature creates the branch as a
-#   commit with no history.
+#   only that App update it. The first signature starts the branch with a
+#   commit that has no history and no signer, then adds itself on top.
+# - The check's comment and the `CLA` status are posted as the same App, so
+#   they carry the project's name; the default branch's ruleset expects the
+#   status from that App. Without the App's secrets the workflow posts both.
 # - Runs when a pull request is opened, pushed to, reopened, closed or
 #   retargeted (a new base can add commits without changing the head).
-# - `recheck` re-runs the check after a signature or allowlist change.
+# - `@<App slug> recheck` (`@bookclerk recheck` here, `@github-actions
+#   recheck` without the App) re-runs the check after a signature or
+#   allowlist change. Other comments that mention `recheck` are ignored.
 # - The verdict is the `CLA` commit status on the pull request's head; that
 #   context is the one to require. It passes only when every open pull
 #   request with that head passes, since they share the status, and is
@@ -80,9 +85,10 @@ jobs:
       # automation App's token instead (below).
       contents: read
       # Read the pull request and its commits (REST and GraphQL), and keep
-      # the check's comment.
+      # the check's comment when the App is not configured.
       pull-requests: write
-      # Report the `CLA` commit status.
+      # Report the `CLA` commit status when the App is not configured, or
+      # its error when the App's token fails.
       statuses: write
     steps:
       # The default branch's checker, never the pull request's.
@@ -95,20 +101,25 @@ jobs:
             scripts/cla_branch/
           sparse-checkout-cone-mode: false
 
-      # Only signature writes use it, narrowed to Contents on this
+      # Signature writes, the check's comment and the `CLA` status use it,
+      # narrowed to Contents, Pull requests and Commit statuses on this
       # repository and revoked when the job ends. Without the App's secrets
-      # the token is empty and recording a signature fails closed.
-      - name: Mint signature-write token
+      # the token is empty: recording a signature fails closed and the
+      # workflow comments and reports instead.
+      - name: Mint the App token
         id: app-token
-        if: github.event_name != 'merge_group' && env.HAS_APP == 'true'
+        if: env.HAS_APP == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
           private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
           permission-contents: write
+          permission-pull-requests: write
+          permission-statuses: write
 
       - name: Check signatures
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLA_SIGNATURE_TOKEN: ${{ steps.app-token.outputs.token }}
+          CLA_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         run: python3 scripts/cla_check.py

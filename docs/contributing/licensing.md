@@ -61,17 +61,19 @@ To sign:
    I have read the Bookclerk CLA and I agree to it.
    ```
 
-4. The check records your signature and passes. You never need to sign
-   again.
+4. The check reacts with 👀 when it sees your comment and 👍 once your
+   signature is recorded, then passes. You never need to sign again.
 
 If someone else in the pull request has not signed, the check stays red
-until they do. Comment `recheck` to run it again.
+until they do. Comment `@bookclerk recheck` to run it again. The mention
+names the bot that reports the check, so the command can't be confused with
+another tool's; any other comment containing "recheck" is ignored.
 
 ## The CLA check
 
 The `CLA` workflow (`.github/workflows/cla.yml`) runs
 `scripts/cla_check.py` on every pull request and on signature and
-`recheck` comments. It checks out only the default branch and reads the
+`@bookclerk recheck` comments. It checks out only the default branch and reads the
 pull request through the API, so pull request code never runs with its
 token.
 
@@ -126,14 +128,19 @@ Who must sign:
   signature from, and must be the sentence above exactly; spaces or line
   breaks around it are ignored. Every run reads the whole comment history,
   so a signature posted while another run was busy still counts.
-- Each signature records the version of the CLA it accepts (`claVersion`),
-  so a later edit to `CLA.md` does not blur what earlier signers agreed to.
+- Each signature records a permalink to the CLA text it accepts
+  (`claUrl`): `CLA.md` at the last commit on `main` that changed it. A
+  later edit to `CLA.md` gives later signers a new link, so it does not
+  blur what earlier signers agreed to, and there is no version number to
+  bump by hand.
 - The check runs when a pull request is opened, pushed to, reopened or
   closed, and when it moves to another base branch, because the new base can
   bring in commits from other authors without changing the head commit.
 
 The result is the **CLA** commit status on the pull request's head commit,
-and one comment that lists who still has to sign, edited in place. Merge
+and one comment that lists who still has to sign, edited in place. Both
+come from the [automation App](automation.md#automation-app), or from
+`github-actions[bot]` in a repository without the App. Merge
 queue runs report a passing **CLA** status, because each pull request
 passed it to enter the queue. A pull request with more than 250 commits
 cannot be checked and fails closed.
@@ -144,23 +151,25 @@ another base), the status passes only when every one of them passes, so
 nobody can borrow a signed contributor's result. When one of them is
 closed, the others decide the status again. When one is pushed to, the
 commit it left keeps its last status until one of the others is checked
-again; comment `recheck` there. More than 10 such pull requests fail
+again; comment `@bookclerk recheck` there. More than 10 such pull requests fail
 closed.
 
 > [!NOTE]
 > Anyone can open a pull request on the same head commit as yours and turn
 > your check red. The check's comment names that pull request. A maintainer
-> closes it, and the status is decided again without it; comment `recheck`
-> if it is not.
+> closes it, and the status is decided again without it; comment
+> `@bookclerk recheck` if it is not.
 
 Signatures are recorded in `signatures/cla.json` on the `cla-signatures`
 branch, so recording one needs no pull request and no bypass of the main
 branch rules. The branch holds only that file and shares no history with
-`main`. The first signature creates it as a single commit with no parents,
-beside a `README.md` that says what the branch is and how to set the check
-up in another repository, and a `setup-rulesets.sh` that protects it (both
-copied from [`scripts/cla_branch/`](../../scripts/cla_branch/README.md)). Each later
-signature is one more commit on top. Every commit is made
+`main`. The first signature starts it with a commit that has no parents
+and no signer, holding an empty signature file, a `README.md` that says
+what the branch is and how to set the check up in another repository, and
+a `setup-rulesets.sh` that protects it (both copied from
+[`scripts/cla_branch/`](../../scripts/cla_branch/README.md)). The signature
+itself, and each later one, is one more commit on top, so no signer's name
+is attached to the README or the script. Every commit is made
 through the API by the [automation App](automation.md#automation-app), so
 GitHub signs it for the App and nothing else needs to push there. Until the
 branch exists, nobody has signed, so every pull request that needs a
@@ -174,8 +183,8 @@ Setup, once, by a repository administrator:
    contributors sign again.
 2. Make sure the automation App's secrets are set (see
    [the automation App](automation.md#automation-app)). Without them
-   the check still decides, but it cannot record a new signature and
-   reports an error instead.
+   the check still decides and reports as `github-actions[bot]`, but it
+   cannot record a new signature and reports an error instead.
 3. Add two branch rulesets targeting `cla-signatures`, by hand or with
    `bash scripts/cla_branch/setup-rulesets.sh OWNER/REPO APP_SLUG` run
    with your own GitHub CLI login (the App never needs the Administration
@@ -192,9 +201,15 @@ Setup, once, by a repository administrator:
    Every run of the check reads the rules that apply to `cla-signatures`
    and posts a workflow warning naming any of these that is missing.
 4. After the check has run on a pull request, add the **CLA** status to the
-   required checks in the main branch ruleset, with **GitHub Actions** as
+   required checks in the main branch ruleset, with the automation App as
    its expected source, so no other app that can post statuses can satisfy
    it. The `CLA check` job is only the workflow that reports it.
+
+> [!NOTE]
+> When the status moves to another source (from GitHub Actions to the App,
+> say), set the required check to **any source** first, merge the change,
+> then pin the new source. A pinned source that never reports blocks every
+> pull request.
 
 ## The Bookclerk name and logo
 

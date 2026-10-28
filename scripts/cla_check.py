@@ -20,9 +20,10 @@ and their signature covers what they submit (CLA section 4).
 The verdict is the ``CLA`` commit status on the pull request's head commit.
 Signatures live in ``signatures/cla.json`` on the ``cla-signatures`` branch,
 in the format CLA Assistant Lite used, and are written through the contents
-API with the automation App's token; the first signature creates the branch
-as a single commit with no history. One comment, marked with
-``COMMENT_MARKER``, says who still has to sign and is edited in place.
+API with the automation App's token; the first signature starts the branch
+with a commit that has no history and no entries, then adds itself on top.
+One comment, marked with ``COMMENT_MARKER``, says who still has to sign and
+is edited in place.
 
 Everything that parses bytes from GitHub (the event payload, pull requests,
 commit and comment pages, the signature file) is sans-IO and fuzzed by
@@ -32,9 +33,12 @@ fails closed.
 Usage (inside the workflow): ``cla_check.py`` with ``GITHUB_TOKEN``,
 ``GITHUB_REPOSITORY``, ``GITHUB_EVENT_NAME``, ``GITHUB_EVENT_PATH`` and
 ``GITHUB_SERVER_URL`` set, plus ``CLA_SIGNATURE_TOKEN``, an automation App
-token that may write to ``cla-signatures``. Only that token records
-signatures, so the branch can refuse every other writer and each signature
-commit is signed by GitHub for the App. It exits 0 once the status is posted, whatever the
+token that may write to ``cla-signatures``, comment on pull requests and post
+commit statuses, and ``CLA_APP_SLUG``, that App's slug. Only that token
+records signatures, so the branch can refuse every other writer and each
+signature commit is signed by GitHub for the App. The check's comment and the
+``CLA`` status are posted as the App too, or as the workflow when no App is
+configured. It exits 0 once the status is posted, whatever the
 verdict, and 1 when it could not decide.
 """
 
@@ -56,8 +60,14 @@ from typing import Callable
 #: surrounding whitespace is trimmed.
 SIGN_PHRASE = "I have read the Bookclerk CLA and I agree to it."
 
-#: The comment that re-runs the check without signing.
-RECHECK_PHRASE = "recheck"
+#: The start of ``SIGN_PHRASE``. A comment containing it runs the check (and
+#: gets the verdict) even when it is not an exact signature; the workflow's
+#: ``if:`` filters on the same text.
+SIGN_TRIGGER = "I have read the Bookclerk CLA"
+
+#: The word that, after a mention of the reporting bot, re-runs the check
+#: without signing (see ``recheck_command``).
+RECHECK_WORD = "recheck"
 
 #: First line of the check's own comment, used to find it again.
 COMMENT_MARKER = "<!-- bookclerk-cla-check -->"
@@ -101,8 +111,9 @@ BOT_ALLOWLIST = frozenset({"dependabot[bot]", "bookclerk[bot]", "github-actions[
 #: can own it, so no person's account is ever exempted this way.
 ASSISTANT_EMAILS = frozenset({"noreply@anthropic.com"})
 
-#: The account the workflow's token comments as.
-COMMENT_AUTHOR = "github-actions[bot]"
+#: The account the workflow's own token reports as, when no automation App
+#: token is configured to post the comment and status instead.
+WORKFLOW_COMMENT_AUTHOR = "github-actions[bot]"
 
 #: Most commits the pull request commits endpoint returns; larger pull
 #: requests fail closed rather than be checked in part.
@@ -141,13 +152,26 @@ MAX_SIGNATURE_BYTES = 1024 * 1024
 #: Times a signature write is retried after another run changed the file.
 SIGNATURE_WRITE_ATTEMPTS = 3
 
+#: The reaction the check adds to a signing comment as soon as it reads it.
+#: GitHub allows only its fixed set of reactions, so neither this nor
+#: ``SIGNED_REACTION`` can be a check mark.
+SEEN_REACTION = "eyes"
+
+#: The reaction that replaces ``SEEN_REACTION`` once the signature is
+#: recorded.
+SIGNED_REACTION = "+1"
+
+#: The message of the commit that starts ``SIGNATURE_BRANCH``. It names no
+#: signer, since it stays the last commit to touch ``BRANCH_FILES``.
+BRANCH_START_MESSAGE = "chore(cla): start the signature branch"
+
 #: Times a check decides and posts again because the signature file changed
 #: while it ran.
 STATUS_ATTEMPTS = 3
 
-#: The version of ``CLA.md`` a signature accepts, recorded with each entry.
-#: Bump it together with the version line in ``CLA.md``.
-CLA_VERSION = "1.0"
+#: The agreement's path on the default branch. Each signature records a
+#: permalink to it at the last commit that changed it.
+CLA_PATH = "CLA.md"
 
 #: Most open pull requests that may share one head commit. The ``CLA``
 #: status belongs to the commit, so each of them is checked before it passes;
@@ -580,7 +604,7 @@ def parse_run_head(value: object) -> RunHead:
 
 
 def parse_commit_page(raw: bytes) -> list[Commit]:
-    """Reads one page of ``GET /pulls/{n}/commits``.
+    """Reads one page of ``GET /pulls/{n}/commits`` or ``GET /commits``.
 
     Only the top-level ``author``, the account GitHub linked the commit to,
     is read; the git author name and email are ignored.
@@ -760,6 +784,18 @@ def parse_git_object(raw: bytes) -> str:
     return _sha(_object(_load_json(raw), "git object").get("sha"), "git object sha")
 
 
+def parse_reaction(raw: bytes) -> int:
+    """Reads the response to adding a reaction to a comment.
+
+    # Returns
+    The reaction's id, which removing it later needs.
+
+    # Errors
+    ``ClaInputError`` when the response is not an object with an ``id``.
+    """
+    return _id(_object(_load_json(raw), "reaction").get("id"), "reaction id")
+
+
 def parse_branch_rules(raw: bytes) -> frozenset[str]:
     """Reads ``GET /rules/branches/{branch}``: the active rules for a branch.
 
@@ -823,11 +859,18 @@ def evaluate(pull: PullRequest, commits: list[Commit], book: SignatureBook) -> V
     return Verdict(unsigned=unsigned, unlinked=unlinked)
 
 
-def add_signature(book: SignatureBook, comment: Comment, repo_id: int, pull_number: int) -> bytes:
+def render_signatures(entries: list[dict[str, object]]) -> bytes:
+    """Returns the signature file holding ``entries``, in order."""
+    doc = {"signedContributors": entries}
+    return (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def add_signature(book: SignatureBook, comment: Comment, repo_id: int, pull_number: int, cla_url: str) -> bytes:
     """Returns the signature file with the commenter's signature appended.
 
     The entry uses CLA Assistant Lite's fields, so the file stays readable by
-    either tool, plus ``claVersion``, the version of ``CLA.md`` accepted.
+    either tool, plus ``claUrl``, a permalink to the text of ``CLA.md``
+    accepted (see ``GitHub.agreement_url``).
     Existing entries are written back unchanged.
     """
     entry: dict[str, object] = {
@@ -837,13 +880,31 @@ def add_signature(book: SignatureBook, comment: Comment, repo_id: int, pull_numb
         "created_at": comment.created_at,
         "repoId": repo_id,
         "pullRequestNo": pull_number,
-        "claVersion": CLA_VERSION,
+        "claUrl": cla_url,
     }
-    doc = {"signedContributors": [*book.entries, entry]}
-    return (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    return render_signatures([*book.entries, entry])
 
 
-def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None) -> str:
+def recheck_command(login: str) -> str:
+    """Returns the comment that re-runs the check, such as ``@bookclerk recheck``.
+
+    The bot that reports the check is mentioned, so the command cannot be
+    mistaken for another tool's. ``login`` is a bot login (``<slug>[bot]``),
+    which is mentioned by its slug.
+    """
+    return f"@{login.removesuffix('[bot]')} {RECHECK_WORD}"
+
+
+def is_recheck(body: str, login: str) -> bool:
+    """Whether a comment body is the recheck command for bot ``login``.
+
+    Matched exactly once surrounding whitespace is trimmed, ignoring case,
+    like a mention.
+    """
+    return body.strip().casefold() == recheck_command(login).casefold()
+
+
+def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None, recheck: str = "") -> str:
     """Renders the check's comment on the pull request.
 
     Only validated logins, validated SHAs and ``cla_url`` reach the body; no
@@ -854,6 +915,7 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
     * ``cla_url``: the link to the agreement.
     * ``blocked_by``: another open pull request with the same head commit
       that still fails, when this one passes.
+    * ``recheck``: the command that re-runs the check (``recheck_command``).
 
     # Returns
     The Markdown body, starting with ``COMMENT_MARKER``.
@@ -869,7 +931,7 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
                 f" #{blocked_by} has the same head commit, and the check's status belongs to the commit."
             ),
             "",
-            f"Once #{blocked_by} is closed, pushed to, or signed, comment `{RECHECK_PHRASE}` here.",
+            f"Once #{blocked_by} is closed, pushed to, or signed, comment `{recheck}` here.",
         ]
         return "\n".join(lines) + "\n"
     lines.append(
@@ -887,7 +949,7 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
             "",
             *(f"- `{sha}`" for sha in verdict.unlinked),
         ]
-    lines += ["", f"Comment `{RECHECK_PHRASE}` to run the check again."]
+    lines += ["", f"Comment `{recheck}` to run the check again."]
     return "\n".join(lines) + "\n"
 
 
@@ -908,11 +970,27 @@ def status_description(verdict: Verdict) -> str:
 Transport = Callable[[str, str, "dict[str, object] | None"], "tuple[int, bytes]"]
 
 
+@dataclass(frozen=True)
+class Reporter:
+    """The bot account that posts the check's comment and status, and how to reach it."""
+
+    #: Sends that bot's requests, with its token.
+    send: Transport
+    #: The bot's login, such as ``bookclerk[bot]``; matches ``BOT_LOGIN``.
+    login: str
+
+
 class GitHub:
     """The few REST calls the check makes, over a ``Transport``."""
 
     def __init__(
-        self, send: Transport, repository: str, write: Transport | None = None, branch_files: dict[str, bytes] | None = None
+        self,
+        send: Transport,
+        repository: str,
+        write: Transport | None = None,
+        branch_files: dict[str, bytes] | None = None,
+        reporter: Reporter | None = None,
+        server: str = "https://github.com",
     ) -> None:
         """Wraps ``send`` for ``repository`` (``owner/name``).
 
@@ -924,6 +1002,10 @@ class GitHub:
           then fails closed).
         * ``branch_files``: the text of each of ``BRANCH_FILES`` by name,
           written when the first signature creates the branch.
+        * ``reporter``: who posts the check's comment and the ``CLA``
+          status, or ``None`` to post them through ``send`` as
+          ``WORKFLOW_COMMENT_AUTHOR``.
+        * ``server``: the web address of the GitHub server, for permalinks.
         """
         #: The function that performs requests.
         self.send = send
@@ -931,10 +1013,16 @@ class GitHub:
         self.write = write
         #: The files that start the signature branch beside the signatures.
         self.branch_files = branch_files or {}
+        #: Who posts the check's comment and status.
+        self.reporter = reporter or Reporter(send, WORKFLOW_COMMENT_AUTHOR)
         #: ``repos/<owner>/<name>``, the prefix of every REST path.
         self.base = f"repos/{repository}"
         #: The repository's owner and name, for GraphQL.
         self.owner, self.name = repository.split("/", 1)
+        #: The web address of the repository, for permalinks.
+        self.web = f"{server}/{repository}"
+        #: The permalink to the agreement, once read.
+        self.agreement: str | None = None
         #: The head commit of the pull request being checked, once known, so
         #: a failed run can still report ``error`` there.
         self.head_sha: str | None = None
@@ -1074,11 +1162,13 @@ class GitHub:
         data, blob = parse_contents(raw)
         return parse_signatures(data), blob
 
-    def create_signature_branch(self, write: Transport, data: bytes, message: str) -> bool:
+    def create_signature_branch(self, write: Transport) -> bool:
         """Creates ``SIGNATURE_BRANCH`` as one commit with no parents.
 
-        The commit holds the signature file and ``BRANCH_FILES``, which say
-        what the branch is and how to set the check up.
+        The commit holds ``BRANCH_FILES``, which say what the branch is and
+        how to set the check up, and a signature file with no entries. The
+        first signature is a separate commit on top, so no signer's name
+        is attached to the branch's own files.
 
         The tree, commit and branch are created with ``write``, the
         automation App's transport, so the commit is the App's and GitHub
@@ -1096,12 +1186,13 @@ class GitHub:
             if text is None:
                 raise ApiError(f"scripts/cla_branch/{name} is missing, so the signature branch cannot be started")
             entries.append({"path": name, "mode": mode, "type": "blob", "content": text.decode("utf-8")})
-        entries.append({"path": SIGNATURE_PATH, "mode": "100644", "type": "blob", "content": data.decode("utf-8")})
+        empty = render_signatures([])
+        entries.append({"path": SIGNATURE_PATH, "mode": "100644", "type": "blob", "content": empty.decode("utf-8")})
         status, raw = write("POST", f"{self.base}/git/trees", {"tree": entries})
         if status != 201:
             raise ApiError(f"POST git/trees: HTTP {status}")
         tree = parse_git_object(raw)
-        status, raw = write("POST", f"{self.base}/git/commits", {"message": message, "tree": tree, "parents": []})
+        status, raw = write("POST", f"{self.base}/git/commits", {"message": BRANCH_START_MESSAGE, "tree": tree, "parents": []})
         if status != 201:
             raise ApiError(f"POST git/commits: HTTP {status}")
         commit = parse_git_object(raw)
@@ -1117,13 +1208,30 @@ class GitHub:
             raise ApiError(f"POST git/refs: HTTP {status}")
         return True
 
+    def agreement_url(self) -> str:
+        """Returns a permalink to ``CLA_PATH`` at the last commit that changed it.
+
+        Every signer of the same text records the same link, and editing the
+        agreement changes it, so each entry names the exact text accepted.
+
+        # Errors
+        ``ApiError`` when the default branch has no ``CLA_PATH``.
+        """
+        if self.agreement is None:
+            commits = parse_commit_page(self.call("GET", f"commits?path={CLA_PATH}&per_page=1"))
+            if not commits:
+                raise ApiError(f"{CLA_PATH} has no commits on the default branch")
+            self.agreement = f"{self.web}/blob/{commits[0].sha}/{CLA_PATH}"
+        return self.agreement
+
     def record(self, comment: Comment, repo_id: int, pull_number: int) -> SignatureBook:
         """Appends the commenter's signature unless it is already there.
 
         Retries when another run replaced the file between the read and the
         write. The write goes through ``self.write``, so the commit is made,
         and signed, by the automation App. The first signature creates the
-        file, and the branch too when it does not exist.
+        file, or first starts the branch (see ``create_signature_branch``)
+        when it does not exist.
 
         # Errors
         ``ApiError`` when no signature token is configured, the write is
@@ -1139,13 +1247,14 @@ class GitHub:
             write = self.write
             if write is None:
                 raise ApiError("CLA_SIGNATURE_TOKEN is not set, so signatures cannot be recorded")
-            data = add_signature(book, comment, repo_id, pull_number)
+            data = add_signature(book, comment, repo_id, pull_number, self.agreement_url())
             message = f"chore(cla): record @{comment.author.login}'s signature from #{pull_number}"
             if blob is None:
                 branch, _ = self.send("GET", f"{self.base}/git/ref/heads/{SIGNATURE_BRANCH}", None)
                 if branch == 404:
-                    if self.create_signature_branch(write, data, message):
-                        return parse_signatures(data)
+                    # Started with no entries (or by another run); the
+                    # next pass appends the signature on top.
+                    self.create_signature_branch(write)
                     continue
                 if branch != 200:
                     raise ApiError(f"GET git/ref/heads/{SIGNATURE_BRANCH}: HTTP {branch}")
@@ -1161,7 +1270,39 @@ class GitHub:
                 return parse_signatures(data)
             if status not in (409, 422):
                 raise ApiError(f"PUT contents/{SIGNATURE_PATH}: HTTP {status}")
-        raise ApiError("the signature file kept changing; try recheck")
+        raise ApiError("the signature file kept changing; try the recheck command")
+
+    def react(self, comment_id: int, content: str) -> int | None:
+        """Adds reaction ``content`` to a comment, as the reporter.
+
+        Reactions only show progress, so a refusal, or a network failure, is
+        printed as a warning and never fails the check.
+
+        # Returns
+        The reaction's id, or ``None`` when it could not be added.
+        """
+        try:
+            status, raw = self.reporter.send("POST", f"{self.base}/issues/comments/{comment_id}/reactions", {"content": content})
+        except OSError as err:
+            print(f"::warning::cannot add the {content} reaction to comment {comment_id} ({err})")
+            return None
+        if status in (200, 201):
+            try:
+                return parse_reaction(raw)
+            except ClaInputError:
+                pass
+        print(f"::warning::cannot add the {content} reaction to comment {comment_id} (HTTP {status})")
+        return None
+
+    def unreact(self, comment_id: int, reaction_id: int) -> None:
+        """Removes the reporter's reaction ``reaction_id`` from a comment, warning on a refusal or network failure."""
+        try:
+            status, _ = self.reporter.send("DELETE", f"{self.base}/issues/comments/{comment_id}/reactions/{reaction_id}", None)
+        except OSError as err:
+            print(f"::warning::cannot remove reaction {reaction_id} from comment {comment_id} ({err})")
+            return
+        if status != 204:
+            print(f"::warning::cannot remove reaction {reaction_id} from comment {comment_id} (HTTP {status})")
 
     def branch_rules(self) -> frozenset[str]:
         """Reads the rule types that apply to ``SIGNATURE_BRANCH``."""
@@ -1169,16 +1310,26 @@ class GitHub:
 
     def set_status(self, sha: str, state: str, description: str, target_url: str) -> None:
         """Posts the ``CLA`` commit status on ``sha``."""
-        self.call("POST", f"statuses/{sha}", {"state": state, "context": STATUS_CONTEXT, "description": description, "target_url": target_url})
+        self.report("POST", f"statuses/{sha}", {"state": state, "context": STATUS_CONTEXT, "description": description, "target_url": target_url})
 
     def upsert_comment(self, number: int, comments: list[Comment], body: str, create: bool) -> None:
         """Edits the check's comment among ``comments``, or posts one when ``create`` is true."""
-        existing = own_comment(comments)
+        existing = own_comment(comments, self.reporter.login)
         if existing is not None:
             if existing.body != body:
-                self.call("PATCH", f"issues/comments/{existing.id}", {"body": body})
+                self.report("PATCH", f"issues/comments/{existing.id}", {"body": body})
         elif create:
-            self.call("POST", f"issues/{number}/comments", {"body": body})
+            self.report("POST", f"issues/{number}/comments", {"body": body})
+
+    def report(self, method: str, path: str, body: dict[str, object]) -> None:
+        """Sends one comment or status request through the reporter's transport.
+
+        # Errors
+        ``ApiError`` when the response is not a success.
+        """
+        status, _ = self.reporter.send(method, f"{self.base}/{path}", body)
+        if status not in (200, 201):
+            raise ApiError(f"{method} {path}: HTTP {status}")
 
 
 def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
@@ -1211,6 +1362,11 @@ def run(event: Event, api: GitHub, cla_url: str, run_url: str) -> None:
             check_pull(event, api, number, cla_url, run_url)
         return
     if event.pull_number is not None:
+        comment = event.comment
+        if comment is not None and SIGN_TRIGGER not in comment.body and not is_recheck(comment.body, api.reporter.login):
+            # Only a signing attempt or the recheck command runs the check;
+            # another comment that merely contains the word is ignored.
+            return
         check_pull(event, api, event.pull_number, cla_url, run_url)
 
 
@@ -1238,12 +1394,17 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
         # The listing can lag behind the event that started the run.
         comments.append(event.comment)
     for comment in signing_comments(comments, verdict):
+        # 👀 while the signature is being recorded, then 👍 once it is.
+        seen = api.react(comment.id, SEEN_REACTION)
         book = api.record(comment, event.repo_id, pull.number)
+        api.react(comment.id, SIGNED_REACTION)
+        if seen is not None:
+            api.unreact(comment.id, seen)
     for _ in range(STATUS_ATTEMPTS):
         verdict = evaluate(pull, commits, book)
         blocked_by = blocking_pull(api, pull, book) if verdict.passed else None
         passed = verdict.passed and blocked_by is None
-        api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by), create=not passed)
+        api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by, recheck_command(api.reporter.login)), create=not passed)
         if blocked_by is not None:
             description = f"CLA: #{blocked_by}, which shares this commit, still needs signatures."
         else:
@@ -1301,10 +1462,14 @@ def settle(api: GitHub, sha: str, book: SignatureBook, run_url: str) -> None:
         api.set_status(sha, "success", status_description(verdicts[0][1]), run_url)
 
 
-def own_comment(comments: list[Comment]) -> Comment | None:
-    """Finds the check's earlier comment, which only the workflow's bot can post."""
+def own_comment(comments: list[Comment], author: str) -> Comment | None:
+    """Finds the check's earlier comment, which only the bot ``author`` can post.
+
+    A comment another bot posted (the workflow's, from before an App was
+    configured) is left alone, since only its author may edit it.
+    """
     for comment in comments:
-        if comment.author.login == COMMENT_AUTHOR and comment.author.type is AccountType.BOT and comment.body.startswith(COMMENT_MARKER):
+        if comment.author.login == author and comment.author.type is AccountType.BOT and comment.body.startswith(COMMENT_MARKER):
             return comment
     return None
 
@@ -1394,8 +1559,16 @@ def main(env: dict[str, str]) -> int:
     api_url = env.get("GITHUB_API_URL", "https://api.github.com")
     signature_token = env.get("CLA_SIGNATURE_TOKEN", "")
     write = urllib_transport(signature_token, api_url) if signature_token else None
+    reporter = None
+    app_slug = env.get("CLA_APP_SLUG", "")
+    if write is not None and app_slug:
+        login = f"{app_slug}[bot]"
+        if BOT_LOGIN.fullmatch(login) is None:
+            print("cla_check: CLA_APP_SLUG is not an App slug", file=sys.stderr)
+            return 1
+        reporter = Reporter(write, login)
     branch_files = load_branch_files(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cla_branch"))
-    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write, branch_files)
+    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write, branch_files, reporter, server)
     run_url = f"{server}/{repository}/actions/runs/{env.get('GITHUB_RUN_ID', '')}"
     # `HEAD` names the default branch, whatever it is called.
     cla_url = f"{server}/{repository}/blob/HEAD/CLA.md"
@@ -1411,14 +1584,20 @@ def main(env: dict[str, str]) -> int:
         run(event, api, cla_url, run_url)
     except (ApiError, ClaInputError) as err:
         print(f"cla_check: {err}", file=sys.stderr)
-        sha = api.head_sha
+        sha = api.head_sha or event.merge_group_sha
         if sha is None and event.run_head is not None:
             sha = event.run_head.sha
         if sha is not None:
             try:
                 api.set_status(sha, "error", "The CLA check could not decide; see the run.", run_url)
             except ApiError:
-                pass
+                # The App may be what failed (a missing permission, say), so
+                # still leave a visible error from the workflow.
+                fallback = GitHub(api.send, repository)
+                try:
+                    fallback.set_status(sha, "error", "The CLA check could not decide; see the run.", run_url)
+                except ApiError:
+                    pass
         return 1
     return 0
 
