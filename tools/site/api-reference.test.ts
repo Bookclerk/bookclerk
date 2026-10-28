@@ -730,3 +730,120 @@ test("an operations page offers the filter its operations by method and path", (
     ],
   });
 });
+
+test("property lists become property rows with a folded nested object", () => {
+  const page = `# Books
+
+## \`POST /api/books\`
+
+### Parameters
+
+- \`id\` (path) *integer*, **required** — Book id.
+- \`full\` (query) *boolean* — default \`false\`
+
+### Request body
+
+- \`title\` *string*, **required** — Shown on two lines.
+- \`meta\` *object*
+  - \`pages\` *integer or null* — at least 1
+  - \`status\` *[\`Status\`](schemas.md#status)*
+`;
+  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  assert.ok(
+    out.html.includes(
+      '<ul class="api-props">\n<li class="api-prop"><span class="api-prop-head"><code class="api-prop-name">id</code><span class="api-prop-in">path</span><span class="api-prop-type">integer</span><span class="api-prop-required">required</span></span><span class="api-prop-desc">Book id.</span></li>',
+    ),
+  );
+  assert.ok(
+    out.html.includes(
+      '<code class="api-prop-name">full</code><span class="api-prop-in">query</span><span class="api-prop-type">boolean</span></span><span class="api-prop-desc">default <code>false</code></span></li>',
+    ),
+    "an optional parameter has no required mark",
+  );
+  assert.ok(
+    out.html.includes(
+      '<code class="api-prop-name">meta</code><span class="api-prop-type">object</span></span><details class="api-prop-nested"><summary>2 fields</summary>\n<ul class="api-props">\n<li class="api-prop"><span class="api-prop-head"><code class="api-prop-name">pages</code>',
+    ),
+    "a nested object folds, closed, with its field count",
+  );
+  assert.ok(
+    out.html.includes(
+      '<span class="api-prop-type"><a href="/docs/api/web/schemas#status"><code>Status</code></a></span>',
+    ),
+    "a linked type keeps its link",
+  );
+  assert.equal(out.html.split("<details").length, out.html.split("</details>").length);
+});
+
+test("response lists become status rows whose body fields start open", () => {
+  const page = `# Books
+
+## \`GET /api/books/{id}\`
+
+### Responses
+
+- \`200\` — The book. Body: [\`Book\`](schemas.md#book) (\`application/json\`)
+  - \`id\` *integer (int64)*, **required** — Its id.
+- \`404\` — No such book. No body.
+- \`default\` — Anything else.
+`;
+  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  assert.ok(
+    out.html.includes(
+      '<li class="api-prop api-response-item"><span class="api-prop-head"><span class="api-status api-status-2xx">200</span></span><span class="api-prop-desc">The book. Body: <a href="/docs/api/web/schemas#book"><code>Book</code></a> (<code>application/json</code>)</span><details class="api-prop-nested" open><summary>1 field</summary>',
+    ),
+  );
+  assert.ok(
+    out.html.includes(
+      '<span class="api-status api-status-4xx">404</span></span><span class="api-prop-desc">No such book. No body.</span></li>',
+    ),
+  );
+  assert.ok(out.html.includes('<span class="api-status">default</span>'));
+});
+
+test("lists that are not property lists pass through, on every Web API page", () => {
+  const page = `# Schemas
+
+## Book
+
+- \`id\` *integer*, **required** — Its id.
+
+Notes:
+
+- one
+- \`two\` *not* a property
+- \`three\` *type* — but the next is not
+- plain
+`;
+  const out = renderDoc(page, "api/web/schemas", { blobBase: BLOB });
+  assert.equal(out.html.split('<ul class="api-props">').length, 2, "the schemas page gets rows");
+  assert.ok(
+    out.html.includes("<ul>\n<li>one</li>\n<li><code>two</code> <em>not</em> a property</li>"),
+  );
+  const guide = renderDoc(page, "guide/schemas", { blobBase: BLOB });
+  assert.ok(!guide.html.includes("api-props"), "other pages keep their lists");
+});
+
+test("only the generator's forms become property rows", () => {
+  const isRow = (source: string): boolean =>
+    renderDoc(`- ${source}\n`, "api/web/x", { blobBase: BLOB }).html.includes('class="api-prop');
+  for (const bad of [
+    "`a`",
+    "`a` integer",
+    "`a` *integer* more",
+    "`a` (body) *integer*",
+    "`a` *integer*, required",
+    "`a` *integer* — ",
+    "`200` desc",
+    "`600` — desc",
+  ])
+    assert.equal(isRow(bad), false, bad);
+  for (const good of [
+    "`a` *integer*",
+    "`a` *x*, **required**",
+    "`a` *x* — d",
+    "`2XX` — d",
+    "`a` (cookie) *x* — d",
+  ])
+    assert.equal(isRow(good), true, good);
+});

@@ -157,19 +157,31 @@ class RenderTest(unittest.TestCase):
         self.assertIn("**Access:** Any session.", page)
         self.assertIn("**Credentials:** `token` or `cookie`", page)
         # Path parameters come first and are always required.
-        self.assertLess(page.index("| `id` | path |"), page.index("| `full` | query |"))
-        self.assertIn("| `id` | path | integer | yes | Book id. |", page)
-        self.assertIn("| `full` | query | boolean | no | default `false` |", page)
-        self.assertIn("| 200 | The book. | [`Book`](schemas.md#book) (`application/json`) |", page)
-        self.assertIn("| 404 | No \\| such book. |  |", page)
+        self.assertLess(page.index("- `id` (path)"), page.index("- `full` (query)"))
+        self.assertIn("- `id` (path) *integer*, **required** — Book id.\n", page)
+        self.assertIn("- `full` (query) *boolean* — default `false`\n", page)
+        # A success response lists its object's fields; other statuses keep the link.
+        self.assertIn(
+            "- `200` — The book. Body: [`Book`](schemas.md#book) (`application/json`)\n  - `id` *integer (int64)*, **required** — Its id.\n  - `status` *[`Status`](schemas.md#status)*, **required**\n",
+            page,
+        )
+        self.assertIn("- `404` — No | such book. No body.\n", page)
+        # An array of objects lists the fields of one item.
+        doc = json.loads(json.dumps(DOCUMENT))
+        doc["paths"]["/books"]["get"] = {
+            "tags": ["Books"],
+            "responses": {"200": {"description": "All.", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Book"}}}}}},
+        }
+        listing = om.Document(doc).render_all()["books.md"].split("## `GET /books`")[1]
+        self.assertIn("- `200` — All. Body: array of [`Book`](schemas.md#book) (`application/json`)\n  - `id` *integer (int64)*, **required** — Its id.\n", listing)
         self.assertIn("**Deprecated.**", page)
         self.assertIn("**Credentials:** none", page)
 
     def test_path_parameters_merge_and_open_security(self) -> None:
         shelf = self.pages["books.md"].split("## `GET /shelves/{shelf}`")[1]
-        self.assertIn("| `shelf` | path | string | yes | Shared. |", shelf)
+        self.assertIn("- `shelf` (path) *string*, **required** — Shared.\n", shelf)
         # The operation's own parameter replaces the path's one of the same name and place.
-        self.assertIn("| `lang` | query | string | no | Operation level. |", shelf)
+        self.assertIn("- `lang` (query) *string* — Operation level.\n", shelf)
         self.assertNotIn("Path level.", shelf)
         # An empty security list means the route is open.
         self.assertIn("**Credentials:** none", shelf)
@@ -177,9 +189,10 @@ class RenderTest(unittest.TestCase):
     def test_request_body_fields_flatten_inline_objects(self) -> None:
         page = self.pages["books.md"]
         self.assertIn("`application/json`: object", page)
-        self.assertIn("| `title` | string | yes | Shown on two lines. |", page)
-        self.assertIn("| `meta.pages` | integer or null | no | at least 1 |", page)
-        self.assertIn("| 201 | Added. | binary (`image/png`) |", page)
+        self.assertIn("- `title` *string*, **required** — Shown on two lines.\n", page)
+        # An inline object's fields nest under it.
+        self.assertIn("- `meta` *object*\n  - `pages` *integer or null* — at least 1\n", page)
+        self.assertIn("- `201` — Added. Body: binary (`image/png`)\n", page)
         self.assertNotIn("Optional.", page.split("## `POST /books`")[1])
 
     def test_example_request(self) -> None:
@@ -373,14 +386,14 @@ class RenderTest(unittest.TestCase):
 
     def test_schema_page(self) -> None:
         schemas = self.pages["schemas.md"]
-        self.assertIn("| `id` | integer (int64) | yes | Its id. |", schemas)
-        self.assertIn("| `status` | [`Status`](#status) | yes |  |", schemas)
-        self.assertIn("| `tags` | array of string | no | no duplicates |", schemas)
-        self.assertIn("| `extra` | map of string to [`Status`](#status) | no |  |", schemas)
-        self.assertIn("| `count` | integer or `all` | no | How many. |", schemas)
+        self.assertIn("- `id` *integer (int64)*, **required** — Its id.\n", schemas)
+        self.assertIn("- `status` *[`Status`](#status)*, **required**\n", schemas)
+        self.assertIn("- `tags` *array of string* — no duplicates\n", schemas)
+        self.assertIn("- `extra` *map of string to [`Status`](#status)*\n", schemas)
+        self.assertIn("- `count` *integer or `all`* — How many.\n", schemas)
         self.assertIn("Type: one of `new`, `old`", schemas)
         self.assertIn("Includes every field of [`Book`](#book).", schemas)
-        self.assertIn("| `note` | string | no |  |", schemas)
+        self.assertIn("- `note` *string*\n", schemas)
         # Alphabetical, whatever order the document lists them in.
         self.assertLess(schemas.index("## Status"), schemas.index("## Wrapped"))
 
@@ -417,6 +430,10 @@ class HelpersTest(unittest.TestCase):
         # A setext underline takes the whole paragraph, and never an indented code line.
         self.assertEqual(om.nested("Para one\npara two\n===", 2), "### Para one para two")
         self.assertEqual(om.nested("Intro\n\n    indented code\n---", 2), "Intro\n\n    indented code\n---")
+
+    def test_null_carries_no_format(self) -> None:
+        document = om.Document(DOCUMENT)
+        self.assertEqual(document.type_of({"type": ["integer", "null"], "format": "int64"}, "x.md"), "integer (int64) or null")
 
     def test_description_joins_constraints(self) -> None:
         document = om.Document(DOCUMENT)

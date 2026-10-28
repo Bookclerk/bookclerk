@@ -517,8 +517,13 @@ Rust crates and the web UI library.
   schemas or saying why there is no JSON body; the request
   sends only required fields, since optional ones can be alternatives
   that must not be sent together), and a page of
-  schemas. A request body that names a schema lists that schema's fields
-  in place, so a route reads without a trip to the schemas page.
+  schemas. Parameters, body fields and responses are lists, one item per
+  property (`` `name` (path) *type*, **required** — description ``), with
+  an inline object's fields nested under it. A request body that names a
+  schema lists that schema's fields in place, and a success response
+  whose JSON body is an object lists its fields too, so a route reads
+  without a trip to the schemas page; error bodies are shared, so they
+  keep the link only.
   - The website lays the route group pages out like an OpenAPI viewer
     (`tools/site/api-reference.ts`): a method badge beside each path, the
     examples in a second column when the reading column is wide enough,
@@ -528,6 +533,12 @@ Rust crates and the web UI library.
     the shared start of each deeper path written once above the routes
     under it. Every method badge is the same width so the paths line up,
     and the rail is sized to fit the longest path on one line.
+  - The property lists become property rows (`tools/site/api-reference.ts`
+    `layoutProperties`): name, location, type and a required mark on one
+    line, the description under it, a nested object's fields folded with
+    their count, and a response's body fields open under its status mark.
+    Any other list, and the tables of pages generated before this format,
+    pass through unchanged.
   - The example responses become one panel per status with a colored
     status mark; with two or more, the page's script shows them as tabs
     in one card. The example request's samples become one panel per

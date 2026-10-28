@@ -22,6 +22,7 @@ import {
   isApiOperationsPage,
   layoutIndex,
   layoutOperations,
+  layoutProperties,
   methodClass,
   operationMeta,
   routeTree,
@@ -387,6 +388,14 @@ function renderer(
   if (isApiOperationsPage(docKey)) {
     md.core.ruler.after("heading_ids", "api_operations", (state) => {
       state.tokens = layoutOperations(
+        state.tokens,
+        (type, tag, nesting) => new state.Token(type, tag, nesting),
+      );
+    });
+  }
+  if (docKey.startsWith("api/web/")) {
+    md.core.ruler.after("heading_ids", "api_properties", (state) => {
+      state.tokens = layoutProperties(
         state.tokens,
         (type, tag, nesting) => new state.Token(type, tag, nesting),
       );
