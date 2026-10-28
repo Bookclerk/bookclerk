@@ -4,7 +4,7 @@
 // by a fake that records what the Worker asks of it.
 
 import assert from "node:assert/strict";
-import { beforeEach, describe, it } from "node:test";
+import { beforeEach, describe, it } from "vitest";
 import { type Deps, handle, resetEstimateCache, sweep, withBanner } from "../src/app.ts";
 import type { Env, SessionApi } from "../src/env.ts";
 import { finish, recordStartup } from "../src/limits.ts";

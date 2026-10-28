@@ -9,7 +9,12 @@
     "lib": ["ES2023"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "types": ["@cloudflare/workers-types", "node"],
+    "types": [
+      "@cloudflare/workers-types",
+      "@cloudflare/vitest-plugin/types",
+      "node",
+      "vite/client"
+    ],
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
@@ -27,5 +32,5 @@
     "useUnknownInCatchVariables": true,
     "skipLibCheck": true
   },
-  "include": ["src/*.ts", "scripts/*.ts", "test/*.ts", "test-support/*.ts"]
+  "include": ["src/*.ts", "scripts/*.ts", "test/*.ts", "test-support/*.ts", "vitest.config.ts"]
 }

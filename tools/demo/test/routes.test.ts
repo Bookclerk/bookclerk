@@ -4,16 +4,15 @@
 // download, link nodes, install plugins or change sign-in stay refused.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { describe, it } from "node:test";
-import { URL } from "node:url";
+import { describe, it } from "vitest";
+// Read by Vite when it transforms this test, so the test runs inside the
+// Workers runtime without a view of the repository.
+import OPENAPI from "../../../crates/bookclerkd/openapi.json?raw";
 import { classify, OPERATIONS } from "../src/routes.ts";
 
 /** Every (method, path) in the API description. */
 function apiOperations() {
-  const spec = JSON.parse(
-    readFileSync(new URL("../../../crates/bookclerkd/openapi.json", import.meta.url), "utf8"),
-  ) as {
+  const spec = JSON.parse(OPENAPI) as {
     paths: Record<string, Record<string, unknown>>;
   };
   const out: string[] = [];
