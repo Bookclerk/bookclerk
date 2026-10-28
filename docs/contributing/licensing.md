@@ -155,30 +155,42 @@ closed.
 
 Signatures are recorded in `signatures/cla.json` on the `cla-signatures`
 branch, so recording one needs no pull request and no bypass of the main
-branch rules. The copy on `main` stays empty and only seeds the branch.
-Each signature is one commit made through the API by the
-[automation App](automation.md#automation-app), so GitHub signs it
-for the App and nothing else needs to push there.
+branch rules. The branch holds only that file and shares no history with
+`main`. The first signature creates it as a single commit with no parents,
+beside a `README.md` that says what the branch is and how to set the check
+up in another repository, and a `setup-rulesets.sh` that protects it (both
+copied from [`scripts/cla_branch/`](../../scripts/cla_branch/README.md)). Each later
+signature is one more commit on top. Every commit is made
+through the API by the [automation App](automation.md#automation-app), so
+GitHub signs it for the App and nothing else needs to push there. Until the
+branch exists, nobody has signed, so every pull request that needs a
+signature fails the check.
 
 Setup, once, by a repository administrator:
 
-1. Create the `cla-signatures` branch from `main`, so it starts with
-   `main`'s empty `signatures/cla.json`. The check fails until the file
-   exists.
+1. Don't create the `cla-signatures` branch yourself; the first signature
+   creates it. To start over, delete the branch while its rulesets are
+   disabled (or before you add them). Every signature on it is lost, so
+   contributors sign again.
 2. Make sure the automation App's secrets are set (see
    [the automation App](automation.md#automation-app)). Without them
    the check still decides, but it cannot record a new signature and
    reports an error instead.
-3. Add two branch rulesets targeting `cla-signatures`. A bypass exempts
-   an actor only from the ruleset that lists it, so splitting the rules
-   lets the App add commits while nobody, the App included, can rewrite
-   them:
+3. Add two branch rulesets targeting `cla-signatures`, by hand or with
+   `bash scripts/cla_branch/setup-rulesets.sh OWNER/REPO APP_SLUG` run
+   with your own GitHub CLI login (the App never needs the Administration
+   permission). A bypass exempts an actor only from the ruleset that lists
+   it, so splitting the rules lets the App add commits while nobody, the
+   App included, can rewrite them:
    - **Restrict creations** and **Restrict updates**, with only the
      automation App on the bypass list, so only the App can add commits.
    - **Restrict deletions**, **Block force pushes**, **Require linear
      history** and **Require signed commits**, with an empty bypass list.
      The App's commits already meet these, because each is one
      GitHub-signed commit on top of the branch.
+
+   Every run of the check reads the rules that apply to `cla-signatures`
+   and posts a workflow warning naming any of these that is missing.
 4. After the check has run on a pull request, add the **CLA** status to the
    required checks in the main branch ruleset, with **GitHub Actions** as
    its expected source, so no other app that can post statuses can satisfy

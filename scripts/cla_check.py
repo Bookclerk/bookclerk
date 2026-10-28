@@ -20,8 +20,9 @@ and their signature covers what they submit (CLA section 4).
 The verdict is the ``CLA`` commit status on the pull request's head commit.
 Signatures live in ``signatures/cla.json`` on the ``cla-signatures`` branch,
 in the format CLA Assistant Lite used, and are written through the contents
-API with the automation App's token. One comment, marked with ``COMMENT_MARKER``, says who still has to sign
-and is edited in place.
+API with the automation App's token; the first signature creates the branch
+as a single commit with no history. One comment, marked with
+``COMMENT_MARKER``, says who still has to sign and is edited in place.
 
 Everything that parses bytes from GitHub (the event payload, pull requests,
 commit and comment pages, the signature file) is sans-IO and fuzzed by
@@ -69,6 +70,24 @@ SIGNATURE_BRANCH = "cla-signatures"
 
 #: Path of the signature file on ``SIGNATURE_BRANCH``.
 SIGNATURE_PATH = "signatures/cla.json"
+
+#: Files the first signature writes beside the signature file, so the branch
+#: explains itself: name on the branch, file mode. Their text comes from
+#: ``scripts/cla_branch/`` on the default branch.
+BRANCH_FILES = (("README.md", "100644"), ("setup-rulesets.sh", "100755"))
+
+#: Ruleset rule types that must apply to ``SIGNATURE_BRANCH``: only the App
+#: may create or update it, and nobody may delete it, force-push, merge
+#: into it or push unsigned commits. Each run warns about missing ones.
+SIGNATURE_BRANCH_RULES = frozenset(
+    {"creation", "update", "deletion", "non_fast_forward", "required_linear_history", "required_signatures"}
+)
+
+#: Most rules a branch rules answer may list.
+MAX_BRANCH_RULES = 200
+
+#: A ruleset rule type, such as ``non_fast_forward``.
+RULE_TYPE = re.compile(r"[a-z][a-z_]{0,63}", re.ASCII)
 
 #: Bot accounts exempt from signing. Only API accounts of type ``Bot`` match,
 #: and ``[bot]`` logins cannot be registered by people.
@@ -729,6 +748,40 @@ def parse_contents(raw: bytes) -> tuple[bytes, str]:
     return data, blob
 
 
+def parse_git_object(raw: bytes) -> str:
+    """Reads the response to creating a git tree or commit.
+
+    # Returns
+    The new object's SHA-1.
+
+    # Errors
+    ``ClaInputError`` when the response is not an object with a ``sha``.
+    """
+    return _sha(_object(_load_json(raw), "git object").get("sha"), "git object sha")
+
+
+def parse_branch_rules(raw: bytes) -> frozenset[str]:
+    """Reads ``GET /rules/branches/{branch}``: the active rules for a branch.
+
+    # Returns
+    The rule types that apply.
+
+    # Errors
+    ``ClaInputError`` when the answer is not a list of at most
+    ``MAX_BRANCH_RULES`` objects, each with a lowercase ``type``.
+    """
+    rules = _load_json(raw)
+    if not isinstance(rules, list) or len(rules) > MAX_BRANCH_RULES:
+        raise ClaInputError("branch rules are not a list of at most 200")
+    types = set()
+    for rule in rules:
+        kind = _string(_object(rule, "branch rule").get("type"), "rule type")
+        if RULE_TYPE.fullmatch(kind) is None:
+            raise ClaInputError("rule type is malformed")
+        types.add(kind)
+    return frozenset(types)
+
+
 def is_exempt(account: Account) -> bool:
     """Whether ``account`` is one of the bots that need not sign."""
     return account.type is AccountType.BOT and account.login in BOT_ALLOWLIST
@@ -858,7 +911,9 @@ Transport = Callable[[str, str, "dict[str, object] | None"], "tuple[int, bytes]"
 class GitHub:
     """The few REST calls the check makes, over a ``Transport``."""
 
-    def __init__(self, send: Transport, repository: str, write: Transport | None = None) -> None:
+    def __init__(
+        self, send: Transport, repository: str, write: Transport | None = None, branch_files: dict[str, bytes] | None = None
+    ) -> None:
         """Wraps ``send`` for ``repository`` (``owner/name``).
 
         # Arguments
@@ -867,11 +922,15 @@ class GitHub:
         * ``write``: performs signature writes, with the automation App's
           token, or ``None`` when none is configured (recording a signature
           then fails closed).
+        * ``branch_files``: the text of each of ``BRANCH_FILES`` by name,
+          written when the first signature creates the branch.
         """
         #: The function that performs requests.
         self.send = send
         #: The function that writes the signature file, if any.
         self.write = write
+        #: The files that start the signature branch beside the signatures.
+        self.branch_files = branch_files or {}
         #: ``repos/<owner>/<name>``, the prefix of every REST path.
         self.base = f"repos/{repository}"
         #: The repository's owner and name, for GraphQL.
@@ -999,17 +1058,72 @@ class GitHub:
                 return comments
             page += 1
 
-    def signatures(self) -> tuple[SignatureBook, str]:
-        """Reads the signature file and its blob SHA from ``SIGNATURE_BRANCH``."""
-        data, blob = parse_contents(self.call("GET", f"contents/{SIGNATURE_PATH}?ref={SIGNATURE_BRANCH}"))
+    def signatures(self) -> tuple[SignatureBook, str | None]:
+        """Reads the signature file and its blob SHA from ``SIGNATURE_BRANCH``.
+
+        # Returns
+        The signatures and the file's blob SHA, or an empty book and ``None``
+        when the branch or the file does not exist yet. Nobody has signed
+        then, so every check that needs a signature fails.
+        """
+        status, raw = self.send("GET", f"{self.base}/contents/{SIGNATURE_PATH}?ref={SIGNATURE_BRANCH}", None)
+        if status == 404:
+            return SignatureBook(entries=(), signed_ids=frozenset()), None
+        if status != 200:
+            raise ApiError(f"GET contents/{SIGNATURE_PATH}: HTTP {status}")
+        data, blob = parse_contents(raw)
         return parse_signatures(data), blob
+
+    def create_signature_branch(self, write: Transport, data: bytes, message: str) -> bool:
+        """Creates ``SIGNATURE_BRANCH`` as one commit with no parents.
+
+        The commit holds the signature file and ``BRANCH_FILES``, which say
+        what the branch is and how to set the check up.
+
+        The tree, commit and branch are created with ``write``, the
+        automation App's transport, so the commit is the App's and GitHub
+        signs it.
+
+        # Returns
+        ``False`` when another run created the branch first.
+
+        # Errors
+        ``ApiError`` when GitHub refuses a step.
+        """
+        entries: list[dict[str, object]] = []
+        for name, mode in BRANCH_FILES:
+            text = self.branch_files.get(name)
+            if text is None:
+                raise ApiError(f"scripts/cla_branch/{name} is missing, so the signature branch cannot be started")
+            entries.append({"path": name, "mode": mode, "type": "blob", "content": text.decode("utf-8")})
+        entries.append({"path": SIGNATURE_PATH, "mode": "100644", "type": "blob", "content": data.decode("utf-8")})
+        status, raw = write("POST", f"{self.base}/git/trees", {"tree": entries})
+        if status != 201:
+            raise ApiError(f"POST git/trees: HTTP {status}")
+        tree = parse_git_object(raw)
+        status, raw = write("POST", f"{self.base}/git/commits", {"message": message, "tree": tree, "parents": []})
+        if status != 201:
+            raise ApiError(f"POST git/commits: HTTP {status}")
+        commit = parse_git_object(raw)
+        status, _ = write("POST", f"{self.base}/git/refs", {"ref": f"refs/heads/{SIGNATURE_BRANCH}", "sha": commit})
+        if status == 422:
+            # Either another run created the branch first, or a ruleset
+            # refused the new ref; only the first is worth retrying.
+            exists, _ = self.send("GET", f"{self.base}/git/ref/heads/{SIGNATURE_BRANCH}", None)
+            if exists == 200:
+                return False
+            raise ApiError(f"POST git/refs: HTTP 422 and {SIGNATURE_BRANCH} does not exist (refused by a ruleset?)")
+        if status != 201:
+            raise ApiError(f"POST git/refs: HTTP {status}")
+        return True
 
     def record(self, comment: Comment, repo_id: int, pull_number: int) -> SignatureBook:
         """Appends the commenter's signature unless it is already there.
 
         Retries when another run replaced the file between the read and the
         write. The write goes through ``self.write``, so the commit is made,
-        and signed, by the automation App.
+        and signed, by the automation App. The first signature creates the
+        file, and the branch too when it does not exist.
 
         # Errors
         ``ApiError`` when no signature token is configured, the write is
@@ -1022,24 +1136,36 @@ class GitHub:
             book, blob = self.signatures()
             if comment.author.id in book.signed_ids:
                 return book
-            if self.write is None:
+            write = self.write
+            if write is None:
                 raise ApiError("CLA_SIGNATURE_TOKEN is not set, so signatures cannot be recorded")
             data = add_signature(book, comment, repo_id, pull_number)
-            status, _ = self.write(
-                "PUT",
-                f"{self.base}/contents/{SIGNATURE_PATH}",
-                {
-                    "message": f"chore(cla): record @{comment.author.login}'s signature from #{pull_number}",
-                    "content": base64.b64encode(data).decode("ascii"),
-                    "sha": blob,
-                    "branch": SIGNATURE_BRANCH,
-                },
-            )
+            message = f"chore(cla): record @{comment.author.login}'s signature from #{pull_number}"
+            if blob is None:
+                branch, _ = self.send("GET", f"{self.base}/git/ref/heads/{SIGNATURE_BRANCH}", None)
+                if branch == 404:
+                    if self.create_signature_branch(write, data, message):
+                        return parse_signatures(data)
+                    continue
+                if branch != 200:
+                    raise ApiError(f"GET git/ref/heads/{SIGNATURE_BRANCH}: HTTP {branch}")
+            body: dict[str, object] = {
+                "message": message,
+                "content": base64.b64encode(data).decode("ascii"),
+                "branch": SIGNATURE_BRANCH,
+            }
+            if blob is not None:
+                body["sha"] = blob
+            status, _ = write("PUT", f"{self.base}/contents/{SIGNATURE_PATH}", body)
             if status in (200, 201):
                 return parse_signatures(data)
             if status not in (409, 422):
                 raise ApiError(f"PUT contents/{SIGNATURE_PATH}: HTTP {status}")
         raise ApiError("the signature file kept changing; try recheck")
+
+    def branch_rules(self) -> frozenset[str]:
+        """Reads the rule types that apply to ``SIGNATURE_BRANCH``."""
+        return parse_branch_rules(self.call("GET", f"rules/branches/{SIGNATURE_BRANCH}?per_page={PAGE_SIZE}"))
 
     def set_status(self, sha: str, state: str, description: str, target_url: str) -> None:
         """Posts the ``CLA`` commit status on ``sha``."""
@@ -1221,6 +1347,36 @@ def urllib_transport(token: str, api_url: str) -> Transport:
     return send
 
 
+def load_branch_files(folder: str) -> dict[str, bytes]:
+    """Reads ``BRANCH_FILES`` from ``folder``, leaving out any that cannot be read."""
+    files: dict[str, bytes] = {}
+    for name, _ in BRANCH_FILES:
+        try:
+            with open(os.path.join(folder, name), "rb") as handle:
+                files[name] = handle.read(MAX_SIGNATURE_BYTES)
+        except OSError:
+            continue
+    return files
+
+
+def warn_about_branch_rules(api: GitHub) -> None:
+    """Prints a workflow warning naming each of ``SIGNATURE_BRANCH_RULES`` that does not apply.
+
+    The verdict does not depend on it: a missing rule only means people
+    other than the App could change the signatures.
+    """
+    try:
+        missing = sorted(SIGNATURE_BRANCH_RULES - api.branch_rules())
+    except (ApiError, ClaInputError, OSError) as err:
+        print(f"::warning::cannot read the rules for {SIGNATURE_BRANCH}: {err}")
+        return
+    if missing:
+        print(
+            f"::warning::{SIGNATURE_BRANCH} is missing ruleset rules: {', '.join(missing)}. "
+            f"See README.md on that branch, or scripts/cla_branch/README.md, to set them up."
+        )
+
+
 def main(env: dict[str, str]) -> int:
     """Runs the check from the workflow environment.
 
@@ -1238,15 +1394,19 @@ def main(env: dict[str, str]) -> int:
     api_url = env.get("GITHUB_API_URL", "https://api.github.com")
     signature_token = env.get("CLA_SIGNATURE_TOKEN", "")
     write = urllib_transport(signature_token, api_url) if signature_token else None
-    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write)
+    branch_files = load_branch_files(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cla_branch"))
+    api = GitHub(urllib_transport(env["GITHUB_TOKEN"], api_url), repository, write, branch_files)
     run_url = f"{server}/{repository}/actions/runs/{env.get('GITHUB_RUN_ID', '')}"
-    cla_url = f"{server}/{repository}/blob/main/CLA.md"
+    # `HEAD` names the default branch, whatever it is called.
+    cla_url = f"{server}/{repository}/blob/HEAD/CLA.md"
     try:
         with open(env["GITHUB_EVENT_PATH"], "rb") as handle:
             event = parse_event(env.get("GITHUB_EVENT_NAME", ""), handle.read(MAX_DOCUMENT_BYTES + 1))
     except (OSError, ClaInputError) as err:
         print(f"cla_check: cannot read the event: {err}", file=sys.stderr)
         return 1
+    if event.kind is not EventKind.MERGE_GROUP:
+        warn_about_branch_rules(api)
     try:
         run(event, api, cla_url, run_url)
     except (ApiError, ClaInputError) as err:

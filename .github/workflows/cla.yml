@@ -10,9 +10,10 @@
 # - A contributor accepts by commenting the sentence in `SIGN_PHRASE` on a
 #   pull request they are part of. The check records the signature in
 #   `signatures/cla.json` on the `cla-signatures` branch, so main is never
-#   written. The write is a contents API commit made with a token from the
+#   written. Each write is an API commit made with a token from the
 #   automation App, which GitHub signs for the App; the branch's ruleset lets
-#   only that App update it.
+#   only that App update it. The first signature creates the branch as a
+#   commit with no history.
 # - Runs when a pull request is opened, pushed to, reopened, closed or
 #   retargeted (a new base can add commits without changing the head).
 # - `recheck` re-runs the check after a signature or allowlist change.
@@ -89,7 +90,9 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          sparse-checkout: scripts/cla_check.py
+          sparse-checkout: |
+            scripts/cla_check.py
+            scripts/cla_branch/
           sparse-checkout-cone-mode: false
 
       # Only signature writes use it, narrowed to Contents on this

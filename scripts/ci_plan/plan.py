@@ -143,14 +143,15 @@ DOC_FILES = frozenset(
         "README.md",
         "TRADEMARK.md",
         "config/config.example.toml",
-        "signatures/cla.json",
     }
 )
 # Tests and fixtures the plan job runs on every event, before any check.
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 # Scripts that only plan-job tests exercise (the CLA checker runs in its own
 # workflow, from the default branch, and builds nothing).
-PLAN_JOB_SCRIPT_FILES = frozenset({"scripts/cla_check.py"})
+PLAN_JOB_SCRIPT_FILES = frozenset(
+    {"scripts/cla_check.py", "scripts/cla_branch/README.md", "scripts/cla_branch/setup-rulesets.sh"}
+)
 
 KNOWN_TOP_LEVEL = frozenset(
     {
@@ -170,7 +171,6 @@ KNOWN_TOP_LEVEL = frozenset(
         "packages",
         "packaging",
         "scripts",
-        "signatures",
         "third_party",
         "tools",
         "ui",
