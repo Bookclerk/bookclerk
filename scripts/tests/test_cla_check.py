@@ -852,7 +852,7 @@ class FakeGitHub:
 
     def last_status(self) -> str:
         sha, body = self.statuses[-1]
-        assert sha == SHA_C and body["context"] == "CLA"
+        assert sha == SHA_C and body["context"] == "Bookclerk CLA"
         return body["state"]
 
 
@@ -1411,7 +1411,7 @@ class EndToEndTests(unittest.TestCase):
     def test_merge_group_reports_on_its_head(self) -> None:
         fake = FakeGitHub(ALICE, [])
         drive(fake, cla.parse_event("merge_group", load("event_merge_group__queued")))
-        self.assertEqual(fake.statuses, [(SHA_B, {"state": "success", "context": "CLA", "description": "Checked on each pull request in the group.", "target_url": RUN_URL})])
+        self.assertEqual(fake.statuses, [(SHA_B, {"state": "success", "context": "Bookclerk CLA", "description": "Checked on each pull request in the group.", "target_url": RUN_URL})])
 
     def test_only_the_bots_recheck_command_runs_the_check(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])

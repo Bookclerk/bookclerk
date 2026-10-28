@@ -14,7 +14,7 @@
 #   automation App, which GitHub signs for the App; the branch's ruleset lets
 #   only that App update it. The first signature starts the branch with a
 #   commit that has no history and no signer, then adds itself on top.
-# - The check's comment and the `CLA` status are posted as the same App, so
+# - The check's comment and the `Bookclerk CLA` status are posted as the same App, so
 #   they carry the project's name; the default branch's ruleset expects the
 #   status from that App. Without the App's secrets the workflow posts both.
 # - Runs when a pull request is opened, pushed to, reopened, closed or
@@ -22,11 +22,11 @@
 # - `@<App slug> recheck` (`@bookclerk recheck` here, `@github-actions
 #   recheck` without the App) re-runs the check after a signature or
 #   allowlist change. Other comments that mention `recheck` are ignored.
-# - The verdict is the `CLA` commit status on the pull request's head; that
+# - The verdict is the `Bookclerk CLA` commit status on the pull request's head; that
 #   context is the one to require. It passes only when every open pull
 #   request with that head passes, since they share the status, and is
 #   re-decided when one of them is closed. Merge groups get a
-#   passing `CLA` status: each pull request in them already passed it to
+#   passing `Bookclerk CLA` status: each pull request in them already passed it to
 #   enter the queue.
 # - Pull request events reach this workflow through `workflow_run`: the
 #   unprivileged `CLA trigger` workflow (cla-trigger.yml) runs on
@@ -87,7 +87,7 @@ jobs:
       # Read the pull request and its commits (REST and GraphQL), and keep
       # the check's comment when the App is not configured.
       pull-requests: write
-      # Report the `CLA` commit status when the App is not configured, or
+      # Report the `Bookclerk CLA` commit status when the App is not configured, or
       # its error when the App's token fails.
       statuses: write
     steps:
@@ -101,7 +101,7 @@ jobs:
             scripts/cla_branch/
           sparse-checkout-cone-mode: false
 
-      # Signature writes, the check's comment and the `CLA` status use it,
+      # Signature writes, the check's comment and the `Bookclerk CLA` status use it,
       # narrowed to Contents, Pull requests and Commit statuses on this
       # repository and revoked when the job ends. Without the App's secrets
       # the token is empty: recording a signature fails closed and the

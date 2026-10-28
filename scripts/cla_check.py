@@ -17,7 +17,7 @@ check, since nobody can sign for it. A co-author whose email matches no
 account does not: the pull request author is the one authenticated party,
 and their signature covers what they submit (CLA section 4).
 
-The verdict is the ``CLA`` commit status on the pull request's head commit.
+The verdict is the ``Bookclerk CLA`` commit status on the pull request's head commit.
 Signatures live in ``signatures/cla.json`` on the ``cla-signatures`` branch,
 in the format CLA Assistant Lite used, and are written through the contents
 API with the automation App's token; the first signature starts the branch
@@ -37,7 +37,7 @@ token that may write to ``cla-signatures``, comment on pull requests and post
 commit statuses, and ``CLA_APP_SLUG``, that App's slug. Only that token
 records signatures, so the branch can refuse every other writer and each
 signature commit is signed by GitHub for the App. The check's comment and the
-``CLA`` status are posted as the App too, or as the workflow when no App is
+``Bookclerk CLA`` status are posted as the App too, or as the workflow when no App is
 configured. It exits 0 once the status is posted, whatever the
 verdict, and 1 when it could not decide.
 """
@@ -73,7 +73,7 @@ RECHECK_WORD = "recheck"
 COMMENT_MARKER = "<!-- bookclerk-cla-check -->"
 
 #: Commit status context the check reports; the one to require in rulesets.
-STATUS_CONTEXT = "CLA"
+STATUS_CONTEXT = "Bookclerk CLA"
 
 #: The description of the ``pending`` status posted while a pull request is
 #: being checked, so the status line shows progress.
@@ -177,7 +177,7 @@ STATUS_ATTEMPTS = 3
 #: permalink to it at the last commit that changed it.
 CLA_PATH = "CLA.md"
 
-#: Most open pull requests that may share one head commit. The ``CLA``
+#: Most open pull requests that may share one head commit. The ``Bookclerk CLA``
 #: status belongs to the commit, so each of them is checked before it passes;
 #: more than this fails closed.
 MAX_SHARED_PULLS = 10
@@ -1006,7 +1006,7 @@ class GitHub:
           then fails closed).
         * ``branch_files``: the text of each of ``BRANCH_FILES`` by name,
           written when the first signature creates the branch.
-        * ``reporter``: who posts the check's comment and the ``CLA``
+        * ``reporter``: who posts the check's comment and the ``Bookclerk CLA``
           status, or ``None`` to post them through ``send`` as
           ``WORKFLOW_COMMENT_AUTHOR``.
         * ``server``: the web address of the GitHub server, for permalinks.
@@ -1313,7 +1313,7 @@ class GitHub:
         return parse_branch_rules(self.call("GET", f"rules/branches/{SIGNATURE_BRANCH}?per_page={PAGE_SIZE}"))
 
     def set_status(self, sha: str, state: str, description: str, target_url: str) -> None:
-        """Posts the ``CLA`` commit status on ``sha``."""
+        """Posts the ``Bookclerk CLA`` commit status on ``sha``."""
         self.report("POST", f"statuses/{sha}", {"state": state, "context": STATUS_CONTEXT, "description": description, "target_url": target_url})
 
     def upsert_comment(self, number: int, comments: list[Comment], body: str, create: bool) -> None:
@@ -1430,7 +1430,7 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
 def blocking_pull(api: GitHub, pull: PullRequest, book: SignatureBook) -> int | None:
     """Finds another open pull request on ``pull``'s head that fails.
 
-    The ``CLA`` status belongs to the commit, which other pull requests
+    The ``Bookclerk CLA`` status belongs to the commit, which other pull requests
     (another author or base) can share, so it passes only when all of them
     pass.
 
