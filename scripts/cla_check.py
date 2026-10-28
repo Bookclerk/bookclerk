@@ -75,6 +75,10 @@ COMMENT_MARKER = "<!-- bookclerk-cla-check -->"
 #: Commit status context the check reports; the one to require in rulesets.
 STATUS_CONTEXT = "CLA"
 
+#: The description of the ``pending`` status posted while a pull request is
+#: being checked, so the status line shows progress.
+CHECKING_DESCRIPTION = "Checking signatures…"
+
 #: The branch that holds the signature file.
 SIGNATURE_BRANCH = "cla-signatures"
 
@@ -956,13 +960,13 @@ def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None
 def status_description(verdict: Verdict) -> str:
     """Returns the commit status description, at most 140 characters."""
     if verdict.passed:
-        return "Everyone has accepted the CLA."
+        return "Everyone has signed."
     parts = []
     if verdict.unsigned:
         parts.append(f"{len(verdict.unsigned)} still to sign")
     if verdict.unlinked:
         parts.append(f"{len(verdict.unlinked)} unlinked commit(s)")
-    return ("CLA: " + ", ".join(parts) + ".")[:140]
+    return (", ".join(parts) + ".").capitalize()[:140]
 
 
 #: Sends one API request: ``(method, path, JSON body or None)`` to
@@ -1381,6 +1385,7 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
     pull = api.pull_request(number)
     if pull.open:
         api.head_sha = pull.head_sha
+        api.set_status(pull.head_sha, "pending", CHECKING_DESCRIPTION, run_url)
     book, _ = api.signatures()
     if not pull.open:
         # A closed pull request no longer holds its head; the open ones that
@@ -1406,7 +1411,7 @@ def check_pull(event: Event, api: GitHub, number: int, cla_url: str, run_url: st
         passed = verdict.passed and blocked_by is None
         api.upsert_comment(pull.number, comments, render_comment(verdict, cla_url, blocked_by, recheck_command(api.reporter.login)), create=not passed)
         if blocked_by is not None:
-            description = f"CLA: #{blocked_by}, which shares this commit, still needs signatures."
+            description = f"#{blocked_by}, which shares this commit, still needs signatures."
         else:
             description = status_description(verdict)
         api.set_status(pull.head_sha, "success" if passed else "failure", description, run_url)
@@ -1457,7 +1462,7 @@ def settle(api: GitHub, sha: str, book: SignatureBook, run_url: str) -> None:
         return
     failing = [number for number, verdict in verdicts if not verdict.passed]
     if failing:
-        api.set_status(sha, "failure", f"CLA: #{failing[0]}, which has this commit, still needs signatures.", run_url)
+        api.set_status(sha, "failure", f"#{failing[0]}, which has this commit, still needs signatures.", run_url)
     else:
         api.set_status(sha, "success", status_description(verdicts[0][1]), run_url)
 

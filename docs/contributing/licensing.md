@@ -140,7 +140,9 @@ Who must sign:
 The result is the **CLA** commit status on the pull request's head commit,
 and one comment that lists who still has to sign, edited in place. Both
 come from the [automation App](automation.md#automation-app), or from
-`github-actions[bot]` in a repository without the App. Merge
+`github-actions[bot]` in a repository without the App. While a check runs,
+the status is pending with "Checking signatures…"; it then says who is
+left ("1 still to sign.") or "Everyone has signed.". Merge
 queue runs report a passing **CLA** status, because each pull request
 passed it to enter the queue. A pull request with more than 250 commits
 cannot be checked and fails closed.

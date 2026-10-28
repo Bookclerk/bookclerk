@@ -835,7 +835,7 @@ class FakeGitHub:
                     c["body"] = body["body"]
             return 200, b"{}"
         if method == "POST" and route.startswith("statuses/"):
-            if self.before_status is not None:
+            if self.before_status is not None and body["state"] != "pending":
                 hook, self.before_status = self.before_status, None
                 hook()
             self.statuses.append((route.rsplit("/", 1)[1], body))
@@ -845,6 +845,10 @@ class FakeGitHub:
 
     def signed_ids(self) -> set[int]:
         return {e["id"] for e in json.loads(self.file)["signedContributors"]}
+
+    def final_statuses(self) -> list[tuple[str, dict]]:
+        """The statuses posted, without the ``pending`` ones a run starts with."""
+        return [(sha, body) for sha, body in self.statuses if body["state"] != "pending"]
 
     def last_status(self) -> str:
         sha, body = self.statuses[-1]
@@ -1015,7 +1019,7 @@ class EndToEndTests(unittest.TestCase):
             cla.run(comment_event(ALICE, cla.SIGN_PHRASE), api, CLA_URL, RUN_URL)
         self.assertEqual(fake.signed_ids(), set())
         self.assertNotIn(("PUT", "repos/bookclerk/bookclerk/contents/signatures/cla.json"), fake.requests)
-        self.assertEqual(fake.statuses, [])
+        self.assertEqual(fake.final_statuses(), [])
 
     def test_a_shared_head_passes_only_when_every_pull_request_passes(self) -> None:
         # Bob opens #8 on alice's signed head; a recheck on #7 must not
@@ -1048,7 +1052,7 @@ class EndToEndTests(unittest.TestCase):
 
         fake.before_status = comment_run
         drive(fake, run_event(fake))
-        self.assertEqual([b["state"] for _, b in fake.statuses], ["success", "failure", "success"])
+        self.assertEqual([b["state"] for _, b in fake.final_statuses()], ["success", "failure", "success"])
         self.assertEqual(len(fake.comments), 1)
         self.assertNotIn("@alice", fake.comments[0]["body"])
 
@@ -1059,7 +1063,7 @@ class EndToEndTests(unittest.TestCase):
         fake.head = SHA_B
         fake.others[8] = {"author": ALICE, "commits": [commit(SHA_A, ALICE)]}
         drive(fake, run_event(fake, 7, sha=SHA_C))
-        self.assertEqual([(sha, b["state"]) for sha, b in fake.statuses], [(SHA_C, "success")])
+        self.assertEqual([(sha, b["state"]) for sha, b in fake.final_statuses()], [(SHA_C, "success")])
         self.assertEqual(fake.comments, [])
 
     def test_a_same_named_branch_in_another_repository_does_not_count(self) -> None:
@@ -1087,7 +1091,7 @@ class EndToEndTests(unittest.TestCase):
             fake.others[n] = {"author": ALICE, "commits": [commit(SHA_A, ALICE)], "label": "alice:feature", "repo": 700}
         with self.assertRaises(cla.ApiError):
             drive(fake, run_event(fake))
-        self.assertEqual(fake.statuses, [])
+        self.assertEqual(fake.final_statuses(), [])
 
     def test_a_closed_pull_request_never_passes_a_shared_head_alone(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 101}])
@@ -1101,7 +1105,7 @@ class EndToEndTests(unittest.TestCase):
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
         fake.state = "closed"
         drive(fake, pr_event(fake))
-        self.assertEqual(fake.statuses, [])
+        self.assertEqual(fake.final_statuses(), [])
         self.assertEqual(fake.comments, [])
 
     def test_closed_or_moved_pull_requests_do_not_hold_a_head(self) -> None:
@@ -1124,7 +1128,7 @@ class EndToEndTests(unittest.TestCase):
             fake.others[n] = {"author": ALICE, "commits": [commit(SHA_A, ALICE)]}
         with self.assertRaises(cla.ApiError):
             drive(fake, pr_event(fake))
-        self.assertEqual(fake.statuses, [])
+        self.assertEqual(fake.final_statuses(), [])
 
     def test_odd_comment_authors_do_not_stop_the_check(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
@@ -1250,7 +1254,7 @@ class EndToEndTests(unittest.TestCase):
         fake.graphql = lambda body: (200, real(body)[1].replace(SHA_A.encode(), SHA_B.encode()))
         with self.assertRaises(cla.ApiError):
             drive(fake, pr_event(fake))
-        self.assertEqual(fake.statuses, [])
+        self.assertEqual(fake.final_statuses(), [])
 
     def test_signatures_match_by_id_not_login(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)], [{"name": "alice", "id": 999}])
@@ -1306,7 +1310,7 @@ class EndToEndTests(unittest.TestCase):
         fake = FakeGitHub(ALICE, commits, [{"name": "alice", "id": 101}])
         with self.assertRaises(cla.ApiError):
             drive(fake, pr_event(fake))
-        self.assertEqual(fake.statuses, [])
+        self.assertEqual(fake.final_statuses(), [])
 
     def test_own_comment_is_found_past_the_first_page(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
@@ -1369,8 +1373,17 @@ class EndToEndTests(unittest.TestCase):
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
         drive(fake, pr_event(fake))
         drive(fake, cla.parse_event("merge_group", load("event_merge_group__queued")))
-        self.assertEqual(len(fake.statuses), 2)
-        self.assertEqual(fake.status_creators, [APP, APP])
+        self.assertEqual([b["state"] for _, b in fake.statuses], ["pending", "failure", "success"])
+        self.assertEqual(fake.status_creators, [APP, APP, APP])
+
+    def test_a_check_shows_progress_before_its_verdict(self) -> None:
+        fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
+        drive(fake, pr_event(fake))
+        (sha, first), (_, last) = fake.statuses[0], fake.statuses[-1]
+        self.assertEqual((sha, first["state"], first["description"]), (SHA_C, "pending", cla.CHECKING_DESCRIPTION))
+        self.assertEqual((last["state"], last["description"]), ("failure", "1 still to sign."))
+        drive(fake, comment_event(ALICE, cla.SIGN_PHRASE))
+        self.assertEqual(fake.statuses[-1][1]["description"], "Everyone has signed.")
 
     def test_without_an_app_the_workflow_reports(self) -> None:
         fake = FakeGitHub(ALICE, [commit(SHA_A, ALICE)])
