@@ -400,7 +400,7 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   assert.ok(!html.includes("doc-note"), "a release's docs carry no development note");
   assert.match(html, /<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="\/docs">Docs<\/a><\/li><li><a href="\/docs\/plugins">Build plugins<\/a><\/li>/);
   assert.match(html, /<aside class="toc" aria-label="On this page">/);
-  assert.match(html, /<div class="docs-menus"><details class="menu menu-nav"><summary>Menu<\/summary>/);
+  assert.match(html, /<div class="docs-menus"><details class="menu menu-nav" name="docs-menu"><summary>Menu<\/summary>/);
   assert.match(html, /<details class="nav-group" open><summary>Build plugins<\/summary>/);
   assert.match(html, /<script src="\/docs.js" defer><\/script>/);
   const ld: { "@graph": { "@type": string; url: string }[] } = JSON.parse(html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)?.[1] ?? "{}");

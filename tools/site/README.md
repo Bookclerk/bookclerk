@@ -84,7 +84,9 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   link: a sidebar group links to its first page, and a Web API route page
   runs through the Web API entry it sits under. Below 1200px the
   rail goes; below 900px the sidebar and the rail become two menus over the
-  page (`<details>`, so they work without a script).
+  page (`<details>`, so they work without a script). They share a `name`,
+  so opening one closes the other, and `docs.js` also closes the open one
+  on a tap outside it, Escape or a followed link.
 - `highlight.ts` – syntax colors for fenced code blocks in the languages the
   docs use (shell, TOML, YAML, JSON, TypeScript, Rust, Python, SQL, nginx,
   HTTP), as `<span class="hl-…">` around escaped text; other fences stay

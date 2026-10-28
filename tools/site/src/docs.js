@@ -2,7 +2,8 @@
 // allows scripts from 'self' and Cloudflare's analytics beacon only). Pages
 // work without it: it adds copy buttons to code blocks, copies a heading's
 // link when it is clicked, offers Copy as Markdown, draws and follows the
-// "On this page" rail, and adds a filter box to the sidebar. Its only
+// "On this page" rail, closes the phone menus like menus, and adds a
+// filter box to the sidebar. Its only
 // network request is Copy as Markdown reading the page's own Markdown.
 
 (() => {
@@ -359,7 +360,38 @@
     });
   }
 
+  /**
+   * Makes the phone menus behave like menus: opening one closes the other
+   * (also done by their shared `name` where browsers support it), and a tap
+   * outside, Escape or following a link closes the open one.
+   */
+  function dismissMenus() {
+    const menus = [...document.querySelectorAll(".docs-menus details.menu")];
+    if (menus.length === 0) return;
+    for (const menu of menus) {
+      menu.addEventListener("toggle", () => {
+        if (!menu.open) return;
+        for (const other of menus) if (other !== menu) other.open = false;
+      });
+      // A link in the menu, such as an "On this page" anchor, has done its job.
+      menu.querySelector(".menu-body")?.addEventListener("click", (event) => {
+        if (event.target instanceof Element && event.target.closest("a")) menu.open = false;
+      });
+    }
+    document.addEventListener("click", (event) => {
+      for (const menu of menus) if (menu.open && !(event.target instanceof Node && menu.contains(event.target))) menu.open = false;
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const open = menus.find((menu) => menu.open);
+      if (!open) return;
+      open.open = false;
+      open.querySelector("summary")?.focus();
+    });
+  }
+
   addCopyButtons();
+  dismissMenus();
   copyHeadingLinks();
   addCopyMarkdown();
   drawTocRail();

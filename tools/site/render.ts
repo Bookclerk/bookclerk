@@ -1100,8 +1100,8 @@ export function metaHtml(note: string, updated: IsoDate | null, markdownUrl: str
  */
 export function mobileMenusHtml(sidebar: string, headings: readonly DocHeading[]): string {
   const list = tocListHtml(headings);
-  const sections = list === "" ? "" : `<details class="menu menu-toc"><summary>On this page</summary><div class="menu-body">${list}</div></details>`;
-  return `<div class="docs-menus"><details class="menu menu-nav"><summary>Menu</summary><div class="menu-body">${sidebar}</div></details>${sections}</div>`;
+  const sections = list === "" ? "" : `<details class="menu menu-toc" name="docs-menu"><summary>On this page</summary><div class="menu-body">${list}</div></details>`;
+  return `<div class="docs-menus"><details class="menu menu-nav" name="docs-menu"><summary>Menu</summary><div class="menu-body">${sidebar}</div></details>${sections}</div>`;
 }
 
 /**
