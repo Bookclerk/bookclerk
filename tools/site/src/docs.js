@@ -3,7 +3,8 @@
 // work without it: it adds copy buttons to code blocks, copies a heading's
 // link when it is clicked, offers Copy as Markdown, draws and follows the
 // "On this page" rail, closes the phone menus like menus, shows example
-// responses as tabs by status with an Example/Schema view, example requests
+// responses as tabs by status with an Example/Schema view, one response's
+// fields open at a time in the Responses list, example requests
 // as tabs by language, and adds a filter box to the sidebar. Its only
 // network requests are same-origin: Copy as Markdown reads the page's own
 // Markdown, and the filter reads the docs version's search index. The only
@@ -680,6 +681,24 @@
     });
   }
 
+  /**
+   * Keeps one response's fields open at a time in a route's Responses
+   * list: opening a status's fold closes the others in the same list.
+   * Without this, every fold opens and closes on its own.
+   */
+  function foldResponses() {
+    for (const list of document.querySelectorAll("ul.api-props")) {
+      const folds = [...list.querySelectorAll(":scope > li.api-response-item > details")];
+      if (folds.length < 2) continue;
+      for (const fold of folds) {
+        fold.addEventListener("toggle", () => {
+          if (!fold.open) return;
+          for (const other of folds) if (other !== fold) other.open = false;
+        });
+      }
+    }
+  }
+
   /** The browser storage key of the response view last picked. */
   const VIEW_KEY = "docs.response-view";
 
@@ -815,6 +834,7 @@
   }
 
   addCopyButtons();
+  foldResponses();
   addResponseTabs();
   addRequestTabs();
   dismissMenus();

@@ -530,10 +530,11 @@ Rust crates and the web UI library.
   schemas. Parameters, body fields and responses are lists, one item per
   property (`` `name` (path) *type*, **required** — description ``), with
   an inline object's fields nested under it. A request body that names a
-  schema lists that schema's fields in place, and a success response
-  whose JSON body is an object lists its fields too, so a route reads
-  without a trip to the schemas page; error bodies are shared, so they
-  keep the link only.
+  schema lists that schema's fields in place, and a response whose body
+  is an object, or an array of objects, lists its fields too, whatever
+  its status or media type, so a route reads without a trip to the
+  schemas page; when a status offers several media types, the fields
+  and the example come from the JSON one.
   - The website lays the route group pages out like an OpenAPI viewer
     (`tools/site/api-reference.ts`): a method badge beside each path, the
     examples in a second column when the reading column is wide enough,
@@ -546,11 +547,13 @@ Rust crates and the web UI library.
   - The property lists become property rows (`tools/site/api-reference.ts`
     `layoutProperties`): name, location, type and a required mark on one
     line, the description under it, a nested object's fields folded with
-    their count, and a response's body fields open under its status mark.
+    their count, and each response's body fields folded under its status
+    mark, the first open; the page's script keeps one open at a time.
     Any other list, and the tables of pages generated before this format,
     pass through unchanged.
   - The example responses become one panel per status with a colored
-    status mark, each holding the example body and then, after a
+    status mark, each holding the example body (JSON, or a text body in
+    its own language; a binary body gets a sentence) and then, after a
     `Schema:` line, the body's JSON Schema (component references expanded
     in place); the page's script shows the statuses as tabs in one card
     with an Example/Schema switch between the two. The example request's
