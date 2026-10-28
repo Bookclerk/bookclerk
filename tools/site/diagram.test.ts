@@ -1,12 +1,12 @@
 // Tests diagram.ts the way the Worker runs it: workerd has no Node `global`
 // unless `nodejs_compat` is on, and elkjs (under beautiful-mermaid) needs one
-// while it starts, which diagram.ts provides for the call. Node defines
-// `global`, so this file removes it before diagram.ts lays anything out; it
-// runs in its own process, as `node --test` runs each file. Run with
-// `npm test`.
+// while it starts, which diagram.ts provides for the call. The tests run
+// with `nodejs_compat`, which defines `global`, so this file removes it
+// before diagram.ts lays anything out; Vitest gives each test file its own
+// isolate, so nothing else sees the change. Run with `npm test`.
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 
 import { diagram } from "./diagram.ts";
 
