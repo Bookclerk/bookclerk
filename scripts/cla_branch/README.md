@@ -14,8 +14,11 @@ Nobody edits it by hand. The CLA check writes it:
 - A contributor signs by commenting the sentence the check's comment asks
   for on a pull request they are part of. The check then adds one entry to
   `signatures/cla.json` in one commit.
-- The first signature created this branch. Each commit is made through the
-  GitHub API with a GitHub App's token, so GitHub signs it for the App.
+- The first signature started this branch with a commit that holds these
+  files and an empty `signatures/cla.json`, then added itself in the next
+  commit, so no signer's name is attached to the files here. Each commit
+  is made through the GitHub API with a GitHub App's token, so GitHub signs
+  it for the App.
 
 Each entry records the GitHub account (`name`, `id`), the signing comment
 (`comment_id`, `created_at`), where it was made (`repoId`,

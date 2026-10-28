@@ -623,6 +623,10 @@ class FakeGitHub:
         #: branch was started with, by path.
         self.objects: dict[str, dict] = {}
         self.branch_tree: dict[str, dict] = {}
+        #: The message of the commit that started the branch, and of each
+        #: signature written through the contents API.
+        self.branch_message: str | None = None
+        self.put_messages: list[str] = []
         #: The ruleset rule types that apply to ``cla-signatures``.
         self.rules: set[str] = set(cla.SIGNATURE_BRANCH_RULES)
         #: Runs once, just before the branch is created, to stand in for a
@@ -755,6 +759,7 @@ class FakeGitHub:
                 assert sorted(tree) == ["README.md", "setup-rulesets.sh", "signatures/cla.json"], sorted(tree)
                 assert tree["setup-rulesets.sh"]["mode"] == "100755"
                 self.branch_tree = tree
+                self.branch_message = commit_obj["message"]
                 self.file = tree["signatures/cla.json"]["content"].encode("utf-8")
                 self.branch = self.has_file = True
                 self.blob += 1
@@ -765,6 +770,7 @@ class FakeGitHub:
         if method == "PUT" and route == "contents/signatures/cla.json":
             assert self.writing, "the signature file must be written with the signature token"
             assert body is not None and body["branch"] == "cla-signatures"
+            self.put_messages.append(body["message"])
             if not self.branch:
                 return 404, b'{"message": "Branch not found"}'
             if not self.has_file:
@@ -895,9 +901,14 @@ class EndToEndTests(unittest.TestCase):
         self.assertTrue(fake.branch)
         self.assertEqual(fake.signed_ids(), {101})
         self.assertEqual(fake.last_status(), "failure")
-        # The branch explains itself with the default branch's templates.
+        # The branch explains itself with the default branch's templates,
+        # in a commit that names no signer; the signature is the next one.
         for name, _ in cla.BRANCH_FILES:
             self.assertEqual(fake.branch_tree[name]["content"].encode(), BRANCH_FILES[name])
+        self.assertEqual(json.loads(fake.branch_tree["signatures/cla.json"]["content"]), {"signedContributors": []})
+        self.assertEqual(fake.branch_message, cla.BRANCH_START_MESSAGE)
+        self.assertNotIn("alice", cla.BRANCH_START_MESSAGE)
+        self.assertEqual(fake.put_messages, ["chore(cla): record @alice's signature from #7"])
         # Later signatures append to it through the contents API.
         objects = len(fake.objects)
         drive(fake, comment_event(BOB, cla.SIGN_PHRASE))

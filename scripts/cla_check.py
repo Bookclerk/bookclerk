@@ -20,8 +20,8 @@ and their signature covers what they submit (CLA section 4).
 The verdict is the ``CLA`` commit status on the pull request's head commit.
 Signatures live in ``signatures/cla.json`` on the ``cla-signatures`` branch,
 in the format CLA Assistant Lite used, and are written through the contents
-API with the automation App's token; the first signature creates the branch
-as a single commit with no history. One comment, marked with
+API with the automation App's token; the first signature starts the branch
+with a commit that has no history and no entries, then adds itself on top. One comment, marked with
 ``COMMENT_MARKER``, says who still has to sign and is edited in place.
 
 Everything that parses bytes from GitHub (the event payload, pull requests,
@@ -144,6 +144,10 @@ MAX_SIGNATURE_BYTES = 1024 * 1024
 
 #: Times a signature write is retried after another run changed the file.
 SIGNATURE_WRITE_ATTEMPTS = 3
+
+#: The message of the commit that starts ``SIGNATURE_BRANCH``. It names no
+#: signer, since it stays the last commit to touch ``BRANCH_FILES``.
+BRANCH_START_MESSAGE = "chore(cla): start the signature branch"
 
 #: Times a check decides and posts again because the signature file changed
 #: while it ran.
@@ -827,6 +831,12 @@ def evaluate(pull: PullRequest, commits: list[Commit], book: SignatureBook) -> V
     return Verdict(unsigned=unsigned, unlinked=unlinked)
 
 
+def render_signatures(entries: list[dict[str, object]]) -> bytes:
+    """Returns the signature file holding ``entries``, in order."""
+    doc = {"signedContributors": entries}
+    return (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
 def add_signature(book: SignatureBook, comment: Comment, repo_id: int, pull_number: int) -> bytes:
     """Returns the signature file with the commenter's signature appended.
 
@@ -843,8 +853,7 @@ def add_signature(book: SignatureBook, comment: Comment, repo_id: int, pull_numb
         "pullRequestNo": pull_number,
         "claVersion": CLA_VERSION,
     }
-    doc = {"signedContributors": [*book.entries, entry]}
-    return (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    return render_signatures([*book.entries, entry])
 
 
 def render_comment(verdict: Verdict, cla_url: str, blocked_by: int | None = None) -> str:
@@ -1098,11 +1107,13 @@ class GitHub:
         data, blob = parse_contents(raw)
         return parse_signatures(data), blob
 
-    def create_signature_branch(self, write: Transport, data: bytes, message: str) -> bool:
+    def create_signature_branch(self, write: Transport) -> bool:
         """Creates ``SIGNATURE_BRANCH`` as one commit with no parents.
 
-        The commit holds the signature file and ``BRANCH_FILES``, which say
-        what the branch is and how to set the check up.
+        The commit holds ``BRANCH_FILES``, which say what the branch is and
+        how to set the check up, and a signature file with no entries. The
+        first signature is a separate commit on top, so no signer's name
+        is attached to the branch's own files.
 
         The tree, commit and branch are created with ``write``, the
         automation App's transport, so the commit is the App's and GitHub
@@ -1120,12 +1131,13 @@ class GitHub:
             if text is None:
                 raise ApiError(f"scripts/cla_branch/{name} is missing, so the signature branch cannot be started")
             entries.append({"path": name, "mode": mode, "type": "blob", "content": text.decode("utf-8")})
-        entries.append({"path": SIGNATURE_PATH, "mode": "100644", "type": "blob", "content": data.decode("utf-8")})
+        empty = render_signatures([])
+        entries.append({"path": SIGNATURE_PATH, "mode": "100644", "type": "blob", "content": empty.decode("utf-8")})
         status, raw = write("POST", f"{self.base}/git/trees", {"tree": entries})
         if status != 201:
             raise ApiError(f"POST git/trees: HTTP {status}")
         tree = parse_git_object(raw)
-        status, raw = write("POST", f"{self.base}/git/commits", {"message": message, "tree": tree, "parents": []})
+        status, raw = write("POST", f"{self.base}/git/commits", {"message": BRANCH_START_MESSAGE, "tree": tree, "parents": []})
         if status != 201:
             raise ApiError(f"POST git/commits: HTTP {status}")
         commit = parse_git_object(raw)
@@ -1147,7 +1159,8 @@ class GitHub:
         Retries when another run replaced the file between the read and the
         write. The write goes through ``self.write``, so the commit is made,
         and signed, by the automation App. The first signature creates the
-        file, and the branch too when it does not exist.
+        file, or first starts the branch (see ``create_signature_branch``)
+        when it does not exist.
 
         # Errors
         ``ApiError`` when no signature token is configured, the write is
@@ -1168,8 +1181,9 @@ class GitHub:
             if blob is None:
                 branch, _ = self.send("GET", f"{self.base}/git/ref/heads/{SIGNATURE_BRANCH}", None)
                 if branch == 404:
-                    if self.create_signature_branch(write, data, message):
-                        return parse_signatures(data)
+                    # Started with no entries (or by another run); the
+                    # next pass appends the signature on top.
+                    self.create_signature_branch(write)
                     continue
                 if branch != 200:
                     raise ApiError(f"GET git/ref/heads/{SIGNATURE_BRANCH}: HTTP {branch}")

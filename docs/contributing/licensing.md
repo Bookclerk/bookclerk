@@ -158,11 +158,13 @@ closed.
 Signatures are recorded in `signatures/cla.json` on the `cla-signatures`
 branch, so recording one needs no pull request and no bypass of the main
 branch rules. The branch holds only that file and shares no history with
-`main`. The first signature creates it as a single commit with no parents,
-beside a `README.md` that says what the branch is and how to set the check
-up in another repository, and a `setup-rulesets.sh` that protects it (both
-copied from [`scripts/cla_branch/`](../../scripts/cla_branch/README.md)). Each later
-signature is one more commit on top. Every commit is made
+`main`. The first signature starts it with a commit that has no parents
+and no signer, holding an empty signature file, a `README.md` that says
+what the branch is and how to set the check up in another repository, and
+a `setup-rulesets.sh` that protects it (both copied from
+[`scripts/cla_branch/`](../../scripts/cla_branch/README.md)). The signature
+itself, and each later one, is one more commit on top, so no signer's name
+is attached to the README or the script. Every commit is made
 through the API by the [automation App](automation.md#automation-app), so
 GitHub signs it for the App and nothing else needs to push there. Until the
 branch exists, nobody has signed, so every pull request that needs a

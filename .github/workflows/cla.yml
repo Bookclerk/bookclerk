@@ -12,8 +12,8 @@
 #   `signatures/cla.json` on the `cla-signatures` branch, so main is never
 #   written. Each write is an API commit made with a token from the
 #   automation App, which GitHub signs for the App; the branch's ruleset lets
-#   only that App update it. The first signature creates the branch as a
-#   commit with no history.
+#   only that App update it. The first signature starts the branch with a
+#   commit that has no history and no signer, then adds itself on top.
 # - The check's comment and the `CLA` status are posted as the same App, so
 #   they carry the project's name; the default branch's ruleset expects the
 #   status from that App. Without the App's secrets the workflow posts both.
