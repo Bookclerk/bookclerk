@@ -1093,9 +1093,9 @@ export function metaHtml(note: string, updated: IsoDate | null, markdownUrl: str
 }
 
 /**
- * Renders the phone and tablet menus that stand in for the sidebar and the
- * "On this page" rail below their breakpoints (site.css shows one set or the
- * other).
+ * Renders the menus that stand in for the sidebar and the "On this page"
+ * rail below their breakpoints: the section menu alone below 1200px, where
+ * the rail goes, and both below 900px, where the sidebar goes too.
  *
  * @param sidebar - The sidebar's HTML (version picker, overview link, groups).
  * @param headings - The doc's headings; no section menu when empty.

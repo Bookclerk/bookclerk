@@ -634,22 +634,15 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 @media (max-width: 1200px) {
   .docs-layout { grid-template-columns: 16rem minmax(0, 1fr); }
   .toc { display: none; }
-}
-
-@media (max-width: 900px) {
-  .docs-page { --docs-header: 53px; }
-  .docs-page .ribbon .wrap > span:not(.badge) { display: none; }
-  .docs-header-row { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
-  .docs-header .logo { height: 30px; }
-  .docs-header .site-nav a:not(.btn) { display: none; }
-  .docs-layout { display: block; padding: 0; }
-  .docs-nav { display: none; }
+  /* The rail becomes the "On this page" menu, alone beside the sidebar
+     until 900px, where the sidebar's menu joins it. */
   .docs-menus {
-    display: flex; gap: 8px; position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--docs-header)); z-index: 10;
+    display: flex; justify-content: flex-end; gap: 8px; position: sticky; top: calc(env(safe-area-inset-top, 0px) + var(--docs-header)); z-index: 10;
     padding: 8px max(16px, env(safe-area-inset-right, 0px)) 8px max(16px, env(safe-area-inset-left, 0px));
     background: var(--paper); border-bottom: 1px solid var(--docs-line);
   }
-  .menu { flex: 1 1 0; min-width: 0; position: relative; }
+  .docs-menus:not(:has(.menu-toc)), .docs-menus .menu-nav { display: none; }
+  .menu { flex: 0 1 22rem; min-width: 0; position: relative; }
   .menu > summary {
     list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 40px;
     padding: 0 12px; border: 1px solid color-mix(in srgb, var(--ink) 15%, transparent); border-radius: 6px; background: var(--index-card); font-weight: 600; font-size: 15px;
@@ -662,12 +655,26 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
     padding: 10px; border: 1px solid color-mix(in srgb, var(--ink) 15%, transparent); border-radius: 8px; background: var(--paper);
     box-shadow: var(--shadow-xl); font-size: 15px; line-height: 20px;
   }
+  .menu-toc .menu-body { width: min(28rem, calc(100vw - 32px)); left: auto; right: 0; }
+  .doc :is(h1, h2, h3, h4) { scroll-margin-top: calc(var(--docs-header) + 76px); }
+}
+
+@media (max-width: 900px) {
+  .docs-page { --docs-header: 53px; }
+  .docs-page .ribbon .wrap > span:not(.badge) { display: none; }
+  .docs-header-row { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .docs-header .logo { height: 30px; }
+  .docs-header .site-nav a:not(.btn) { display: none; }
+  .docs-layout { display: block; padding: 0; }
+  .docs-nav { display: none; }
+  .docs-menus, .docs-menus:not(:has(.menu-toc)) { display: flex; justify-content: flex-start; }
+  .docs-menus .menu-nav { display: block; }
+  .menu { flex: 1 1 0; }
   .menu-nav .menu-body { width: calc(100vw - 32px); right: auto; }
-  .menu-toc .menu-body { width: calc(100vw - 32px); left: auto; right: 0; }
+  .menu-toc .menu-body { width: calc(100vw - 32px); }
   .doc { padding: 20px max(16px, env(safe-area-inset-right, 0px)) 64px max(16px, env(safe-area-inset-left, 0px)); font-size: 17px; }
   .doc h1 { font-size: 31px; line-height: 38px; }
   .doc h2 { font-size: 23px; line-height: 30px; }
-  .doc :is(h1, h2, h3, h4) { scroll-margin-top: calc(var(--docs-header) + 76px); }
   .pager { grid-template-columns: minmax(0, 1fr); }
   .pager .pager-next { grid-column: 1; }
 }
