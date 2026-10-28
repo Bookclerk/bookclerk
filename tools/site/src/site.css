@@ -596,6 +596,15 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 .toc ul, .menu-toc ul { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--docs-line); }
 .toc li a, .menu-toc li a { display: block; margin-left: -1px; padding: 5px 0 5px 14px; border-left: 2px solid transparent; color: color-mix(in srgb, var(--ink) 78%, transparent); text-decoration: none; }
 .toc li.sub a, .menu-toc li.sub a { padding-left: 28px; font-size: 13.5px; }
+/* A route group's routes, nested by path (render.ts tocListHtml): every
+   badge is one width so the paths line up, and a shared path that is not
+   a route is a plain label. */
+.toc li.depth-1 > :is(a, span), .menu-toc li.depth-1 > :is(a, span) { padding-left: 28px; }
+.toc li.depth-2 > :is(a, span), .menu-toc li.depth-2 > :is(a, span) { padding-left: 42px; }
+.toc-label { display: block; padding: 5px 0 5px 14px; color: var(--docs-soft); }
+.toc a.toc-op, .menu-toc a.toc-op { display: grid; grid-template-columns: 52px minmax(0, 1fr); column-gap: 6px; align-items: baseline; }
+.toc-op .api-method { box-sizing: border-box; min-width: 0; width: 100%; text-align: center; margin: 0; }
+.toc-op code, .toc-label code { overflow-wrap: anywhere; }
 .toc li a:hover, .menu-toc li a:hover { color: var(--ink); }
 .toc a[aria-current="location"], .menu-toc a[aria-current="location"] { color: var(--ink); border-left-color: var(--teal); font-weight: 600; }
 .toc .toc-actions { display: flex; flex-direction: column; gap: 2px; margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--docs-line); border-left: 0; list-style: none; }
@@ -611,7 +620,9 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 @media (prefers-reduced-motion: reduce) { .toc-rail-active { transition: none; } }
 .toc-list.has-rail ul { border-left: 0; }
 .toc-list.has-rail li a { margin-left: 0; border-left: 0; padding-left: 20px; }
-.toc-list.has-rail li.sub a { padding-left: 34px; }
+.toc-list.has-rail li > .toc-label { padding-left: 20px; }
+.toc-list.has-rail li.depth-1 > :is(a, span) { padding-left: 34px; }
+.toc-list.has-rail li.depth-2 > :is(a, span) { padding-left: 48px; }
 .toc-list.has-rail a[aria-current="location"] { font-weight: 500; }
 /* Without the script, Chromium can still mark the section being read. Kept
    apart: a browser that does not know :target-current drops the whole rule. */
@@ -702,10 +713,6 @@ code.inline { font-size: 0.9em; background: color-mix(in srgb, var(--ink) 8%, tr
 .api-status-4xx::before { background: #b7791f; }
 .api-status-5xx::before { background: var(--brick); }
 .docs-nav .nav-sub, .docs-menus .nav-sub { margin: 2px 0 4px 12px; border-left: 1px solid var(--docs-line); }
-.docs-nav .nav-ops, .docs-menus .nav-ops { margin: 2px 0 6px 8px; }
-.docs-nav .nav-op, .docs-menus .nav-op { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; font-size: 13px; line-height: 18px; }
-.nav-op .api-method { min-width: 3.4em; font-size: 10px; line-height: 15px; padding: 0 4px; flex: none; }
-.nav-op code { font: 13px/18px var(--font-mono); overflow-wrap: anywhere; background: none; border: 0; padding: 0; }
 /* The index (layoutIndex): the introduction with the Quick start beside it,
    then one card per route group listing its routes with method badges. */
 .api-intro-main > * + *, .api-intro-side > * + * { margin-top: 1.15em; }

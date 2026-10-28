@@ -513,9 +513,12 @@ Rust crates and the web UI library.
   - The website lays the route group pages out like an OpenAPI viewer
     (`tools/site/api-reference.ts`): a method badge beside each path, the
     examples in a second column when the reading column is wide enough,
-    and the usual "On this page" rail.
-  - Under **Web API** the sidebar lists every route group, and only the
-    open group's page shows its routes. The index, titled **Web API** like
+    and the usual "On this page" rail. The rail lists the routes nested
+    by path, with the shared start of each path written once above the
+    routes under it, and every method badge is the same width so the
+    paths line up.
+  - Under **Web API** the sidebar lists every route group and the schemas
+    page, not their routes; those are in the rail. The index, titled **Web API** like
     its sidebar entry and breadcrumb, puts its quick start beside the
     introduction and shows each route group as a card of badged routes.
   - The Markdown itself stays plain, so the pages read the same on GitHub.

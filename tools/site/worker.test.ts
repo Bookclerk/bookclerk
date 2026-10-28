@@ -905,13 +905,13 @@ test("docPageTitle names the site when it fits and otherwise keeps what identifi
   assert.doesNotMatch(docPageTitle(`${"😀".repeat(40)} title`), /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
 });
 
-test("a Web API page's sidebar lists every route group from the index, with only its own open", async () => {
+test("a Web API page's sidebar lists every route group from the index, marking its own", async () => {
   const res = await get("/docs/api/web/jobs", BROWSER);
   assert.equal(res.status, 200);
   const html = await res.text();
   assert.ok(
     html.includes(
-      '<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a><ul class="nav-ops"><li><a class="nav-op" href="#get-apijobs">',
+      '<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a></li>',
     ),
   );
   assert.ok(html.includes('<li><a href="/docs/api/web/health">Health</a></li><li><a href="/docs/api/web/schemas">Schemas</a></li></ul>'));

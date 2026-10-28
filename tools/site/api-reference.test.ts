@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isApiOperationsPage, statusClass } from "./api-reference.ts";
+import { isApiOperationsPage, routeTree, statusClass } from "./api-reference.ts";
 import { apiNavNested, apiRouteGroups, crumbsHtml, crumbTrail, docJsonLd, navHtml, navParent, renderDoc, tocListHtml } from "./render.ts";
 
 /** GitHub prefix for repository links. */
@@ -95,20 +95,21 @@ test("the page's headings are its operations, with their methods", () => {
   ]);
   assert.equal(
     tocListHtml(out.headings),
-    '<ul><li><a href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr>api/<wbr>jobs</code></a></li>' +
-      '<li><a href="#post-apijobsidcancel"><span class="api-method api-method-post">POST</span> <code>/<wbr>api/<wbr>jobs/<wbr>{id}/<wbr>cancel</code></a></li></ul>',
+    '<ul><li class="depth-0"><a class="toc-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr>api/<wbr>jobs</code></a></li>' +
+      '<li class="depth-1"><a class="toc-op" href="#post-apijobsidcancel"><span class="api-method api-method-post">POST</span> <code>/<wbr>{id}/<wbr>cancel</code></a></li></ul>',
   );
 });
 
-test("the sidebar lists the page and its operations under Web API", () => {
+test("the sidebar lists the page under Web API, and its routes go to the rail", () => {
   const out = renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB });
-  const nested = apiNavNested("api/web/jobs", out.title, out.headings, "/docs/");
+  const nested = apiNavNested("api/web/jobs", out.title, "/docs/");
   assert.equal(nested?.under, "api/web/README");
   const nav = navHtml([{ title: "API reference", pages: [{ key: "api/web/README", title: "Web API" }] }], "api/web/jobs", "/docs/", nested);
   assert.ok(nav.startsWith('<details class="nav-group" open>'), "the group opens");
   assert.ok(nav.includes('<a href="/docs/api/web">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a>'));
-  assert.ok(nav.includes('<a class="nav-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr>api/<wbr>jobs</code></a>'));
-  assert.equal(apiNavNested("server/operations", "Running", [], "/docs/"), null);
+  assert.ok(!nav.includes("#get-apijobs"), "no routes in the sidebar");
+  assert.ok(tocListHtml(out.headings).includes('<a class="toc-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr>api/<wbr>jobs</code></a>'));
+  assert.equal(apiNavNested("server/operations", "Running", "/docs/"), null);
 });
 
 test("the breadcrumb of an operations page runs through Web API", () => {
@@ -136,7 +137,7 @@ test("the title and its meta line stay ahead of the layout", () => {
 });
 
 test("the schemas page sits under Web API in the sidebar too", () => {
-  const nested = apiNavNested("api/web/schemas", "Schemas", [], "/docs/");
+  const nested = apiNavNested("api/web/schemas", "Schemas", "/docs/");
   assert.equal(nested?.html, '<ul class="nav-sub"><li><a href="/docs/api/web/schemas" aria-current="page">Schemas</a></li></ul>');
 });
 
@@ -231,7 +232,7 @@ test("the index's sidebar lists every route group with its routes", () => {
     },
     { title: "Health", href: "/docs/api/web/health", routes: [{ method: "GET", path: "/health", href: "/docs/api/web/health#get-health" }] },
   ]);
-  const nested = apiNavNested("api/web/README", out.title, out.headings, "/docs/", out.routes);
+  const nested = apiNavNested("api/web/README", out.title, "/docs/", out.routes);
   assert.equal(nested?.under, "api/web/README");
   const nav = navHtml([{ title: "API reference", pages: [{ key: "api/web/README", title: "Web API" }] }], "api/web/README", "/docs/", nested);
   // On the index every group is collapsed, and the schemas page follows them.
@@ -242,11 +243,10 @@ test("the index's sidebar lists every route group with its routes", () => {
     ),
   );
   assert.ok(!nav.includes("nav-ops"));
-  assert.equal(apiNavNested("api/web/README", out.title, out.headings, "/docs/", []), null);
-  // On a group's page only that group opens, on its own operations.
-  const jobs = renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB });
-  const onJobs = apiNavNested("api/web/jobs", jobs.title, jobs.headings, "/docs/", out.routes)?.html ?? "";
-  assert.ok(onJobs.startsWith('<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a><ul class="nav-ops"><li><a class="nav-op" href="#get-apijobs">'));
+  assert.equal(apiNavNested("api/web/README", out.title, "/docs/", []), null);
+  // On a group's page that group is marked; its routes are in the rail.
+  const onJobs = apiNavNested("api/web/jobs", "Jobs", "/docs/", out.routes)?.html ?? "";
+  assert.ok(onJobs.startsWith('<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a></li>'));
   assert.ok(onJobs.endsWith('<li><a href="/docs/api/web/health">Health</a></li><li><a href="/docs/api/web/schemas">Schemas</a></li></ul>'));
   assert.deepEqual(apiRouteGroups(INDEX, { blobBase: BLOB }), out.routes);
   assert.deepEqual(renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB }).routes, []);
@@ -265,4 +265,45 @@ test("section headings link to themselves, after the heading so its name stays i
   assert.ok(out.html.includes('<h3 id="cargo--co"><code>cargo</code> &amp; co</h3><a class="heading-anchor" href="#cargo--co" aria-label="Link to section: cargo &amp; co">'));
   assert.ok(out.html.includes('<li>\n<div class="heading-wrapper level-h2"><h2 id="in-a-list">In a list</h2><a class="heading-anchor" href="#in-a-list"'));
   assert.ok(!out.html.includes('href="#title"'), "the title has no link to itself");
+});
+
+test("a route group's routes nest by path in the rail", () => {
+  const ops = [
+    ["GET", "/api/auth/totp"],
+    ["DELETE", "/api/auth/totp"],
+    ["POST", "/api/auth/totp/login"],
+    ["POST", "/api/auth/totp/enroll/begin"],
+    ["POST", "/api/auth/totp/enroll/finish"],
+    ["GET", "/api/auth/oidc/config"],
+    ["PUT", "/api/auth/oidc/config"],
+    ["GET", "/api/auth/oidc/providers"],
+    ["POST", "/api/auth/a/b/c/d/e"],
+    ["POST", "/api/auth/a/b/c/d/f"],
+    ["GET", "/api/auth/a"],
+    ["POST", "/api/auth/login"],
+  ] as const;
+  const tree = routeTree(ops.map(([method, path]) => ({ method, path, id: `${method}${path}` })));
+  const lines = tree.map((e) => `${"  ".repeat(e.depth)}${e.kind === "op" ? `${e.method} ` : ""}${e.label}`);
+  assert.deepEqual(lines, [
+    "GET /api/auth/totp",
+    "DELETE /api/auth/totp",
+    "  POST /login",
+    "  /enroll",
+    "    POST /begin",
+    "    POST /finish",
+    "/api/auth/oidc",
+    "  GET /config",
+    "  PUT /config",
+    "  GET /providers",
+    // Below the deepest level, routes keep their longer remainder.
+    "GET /api/auth/a",
+    "  /b/c/d",
+    "    POST /e",
+    "    POST /f",
+    "POST /api/auth/login",
+  ]);
+  // Every operation is listed once, whatever its depth.
+  assert.equal(tree.filter((e) => e.kind === "op").length, ops.length);
+  assert.deepEqual(routeTree([{ method: "GET", path: "/health", id: "h" }]), [{ kind: "op", method: "GET", id: "h", label: "/health", depth: 0 }]);
+  assert.deepEqual(routeTree([{ method: "GET", path: "/", id: "r" }]).map((e) => e.label), ["/"]);
 });
