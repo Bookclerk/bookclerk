@@ -3,7 +3,7 @@
 // and teardown signs out every linked store account even when some fail.
 
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import {
   enableStorefronts,
   signInVisitor,

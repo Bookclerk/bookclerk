@@ -10,21 +10,25 @@
     "build": "node build.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json",
     "lint": "oxlint --deny-warnings",
-    "test": "node --test api-reference.test.ts build.test.ts diagram.test.ts docs.test.ts fuzz.test.ts worker.test.ts",
+    "test": "vitest run",
     "deploy": "wrangler deploy",
-    "dev": "node build.ts && wrangler dev"
+    "dev": "node build.ts && wrangler dev",
+    "coverage": "vitest run --coverage"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.4.9",
     "@cloudflare/workers-types": "^5.20261019.1",
     "@shikijs/core": "4.5.0",
     "@shikijs/engine-javascript": "4.5.0",
     "@shikijs/langs": "4.5.0",
     "@types/markdown-it": "^14.2.0",
     "@types/node": "^26.6.5",
+    "@vitest/coverage-v8": "^5.0.5",
     "beautiful-mermaid": "1.1.3",
     "markdown-it": "^15.0.3",
     "oxlint": "^1.90.0",
     "typescript": "^7.0.2",
+    "vitest": "^5.0.5",
     "wrangler": "^4.154.0"
   }
 }

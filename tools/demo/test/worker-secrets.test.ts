@@ -3,7 +3,7 @@
 // session key printed only when the Worker has none.
 
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { newSessionKey, WIDGET_NAME, workerSecrets } from "../scripts/worker-secrets.ts";
 import { type Sent, sent } from "../test-support/requests.ts";
 

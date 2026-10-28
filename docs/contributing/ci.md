@@ -467,6 +467,21 @@ The job's checks are selected by path, with no Rust toolchain:
 
 The full suite runs all four.
 
+`npm test` is Vitest in all three Workers, configured in each one's
+`vitest.config.ts` with two projects:
+
+- **`workers`** runs the Worker's tests inside the Workers runtime through
+  `@cloudflare/vitest-plugin`, on the compatibility date in `wrangler.toml`.
+  The collector and the demo test against real D1 databases with their
+  `migrations/` applied. The site's Worker tests serve a real build, which
+  a global setup makes in Node first.
+- **`node`** runs what needs the host: the site's build and docs-tree
+  tests, the demo's page-script tests and the collector's Python-oracle
+  fuzz test.
+
+`npm run coverage` adds V8 coverage from both projects (`text-summary` and
+`lcov` under `coverage/`).
+
 ### Other workflows
 
 These run outside `CI Gate`:

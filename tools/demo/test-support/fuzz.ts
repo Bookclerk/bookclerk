@@ -1,6 +1,18 @@
 // Seeded mutation helpers for the demo fuzz tests: a
 // deterministic PRNG so a failure replays from its seed, and a text mutator
-// that splices in fragments chosen by each test.
+// that splices in fragments chosen by each test, plus seed corpus loading.
+
+/**
+ * Every seed file under ../corpus, by path relative to this module
+ * (`../corpus/<target>/<name>`). Vite reads them when it transforms this
+ * module, so the tests replay them inside the Workers runtime, which has no
+ * view of the host filesystem.
+ */
+const CORPUS: Readonly<Record<string, string>> = import.meta.glob("../corpus/*/*", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
 
 /**
  * Deterministic PRNG (mulberry32).
@@ -42,4 +54,21 @@ export function mutate(rand: () => number, text: string, fragments: string[]): s
     }
   }
   return text;
+}
+
+/**
+ * The seed corpus of one fuzz target, as `[file name, text]` sorted by name.
+ *
+ * @param target - Directory under `corpus/`, such as `route`.
+ * @returns Seeds.
+ * @throws {Error} When the target has no seeds, which means a typo.
+ */
+export function seeds(target: string): [string, string][] {
+  const prefix = `../corpus/${target}/`;
+  const out = Object.entries(CORPUS)
+    .filter(([path]) => path.startsWith(prefix))
+    .map(([path, text]): [string, string] => [path.slice(prefix.length), text])
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  if (out.length === 0) throw new Error(`no seeds in corpus/${target}`);
+  return out;
 }

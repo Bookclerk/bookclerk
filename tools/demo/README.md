@@ -126,8 +126,13 @@ npm test
 ```
 
 The Worker, its deploy script and the tests are strict TypeScript. Wrangler
-bundles the `.ts` sources and Node (26 in CI, 22.18 or newer) runs the tests and
+bundles the `.ts` sources and Node (26 in CI, 22.18 or newer) runs
 `scripts/worker-secrets.ts` by stripping types, so nothing is compiled.
+`npm test` runs Vitest (`vitest.config.ts`): the Worker's tests run inside
+the Workers runtime through `@cloudflare/vitest-plugin`, on the Worker's
+compatibility date and against real D1 databases with `migrations/`
+applied, and the tests of the page scripts run in Node. `npm run coverage`
+adds a V8 coverage report.
 `npm run typecheck` checks everything with the Workers and Node types
 (`tsconfig.json`) and the Worker's sources again with the Workers types only
 (`tsconfig.worker.json`). The scripts under `public/_demo/` are browser

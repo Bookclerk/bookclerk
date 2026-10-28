@@ -1,7 +1,7 @@
 {
   // Type checking only (`npm run typecheck`): wrangler bundles the Worker
-  // from its .ts sources and Node runs the tests by stripping the types, so
-  // nothing is emitted. This config checks every module with both the
+  // from its .ts sources and Vitest transforms the tests, so nothing is
+  // emitted. This config checks every module with both the
   // Workers runtime types and Node's; tsconfig.worker.json checks the
   // Worker's sources again without Node's.
   "compilerOptions": {
@@ -9,7 +9,12 @@
     "lib": ["ES2023"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "types": ["@cloudflare/workers-types", "node"],
+    "types": [
+      "@cloudflare/workers-types",
+      "@cloudflare/vitest-plugin/types",
+      "node",
+      "vite/client"
+    ],
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,

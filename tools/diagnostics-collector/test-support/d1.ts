@@ -1,199 +1,116 @@
-// A small D1 stand-in over node:sqlite for the dashboard tests, with the
-// migrations in ../migrations applied. Only the calls the dashboard makes are
-// implemented: prepare().bind().all() / first() / run(), batch() and exec().
+// The dashboard tests' D1 databases: real D1 that Miniflare runs inside the
+// Workers runtime. vitest.config.ts binds TEST_DB_POOL_SIZE of them and
+// workers-setup.ts empties them all before each test. Each createD1() call
+// hands out a database no one has used in the current test, and applies
+// ../migrations to it before its first statement runs, so a test that never
+// touches its database pays nothing for it.
 
-import { readdirSync, readFileSync } from "node:fs";
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { URL } from "node:url";
+import { applyD1Migrations, env } from "cloudflare:test";
 
-/**
- * A bound value as node:sqlite takes it; undefined binds as NULL, as D1
- * would refuse it but the dashboard never passes one on purpose.
- *
- * @param value - Value passed to `bind`.
- * @returns The value for node:sqlite.
- * @throws {TypeError} For a value SQLite cannot store.
- */
-function sqlValue(value: unknown): SQLInputValue {
-  if (value === undefined || value === null) return null;
-  if (typeof value === "number" || typeof value === "bigint" || typeof value === "string")
-    return value;
-  if (value instanceof Uint8Array) return value;
-  throw new TypeError(`cannot bind a ${typeof value}`);
+import { TEST_DB_POOL_SIZE } from "./d1-pool.ts";
+
+/** Databases handed out to the current test. */
+let used = 0;
+
+/** Called by workers-setup.ts once the databases are empty again. */
+export function resetHandOut(): void {
+  used = 0;
 }
 
 /**
- * D1's result metadata for a statement that changed `changes` rows.
+ * A pool database by index.
  *
- * @param changes - Rows changed.
- * @returns The metadata.
+ * @param i - Index below TEST_DB_POOL_SIZE.
+ * @returns The binding.
+ * @throws {Error} When vitest.config.ts did not bind it.
  */
-function meta(changes: number): D1Meta & Record<string, unknown> {
-  return {
-    duration: 0,
-    size_after: 0,
-    rows_read: 0,
-    rows_written: changes,
-    last_row_id: 0,
-    changed_db: changes > 0,
-    changes,
-  };
+function pooled(i: number): D1Database {
+  const db = (env as unknown as Record<string, D1Database | undefined>)[`TEST_DB_${i}`];
+  if (db === undefined) throw new Error(`TEST_DB_${i} is not bound`);
+  return db;
 }
 
-/** A prepared statement with bound values. */
-class Statement implements D1PreparedStatement {
-  /** Database. */
-  readonly db: DatabaseSync;
+/**
+ * A statement that waits for the schema, then runs on the real database.
+ * batch() reads `sql` and `params` back to rebuild it there.
+ */
+class LazyStatement {
+  /** The database, once migrated. */
+  readonly db: Promise<D1Database>;
   /** Statement text. */
   readonly sql: string;
-  /** Bound values. */
-  readonly params: SQLInputValue[];
+  /** Bound values, in order. */
+  readonly params: unknown[];
 
   /**
-   * @param db - Database.
+   * @param db - The database, once migrated.
    * @param sql - Statement text.
    * @param params - Bound values.
    */
-  constructor(db: DatabaseSync, sql: string, params: SQLInputValue[] = []) {
+  constructor(db: Promise<D1Database>, sql: string, params: unknown[] = []) {
     this.db = db;
     this.sql = sql;
     this.params = params;
   }
 
   /**
-   * @param params - Values for the placeholders.
-   * @returns A copy with these values bound.
+   * @param values - Values for the placeholders.
+   * @returns A statement with them bound.
    */
-  bind(...params: unknown[]): Statement {
-    return new Statement(this.db, this.sql, params.map(sqlValue));
+  bind(...values: unknown[]): LazyStatement {
+    return new LazyStatement(this.db, this.sql, values);
+  }
+
+  /** @returns The statement on the migrated database. */
+  async real(): Promise<D1PreparedStatement> {
+    return (await this.db).prepare(this.sql).bind(...this.params);
   }
 
   /**
-   * Rows as plain objects. Like D1's own, the row type is the caller's word.
-   *
-   * @returns Rows.
+   * @param column - Optional column to read.
+   * @returns The first row, or that column of it.
    */
-  rows<T>(): T[] {
-    return this.db
-      .prepare(this.sql)
-      .all(...this.params)
-      .map((r) => ({ ...r }) as T);
+  async first(column?: string): Promise<unknown> {
+    const stmt = await this.real();
+    return column === undefined ? stmt.first() : stmt.first(column);
   }
 
-  /** @returns Rows. */
-  async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-    return { success: true, meta: meta(0), results: this.rows<T>() };
+  /** @returns The result with every row. */
+  async all(): Promise<D1Result> {
+    return (await this.real()).all();
   }
 
-  first<T = unknown>(colName: string): Promise<T | null>;
-  first<T = Record<string, unknown>>(): Promise<T | null>;
-  /**
-   * @param colName - One column, or the whole row when left out.
-   * @returns First row (or its column), or null.
-   */
-  async first<T>(colName?: string): Promise<T | null> {
-    const row = this.db.prepare(this.sql).get(...this.params);
-    if (!row) return null;
-    return (colName === undefined ? { ...row } : row[colName]) as T;
+  /** @returns The result without rows. */
+  async run(): Promise<D1Result> {
+    return (await this.real()).run();
   }
 
-  /** @returns Rows changed. */
-  async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-    const res = this.db.prepare(this.sql).run(...this.params);
-    return { success: true, meta: meta(Number(res.changes)), results: [] };
-  }
-
-  raw<T = unknown[]>(options: { columnNames: true }): Promise<[string[], ...T[]]>;
-  raw<T = unknown[]>(options?: { columnNames?: false }): Promise<T[]>;
-  /**
-   * Not used by the dashboard.
-   *
-   * @throws {Error} Always.
-   */
-  raw(): Promise<never> {
-    throw new Error("raw() is not implemented by the test D1");
-  }
-}
-
-/** A fresh in-memory D1 stand-in. */
-export class TestD1 implements D1Database {
-  /** The node:sqlite database, for tests that look at it directly. */
-  readonly raw: DatabaseSync;
-
-  /**
-   * @param raw - Database with the schema applied.
-   */
-  constructor(raw: DatabaseSync) {
-    this.raw = raw;
-  }
-
-  /**
-   * @param sql - Statement text.
-   * @returns The statement.
-   */
-  prepare(sql: string): Statement {
-    return new Statement(this.raw, sql);
-  }
-
-  /**
-   * Runs statements in one transaction.
-   *
-   * @param stmts - Statements from `prepare`.
-   * @returns One result per statement.
-   */
-  async batch<T = unknown>(stmts: D1PreparedStatement[]): Promise<D1Result<T>[]> {
-    this.raw.exec("BEGIN");
-    try {
-      const out: D1Result<T>[] = [];
-      for (const s of stmts) out.push(await s.run<T>());
-      this.raw.exec("COMMIT");
-      return out;
-    } catch (err) {
-      this.raw.exec("ROLLBACK");
-      throw err;
-    }
-  }
-
-  /**
-   * @param sql - SQL statements.
-   * @returns A count of zero.
-   */
-  async exec(sql: string): Promise<D1ExecResult> {
-    this.raw.exec(sql);
-    return { count: 0, duration: 0 };
-  }
-
-  /**
-   * Not used by the dashboard.
-   *
-   * @throws {Error} Always.
-   */
-  withSession(): D1DatabaseSession {
-    throw new Error("sessions are not implemented by the test D1");
-  }
-
-  /**
-   * Not used by the dashboard.
-   *
-   * @throws {Error} Always.
-   */
-  dump(): Promise<ArrayBuffer> {
-    throw new Error("dump() is not implemented by the test D1");
+  /** @returns The rows as arrays. */
+  async raw(): Promise<unknown[]> {
+    return (await this.real()).raw();
   }
 }
 
 /**
- * A fresh in-memory database with the dashboard schema.
+ * A database with the dashboard schema and no rows, not shared with anything
+ * else in the current test.
  *
- * @returns D1-shaped handle.
+ * @returns A D1Database that migrates on first use.
+ * @throws {Error} When the test has used every database in the pool.
  */
-export function createD1(): TestD1 {
-  const db = new DatabaseSync(":memory:");
-  const dir = new URL("../migrations/", import.meta.url);
-  for (const name of readdirSync(dir)
-    .filter((n) => n.endsWith(".sql"))
-    .sort()) {
-    db.exec(readFileSync(new URL(name, dir), "utf8"));
-  }
-  return new TestD1(db);
+export function createD1(): D1Database {
+  if (used >= TEST_DB_POOL_SIZE)
+    throw new Error(`a test may create at most ${TEST_DB_POOL_SIZE} databases`);
+  const db = pooled(used);
+  used += 1;
+  let ready: Promise<D1Database> | undefined;
+  const migrated = (): Promise<D1Database> =>
+    (ready ??= applyD1Migrations(db, env.TEST_MIGRATIONS).then(() => db));
+  const lazy = {
+    prepare: (sql: string) => new LazyStatement(Promise.resolve().then(migrated), sql),
+    batch: async (stmts: LazyStatement[]) =>
+      (await migrated()).batch(await Promise.all(stmts.map((s) => s.real()))),
+    exec: async (sql: string) => (await migrated()).exec(sql),
+  };
+  return lazy as unknown as D1Database;
 }

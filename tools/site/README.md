@@ -179,8 +179,12 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   Worker type-checks before a build.
 - TypeScript – every module here is strict TypeScript (`tsconfig.json`).
   Wrangler bundles the Worker from the `.ts` sources and Node (26 in CI,
-  22.18 or newer) runs the build and the tests by stripping the types, so
-  nothing is compiled; `npm run typecheck` runs `tsc`, and CI runs it before the tests.
+  22.18 or newer) runs the build by stripping the types, so nothing is
+  compiled; `npm run typecheck` runs `tsc`, and CI runs it before the tests.
+  `npm test` runs Vitest (`vitest.config.ts`): the Worker's tests run inside
+  the Workers runtime through `@cloudflare/vitest-plugin`, against a site
+  built once in Node beforehand, and the build and docs tests run in Node.
+  `npm run coverage` adds a V8 coverage report.
 - `src/_headers` – security headers, and Markdown and `llms.txt` content
   types. The CSP allows only the site's own scripts (`'self'`, for
   `docs.js`) and Cloudflare Web Analytics, which the edge injects into each

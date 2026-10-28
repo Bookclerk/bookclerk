@@ -2,8 +2,17 @@
 // deterministic PRNG so a failure replays from its seed, and a text mutator
 // that splices in fragments chosen by each test, plus seed corpus loading.
 
-import { readdirSync, readFileSync } from "node:fs";
-import { URL } from "node:url";
+/**
+ * Every seed file under ../corpus, by path relative to this module
+ * (`../corpus/<target>/<name>`). Vite reads them when it transforms this
+ * module, so the tests replay them inside the Workers runtime, which has no
+ * view of the host filesystem.
+ */
+const CORPUS: Readonly<Record<string, string>> = import.meta.glob("../corpus/*/*", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
 
 /**
  * Deterministic PRNG (mulberry32).
@@ -62,13 +71,32 @@ export function choose<T>(rand: () => number, list: readonly T[]): T {
 }
 
 /**
- * The seed corpus in a directory, as `[file name, text]` sorted by name.
+ * The seed corpus of one fuzz target, as `[file name, text]` sorted by name.
  *
- * @param dir - Corpus directory URL (with a trailing slash).
+ * @param target - Directory under `corpus/`, such as `b2_error`.
  * @returns Seeds.
+ * @throws {Error} When the target has no seeds, which means a typo.
  */
-export function seedsIn(dir: URL): [string, string][] {
-  return readdirSync(dir)
-    .sort()
-    .map((name): [string, string] => [name, readFileSync(new URL(name, dir), "utf8")]);
+export function seeds(target: string): [string, string][] {
+  const prefix = `../corpus/${target}/`;
+  const out = Object.entries(CORPUS)
+    .filter(([path]) => path.startsWith(prefix))
+    .map(([path, text]): [string, string] => [path.slice(prefix.length), text])
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  if (out.length === 0) throw new Error(`no seeds in corpus/${target}`);
+  return out;
+}
+
+/**
+ * One seed file.
+ *
+ * @param target - Directory under `corpus/`.
+ * @param name - File name in it.
+ * @returns The file's text.
+ * @throws {Error} When the file does not exist.
+ */
+export function seed(target: string, name: string): string {
+  const text = CORPUS[`../corpus/${target}/${name}`];
+  if (text === undefined) throw new Error(`no seed corpus/${target}/${name}`);
+  return text;
 }

@@ -6,10 +6,7 @@
 // seed and input that reproduce it.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { test } from "node:test";
-import { fileURLToPath, URL } from "node:url";
+import { test } from "vitest";
 
 import { renderMermaidSVG } from "beautiful-mermaid";
 
@@ -21,8 +18,16 @@ import { renderDoc, SEARCH_INDEX } from "./render.ts";
 import { docsTarget, pickEncoding, sitePageLocation } from "./worker.ts";
 import type { Encoding } from "./worker.ts";
 
-/** This directory. */
-const HERE = fileURLToPath(new URL(".", import.meta.url));
+/**
+ * Every seed under fuzz/, by path from this module (`./fuzz/<target>/<name>`).
+ * Vite reads them when it transforms this test, so it runs inside the
+ * Workers runtime, which has no view of the repository.
+ */
+const SEEDS: Readonly<Record<string, string>> = import.meta.glob<string>("./fuzz/*/*", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
 
 /** PRNG seed for this run. */
 const SEED = Number(process.env["FUZZ_SEED"] ?? 0x5eed);
@@ -174,10 +179,13 @@ function oracleEncoding(header: string): Encoding | null {
  * @returns The seeds.
  */
 function corpus(target: string): string[] {
-  const dir = join(HERE, "fuzz", target);
-  return readdirSync(dir)
+  const prefix = `./fuzz/${target}/`;
+  const seeds = Object.keys(SEEDS)
+    .filter((path) => path.startsWith(prefix))
     .sort()
-    .map((name) => readFileSync(join(dir, name), "utf8"));
+    .map((path) => SEEDS[path] ?? "");
+  if (seeds.length === 0) throw new Error(`no seeds in fuzz/${target}`);
+  return seeds;
 }
 
 test("pickEncoding agrees with the oracle on its seed corpus", () => {

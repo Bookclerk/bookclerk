@@ -10,16 +10,20 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json",
     "lint": "oxlint --deny-warnings",
-    "test": "node --test \"test/*.test.ts\""
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@cloudflare/containers": "0.3.7"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.9",
     "@cloudflare/workers-types": "5.20261021.1",
     "@types/node": "26.6.5",
+    "@vitest/coverage-v8": "5.0.5",
     "oxlint": "1.90.0",
     "typescript": "7.0.2",
+    "vitest": "5.0.5",
     "wrangler": "4.151.3"
   },
   "overrides": {

@@ -6,9 +6,7 @@
 // result against an oracle written without the module's helpers.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
-import { describe, it } from "node:test";
-import { URL } from "node:url";
+import { describe, it } from "vitest";
 import { classify, OPERATIONS } from "../src/routes.ts";
 import {
   cookiesForContainer,
@@ -33,7 +31,7 @@ import {
   widgetKeys,
   WIDGET_NAME,
 } from "../scripts/worker-secrets.ts";
-import { mutate, rng } from "../test-support/fuzz.ts";
+import { mutate, rng, seeds as corpus } from "../test-support/fuzz.ts";
 
 /** Mutated inputs per seed. */
 const ROUNDS = 300;
@@ -69,10 +67,7 @@ function plainObject(v: unknown): v is Record<string, unknown> {
  * @returns File names and contents.
  */
 function seeds(name: string): Array<[string, string]> {
-  const url = new URL(`../corpus/${name}/`, import.meta.url);
-  return readdirSync(url)
-    .sort()
-    .map((f) => [f, readFileSync(new URL(f, url), "utf8")]);
+  return corpus(name);
 }
 
 /**

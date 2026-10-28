@@ -47,7 +47,7 @@
 // module's own helpers.
 
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { URL } from "node:url";
 import {
   DEFAULT_NEXT,
@@ -96,11 +96,11 @@ import {
   parseIssueReportIds,
 } from "./dashboard/report-ids.ts";
 import { MAX_FIELD_CHARS, MAX_LABEL_CHARS, summarizeReport } from "./dashboard/signature.ts";
-import { choose, mutate, rng, seedsIn } from "./test-support/fuzz.ts";
+import { choose, mutate, rng, seeds as corpus } from "./test-support/fuzz.ts";
 
 /** Seed inputs of a corpus directory, keyed by file name. */
 function seeds(dir: string): [string, string][] {
-  return seedsIn(new URL(`./corpus/${dir}/`, import.meta.url));
+  return corpus(dir);
 }
 
 /**

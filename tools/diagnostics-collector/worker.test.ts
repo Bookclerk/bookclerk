@@ -4,9 +4,9 @@
 // Also the ingest cursor the Action stores and pulls from.
 
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, describe, it } from "vitest";
 import type { Env } from "./env.ts";
-import { createD1, type TestD1 } from "./test-support/d1.ts";
+import { createD1 } from "./test-support/d1.ts";
 import worker, {
   UpstreamError,
   type CursorAnswer,
@@ -160,7 +160,7 @@ describe("GET /report?unfiled=1", () => {
    *
    * @returns The D1 stand-in.
    */
-  async function setup(): Promise<TestD1> {
+  async function setup(): Promise<D1Database> {
     const db = createD1();
     await db
       .prepare("INSERT INTO report_issue (report_id, issue_number) VALUES (?, ?)")
@@ -194,7 +194,7 @@ describe("GET /report?unfiled=1", () => {
    * @param query - Extra query text.
    * @returns The answer.
    */
-  async function pull(db: TestD1, query: string): Promise<ReportAnswer> {
+  async function pull(db: D1Database, query: string): Promise<ReportAnswer> {
     const req = new Request(`https://collector.test/report?since=0&baseline_version=${query}`, {
       headers: { authorization: `Bearer ${KEY}` },
     });
@@ -275,7 +275,7 @@ describe("GET /report?unfiled=1 against closed issues", () => {
    * The closed issue #412 has its fix recorded as shipped in `fixedIn`
    * (null for no fix row).
    */
-  async function setup(version: string, fixedIn: string | null): Promise<TestD1> {
+  async function setup(version: string, fixedIn: string | null): Promise<D1Database> {
     const db = createD1();
     await db
       .prepare(
@@ -339,7 +339,7 @@ describe("GET /report?unfiled=1 against closed issues", () => {
    * @param db - Database.
    * @returns The answer.
    */
-  async function pull(db: TestD1): Promise<ReportAnswer> {
+  async function pull(db: D1Database): Promise<ReportAnswer> {
     const req = new Request("https://collector.test/report?since=0&baseline_version=&unfiled=1", {
       headers: { authorization: `Bearer ${KEY}` },
     });
@@ -412,7 +412,7 @@ describe("GET /report?unfiled=1 against closed issues", () => {
 
   /** Adds a second closed issue tracking the same signature through a report of `version`. */
   async function closedIssue(
-    db: TestD1,
+    db: D1Database,
     number: number,
     version: string,
     fixedIn: string | null,

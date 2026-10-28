@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { test } from "node:test";
+import { test } from "vitest";
 import { fileURLToPath, URL } from "node:url";
 import { runInNewContext } from "node:vm";
 

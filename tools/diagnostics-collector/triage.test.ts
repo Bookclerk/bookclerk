@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import {
   BudgetLedger,
   DEFAULT_DAILY_NEURONS,
@@ -247,18 +247,18 @@ describe("handleTriage", () => {
     // A malformed batch is refused before the database is read.
     const broken = {
       ...env,
-      DASHBOARD_DB: Object.assign(createD1(), {
+      DASHBOARD_DB: {
         prepare: () => {
           throw new Error("no reads expected");
         },
-      }),
+      } as unknown as D1Database,
     };
     assert.equal((await handleTriage(triageRequest("["), broken, { now: () => NOW })).status, 400);
   });
 
   it("triages without the open issues when the dashboard cannot be read", async () => {
     const db = createD1();
-    db.raw.exec("DROP TABLE issues");
+    await db.exec("DROP TABLE issues");
     const env: Env = {
       TRIAGE_BUDGET: fakeBudget(),
       DASHBOARD_DB: db,

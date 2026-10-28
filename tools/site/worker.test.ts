@@ -4,12 +4,9 @@
 // a stand-in for the docs repository. Run with `npm test`.
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { extname, join, relative } from "node:path";
-import { after, before, test } from "node:test";
+import { inject, test } from "vitest";
 
-import { build, PAGES } from "./build.ts";
+import { PAGES } from "./build.ts";
 import {
   acceptWeights,
   docsTarget,
@@ -26,25 +23,34 @@ import {
   sitePageLocation,
 } from "./worker.ts";
 import type { DocsFetch, Env, PageCache } from "./worker.ts";
-import type { BuildEnv } from "./build.ts";
 import { docPageTitle, docUrl, TITLE_MAX } from "./render.ts";
 import type { DocsShell, SearchPage } from "./render.ts";
 import { MAX_LAST_UPDATED_BYTES } from "./last-updated.ts";
+// Read by Vite when it transforms this test: it runs inside the Workers
+// runtime, which has no view of the repository.
+import HEADERS_FILE from "./src/_headers?raw";
+import WRANGLER_TOML from "./wrangler.toml?raw";
 
-/** This directory. */
-const HERE = new URL(".", import.meta.url).pathname;
-
-/** Release state after two releases: v0.2.0 is the default docs version. */
-const ENV: BuildEnv = {
-  SITE_COMMIT: "b6adae4d0123456789abcdef0123456789abcdef",
-  SITE_BUILT_ON: "2026-10-23",
-  SITE_RELEASE_TAG: "v0.2.0",
-  SITE_RELEASE_DATE: "2026-12-01",
-  SITE_DOCS_VERSIONS: "v0.2.0 v0.1.0",
-};
-
-/** The repository's docs/, served as every version of the docs repository. */
-const DOCS = join(HERE, "..", "..", "docs");
+/**
+ * The repository's docs/, served as every version of the docs repository:
+ * text by path from docs/. The generated API reference that
+ * scripts/generate-api-docs.sh may have written there is left out, as on CI
+ * (GENERATED stands in for it).
+ */
+const DOCS: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(
+    import.meta.glob<string>(
+      [
+        "../../docs/**/*",
+        "!../../docs/api/rust/**",
+        "!../../docs/api/typescript/**",
+        "!../../docs/api/ui/**",
+        "!../../docs/api/python/**",
+      ],
+      { query: "?raw", import: "default", eager: true },
+    ),
+  ).map(([path, text]) => [path.slice("../../docs/".length), text]),
+);
 
 /** Generated pages the stand-in docs repository adds to docs/. */
 const GENERATED: Readonly<Record<string, string>> = {
@@ -69,14 +75,22 @@ const TYPES: Readonly<Record<string, string>> = {
   ".css": "text/css",
 };
 
-/** Temporary directory holding the build. */
-let root = "";
-
-/** The built dist/. */
-let dist = "";
+/** The site built (for test-support/build-env.ts) by test-support/site-build.ts before the tests start. */
+const BUILT = inject("siteBuild");
 
 /** The docs shell the build baked. */
-let shell: DocsShell;
+const shell: DocsShell = BUILT.shell;
+
+/**
+ * One built file.
+ *
+ * @param path - Path from dist/, such as `sitemap.xml`.
+ * @returns Its bytes, or undefined when the build has no such file.
+ */
+function distFile(path: string): Uint8Array<ArrayBuffer> | undefined {
+  const base64 = Object.hasOwn(BUILT.files, path) ? BUILT.files[path] : undefined;
+  return base64 === undefined ? undefined : Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+}
 
 /** URLs the stand-in docs repository was asked for. */
 const fetched: string[] = [];
@@ -117,9 +131,8 @@ async function docsFetch(url: string, init: RequestInit): Promise<Response> {
   if (!REFS.has(ref)) return new Response("404: Not Found", { status: 404 });
   const generated = Object.hasOwn(GENERATED, file) ? GENERATED[file] : undefined;
   if (generated !== undefined) return new Response(generated);
-  const path = join(DOCS, file);
-  if (!file.includes("..") && existsSync(path) && statSync(path).isFile())
-    return new Response(readFileSync(path));
+  const doc = Object.hasOwn(DOCS, file) ? DOCS[file] : undefined;
+  if (doc !== undefined) return new Response(doc);
   return new Response("404: Not Found", { status: 404 });
 }
 
@@ -134,15 +147,16 @@ async function assetsFetch(input: Request | URL | string): Promise<Response> {
   const path = new URL(input instanceof Request ? input.url : input).pathname;
   const candidates = path.endsWith("/") ? [`${path}index.html`] : [path, `${path}.html`];
   for (const candidate of candidates) {
-    const file = join(dist, candidate);
-    if (existsSync(file) && statSync(file).isFile()) {
-      return new Response(readFileSync(file), {
+    const body = distFile(candidate.slice(1));
+    if (body !== undefined) {
+      const ext = /\.[^./]*$/.exec(candidate)?.[0] ?? "";
+      return new Response(body, {
         status: 200,
-        headers: { "Content-Type": TYPES[extname(file)] ?? "application/octet-stream" },
+        headers: { "Content-Type": TYPES[ext] ?? "application/octet-stream" },
       });
     }
   }
-  return new Response(readFileSync(join(dist, "404.html")), {
+  return new Response(distFile("404.html") ?? null, {
     status: 404,
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
@@ -166,15 +180,6 @@ function get(path: string, accept: string, method = "GET"): Promise<Response> {
     { shell, fetch: docsFetch },
   );
 }
-
-before(() => {
-  root = mkdtempSync(join(tmpdir(), "bookclerk-site-worker-"));
-  dist = join(root, "dist");
-  build(ENV, dist, join(root, "docs-shell.json"));
-  shell = JSON.parse(readFileSync(join(root, "docs-shell.json"), "utf8"));
-});
-
-after(() => rmSync(root, { recursive: true, force: true }));
 
 test("acceptWeights reads quality values and counts wildcards as HTML", () => {
   assert.deepEqual(acceptWeights("text/markdown"), { markdown: 1, html: 0 });
@@ -323,7 +328,7 @@ test("docsTarget reads versions and paths", () => {
 });
 
 test("every page with a Markdown version runs the Worker and is mapped", () => {
-  const toml = readFileSync(join(HERE, "wrangler.toml"), "utf8");
+  const toml = WRANGLER_TOML;
   const routes: string[] = JSON.parse(toml.match(/^run_worker_first = (\[.*\])$/m)?.[1] ?? "[]");
   assert.ok(routes.includes("/docs/*") && routes.includes("/docs"));
   for (const page of PAGES.filter((p) => p.markdown)) {
@@ -337,7 +342,7 @@ test("every page with a Markdown version runs the Worker and is mapped", () => {
 });
 
 test("the Worker sends the same security headers as src/_headers", () => {
-  const block = readFileSync(join(HERE, "src", "_headers"), "utf8").split(/\n\s*\n/)[0] ?? "";
+  const block = HEADERS_FILE.split(/\n\s*\n/)[0] ?? "";
   const fromFile = Object.fromEntries(
     block
       .split("\n")
@@ -440,7 +445,7 @@ test("website pages have one slash-free URL; other spellings move there permanen
     "/404.html",
   ])
     assert.equal(sitePageLocation(path, pages), null, path);
-  const toml = readFileSync(join(HERE, "wrangler.toml"), "utf8");
+  const toml = WRANGLER_TOML;
   assert.match(toml, /^html_handling = "drop-trailing-slash"$/m);
   const routes: string[] = JSON.parse(toml.match(/^run_worker_first = (\[.*\])$/m)?.[1] ?? "[]");
   for (const page of shell.pages.filter((p) => p !== "/")) {
@@ -682,8 +687,10 @@ test("a page shows no date when the dates file leaves it out, is broken or canno
   );
   const broken =
     (answer: () => Promise<Response>): DocsFetch =>
+    // Awaited, not returned: the Workers runtime reports a rejection that an
+    // async function passes on by returning it as unhandled.
     async (url, init) =>
-      url.endsWith("/last-updated.json") ? answer() : docsFetch(url, init);
+      url.endsWith("/last-updated.json") ? await answer() : docsFetch(url, init);
   const answers = [
     async () => new Response("oops", { status: 502 }),
     async () => new Response(null, { status: 302, headers: { Location: "https://example.com/" } }),
@@ -696,7 +703,9 @@ test("a page shows no date when the dates file leaves it out, is broken or canno
       new Response(JSON.stringify({ version: 1, pages: { "plugins/README": "<b>x</b>" } })),
     async () =>
       new Response("x", { headers: { "Content-Length": String(MAX_LAST_UPDATED_BYTES + 1) } }),
-    async () => Promise.reject(new Error("network")),
+    async () => {
+      throw new Error("network");
+    },
   ];
   // Answers that are the file itself (however wrong) are cached like the page; failed reads are not.
   const failed = new Set([0, 1, 6, 7]);
@@ -779,7 +788,9 @@ test("a failing or oversized docs repository answer is a 503, not a page", async
     big,
     endless,
     moved,
-    async () => Promise.reject(new Error("network")),
+    async () => {
+      throw new Error("network");
+    },
   ];
   for (const fetcher of fetchers) {
     const req = new Request("https://bookclerk.app/docs/plugins", { headers: { Accept: BROWSER } });
@@ -906,9 +917,7 @@ test("rendered pages are cached per deploy, version, path and format", async () 
 
 test("the sitemap is an index of one sitemap per section, listing every dated page of the default docs version", async () => {
   const routes: string[] = JSON.parse(
-    readFileSync(join(HERE, "wrangler.toml"), "utf8").match(
-      /^run_worker_first = (\[.*\])$/m,
-    )?.[1] ?? "[]",
+    WRANGLER_TOML.match(/^run_worker_first = (\[.*\])$/m)?.[1] ?? "[]",
   );
   assert.ok(routes.includes("/sitemap.xml") && routes.includes("/sitemap-*"));
   fetched.length = 0;
@@ -963,9 +972,7 @@ test("the sitemap is an index of one sitemap per section, listing every dated pa
 
 test("/sitemap lists every page for people, grouped like the sidebar, with dates", async () => {
   const routes: string[] = JSON.parse(
-    readFileSync(join(HERE, "wrangler.toml"), "utf8").match(
-      /^run_worker_first = (\[.*\])$/m,
-    )?.[1] ?? "[]",
+    WRANGLER_TOML.match(/^run_worker_first = (\[.*\])$/m)?.[1] ?? "[]",
   );
   for (const path of ["/sitemap", "/sitemap/", "/sitemap.md"])
     assert.ok(routes.includes(path), path);
@@ -1084,7 +1091,7 @@ test("the sitemap leaves out keys the docs route does not serve as themselves an
 });
 
 test("the sitemap falls back to the built one when the dates file is missing, unreadable or lists no page", async () => {
-  const built = readFileSync(join(dist, "sitemap.xml"), "utf8");
+  const built = new TextDecoder().decode(distFile("sitemap.xml"));
   assert.match(built, /<loc>https:\/\/bookclerk.app\/docs\/plugins<\/loc>/);
   assert.doesNotMatch(built, /<lastmod>/);
   const answers = [
@@ -1096,7 +1103,9 @@ test("the sitemap falls back to the built one when the dates file is missing, un
     async () => new Response(JSON.stringify({ version: 1, pages: { "v/x": "2026-10-20" } })),
     async () =>
       new Response("x", { headers: { "Content-Length": String(MAX_LAST_UPDATED_BYTES + 1) } }),
-    async () => Promise.reject(new Error("network")),
+    async () => {
+      throw new Error("network");
+    },
   ];
   // A release published without the file never gets one, so its fallback is
   // kept like its pages; every other answer is retried in a minute.
@@ -1109,7 +1118,7 @@ test("the sitemap falls back to the built one when the dates file is missing, un
     };
     const pending: Promise<unknown>[] = [];
     const fetcher: DocsFetch = async (url, init) =>
-      url.endsWith("/last-updated.json") ? answer() : docsFetch(url, init);
+      url.endsWith("/last-updated.json") ? await answer() : docsFetch(url, init);
     const res = await handle(new Request("https://bookclerk.app/sitemap.xml"), env, {
       shell,
       fetch: fetcher,
@@ -1302,14 +1311,6 @@ test("compression leaves alone what must not or need not be compressed", async (
   assert.equal(post.headers.get("Content-Encoding"), null);
 });
 
-/** Where scripts/generate-api-docs.sh writes the API reference into docs/ (gitignored, see docs/api/README.md). */
-const GENERATED_API_DIRS: ReadonlySet<string> = new Set([
-  "api/rust",
-  "api/typescript",
-  "api/ui",
-  "api/python",
-]);
-
 /**
  * Decodes the character references escapeHtml writes.
  *
@@ -1332,25 +1333,11 @@ function unescapeHtml(text: string): string {
   });
 }
 
-/**
- * Every Markdown file under a directory.
- *
- * @param dir - Directory to walk.
- * @returns Absolute paths of its `.md` files, subdirectories included.
- */
-function markdownFiles(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(dir, entry.name);
-    // The generated API reference is gitignored here; GENERATED stands in for it.
-    if (entry.isDirectory())
-      return GENERATED_API_DIRS.has(relative(DOCS, path)) ? [] : markdownFiles(path);
-    return entry.isFile() && entry.name.endsWith(".md") ? [path] : [];
-  });
-}
-
 test("every page has a description, a title search engines show whole, and alt text on every image", async () => {
   const docs = [
-    ...markdownFiles(DOCS).map((file) => relative(DOCS, file).slice(0, -".md".length)),
+    ...Object.keys(DOCS)
+      .filter((file) => file.endsWith(".md"))
+      .map((file) => file.slice(0, -".md".length)),
     ...Object.keys(GENERATED)
       .filter((f) => f.endsWith(".md"))
       .map((f) => f.slice(0, -".md".length)),

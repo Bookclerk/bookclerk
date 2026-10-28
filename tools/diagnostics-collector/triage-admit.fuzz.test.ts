@@ -6,9 +6,7 @@
 // recomputes with Buffer instead of the module's own helpers.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
-import { describe, it } from "node:test";
-import { URL } from "node:url";
+import { describe, it } from "vitest";
 import {
   MAX_OUTPUT_TOKENS,
   MAX_TRIAGE_BODY_BYTES,
@@ -21,17 +19,14 @@ import {
   offerOpenIssues,
   type ModelRates,
 } from "./triage.ts";
-import { mutate, rng } from "./test-support/fuzz.ts";
+import { mutate, rng, seeds as corpus } from "./test-support/fuzz.ts";
 
-const CORPUS = new URL("./corpus/triage_admit/", import.meta.url);
 const RATES = MODELS["@cf/ibm-granite/granite-4.0-h-micro"];
 const SMALL_CONTEXT: ModelRates = { ...RATES, context: 4096 };
 
 /** Seed inputs, keyed by file name. */
 function seeds(): [string, string][] {
-  return readdirSync(CORPUS)
-    .sort()
-    .map((name): [string, string] => [name, readFileSync(new URL(name, CORPUS), "utf8")]);
+  return corpus("triage_admit");
 }
 
 /** The open-issue text a dashboard-backed Worker puts before the batch. */
