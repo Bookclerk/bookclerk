@@ -198,6 +198,10 @@ test("docsTarget reads versions and paths", () => {
     { ref: "main", label: "Development (main)", base: "/docs/v/main/" },
   ];
   const [latest, main] = versions;
+  // Every redirect lands on the final URL in one hop.
+  assert.deepEqual(docsTarget("/docs/v/v0.2.0/guide/install.html", versions), { kind: "redirect", location: "/docs/guide/install" });
+  assert.deepEqual(docsTarget("/docs/v/v0.2.0/api/web/index.html", versions), { kind: "redirect", location: "/docs/api/web" });
+  assert.deepEqual(docsTarget("/docs/a.html/index.html", versions), { kind: "redirect", location: "/docs/a" });
   assert.deepEqual(docsTarget("/docs", versions), { kind: "page", version: latest, keys: ["README", "index"] });
   assert.deepEqual(docsTarget("/docs/", versions), { kind: "page", version: latest, keys: ["README", "index"] });
   assert.deepEqual(docsTarget("/docs/plugins", versions), { kind: "page", version: latest, keys: ["plugins", "plugins/README", "plugins/index"] });

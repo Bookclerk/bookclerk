@@ -328,7 +328,13 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
     if (found === undefined) return { kind: "missing" };
     rest = tail.join("/");
     if (!DOC_REST_RE.test(rest)) return { kind: "missing" };
-    if (found === versions[0]) return { kind: "redirect", location: `/docs/${rest}`.replace(/\/$/, "") };
+    if (found === versions[0]) {
+      // Straight to the final URL: the unprefixed path may itself redirect
+      // (`x.html`), and a redirect should take one hop.
+      const location = `/docs/${rest}`.replace(/\/$/, "");
+      const next = docsTarget(location, versions);
+      return next.kind === "redirect" ? next : { kind: "redirect", location };
+    }
     version = found;
   }
   if (!DOC_REST_RE.test(rest)) return { kind: "missing" };
@@ -336,7 +342,10 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
   if (last.endsWith(".md")) return { kind: "markdown", version, keys: [rest.slice(0, -".md".length)] };
   if (last.endsWith(".html")) {
     const page = last === "index.html" ? rest.slice(0, -"index.html".length) : rest.slice(0, -".html".length);
-    return { kind: "redirect", location: (version.base + page).replace(/\/$/, "") };
+    const location = (version.base + page).replace(/\/$/, "");
+    // `a.html/index.html` lands on `a.html`, which would redirect again.
+    const next = docsTarget(location, versions);
+    return next.kind === "redirect" ? next : { kind: "redirect", location };
   }
   if (rest === "" || rest.endsWith("/")) {
     const keys: [string, ...string[]] = [`${rest}README`, `${rest}index`];
