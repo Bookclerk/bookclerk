@@ -666,7 +666,8 @@
   /**
    * Applies a kept preference now and again when the page comes back from
    * the back/forward cache, where a choice made on another page since would
-   * otherwise not show.
+   * otherwise not show. On that return, nothing kept (storage off, or no
+   * choice yet) leaves the page's own choice as it is.
    *
    * @param {{ get: () => string }} kept - The preference.
    * @param {(value: string) => void} show - Applies a value.
@@ -674,7 +675,8 @@
   function follow(kept, show) {
     show(kept.get());
     window.addEventListener("pageshow", (event) => {
-      if (event.persisted) show(kept.get());
+      const value = kept.get();
+      if (event.persisted && value) show(value);
     });
   }
 
