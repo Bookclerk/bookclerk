@@ -1,5 +1,7 @@
 # Formatting is checked by `prettier --check .` from the repository root
-# (the `lint` CI check). Prettier already skips what .gitignore ignores.
+# (the `lint` CI check). Prettier skips node_modules and what the ROOT
+# .gitignore ignores, but not nested .gitignore files, so their build and
+# local-state paths are repeated at the end of this file.
 
 # Markdown belongs to markdownlint (.markdownlint-cli2.jsonc): docs are
 # written for GitHub's renderer, and reflowing them would churn every page.
@@ -42,3 +44,10 @@ fuzz/
 **/tests/fixtures/
 scripts/tests/ci_plan_fixtures/
 tools/site/fuzz/*/
+
+# Ignored by the Workers' own .gitignore files.
+tools/*/.wrangler/
+tools/site/dist/
+tools/site/generated/
+tools/site/audit/report/
+tools/site/audit/.wrangler/

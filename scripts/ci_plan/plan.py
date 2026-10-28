@@ -144,8 +144,10 @@ LINT_SUFFIXES = (
     ".yml",
     ".yaml",
     ".css",
-    ".html",
+    ".webmanifest",
 )
+# Files with a lint suffix that both tools skip (.prettierignore).
+LINT_SKIPPED_NAMES = frozenset({"package-lock.json"})
 # Repository files the website renders as pages of their own
 # (tools/site/build.ts `PAGES`, `source`).
 SITE_SOURCE_FILES = frozenset({"SECURITY.md"})
@@ -852,7 +854,7 @@ def build_plan(
         if path in LINT_CONFIG_FILES or path.startswith(LINT_PREFIX):
             surf.lint.append(path)
             classified = True
-        elif path.endswith(LINT_SUFFIXES):
+        elif path.endswith(LINT_SUFFIXES) and path.rsplit("/", 1)[-1] not in LINT_SKIPPED_NAMES:
             # Also classified with its owner; Prettier or markdownlint reads it.
             surf.lint.append(path)
         if pkg is None and path.startswith("examples/plugins-"):

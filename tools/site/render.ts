@@ -347,6 +347,42 @@ export function rewriteLink(
   return base + encodeURI(target) + hash;
 }
 
+/** A markdownlint inline override, such as `<!-- markdownlint-disable-line MD038 -->`. */
+const LINT_COMMENT = /\s*<!--\s*markdownlint-[\s\S]*?-->/g;
+
+/**
+ * Removes markdownlint inline overrides from parsed prose.
+ *
+ * GitHub hides these HTML comments, but the site renders with raw HTML off,
+ * which would print them as text. Code spans and fences keep them, so a
+ * page can still show one as an example.
+ *
+ * @param tokens - Block tokens after inline parsing.
+ * @returns The tokens without the comments, and without paragraphs that held
+ *   nothing else.
+ */
+export function dropLintComments(tokens: Token[]): Token[] {
+  for (const token of tokens) {
+    if (token.type !== "inline") continue;
+    const children = (token.children ?? []).filter((child) => {
+      if (child.type !== "text") return true;
+      child.content = child.content.replace(LINT_COMMENT, "");
+      return child.content !== "";
+    });
+    // A comment that ended a line leaves its line break behind.
+    while (children.length > 0 && children.at(-1)?.type === "softbreak") children.pop();
+    token.children = children;
+    token.content = token.content.replace(LINT_COMMENT, "");
+  }
+  return tokens.filter((token, i) => {
+    const inline = token.type === "paragraph_open" ? tokens[i + 1] : tokens[i - 1];
+    const empty = inline?.type === "inline" && (inline.children ?? []).length === 0;
+    if (token.type === "paragraph_open" || token.type === "paragraph_close") return !empty;
+    if (token.type !== "inline") return true;
+    return !(empty && tokens[i - 1]?.type === "paragraph_open");
+  });
+}
+
 /**
  * Builds the Markdown renderer for one doc.
  *
@@ -365,6 +401,9 @@ function renderer(
   urlFor: UrlFor,
 ): Markdown {
   const md = new MarkdownIt({ html: false, linkify: false, typographer: false });
+  md.core.ruler.push("lint_comments", (state) => {
+    state.tokens = dropLintComments(state.tokens);
+  });
   const seen = new Map<string, number>();
   md.core.ruler.push("heading_ids", (state) => {
     const tokens = state.tokens;

@@ -169,6 +169,31 @@ test("raw HTML in a doc is shown as text", () => {
   assert.ok(!out.html.includes("<script"));
 });
 
+test("markdownlint overrides are hidden in prose, as on GitHub, and kept in code", () => {
+  const source = [
+    "# Title <!-- markdownlint-disable-line MD026 -->",
+    "",
+    "Only `$ ` lines run. <!-- markdownlint-disable-line MD038 -->",
+    "",
+    "<!-- markdownlint-disable-next-line MD001 -->",
+    "",
+    "Use `<!-- markdownlint-disable-line MDxxx -->` on the line.",
+    "",
+    "```markdown",
+    "Text. <!-- markdownlint-disable-line MD038 -->",
+    "```",
+    "",
+  ].join("\n");
+  const out = renderDoc(source, "cluster-hosts", { blobBase: BLOB });
+  assert.match(out.html, /<h1 id="title"[^>]*>Title</);
+  assert.match(out.html, /<p>Only <code>\$ <\/code> lines run\.<\/p>/);
+  assert.ok(!out.html.includes("<p></p>"));
+  assert.ok(!out.html.includes("MD001"));
+  assert.match(out.html, /<code>&lt;!-- markdownlint-disable-line MDxxx --&gt;<\/code>/);
+  assert.match(out.html, /Text\. &lt;!-- markdownlint-disable-line MD038 --&gt;/);
+  assert.ok(out.markdown.includes("<!-- markdownlint-disable-line MD038 -->"));
+});
+
 test("code blocks get syntax colors and a language label when highlight.ts knows the language", () => {
   const out = renderDoc(
     "```toml\n[library]\nauto_acquire = false # off\n```\n\n```text\n<plain>\n```\n",

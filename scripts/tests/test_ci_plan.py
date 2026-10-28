@@ -166,7 +166,7 @@ class WorkspaceModelTests(unittest.TestCase):
 
 
 class ScenarioTests(unittest.TestCase):
-    def test_docs_only_runs_only_the_site_link_check(self) -> None:
+    def test_docs_only_runs_the_site_link_check_and_lint(self) -> None:
         p = plan("docs/internals/architecture.md", "docs/README.md")
         self.assertFalse(p.full_suite)
         self.assertEqual(sorted(p.checks), ["lint", "site_test"])
@@ -1616,6 +1616,12 @@ class RunnerLayoutTests(unittest.TestCase):
         self.assertFalse(p.full_suite, p.reasons)
         self.assertEqual(sorted(p.checks), ["lint"])
         self.assertEqual({j for j, on in p.jobs.items() if on}, {"check"})
+
+    def test_lint_follows_the_files_the_tools_read(self) -> None:
+        self.assertIn("lint", plan("ui/public/site.webmanifest").checks)
+        for path in ("tools/demo/src/pages/index.html", "tools/site/package-lock.json"):
+            with self.subTest(path=path):
+                self.assertNotIn("lint", plan(path).checks)
 
     def test_lint_runs_prettier_and_markdownlint_without_cargo(self) -> None:
         art = artifact(plan("tools/lint/package.json"))

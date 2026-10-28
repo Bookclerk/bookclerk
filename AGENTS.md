@@ -56,8 +56,8 @@ Types:
   workflow both run it first. Browser scripts a Worker serves are not Worker
   code and may stay JavaScript.
 - Run the formatters before committing rather than formatting by hand:
-  `cargo fmt` for Rust, Prettier for TypeScript, JavaScript, JSON, YAML, CSS
-  and HTML, and `ruff format` for the Python SDK. Markdown passes
+  `cargo fmt` for Rust, Prettier for TypeScript, JavaScript, JSON, YAML and
+  CSS, and `ruff format` for the Python SDK. Markdown passes
   markdownlint with the repository's relaxed settings; a line that must
   break a rule disables it in place, never for the whole file (see
   [`docs/contributing/writing-docs.md`](docs/contributing/writing-docs.md#markdown-lint)).

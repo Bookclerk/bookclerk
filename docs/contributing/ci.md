@@ -203,7 +203,7 @@ paths):
 | `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |
 | `tools/diagnostics-collector/**` | The collector's tests (`collector_test`) |
 | `tools/demo/**` and the files the demo copies | The hosted demo Worker's tests (`demo_test`) |
-| Markdown, TypeScript, JavaScript, JSON, YAML, CSS or HTML anywhere | Formatting and Markdown lint (`lint`), on top of whatever else the file selects |
+| Markdown, TypeScript, JavaScript, JSON, YAML or CSS anywhere (not lockfiles) | Formatting and Markdown lint (`lint`), on top of whatever else the file selects |
 | `.prettierrc.json`, `.prettierignore`, `.markdownlint-cli2.jsonc`, `tools/lint/**` | Only `lint` |
 | Root `Cargo.toml` or `Cargo.lock`, the toolchain, `.cargo/`, workflows, the planner, `fuzz/Cargo.*`, unknown paths, planner errors | **Full suite** |
 | `fuzz/corpus/<target>/**`, `fuzz/oracles/<target>.rs` | The owning crate's tests |
@@ -355,10 +355,11 @@ the plugin host's RPC `LIKE`.
 The `lint` check needs no Rust toolchain. It installs `tools/lint` (pinned
 Prettier and markdownlint-cli2) and runs both from the repository root:
 
-- **Prettier** checks TypeScript, JavaScript, JSON, YAML, CSS and HTML
-  against `.prettierrc.json`. `.prettierignore` leaves out Markdown,
-  lockfiles, generated files, byte-identical mirrors and fuzz or test
-  corpora.
+- **Prettier** checks TypeScript, JavaScript, JSON, YAML and CSS against
+  `.prettierrc.json`. `.prettierignore` leaves out Markdown, HTML (page
+  templates whose whitespace reaches the output), lockfiles, generated
+  files, byte-identical mirrors, fuzz or test corpora, and the build output
+  that nested `.gitignore` files hide.
 - **markdownlint** checks every Markdown file against
   `.markdownlint-cli2.jsonc`, which relaxes the rules that fight GitHub-first
   docs (see [Writing docs](writing-docs.md#markdown-lint)).
