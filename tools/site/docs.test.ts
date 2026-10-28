@@ -535,6 +535,154 @@ test("Copy takes a session's commands and the lines that continue them", async (
   assert.equal(await copied("$ echo 'a \\' x\nout"), "echo 'a \\' x");
 });
 
+/** The surface of a page element that src/docs.js touches on a tab card. */
+interface StubElement {
+  dataset: Record<string, string>;
+  hidden: boolean;
+  tabIndex: number;
+  id: string;
+  className: string;
+  textContent: string;
+  type: string;
+  listeners: Record<string, (event: unknown) => void>;
+  setAttribute: () => void;
+  addEventListener: (name: string, f: (event: unknown) => void) => void;
+  append: () => void;
+  before: () => void;
+  focus: () => void;
+  querySelector: () => null;
+  querySelectorAll: (selector: string) => StubElement[];
+  classList: { add: () => void };
+}
+
+/**
+ * A stub element whose event listeners can be fired by name.
+ *
+ * @param dataset - The element's `data-*` values.
+ * @returns The element.
+ */
+function stubElement(dataset: Record<string, string> = {}): StubElement {
+  const listeners: Record<string, (event: unknown) => void> = {};
+  return {
+    dataset,
+    hidden: false,
+    tabIndex: 0,
+    id: "",
+    className: "",
+    textContent: "",
+    type: "",
+    listeners,
+    setAttribute: () => {},
+    addEventListener: (name, f) => {
+      listeners[name] = f;
+    },
+    append: () => {},
+    before: () => {},
+    focus: () => {},
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    classList: { add: () => {} },
+  };
+}
+
+/** The browser storage src/docs.js keeps a display preference in. */
+interface StubStorage {
+  getItem: (key: string) => string | null;
+  setItem: (key: string, value: string) => void;
+}
+
+/**
+ * Runs src/docs.js against a stub page holding one request card with a
+ * `shell` and a `python` sample, and hands back the page's controls.
+ *
+ * @param localStorage - The page's storage; a getter that throws stands for
+ *   storage the browser refuses.
+ * @returns `shown`, which panel is visible; `click`, picks a sample's tab;
+ *   `pageshow`, fires the event with the given `persisted` flag.
+ */
+function requestPage(localStorage: StubStorage): {
+  shown: () => string;
+  click: (index: number) => void;
+  pageshow: (persisted: boolean) => void;
+} {
+  const panels = [stubElement({ lang: "shell" }), stubElement({ lang: "python" })];
+  const card = stubElement();
+  card.querySelectorAll = (selector) => (selector === ":scope > .api-request" ? panels : []);
+  const buttons: StubElement[] = [];
+  let pageshow: ((event: unknown) => void) | null = null;
+  const context = {
+    navigator: { clipboard: { writeText: () => Promise.resolve() } },
+    localStorage,
+    document: {
+      querySelectorAll: (selector: string) => (selector === ".api-requests" ? [card] : []),
+      querySelector: () => null,
+      createElement: (tag: string) => {
+        const element = stubElement();
+        if (tag === "button") buttons.push(element);
+        return element;
+      },
+      addEventListener: () => {},
+    },
+    window: {
+      addEventListener: (name: string, f: (event: unknown) => void) => {
+        if (name === "pageshow") pageshow = f;
+      },
+      clearTimeout: () => {},
+      setTimeout: () => 0,
+    },
+  };
+  runInNewContext(
+    readFileSync(fileURLToPath(new URL("src/docs.js", import.meta.url)), "utf8"),
+    context,
+  );
+  assert.ok(pageshow !== null, "no pageshow listener");
+  return {
+    shown: () =>
+      panels
+        .filter((panel) => !panel.hidden)
+        .map((panel) => panel.dataset.lang)
+        .join(),
+    click: (index) => {
+      const click = buttons[index]?.listeners.click;
+      assert.ok(click, `no tab ${index}`);
+      click({});
+    },
+    pageshow: (persisted) => (pageshow as (event: unknown) => void)({ persisted }),
+  };
+}
+
+test("a page back from the cache keeps its request language unless another is kept", () => {
+  // Storage off: the choice lasts for the page, and a return from the
+  // back/forward cache leaves it alone instead of resetting the first sample.
+  const refused = (): never => {
+    throw new Error("storage off");
+  };
+  const off = requestPage({ getItem: refused, setItem: refused });
+  assert.equal(off.shown(), "shell");
+  off.click(1);
+  assert.equal(off.shown(), "python");
+  off.pageshow(true);
+  assert.equal(off.shown(), "python");
+
+  // Storage on: the choice is kept, a choice kept since (on another page)
+  // shows on the return, and a plain load event changes nothing.
+  const store = new Map<string, string>();
+  const on = requestPage({
+    getItem: (key) => store.get(key) ?? null,
+    setItem: (key, value) => void store.set(key, value),
+  });
+  on.click(1);
+  assert.equal(store.get("docs.request-language"), "python");
+  store.set("docs.request-language", "shell");
+  on.pageshow(false);
+  assert.equal(on.shown(), "python");
+  on.pageshow(true);
+  assert.equal(on.shown(), "shell");
+
+  // A page opened with a choice kept starts on it.
+  assert.equal(requestPage({ getItem: () => "python", setItem: () => {} }).shown(), "python");
+});
+
 test("GitHub alert blockquotes render as callouts, other blockquotes stay quotes", () => {
   const html = (source: string): string =>
     renderDoc(source, "cluster-hosts", { blobBase: BLOB }).html;
