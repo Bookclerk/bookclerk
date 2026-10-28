@@ -39,6 +39,8 @@ FULL_SUITE_PATHS = frozenset(
 
 FULL_SUITE_PATH_PREFIXES = (
     ".cargo/",
+    # nextest profiles: every Rust test run reads them.
+    ".config/",
     ".github/workflows/",
     "scripts/ci_plan/",
     "fuzz/",
@@ -187,6 +189,7 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
 KNOWN_TOP_LEVEL = frozenset(
     {
         ".cargo",
+        ".config",
         ".cursor",
         ".dockerignore",
         ".devcontainer",
