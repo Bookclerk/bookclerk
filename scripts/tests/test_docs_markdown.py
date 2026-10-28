@@ -256,6 +256,43 @@ class TreeTest(unittest.TestCase):
         line = "Use `` ` <!-- markdownlint-disable MD038 --> `` here. <!-- markdownlint-disable-line MD001 -->"
         self.assertEqual(dm.strip_lint_comments(line), "Use `` ` <!-- markdownlint-disable MD038 --> `` here.")
 
+    def test_strip_lint_comments_keeps_code_spans_across_lines(self) -> None:
+        source = "Use `a\n<!-- markdownlint-disable -->\nb` here.\n\n`x\n\n<!-- markdownlint-disable -->\n"
+        self.assertEqual(
+            dm.strip_lint_comments(source), "Use `a\n<!-- markdownlint-disable -->\nb` here.\n\n`x\n"
+        )
+
+    def test_strip_lint_comments_ignores_backtick_fences_with_backticks_in_the_info_string(self) -> None:
+        source = "```foo`bar\nText. <!-- markdownlint-disable-line MD001 -->\n"
+        self.assertEqual(dm.strip_lint_comments(source), "```foo`bar\nText.\n")
+
+    def test_strip_lint_comments_keeps_block_quoted_fences(self) -> None:
+        source = "\n".join(
+            [
+                "> ```markdown",
+                "> <!-- markdownlint-disable -->",
+                "> ```",
+                "",
+                "> ~~~",
+                "> <!-- markdownlint-disable -->",
+                "Text. <!-- markdownlint-disable-line MD001 -->",
+            ]
+        )
+        self.assertEqual(
+            dm.strip_lint_comments(source),
+            "\n".join(
+                [
+                    "> ```markdown",
+                    "> <!-- markdownlint-disable -->",
+                    "> ```",
+                    "",
+                    "> ~~~",
+                    "> <!-- markdownlint-disable -->",
+                    "Text.",
+                ]
+            ),
+        )
+
     def test_python_modules_skip_private_and_templates(self) -> None:
         pkg = self.base / "src" / "pkg"
         for rel in ("__init__.py", "__main__.py", "_abi.py", "abi.py", "sub/__init__.py", "sub/x.py", "a_template/t.py"):
