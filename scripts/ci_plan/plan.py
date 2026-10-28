@@ -169,7 +169,7 @@ DOC_FILES = frozenset(
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 # Scripts that only plan-job tests exercise (the CLA checker runs in its own
 # workflow, from the default branch, and builds nothing; the coverage gate
-# runs in CI Gate on every run).
+# runs in CI Gate on every run, and Codecov reads its settings itself).
 PLAN_JOB_SCRIPT_FILES = frozenset(
     {
         "scripts/cla_check.py",
@@ -177,6 +177,7 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
         "scripts/cla_branch/setup-rulesets.sh",
         "scripts/coverage_gate.py",
         "scripts/coverage_areas.toml",
+        ".github/codecov.yml",
     }
 )
 

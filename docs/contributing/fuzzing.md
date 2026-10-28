@@ -206,6 +206,9 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     segments. Every path the module keeps is relative to the repository
     and never climbs out of it, and every hit count is a non-negative
     integer.
+  - The Codecov upload sends only what this parser accepted:
+    `--export` writes each parsed report back out, and a test checks that
+    the written report reads back the same.
 
 ### Diagnostics collector Worker
 

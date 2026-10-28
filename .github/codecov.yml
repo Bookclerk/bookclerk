@@ -1,0 +1,48 @@
+# Codecov settings for the uploads in .github/workflows/coverage-upload.yml
+# (docs/contributing/ci.md#codecov).
+#
+# Trial: every status is informational, so Codecov reports but never fails a
+# commit. The plan is to make `codecov/patch` a required check later; drop
+# its `informational` line in the same change.
+
+codecov:
+  # Uploads come from a separate workflow after CI completes, and a failed
+  # CI run still uploads what it measured.
+  require_ci_to_pass: false
+
+coverage:
+  precision: 1
+  round: down
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        # The same target as CI Gate's patch coverage
+        # (scripts/coverage_areas.toml).
+        target: 80%
+        informational: true
+
+comment:
+  layout: "condensed_header, diff, flags, files"
+  # Comment only when coverage changes, not on every docs-only change.
+  require_changes: true
+
+# One flag per area of scripts/coverage_areas.toml. A selective run measures
+# only the areas whose tests it ran; carryforward keeps the others at their
+# last measured value instead of reporting them as dropped.
+flag_management:
+  default_rules:
+    carryforward: true
+  individual_flags:
+    - name: rust
+      paths: [crates/, fuzz/, examples/]
+    - name: site
+      paths: [tools/site/]
+    - name: demo
+      paths: [tools/demo/]
+    - name: collector
+      paths: [tools/diagnostics-collector/]
+    - name: python-sdk
+      paths: [packages/plugin-sdk-python/src/]

@@ -30,7 +30,10 @@ sans-IO so ``scripts/tests/test_coverage_gate.py`` drives the same code.
 
 Usage: ``coverage_gate.py --reports DIR --diff FILE --plan ci-plan.json``
 from the repository root (``--summary FILE`` defaults to
-``$GITHUB_STEP_SUMMARY``).
+``$GITHUB_STEP_SUMMARY``). ``coverage_gate.py --reports DIR --export OUT``
+instead writes each area's report, read by the same parser and made
+repository-relative, to ``OUT/<area>.lcov`` for the Codecov upload
+(``.github/workflows/coverage-upload.yml``).
 """
 
 from __future__ import annotations
@@ -464,20 +467,79 @@ def measure(config: Config, reports: Path, diff: Path, plan: Path | None) -> Ver
     Raises:
         OSError: The diff or the plan could not be read.
     """
-    workspace = Path.cwd().resolve().as_posix()
     full = full_workspace_checks(plan.read_text(encoding="utf-8")) if plan else frozenset()
+    results = []
+    for result in read_reports(config, reports):
+        if result.measured and result.area.workspace_check is not None and result.area.workspace_check not in full:
+            result.partial = True
+        results.append(result)
+    added = parse_diff(diff.read_text(encoding="utf-8", errors="replace"))
+    return judge(config, results, added)
+
+
+def read_reports(config: Config, reports: Path) -> list[AreaResult]:
+    """Read each area's report from the downloaded artifacts.
+
+    Args:
+        config: The areas file.
+        reports: The directory the ``coverage-*`` artifacts were downloaded to.
+
+    Returns:
+        Each area's result, in the areas file's order; an area without a
+        report is not measured. Only the area's own files are kept.
+    """
+    workspace = Path.cwd().resolve().as_posix()
     results = []
     for area in config.areas:
         report = reports / area.report
         if not report.is_file():
             results.append(AreaResult(area, measured=False))
-        else:
-            text = report.read_text(encoding="utf-8", errors="replace")
-            hits = {p: h for p, h in parse_lcov(text, area.root, workspace).items() if area.owns(p)}
-            partial = area.workspace_check is not None and area.workspace_check not in full
-            results.append(AreaResult(area, measured=True, hits=hits, partial=partial))
-    added = parse_diff(diff.read_text(encoding="utf-8", errors="replace"))
-    return judge(config, results, added)
+            continue
+        text = report.read_text(encoding="utf-8", errors="replace")
+        hits = {p: h for p, h in parse_lcov(text, area.root, workspace).items() if area.owns(p)}
+        results.append(AreaResult(area, measured=True, hits=hits))
+    return results
+
+
+def write_lcov(hits: dict[str, LineHits]) -> str:
+    """Write executable lines back out as a minimal LCOV report.
+
+    The Codecov upload sends these instead of the downloaded reports, so only
+    what :func:`parse_lcov` accepted leaves the run: repository-relative
+    paths, line numbers and hit counts.
+
+    Args:
+        hits: Executable lines per repository-relative file.
+
+    Returns:
+        One ``SF:``/``DA:``/``end_of_record`` record per file, in path order.
+    """
+    out: list[str] = []
+    for path in sorted(hits):
+        out.append(f"SF:{path}")
+        out += [f"DA:{n},{hits[path][n]}" for n in sorted(hits[path])]
+        out.append("end_of_record")
+    return "".join(f"{line}\n" for line in out)
+
+
+def export(config: Config, reports: Path, out: Path) -> list[str]:
+    """Write each measured area's report as ``<out>/<area>.lcov``.
+
+    Args:
+        config: The areas file.
+        reports: The directory the ``coverage-*`` artifacts were downloaded to.
+        out: The directory to write to; created when missing.
+
+    Returns:
+        The names of the areas written.
+    """
+    out.mkdir(parents=True, exist_ok=True)
+    written = []
+    for result in read_reports(config, reports):
+        if result.measured and result.hits:
+            (out / f"{result.area.name}.lcov").write_text(write_lcov(result.hits), encoding="utf-8")
+            written.append(result.area.name)
+    return written
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -491,12 +553,20 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--reports", type=Path, required=True, help="directory holding the downloaded LCOV reports")
-    parser.add_argument("--diff", type=Path, required=True, help="the change as `git diff --unified=0` output")
+    parser.add_argument("--diff", type=Path, default=None, help="the change as `git diff --unified=0` output")
+    parser.add_argument(
+        "--export", type=Path, default=None, help="write each area's report, repository-relative, to <dir>/<area>.lcov and stop"
+    )
     parser.add_argument("--plan", type=Path, default=None, help="the run's ci-plan.json (see full_workspace_checks)")
     parser.add_argument("--summary", type=Path, default=None, help="Markdown output (default $GITHUB_STEP_SUMMARY)")
     args = parser.parse_args(argv)
 
     config = parse_config(Path(AREAS_FILE).read_text(encoding="utf-8"))
+    if args.export is not None:
+        print("Exported: " + (", ".join(export(config, args.reports, args.export)) or "nothing"))
+        return 0
+    if args.diff is None:
+        parser.error("--diff is required unless --export is given")
     level = "error" if config.enforce else "warning"
     try:
         verdict = measure(config, args.reports, args.diff, args.plan)
