@@ -21,8 +21,9 @@ The verdict is the ``CLA`` commit status on the pull request's head commit.
 Signatures live in ``signatures/cla.json`` on the ``cla-signatures`` branch,
 in the format CLA Assistant Lite used, and are written through the contents
 API with the automation App's token; the first signature starts the branch
-with a commit that has no history and no entries, then adds itself on top. One comment, marked with
-``COMMENT_MARKER``, says who still has to sign and is edited in place.
+with a commit that has no history and no entries, then adds itself on top.
+One comment, marked with ``COMMENT_MARKER``, says who still has to sign and
+is edited in place.
 
 Everything that parses bytes from GitHub (the event payload, pull requests,
 commit and comment pages, the signature file) is sans-IO and fuzzed by
