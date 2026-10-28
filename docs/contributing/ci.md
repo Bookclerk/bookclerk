@@ -113,6 +113,11 @@ Rust dependency caches use three shared keys. Each is saved by one job on
 Fewer entries keep the repository under the Actions cache limit, so jobs
 stop missing their cache.
 
+The `test` job instruments its build for [coverage](#coverage) and still
+uses the `debug` key: the instrumentation applies only to workspace crates,
+which no cache holds, so the cached dependencies match. The build-only
+`main` push that saves the key runs uninstrumented.
+
 CI builds the dev and test profiles with
 `CARGO_PROFILE_DEV_DEBUG=line-tables-only`. That keeps file and line in
 panics while cutting link time and cache size. A failing test prints its
@@ -480,7 +485,8 @@ The full suite runs all four.
   fuzz test.
 
 `npm run coverage` adds V8 coverage from both projects (`text-summary` and
-`lcov` under `coverage/`).
+`lcov` under `coverage/`). CI runs it in place of `npm test` to feed the
+[coverage](#coverage) report.
 
 ### Other workflows
 
@@ -632,6 +638,57 @@ timeout fails the test.
 - Smoke-only inputs (the four targets, `tests/native_gateway/` and the
   fixture guest source) select `native_gateway` but not the staged E2E
   suite.
+
+## Coverage
+
+CI Gate reports how much of a change its tests run. It is **report only**
+for now: it writes a summary and warnings but never fails the gate.
+
+Coverage is measured in the jobs that already run the tests, so it costs no
+extra test run:
+
+| Area | Measured by | Tool |
+| --- | --- | --- |
+| `rust` | `test` (`rust_test`) | [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov), source-based LLVM coverage |
+| `site`, `collector`, `demo` | Workers (`site_test`, `collector_test`, `demo_test`) | Vitest V8 coverage (`npm run coverage`) |
+| `python-sdk` | `fmt / clippy / docs` (`python_sdk`) | pytest-cov |
+
+How a run gets there:
+
+1. The workflow sets `CI_COVERAGE_DIR` on those steps. With it set,
+   `scripts/ci-exec.py` runs each check with coverage and writes
+   `<dir>/<area>/lcov.info`. Unset (locally, by default), the checks run as
+   before.
+2. Each job uploads its reports as a `coverage-*` artifact. The plan job
+   uploads the hunk headers of `git diff --unified=0 base...head` as
+   `ci-patch`, because CI Gate checks out a single commit.
+3. After comparing the job results, CI Gate downloads both and runs
+   `scripts/coverage_gate.py`. It writes the summary to the job's step
+   summary.
+
+The summary has two figures:
+
+- **Patch coverage**: of the executable lines the change adds, the share
+  the tests ran. The target is 80%. Lines in an area this run did not
+  measure, such as Rust on a docs-only change, are listed apart rather than
+  counted.
+- **Area floors**: each area's total line coverage against its floor in
+  [`scripts/coverage_areas.toml`](../../scripts/coverage_areas.toml). A
+  selective Rust run tests only the affected packages, so the `rust` floor
+  is checked only when `rust_test` ran the whole workspace.
+
+Floors ratchet. Raise an area's floor when its coverage rises, keeping it a
+little below the measured value so noise does not fail a run. Never lower a
+floor to make a change pass.
+
+> [!NOTE]
+> An unpublished OSV remediation run uploads no coverage and CI Gate skips
+> the report. The diff and reports would show the bumped versions.
+
+To check coverage before pushing, run a Worker's `npm run coverage`, or
+pytest with `--cov=packages/plugin-sdk-python/src`. For Rust,
+`cargo llvm-cov nextest -p <crate>` covers one crate; the whole workspace
+needs a lot of disk.
 
 ## Branch protection and the merge queue
 

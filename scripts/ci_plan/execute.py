@@ -437,6 +437,39 @@ def _pkg_args(pkgs: Sequence[str]) -> list[str]:
     return out
 
 
+# Set by the workflow on the jobs that measure coverage: each measured check
+# writes `<dir>/<area>/lcov.info` for CI Gate (scripts/coverage_gate.py and
+# docs/contributing/ci.md#coverage). Unset, checks run without coverage.
+COVERAGE_DIR_ENV = "CI_COVERAGE_DIR"
+
+
+def _coverage_report(area: str) -> Path | None:
+    """Where ``area``'s LCOV report goes (its directory created), or ``None`` without coverage."""
+    root = os.environ.get(COVERAGE_DIR_ENV)
+    if not root:
+        return None
+    report = Path(root) / area / "lcov.info"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    return report
+
+
+def _worker_test(area: str, path: str, cwd: str) -> Command:
+    """``npm test`` for the Worker at ``path``, as ``npm run coverage`` when measuring.
+
+    The coverage run is the same Vitest suite with V8 coverage; only the LCOV
+    reporter is kept, writing into the Worker's coverage area.
+    """
+    report = _coverage_report(area)
+    if report is None:
+        return Command(f"npm test ({path})", ["npm", "test"], cwd=cwd)
+    reporters = ["--coverage.reporter=text-summary", "--coverage.reporter=lcovonly"]
+    return Command(
+        f"npm run coverage ({path})",
+        ["npm", "run", "coverage", "--", *reporters, f"--coverage.reportsDirectory={report.parent}"],
+        cwd=cwd,
+    )
+
+
 def _nextest_filter(custom: Sequence[tuple[str, str]]) -> list[str]:
     """``-E`` filterset excluding custom-harness test binaries (run separately)."""
     if not custom:
@@ -512,6 +545,8 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         py = str(venv / ("Scripts" if ctx.os_name == "Windows" else "bin") / "python")
         # Tests import the SDK from its source tree.
         src = {"PYTHONPATH": str(ctx.workspace / "packages" / "plugin-sdk-python" / "src")}
+        report = _coverage_report("python-sdk")
+        cov = ["--cov=packages/plugin-sdk-python/src", f"--cov-report=lcov:{report}"] if report else []
         return [
             # Installs the dev/docs extras at the versions in uv.lock (the
             # lockfile OSV scans); `--locked` fails when the lockfile no longer
@@ -538,7 +573,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             ),
             Command("ruff", [py, "-m", "ruff", "check", "packages/plugin-sdk-python"]),
             Command("ruff format", [py, "-m", "ruff", "format", "--check", "packages/plugin-sdk-python"]),
-            Command("pytest", [py, "-m", "pytest", "packages/plugin-sdk-python/tests", "-q"], env=src),
+            Command("pytest", [py, "-m", "pytest", "packages/plugin-sdk-python/tests", "-q", *cov], env=src),
         ]
     if check == "site_test":
         site = str(ctx.workspace / "tools" / "site")
@@ -546,7 +581,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("npm ci (tools/site)", ["npm", "ci"], cwd=site),
             Command("tsc (tools/site)", ["npm", "run", "typecheck"], cwd=site),
             Command("oxlint (tools/site)", ["npm", "run", "lint"], cwd=site),
-            Command("npm test (tools/site)", ["npm", "test"], cwd=site),
+            _worker_test("site", "tools/site", site),
         ]
     if check == "site_audit":
         site = ctx.workspace / "tools" / "site"
@@ -568,7 +603,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("npm ci (tools/diagnostics-collector)", ["npm", "ci"], cwd=collector),
             Command("tsc (tools/diagnostics-collector)", ["npm", "run", "typecheck"], cwd=collector),
             Command("oxlint (tools/diagnostics-collector)", ["npm", "run", "lint"], cwd=collector),
-            Command("npm test (tools/diagnostics-collector)", ["npm", "test"], cwd=collector),
+            _worker_test("collector", "tools/diagnostics-collector", collector),
         ]
     if check == "demo_test":
         demo = str(ctx.workspace / "tools" / "demo")
@@ -576,7 +611,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("npm ci (tools/demo)", ["npm", "ci"], cwd=demo),
             Command("tsc (tools/demo)", ["npm", "run", "typecheck"], cwd=demo),
             Command("oxlint (tools/demo)", ["npm", "run", "lint"], cwd=demo),
-            Command("npm test (tools/demo)", ["npm", "test"], cwd=demo),
+            _worker_test("demo", "tools/demo", demo),
         ]
     if check == "lint":
         # Repository-wide: Prettier formatting and markdownlint, both run from
@@ -666,6 +701,13 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
                     env=env,
                 )
             )
+        report = _coverage_report("rust")
+        if report is not None:
+            # The workflow instruments the build (`cargo llvm-cov show-env`);
+            # a report without it would fail on missing profiles.
+            if not os.environ.get("CARGO_LLVM_COV"):
+                raise ExecError(f"{COVERAGE_DIR_ENV} is set but the build is not instrumented (cargo llvm-cov show-env)")
+            cmds.append(Command("coverage report", ["cargo", "llvm-cov", "report", "--lcov", "--output-path", str(report)]))
         if params.get("benches"):
             cmds.append(Command("bench targets build", ["cargo", "bench", *_pkg_args(params["benches"]), "--benches", "--no-run"]))
         if params.get("examples"):

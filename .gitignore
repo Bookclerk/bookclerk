@@ -61,6 +61,7 @@ scripts/librofm-apk-probe/_smoke_keep/
 
 # Coverage / tooling
 coverage/
+.coverage
 lcov.info
 *.profraw
 .venv/

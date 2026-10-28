@@ -13,7 +13,7 @@ authors = [{ name = "Bookclerk contributors" }]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.11"]
+dev = ["pytest>=8.0", "pytest-cov>=6.0", "ruff>=0.11"]
 # Google-style API reference via pdoc (`./scripts/generate-api-docs.sh` installs
 # this extra from uv.lock into a throwaway venv). After changing any dependency
 # here, run `uv lock` and commit uv.lock.

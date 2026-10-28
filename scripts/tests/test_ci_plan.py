@@ -743,6 +743,55 @@ def _ctx(os_name: str) -> Context:
     )
 
 
+class CoverageCommandTests(unittest.TestCase):
+    """With CI_COVERAGE_DIR set, measured checks write `<dir>/<area>/lcov.info`."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def env(self, **extra: str) -> mock._patch:
+        return mock.patch.dict(os.environ, {"CI_COVERAGE_DIR": str(self.dir), **extra})
+
+    def test_unset_runs_plain_tests(self) -> None:
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CI_COVERAGE_DIR", None)
+            self.assertIn(["npm", "test"], commands(plan("tools/demo/src/app.ts"), "demo_test"))
+
+    def test_workers_run_coverage_into_their_area(self) -> None:
+        for path, check, area in (
+            ("tools/site/build.ts", "site_test", "site"),
+            ("tools/demo/src/app.ts", "demo_test", "demo"),
+            ("tools/diagnostics-collector/index.ts", "collector_test", "collector"),
+        ):
+            with self.subTest(check=check), self.env():
+                cmds = commands(plan(path), check)
+                self.assertNotIn(["npm", "test"], cmds)
+                run = next(c for c in cmds if c[:3] == ["npm", "run", "coverage"])
+                self.assertIn("--coverage.reporter=lcovonly", run)
+                self.assertIn(f"--coverage.reportsDirectory={self.dir / area}", run)
+                self.assertTrue((self.dir / area).is_dir())
+
+    def test_python_sdk_writes_lcov(self) -> None:
+        with self.env():
+            cmds = commands(plan("packages/plugin-sdk-python/src/bookclerk_plugin_sdk/tools.py"), "python_sdk")
+        pytest = next(c for c in cmds if "pytest" in c)
+        self.assertIn(f"--cov-report=lcov:{self.dir / 'python-sdk' / 'lcov.info'}", pytest)
+
+    def test_rust_report_needs_instrumentation(self) -> None:
+        p = plan("crates/bookclerk-config/src/lib.rs")
+        with self.env(CARGO_LLVM_COV="1"):
+            cmds = commands(p, "rust_test")
+        self.assertEqual(
+            cmds[-1], ["cargo", "llvm-cov", "report", "--lcov", "--output-path", str(self.dir / "rust" / "lcov.info")]
+        )
+        with self.env():
+            os.environ.pop("CARGO_LLVM_COV", None)
+            with self.assertRaises(ExecError):
+                commands(p, "rust_test")
+
+
 class NativeGatewayTests(unittest.TestCase):
     SMOKE = [
         "cargo",

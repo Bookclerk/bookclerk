@@ -1,0 +1,7 @@
+diff --git a/crates/a.rs b/crates/a.rs
+index 1..2 100644
+--- a/crates/a.rs
++++ b/crates/a.rs
+@@ -1,0 +2,3 @@
+@@ -10 +12 @@
+@@ -20,2 +22,0 @@

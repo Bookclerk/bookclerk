@@ -193,6 +193,20 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     co-authors, minus the allowlisted bots, the assistant accounts and the
     signed ids. The comment mentions only them and links only to the CLA.
 
+### Coverage gate (Python)
+
+- **Coverage report and diff readers** (`parse_lcov` and `parse_diff` in
+  `scripts/coverage_gate.py`). CI Gate reads the LCOV reports and the
+  change's hunk headers that the pull request's own run uploaded, so a
+  pull request chooses their bytes.
+  - Test and corpus: `scripts/tests/test_coverage_gate.py`,
+    `scripts/tests/coverage_gate_corpus/` (files named `<kind>__<case>`).
+  - Oracle: an independent reading of each report record and hunk header
+    with full-line patterns, and of each `SF:` path by walking its
+    segments. Every path the module keeps is relative to the repository
+    and never climbs out of it, and every hit count is a non-negative
+    integer.
+
 ### Diagnostics collector Worker
 
 The tests and corpora live in `tools/diagnostics-collector/`.
