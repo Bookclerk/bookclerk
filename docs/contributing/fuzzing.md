@@ -370,12 +370,14 @@ fuzzing in `npm test`.
 - **Web API layout** (`layoutOperations` in
   `tools/site/api-reference.ts`, through `renderDoc`) rearranges the
   generated `api/web/` pages from the docs repository into operation
-  sections, with one panel per example response (`layoutResponses`).
+  sections, with one panel per example response (`layoutResponses`) and
+  one per example request language (`layoutRequests`).
   Corpus `tools/site/fuzz/api_reference/`. Oracle: the HTML nests
   properly, every section is labelled by its own heading with one badge
   for a known method, every response panel has a unique id and a caption
-  marking its status, and the page keeps the same text as it has without
-  the layout.
+  marking its status, every request panel has a unique id naming its
+  language and holds one code block, and the page keeps the same text as
+  it has without the layout.
 - **Web API index layout** (`layoutIndex` and `indexRoutes` in
   `tools/site/api-reference.ts`, through `renderDoc`) lays out the
   generated `api/web/README.md` as route group cards with a quick-start

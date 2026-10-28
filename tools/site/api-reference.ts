@@ -213,7 +213,7 @@ export function layoutOperations(tokens: readonly Token[], make: MakeToken): Tok
     if (examples.length > 0)
       out.push(
         html('<div class="api-op-examples">\n'),
-        ...layoutResponses(examples, make, id),
+        ...layoutRequests(layoutResponses(examples, make, id), make, id),
         html("</div>\n"),
       );
     out.push(html("</div>\n</section>\n"));
@@ -225,6 +225,100 @@ export function layoutOperations(tokens: readonly Token[], make: MakeToken): Tok
 
 /** The heading of the examples subsection {@link layoutResponses} lays out. */
 const EXAMPLE_RESPONSE = "Example response";
+
+/**
+ * Finds where an examples subsection ends: at the next top-level `###`
+ * heading, or the page's end. An `html_block` just before that heading was
+ * put there by the other examples layout (the page itself has no raw HTML),
+ * so it stays outside this subsection and the two cards do not nest.
+ *
+ * @param tokens - An operation's example subsections.
+ * @param start - The index of the subsection's `heading_open`.
+ * @returns The index of the first token after the subsection.
+ */
+function subsectionEnd(tokens: readonly Token[], start: number): number {
+  const isH3 = (t: Token | undefined): boolean =>
+    t?.type === "heading_open" && t.tag === "h3" && t.level === 0;
+  const nextH3 = tokens.findIndex((t, i) => i > start && isH3(t));
+  let end = nextH3 < 0 ? tokens.length : nextH3;
+  while (end > start + 3 && tokens[end - 1]?.type === "html_block") end -= 1;
+  return end;
+}
+
+/** The heading of the examples subsection {@link layoutRequests} lays out. */
+const EXAMPLE_REQUEST = "Example request";
+
+/**
+ * The name shown for each language a request sample is written in, by the
+ * fence's language name. A language not listed is shown by that name.
+ */
+const SAMPLE_LANGUAGES: ReadonlyMap<string, string> = new Map([
+  ["console", "Shell"],
+  ["bash", "Shell"],
+  ["sh", "Shell"],
+  ["shell", "Shell"],
+  ["powershell", "PowerShell"],
+  ["pwsh", "PowerShell"],
+  ["python", "Python"],
+  ["py", "Python"],
+  ["javascript", "JavaScript"],
+  ["js", "JavaScript"],
+  ["typescript", "TypeScript"],
+  ["ts", "TypeScript"],
+  ["rust", "Rust"],
+  ["rs", "Rust"],
+]);
+
+/**
+ * Lays out an operation's `### Example request` subsection as a card with
+ * one panel per language, the way OpenAPI viewers offer a request in several
+ * languages: each fenced block directly under the heading becomes a
+ * `div.api-request` (id `<operation id>-request-<language>`) carrying the
+ * fence's language name in `data-lang` and the name to show in
+ * `data-label`. docs.js turns the panels into a language picker; without it
+ * they stack. Text between the blocks, and anything after the first
+ * non-fence block, passes through.
+ *
+ * @param tokens - An operation's example subsections.
+ * @param make - markdown-it's token constructor.
+ * @param id - The operation heading's id, which panel ids start with.
+ * @returns The new token list.
+ */
+export function layoutRequests(tokens: readonly Token[], make: MakeToken, id: string): Token[] {
+  const html = (content: string): Token => {
+    const token = make("html_block", "", 0);
+    token.content = content;
+    return token;
+  };
+  const isH3 = (t: Token | undefined): boolean =>
+    t?.type === "heading_open" && t.tag === "h3" && t.level === 0;
+  const start = tokens.findIndex((t, i) => isH3(t) && tokens[i + 1]?.content === EXAMPLE_REQUEST);
+  if (start < 0) return [...tokens];
+  const end = subsectionEnd(tokens, start);
+  const out: Token[] = [...tokens.slice(0, start), html('<div class="api-requests">\n')];
+  out.push(...tokens.slice(start, start + 3));
+  const used = new Set<string>();
+  let i = start + 3;
+  // Only a top-level fence is a sample: one in a list or quote stays where
+  // it is, since a panel opened there would close outside it.
+  for (; i < end; i++) {
+    const token = tokens[i];
+    if (token?.type !== "fence" || token.level !== 0) break;
+    const lang = token.info.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+    if (lang === "" || used.has(lang)) break;
+    used.add(lang);
+    const label = SAMPLE_LANGUAGES.get(lang) ?? lang;
+    out.push(
+      html(
+        `<div class="api-request" id="${escapeCode(`${id}-request-${lang}`)}" data-lang="${escapeCode(lang)}" data-label="${escapeCode(label)}">\n`,
+      ),
+      token,
+      html("</div>\n"),
+    );
+  }
+  out.push(...tokens.slice(i, end), html("</div>\n"), ...tokens.slice(end));
+  return out;
+}
 
 /**
  * Reads a status line of an example response: a paragraph whose inline
@@ -269,8 +363,7 @@ export function layoutResponses(tokens: readonly Token[], make: MakeToken, id: s
     t?.type === "heading_open" && t.tag === "h3" && t.level === 0;
   const start = tokens.findIndex((t, i) => isH3(t) && tokens[i + 1]?.content === EXAMPLE_RESPONSE);
   if (start < 0) return [...tokens];
-  const nextH3 = tokens.findIndex((t, i) => i > start && isH3(t));
-  const end = nextH3 < 0 ? tokens.length : nextH3;
+  const end = subsectionEnd(tokens, start);
   // A status line is a top-level paragraph: one in a list or quote stays
   // where it is, since a panel opened there would close outside it.
   const statusAt = (i: number): string | null =>

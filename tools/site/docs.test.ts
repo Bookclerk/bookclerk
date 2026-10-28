@@ -315,6 +315,10 @@ test("highlight colors each language's own names and leaves the rest plain", () 
     '$ <span class="hl-f">make</span> <span class="hl-c"># build \\</span>\n  echo hi',
   );
   assert.equal(
+    highlight("Invoke-RestMethod -Uri 'http://x' `\n    -Method Post", "powershell"),
+    '<span class="hl-f">Invoke-RestMethod</span> -Uri <span class="hl-s">&#39;http://x&#39;</span> `\n    -Method Post',
+  );
+  assert.equal(
     highlight("Compiling foo\ncargo dev", "bash"),
     '<span class="hl-f">Compiling</span> foo\n<span class="hl-f">cargo</span> dev',
   );

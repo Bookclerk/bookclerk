@@ -510,8 +510,10 @@ Rust crates and the web UI library.
 - **Web API**: `scripts/openapi_markdown.py` renders `bookclerkd`'s
   committed OpenAPI document (`crates/bookclerkd/openapi.json`). It writes
   an index with a quick-start request, the credentials and every route, one page per route group (with each
-  route's access rule, parameters, body, responses, an example `curl`
-  request and an example response for each status, built from the
+  route's access rule, parameters, body, responses, an example request
+  as a `curl` command, a PowerShell `Invoke-RestMethod` call, Python
+  (`requests`), JavaScript (`fetch`) and Rust (`reqwest`), and an
+  example response for each status, built from the
   schemas or saying why there is no JSON body; the request
   sends only required fields, since optional ones can be alternatives
   that must not be sent together), and a page of
@@ -528,7 +530,10 @@ Rust crates and the web UI library.
     and the rail is sized to fit the longest path on one line.
   - The example responses become one panel per status with a colored
     status mark; with two or more, the page's script shows them as tabs
-    in one card.
+    in one card. The example request's samples become one panel per
+    language the same way, and the page's script shows them as a
+    language picker; picking a language picks it for every route on the
+    page. Nothing is kept in the browser, as the privacy page promises.
   - Like every generated page, each one ends with a Source on GitHub link
     to what it is generated from: `crates/bookclerkd/openapi.json` here.
   - Under **Web API** the sidebar lists every route group and the schemas

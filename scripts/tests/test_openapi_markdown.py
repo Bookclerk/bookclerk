@@ -188,13 +188,40 @@ class RenderTest(unittest.TestCase):
             "### Example request\n\n```console\n$ curl 'http://127.0.0.1:8787/books/<id>' \\\n    -H 'Authorization: Bearer <token>'\n```",
             get,
         )
+        # The same request in each sample language, in a fixed order.
+        self.assertIn(
+            "```powershell\nInvoke-RestMethod -Uri 'http://127.0.0.1:8787/books/<id>' `\n    -Headers @{ Authorization = 'Bearer <token>' }\n```",
+            get,
+        )
+        self.assertIn(
+            '```python\nimport requests\n\nresponse = requests.get(\n    "http://127.0.0.1:8787/books/<id>",\n    headers={"Authorization": "Bearer <token>"},\n)\nprint(response.status_code, response.text)\n```',
+            get,
+        )
+        self.assertIn(
+            '```javascript\nconst response = await fetch("http://127.0.0.1:8787/books/<id>", {\n  headers: { Authorization: "Bearer <token>" },\n});\nconsole.log(response.status, await response.text());\n```',
+            get,
+        )
+        self.assertIn(
+            '```rust\nlet client = reqwest::Client::new();\nlet response = client\n    .get("http://127.0.0.1:8787/books/<id>")\n    .header("Authorization", "Bearer <token>")\n    .send()\n    .await?;\nprintln!("{} {}", response.status(), response.text().await?);\n```',
+            get,
+        )
+        fences = re.findall(r"^```(\w+)$", get.split("### Example response")[0], re.MULTILINE)
+        self.assertEqual(fences, ["console", "powershell", "python", "javascript", "rust"])
         post = self.pages["books.md"].split("## `POST /books`")[1]
         # A request example sends only required fields (optional ones may be
         # alternatives), with the JSON on one line so the Copy button keeps it.
         self.assertIn("    -X POST \\\n    -H 'Content-Type: application/json' \\\n    -d '{\"title\": \"string\"}'", post)
-        # An open route sends no credential.
+        self.assertIn("    -Method Post `\n    -ContentType 'application/json' `\n    -Body '{\"title\": \"string\"}'", post)
+        self.assertIn('requests.post(\n    "http://127.0.0.1:8787/books",\n    json={"title": "string"},\n)', post)
+        self.assertIn('  method: "POST",\n  headers: { "Content-Type": "application/json" },\n  body: JSON.stringify({"title": "string"}),', post)
+        self.assertIn('    .post("http://127.0.0.1:8787/books")\n    .json(&serde_json::json!({"title": "string"}))', post)
+        # An open route sends no credential, and a bare GET stays one call.
         shelf = self.pages["books.md"].split("## `GET /shelves/{shelf}`")[1]
         self.assertIn("$ curl 'http://127.0.0.1:8787/shelves/<shelf>'\n```", shelf)
+        self.assertIn("Invoke-RestMethod -Uri 'http://127.0.0.1:8787/shelves/<shelf>'\n```", shelf)
+        self.assertIn('response = requests.get("http://127.0.0.1:8787/shelves/<shelf>")\n', shelf)
+        self.assertIn('await fetch("http://127.0.0.1:8787/shelves/<shelf>");\n', shelf)
+        self.assertIn('let response = reqwest::get("http://127.0.0.1:8787/shelves/<shelf>").await?;\n', shelf)
 
     def test_example_response(self) -> None:
         get = self.pages["books.md"].split("## `GET /books/{id}`")[1].split("## `DELETE")[0]
@@ -293,8 +320,47 @@ class RenderTest(unittest.TestCase):
         self.assertIn("/up?ids=a%20b%26c&all=true'", put)
         post = page.split("## `POST /up`")[1].split("\n## ")[0]
         self.assertIn("-b 'sid=<cookie>' \\\n    -H 'Origin: http://127.0.0.1:8787'", post)
+        # Windows PowerShell ignores a Cookie header, so the cookie rides a web session.
+        self.assertIn(
+            "$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession\n"
+            "$session.Cookies.Add((New-Object System.Net.Cookie('sid', '<cookie>', '/', '127.0.0.1')))\n"
+            "Invoke-RestMethod -Uri 'http://127.0.0.1:8787/",
+            post,
+        )
+        self.assertIn("    -WebSession $session `\n    -Headers @{ Origin = 'http://127.0.0.1:8787' }\n```", post)
+        self.assertNotIn("Cookie = ", post)
         token = page.split("## `POST /token`")[1]
         self.assertIn("-d 'grant_type=a%2Fb%20c'", token.split("\n## ")[0])
+        # Every language sends the same form: a boolean as `true`, an array as repeated fields.
+        doc = json.loads(json.dumps(DOCUMENT))
+        doc["paths"]["/flags"] = {
+            "post": {
+                "tags": ["Books"],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["on", "tags"],
+                                "properties": {"on": {"type": "boolean"}, "tags": {"type": "array", "items": {"type": "string"}}},
+                            }
+                        }
+                    },
+                },
+                "responses": {"204": {"description": "Done."}},
+            }
+        }
+        flags = om.Document(doc).render_all()["books.md"].split("## `POST /flags`")[1].split("\n## ")[0]
+        self.assertIn("-d 'on=true&tags=string'", flags)
+        self.assertIn("-Body 'on=true&tags=string'", flags)
+        self.assertIn('data={"on": "true", "tags": "string"},', flags)
+        self.assertIn('body: new URLSearchParams("on=true&tags=string"),', flags)
+        self.assertIn('.form(&[("on", "true"), ("tags", "string")])', flags)
+        self.assertEqual(
+            om.form_pairs([("a", [True, 1]), ("b", {"k": "v"}), ("c", om.NO_EXAMPLE)]),
+            [("a", "true"), ("a", "1"), ("b", '{"k": "v"}'), ("c", "")],
+        )
         # A form with no required field guesses none of its alternatives.
         callback = page.split("## `POST /callback`")[1].split("\n## ")[0]
         self.assertNotIn("-d ", callback)
@@ -320,7 +386,10 @@ class RenderTest(unittest.TestCase):
 
     def test_no_raw_html(self) -> None:
         for name, text in self.pages.items():
-            outside_code = re.sub(r"`[^`]*`", "", text)
+            # Drop fenced blocks first: a PowerShell sample ends lines with a
+            # backtick, which would otherwise pair with an inline code span.
+            outside_fences = re.sub(r"^```.*?^```$", "", text, flags=re.DOTALL | re.MULTILINE)
+            outside_code = re.sub(r"`[^`]*`", "", outside_fences)
             self.assertNotRegex(outside_code, r"<[a-zA-Z/]", name)
 
 

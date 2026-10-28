@@ -531,6 +531,153 @@ Status \`404\`: Again.
   );
 });
 
+test("example requests become one panel per language with a label", () => {
+  const page = `# Books
+
+## \`GET /api/books/{id}\`
+
+### Example request
+
+\`\`\`console
+$ curl 'http://127.0.0.1:8787/api/books/1'
+\`\`\`
+
+\`\`\`powershell
+Invoke-RestMethod -Uri 'http://127.0.0.1:8787/api/books/1'
+\`\`\`
+
+\`\`\`Rust  main
+reqwest::get("http://127.0.0.1:8787/api/books/1").await?;
+\`\`\`
+
+\`\`\`zig
+unknown
+\`\`\`
+
+After the samples.
+
+### Example response
+
+Status \`200\`: The book.
+`;
+  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  const id = "get-apibooksid";
+  assert.match(
+    out.html,
+    /<div class="api-requests">\n<div class="heading-wrapper level-h3"><h3 id="example-request"/,
+  );
+  assert.ok(
+    out.html.includes(
+      `<div class="api-request" id="${id}-request-console" data-lang="console" data-label="Shell">\n<div class="code" data-lang="console"><pre tabindex="0"><code class="language-console">$ `,
+    ),
+  );
+  assert.ok(
+    out.html.includes(
+      `<div class="api-request" id="${id}-request-powershell" data-lang="powershell" data-label="PowerShell">\n<div class="code" data-lang="powershell">`,
+    ),
+    "PowerShell is highlighted",
+  );
+  assert.ok(
+    out.html.includes(`id="${id}-request-rust" data-lang="rust" data-label="Rust">`),
+    "the language name is lower-cased and the rest of the info string ignored",
+  );
+  assert.ok(
+    out.html.includes(
+      `id="${id}-request-zig" data-lang="zig" data-label="zig">\n<div class="code"><pre`,
+    ),
+    "an unknown language is labelled by its name",
+  );
+  assert.equal(out.html.split('<div class="api-request"').length, 5);
+  const card = out.html.slice(
+    out.html.indexOf('<div class="api-requests">'),
+    out.html.indexOf('<div class="api-responses">'),
+  );
+  assert.ok(
+    card.endsWith("</div>\n<p>After the samples.</p>\n</div>\n"),
+    "text after the samples stays in the card, which closes before the responses card",
+  );
+  assert.ok(
+    out.html.indexOf('<div class="api-requests">') >
+      out.html.indexOf('<div class="api-op-examples">'),
+    "the requests sit in the examples column",
+  );
+});
+
+test("the request and response cards do not nest, whichever comes first", () => {
+  const page = `# Books
+
+## \`GET /api/books\`
+
+### Example response
+
+Status \`200\`: Fine.
+
+### Example request
+
+\`\`\`console
+$ curl 'http://127.0.0.1:8787/api/books'
+\`\`\`
+`;
+  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  const responses = out.html.slice(
+    out.html.indexOf('<div class="api-responses">'),
+    out.html.indexOf('<div class="api-requests">'),
+  );
+  assert.ok(
+    responses.endsWith("</div>\n</div>\n"),
+    "the responses card closes before the requests card",
+  );
+  assert.ok(
+    out.html.includes("</div>\n</div>\n</div>\n</section>"),
+    "the requests card closes before the column",
+  );
+});
+
+test("only the fences directly under the heading become request panels", () => {
+  const page = `# Books
+
+## \`GET /api/books\`
+
+### Example request
+
+A note first.
+
+\`\`\`console
+$ curl 'http://127.0.0.1:8787/api/books'
+\`\`\`
+
+## \`POST /api/books\`
+
+### Example request
+
+- \`\`\`console
+  $ curl 'in a list'
+  \`\`\`
+
+## \`DELETE /api/books\`
+
+### Example request
+
+\`\`\`console
+$ curl 'first'
+\`\`\`
+
+\`\`\`console
+$ curl 'the same language again'
+\`\`\`
+
+\`\`\`
+no language
+\`\`\`
+`;
+  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  assert.equal(out.html.split('<div class="api-request"').length, 2);
+  assert.ok(out.html.includes('id="delete-apibooks-request-console"'));
+  assert.equal(out.html.split('<div class="api-requests">').length, 4);
+  assert.ok(out.html.includes('<p>A note first.</p>\n<div class="code" data-lang="console">'));
+  assert.ok(out.html.includes('<li>\n<div class="code" data-lang="console">'));
+});
+
 test("a status line in a list or quote opens no panel", () => {
   const page = `# Books
 

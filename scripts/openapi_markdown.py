@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.parse
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -569,8 +570,8 @@ class Document:
             return True
         return NO_EXAMPLE
 
-    def _credential_flags(self, requirements: Any, write: bool) -> list[str]:
-        """``curl`` flags that send the first credential an operation accepts.
+    def _credential(self, requirements: Any, write: bool) -> tuple[Credential | None, bool]:
+        """The first credential an operation accepts, as a sample sends it.
 
         Args:
             requirements: The operation's ``security`` list.
@@ -578,44 +579,43 @@ class Document:
                 then also sends the ``Origin`` the daemon checks.
 
         Returns:
-            The flags; none for an open route or when no requirement uses
-            a scheme ``curl`` can send (each alternative is tried in turn).
+            The credential (none for an open route or when no requirement
+            uses a scheme a sample can send; each alternative is tried in
+            turn) and whether to send ``Origin``.
         """
         if not isinstance(requirements, Sequence) or isinstance(requirements, str):
-            return []
+            return None, False
         for requirement in requirements:
             if not isinstance(requirement, Mapping) or not requirement:
-                return []
+                return None, False
             name = str(next(iter(requirement)))
             scheme = self.security_schemes.get(name)
             if not isinstance(scheme, Mapping):
                 continue
             kind = scheme.get("type")
             if kind == "http" and str(scheme.get("scheme", "")).lower() == "bearer":
-                return ["-H " + shell_quote(f"Authorization: Bearer <{name}>")]
+                return Credential("header", "Authorization", f"Bearer <{name}>"), False
             if kind == "apiKey" and scheme.get("in") == "header":
                 header = str(scheme.get("name", ""))
                 # A scheme whose description spells out the header's form,
                 # such as `Authorization: Bookclerk-Upload <token>`, keeps it.
-                shown = re.search(r"`(" + re.escape(header) + r": [^`]+)`", str(scheme.get("description", "")))
-                return ["-H " + shell_quote(shown.group(1) if shown else f"{header}: <{name}>")]
+                shown = re.search(r"`(" + re.escape(header) + r"): ([^`]+)`", str(scheme.get("description", "")))
+                return Credential("header", header, shown.group(2) if shown else f"<{name}>"), False
             if kind == "apiKey" and scheme.get("in") == "cookie":
-                flags = ["-b " + shell_quote(f"{scheme.get('name', '')}=<{name}>")]
-                if write:
-                    flags.append("-H " + shell_quote(f"Origin: {EXAMPLE_ORIGIN}"))
-                return flags
-        return []
+                return Credential("cookie", str(scheme.get("name", "")), f"<{name}>"), write
+        return None, False
 
-    def example_request(self, op: Operation) -> list[str]:
-        """Render an operation's example ``curl`` command.
+    def request_example(self, op: Operation) -> RequestExample:
+        """Describe an operation's example request, which each sample renders.
 
         Args:
             op: The operation.
 
         Returns:
-            Markdown lines: an ``Example request`` heading and a ``console``
-            block. Path parameters stay as ``<name>`` placeholders; required
-            query parameters get example values.
+            The method, URL (path parameters stay as ``<name>`` placeholders;
+            required query parameters get example values), credential and
+            body. A JSON body sends only required fields, since optional
+            ones can be alternatives that must not be sent together.
         """
         spec = op.spec
         path = re.sub(r"\{([^}/]+)\}", r"<\1>", op.path)
@@ -624,31 +624,41 @@ class Document:
             if isinstance(param, Mapping) and param.get("in") == "query" and param.get("required"):
                 query.append((str(param.get("name", "")), self.example(param.get("schema", {}), minimal=True)))
         url = EXAMPLE_ORIGIN + path + ("?" + form_encode(query) if query else "")
-        flags = [] if op.method == "GET" else [f"-X {op.method}"]
-        flags += self._credential_flags(spec.get("security"), op.method not in ("GET", "HEAD", "OPTIONS"))
-        body = spec.get("requestBody")
-        content = body.get("content", {}) if isinstance(body, Mapping) else {}
+        credential, origin = self._credential(spec.get("security"), op.method not in ("GET", "HEAD", "OPTIONS"))
+        body: RequestBody | None = None
+        request_body = spec.get("requestBody")
+        content = request_body.get("content", {}) if isinstance(request_body, Mapping) else {}
         if isinstance(content, Mapping) and content:
             media, entry = next(iter(content.items()))
             schema = entry.get("schema", {}) if isinstance(entry, Mapping) else {}
             value = self.example(schema, minimal=True)
             if str(media).startswith("application/json"):
-                flags.append("-H " + shell_quote("Content-Type: application/json"))
-                # One line: the site's Copy button joins continuation lines
-                # only after a trailing backslash, not inside quotes.
-                data = json.dumps({} if value is NO_EXAMPLE else value, ensure_ascii=False)
-                flags.append("-d " + shell_quote(data))
+                body = RequestBody("json", "application/json", {} if value is NO_EXAMPLE else value)
             elif media == "application/x-www-form-urlencoded" and isinstance(value, dict):
-                # The value holds only required fields (see ``minimal``).
-                if value:
-                    flags.append("-d " + shell_quote(form_encode(list(value.items()))))
+                # The value holds only required fields (see ``minimal``); a
+                # form with none of them sends nothing.
+                body = RequestBody("form", str(media), list(value.items())) if value else None
             else:
-                flags.append("-H " + shell_quote(f"Content-Type: {media}"))
-                flags.append("--data-binary @file")
-        command = "$ curl " + shell_quote(url)
-        if flags:
-            command += " \\\n" + " \\\n".join(f"    {flag}" for flag in flags)
-        return ["### Example request", "", "```console", command, "```", ""]
+                body = RequestBody("binary", str(media), None)
+        return RequestExample(op.method, url, credential, origin, body)
+
+    def example_request(self, op: Operation) -> list[str]:
+        """Render an operation's example request in every sample language.
+
+        Args:
+            op: The operation.
+
+        Returns:
+            Markdown lines: an ``Example request`` heading, then one fenced
+            block per language in SAMPLE_LANGUAGES order (``console`` holds
+            the ``curl`` command). The site shows the blocks as a language
+            picker; elsewhere they follow one another.
+        """
+        example = self.request_example(op)
+        lines = ["### Example request", ""]
+        for language, render in SAMPLE_LANGUAGES.items():
+            lines += [f"```{language}", *render(example), "```", ""]
+        return lines
 
     def example_response(self, op: Operation) -> list[str]:
         """Render an example of each of an operation's responses.
@@ -774,7 +784,7 @@ class Document:
         if chosen is None:
             return []
         group, op = chosen
-        command = self.example_request(op)[2:]
+        command = ["```console", *sample_curl(self.request_example(op)), "```", ""]
         requirement = next(iter(spec_list(op.spec["security"], "security")), {})
         credential = f" with the {code(str(next(iter(requirement))))} credential" if isinstance(requirement, Mapping) and requirement else ""
         return [
@@ -969,16 +979,262 @@ class _NoExample:
 NO_EXAMPLE = _NoExample()
 
 
-def form_encode(pairs: Sequence[tuple[str, Any]]) -> str:
-    """Encode example values as a query string or form body.
+@dataclass(frozen=True)
+class Credential:
+    """How a sample request authenticates."""
+
+    # ``header`` sends ``name: value``; ``cookie`` sends the cookie ``name=value``.
+    kind: str
+    # The header or cookie name.
+    name: str
+    # Its value, with ``<scheme>`` placeholders for the secret.
+    value: str
+
+
+@dataclass(frozen=True)
+class RequestBody:
+    """A sample request's body."""
+
+    # ``json`` (``value`` is the JSON value), ``form`` (``value`` is the
+    # ``(name, example)`` pairs) or ``binary`` (a file of ``media``).
+    kind: str
+    # The ``Content-Type`` sent.
+    media: str
+    # See ``kind``.
+    value: Any
+
+
+@dataclass(frozen=True)
+class RequestExample:
+    """An operation's example request, which every sample language renders."""
+
+    # The HTTP method, upper-case.
+    method: str
+    # The full URL, with ``<name>`` placeholders for path parameters.
+    url: str
+    # The credential sent, if the route needs one a sample can send.
+    credential: Credential | None
+    # Whether to send the daemon's ``Origin`` check (a cookie credential on a write).
+    origin: bool
+    # The body, if the operation takes one.
+    body: RequestBody | None
+
+
+def sample_curl(example: RequestExample) -> list[str]:
+    """Render a request as a ``curl`` command in a ``console`` block.
 
     Args:
-        pairs: Names and example values; an array repeats its name once per
-            item, an object is sent as JSON, a value with no example as
-            empty.
+        example: The request.
 
     Returns:
-        ``name=value`` pairs joined by ``&``, percent-encoded.
+        The command's lines: a ``$ `` prompt line and one flag per
+        continuation line, with a JSON body on one line (the site's Copy
+        button joins continuation lines only after a trailing backslash,
+        not inside quotes).
+    """
+    flags = [] if example.method == "GET" else [f"-X {example.method}"]
+    credential = example.credential
+    if credential is not None and credential.kind == "header":
+        flags.append("-H " + shell_quote(f"{credential.name}: {credential.value}"))
+    elif credential is not None:
+        flags.append("-b " + shell_quote(f"{credential.name}={credential.value}"))
+    if example.origin:
+        flags.append("-H " + shell_quote(f"Origin: {EXAMPLE_ORIGIN}"))
+    body = example.body
+    if body is not None and body.kind == "json":
+        flags.append("-H " + shell_quote("Content-Type: application/json"))
+        flags.append("-d " + shell_quote(json.dumps(body.value, ensure_ascii=False)))
+    elif body is not None and body.kind == "form":
+        flags.append("-d " + shell_quote(form_encode(body.value)))
+    elif body is not None:
+        flags.append("-H " + shell_quote(f"Content-Type: {body.media}"))
+        flags.append("--data-binary @file")
+    command = "$ curl " + shell_quote(example.url)
+    if flags:
+        command += " \\\n" + " \\\n".join(f"    {flag}" for flag in flags)
+    return command.split("\n")
+
+
+def _sample_headers(example: RequestExample) -> list[tuple[str, str]]:
+    """The headers a non-``curl`` sample sends, in order: credential (a cookie as ``Cookie``), then ``Origin``."""
+    headers: list[tuple[str, str]] = []
+    credential = example.credential
+    if credential is not None and credential.kind == "header":
+        headers.append((credential.name, credential.value))
+    elif credential is not None:
+        headers.append(("Cookie", f"{credential.name}={credential.value}"))
+    if example.origin:
+        headers.append(("Origin", EXAMPLE_ORIGIN))
+    return headers
+
+
+def powershell_quote(text: str) -> str:
+    """Quote text for PowerShell in single quotes, doubling each ``'``."""
+    return "'" + text.replace("'", "''") + "'"
+
+
+def sample_powershell(example: RequestExample) -> list[str]:
+    """Render a request as an ``Invoke-RestMethod`` call.
+
+    A cookie credential goes in a ``WebRequestSession`` passed as
+    ``-WebSession``, since Windows PowerShell 5.1 ignores a ``Cookie``
+    entry in ``-Headers``; the ``Origin`` header stays in ``-Headers``.
+    """
+    lines: list[str] = []
+    parts = [f"-Method {example.method.capitalize()}"] if example.method != "GET" else []
+    headers = _sample_headers(example)
+    credential = example.credential
+    if credential is not None and credential.kind == "cookie":
+        host = urllib.parse.urlsplit(example.url).hostname or "localhost"
+        lines += [
+            "$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession",
+            "$session.Cookies.Add((New-Object System.Net.Cookie("
+            f"{powershell_quote(credential.name)}, {powershell_quote(credential.value)}, '/', {powershell_quote(host)})))",
+        ]
+        parts.append("-WebSession $session")
+        headers = [(name, value) for name, value in headers if name != "Cookie"]
+    if headers:
+        parts.append("-Headers @{ " + "; ".join(f"{name} = {powershell_quote(value)}" for name, value in headers) + " }")
+    body = example.body
+    if body is not None:
+        parts.append(f"-ContentType {powershell_quote(body.media)}")
+        if body.kind == "json":
+            parts.append("-Body " + powershell_quote(json.dumps(body.value, ensure_ascii=False)))
+        elif body.kind == "form":
+            parts.append("-Body " + powershell_quote(form_encode(body.value)))
+        else:
+            parts.append("-InFile 'file'")
+    command = f"Invoke-RestMethod -Uri {powershell_quote(example.url)}"
+    if parts:
+        command += " `\n" + " `\n".join(f"    {part}" for part in parts)
+    return lines + command.split("\n")
+
+
+def python_literal(value: Any) -> str:
+    """Write a JSON value as a Python literal on one line."""
+    if value is True or value is False or value is None:
+        return {True: "True", False: "False", None: "None"}[value]
+    if isinstance(value, list):
+        return "[" + ", ".join(python_literal(item) for item in value) + "]"
+    if isinstance(value, Mapping):
+        return "{" + ", ".join(f"{json.dumps(str(k), ensure_ascii=False)}: {python_literal(v)}" for k, v in value.items()) + "}"
+    return json.dumps(value, ensure_ascii=False)
+
+
+def sample_python(example: RequestExample) -> list[str]:
+    """Render a request with the ``requests`` library."""
+    method = example.method.lower()
+    call = f"requests.{method}" if method in ("get", "post", "put", "patch", "delete", "head", "options") else "requests.request"
+    args = [json.dumps(example.method)] if call == "requests.request" else []
+    args.append(json.dumps(example.url, ensure_ascii=False))
+    headers = _sample_headers(example)
+    body = example.body
+    if body is not None and body.kind == "binary":
+        headers.append(("Content-Type", body.media))
+    if headers:
+        args.append("headers=" + python_literal(dict(headers)))
+    if body is not None and body.kind == "json":
+        args.append("json=" + python_literal(body.value))
+    elif body is not None and body.kind == "form":
+        # ``requests`` sends a list value as repeated fields, like curl does.
+        form: dict[str, Any] = {}
+        for name, text in form_pairs(body.value):
+            if name in form:
+                form[name] = [*(form[name] if isinstance(form[name], list) else [form[name]]), text]
+            else:
+                form[name] = text
+        args.append("data=" + python_literal(form))
+    elif body is not None:
+        args.append('data=open("file", "rb")')
+    lines = ["import requests", ""]
+    if len(args) == 1:
+        lines.append(f"response = {call}({args[0]})")
+    else:
+        lines += [f"response = {call}(", *(f"    {arg}," for arg in args), ")"]
+    lines.append("print(response.status_code, response.text)")
+    return lines
+
+
+def sample_javascript(example: RequestExample) -> list[str]:
+    """Render a request with ``fetch``."""
+    options: list[str] = []
+    if example.method != "GET":
+        options.append(f"method: {json.dumps(example.method)}")
+    headers = _sample_headers(example)
+    body = example.body
+    if body is not None and body.kind != "form":
+        headers.append(("Content-Type", body.media))
+    if headers:
+        pairs = ", ".join(f"{name if name.isalnum() else json.dumps(name)}: {json.dumps(value, ensure_ascii=False)}" for name, value in headers)
+        options.append(f"headers: {{ {pairs} }}")
+    if body is not None and body.kind == "json":
+        options.append(f"body: JSON.stringify({json.dumps(body.value, ensure_ascii=False)})")
+    elif body is not None and body.kind == "form":
+        options.append(f"body: new URLSearchParams({json.dumps(form_encode(body.value))})")
+    elif body is not None:
+        options.append('body: await readFile("file")')
+    lines = ['import { readFile } from "node:fs/promises";', ""] if body is not None and body.kind == "binary" else []
+    url = json.dumps(example.url, ensure_ascii=False)
+    if options:
+        lines += [f"const response = await fetch({url}, {{", *(f"  {option}," for option in options), "});"]
+    else:
+        lines.append(f"const response = await fetch({url});")
+    lines.append("console.log(response.status, await response.text());")
+    return lines
+
+
+def sample_rust(example: RequestExample) -> list[str]:
+    """Render a request with ``reqwest``."""
+    method = example.method.lower()
+    url = json.dumps(example.url, ensure_ascii=False)
+    headers = _sample_headers(example)
+    body = example.body
+    if body is not None and body.kind == "binary":
+        headers.append(("Content-Type", body.media))
+    if example.method == "GET" and not headers and body is None:
+        return [f"let response = reqwest::get({url}).await?;", 'println!("{} {}", response.status(), response.text().await?);']
+    calls = [f".{method}({url})" if method in ("get", "post", "put", "patch", "delete", "head") else f".request(reqwest::Method::{example.method}, {url})"]
+    calls += [f".header({json.dumps(name)}, {json.dumps(value, ensure_ascii=False)})" for name, value in headers]
+    if body is not None and body.kind == "json":
+        calls.append(f".json(&serde_json::json!({json.dumps(body.value, ensure_ascii=False)}))")
+    elif body is not None and body.kind == "form":
+        pairs = ", ".join(f"({json.dumps(name)}, {json.dumps(text, ensure_ascii=False)})" for name, text in form_pairs(body.value))
+        calls.append(f".form(&[{pairs}])")
+    elif body is not None:
+        calls.append('.body(std::fs::read("file")?)')
+    return [
+        "let client = reqwest::Client::new();",
+        "let response = client",
+        *(f"    {call}" for call in calls),
+        "    .send()",
+        "    .await?;",
+        'println!("{} {}", response.status(), response.text().await?);',
+    ]
+
+
+# Each sample language's fence name and renderer, in the order the page lists them.
+SAMPLE_LANGUAGES = {
+    "console": sample_curl,
+    "powershell": sample_powershell,
+    "python": sample_python,
+    "javascript": sample_javascript,
+    "rust": sample_rust,
+}
+
+
+def form_pairs(pairs: Sequence[tuple[str, Any]]) -> list[tuple[str, str]]:
+    """Flatten example values into the fields of a form, as text.
+
+    Every sample language sends a form through this, so they all send the
+    same body: an array repeats its name once per item, an object is sent as
+    JSON text, a boolean or number as its JSON text, and a value with no
+    example as empty.
+
+    Args:
+        pairs: Names and example values.
+
+    Returns:
+        ``(name, text)`` fields in order.
     """
     flat: list[tuple[str, str]] = []
     for name, value in pairs:
@@ -990,7 +1246,19 @@ def form_encode(pairs: Sequence[tuple[str, Any]]) -> str:
             else:
                 text = json.dumps(item, ensure_ascii=False)
             flat.append((name, text))
-    return urlencode(flat, quote_via=quote)
+    return flat
+
+
+def form_encode(pairs: Sequence[tuple[str, Any]]) -> str:
+    """Encode example values as a query string or form body.
+
+    Args:
+        pairs: Names and example values, flattened by :func:`form_pairs`.
+
+    Returns:
+        ``name=value`` pairs joined by ``&``, percent-encoded.
+    """
+    return urlencode(form_pairs(pairs), quote_via=quote)
 
 
 def shell_quote(text: str) -> str:
