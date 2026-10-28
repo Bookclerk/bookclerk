@@ -11,7 +11,13 @@
 // Accounts page uses, so Audible deregisters the device it added, before
 // the container (and with it every token) is destroyed.
 
-import { decodeClaimTicket, decodeConnections, decodeInstances, portalSessionFrom, PORTAL_COOKIE } from "./inputs.ts";
+import {
+  decodeClaimTicket,
+  decodeConnections,
+  decodeInstances,
+  portalSessionFrom,
+  PORTAL_COOKIE,
+} from "./inputs.ts";
 
 /**
  * The storefront plugins the demo image ships (their manifest ids). The host
@@ -47,10 +53,13 @@ export function randomHex(n: number): string {
  * @param call - Container request function.
  * @param opts - How long to wait in
  *   all, and between attempts.
- * @returns 
+ * @returns
  * @throws {Error} When bookclerkd has not answered 200 in time.
  */
-export async function waitForHealth(call: ContainerCall, opts: { timeoutMs: number; intervalMs: number; }): Promise<void> {
+export async function waitForHealth(
+  call: ContainerCall,
+  opts: { timeoutMs: number; intervalMs: number },
+): Promise<void> {
   const deadline = Date.now() + opts.timeoutMs;
   let last = "no answer";
   while (Date.now() < deadline) {
@@ -86,7 +95,11 @@ export async function signInVisitor(call: ContainerCall, operatorToken: string):
   const boot = await call("/api/auth/bootstrap", {
     method: "POST",
     headers: { Authorization: `Bearer ${operatorToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ display_name: "Demo visitor", login_name: "demo", password: randomHex(24) }),
+    body: JSON.stringify({
+      display_name: "Demo visitor",
+      login_name: "demo",
+      password: randomHex(24),
+    }),
   });
   const ticket = decodeClaimTicket(await boot.text());
   if (boot.status !== 200 || !ticket) throw new Error(`bootstrap answered ${boot.status}`);
@@ -109,11 +122,15 @@ export async function signInVisitor(call: ContainerCall, operatorToken: string):
  * @param call - Container request function.
  * @param operatorToken - The session's operator token.
  * @param ids - Plugin ids to enable.
- * @returns 
+ * @returns
  * @throws {Error} When a grant or deployment is refused, or a storefront has
  *   no default instance (the image is missing it).
  */
-export async function enableStorefronts(call: ContainerCall, operatorToken: string, ids: string[] = STOREFRONTS): Promise<void> {
+export async function enableStorefronts(
+  call: ContainerCall,
+  operatorToken: string,
+  ids: string[] = STOREFRONTS,
+): Promise<void> {
   const json = { Authorization: `Bearer ${operatorToken}`, "Content-Type": "application/json" };
   for (const id of ids) {
     const res = await call(`/api/plugins/${encodeURIComponent(id)}/consent`, {
@@ -124,14 +141,20 @@ export async function enableStorefronts(call: ContainerCall, operatorToken: stri
     await res.body?.cancel();
     if (res.status !== 200) throw new Error(`consent for ${id} answered ${res.status}`);
   }
-  const list = await call("/api/config/plugin-instances", { headers: { Authorization: json.Authorization } });
+  const list = await call("/api/config/plugin-instances", {
+    headers: { Authorization: json.Authorization },
+  });
   const found = list.status === 200 ? decodeInstances(await list.text(), ids) : null;
   if (!found) throw new Error(`plugin instances answered ${list.status}`);
   for (const id of ids) {
     const instance = found.instances.get(id);
     if (!instance) throw new Error(`no default instance for ${id}`);
     const path = `/api/config/plugin-instances/${encodeURIComponent(instance)}/deployments/${encodeURIComponent(found.nodeId)}`;
-    const res = await call(path, { method: "PUT", headers: json, body: JSON.stringify({ desired: "present" }) });
+    const res = await call(path, {
+      method: "PUT",
+      headers: json,
+      body: JSON.stringify({ desired: "present" }),
+    });
     await res.body?.cancel();
     if (res.status !== 200) throw new Error(`deploying ${id} answered ${res.status}`);
   }
@@ -154,11 +177,19 @@ export async function enableStorefronts(call: ContainerCall, operatorToken: stri
  *   and accounts whose sign-out failed (including when the list could not
  *   be read: then `failed` is 1).
  */
-export async function signOutStores(call: ContainerCall, portalSession: string, timeoutMs: number, origin: string): Promise<{ revoked: number; failed: number; }> {
+export async function signOutStores(
+  call: ContainerCall,
+  portalSession: string,
+  timeoutMs: number,
+  origin: string,
+): Promise<{ revoked: number; failed: number }> {
   const cookie = { Cookie: `${PORTAL_COOKIE}=${portalSession}` };
   let accounts;
   try {
-    const res = await call("/api/portal/connections", { headers: cookie, signal: AbortSignal.timeout(timeoutMs) });
+    const res = await call("/api/portal/connections", {
+      headers: cookie,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     accounts = res.status === 200 ? decodeConnections(await res.text()) : null;
   } catch {
     accounts = null;

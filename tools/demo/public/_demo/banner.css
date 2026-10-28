@@ -26,13 +26,25 @@ body:has(> #bookclerk-demo-banner) > #root {
   padding: 8px 16px;
   background: #0b3553;
   color: #f3e5c6;
-  font: 15px/1.4 "Segoe UI", Candara, system-ui, sans-serif;
+  font:
+    15px/1.4 "Segoe UI",
+    Candara,
+    system-ui,
+    sans-serif;
   white-space: nowrap;
 }
-#bookclerk-demo-banner strong { font-weight: 600; }
-#bookclerk-demo-banner .demo-left { font-variant-numeric: tabular-nums; }
-#bookclerk-demo-banner .demo-spacer { flex: 1 1 auto; }
-#bookclerk-demo-banner .demo-short { display: none; }
+#bookclerk-demo-banner strong {
+  font-weight: 600;
+}
+#bookclerk-demo-banner .demo-left {
+  font-variant-numeric: tabular-nums;
+}
+#bookclerk-demo-banner .demo-spacer {
+  flex: 1 1 auto;
+}
+#bookclerk-demo-banner .demo-short {
+  display: none;
+}
 #bookclerk-demo-banner a,
 #bookclerk-demo-banner button {
   font: inherit;
@@ -45,8 +57,13 @@ body:has(> #bookclerk-demo-banner) > #root {
   cursor: pointer;
 }
 #bookclerk-demo-banner a:focus-visible,
-#bookclerk-demo-banner button:focus-visible { outline: 2px solid #5aa8a2; outline-offset: 2px; }
-#bookclerk-demo-banner form { margin: 0; }
+#bookclerk-demo-banner button:focus-visible {
+  outline: 2px solid #5aa8a2;
+  outline-offset: 2px;
+}
+#bookclerk-demo-banner form {
+  margin: 0;
+}
 /* Phones: one short row. "Bookclerk demo" becomes "Demo" and the buttons
    shrink, so the bar stays one row about 38px tall. */
 @media (max-width: 560px) {
@@ -55,12 +72,20 @@ body:has(> #bookclerk-demo-banner) > #root {
     padding: 6px 10px;
     font-size: 13px;
   }
-  #bookclerk-demo-banner .demo-long { display: none; }
-  #bookclerk-demo-banner .demo-short { display: inline; }
+  #bookclerk-demo-banner .demo-long {
+    display: none;
+  }
+  #bookclerk-demo-banner .demo-short {
+    display: inline;
+  }
   #bookclerk-demo-banner a,
-  #bookclerk-demo-banner button { padding: 4px 8px; }
+  #bookclerk-demo-banner button {
+    padding: 4px 8px;
+  }
 }
 /* The narrowest phones (320px): the time and both buttons still fit. */
 @media (max-width: 360px) {
-  #bookclerk-demo-banner strong { display: none; }
+  #bookclerk-demo-banner strong {
+    display: none;
+  }
 }

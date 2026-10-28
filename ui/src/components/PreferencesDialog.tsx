@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Ban, Settings2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StoreLogo } from "@/components/StoreLogo";
@@ -34,10 +27,7 @@ import {
   type ShelvesListener,
 } from "@/components/preferencesContext";
 import { usePreferences } from "@/components/usePreferences";
-import {
-  ThemePreferenceControl,
-  useTheme,
-} from "@/components/ThemeProvider";
+import { ThemePreferenceControl, useTheme } from "@/components/ThemeProvider";
 import type { ThemePreference } from "@/lib/theme";
 
 const LANG_BROWSER = "__browser__";
@@ -124,8 +114,7 @@ function PreferencesDialog({
   const [ignored, setIgnored] = useState<string[]>([]);
   const [shelfKinds, setShelfKinds] = useState<ShelfKindInfo[]>([]);
   const [discoverSort, setDiscoverSort] = useState<CatalogSearchSort>("relevance");
-  const [discoverSortDir, setDiscoverSortDir] =
-    useState<CatalogSortDir>("desc");
+  const [discoverSortDir, setDiscoverSortDir] = useState<CatalogSortDir>("desc");
   const [discoverLanguage, setDiscoverLanguage] = useState(LANG_BROWSER);
   const [excludedSources, setExcludedSources] = useState<string[]>([]);
   const [enabledSources, setEnabledSources] = useState<PortalSource[]>([]);
@@ -224,9 +213,7 @@ function PreferencesDialog({
 
   async function toggleIgnored(kindId: string) {
     const prev = ignored;
-    const next = prev.includes(kindId)
-      ? prev.filter((x) => x !== kindId)
-      : [...prev, kindId];
+    const next = prev.includes(kindId) ? prev.filter((x) => x !== kindId) : [...prev, kindId];
     setIgnored(next);
     setBusy(true);
     setError(null);
@@ -257,9 +244,7 @@ function PreferencesDialog({
       setDiscoverLanguage(saved.discover_language ?? LANG_BROWSER);
       setExcludedSources(saved.discover_excluded_sources ?? []);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to save Discover prefs",
-      );
+      setError(err instanceof Error ? err.message : "Failed to save Discover prefs");
     } finally {
       setBusy(false);
     }
@@ -324,8 +309,8 @@ function PreferencesDialog({
             <div className="space-y-2">
               <h3 className="text-base font-semibold text-ink">Appearance</h3>
               <p className="text-sm text-ink/55">
-                Follows this device when set to System. Light is the designed
-                look; Dark adapts the same palette.
+                Follows this device when set to System. Light is the designed look; Dark adapts the
+                same palette.
               </p>
               <ThemePreferenceControl
                 value={theme}
@@ -336,9 +321,7 @@ function PreferencesDialog({
 
             <div className="space-y-2">
               <h3 className="text-base font-semibold text-ink">Default view</h3>
-              <p className="text-sm text-ink/55">
-                Where this account opens after sign-in.
-              </p>
+              <p className="text-sm text-ink/55">Where this account opens after sign-in.</p>
               <div className="flex flex-wrap gap-2">
                 {(
                   [
@@ -364,8 +347,8 @@ function PreferencesDialog({
               <div>
                 <h3 className="text-base font-semibold text-ink">Discover defaults</h3>
                 <p className="text-sm text-ink/55">
-                  Applied when you open a catalog search. New stores stay included
-                  unless you uncheck them here.
+                  Applied when you open a catalog search. New stores stay included unless you
+                  uncheck them here.
                 </p>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
@@ -419,8 +402,7 @@ function PreferencesDialog({
                       const next = e.target.value;
                       setDiscoverLanguage(next);
                       void saveDiscoverPrefs({
-                        discover_language:
-                          next === LANG_BROWSER ? null : next,
+                        discover_language: next === LANG_BROWSER ? null : next,
                       });
                     }}
                   >
@@ -429,9 +411,7 @@ function PreferencesDialog({
                     </option>
                     {CATALOG_LANGUAGE_OPTIONS.map((opt) => (
                       <option key={opt.value} value={opt.value}>
-                        {opt.value === CATALOG_LANGUAGE_ALL
-                          ? opt.label
-                          : opt.label}
+                        {opt.value === CATALOG_LANGUAGE_ALL ? opt.label : opt.label}
                       </option>
                     ))}
                   </select>
@@ -440,8 +420,8 @@ function PreferencesDialog({
               <div className="space-y-2">
                 <p className="text-sm font-medium text-ink">Stores to include</p>
                 <p className="text-xs text-ink/50">
-                  Only enabled storefront plugins appear here. Exclusions for
-                  disabled stores are kept and apply again if re-enabled.
+                  Only enabled storefront plugins appear here. Exclusions for disabled stores are
+                  kept and apply again if re-enabled.
                 </p>
                 {enabledSources.length === 0 ? (
                   <p className="flex items-center gap-2 text-sm text-ink/55">
@@ -452,9 +432,7 @@ function PreferencesDialog({
                   <ul className="grid gap-2 sm:grid-cols-2">
                     {enabledSources.map((source) => {
                       const id = source.id.toLowerCase();
-                      const on = !excludedSources.some(
-                        (s) => s.toLowerCase() === id,
-                      );
+                      const on = !excludedSources.some((s) => s.toLowerCase() === id);
                       return (
                         <li key={source.id}>
                           <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
@@ -480,8 +458,7 @@ function PreferencesDialog({
                 <div>
                   <h3 className="text-base font-semibold text-ink">Shelves to show</h3>
                   <p className="text-sm text-ink/55">
-                    All shelves are on by default. Uncheck any you want to hide for this
-                    account.
+                    All shelves are on by default. Uncheck any you want to hide for this account.
                   </p>
                 </div>
                 <ul className="grid max-h-72 gap-2 overflow-y-auto sm:grid-cols-2">

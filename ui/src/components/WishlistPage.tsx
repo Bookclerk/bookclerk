@@ -3,10 +3,7 @@ import { Trash2 } from "lucide-react";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
 import { CoverThumb } from "@/components/CoverThumb";
-import {
-  CatalogTitleDetailModal,
-  type TitleMetaSearchKind,
-} from "@/components/TitleDetailModal";
+import { CatalogTitleDetailModal, type TitleMetaSearchKind } from "@/components/TitleDetailModal";
 import { WisherAvatars } from "@/components/WisherAvatars";
 import { type TitleDetail } from "@/lib/titleDetail";
 import { Button } from "@/components/ui/button";
@@ -94,9 +91,7 @@ export function WishlistPage({
       setMine(w);
       setQueue(q);
       const myKeys = new Map(w.map((r) => [r.work_key, r.uuid]));
-      const baseMine = w.map((r) =>
-        attachWishersFromQueue(catalogTitleFromRequest(r), q),
-      );
+      const baseMine = w.map((r) => attachWishersFromQueue(catalogTitleFromRequest(r), q));
       const baseQueue = q.map((entry) =>
         catalogTitleFromQueueEntry(entry, myKeys.get(entry.work_key) ?? null),
       );
@@ -116,8 +111,7 @@ export function WishlistPage({
             (r) =>
               r.wishlist_uuid === prev.wishlist_uuid ||
               (r.work_key && r.work_key === prev.work_key),
-          ) ??
-          enrichedQueue.find((r) => r.work_key && r.work_key === prev.work_key);
+          ) ?? enrichedQueue.find((r) => r.work_key && r.work_key === prev.work_key);
         return match ?? { ...prev, wishlist_uuid: null };
       });
     } catch (err) {
@@ -171,8 +165,7 @@ export function WishlistPage({
         notes: "Wishlisted from global queue",
       });
       setSelected((prev) =>
-        prev &&
-        (prev.work_key === title.work_key || prev.title === title.title)
+        prev && (prev.work_key === title.work_key || prev.title === title.title)
           ? { ...prev, wishlist_uuid: created.uuid }
           : prev,
       );
@@ -211,8 +204,8 @@ export function WishlistPage({
                 Your wishlist
               </h1>
               <p className="text-sm text-ink/60">
-                Titles you want acquired. Click a title for details. Un-wishlist to remove
-                them from your list and the shared queue.
+                Titles you want acquired. Click a title for details. Un-wishlist to remove them from
+                your list and the shared queue.
               </p>
             </div>
 
@@ -240,15 +233,10 @@ export function WishlistPage({
                       className="flex min-w-0 flex-1 items-center gap-3 text-left"
                       onClick={() => setSelected(title)}
                     >
-                      <CoverThumb
-                        url={title.cover_url}
-                        className="h-14 w-14"
-                      />
+                      <CoverThumb url={title.cover_url} className="h-14 w-14" />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-2">
-                          <p className="font-medium text-ink hover:underline">
-                            {title.title}
-                          </p>
+                          <p className="font-medium text-ink hover:underline">{title.title}</p>
                           {(title.wishers?.length ?? 0) > 0 ? (
                             <span className="flex shrink-0 items-center gap-1.5">
                               <WisherAvatars
@@ -266,9 +254,7 @@ export function WishlistPage({
                             title.authors ?? "Unknown author",
                             title.narrators ? `narr. ${title.narrators}` : null,
                             formatSeriesLabel(title.series, title.series_index),
-                            title.length_minutes
-                              ? formatDuration(title.length_minutes)
-                              : null,
+                            title.length_minutes ? formatDuration(title.length_minutes) : null,
                             title.asin,
                             title.isbn,
                           ]
@@ -289,9 +275,7 @@ export function WishlistPage({
                       variant="ghost"
                       disabled={busy || !title.wishlist_uuid}
                       onClick={() =>
-                        title.wishlist_uuid
-                          ? void onRemove(title.wishlist_uuid)
-                          : undefined
+                        title.wishlist_uuid ? void onRemove(title.wishlist_uuid) : undefined
                       }
                       aria-label="Remove from wishlist"
                     >
@@ -308,8 +292,8 @@ export function WishlistPage({
             <div className="space-y-1">
               <h2 className="text-base font-semibold text-ink">Global queue</h2>
               <p className="text-xs text-ink/55">
-                Shared household ranking: overall Discover taste, heavily boosted by how many
-                people wishlisted each title. Titles already in the library are omitted.
+                Shared household ranking: overall Discover taste, heavily boosted by how many people
+                wishlisted each title. Titles already in the library are omitted.
               </p>
             </div>
             {queueTitles.length === 0 ? (
@@ -328,10 +312,7 @@ export function WishlistPage({
                         <span className="w-5 shrink-0 pt-1 text-xs tabular-nums text-ink/40">
                           {i + 1}
                         </span>
-                        <CoverThumb
-                          url={title.cover_url}
-                          className="h-12 w-12"
-                        />
+                        <CoverThumb url={title.cover_url} className="h-12 w-12" />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center justify-between gap-2">
                             <p className="truncate font-medium text-ink hover:underline">
@@ -353,9 +334,7 @@ export function WishlistPage({
                             {[
                               title.authors ?? "Unknown author",
                               formatSeriesLabel(title.series, title.series_index),
-                              title.length_minutes
-                                ? formatDuration(title.length_minutes)
-                                : null,
+                              title.length_minutes ? formatDuration(title.length_minutes) : null,
                               myKeys.has(title.work_key) ? "on your list" : null,
                             ]
                               .filter(Boolean)

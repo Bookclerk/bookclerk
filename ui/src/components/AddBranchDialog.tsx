@@ -184,9 +184,7 @@ export function AddBranchDialog({ open, onClose, userId, userLabel }: AddBranchD
 
         {minted ? (
           <div className="space-y-2 rounded-md border border-teal/30 bg-teal/5 p-3">
-            <p className="text-sm font-medium text-ink">
-              Copy it now: it is shown only once.
-            </p>
+            <p className="text-sm font-medium text-ink">Copy it now: it is shown only once.</p>
             <div className="flex gap-2">
               <Input
                 readOnly

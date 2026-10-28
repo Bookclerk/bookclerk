@@ -8,10 +8,7 @@
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "remoteUser": "bookclerk",
   "updateRemoteUserUID": true,
-  "runArgs": [
-    "--security-opt=apparmor=unconfined",
-    "--security-opt=label=disable"
-  ],
+  "runArgs": ["--security-opt=apparmor=unconfined", "--security-opt=label=disable"],
   "forwardPorts": [8787, 5173],
   "portsAttributes": {
     "8787": {

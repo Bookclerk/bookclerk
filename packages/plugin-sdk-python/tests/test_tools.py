@@ -281,9 +281,7 @@ def test_materialize_accepts_kv_fixture():
 
     from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
 
-    manifest = tomllib.loads(
-        (FIXTURES / "valid-kv" / "plugin.toml").read_text(encoding="utf-8")
-    )
+    manifest = tomllib.loads((FIXTURES / "valid-kv" / "plugin.toml").read_text(encoding="utf-8"))
     materialize_config(
         FIXTURES / "valid-kv",
         manifest,
@@ -297,9 +295,7 @@ def test_kv_rows_format_and_type():
 
     from bookclerk_plugin_sdk.tools import render_env_types
 
-    manifest = tomllib.loads(
-        (FIXTURES / "valid-kv" / "plugin.toml").read_text(encoding="utf-8")
-    )
+    manifest = tomllib.loads((FIXTURES / "valid-kv" / "plugin.toml").read_text(encoding="utf-8"))
     rendered = format_manifest(manifest)
     assert 'namespace = "sync.cursors"' in rendered
     assert "max_value_bytes = 4096" in rendered
@@ -334,11 +330,15 @@ def test_validate_rejects_reserved_and_duplicate_queues():
         "capabilities": {"network": {"mode": "deny"}},
     }
     with pytest.raises(ValueError, match="host-reserved"):
-        validate_manifest({**base, "queues": {"producers": [{"queue": "core.events", "binding": "Q"}]}})
+        validate_manifest(
+            {**base, "queues": {"producers": [{"queue": "core.events", "binding": "Q"}]}}
+        )
     with pytest.raises(ValueError, match="is duplicated"):
         validate_manifest({**base, "queues": {"consumers": [{"queue": "jobs"}, {"queue": "jobs"}]}})
     with pytest.raises(ValueError, match="collides"):
-        validate_manifest({**base, "queues": {"producers": [{"queue": "jobs", "binding": "EVENTS"}]}})
+        validate_manifest(
+            {**base, "queues": {"producers": [{"queue": "jobs", "binding": "EVENTS"}]}}
+        )
     with pytest.raises(ValueError, match="must differ"):
         validate_manifest(
             {**base, "queues": {"consumers": [{"queue": "jobs", "dead_letter_queue": "jobs"}]}}
@@ -383,7 +383,6 @@ def test_format_manifest_does_not_insert_python_flags():
         }
     )
     assert "python_workers" not in rendered
-
 
 
 def test_format_omits_module_path_when_absent():
@@ -439,7 +438,6 @@ def test_package_python_vendors_sdk_package(tmp_path: Path):
 
 
 def test_package_refuses_module_symlink_without_outside_bytes(tmp_path: Path):
-    import tarfile
 
     from bookclerk_plugin_sdk.path_guard import copy_tree_no_symlinks
 
@@ -468,9 +466,7 @@ def test_package_refuses_module_symlink_without_outside_bytes(tmp_path: Path):
         package_plugin(plugin, out)
     assert not any(out.glob("*.tar.gz"))
     assert "SECRET_OUTSIDE_BYTES" not in "".join(
-        p.read_text(encoding="utf-8", errors="ignore")
-        for p in out.rglob("*")
-        if p.is_file()
+        p.read_text(encoding="utf-8", errors="ignore") for p in out.rglob("*") if p.is_file()
     )
 
 
@@ -588,8 +584,9 @@ def test_refuse_symlink_blocks_bookclerk_dir_link(tmp_path: Path):
 
 
 def test_refuse_symlink_blocks_main_module_link(tmp_path: Path):
-    from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
     import tomllib
+
+    from bookclerk_plugin_sdk.sparse_workerd.config import materialize_config
 
     plugin = tmp_path / "plugin"
     modules = plugin / "modules"
@@ -765,10 +762,7 @@ def test_format_manifest_emits_sealed_and_loopback_tables():
 
 
 def test_env_properties_include_sealed_and_loopback_bindings(tmp_path: Path):
-    names = [
-        name
-        for name, _, _ in env_properties_for({"id": "echo", "secrets": {}, "oauth": {}})
-    ]
+    names = [name for name, _, _ in env_properties_for({"id": "echo", "secrets": {}, "oauth": {}})]
     assert "SECRETS" in names
     assert "OAUTH" in names
     (tmp_path / "plugin.toml").write_text(
@@ -991,6 +985,7 @@ def test_workerd_cache_and_currency(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     except ValueError as err:
         assert "symlink" in str(err).lower()
     assert outside.read_bytes() == b"OUT"
+
 
 def test_manifest_capabilities_report_queues():
     from bookclerk_plugin_sdk.sparse_workerd.config import manifest_capabilities

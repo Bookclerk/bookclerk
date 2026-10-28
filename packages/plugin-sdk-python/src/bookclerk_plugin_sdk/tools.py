@@ -23,14 +23,14 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from .path_guard import (
-    resolve_under,
     cli_user_path,
-    copy_tree_no_symlinks,
-    refuse_symlink_path,
-    refuse_symlink_existing_components,
-    write_file_under,
     copy_file_under,
+    copy_tree_no_symlinks,
     ensure_dir_under,
+    refuse_symlink_existing_components,
+    refuse_symlink_path,
+    resolve_under,
+    write_file_under,
 )
 
 # Required for local bookclerk-workerd / Pyodide without pywrangler.
@@ -95,9 +95,7 @@ def validate_author_compatibility_date(date: str) -> None:
         ValueError: When the date is not a calendar day.
     """
     if not _is_calendar_date(date):
-        raise ValueError(
-            "plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD"
-        )
+        raise ValueError("plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD")
 
 
 def apply_author_compatibility_date(date: str) -> AppliedCompatibilityDate:
@@ -150,13 +148,9 @@ def validate_author_compatibility_flags(flags: list[Any], python: bool) -> None:
     names = [str(flag) for flag in flags]
     for flag in names:
         if flag == "experimental":
-            raise ValueError(
-                "plugin.toml: workerd.compatibility_flags `experimental` is host-only"
-            )
+            raise ValueError("plugin.toml: workerd.compatibility_flags `experimental` is host-only")
         if flag not in PYTHON_WORKERD_FLAGS:
-            raise ValueError(
-                f"plugin.toml: workerd.compatibility_flags `{flag}` is not allowed"
-            )
+            raise ValueError(f"plugin.toml: workerd.compatibility_flags `{flag}` is not allowed")
     both = all(flag in names for flag in PYTHON_WORKERD_FLAGS)
     any_flag = any(flag in names for flag in PYTHON_WORKERD_FLAGS)
     if python and not both:
@@ -165,9 +159,7 @@ def validate_author_compatibility_flags(flags: list[Any], python: bool) -> None:
             "python_workers and disable_python_external_sdk when the guest is Python"
         )
     if any_flag and not python:
-        raise ValueError(
-            "plugin.toml: workerd.compatibility_flags require a Python module"
-        )
+        raise ValueError("plugin.toml: workerd.compatibility_flags require a Python module")
 
 
 def declares_python(m: dict[str, Any]) -> bool:
@@ -310,7 +302,9 @@ def _validate_queues(m: dict[str, Any]) -> None:
             )
         seen.add(queue)
         field = f"queues.consumers[{index}]"
-        _validate_int(f"{field}.max_batch_size", consumer.get("max_batch_size", 10), 1, 100, "must be 1..=100")
+        _validate_int(
+            f"{field}.max_batch_size", consumer.get("max_batch_size", 10), 1, 100, "must be 1..=100"
+        )
         _validate_int(
             f"{field}.max_batch_timeout",
             consumer.get("max_batch_timeout", 5),
@@ -318,13 +312,23 @@ def _validate_queues(m: dict[str, Any]) -> None:
             60,
             "must be at most 60 seconds",
         )
-        _validate_int(f"{field}.max_retries", consumer.get("max_retries", 3), 0, 100, "must be at most 100")
         _validate_int(
-            f"{field}.retry_delay", consumer.get("retry_delay", 0), 0, 43200, "must be at most 43200 seconds"
+            f"{field}.max_retries", consumer.get("max_retries", 3), 0, 100, "must be at most 100"
+        )
+        _validate_int(
+            f"{field}.retry_delay",
+            consumer.get("retry_delay", 0),
+            0,
+            43200,
+            "must be at most 43200 seconds",
         )
         if consumer.get("max_concurrency") is not None:
             _validate_int(
-                f"{field}.max_concurrency", consumer.get("max_concurrency"), 1, 2**31, "must be at least 1"
+                f"{field}.max_concurrency",
+                consumer.get("max_concurrency"),
+                1,
+                2**31,
+                "must be at least 1",
             )
         dlq = consumer.get("dead_letter_queue")
         if dlq is not None:
@@ -372,9 +376,7 @@ def validate_module_declarations(main_module: str, modules: list[Any]) -> None:
         ValueError: When a file would not be embedded or its type disagrees.
     """
     if _embed_class(main_module) is None:
-        raise ValueError(
-            f"plugin.toml: workerd.main_module `{main_module}` is not implemented yet"
-        )
+        raise ValueError(f"plugin.toml: workerd.main_module `{main_module}` is not implemented yet")
     for mod in modules:
         path = str(mod.get("path") or mod.get("name") or "")
         embed = _embed_class(path)
@@ -426,6 +428,7 @@ def workerd_module_is_embedded(path: str) -> bool:
         Whether the extension is ``.js``, ``.mjs``, ``.py``, ``.wasm``, or ``.json``.
     """
     return _embed_class(path) is not None
+
 
 LOGO_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico")
 """Allowed file extensions for embedded ``plugin.toml`` logo paths."""
@@ -492,9 +495,7 @@ def _validate_parsed_url(parsed: Any, original: str) -> tuple[str, str]:
     username = parsed.username or ""
     userinfo = parsed.netloc.rsplit("@", 1)[0] if "@" in parsed.netloc else ""
     if username or ":" in userinfo:
-        raise ValueError(
-            "plugin.toml: `logo` URL must not include userinfo (userinfo@host)"
-        )
+        raise ValueError("plugin.toml: `logo` URL must not include userinfo (userinfo@host)")
     host = (parsed.hostname or "").strip()
     if not host or host in {".", ".."}:
         raise ValueError("plugin.toml: `logo` URL is missing a host")
@@ -508,9 +509,7 @@ def _validate_embedded_path(trimmed: str) -> tuple[str, str]:
             "plugin.toml: embedded `logo` must be a relative path under the plugin root"
         )
     if len(path) >= 2 and path[1] == ":":
-        raise ValueError(
-            "plugin.toml: embedded `logo` must be a relative path (no drive letter)"
-        )
+        raise ValueError("plugin.toml: embedded `logo` must be a relative path (no drive letter)")
     if path.startswith("//"):
         raise ValueError("plugin.toml: embedded `logo` must be a relative path (no UNC)")
     segments: list[str] = []
@@ -546,21 +545,13 @@ def validate_plugin_id(id: str) -> None:
         ValueError: If the id fails length, charset, or underscore rules.
     """
     if id != id.strip():
-        raise ValueError(
-            f"plugin id `{id}` must not have leading or trailing whitespace"
-        )
+        raise ValueError(f"plugin id `{id}` must not have leading or trailing whitespace")
     if len(id) < 2 or len(id) > 32:
         raise ValueError(f"plugin id `{id}` must be 2–32 characters")
-    if not id.isascii() or not all(
-        c.islower() or c.isdigit() or c == "_" for c in id
-    ):
-        raise ValueError(
-            f"plugin id `{id}` must be lowercase ascii letters, digits, or `_`"
-        )
+    if not id.isascii() or not all(c.islower() or c.isdigit() or c == "_" for c in id):
+        raise ValueError(f"plugin id `{id}` must be lowercase ascii letters, digits, or `_`")
     if id.startswith("_") or id.endswith("_") or "__" in id:
-        raise ValueError(
-            f"plugin id `{id}` must not start/end with `_` or contain `__`"
-        )
+        raise ValueError(f"plugin id `{id}` must not start/end with `_` or contain `__`")
 
 
 def validate_manifest(m: dict[str, Any]) -> None:
@@ -648,7 +639,7 @@ def _validate_surface(m: dict[str, Any]) -> None:
         seen.add(entrypoint)
     events = m.get("events") or {}
     consumers = list(events.get("consumers") or [])
-    queue_consumers = list(((m.get("queues") or {}).get("consumers") or []))
+    queue_consumers = list((m.get("queues") or {}).get("consumers") or [])
     jobs = list((m.get("triggers") or {}).get("jobs") or [])
     if not entrypoints and not consumers and not queue_consumers and not jobs:
         raise ValueError(
@@ -700,16 +691,12 @@ def _validate_surface(m: dict[str, Any]) -> None:
     for index, kv in enumerate(m.get("kv_namespaces") or []):
         named.append(("kv_namespaces", str(kv.get("binding") or "KV"), index))
     for index, producer in enumerate((m.get("events") or {}).get("producers") or []):
-        named.append(
-            ("events.producers", str(producer.get("binding") or "EVENTS"), index)
-        )
+        named.append(("events.producers", str(producer.get("binding") or "EVENTS"), index))
     for index, producer in enumerate((m.get("queues") or {}).get("producers") or []):
         named.append(("queues.producers", str(producer.get("binding") or ""), index))
     for table, name, index in named:
         if not _DATABASE_BINDING_RE.match(name) or len(name) > 32:
-            raise ValueError(
-                f"plugin.toml: [{table}][{index}] binding must be `[A-Z][A-Z0-9_]*`"
-            )
+            raise ValueError(f"plugin.toml: [{table}][{index}] binding must be `[A-Z][A-Z0-9_]*`")
         if table in ("kv_namespaces", "queues.producers") and name in reserved:
             raise ValueError(
                 f"plugin.toml: [{table}][{index}] binding collides with another binding"
@@ -843,9 +830,7 @@ def check_main_module_source(
             )
     else:
         if "@bookclerk/plugin-sdk" not in src and base not in src:
-            raise ValueError(
-                f'{main_name}: import {base} from "@bookclerk/plugin-sdk/workerd"'
-            )
+            raise ValueError(f'{main_name}: import {base} from "@bookclerk/plugin-sdk/workerd"')
     if "WorkerEntrypoint" in src and "Entrypoint" not in src.replace("WorkerEntrypoint", ""):
         raise ValueError(f"{main_name}: subclass {base}, not bare WorkerEntrypoint")
     for wire in entrypoints:
@@ -960,7 +945,7 @@ def sync_embed(plugin_dir: Path) -> str:
     m = tomllib.loads(text)
     validate_manifest(m)
     if (m.get("runtime") or "native") != "workerd":
-        raise ValueError("sync-embed requires runtime = \"workerd\"")
+        raise ValueError('sync-embed requires runtime = "workerd"')
     if not _is_python_workerd(m):
         raise ValueError(
             "sync-embed (Python SDK): main_module must end with .py "
@@ -1141,7 +1126,9 @@ def format_manifest(m: dict[str, Any]) -> str:
         lines.append("")
         lines.append("[[events.consumers]]")
         lines.append(f"type = {_esc(str(consumer['type']))}")
-        lines.append(f"schema_versions = {_number_array(list(consumer.get('schema_versions') or [1]))}")
+        lines.append(
+            f"schema_versions = {_number_array(list(consumer.get('schema_versions') or [1]))}"
+        )
         lines.append(f"supports_suspend = {_bool(consumer.get('supports_suspend'))}")
         lines.append(f"resource_class = {_esc(str(consumer.get('resource_class') or 'network'))}")
         if consumer.get("max_retries") is not None:
@@ -1411,9 +1398,7 @@ def package_plugin(plugin_dir: Path, out_dir: Path) -> Path:
 TYPES_OUTPUT_FILE = "bookclerk_configuration.py"
 """Default ``types`` output filename next to ``plugin.toml``."""
 
-_RESERVED_BINDINGS = frozenset(
-    {"CONFIG", _SEALED_ENV, "EVENTS", "WORK_FS", "KV", _LOOPBACK_ENV}
-)
+_RESERVED_BINDINGS = frozenset({"CONFIG", _SEALED_ENV, "EVENTS", "WORK_FS", "KV", _LOOPBACK_ENV})
 
 
 def _var_type(value: Any) -> str:
@@ -1452,7 +1437,9 @@ def env_properties_for(m: dict[str, Any]) -> list[tuple[str, str, str]]:
         config_type = f"dict[str, Any]  # {{{fields}}}"
     else:
         config_type = "dict[str, Any]"
-    props.append(("CONFIG", config_type, "`[vars]` plus operator settings from the granted config payload."))
+    props.append(
+        ("CONFIG", config_type, "`[vars]` plus operator settings from the granted config payload.")
+    )
     sealed = m.get(_SEALED_TABLE)
     if isinstance(sealed, dict):
         props.append(
@@ -1468,7 +1455,13 @@ def env_properties_for(m: dict[str, Any]) -> list[tuple[str, str, str]]:
         props.append(("EVENTS", "Any", f"`[[events.producers]]` outbox publisher ({types})."))
     work_fs = m.get("work_fs")
     if isinstance(work_fs, dict):
-        props.append((str(work_fs.get("binding") or "WORK_FS"), "Any", "`[work_fs]` host-granted object storage."))
+        props.append(
+            (
+                str(work_fs.get("binding") or "WORK_FS"),
+                "Any",
+                "`[work_fs]` host-granted object storage.",
+            )
+        )
     for kv in m.get("kv_namespaces") or []:
         props.append(
             (
@@ -1499,10 +1492,14 @@ def env_properties_for(m: dict[str, Any]) -> list[tuple[str, str, str]]:
     for db in m.get("databases") or []:
         name = str(db.get("binding"))
         if name in _RESERVED_BINDINGS:
-            raise ValueError(
-                "plugin.toml: [[databases]] binding collides with a Bookclerk binding"
+            raise ValueError("plugin.toml: [[databases]] binding collides with a Bookclerk binding")
+        props.append(
+            (
+                name,
+                "DatabaseBinding",
+                "`[[databases]]` plugin-owned database (D1-shaped prepare/batch/exec).",
             )
-        props.append((name, "DatabaseBinding", "`[[databases]]` plugin-owned database (D1-shaped prepare/batch/exec)."))
+        )
     seen: set[str] = set()
     for name, _, _ in props:
         if name in seen:

@@ -118,9 +118,8 @@ export function MfaEnrollDialog({
               Two-factor authentication required
             </h1>
             <p className="mt-1.5 text-sm text-ink/70">
-              This server requires a passkey or authenticator app before you can
-              use the library. Set one up now, or log out and finish later.
-              Logging out does not lock your account.
+              This server requires a passkey or authenticator app before you can use the library.
+              Set one up now, or log out and finish later. Logging out does not lock your account.
             </p>
           </div>
         </div>
@@ -183,9 +182,7 @@ export function MfaEnrollDialog({
             <Button
               type="button"
               disabled={busy || !canUsePasskeys}
-              title={
-                canUsePasskeys ? undefined : "This browser does not support passkeys"
-              }
+              title={canUsePasskeys ? undefined : "This browser does not support passkeys"}
               onClick={() => void onRegisterPasskey()}
             >
               <Fingerprint className="h-4 w-4" aria-hidden />

@@ -78,7 +78,12 @@ export type Manifest = {
    * from the library database; distinct from `databases`. `namespace`
    * defaults to the binding name lowercased.
    */
-  kv_namespaces?: Array<{ binding?: string; namespace?: string; max_value_bytes?: number; max_keys?: number }>;
+  kv_namespaces?: Array<{
+    binding?: string;
+    namespace?: string;
+    max_value_bytes?: number;
+    max_keys?: number;
+  }>;
   /**
    * `[queues]` — Workers Queues: producers are `env` send bindings,
    * consumers are `queue(batch)` triggers on the host outbox.
@@ -162,7 +167,9 @@ export const RESERVED_QUEUE_PREFIXES = ["core.", "node."] as const;
  * @returns Whether the grammar accepts it.
  */
 export function isValidQueueName(name: string): boolean {
-  return name.length > 0 && name.length <= MAX_QUEUE_NAME_LEN && /^[a-z0-9][a-z0-9._-]*$/.test(name);
+  return (
+    name.length > 0 && name.length <= MAX_QUEUE_NAME_LEN && /^[a-z0-9][a-z0-9._-]*$/.test(name)
+  );
 }
 
 function validateQueueName(field: string, name: unknown): void {
@@ -173,7 +180,9 @@ function validateQueueName(field: string, name: unknown): void {
     );
   }
   if (RESERVED_QUEUE_PREFIXES.some((prefix) => text.startsWith(prefix))) {
-    throw new Error(`plugin.toml: ${field} \`${text}\` uses a host-reserved prefix (\`core.\`, \`host.\`)`);
+    throw new Error(
+      `plugin.toml: ${field} \`${text}\` uses a host-reserved prefix (\`core.\`, \`host.\`)`,
+    );
   }
 }
 
@@ -199,11 +208,15 @@ function validateKvNamespaces(m: Manifest): void {
     }
     const maxValue = row.max_value_bytes ?? 65_536;
     if (!Number.isInteger(maxValue) || maxValue < 1 || maxValue > MAX_KV_NAMESPACE_VALUE_BYTES) {
-      throw new Error(`plugin.toml: kv_namespaces[${i}].max_value_bytes must be 1..=${MAX_KV_NAMESPACE_VALUE_BYTES}`);
+      throw new Error(
+        `plugin.toml: kv_namespaces[${i}].max_value_bytes must be 1..=${MAX_KV_NAMESPACE_VALUE_BYTES}`,
+      );
     }
     const maxKeys = row.max_keys ?? 10_000;
     if (!Number.isInteger(maxKeys) || maxKeys < 1 || maxKeys > MAX_KV_NAMESPACE_KEYS) {
-      throw new Error(`plugin.toml: kv_namespaces[${i}].max_keys must be 1..=${MAX_KV_NAMESPACE_KEYS}`);
+      throw new Error(
+        `plugin.toml: kv_namespaces[${i}].max_keys must be 1..=${MAX_KV_NAMESPACE_KEYS}`,
+      );
     }
   }
 }
@@ -219,7 +232,9 @@ function validateQueues(m: Manifest): void {
   for (const [i, consumer] of (m.queues?.consumers ?? []).entries()) {
     validateQueueName(`queues.consumers[${i}].queue`, consumer.queue);
     if (seen.has(consumer.queue)) {
-      throw new Error(`plugin.toml: queues.consumers[${i}].queue \`${consumer.queue}\` is duplicated`);
+      throw new Error(
+        `plugin.toml: queues.consumers[${i}].queue \`${consumer.queue}\` is duplicated`,
+      );
     }
     seen.add(consumer.queue);
     const batch = consumer.max_batch_size ?? 10;
@@ -228,7 +243,9 @@ function validateQueues(m: Manifest): void {
     }
     const timeout = consumer.max_batch_timeout ?? 5;
     if (!Number.isInteger(timeout) || timeout < 0 || timeout > 60) {
-      throw new Error(`plugin.toml: queues.consumers[${i}].max_batch_timeout must be at most 60 seconds`);
+      throw new Error(
+        `plugin.toml: queues.consumers[${i}].max_batch_timeout must be at most 60 seconds`,
+      );
     }
     const retries = consumer.max_retries ?? 3;
     if (!Number.isInteger(retries) || retries < 0 || retries > 100) {
@@ -236,15 +253,22 @@ function validateQueues(m: Manifest): void {
     }
     const delay = consumer.retry_delay ?? 0;
     if (!Number.isInteger(delay) || delay < 0 || delay > 43200) {
-      throw new Error(`plugin.toml: queues.consumers[${i}].retry_delay must be at most 43200 seconds`);
+      throw new Error(
+        `plugin.toml: queues.consumers[${i}].retry_delay must be at most 43200 seconds`,
+      );
     }
-    if (consumer.max_concurrency != null && (!Number.isInteger(consumer.max_concurrency) || consumer.max_concurrency < 1)) {
+    if (
+      consumer.max_concurrency != null &&
+      (!Number.isInteger(consumer.max_concurrency) || consumer.max_concurrency < 1)
+    ) {
       throw new Error(`plugin.toml: queues.consumers[${i}].max_concurrency must be at least 1`);
     }
     if (consumer.dead_letter_queue != null) {
       validateQueueName(`queues.consumers[${i}].dead_letter_queue`, consumer.dead_letter_queue);
       if (consumer.dead_letter_queue === consumer.queue) {
-        throw new Error(`plugin.toml: queues.consumers[${i}].dead_letter_queue must differ from the consumed queue`);
+        throw new Error(
+          `plugin.toml: queues.consumers[${i}].dead_letter_queue must differ from the consumed queue`,
+        );
       }
     }
   }
@@ -302,30 +326,42 @@ function validateSettings(m: Manifest): void {
     const values = spec.values ?? [];
     if (spec.type === "enum") {
       if (values.length === 0) {
-        throw new Error(`plugin.toml: [[settings]] enum setting \`${key}\` must declare \`values\``);
+        throw new Error(
+          `plugin.toml: [[settings]] enum setting \`${key}\` must declare \`values\``,
+        );
       }
       const ids = new Set<string>();
       for (const value of values) {
         const id = String(value.id ?? "");
         if (!id || ids.has(id)) {
-          throw new Error(`plugin.toml: [[settings]] enum setting \`${key}\` has an invalid or duplicated value id`);
+          throw new Error(
+            `plugin.toml: [[settings]] enum setting \`${key}\` has an invalid or duplicated value id`,
+          );
         }
         ids.add(id);
       }
     } else if (values.length > 0) {
-      throw new Error(`plugin.toml: [[settings]] setting \`${key}\` declares \`values\` but is not an enum`);
+      throw new Error(
+        `plugin.toml: [[settings]] setting \`${key}\` declares \`values\` but is not an enum`,
+      );
     }
     if (spec.type === "secret") {
       if (spec.default !== undefined) {
-        throw new Error(`plugin.toml: [[settings]] secret setting \`${key}\` may not declare a default`);
+        throw new Error(
+          `plugin.toml: [[settings]] secret setting \`${key}\` may not declare a default`,
+        );
       }
       if (!m.secrets) {
-        throw new Error(`plugin.toml: [[settings]] secret setting \`${key}\` requires the \`[secrets]\` binding`);
+        throw new Error(
+          `plugin.toml: [[settings]] secret setting \`${key}\` requires the \`[secrets]\` binding`,
+        );
       }
       continue;
     }
     if (m.vars === undefined) {
-      throw new Error(`plugin.toml: [[settings]] setting \`${key}\` requires the \`[vars]\` binding`);
+      throw new Error(
+        `plugin.toml: [[settings]] setting \`${key}\` requires the \`[vars]\` binding`,
+      );
     }
     const def = spec.default;
     if (def === undefined) continue;
@@ -338,7 +374,9 @@ function validateSettings(m: Manifest): void {
             ? typeof def === "string" && values.some((v) => v.id === def)
             : typeof def === "string";
     if (!ok) {
-      throw new Error(`plugin.toml: [[settings]] default for setting \`${key}\` does not match its type`);
+      throw new Error(
+        `plugin.toml: [[settings]] default for setting \`${key}\` does not match its type`,
+      );
     }
   }
 }
@@ -353,15 +391,7 @@ export const ENTRYPOINT_NAMES = [
   "oidc",
 ] as const;
 
-const LOGO_EXTENSIONS = [
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".svg",
-  ".ico",
-] as const;
+const LOGO_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"] as const;
 
 /**
  * Validates a plugin id against the strict grammar.
@@ -380,22 +410,16 @@ const LOGO_EXTENSIONS = [
  */
 export function validatePluginId(id: string): void {
   if (id !== id.trim()) {
-    throw new Error(
-      `plugin id \`${id}\` must not have leading or trailing whitespace`,
-    );
+    throw new Error(`plugin id \`${id}\` must not have leading or trailing whitespace`);
   }
   if (id.length < 2 || id.length > 32) {
     throw new Error(`plugin id \`${id}\` must be 2–32 characters`);
   }
   if (![...id].every((c) => /[a-z0-9_]/.test(c))) {
-    throw new Error(
-      `plugin id \`${id}\` must be lowercase ascii letters, digits, or \`_\``,
-    );
+    throw new Error(`plugin id \`${id}\` must be lowercase ascii letters, digits, or \`_\``);
   }
   if (id.startsWith("_") || id.endsWith("_") || id.includes("__")) {
-    throw new Error(
-      `plugin id \`${id}\` must not start/end with \`_\` or contain \`__\``,
-    );
+    throw new Error(`plugin id \`${id}\` must not start/end with \`_\` or contain \`__\``);
   }
 }
 
@@ -431,10 +455,7 @@ export function validateLogo(
   return validateParsedUrl(parsed, trimmed);
 }
 
-function validateParsedUrl(
-  parsed: URL,
-  original: string,
-): { kind: "remote"; value: string } {
+function validateParsedUrl(parsed: URL, original: string): { kind: "remote"; value: string } {
   const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
   if (scheme !== "http" && scheme !== "https") {
     throw new Error(
@@ -450,9 +471,7 @@ function validateParsedUrl(
     );
   }
   if (parsed.username || parsed.password) {
-    throw new Error(
-      "plugin.toml: `logo` URL must not include userinfo (user:pass@host)",
-    );
+    throw new Error("plugin.toml: `logo` URL must not include userinfo (user:pass@host)");
   }
   const host = parsed.hostname.trim();
   if (!host || host === "." || host === "..") {
@@ -464,14 +483,10 @@ function validateParsedUrl(
 function validateEmbeddedPath(trimmed: string): { kind: "embedded"; value: string } {
   const path = trimmed.replace(/\\/g, "/");
   if (path.startsWith("/") || path.startsWith("~")) {
-    throw new Error(
-      "plugin.toml: embedded `logo` must be a relative path under the plugin root",
-    );
+    throw new Error("plugin.toml: embedded `logo` must be a relative path under the plugin root");
   }
   if (path.length >= 2 && path.charCodeAt(1) === 58 /* : */) {
-    throw new Error(
-      "plugin.toml: embedded `logo` must be a relative path (no drive letter)",
-    );
+    throw new Error("plugin.toml: embedded `logo` must be a relative path (no drive letter)");
   }
   if (path.startsWith("//")) {
     throw new Error("plugin.toml: embedded `logo` must be a relative path (no UNC)");
@@ -527,28 +542,18 @@ export function validateManifest(m: Manifest): void {
   const runtime = m.runtime ?? "native";
   if (runtime === "native") {
     if (!m.command || !String(m.command).trim()) {
-      throw new Error(
-        'plugin.toml: `command` is required when runtime = "native"',
-      );
+      throw new Error('plugin.toml: `command` is required when runtime = "native"');
     }
-    if (
-      m.capabilities?.network?.domains &&
-      m.capabilities.network.domains.length > 0
-    ) {
+    if (m.capabilities?.network?.domains && m.capabilities.network.domains.length > 0) {
       throw new Error(
         'plugin.toml: capabilities.network.domains is only valid for runtime = "workerd" (native outbound is coarse jail networking with no hostname filter — omit domains)',
       );
     }
   } else if (runtime === "workerd") {
     if (!m.workerd) {
-      throw new Error(
-        'plugin.toml: `[workerd]` is required when runtime = "workerd"',
-      );
+      throw new Error('plugin.toml: `[workerd]` is required when runtime = "workerd"');
     }
-    if (
-      typeof m.workerd.compatibility_date !== "string" ||
-      !m.workerd.compatibility_date.trim()
-    ) {
+    if (typeof m.workerd.compatibility_date !== "string" || !m.workerd.compatibility_date.trim()) {
       throw new Error("plugin.toml: workerd.compatibility_date is required");
     }
     if (!m.workerd.main_module?.trim()) {
@@ -556,14 +561,10 @@ export function validateManifest(m: Manifest): void {
     }
     validateAuthorCompatibilityDate(m.workerd.compatibility_date);
     validateModuleDeclarations(m.workerd.main_module, m.modules ?? []);
-    validateAuthorCompatibilityFlags(
-      m.workerd.compatibility_flags ?? [],
-      declaresPython(m),
-    );
+    validateAuthorCompatibilityFlags(m.workerd.compatibility_flags ?? [], declaresPython(m));
     if (
       m.capabilities?.network?.mode === "outbound" &&
-      (!m.capabilities.network.domains ||
-        m.capabilities.network.domains.length === 0)
+      (!m.capabilities.network.domains || m.capabilities.network.domains.length === 0)
     ) {
       throw new Error(
         'plugin.toml: capabilities.network.domains is required when runtime = "workerd" and mode = "outbound"',
@@ -598,7 +599,12 @@ function validateSurface(m: Manifest): void {
   const consumers = m.events?.consumers ?? [];
   const queueConsumers = m.queues?.consumers ?? [];
   const jobs = m.triggers?.jobs ?? [];
-  if (entrypoints.length === 0 && consumers.length === 0 && queueConsumers.length === 0 && jobs.length === 0) {
+  if (
+    entrypoints.length === 0 &&
+    consumers.length === 0 &&
+    queueConsumers.length === 0 &&
+    jobs.length === 0
+  ) {
     throw new Error(
       "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, `[[queues.consumers]]`, or `[triggers].jobs`",
     );
@@ -658,27 +664,19 @@ function validateSurface(m: Manifest): void {
   }
   for (const [table, name, index] of named) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(name) || name.length > 32) {
-      throw new Error(
-        `plugin.toml: [${table}][${index}] binding must be \`[A-Z][A-Z0-9_]*\``,
-      );
+      throw new Error(`plugin.toml: [${table}][${index}] binding must be \`[A-Z][A-Z0-9_]*\``);
     }
     if ((table === "kv_namespaces" || table === "queues.producers") && reserved.has(name)) {
-      throw new Error(
-        `plugin.toml: [${table}][${index}] binding collides with another binding`,
-      );
+      throw new Error(`plugin.toml: [${table}][${index}] binding collides with another binding`);
     }
     if (name === "CONFIG" || bindings.has(name)) {
-      throw new Error(
-        `plugin.toml: [${table}][${index}] binding collides with another binding`,
-      );
+      throw new Error(`plugin.toml: [${table}][${index}] binding collides with another binding`);
     }
   }
   for (const [table, name, index] of named) {
     if (table === "events.producers") continue;
     if (bindings.has(name)) {
-      throw new Error(
-        `plugin.toml: [${table}][${index}] binding collides with another binding`,
-      );
+      throw new Error(`plugin.toml: [${table}][${index}] binding collides with another binding`);
     }
     bindings.add(name);
   }
@@ -712,9 +710,7 @@ export interface AppliedCompatibilityDate {
  */
 export function validateAuthorCompatibilityDate(date: string): void {
   if (!isCalendarDate(date)) {
-    throw new Error(
-      "plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD",
-    );
+    throw new Error("plugin.toml: workerd.compatibility_date must be a calendar YYYY-MM-DD");
   }
 }
 
@@ -730,9 +726,7 @@ export function validateAuthorCompatibilityDate(date: string): void {
  * @returns The date to pass to workerd, and a warning when it was clamped.
  * @throws {Error} When the date is not a calendar day.
  */
-export function applyAuthorCompatibilityDate(
-  date: string,
-): AppliedCompatibilityDate {
+export function applyAuthorCompatibilityDate(date: string): AppliedCompatibilityDate {
   validateAuthorCompatibilityDate(date);
   if (date > WORKERD_PIN_COMPAT_DATE) {
     return {
@@ -760,20 +754,13 @@ function compatibilityDateFallbackWarning(requested: string): string {
  * disk-only `.py` file is not enough.
  * @throws {Error} When a flag is outside the allowlist or the pair is wrong.
  */
-export function validateAuthorCompatibilityFlags(
-  flags: readonly string[],
-  python: boolean,
-): void {
+export function validateAuthorCompatibilityFlags(flags: readonly string[], python: boolean): void {
   for (const flag of flags) {
     if (flag === "experimental") {
-      throw new Error(
-        "plugin.toml: workerd.compatibility_flags `experimental` is host-only",
-      );
+      throw new Error("plugin.toml: workerd.compatibility_flags `experimental` is host-only");
     }
     if (!(PYTHON_COMPATIBILITY_FLAGS as readonly string[]).includes(flag)) {
-      throw new Error(
-        `plugin.toml: workerd.compatibility_flags \`${flag}\` is not allowed`,
-      );
+      throw new Error(`plugin.toml: workerd.compatibility_flags \`${flag}\` is not allowed`);
     }
   }
   const has = (name: string) => flags.includes(name);
@@ -785,9 +772,7 @@ export function validateAuthorCompatibilityFlags(
     );
   }
   if (any && !python) {
-    throw new Error(
-      "plugin.toml: workerd.compatibility_flags require a Python module",
-    );
+    throw new Error("plugin.toml: workerd.compatibility_flags require a Python module");
   }
 }
 
@@ -838,9 +823,7 @@ export function validateModuleDeclarations(
   modules: ReadonlyArray<{ name: string; path?: string; type?: string }>,
 ): void {
   if (embedClass(mainModule) == null) {
-    throw new Error(
-      `plugin.toml: workerd.main_module \`${mainModule}\` is not implemented yet`,
-    );
+    throw new Error(`plugin.toml: workerd.main_module \`${mainModule}\` is not implemented yet`);
   }
   for (const mod of modules) {
     const path = mod.path || mod.name;
@@ -920,7 +903,8 @@ function moduleTypeMatches(embed: string, moduleType: string): boolean {
   if (embed === "python") return kind === "python";
   if (embed === "wasm") return kind === "wasm";
   if (embed === "json") return kind === "json";
-  if (embed === "js") return kind === "js" || kind === "javascript" || kind === "esm" || kind === "esmodule";
+  if (embed === "js")
+    return kind === "js" || kind === "javascript" || kind === "esm" || kind === "esmodule";
   return false;
 }
 

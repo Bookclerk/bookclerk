@@ -1,11 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Ban } from "lucide-react";
 import { StoreLogo } from "@/components/StoreLogo";
-import {
-  RUNTIME_BUCKET_OPTIONS,
-  storeLabel,
-  type RuntimeBucket,
-} from "@/lib/catalogTitle";
+import { RUNTIME_BUCKET_OPTIONS, storeLabel, type RuntimeBucket } from "@/lib/catalogTitle";
 import { cn } from "@/lib/utils";
 
 /**
@@ -13,18 +9,10 @@ import { cn } from "@/lib/utils";
  */
 export type FacetOption = { value: string; label: string };
 
-function FilterSection({
-  title,
-  children,
-}: {
-  title: string;
-  children: ReactNode;
-}) {
+function FilterSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="space-y-2 border-b border-ink/10 pb-4 last:border-b-0 last:pb-0">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-ink/55">
-        {title}
-      </h3>
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-ink/55">{title}</h3>
       {children}
     </section>
   );
@@ -48,9 +36,7 @@ function SearchableCheckList({
   const visible = useMemo(() => {
     const base = needle
       ? options.filter(
-          (o) =>
-            o.label.toLowerCase().includes(needle) ||
-            o.value.toLowerCase().includes(needle),
+          (o) => o.label.toLowerCase().includes(needle) || o.value.toLowerCase().includes(needle),
         )
       : options;
     // Keep selected values visible even if they fall outside the typeahead.
@@ -155,9 +141,7 @@ export function DiscoverFilterRail({
     const enabled = enabledSourceIds.map((id) => id.toLowerCase());
     // Prefer enabled sources; intersect facet hits so disabled stores do not reappear.
     if (enabled.length === 0) return [];
-    const fromFacets = new Set(
-      sourceOptions.map((o) => o.value.toLowerCase()).filter(Boolean),
-    );
+    const fromFacets = new Set(sourceOptions.map((o) => o.value.toLowerCase()).filter(Boolean));
     const ids = enabled.filter((id) => fromFacets.size === 0 || fromFacets.has(id));
     return (ids.length > 0 ? ids : enabled).sort();
   }, [enabledSourceIds, sourceOptions]);
@@ -165,9 +149,7 @@ export function DiscoverFilterRail({
   function toggleSource(id: string, included: boolean) {
     const key = id.toLowerCase();
     if (included) {
-      onExcludedSourcesChange(
-        excludedSources.filter((s) => s.toLowerCase() !== key),
-      );
+      onExcludedSourcesChange(excludedSources.filter((s) => s.toLowerCase() !== key));
     } else if (!excludedSources.some((s) => s.toLowerCase() === key)) {
       onExcludedSourcesChange([...excludedSources, key]);
     }
@@ -189,9 +171,7 @@ export function DiscoverFilterRail({
         ) : (
           <ul className="space-y-2">
             {stores.map((id) => {
-              const included = !excludedSources.some(
-                (s) => s.toLowerCase() === id,
-              );
+              const included = !excludedSources.some((s) => s.toLowerCase() === id);
               return (
                 <li key={id}>
                   <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">

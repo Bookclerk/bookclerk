@@ -28,7 +28,7 @@ class _MockFetcher:
                                 "rows": [{"values": [{"kind": "int64", "value": 1}]}],
                                 "columns": [{"name": "n", "dbType": "int64"}],
                                 "rowsAffected": 0,
-                                                            }
+                            }
                         ],
                         "timing": {
                             "attemptElapsedUs": 0,
@@ -107,5 +107,7 @@ class WorkerdTransportDbTests(unittest.IsolatedAsyncioTestCase):
         from bookclerk_plugin_sdk.workerd import _invocation_env
 
         marker = object()
-        env = _invocation_env({}, {"databases": [{"name": "DB", "database": marker, "transport": 1}]})
+        env = _invocation_env(
+            {}, {"databases": [{"name": "DB", "database": marker, "transport": 1}]}
+        )
         self.assertIs(env.DB, marker)

@@ -6,11 +6,7 @@ import { fileURLToPath } from "node:url";
 const root = dirname(fileURLToPath(import.meta.url));
 const dist = join(root, "../dist");
 
-const {
-  parseDbValue,
-  encodeDbValue,
-  decodeDbValue,
-} = await import(join(dist, "db-value.js"));
+const { parseDbValue, encodeDbValue, decodeDbValue } = await import(join(dist, "db-value.js"));
 const {
   encodeExecuteRequest,
   decodeExecuteRequest,
@@ -29,18 +25,14 @@ const I64_MIN = -0x8000_0000_0000_0000n;
 const I64_MAX = 0x7fff_ffff_ffff_ffffn;
 
 const GOLDEN = {
-  i64Min:
-    "00000000040000000000000002000100000002000000000000000000000000800000000000000000",
-  i64Max:
-    "000000000400000000000000020001000000020000000000ffffffffffffff7f0000000000000000",
+  i64Min: "00000000040000000000000002000100000002000000000000000000000000800000000000000000",
+  i64Max: "000000000400000000000000020001000000020000000000ffffffffffffff7f0000000000000000",
   textB64:
     "0000000006000000000000000200010000000400000000000000000000000000010000004a0000006236343a414141410000000000000000",
   bytes012:
     "0000000005000000000000000200010000000500000000000000000000000000010000001a0000000001020000000000",
-  boolTrue:
-    "00000000040000000000000002000100010001000000000000000000000000000000000000000000",
-  nullBytes:
-    "00000000040000000000000002000100050000000000000000000000000000000000000000000000",
+  boolTrue: "00000000040000000000000002000100010001000000000000000000000000000000000000000000",
+  nullBytes: "00000000040000000000000002000100050000000000000000000000000000000000000000000000",
   executeRequest:
     "000000001d00000000000000040003000000000000000000000000000000000000000000000000000000000000000000090000001a0000000900000022000000090000001f0000006f70000000000000616263000000000004000000010002000100020001000000050000004a000000090000004f00000053454c454354203f00000000000000000c00000002000100000002000000000000000000000000800000000000000000000004000000000000000000000000000d0000007200000000000500000000000000000000000000090000000a0000006236343a6e6f742d6279746573000000ff00000000000000",
 };
@@ -105,26 +97,14 @@ const blob = parseDbValue({ kind: "bytes", value: "b64:AAEC" });
 assert.equal(blob.kind, "bytes");
 assert.deepEqual(Array.from(blob.value), [0, 1, 2]);
 
-assert.throws(
-  () => parseDbValue({ kind: "xml", value: "<a/>" }),
-  /unknown DbValue union member/,
-);
+assert.throws(() => parseDbValue({ kind: "xml", value: "<a/>" }), /unknown DbValue union member/);
 
 assert.equal(hex(encodeDbValue({ kind: "int64", value: I64_MIN })), GOLDEN.i64Min);
 assert.equal(hex(encodeDbValue({ kind: "int64", value: I64_MAX })), GOLDEN.i64Max);
-assert.equal(
-  hex(encodeDbValue({ kind: "text", value: "b64:AAAA" })),
-  GOLDEN.textB64,
-);
-assert.equal(
-  hex(encodeDbValue({ kind: "bytes", value: Uint8Array.of(0, 1, 2) })),
-  GOLDEN.bytes012,
-);
+assert.equal(hex(encodeDbValue({ kind: "text", value: "b64:AAAA" })), GOLDEN.textB64);
+assert.equal(hex(encodeDbValue({ kind: "bytes", value: Uint8Array.of(0, 1, 2) })), GOLDEN.bytes012);
 assert.equal(hex(encodeDbValue({ kind: "boolean", value: true })), GOLDEN.boolTrue);
-assert.equal(
-  hex(encodeDbValue({ kind: "null", value: "bytes" })),
-  GOLDEN.nullBytes,
-);
+assert.equal(hex(encodeDbValue({ kind: "null", value: "bytes" })), GOLDEN.nullBytes);
 
 assert.notEqual(
   hex(encodeDbValue({ kind: "text", value: "b64:AAAA" })),
@@ -202,8 +182,7 @@ await seqBinding.prepare("INSERT INTO t VALUES (?)").bind({ kind: "int64", value
 assert.equal(sequentialIds.length, 2);
 assert.notEqual(sequentialIds[0], sequentialIds[1]);
 
-const GOLDEN_DEADLINE_HASH =
-  "648cd28b3223c825c55ea99a7c6e52321ea733656f5965abfe4c7ed4ca21d111";
+const GOLDEN_DEADLINE_HASH = "648cd28b3223c825c55ea99a7c6e52321ea733656f5965abfe4c7ed4ca21d111";
 const deadlineReq = {
   operationId: "op",
   requestHash: "abc",
@@ -431,10 +410,7 @@ const atomicOk = encodeExecuteResultReply({ ok: i64Reply });
 const decodedOk = decodeExecuteResultReply(atomicOk);
 assert.equal(decodedOk.statements[0].rows[0].values[0].value, I64_MIN);
 assert.equal(decodedOk.statements[0].rows[0].values[1].value, I64_MAX);
-assert.deepEqual(
-  Array.from(decodedOk.statements[0].rows[0].values[2].value),
-  [0xff],
-);
+assert.deepEqual(Array.from(decodedOk.statements[0].rows[0].values[2].value), [0xff]);
 assert.equal(decodedOk.statements[0].rows[0].values[3].value, "b64:not-bytes");
 assert.equal(decodedOk.statements[0].rows[0].values[4].value, "int64");
 

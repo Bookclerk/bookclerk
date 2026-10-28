@@ -11,7 +11,14 @@
 import { Container } from "@cloudflare/containers";
 import type { Env, SessionApi } from "./env.ts";
 import { finish, recordStartup } from "./limits.ts";
-import { type ContainerCall, enableStorefronts, randomHex, signInVisitor, signOutStores, waitForHealth } from "./lifecycle.ts";
+import {
+  type ContainerCall,
+  enableStorefronts,
+  randomHex,
+  signInVisitor,
+  signOutStores,
+  waitForHealth,
+} from "./lifecycle.ts";
 import {
   CLOSE_TOO_MANY,
   isOver,
@@ -194,7 +201,12 @@ export class DemoSession extends Container<Env> implements SessionApi {
    *
    * @param params - Session id, hard stop (Unix seconds), image version and the demo's origin.
    */
-  async open(params: { id: string; endsAt: number; version: string; origin: string; }): Promise<void> {
+  async open(params: {
+    id: string;
+    endsAt: number;
+    version: string;
+    origin: string;
+  }): Promise<void> {
     if (await this.meta()) return;
     await this.ctx.storage.put("meta", { ...params, state: "starting", openedAt: Date.now() });
     await this.schedule(1, "boot");
@@ -235,12 +247,15 @@ export class DemoSession extends Container<Env> implements SessionApi {
         },
         cancellationOptions: { portReadyTimeoutMS: BOOT_TIMEOUT_MS },
       });
-      const call: ContainerCall = (path, init) => this.containerFetch(`http://container${path}`, init, PORT);
+      const call: ContainerCall = (path, init) =>
+        this.containerFetch(`http://container${path}`, init, PORT);
       if (await this.stillStarting()) {
         await waitForHealth(call, { timeoutMs: BOOT_TIMEOUT_MS, intervalMs: 1000 });
       }
       if (await this.stillStarting()) await enableStorefronts(call, operatorToken);
-      const portalSession = (await this.stillStarting()) ? await signInVisitor(call, operatorToken) : null;
+      const portalSession = (await this.stillStarting())
+        ? await signInVisitor(call, operatorToken)
+        : null;
       if (portalSession === null || !(await this.stillStarting())) {
         // Ended meanwhile: close() may have run before the VM was up, so
         // make sure it is gone. The end is already recorded.
@@ -254,8 +269,13 @@ export class DemoSession extends Container<Env> implements SessionApi {
       if (meta.openedAt !== undefined) {
         // Only feeds the pages' estimate: a failure here must not reach the
         // catch below, which tears a session down.
-        await recordStartup(this.env.DB, { id: meta.id, seconds: (Date.now() - meta.openedAt) / 1000 }).catch((err: unknown) => {
-          console.error(`demo session ${meta.id} could not record its startup time: ${String(err)}`);
+        await recordStartup(this.env.DB, {
+          id: meta.id,
+          seconds: (Date.now() - meta.openedAt) / 1000,
+        }).catch((err: unknown) => {
+          console.error(
+            `demo session ${meta.id} could not record its startup time: ${String(err)}`,
+          );
         });
       }
     } catch (err) {
@@ -304,11 +324,15 @@ export class DemoSession extends Container<Env> implements SessionApi {
   override async fetch(request: Request): Promise<Response> {
     // The Worker answers every /_demo/ path itself and forwards none, so
     // this path only ever comes from its own live status route.
-    if (new URL(request.url).pathname === LIVE_PATH && request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
+    if (
+      new URL(request.url).pathname === LIVE_PATH &&
+      request.headers.get("Upgrade")?.toLowerCase() === "websocket"
+    ) {
       return this.openLive();
     }
     const meta = await this.meta();
-    const secrets = meta?.state === "ready" ? await this.ctx.storage.get<SessionSecrets>("secrets") : undefined;
+    const secrets =
+      meta?.state === "ready" ? await this.ctx.storage.get<SessionSecrets>("secrets") : undefined;
     if (!secrets) {
       // The Worker turns this into the waiting page or the ended page.
       return Response.json(
@@ -326,7 +350,7 @@ export class DemoSession extends Container<Env> implements SessionApi {
    * @returns Accounts signed out
    *   and failed sign-outs (zeros when it had already ended).
    */
-  async end(reason: string): Promise<{ revoked: number; failed: number; }> {
+  async end(reason: string): Promise<{ revoked: number; failed: number }> {
     const meta = await this.meta();
     if (!meta || meta.state === "ending" || meta.state === "ended" || meta.state === "failed") {
       return { revoked: 0, failed: 0 };
@@ -336,7 +360,8 @@ export class DemoSession extends Container<Env> implements SessionApi {
     let result = { revoked: 0, failed: 0 };
     const secrets = await this.ctx.storage.get<SessionSecrets>("secrets");
     if (wasReady && secrets) {
-      const call: ContainerCall = (path, init) => this.containerFetch(`http://container${path}`, init, PORT);
+      const call: ContainerCall = (path, init) =>
+        this.containerFetch(`http://container${path}`, init, PORT);
       result = await signOutStores(call, secrets.portalSession, SIGN_OUT_TIMEOUT_MS, meta.origin);
     }
     await this.close(reason, result);
@@ -349,7 +374,7 @@ export class DemoSession extends Container<Env> implements SessionApi {
    * @param reason - Why the session ended.
    * @param result - Sign-out counts.
    */
-  async close(reason: string, result: { revoked: number; failed: number; }): Promise<void> {
+  async close(reason: string, result: { revoked: number; failed: number }): Promise<void> {
     const meta = await this.meta();
     await this.ctx.storage.delete("secrets");
     if (meta && meta.state !== "failed") await this.setState("ended");
@@ -378,7 +403,8 @@ export class DemoSession extends Container<Env> implements SessionApi {
     } catch (err) {
       const id = (await this.meta())?.id;
       console.error(`demo session ${id} destroy attempt ${attempt + 1} failed: ${String(err)}`);
-      if (attempt + 1 < DESTROY_ATTEMPTS) await this.schedule(DESTROY_RETRY_SECONDS, "retryDestroy", attempt + 1);
+      if (attempt + 1 < DESTROY_ATTEMPTS)
+        await this.schedule(DESTROY_RETRY_SECONDS, "retryDestroy", attempt + 1);
     }
   }
 

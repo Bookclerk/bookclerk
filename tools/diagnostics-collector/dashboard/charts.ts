@@ -14,7 +14,7 @@ import { html, raw, type SafeHtml } from "./html.ts";
  * @param max - Largest value (>= 0).
  * @returns Axis top and tick step.
  */
-export function niceScale(max: number): { top: number; step: number; } {
+export function niceScale(max: number): { top: number; step: number } {
   if (!(max > 0)) return { top: 4, step: 1 };
   const rough = max / 4;
   const pow = 10 ** Math.floor(Math.log10(rough));
@@ -43,7 +43,11 @@ function r2(n: number): number {
  * @param ariaLabel - Accessible description.
  * @returns An `<svg>`.
  */
-export function stackedBars(buckets: { label: string; values: Record<string, number>; }[], series: { key: string; cls: string; }[], ariaLabel: string): SafeHtml {
+export function stackedBars(
+  buckets: { label: string; values: Record<string, number> }[],
+  series: { key: string; cls: string }[],
+  ariaLabel: string,
+): SafeHtml {
   const W = 760;
   const H = 230;
   const L = 40;
@@ -76,11 +80,15 @@ export function stackedBars(buckets: { label: string; values: Record<string, num
     }
     const last = i === buckets.length - 1;
     if ((buckets.length - 1 - i) % labelEvery === 0) {
-      parts.push(`<text class="tick" x="${r2(L + i * bw + bw / 2)}" y="${H - 8}" text-anchor="middle">${html`${b.label}`}</text>`);
+      parts.push(
+        `<text class="tick" x="${r2(L + i * bw + bw / 2)}" y="${H - 8}" text-anchor="middle">${html`${b.label}`}</text>`,
+      );
     }
     const total = totals[i] ?? 0;
     if (last && total > 0) {
-      parts.push(`<text class="tick strong" x="${r2(L + i * bw + bw / 2)}" y="${r2(y(total) - 4)}" text-anchor="middle">${total}</text>`);
+      parts.push(
+        `<text class="tick strong" x="${r2(L + i * bw + bw / 2)}" y="${r2(y(total) - 4)}" text-anchor="middle">${total}</text>`,
+      );
     }
   });
   return html`<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${ariaLabel}">${raw(parts.join(""))}</svg>`;
@@ -97,10 +105,19 @@ export function stackedBars(buckets: { label: string; values: Record<string, num
  *   the aspect ratio.
  * @returns An `<svg>`.
  */
-export function sparkline(values: number[], cls: string, w: number = 90, h: number = 22, stretch: boolean = false): SafeHtml {
+export function sparkline(
+  values: number[],
+  cls: string,
+  w: number = 90,
+  h: number = 22,
+  stretch: boolean = false,
+): SafeHtml {
   if (values.length < 2) values = [values[0] ?? 0, values[0] ?? 0];
   const max = Math.max(1, ...values);
-  const pts = values.map((v, i): [number, number] => [r2(2 + (i * (w - 4)) / (values.length - 1)), r2(h - 3 - ((h - 6) * v) / max)]);
+  const pts = values.map((v, i): [number, number] => [
+    r2(2 + (i * (w - 4)) / (values.length - 1)),
+    r2(h - 3 - ((h - 6) * v) / max),
+  ]);
   const line = pts.map((p) => p.join(",")).join(" L");
   // At least two points: shorter inputs were padded above.
   const [lx, ly] = pts[pts.length - 1] ?? [0, 0];
@@ -121,7 +138,11 @@ export function sparkline(values: number[], cls: string, w: number = 90, h: numb
  *   decorative.
  * @returns An `<svg>`.
  */
-export function meter(fraction: number, cls: string = "fill-teal", ariaLabel: string = ""): SafeHtml {
+export function meter(
+  fraction: number,
+  cls: string = "fill-teal",
+  ariaLabel: string = "",
+): SafeHtml {
   const f = Math.max(0, Math.min(1, Number(fraction) || 0));
   const a11y = ariaLabel ? html`role="img" aria-label="${ariaLabel}"` : raw('aria-hidden="true"');
   return html`<svg class="meter" viewBox="0 0 100 8" preserveAspectRatio="none" ${a11y}><rect class="track" x="0" y="0" width="100" height="8" rx="4"/>${raw(
@@ -138,7 +159,11 @@ export function meter(fraction: number, cls: string = "fill-teal", ariaLabel: st
  * @param ariaLabel - Accessible description.
  * @returns An `<svg>`.
  */
-export function histogram(days: { label: string; n: number; after: boolean; }[], marker: { index: number; label: string; } | null, ariaLabel: string): SafeHtml {
+export function histogram(
+  days: { label: string; n: number; after: boolean }[],
+  marker: { index: number; label: string } | null,
+  ariaLabel: string,
+): SafeHtml {
   const W = 520;
   const H = 120;
   const L = 28;
@@ -163,7 +188,9 @@ export function histogram(days: { label: string; n: number; after: boolean; }[],
       );
     }
     if ((days.length - 1 - i) % labelEvery === 0) {
-      parts.push(`<text class="tick" x="${r2(L + i * bw + bw / 2)}" y="${H - 6}" text-anchor="middle">${html`${d.label}`}</text>`);
+      parts.push(
+        `<text class="tick" x="${r2(L + i * bw + bw / 2)}" y="${H - 6}" text-anchor="middle">${html`${d.label}`}</text>`,
+      );
     }
   });
   if (marker && marker.index >= 0 && marker.index < days.length) {

@@ -49,9 +49,7 @@ export function CpuCoresSlider({
   const controlId = id ?? autoId;
   const hostMax = Math.max(minCores, hostMaxCores);
   const selectableMax =
-    globalCores != null && globalCores > 0
-      ? Math.min(hostMax, globalCores)
-      : hostMax;
+    globalCores != null && globalCores > 0 ? Math.min(hostMax, globalCores) : hostMax;
   const cores = clamp(value, minCores, selectableMax);
 
   function markLeft(coresAt: number): string {

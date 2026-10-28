@@ -16,6 +16,10 @@ export default {
    * @returns The response.
    */
   fetch(request, env, ctx) {
-    return handle(request, env, { shell, cache: caches.default, waitUntil: (p) => ctx.waitUntil(p) });
+    return handle(request, env, {
+      shell,
+      cache: caches.default,
+      waitUntil: (p) => ctx.waitUntil(p),
+    });
   },
 } satisfies ExportedHandler<Env>;

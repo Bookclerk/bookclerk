@@ -18,13 +18,7 @@ export type FilterKind =
 /**
  * Client-side library table sort keys.
  */
-export type SortKey =
-  | "title"
-  | "author"
-  | "series"
-  | "purchased"
-  | "length"
-  | "added";
+export type SortKey = "title" | "author" | "series" | "purchased" | "length" | "added";
 
 /**
  * Active library filter kind plus selected value.
@@ -97,22 +91,22 @@ export function filterValuesForKind(
     case "all":
       return [];
     case "authors":
-      return uniqueSorted(books.flatMap((b) => splitList(b.authors))).map(
-        (v) => ({ value: v, label: v }),
-      );
+      return uniqueSorted(books.flatMap((b) => splitList(b.authors))).map((v) => ({
+        value: v,
+        label: v,
+      }));
     case "series": {
       const named = uniqueSorted(
         books.map((b) => b.series?.trim()).filter(Boolean) as string[],
       ).map((v) => ({ value: v, label: v }));
       const hasNone = books.some((b) => !b.series?.trim());
-      return hasNone
-        ? [{ value: "__none__", label: "No series" }, ...named]
-        : named;
+      return hasNone ? [{ value: "__none__", label: "No series" }, ...named] : named;
     }
     case "genres":
-      return uniqueSorted(books.flatMap((b) => splitList(b.categories))).map(
-        (v) => ({ value: v, label: v }),
-      );
+      return uniqueSorted(books.flatMap((b) => splitList(b.categories))).map((v) => ({
+        value: v,
+        label: v,
+      }));
     case "tags":
       return uniqueSorted(
         books.flatMap((b) =>
@@ -123,13 +117,14 @@ export function filterValuesForKind(
         ),
       ).map((v) => ({ value: v, label: v }));
     case "narrators":
-      return uniqueSorted(books.flatMap((b) => splitList(b.narrators))).map(
+      return uniqueSorted(books.flatMap((b) => splitList(b.narrators))).map((v) => ({
+        value: v,
+        label: v,
+      }));
+    case "publishers":
+      return uniqueSorted(books.map((b) => b.publisher?.trim()).filter(Boolean) as string[]).map(
         (v) => ({ value: v, label: v }),
       );
-    case "publishers":
-      return uniqueSorted(
-        books.map((b) => b.publisher?.trim()).filter(Boolean) as string[],
-      ).map((v) => ({ value: v, label: v }));
     case "sources":
       return uniqueSorted(books.map((b) => b.source)).map((v) => ({
         value: v,
@@ -155,31 +150,22 @@ export function filterValuesForKind(
  * @param filter - Kind + value (`all` / empty value always matches).
  * @returns True when the book should remain visible.
  */
-export function bookMatchesFilter(
-  book: BookRecord,
-  filter: LibraryFilter,
-): boolean {
+export function bookMatchesFilter(book: BookRecord, filter: LibraryFilter): boolean {
   if (filter.kind === "all" || !filter.value) return true;
   switch (filter.kind) {
     case "authors":
-      return splitList(book.authors).some(
-        (a) => a.toLowerCase() === filter.value.toLowerCase(),
-      );
+      return splitList(book.authors).some((a) => a.toLowerCase() === filter.value.toLowerCase());
     case "series":
       if (filter.value === "__none__") return !book.series?.trim();
       return (book.series ?? "").trim().toLowerCase() === filter.value.toLowerCase();
     case "genres":
-      return splitList(book.categories).some(
-        (g) => g.toLowerCase() === filter.value.toLowerCase(),
-      );
+      return splitList(book.categories).some((g) => g.toLowerCase() === filter.value.toLowerCase());
     case "tags":
       return (book.tags ?? "")
         .split(/\s+/)
         .some((t) => t.toLowerCase() === filter.value.toLowerCase());
     case "narrators":
-      return splitList(book.narrators).some(
-        (n) => n.toLowerCase() === filter.value.toLowerCase(),
-      );
+      return splitList(book.narrators).some((n) => n.toLowerCase() === filter.value.toLowerCase());
     case "publishers":
       return (book.publisher ?? "").trim().toLowerCase() === filter.value.toLowerCase();
     case "sources":
@@ -238,14 +224,11 @@ export function compareSeriesIndex(
  */
 export function sortBooks(books: BookRecord[], sort: SortKey): BookRecord[] {
   const out = [...books];
-  const cmp = (a: string, b: string) =>
-    a.localeCompare(b, undefined, { sensitivity: "base" });
+  const cmp = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base" });
   out.sort((a, b) => {
     switch (sort) {
       case "author":
-        return (
-          cmp(a.authors ?? "", b.authors ?? "") || cmp(a.title, b.title)
-        );
+        return cmp(a.authors ?? "", b.authors ?? "") || cmp(a.title, b.title);
       case "series":
         return (
           cmp(a.series ?? "\uffff", b.series ?? "\uffff") ||

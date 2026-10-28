@@ -8,20 +8,33 @@ import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
 import { URL } from "node:url";
 import { recordStartup, startupEstimate } from "../src/limits.ts";
-import { CLOSE_TOO_MANY, isOver, liveStatus, MAX_LIVE_SOCKETS, replyCloseCode, socketsToEvict } from "../src/live.ts";
+import {
+  CLOSE_TOO_MANY,
+  isOver,
+  liveStatus,
+  MAX_LIVE_SOCKETS,
+  replyCloseCode,
+  socketsToEvict,
+} from "../src/live.ts";
 import { createD1 } from "../test-support/d1.ts";
 
 describe("liveStatus", () => {
   it("counts the seconds left by the given clock and never below zero", () => {
     const meta = { state: "ready" as const, endsAt: 1_000, version: "abc" };
-    assert.deepEqual(liveStatus(meta, 400_500), { state: "ready", endsAt: 1_000, remaining: 599, version: "abc" });
+    assert.deepEqual(liveStatus(meta, 400_500), {
+      state: "ready",
+      endsAt: 1_000,
+      remaining: 599,
+      version: "abc",
+    });
     assert.equal(liveStatus(meta, 2_000_000).remaining, 0);
   });
 
   it("treats every state but starting and ready as over", () => {
     assert.equal(isOver("starting"), false);
     assert.equal(isOver("ready"), false);
-    for (const state of ["ending", "ended", "failed", "none"] as const) assert.equal(isOver(state), true);
+    for (const state of ["ending", "ended", "failed", "none"] as const)
+      assert.equal(isOver(state), true);
   });
 });
 
@@ -34,8 +47,10 @@ describe("socket housekeeping", () => {
   });
 
   it("answers a page's close with a code it may send", () => {
-    for (const code of [1000, 1001, 1008, 1011, 3000, CLOSE_TOO_MANY, 4999]) assert.equal(replyCloseCode(code), code);
-    for (const code of [1004, 1005, 1006, 1015, 999, 2000, 5000, 1000.5, Number.NaN]) assert.equal(replyCloseCode(code), 1000);
+    for (const code of [1000, 1001, 1008, 1011, 3000, CLOSE_TOO_MANY, 4999])
+      assert.equal(replyCloseCode(code), code);
+    for (const code of [1004, 1005, 1006, 1015, 999, 2000, 5000, 1000.5, Number.NaN])
+      assert.equal(replyCloseCode(code), 1000);
   });
 });
 
@@ -65,17 +80,29 @@ describe("startup records", () => {
     await recordStartup(db, { id: "b", seconds: -1 });
     await recordStartup(db, { id: "c", seconds: 601 });
     await recordStartup(db, { id: "d", seconds: Number.NaN });
-    const { results } = await db.prepare("SELECT id, startup_seconds FROM sessions ORDER BY id").all();
+    const { results } = await db
+      .prepare("SELECT id, startup_seconds FROM sessions ORDER BY id")
+      .all();
     assert.deepEqual(
       results.map((r) => [r.id, r.startup_seconds]),
-      [["a", 10], ["b", null], ["c", null], ["d", null]],
+      [
+        ["a", 10],
+        ["b", null],
+        ["c", null],
+        ["d", null],
+      ],
     );
   });
 
   it("estimates from the median of the last week's starts", async () => {
     const now = 2_000_000;
     const db = await sessions(["a", "b", "c", "d"], now - 3600);
-    for (const [id, seconds] of [["a", 8], ["b", 21], ["c", 23], ["d", 300]] as const) {
+    for (const [id, seconds] of [
+      ["a", 8],
+      ["b", 21],
+      ["c", 23],
+      ["d", 300],
+    ] as const) {
       await recordStartup(db, { id, seconds });
     }
     // Median of 8, 21, 23 and 300 is 22, rounded up to 25.
@@ -182,7 +209,10 @@ function loadPage(session: Record<string, unknown>): Page {
     Math,
     Set,
   };
-  runInNewContext(readFileSync(new URL("../public/_demo/live.js", import.meta.url), "utf8"), context);
+  runInNewContext(
+    readFileSync(new URL("../public/_demo/live.js", import.meta.url), "utf8"),
+    context,
+  );
   page.runTimers = async () => {
     const due = timers;
     timers = [];
@@ -190,9 +220,13 @@ function loadPage(session: Record<string, unknown>): Page {
     await new Promise((resolve) => setImmediate(resolve));
   };
   page.show = () => docListeners.forEach((fn) => fn());
-  const live = window.bookclerkDemoLive as { follow: (fn: (s: Record<string, unknown>) => void, o?: object) => void };
+  const live = window.bookclerkDemoLive as {
+    follow: (fn: (s: Record<string, unknown>) => void, o?: object) => void;
+  };
   // Copied into this realm, so deepEqual compares plain objects.
-  live.follow((s) => page.statuses.push(JSON.parse(JSON.stringify(s)) as Record<string, unknown>), { maxRetryMs: 2000 });
+  live.follow((s) => page.statuses.push(JSON.parse(JSON.stringify(s)) as Record<string, unknown>), {
+    maxRetryMs: 2000,
+  });
   return page;
 }
 
@@ -202,10 +236,19 @@ describe("live.js", () => {
     const socket = FakeSocket.opened[0]!;
     assert.equal(socket.url, "wss://demo.example.test/_demo/live");
     socket.emit("open");
-    socket.emit("message", { data: JSON.stringify({ state: "starting", remaining: 1790, siteUrl: "https://x.test", extra: 1 }) });
+    socket.emit("message", {
+      data: JSON.stringify({
+        state: "starting",
+        remaining: 1790,
+        siteUrl: "https://x.test",
+        extra: 1,
+      }),
+    });
     socket.emit("message", { data: "not json" });
     socket.emit("message", { data: JSON.stringify({ state: "bogus", remaining: 1 }) });
-    socket.emit("message", { data: JSON.stringify({ state: "ready", remaining: "lots", siteUrl: "javascript:alert(1)" }) });
+    socket.emit("message", {
+      data: JSON.stringify({ state: "ready", remaining: "lots", siteUrl: "javascript:alert(1)" }),
+    });
     socket.emit("message", { data: JSON.stringify({ state: "ended", remaining: 0 }) });
     socket.emit("message", { data: JSON.stringify({ state: "ready", remaining: 5 }) });
     assert.deepEqual(page.statuses, [

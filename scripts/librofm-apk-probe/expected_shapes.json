@@ -5,7 +5,13 @@
     "path": "/oauth/token",
     "auth_required": true,
     "request_json_fields": ["grant_type", "password", "username"],
-    "response_json_fields": ["access_token", "created_at", "error", "error_description", "token_type"]
+    "response_json_fields": [
+      "access_token",
+      "created_at",
+      "error",
+      "error_description",
+      "token_type"
+    ]
   },
   "library": {
     "method": "GET",
@@ -14,7 +20,14 @@
     "query": ["page"],
     "path_params": [],
     "request_json_fields": [],
-    "response_json_fields": ["audiobooks", "ebooks", "page", "pending_preorders", "tags", "total_pages"]
+    "response_json_fields": [
+      "audiobooks",
+      "ebooks",
+      "page",
+      "pending_preorders",
+      "tags",
+      "total_pages"
+    ]
   },
   "download-manifest": {
     "method": "GET",
@@ -52,7 +65,14 @@
     "response_json_fields": ["data", "user_info"],
     "response_children": {
       "data": {
-        "json_fields": ["audiobook", "gift_info", "playlists", "purchase_info", "related_audiobooks", "sample_url"]
+        "json_fields": [
+          "audiobook",
+          "gift_info",
+          "playlists",
+          "purchase_info",
+          "related_audiobooks",
+          "sample_url"
+        ]
       },
       "user_info": {
         "json_fields": ["signed_in"]

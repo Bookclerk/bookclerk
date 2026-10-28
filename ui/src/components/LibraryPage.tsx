@@ -2,10 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw, ScanSearch } from "lucide-react";
 import type { AppNavProps } from "@/components/AppNav";
 import { AppTopBar } from "@/components/AppTopBar";
-import {
-  TitleDetailModal,
-  type TitleMetaSearchKind,
-} from "@/components/TitleDetailModal";
+import { TitleDetailModal, type TitleMetaSearchKind } from "@/components/TitleDetailModal";
 import { titleDetailFromBook } from "@/lib/titleDetail";
 import { BookRow } from "@/components/BookRow";
 import { JobsStrip } from "@/components/JobsStrip";
@@ -93,15 +90,12 @@ export function LibraryPage({
   // Titles in `books`, kept in step with every write so the next load's
   // offset is right before React re-renders.
   const loadedRef = useRef(0);
-  const loadBooksRef = useRef<(kind: LoadKind) => Promise<void>>(
-    async () => {},
-  );
+  const loadBooksRef = useRef<(kind: LoadKind) => Promise<void>>(async () => {});
   // Bumped after each successful load so the scroll sentinel checks again
   // whether it is still in view (the list may not have grown).
   const [sentinelCheck, setSentinelCheck] = useState(0);
 
-  const serverStatus =
-    filterKind === "status" && filterValue ? filterValue : "all";
+  const serverStatus = filterKind === "status" && filterValue ? filterValue : "all";
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -130,8 +124,7 @@ export function LibraryPage({
         return;
       }
       loadingRef.current = true;
-      const generation =
-        kind === "append" ? generationRef.current : ++generationRef.current;
+      const generation = kind === "append" ? generationRef.current : ++generationRef.current;
       const offset = kind === "append" ? loadedRef.current : 0;
       // A reload fetches again every page already shown (so the titles in
       // view and the scroll stay), in requests of at most MAX_RELOAD rows.
@@ -275,9 +268,7 @@ export function LibraryPage({
     const filtered =
       filterKind === "all" || filterKind === "status" || !filterValue
         ? books
-        : books.filter((book) =>
-            bookMatchesFilter(book, { kind: filterKind, value: filterValue }),
-          );
+        : books.filter((book) => bookMatchesFilter(book, { kind: filterKind, value: filterValue }));
     return sortBooks(filtered, sortKey);
   }, [books, filterKind, filterValue, sortKey]);
 
@@ -315,7 +306,9 @@ export function LibraryPage({
     try {
       await triggerAcquire({ uuid: book.uuid });
       await refresh();
-      setSelected((prev) => (prev?.uuid === book.uuid ? { ...book, acquire_status: "queued" } : prev));
+      setSelected((prev) =>
+        prev?.uuid === book.uuid ? { ...book, acquire_status: "queued" } : prev,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Acquire failed");
     } finally {
@@ -398,9 +391,7 @@ export function LibraryPage({
                 aria-label="Filter value"
                 disabled={filterKind === "all" || filterValueOptions.length === 0}
               >
-                <option value="">
-                  {filterKind === "all" ? "Any value" : "Select value"}
-                </option>
+                <option value="">{filterKind === "all" ? "Any value" : "Select value"}</option>
                 {filterValueOptions.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}
@@ -438,33 +429,33 @@ export function LibraryPage({
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto">
-      <main className={cn("w-full", pageWidthClass)}>
-        <div className="animate-[rowIn_500ms_ease-out] bg-card shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
-          {visibleBooks.length === 0 && !loaded ? (
-            <div className="flex justify-center px-4 py-16" role="status">
-              <WaveformThrobber size="sm" />
-              <span className="sr-only">Loading the library…</span>
-            </div>
-          ) : visibleBooks.length === 0 ? (
-            <p className="px-4 py-16 text-center text-sm text-ink/60">
-              No books match this view.
-              {canAcquire ? " Run a scan or adjust filters." : " Link a store under Accounts."}
-            </p>
-          ) : (
-            visibleBooks.map((book) => (
-              <BookRow
-                key={book.uuid}
-                book={book}
-                busy={busyKey !== null}
-                showAcquire={canAcquire}
-                onOpen={setSelected}
-                onAcquire={(b) => void onAcquireBook(b)}
-              />
-            ))
-          )}
-          <div ref={sentinelRef} className="h-8" aria-hidden />
-        </div>
-      </main>
+        <main className={cn("w-full", pageWidthClass)}>
+          <div className="animate-[rowIn_500ms_ease-out] bg-card shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
+            {visibleBooks.length === 0 && !loaded ? (
+              <div className="flex justify-center px-4 py-16" role="status">
+                <WaveformThrobber size="sm" />
+                <span className="sr-only">Loading the library…</span>
+              </div>
+            ) : visibleBooks.length === 0 ? (
+              <p className="px-4 py-16 text-center text-sm text-ink/60">
+                No books match this view.
+                {canAcquire ? " Run a scan or adjust filters." : " Link a store under Accounts."}
+              </p>
+            ) : (
+              visibleBooks.map((book) => (
+                <BookRow
+                  key={book.uuid}
+                  book={book}
+                  busy={busyKey !== null}
+                  showAcquire={canAcquire}
+                  onOpen={setSelected}
+                  onAcquire={(b) => void onAcquireBook(b)}
+                />
+              ))
+            )}
+            <div ref={sentinelRef} className="h-8" aria-hidden />
+          </div>
+        </main>
       </div>
 
       {selected ? (

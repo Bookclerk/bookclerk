@@ -6,12 +6,17 @@ import css from "./index.css?raw";
 const bundled = Object.keys(import.meta.glob("./fonts/*.woff2"));
 
 /** Font files the `@font-face` rules in index.css load. */
-const declared = [...css.matchAll(/@font-face\s*\{[^}]*?url\("(\.\/fonts\/[^"]+)"\)/g)].map((m) => m[1]);
+const declared = [...css.matchAll(/@font-face\s*\{[^}]*?url\("(\.\/fonts\/[^"]+)"\)/g)].map(
+  (m) => m[1],
+);
 
 describe("web fonts", () => {
   it("are declared for every family the UI uses, from bundled files", () => {
     for (const family of ["source-sans-3", "literata", "google-sans"]) {
-      expect(declared.some((file) => file.startsWith(`./fonts/${family}-`)), family).toBe(true);
+      expect(
+        declared.some((file) => file.startsWith(`./fonts/${family}-`)),
+        family,
+      ).toBe(true);
     }
     for (const file of declared) expect(bundled).toContain(file);
   });

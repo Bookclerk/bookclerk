@@ -5,6 +5,7 @@ assets, and runs describe/health smoke tests. Public helpers are re-exported
 from :mod:`.config`, :mod:`.ensure`, and :mod:`.smoke`.
 """
 
+from ..path_guard import resolve_under
 from .config import (
     GeneratedConfig,
     allocate_workerd_state_dir,
@@ -22,7 +23,6 @@ from .ensure import (
     validate_fetch_url,
     validate_spawn_executable,
 )
-from ..path_guard import resolve_under
 from .smoke import run_smoke
 
 __all__ = [

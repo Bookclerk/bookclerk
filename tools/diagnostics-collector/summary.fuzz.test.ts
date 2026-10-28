@@ -17,7 +17,13 @@ import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import { describe, it } from "node:test";
-import { MARKER, MAX_SUMMARIES, dashboardOrigin, defang, renderSummaries } from "./dashboard/summary.ts";
+import {
+  MARKER,
+  MAX_SUMMARIES,
+  dashboardOrigin,
+  defang,
+  renderSummaries,
+} from "./dashboard/summary.ts";
 import { mutate, rng } from "./test-support/fuzz.ts";
 
 const ROOT = new URL("../../", import.meta.url);
@@ -75,29 +81,143 @@ function agree(cases: Case[]): void {
   const answers = oracle(cases.map((c) => ({ payload: c.payload, dashboard: c.dashboard })));
   cases.forEach(({ payload, dashboard, label }, i) => {
     const answer = answers[i];
-    assert.ok(answer !== undefined && !("error" in answer), `${label}: the oracle could not decode the input`);
-    const ours = renderSummaries(payload, dashboardOrigin(dashboard)).map((r) => [r.issue, r.fingerprint, r.body]);
+    assert.ok(
+      answer !== undefined && !("error" in answer),
+      `${label}: the oracle could not decode the input`,
+    );
+    const ours = renderSummaries(payload, dashboardOrigin(dashboard)).map((r) => [
+      r.issue,
+      r.fingerprint,
+      r.body,
+    ]);
     assert.deepEqual(ours, answer.rendered, label);
   });
 }
 
 const FRAGMENTS = [
-  "@", "#1", "GH-2", "](", "]:", "[", "]", "(", ")", "<a href=x>", "<img src=y>", "&#64;", "&amp;",
-  "https://", "www.", "WWW.", "\\n### Report IDs\\n", "​", "\\\\", '"', "{", "}", ",", ":", "issues",
-  "report_id", "fingerprint", "newest", "versions", "platforms", "sources", "reports", "installs",
-  "true", "null", "0", "-1", "1e3", "1.0", "999999999999", "0.9.", "+build", UUID_A, "a".repeat(64),
-  "\\u000b", "\\u00a0", "\\u2028", "\\ud83d\\ude00", "é", "ſ", "K", "İ", " ", "\\t",
+  "@",
+  "#1",
+  "GH-2",
+  "](",
+  "]:",
+  "[",
+  "]",
+  "(",
+  ")",
+  "<a href=x>",
+  "<img src=y>",
+  "&#64;",
+  "&amp;",
+  "https://",
+  "www.",
+  "WWW.",
+  "\\n### Report IDs\\n",
+  "​",
+  "\\\\",
+  '"',
+  "{",
+  "}",
+  ",",
+  ":",
+  "issues",
+  "report_id",
+  "fingerprint",
+  "newest",
+  "versions",
+  "platforms",
+  "sources",
+  "reports",
+  "installs",
+  "true",
+  "null",
+  "0",
+  "-1",
+  "1e3",
+  "1.0",
+  "999999999999",
+  "0.9.",
+  "+build",
+  UUID_A,
+  "a".repeat(64),
+  "\\u000b",
+  "\\u00a0",
+  "\\u2028",
+  "\\ud83d\\ude00",
+  "é",
+  "ſ",
+  "K",
+  "İ",
+  " ",
+  "\\t",
 ];
 
 const HOSTILE_VALUES: unknown[] = [
-  "https://evil.test/x", "www.evil.test", "WWW.EVIL.TEST", "@octocat", "#1", "GH-1", "gh-1", "[x](y)", "[x]: y",
-  "<script>", "&#64;", "a\nb", "1.2.3-www.x", "1.2.3+GH-1", "linux #1", "x".repeat(1000), "", " ", "\u000b1.2.3\u000c",
-  " 1.2.3", "linux x64", "linux x64", "linux  x64 ", "1.2.3​", "ſ", "K", "İ", "é", "\u0000",
-  null, true, false, 0, -1, 1e12, 1e21, 1.5, 1.0, 86_400_000, 253_402_300_799_000, 253_402_300_800_000, [], {},
-  { n: 1 }, UUID_A, UUID_A.toUpperCase(), "others", "a".repeat(64), "A".repeat(64), "😀",
+  "https://evil.test/x",
+  "www.evil.test",
+  "WWW.EVIL.TEST",
+  "@octocat",
+  "#1",
+  "GH-1",
+  "gh-1",
+  "[x](y)",
+  "[x]: y",
+  "<script>",
+  "&#64;",
+  "a\nb",
+  "1.2.3-www.x",
+  "1.2.3+GH-1",
+  "linux #1",
+  "x".repeat(1000),
+  "",
+  " ",
+  "\u000b1.2.3\u000c",
+  " 1.2.3",
+  "linux x64",
+  "linux x64",
+  "linux  x64 ",
+  "1.2.3​",
+  "ſ",
+  "K",
+  "İ",
+  "é",
+  "\u0000",
+  null,
+  true,
+  false,
+  0,
+  -1,
+  1e12,
+  1e21,
+  1.5,
+  1.0,
+  86_400_000,
+  253_402_300_799_000,
+  253_402_300_800_000,
+  [],
+  {},
+  { n: 1 },
+  UUID_A,
+  UUID_A.toUpperCase(),
+  "others",
+  "a".repeat(64),
+  "A".repeat(64),
+  "😀",
 ];
 
-const KEYS = ["issue", "fingerprint", "reports", "installs", "first_seen", "last_seen", "version", "platform", "report_id", "received_at", "n", "x"];
+const KEYS = [
+  "issue",
+  "fingerprint",
+  "reports",
+  "installs",
+  "first_seen",
+  "last_seen",
+  "version",
+  "platform",
+  "report_id",
+  "received_at",
+  "n",
+  "x",
+];
 
 /**
  * Mutates a parsed payload in place of the Python test's `mutate_value`:
@@ -109,7 +229,7 @@ const KEYS = ["issue", "fingerprint", "reports", "installs", "first_seen", "last
  * @returns Mutated value.
  */
 function mutateValue(rand: () => number, value: unknown, depth: number = 0): unknown {
-  const pick = <T,>(list: readonly T[]): T => list[Math.floor(rand() * list.length)] as T;
+  const pick = <T>(list: readonly T[]): T => list[Math.floor(rand() * list.length)] as T;
   if (depth < 6 && Array.isArray(value)) {
     const out = value.map((v) => mutateValue(rand, v, depth + 1));
     if (rand() < 0.3) out.push(pick(HOSTILE_VALUES));
@@ -117,7 +237,9 @@ function mutateValue(rand: () => number, value: unknown, depth: number = 0): unk
     return out;
   }
   if (depth < 6 && value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = Object.fromEntries(Object.entries(value).map(([k, v]) => [k, mutateValue(rand, v, depth + 1)]));
+    const out: Record<string, unknown> = Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, mutateValue(rand, v, depth + 1)]),
+    );
     const keys = Object.keys(out);
     if (rand() < 0.2 && keys.length) delete out[pick(keys)];
     if (rand() < 0.15) out[pick(KEYS)] = pick(HOSTILE_VALUES);
@@ -134,9 +256,17 @@ function mutateValue(rand: () => number, value: unknown, depth: number = 0): unk
  * @returns The value with its strings edited.
  */
 function mutateStrings(rand: () => number, value: unknown): unknown {
-  if (typeof value === "string") return rand() < 0.7 ? mutate(rand, value, HOSTILE_VALUES.filter((v): v is string => typeof v === "string")) : value;
+  if (typeof value === "string")
+    return rand() < 0.7
+      ? mutate(
+          rand,
+          value,
+          HOSTILE_VALUES.filter((v): v is string => typeof v === "string"),
+        )
+      : value;
   if (Array.isArray(value)) return value.map((v) => mutateStrings(rand, v));
-  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, mutateStrings(rand, v)]));
+  if (value !== null && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, mutateStrings(rand, v)]));
   return value;
 }
 
@@ -165,7 +295,9 @@ describe("summary comment renderer against the Python oracle", () => {
   });
 
   it("agrees with the oracle under seeded text mutation", () => {
-    const texts = seeds().filter(([n]) => n !== "deep_nesting.json" && n !== "many.json").map(([, t]) => t);
+    const texts = seeds()
+      .filter(([n]) => n !== "deep_nesting.json" && n !== "many.json")
+      .map(([, t]) => t);
     const rand = rng(20261025);
     const cases: Case[] = [];
     let raw = 0;
@@ -184,19 +316,29 @@ describe("summary comment renderer against the Python oracle", () => {
         if (parsed === undefined) continue;
         payload = mutateStrings(rand, parsed);
       }
-      cases.push({ payload, dashboard: n % 4 < 2 ? DASHBOARD : null, label: `text mutation ${n}: ${JSON.stringify(payload).slice(0, 300)}` });
+      cases.push({
+        payload,
+        dashboard: n % 4 < 2 ? DASHBOARD : null,
+        label: `text mutation ${n}: ${JSON.stringify(payload).slice(0, 300)}`,
+      });
     }
     assert.ok(raw > 50, `enough edited texts still parse (${raw})`);
     agree(cases);
   });
 
   it("agrees with the oracle under seeded value mutation", () => {
-    const values = seeds().filter(([n]) => !["deep_nesting.json", "many.json", "not_json.json"].includes(n)).map(([, t]) => parse(t));
+    const values = seeds()
+      .filter(([n]) => !["deep_nesting.json", "many.json", "not_json.json"].includes(n))
+      .map(([, t]) => parse(t));
     const rand = rng(7);
     const cases: Case[] = [];
     for (let n = 0; n < 1500; n++) {
       const payload = mutateValue(rand, values[Math.floor(rand() * values.length)]);
-      cases.push({ payload, dashboard: n % 2 ? DASHBOARD : null, label: `value mutation ${n}: ${JSON.stringify(payload).slice(0, 300)}` });
+      cases.push({
+        payload,
+        dashboard: n % 2 ? DASHBOARD : null,
+        label: `value mutation ${n}: ${JSON.stringify(payload).slice(0, 300)}`,
+      });
     }
     agree(cases);
   });
@@ -210,17 +352,63 @@ describe("summary comment renderer against the Python oracle", () => {
 
   it("accepts the same origins as the Python check", () => {
     const seedsOrigins: unknown[] = [
-      DASHBOARD, `${DASHBOARD}/`, `${DASHBOARD}//`, "https://x", "https://x:8443", "https://x:99999", "https://x:123456",
-      "http://x", "https://", "https://-x", "https://x-", "https://X.Test", "https://x/path", "https://x?q", "https://x#f",
-      " https://x ", "\u000bhttps://x\u000c", " https://x", "https://ſ", "https://K", `https://${"a".repeat(253)}`,
-      `https://${"a".repeat(254)}`, "", null, 7, true, [], {},
+      DASHBOARD,
+      `${DASHBOARD}/`,
+      `${DASHBOARD}//`,
+      "https://x",
+      "https://x:8443",
+      "https://x:99999",
+      "https://x:123456",
+      "http://x",
+      "https://",
+      "https://-x",
+      "https://x-",
+      "https://X.Test",
+      "https://x/path",
+      "https://x?q",
+      "https://x#f",
+      " https://x ",
+      "\u000bhttps://x\u000c",
+      " https://x",
+      "https://ſ",
+      "https://K",
+      `https://${"a".repeat(253)}`,
+      `https://${"a".repeat(254)}`,
+      "",
+      null,
+      7,
+      true,
+      [],
+      {},
     ];
     const rand = rng(20261027);
     const origins = [...seedsOrigins];
     for (let n = 0; n < 1500; n++) {
-      origins.push(mutate(rand, DASHBOARD, ["/", ":", ".", "-", "443", " ", "\t", "http", "HTTPS", "é", "ſ", "K", "\u0000", " ", "?", "#", "@"]));
+      origins.push(
+        mutate(rand, DASHBOARD, [
+          "/",
+          ":",
+          ".",
+          "-",
+          "443",
+          " ",
+          "\t",
+          "http",
+          "HTTPS",
+          "é",
+          "ſ",
+          "K",
+          "\u0000",
+          " ",
+          "?",
+          "#",
+          "@",
+        ]),
+      );
     }
     const answers = oracle(origins.map((origin) => ({ origin })));
-    origins.forEach((origin, i) => assert.equal(dashboardOrigin(origin), answers[i]?.origin, JSON.stringify(origin)));
+    origins.forEach((origin, i) =>
+      assert.equal(dashboardOrigin(origin), answers[i]?.origin, JSON.stringify(origin)),
+    );
   });
 });

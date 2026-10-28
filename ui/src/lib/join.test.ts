@@ -121,10 +121,12 @@ describe("joinErrorMessage", () => {
     expect(joinErrorMessage(new JoinApiError(403, "x", "enrollment_disabled"), "f")).toBe(
       "This library isn't accepting new branches.",
     );
-    expect(joinErrorMessage(new JoinApiError(410, "x", "join_expired"), "f")).toMatch(/Start again/);
-    expect(joinErrorMessage(new JoinApiError(409, "use this address", "origin_mismatch"), "f")).toBe(
-      "use this address",
+    expect(joinErrorMessage(new JoinApiError(410, "x", "join_expired"), "f")).toMatch(
+      /Start again/,
     );
+    expect(
+      joinErrorMessage(new JoinApiError(409, "use this address", "origin_mismatch"), "f"),
+    ).toBe("use this address");
     expect(joinErrorMessage("nope", "fallback")).toBe("fallback");
   });
 

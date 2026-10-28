@@ -31,7 +31,34 @@ const SEED = Number(process.env["FUZZ_SEED"] ?? 0x5eed);
 const ITERATIONS = Number(process.env["FUZZ_ITERATIONS"] ?? 20000);
 
 /** Fragments Accept-Encoding mutations splice in: list and parameter syntax, codings, odd qvalues and whitespace. */
-const FRAGMENTS = [",", ";", "=", " ", "\t", "q", "Q", "q=", "br", "BR", "gzip", "*", "identity", "0", "1", ".", "0.5", "1.000", "1.0001", ".5", "0x1", "1e0", "-0", " ", "\u0000", "é"];
+const FRAGMENTS = [
+  ",",
+  ";",
+  "=",
+  " ",
+  "\t",
+  "q",
+  "Q",
+  "q=",
+  "br",
+  "BR",
+  "gzip",
+  "*",
+  "identity",
+  "0",
+  "1",
+  ".",
+  "0.5",
+  "1.000",
+  "1.0001",
+  ".5",
+  "0x1",
+  "1e0",
+  "-0",
+  " ",
+  "\u0000",
+  "é",
+];
 
 /**
  * Seeds a small deterministic PRNG (mulberry32).
@@ -59,7 +86,12 @@ function prng(seed: number): () => number {
  * @param fragments - Snippets of the target's syntax to splice in.
  * @returns The mutated input.
  */
-function mutate(input: string, seeds: readonly string[], rand: () => number, fragments: readonly string[] = FRAGMENTS): string {
+function mutate(
+  input: string,
+  seeds: readonly string[],
+  rand: () => number,
+  fragments: readonly string[] = FRAGMENTS,
+): string {
   let out = input;
   const pick = (list: readonly string[]): string => list[Math.floor(rand() * list.length)] ?? "";
   for (let n = 1 + Math.floor(rand() * 4); n > 0; n--) {
@@ -119,10 +151,16 @@ function oracleEncoding(header: string): Encoding | null {
     if (coding === "") continue;
     const qs = params.filter((p) => (p.split("=")[0] ?? "").trim().toLowerCase() === "q");
     const last = qs.at(-1);
-    const weight = last === undefined ? 1 : last.includes("=") ? oracleQvalue(last.slice(last.indexOf("=") + 1).trim()) : 0;
+    const weight =
+      last === undefined
+        ? 1
+        : last.includes("=")
+          ? oracleQvalue(last.slice(last.indexOf("=") + 1).trim())
+          : 0;
     weights[coding] = Math.max(weights[coding] ?? 0, weight);
   }
-  const of = (coding: string): number => (coding in weights ? (weights[coding] ?? 0) : (weights["*"] ?? 0));
+  const of = (coding: string): number =>
+    coding in weights ? (weights[coding] ?? 0) : (weights["*"] ?? 0);
   const br = of("br");
   const gzip = of("gzip");
   if (br === 0 && gzip === 0) return null;
@@ -145,7 +183,8 @@ function corpus(target: string): string[] {
 test("pickEncoding agrees with the oracle on its seed corpus", () => {
   const seeds = corpus("accept_encoding");
   assert.ok(seeds.length >= 10);
-  for (const seed of seeds) assert.equal(pickEncoding(seed), oracleEncoding(seed), JSON.stringify(seed));
+  for (const seed of seeds)
+    assert.equal(pickEncoding(seed), oracleEncoding(seed), JSON.stringify(seed));
 });
 
 test("pickEncoding agrees with the oracle on mutated inputs", () => {
@@ -155,18 +194,82 @@ test("pickEncoding agrees with the oracle on mutated inputs", () => {
     const input = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand);
     const got = pickEncoding(input);
     assert.ok(got === null || got === "br" || got === "gzip", JSON.stringify(input));
-    assert.equal(got, oracleEncoding(input), `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(input)}`);
+    assert.equal(
+      got,
+      oracleEncoding(input),
+      `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(input)}`,
+    );
   }
 });
 
 /** Fragments code-block mutations splice in: quotes, escapes, comment marks, HTML-special characters and names. */
-const CODE_FRAGMENTS = ['"', "'", "`", "\\", "#", "//", "/*", "*/", "--", "-", "$", "${", "}", "[", "]", "[[", "=", ":", "\n", " ", "\t", "<", ">", "&", "&amp;", "0x1", "1.5", "true", "fn", "SELECT", "sudo", "|", ";", "é", "\u0000", "<span class=\"hl-c\">"];
+const CODE_FRAGMENTS = [
+  '"',
+  "'",
+  "`",
+  "\\",
+  "#",
+  "//",
+  "/*",
+  "*/",
+  "--",
+  "-",
+  "$",
+  "${",
+  "}",
+  "[",
+  "]",
+  "[[",
+  "=",
+  ":",
+  "\n",
+  " ",
+  "\t",
+  "<",
+  ">",
+  "&",
+  "&amp;",
+  "0x1",
+  "1.5",
+  "true",
+  "fn",
+  "SELECT",
+  "sudo",
+  "|",
+  ";",
+  "é",
+  "\u0000",
+  '<span class="hl-c">',
+];
 
 /** Language names the highlight seeds name, plus names it does not know. */
-const LANGUAGES = ["bash", "sh", "console", "toml", "yaml", "json", "ts", "rust", "python", "sql", "nginx", "http", "text", "", "mermaid", "TOML"];
+const LANGUAGES = [
+  "bash",
+  "sh",
+  "console",
+  "toml",
+  "yaml",
+  "json",
+  "ts",
+  "rust",
+  "python",
+  "sql",
+  "nginx",
+  "http",
+  "text",
+  "",
+  "mermaid",
+  "TOML",
+];
 
 /** The entities highlight.ts writes, and the characters they stand for. */
-const ENTITIES: readonly [string, string][] = [["&amp;", "&"], ["&lt;", "<"], ["&gt;", ">"], ["&quot;", '"'], ["&#39;", "'"]];
+const ENTITIES: readonly [string, string][] = [
+  ["&amp;", "&"],
+  ["&lt;", "<"],
+  ["&gt;", ">"],
+  ["&quot;", '"'],
+  ["&#39;", "'"],
+];
 
 /**
  * Reads highlight.ts's output back to text, written without reference to
@@ -185,7 +288,13 @@ function oracleText(html: string): string | null {
   while (i < html.length) {
     if (html.startsWith(open, i)) {
       const kind = html[i + open.length] ?? "";
-      if (inSpan || !"csnkvf".includes(kind) || kind === "" || html.slice(i + open.length + 1, i + open.length + 3) !== '">') return null;
+      if (
+        inSpan ||
+        !"csnkvf".includes(kind) ||
+        kind === "" ||
+        html.slice(i + open.length + 1, i + open.length + 3) !== '">'
+      )
+        return null;
       inSpan = true;
       spanText = 0;
       i += open.length + 3;
@@ -234,10 +343,17 @@ function splitSeed(seed: string): [string, string] {
 function checkHighlight(code: string, lang: string, context: string): void {
   const html = highlight(code, lang);
   if (html === null) {
-    assert.ok(["text", "", "mermaid"].includes(lang), `${context}: no grammar for ${JSON.stringify(lang)}`);
+    assert.ok(
+      ["text", "", "mermaid"].includes(lang),
+      `${context}: no grammar for ${JSON.stringify(lang)}`,
+    );
     return;
   }
-  assert.equal(oracleText(html), code, `${context}: ${JSON.stringify(code)} -> ${JSON.stringify(html)}`);
+  assert.equal(
+    oracleText(html),
+    code,
+    `${context}: ${JSON.stringify(code)} -> ${JSON.stringify(html)}`,
+  );
   if (lang.toLowerCase() === "console") {
     // Terminal output stays plain: only a `$ ` line, or a line continuing
     // one that ends in an unescaped `\` (an odd run), may carry spans.
@@ -247,8 +363,13 @@ function checkHighlight(code: string, lang: string, context: string): void {
     assert.equal(htmlLines.length, codeLines.length, context);
     let command = false;
     codeLines.forEach((line, n) => {
-      command = line.startsWith("$ ") || (command && /(^|[^\\])(\\\\)*\\$/.test(codeLines[n - 1] ?? ""));
-      if (!command) assert.ok(!(htmlLines[n] ?? "").includes("<span"), `${context}: output line ${n} colored in ${JSON.stringify(code)} -> ${JSON.stringify(html)}`);
+      command =
+        line.startsWith("$ ") || (command && /(^|[^\\])(\\\\)*\\$/.test(codeLines[n - 1] ?? ""));
+      if (!command)
+        assert.ok(
+          !(htmlLines[n] ?? "").includes("<span"),
+          `${context}: output line ${n} colored in ${JSON.stringify(code)} -> ${JSON.stringify(html)}`,
+        );
     });
   }
 }
@@ -267,20 +388,79 @@ test("highlight keeps mutated code intact and markup-free", () => {
   const seeds = corpus("highlight").map((seed) => splitSeed(seed)[1]);
   const rand = prng(SEED);
   for (let i = 0; i < ITERATIONS; i++) {
-    const code = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, CODE_FRAGMENTS);
+    const code = mutate(
+      seeds[Math.floor(rand() * seeds.length)] ?? "",
+      seeds,
+      rand,
+      CODE_FRAGMENTS,
+    );
     const lang = LANGUAGES[Math.floor(rand() * LANGUAGES.length)] ?? "bash";
     checkHighlight(code, lang, `FUZZ_SEED=${SEED} iteration ${i} (${lang})`);
   }
 });
 
 /** Fragments dates-file mutations splice in: JSON syntax, keys, numbers, dates and odd characters. */
-const DATE_FRAGMENTS = ['"', "{", "}", "[", "]", ":", ",", "\\", "\\u0000", " ", "\n", "1", "2", "0", "9", "-", "-02-29", "-13-", "1.0", "1e0", "null", "true", '"version"', '"pages"', '"README"', '"__proto__"', "2026-10-26", "<", "&", "é"];
+const DATE_FRAGMENTS = [
+  '"',
+  "{",
+  "}",
+  "[",
+  "]",
+  ":",
+  ",",
+  "\\",
+  "\\u0000",
+  " ",
+  "\n",
+  "1",
+  "2",
+  "0",
+  "9",
+  "-",
+  "-02-29",
+  "-13-",
+  "1.0",
+  "1e0",
+  "null",
+  "true",
+  '"version"',
+  '"pages"',
+  '"README"',
+  '"__proto__"',
+  "2026-10-26",
+  "<",
+  "&",
+  "é",
+];
 
 /** Page keys the dates-file fuzzing asks for. */
-const DATE_KEYS = ["README", "guide/getting-started", "adr/control-plane", "server/backups", "__proto__", "constructor", "toString", "", "missing"];
+const DATE_KEYS = [
+  "README",
+  "guide/getting-started",
+  "adr/control-plane",
+  "server/backups",
+  "__proto__",
+  "constructor",
+  "toString",
+  "",
+  "missing",
+];
 
 /** Full month names, written without reference to last-updated.ts. */
-const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
 
 /**
  * The date pageDate should find, computed independently of last-updated.ts:
@@ -305,7 +485,8 @@ function oraclePageDate(json: string, key: string): string | null {
   if (typeof pages !== "object" || pages === null || pages instanceof Array) return null;
   if (!Object.getOwnPropertyNames(pages).includes(key)) return null;
   const value = Object.getOwnPropertyDescriptor(pages, key)?.value;
-  if (typeof value !== "string" || value.length !== 10 || value[4] !== "-" || value[7] !== "-") return null;
+  if (typeof value !== "string" || value.length !== 10 || value[4] !== "-" || value[7] !== "-")
+    return null;
   let year = 0;
   let month = 0;
   let day = 0;
@@ -332,11 +513,19 @@ function oraclePageDate(json: string, key: string): string | null {
  */
 function checkPageDate(json: string, key: string, context: string): void {
   const got = pageDate(json, key);
-  assert.equal(got, oraclePageDate(json, key), `${context}: ${JSON.stringify(key)} in ${JSON.stringify(json)}`);
+  assert.equal(
+    got,
+    oraclePageDate(json, key),
+    `${context}: ${JSON.stringify(key)} in ${JSON.stringify(json)}`,
+  );
   if (got === null) return;
   const shown = formatDate(got);
   const [year = "", month = "", day = ""] = got.split("-");
-  assert.equal(shown, `${MONTH_NAMES[Number(month) - 1]?.slice(0, 3)} ${Number(day)}, ${year}`, context);
+  assert.equal(
+    shown,
+    `${MONTH_NAMES[Number(month) - 1]?.slice(0, 3)} ${Number(day)}, ${year}`,
+    context,
+  );
   assert.match(shown, /^[A-Za-z]{3} [0-9]{1,2}, [0-9]{4}$/, context);
 }
 
@@ -357,7 +546,12 @@ test("pageDate agrees with the oracle on mutated inputs", () => {
   const seeds = corpus("last_updated");
   const rand = prng(SEED);
   for (let i = 0; i < ITERATIONS; i++) {
-    const json = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, DATE_FRAGMENTS);
+    const json = mutate(
+      seeds[Math.floor(rand() * seeds.length)] ?? "",
+      seeds,
+      rand,
+      DATE_FRAGMENTS,
+    );
     const key = DATE_KEYS[Math.floor(rand() * DATE_KEYS.length)] ?? "README";
     checkPageDate(json, key, `FUZZ_SEED=${SEED} iteration ${i}`);
   }
@@ -376,7 +570,13 @@ function oracleDocKey(key: string): boolean {
   return key.split("/").every((segment) => {
     if (segment === "" || segment.startsWith(".")) return false;
     for (const ch of segment) {
-      const ok = (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || (ch >= "0" && ch <= "9") || ch === "." || ch === "_" || ch === "-";
+      const ok =
+        (ch >= "a" && ch <= "z") ||
+        (ch >= "A" && ch <= "Z") ||
+        (ch >= "0" && ch <= "9") ||
+        ch === "." ||
+        ch === "_" ||
+        ch === "-";
       if (!ok) return false;
     }
     return true;
@@ -398,7 +598,13 @@ function checkDatedPages(json: string, context: string): void {
     const document: unknown = JSON.parse(json);
     if (typeof document === "object" && document !== null && !(document instanceof Array)) {
       const top: Record<string, unknown> = Object.assign(Object.create(null), document);
-      if (top["version"] === 1 && typeof top["pages"] === "object" && top["pages"] !== null && !(top["pages"] instanceof Array)) pages = top["pages"];
+      if (
+        top["version"] === 1 &&
+        typeof top["pages"] === "object" &&
+        top["pages"] !== null &&
+        !(top["pages"] instanceof Array)
+      )
+        pages = top["pages"];
     }
   } catch {
     pages = null;
@@ -430,19 +636,106 @@ test("datedPages agrees with the oracle on mutated inputs", () => {
   const seeds = corpus("last_updated");
   const rand = prng(SEED ^ 0x51);
   for (let i = 0; i < ITERATIONS; i++) {
-    const json = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, [...DATE_FRAGMENTS, "/", "//", "./", "../", ".", "_"]);
+    const json = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, [
+      ...DATE_FRAGMENTS,
+      "/",
+      "//",
+      "./",
+      "../",
+      ".",
+      "_",
+    ]);
     checkDatedPages(json, `FUZZ_SEED=${SEED} iteration ${i}`);
   }
 });
 
 /** Fragments diagram-source mutations splice in: Mermaid arrows, brackets, directives and HTML-special text. */
-const DIAGRAM_FRAGMENTS = ["-->", "---", "-.->", "==>", "--", "|", "[", "]", "(", ")", "{", "}", "((", "[(", ">", "<", "&", '"', "'", ":", ";", "\n", " ", "%%", "subgraph X", "end", "direction LR", "<br/>", "<b>", "<i>", "style A fill:#000", "classDef c fill:red", "url(", "url(#x)", "javascript:", "onload=", "<script>", "&amp;", "é", "\u0000", "[*]", "note right of A: x"];
+const DIAGRAM_FRAGMENTS = [
+  "-->",
+  "---",
+  "-.->",
+  "==>",
+  "--",
+  "|",
+  "[",
+  "]",
+  "(",
+  ")",
+  "{",
+  "}",
+  "((",
+  "[(",
+  ">",
+  "<",
+  "&",
+  '"',
+  "'",
+  ":",
+  ";",
+  "\n",
+  " ",
+  "%%",
+  "subgraph X",
+  "end",
+  "direction LR",
+  "<br/>",
+  "<b>",
+  "<i>",
+  "style A fill:#000",
+  "classDef c fill:red",
+  "url(",
+  "url(#x)",
+  "javascript:",
+  "onload=",
+  "<script>",
+  "&amp;",
+  "é",
+  "\u0000",
+  "[*]",
+  "note right of A: x",
+];
 
 /** Fragments SVG mutations splice in: tags, attributes, references and the markup cleanSvg must refuse. */
-const SVG_FRAGMENTS = ["<", ">", "/>", "</g>", "<g>", '"', "=", " ", "<style>", "</style>", "<script>", "<foreignObject>", "<a href=\"x\">", ' onload="x"', ' href="#x"', ' xlink:href="x"', ' style="fill:red"', ' class="x"', ' data-x="y"', ' fill="url(#arrowhead)"', ' fill="url(http://x/)"', ' id="x y"', "&", "&amp;", "&#60;", "<!--", "-->", "<![CDATA[", "<svg>", "</svg>", "<text>", "</text>", "é", "\u0000"];
+const SVG_FRAGMENTS = [
+  "<",
+  ">",
+  "/>",
+  "</g>",
+  "<g>",
+  '"',
+  "=",
+  " ",
+  "<style>",
+  "</style>",
+  "<script>",
+  "<foreignObject>",
+  '<a href="x">',
+  ' onload="x"',
+  ' href="#x"',
+  ' xlink:href="x"',
+  ' style="fill:red"',
+  ' class="x"',
+  ' data-x="y"',
+  ' fill="url(#arrowhead)"',
+  ' fill="url(http://x/)"',
+  ' id="x y"',
+  "&",
+  "&amp;",
+  "&#60;",
+  "<!--",
+  "-->",
+  "<![CDATA[",
+  "<svg>",
+  "</svg>",
+  "<text>",
+  "</text>",
+  "é",
+  "\u0000",
+];
 
 /** Elements a drawn diagram may hold, written apart from diagram.ts's list. */
-const SVG_ELEMENTS = /^(svg|g|defs|marker|path|polygon|polyline|line|rect|circle|ellipse|text|tspan)$/;
+const SVG_ELEMENTS =
+  /^(svg|g|defs|marker|path|polygon|polyline|line|rect|circle|ellipse|text|tspan)$/;
 
 /**
  * Checks markup the docs page will embed as a diagram, independently of
@@ -461,8 +754,14 @@ function checkSvg(svg: string, prefix: string, context: string): void {
   let roots = 0;
   for (const part of svg.split(/(<[^<>]*>)/)) {
     if (!part.startsWith("<")) {
-      assert.ok(!part.includes("<") && !part.includes(">"), `${context}: stray bracket in text ${JSON.stringify(part)}`);
-      assert.ok(!/&(?!(?:[a-zA-Z]+|#[0-9]+|#x[0-9a-fA-F]+);)/.test(part), `${context}: bare & in ${JSON.stringify(part)}`);
+      assert.ok(
+        !part.includes("<") && !part.includes(">"),
+        `${context}: stray bracket in text ${JSON.stringify(part)}`,
+      );
+      assert.ok(
+        !/&(?!(?:[a-zA-Z]+|#[0-9]+|#x[0-9a-fA-F]+);)/.test(part),
+        `${context}: bare & in ${JSON.stringify(part)}`,
+      );
       if (stack.length === 0) assert.equal(part.trim(), "", `${context}: text outside the svg`);
       continue;
     }
@@ -481,14 +780,34 @@ function checkSvg(svg: string, prefix: string, context: string): void {
     }
     for (const [, key = "", value = ""] of attrs.matchAll(/ ([^\s=]+)="([^"]*)"/g)) {
       const lower = key.toLowerCase();
-      assert.ok(!lower.startsWith("on") && !lower.includes("href") && !["style", "src"].includes(lower) && !lower.startsWith("data-"), `${context}: attribute ${key}`);
+      assert.ok(
+        !lower.startsWith("on") &&
+          !lower.includes("href") &&
+          !["style", "src"].includes(lower) &&
+          !lower.startsWith("data-"),
+        `${context}: attribute ${key}`,
+      );
       if (lower === "class") assert.equal(value, "mono", `${context}: class ${value}`);
-      if (lower === "fill" || lower === "stroke") assert.ok(value === "none" || value.startsWith("var(--") || value.startsWith(`url(#${prefix}-`), `${context}: literal paint ${key}="${value}"`);
-      assert.ok(!/&(?!(?:[a-zA-Z]+|#[0-9]+|#x[0-9a-fA-F]+);)/.test(value), `${context}: bare & in ${key}`);
+      if (lower === "fill" || lower === "stroke")
+        assert.ok(
+          value === "none" || value.startsWith("var(--") || value.startsWith(`url(#${prefix}-`),
+          `${context}: literal paint ${key}="${value}"`,
+        );
+      assert.ok(
+        !/&(?!(?:[a-zA-Z]+|#[0-9]+|#x[0-9a-fA-F]+);)/.test(value),
+        `${context}: bare & in ${key}`,
+      );
       if (lower === "id") assert.ok(value.startsWith(`${prefix}-`), `${context}: id ${value}`);
-      for (const ref of value.matchAll(/url\s*\(([^)]*)\)?/gi)) assert.ok((ref[1] ?? "").startsWith(`#${prefix}-`) && ref[0].endsWith(")"), `${context}: reference ${ref[0]}`);
+      for (const ref of value.matchAll(/url\s*\(([^)]*)\)?/gi))
+        assert.ok(
+          (ref[1] ?? "").startsWith(`#${prefix}-`) && ref[0].endsWith(")"),
+          `${context}: reference ${ref[0]}`,
+        );
       assert.ok(!value.includes("\\"), `${context}: escape in ${key}`);
-      assert.ok(!/javascript:|@import|https?:/i.test(value) || lower === "xmlns", `${context}: ${key}="${value}"`);
+      assert.ok(
+        !/javascript:|@import|https?:/i.test(value) || lower === "xmlns",
+        `${context}: ${key}="${value}"`,
+      );
     }
     if (self === undefined) stack.push(name);
   }
@@ -517,9 +836,15 @@ test("diagram keeps mutated sources clean or leaves them as code", () => {
   const seeds = corpus("diagram");
   const rand = prng(SEED);
   for (let i = 0; i < DIAGRAM_ITERATIONS; i++) {
-    const source = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, DIAGRAM_FRAGMENTS);
+    const source = mutate(
+      seeds[Math.floor(rand() * seeds.length)] ?? "",
+      seeds,
+      rand,
+      DIAGRAM_FRAGMENTS,
+    );
     const drawn = diagram(source, "f");
-    if (drawn !== null) checkSvg(drawn.svg, "f", `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(source)}`);
+    if (drawn !== null)
+      checkSvg(drawn.svg, "f", `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(source)}`);
   }
 });
 
@@ -542,12 +867,57 @@ test("cleanSvg passes only clean markup on mutated renderer output", () => {
   for (let i = 0; i < ITERATIONS; i++) {
     const input = mutate(svgs[Math.floor(rand() * svgs.length)] ?? "", svgs, rand, SVG_FRAGMENTS);
     const out = cleanSvg(input, "c");
-    if (out !== null) checkSvg(out, "c", `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(input.slice(0, 2000))}`);
+    if (out !== null)
+      checkSvg(
+        out,
+        "c",
+        `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(input.slice(0, 2000))}`,
+      );
   }
 });
 
 /** Fragments Web API page mutations splice in: headings, code spans, methods, quotes, lists, tables and HTML. */
-const API_FRAGMENTS = ["\n", "\n\n", "## ", "### ", "#", "`", "``", "> ", "- ", "1. ", "    ", "|", " | ", "| --- |", "| Status |", "GET ", "POST ", "get ", "/api/", "{id}", " ", "Example request", "Example response", "Responses", "200", "4XX", "default", "```", "```json\n", "---", "===", "<", ">", "&", '"', "<section>", "</div>", "é", "\u0000"];
+const API_FRAGMENTS = [
+  "\n",
+  "\n\n",
+  "## ",
+  "### ",
+  "#",
+  "`",
+  "``",
+  "> ",
+  "- ",
+  "1. ",
+  "    ",
+  "|",
+  " | ",
+  "| --- |",
+  "| Status |",
+  "GET ",
+  "POST ",
+  "get ",
+  "/api/",
+  "{id}",
+  " ",
+  "Example request",
+  "Example response",
+  "Responses",
+  "200",
+  "4XX",
+  "default",
+  "```",
+  "```json\n",
+  "---",
+  "===",
+  "<",
+  ">",
+  "&",
+  '"',
+  "<section>",
+  "</div>",
+  "é",
+  "\u0000",
+];
 
 /** Elements that never take a closing tag. */
 const VOID_ELEMENTS = /^(br|hr|img|input|wbr|col|meta|link|source)$/;
@@ -570,8 +940,16 @@ function checkApiPage(source: string, context: string): void {
   checkNesting(laid, context);
 
   const ids = new Set([...laid.matchAll(/ id="([^"]*)"/g)].map((m) => m[1]));
-  const sections = [...laid.matchAll(/<section class="api-op" aria-labelledby="([^"]*)">\n<div class="heading-wrapper level-h2"><h2 id="([^"]*)" class="api-op-title"><span class="api-method api-method-([a-z]+)">([A-Z]+)<\/span> <code>/g)];
-  assert.equal(sections.length, (laid.match(/<section/g) ?? []).length, `section without its heading: ${context}`);
+  const sections = [
+    ...laid.matchAll(
+      /<section class="api-op" aria-labelledby="([^"]*)">\n<div class="heading-wrapper level-h2"><h2 id="([^"]*)" class="api-op-title"><span class="api-method api-method-([a-z]+)">([A-Z]+)<\/span> <code>/g,
+    ),
+  ];
+  assert.equal(
+    sections.length,
+    (laid.match(/<section/g) ?? []).length,
+    `section without its heading: ${context}`,
+  );
   for (const [, labelled, id, lower, method] of sections) {
     assert.equal(labelled, id, context);
     assert.ok(ids.has(id), context);
@@ -586,7 +964,9 @@ function checkApiPage(source: string, context: string): void {
   // the text runs (even indices) and the tags before them (odd ones).
   const chars = (html: string): string => {
     const parts = html.split(/(<[^>]*>)/);
-    const text = parts.filter((_part, i) => i % 2 === 0 && !(parts[i - 1] ?? "").startsWith('<span class="api-method '));
+    const text = parts.filter(
+      (_part, i) => i % 2 === 0 && !(parts[i - 1] ?? "").startsWith('<span class="api-method '),
+    );
     return [...text.join("").replace(/\s/g, "")].sort().join("");
   };
   const methods = sections.map((m) => m[4] ?? "").join("");
@@ -594,7 +974,20 @@ function checkApiPage(source: string, context: string): void {
 }
 
 /** Fragments Web API index mutations splice in, on top of {@link API_FRAGMENTS}: links, group headings and the Quick start. */
-const INDEX_FRAGMENTS = [...API_FRAGMENTS, "Quick start", "## Quick start\n\n", "### [", "[", "]", "](jobs.md)", "](x.md#a)", "[`GET /x`](x.md)", "(deprecated)", "<aside>", "</section>"];
+const INDEX_FRAGMENTS = [
+  ...API_FRAGMENTS,
+  "Quick start",
+  "## Quick start\n\n",
+  "### [",
+  "[",
+  "]",
+  "](jobs.md)",
+  "](x.md#a)",
+  "[`GET /x`](x.md)",
+  "(deprecated)",
+  "<aside>",
+  "</section>",
+];
 
 /**
  * Checks a rendered Web API index against an oracle that does not use
@@ -615,22 +1008,49 @@ function checkApiIndex(source: string, context: string): void {
   const ids = new Set([...laid.matchAll(/ id="([^"]*)"/g)].map((m) => m[1]));
   // A heading whose text gives no id (an empty link) gets no self-link, so
   // no wrapper either.
-  const wrapped = [...laid.matchAll(/<section class="api-group" aria-labelledby="([^"]*)">\n(<div class="heading-wrapper level-h3">)?<h3 id="([^"]*)"><a /g)];
-  assert.equal(wrapped.length, (laid.match(/<section/g) ?? []).length, `card without its heading: ${context}`);
-  for (const [, , wrapper, id] of wrapped) assert.equal(wrapper !== undefined, id !== "", `self-link wrapper: ${context}`);
+  const wrapped = [
+    ...laid.matchAll(
+      /<section class="api-group" aria-labelledby="([^"]*)">\n(<div class="heading-wrapper level-h3">)?<h3 id="([^"]*)"><a /g,
+    ),
+  ];
+  assert.equal(
+    wrapped.length,
+    (laid.match(/<section/g) ?? []).length,
+    `card without its heading: ${context}`,
+  );
+  for (const [, , wrapper, id] of wrapped)
+    assert.equal(wrapper !== undefined, id !== "", `self-link wrapper: ${context}`);
   const cards = wrapped.map(([all, labelled, , id]) => [all, labelled, id] as const);
-  const asides = [...laid.matchAll(/<aside class="api-intro-side" aria-labelledby="([^"]*)">\n<div class="heading-wrapper level-h2"><h2 id="([^"]*)">Quick start<\/h2>/g)];
-  assert.equal(asides.length, (laid.match(/<aside/g) ?? []).length, `aside without its heading: ${context}`);
+  const asides = [
+    ...laid.matchAll(
+      /<aside class="api-intro-side" aria-labelledby="([^"]*)">\n<div class="heading-wrapper level-h2"><h2 id="([^"]*)">Quick start<\/h2>/g,
+    ),
+  ];
+  assert.equal(
+    asides.length,
+    (laid.match(/<aside/g) ?? []).length,
+    `aside without its heading: ${context}`,
+  );
   assert.ok(asides.length <= 1, context);
   for (const [, labelled, id] of [...cards, ...asides]) {
     assert.equal(labelled, id, context);
     assert.ok(ids.has(id), context);
   }
-  for (const [, lower, method] of laid.matchAll(/<span class="api-method api-method-([a-z]+)">([^<]*)<\/span>/g)) {
+  for (const [, lower, method] of laid.matchAll(
+    /<span class="api-method api-method-([a-z]+)">([^<]*)<\/span>/g,
+  )) {
     assert.ok((HTTP_METHODS as readonly string[]).includes(method ?? ""), context);
     assert.equal(lower, method?.toLowerCase(), context);
   }
-  const chars = (html: string): string => [...html.split(/<[^>]*>/).join("").replace(/\s/g, "")].sort().join("");
+  const chars = (html: string): string =>
+    [
+      ...html
+        .split(/<[^>]*>/)
+        .join("")
+        .replace(/\s/g, ""),
+    ]
+      .sort()
+      .join("");
   assert.equal(chars(laid), chars(plain), `text changed: ${context}`);
 }
 
@@ -664,7 +1084,12 @@ test("the Web API layout keeps mutated pages well formed and complete", () => {
   const seeds = corpus("api_reference");
   const rand = prng(SEED);
   for (let i = 0; i < API_ITERATIONS; i++) {
-    const source = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, API_FRAGMENTS);
+    const source = mutate(
+      seeds[Math.floor(rand() * seeds.length)] ?? "",
+      seeds,
+      rand,
+      API_FRAGMENTS,
+    );
     checkApiPage(source, `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(source)}`);
   }
 });
@@ -679,13 +1104,43 @@ test("the Web API index layout keeps mutated pages well formed and complete", ()
   const seeds = corpus("api_index");
   const rand = prng(SEED);
   for (let i = 0; i < API_ITERATIONS; i++) {
-    const source = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, INDEX_FRAGMENTS);
+    const source = mutate(
+      seeds[Math.floor(rand() * seeds.length)] ?? "",
+      seeds,
+      rand,
+      INDEX_FRAGMENTS,
+    );
     checkApiIndex(source, `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(source)}`);
   }
 });
 
 /** Fragments path mutations splice in: separators, extensions, version prefixes and characters a URL path should not carry. */
-const PATH_FRAGMENTS = ["/", "//", ".", "..", "/..", ".html", "index.html", ".md", "/docs", "/docs/", "v/", "/v/main/", "/v/v0.2.0/", "main", "v0.2.0", "README", "download", "%2F", "?", "#", "\\", " ", "\u0000", "é"];
+const PATH_FRAGMENTS = [
+  "/",
+  "//",
+  ".",
+  "..",
+  "/..",
+  ".html",
+  "index.html",
+  ".md",
+  "/docs",
+  "/docs/",
+  "v/",
+  "/v/main/",
+  "/v/v0.2.0/",
+  "main",
+  "v0.2.0",
+  "README",
+  "download",
+  "%2F",
+  "?",
+  "#",
+  "\\",
+  " ",
+  "\u0000",
+  "é",
+];
 
 /** The website pages the redirect fuzzing serves, as the shell lists them. */
 const FUZZ_PAGES = ["/", "/download", "/privacy", "/security", "/sitemap"];
@@ -730,13 +1185,23 @@ function checkRedirects(path: string, context: string): void {
   if (target.kind === "redirect") {
     const { location } = target;
     assert.ok(location === "/docs" || location.startsWith("/docs/"), `${context}: ${location}`);
-    assert.ok(!location.endsWith("/") && !location.includes("//") && !/[?#\\\s]/.test(location), `${context}: ${location}`);
+    assert.ok(
+      !location.endsWith("/") && !location.includes("//") && !/[?#\\\s]/.test(location),
+      `${context}: ${location}`,
+    );
     assert.notEqual(location, path, context);
-    assert.notEqual(docsTarget(location, FUZZ_VERSIONS).kind, "redirect", `${context}: ${location} redirects again`);
+    assert.notEqual(
+      docsTarget(location, FUZZ_VERSIONS).kind,
+      "redirect",
+      `${context}: ${location} redirects again`,
+    );
   } else if (target.kind !== "missing") {
     for (const key of target.keys) {
       for (const segment of key.split("/")) {
-        assert.ok(!segment.startsWith(".") && /^[A-Za-z0-9._-]*$/.test(segment), `${context}: key ${key}`);
+        assert.ok(
+          !segment.startsWith(".") && /^[A-Za-z0-9._-]*$/.test(segment),
+          `${context}: key ${key}`,
+        );
       }
     }
   }
@@ -752,7 +1217,12 @@ test("the site and docs redirects keep mutated paths canonical", () => {
   const seeds = corpus("site_redirects");
   const rand = prng(SEED);
   for (let i = 0; i < ITERATIONS; i++) {
-    const path = mutate(seeds[Math.floor(rand() * seeds.length)] ?? "", seeds, rand, PATH_FRAGMENTS);
+    const path = mutate(
+      seeds[Math.floor(rand() * seeds.length)] ?? "",
+      seeds,
+      rand,
+      PATH_FRAGMENTS,
+    );
     checkRedirects(path, `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(path)}`);
   }
 });

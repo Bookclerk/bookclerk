@@ -22,8 +22,7 @@ const PLUGIN_ID = "echo_workerd_rust";
 
 /** Call one Wasm method with JSON params; returns the parsed JSON result. */
 function call(method, params) {
-  const paramsJson =
-    params === undefined || params === null ? "{}" : JSON.stringify(params);
+  const paramsJson = params === undefined || params === null ? "{}" : JSON.stringify(params);
   const out = dispatch(method, paramsJson);
   return out === "null" ? null : JSON.parse(out);
 }

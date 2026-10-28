@@ -189,8 +189,8 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
               </Button>
             </div>
             <p className="text-xs text-ink/50">
-              The address you use to open that library in a browser. This server reads it, not
-              your browser.
+              The address you use to open that library in a browser. This server reads it, not your
+              browser.
             </p>
             {suggested ? (
               <Button type="button" variant="ghost" onClick={() => setAddress(suggested)}>
@@ -272,8 +272,8 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
                         onChange={(e) => setReplaceConfirmed(e.target.checked)}
                       />
                       <span>
-                        As a clerk, this server's own database settings and keys are replaced by
-                        the library's, and it restarts. I understand that whatever it holds now is
+                        As a clerk, this server's own database settings and keys are replaced by the
+                        library's, and it restarts. I understand that whatever it holds now is
                         replaced.
                       </span>
                     </label>

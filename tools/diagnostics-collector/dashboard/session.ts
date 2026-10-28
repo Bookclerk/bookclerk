@@ -89,7 +89,11 @@ export function cookieValue(header: string, name: string): string | null {
  *   seconds (0 deletes) and SameSite mode.
  * @returns Header value.
  */
-export function hostCookie(name: string, value: string, opts: { maxAge: number; sameSite: "Strict" | "Lax"; }): string {
+export function hostCookie(
+  name: string,
+  value: string,
+  opts: { maxAge: number; sameSite: "Strict" | "Lax" },
+): string {
   return `${name}=${value}; Path=/; Secure; HttpOnly; SameSite=${opts.sameSite}; Max-Age=${opts.maxAge}`;
 }
 
@@ -113,7 +117,11 @@ export type Member = {
  * @param now - Unix time in milliseconds.
  * @returns The `Set-Cookie` value.
  */
-export async function createSession(db: D1Database, who: { userId: number; login: string; role: "admin" | "member"; }, now: number): Promise<string> {
+export async function createSession(
+  db: D1Database,
+  who: { userId: number; login: string; role: "admin" | "member" },
+  now: number,
+): Promise<string> {
   const token = randomToken(32);
   await run(
     db,
@@ -137,7 +145,11 @@ export async function createSession(db: D1Database, who: { userId: number; login
  * @returns The member, or null when there is no
  *   valid, unexpired session.
  */
-export async function currentMember(db: D1Database, request: Request, now: number): Promise<Member | null> {
+export async function currentMember(
+  db: D1Database,
+  request: Request,
+  now: number,
+): Promise<Member | null> {
   const token = sessionToken(request.headers.get("cookie") || "");
   if (!token) return null;
   const row = await first(
@@ -177,7 +189,8 @@ export function memberFromRow(row: Record<string, unknown> | null, now: number):
   const userId = Number(row.user_id);
   const login = typeof row.login === "string" ? row.login : "";
   if (!Number.isFinite(expiresAt) || expiresAt <= now) return null;
-  if (!Number.isSafeInteger(userId) || userId <= 0 || !/^[A-Za-z0-9-]{1,39}$/.test(login)) return null;
+  if (!Number.isSafeInteger(userId) || userId <= 0 || !/^[A-Za-z0-9-]{1,39}$/.test(login))
+    return null;
   const role = row.role === "admin" ? "admin" : "member";
   return { userId, login, role, expiresAt };
 }

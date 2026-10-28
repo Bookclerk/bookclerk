@@ -49,8 +49,7 @@ const MONO_MARKS: Record<
 const BUTTON_CLASS_LIGHT: Record<string, string> = {
   google:
     "h-10 border border-[#747775] bg-white font-google-sans font-medium text-[#1F1F1F] shadow-none hover:bg-[#F2F2F2]",
-  apple:
-    "h-10 border border-black bg-black font-medium text-white shadow-none hover:bg-[#1a1a1a]",
+  apple: "h-10 border border-black bg-black font-medium text-white shadow-none hover:bg-[#1a1a1a]",
   github:
     "h-10 border border-[#1F2328] bg-[#1F2328] font-medium text-white shadow-none hover:bg-black",
   discord:
@@ -67,10 +66,8 @@ const BUTTON_CLASS_LIGHT: Record<string, string> = {
 const BUTTON_CLASS_DARK: Record<string, string> = {
   google:
     "h-10 border border-[#8E918F] bg-[#131314] font-google-sans font-medium text-[#E3E3E3] shadow-none hover:bg-[#1e1e1f]",
-  apple:
-    "h-10 border border-white bg-white font-medium text-black shadow-none hover:bg-[#f5f5f5]",
-  github:
-    "h-10 border border-white bg-white font-medium text-black shadow-none hover:bg-[#f5f5f5]",
+  apple: "h-10 border border-white bg-white font-medium text-black shadow-none hover:bg-[#f5f5f5]",
+  github: "h-10 border border-white bg-white font-medium text-black shadow-none hover:bg-[#f5f5f5]",
   discord:
     "h-10 border border-black bg-black font-medium text-white shadow-none hover:bg-[#1a1a1a]",
 };
@@ -136,11 +133,7 @@ export function SsoProviderMark({
     // the full-color G on white (or black), never on navy/cream/blurple.
     if (onBrand && !dark) {
       return (
-        <img
-          src={googleMark}
-          alt=""
-          className={cn("h-6 w-6 shrink-0 object-contain", className)}
-        />
+        <img src={googleMark} alt="" className={cn("h-6 w-6 shrink-0 object-contain", className)} />
       );
     }
     return (
@@ -227,12 +220,7 @@ export function SsoSignInButton({
       className={cn(brand ? chrome[brand] : "h-10", className)}
       {...props}
     >
-      <SsoProviderMark
-        preset={preset}
-        title={name}
-        onBrand={Boolean(brand)}
-        className="h-5 w-5"
-      />
+      <SsoProviderMark preset={preset} title={name} onBrand={Boolean(brand)} className="h-5 w-5" />
       {continueWithLabel(preset, name)}
     </Button>
   );

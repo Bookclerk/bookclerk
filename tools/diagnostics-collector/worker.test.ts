@@ -7,7 +7,12 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { Env } from "./env.ts";
 import { createD1, type TestD1 } from "./test-support/d1.ts";
-import worker, { UpstreamError, type CursorAnswer, type ErrorAnswer, type ReportAnswer } from "./worker.ts";
+import worker, {
+  UpstreamError,
+  type CursorAnswer,
+  type ErrorAnswer,
+  type ReportAnswer,
+} from "./worker.ts";
 
 const KEY = "k".repeat(32);
 /** Execution context: background work is not awaited by these tests. */
@@ -58,12 +63,20 @@ describe("worker errors", () => {
     stubFetch({
       "releases/latest": () => new Response("{}", { status: 404 }),
       b2_authorize_account: () =>
-        Response.json({ apiUrl: "https://b2.test", downloadUrl: "https://d.test", authorizationToken: "t" }),
-      b2_list_file_names: () => Response.json({ code: "unauthorized", message: "no listFiles" }, { status: 401 }),
+        Response.json({
+          apiUrl: "https://b2.test",
+          downloadUrl: "https://d.test",
+          authorizationToken: "t",
+        }),
+      b2_list_file_names: () =>
+        Response.json({ code: "unauthorized", message: "no listFiles" }, { status: 401 }),
     });
     const res = await worker.fetch(report({ authorization: `Bearer ${KEY}` }), ENV, CTX);
     assert.equal(res.status, 502);
-    assert.deepEqual(await res.json(), { error: "upstream failed", detail: "b2 list failed: HTTP 401: unauthorized" });
+    assert.deepEqual(await res.json(), {
+      error: "upstream failed",
+      detail: "b2 list failed: HTTP 401: unauthorized",
+    });
     assert.equal(logged.length, 1);
     assert.ok(logged[0] !== undefined && !logged[0].includes(ENV.B2_APPLICATION_KEY ?? ""));
   });
@@ -120,7 +133,11 @@ describe("worker errors", () => {
     stubFetch({ b2_authorize_account: () => new Response("{}", { status: 503 }) });
     const body = JSON.stringify({ version: "0.1.0", trigger: "test", os: "linux", events: [] });
     const res = await worker.fetch(
-      new Request("https://collector.test/submit", { method: "POST", body, headers: { "content-type": "application/json" } }),
+      new Request("https://collector.test/submit", {
+        method: "POST",
+        body,
+        headers: { "content-type": "application/json" },
+      }),
       ENV,
       CTX,
     );
@@ -145,7 +162,10 @@ describe("GET /report?unfiled=1", () => {
    */
   async function setup(): Promise<TestD1> {
     const db = createD1();
-    await db.prepare("INSERT INTO report_issue (report_id, issue_number) VALUES (?, ?)").bind(FILED, 400).run();
+    await db
+      .prepare("INSERT INTO report_issue (report_id, issue_number) VALUES (?, ?)")
+      .bind(FILED, 400)
+      .run();
     const files = [FILED, FRESH].map((id, i) => ({
       action: "upload",
       fileName: `diagnostics/0.0.0-synthetic/${id}.json`,
@@ -155,7 +175,11 @@ describe("GET /report?unfiled=1", () => {
     }));
     stubFetch({
       b2_authorize_account: () =>
-        Response.json({ apiUrl: "https://b2.test", downloadUrl: "https://d.test", authorizationToken: "t" }),
+        Response.json({
+          apiUrl: "https://b2.test",
+          downloadUrl: "https://d.test",
+          authorizationToken: "t",
+        }),
       b2_list_file_names: () => Response.json({ files, nextFileName: null }),
       [`file-${FILED}`]: () => Response.json({ report_id: FILED }),
       [`file-${FRESH}`]: () => Response.json({ report_id: FRESH }),
@@ -179,7 +203,10 @@ describe("GET /report?unfiled=1", () => {
 
   it("skips reports an issue lists and still moves the cursor past them", async () => {
     const out = await pull(await setup(), "&unfiled=1");
-    assert.deepEqual(out.reports.map((r) => r.report_id), [FRESH]);
+    assert.deepEqual(
+      out.reports.map((r) => r.report_id),
+      [FRESH],
+    );
     assert.equal(out.skipped_filed, 1);
     assert.equal(out.filed_filter, "on");
     assert.equal(out.next_since, 1001);
@@ -187,7 +214,10 @@ describe("GET /report?unfiled=1", () => {
 
   it("returns every report without the flag", async () => {
     const out = await pull(await setup(), "");
-    assert.deepEqual(out.reports.map((r) => r.report_id), [FILED, FRESH]);
+    assert.deepEqual(
+      out.reports.map((r) => r.report_id),
+      [FILED, FRESH],
+    );
     assert.equal(out.skipped_filed, 0);
     assert.equal(out.filed_filter, "off");
     assert.deepEqual(out.linked, []);
@@ -198,11 +228,18 @@ describe("GET /report?unfiled=1", () => {
     // FILED is indexed with a signature and tracked by open issue #400;
     // FRESH shares the signature on the same version line.
     await db
-      .prepare("INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (400, 't', 'open', 'triage', 1, 1)")
+      .prepare(
+        "INSERT INTO issues (number, title, state, kind, created_at, updated_at) VALUES (400, 't', 'open', 'triage', 1, 1)",
+      )
       .run();
-    for (const [id, version] of [[FILED, "0.0.0-synthetic"], [FRESH, "0.0.1"]] as const) {
+    for (const [id, version] of [
+      [FILED, "0.0.0-synthetic"],
+      [FRESH, "0.0.1"],
+    ] as const) {
       await db
-        .prepare("INSERT INTO reports (report_id, object_key, received_at, version, signature) VALUES (?, ?, 1, ?, 'sig')")
+        .prepare(
+          "INSERT INTO reports (report_id, object_key, received_at, version, signature) VALUES (?, ?, 1, ?, 'sig')",
+        )
         .bind(id, `diagnostics/${version}/${id}.json`, version)
         .run();
     }
@@ -218,7 +255,10 @@ describe("GET /report?unfiled=1", () => {
     assert.equal(out.linked_signature, 1);
     assert.equal(out.next_since, 1001, "the cursor moves past a linked report");
     assert.equal(downloads, 0, "a linked report is not downloaded");
-    const row = await db.prepare("SELECT source, linked_by FROM report_issue WHERE report_id = ?").bind(FRESH).first();
+    const row = await db
+      .prepare("SELECT source, linked_by FROM report_issue WHERE report_id = ?")
+      .bind(FRESH)
+      .first();
     assert.deepEqual(row, { source: "signature", linked_by: "ingest" });
     assert.deepEqual((await pull(db, "")).linked, [], "a force_full pull links nothing");
   });
@@ -238,22 +278,41 @@ describe("GET /report?unfiled=1 against closed issues", () => {
   async function setup(version: string, fixedIn: string | null): Promise<TestD1> {
     const db = createD1();
     await db
-      .prepare("INSERT INTO issues (number, title, state, kind, created_at, updated_at, closed_at) VALUES (412, 'Libro stalls', 'closed', 'triage', 1, 2, 2)")
+      .prepare(
+        "INSERT INTO issues (number, title, state, kind, created_at, updated_at, closed_at) VALUES (412, 'Libro stalls', 'closed', 'triage', 1, 2, 2)",
+      )
       .run();
-    await db.prepare("INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, 412, 'filed')").bind(OLD).run();
+    await db
+      .prepare(
+        "INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, 412, 'filed')",
+      )
+      .bind(OLD)
+      .run();
     if (fixedIn) {
       await db
-        .prepare("INSERT INTO issue_fix (issue_number, recorded_at, source, fixed_in, pr_number, merge_sha, recorded_by) VALUES (412, 3, 'release', ?, 418, ?, 'sync')")
+        .prepare(
+          "INSERT INTO issue_fix (issue_number, recorded_at, source, fixed_in, pr_number, merge_sha, recorded_by) VALUES (412, 3, 'release', ?, 418, ?, 'sync')",
+        )
         .bind(fixedIn, SHA)
         .run();
     }
-    for (const [id, v] of [[OLD, "0.9.0"], [NEW, version]] as const) {
+    for (const [id, v] of [
+      [OLD, "0.9.0"],
+      [NEW, version],
+    ] as const) {
       await db
-        .prepare("INSERT INTO reports (report_id, object_key, received_at, version, signature) VALUES (?, ?, 1, ?, 'sig')")
+        .prepare(
+          "INSERT INTO reports (report_id, object_key, received_at, version, signature) VALUES (?, ?, 1, ?, 'sig')",
+        )
         .bind(id, `diagnostics/${v}/${id}.json`, v)
         .run();
     }
-    const files = ([[OLD, "0.9.0"], [NEW, version]] as const).map(([id, v], i) => ({
+    const files = (
+      [
+        [OLD, "0.9.0"],
+        [NEW, version],
+      ] as const
+    ).map(([id, v], i) => ({
       action: "upload",
       fileName: `diagnostics/${v}/${id}.json`,
       fileId: `file-${id}`,
@@ -262,7 +321,11 @@ describe("GET /report?unfiled=1 against closed issues", () => {
     }));
     stubFetch({
       b2_authorize_account: () =>
-        Response.json({ apiUrl: "https://b2.test", downloadUrl: "https://d.test", authorizationToken: "t" }),
+        Response.json({
+          apiUrl: "https://b2.test",
+          downloadUrl: "https://d.test",
+          authorizationToken: "t",
+        }),
       b2_list_file_names: () => Response.json({ files, nextFileName: null }),
       [`file-${OLD}`]: () => Response.json({ report_id: OLD }),
       [`file-${NEW}`]: () => Response.json({ report_id: NEW }),
@@ -287,9 +350,20 @@ describe("GET /report?unfiled=1 against closed issues", () => {
     const db = await setup("0.9.3", "0.9.2");
     const out = await pull(db);
     assert.equal(out.regressions, 1);
-    assert.deepEqual(out.reports.map((r) => [r.report_id, r.regression_of]), [[NEW, { issue: 412, fixed_in: "0.9.2", pr_number: 418, title: "Libro stalls" }]]);
+    assert.deepEqual(
+      out.reports.map((r) => [r.report_id, r.regression_of]),
+      [[NEW, { issue: 412, fixed_in: "0.9.2", pr_number: 418, title: "Libro stalls" }]],
+    );
     assert.deepEqual(out.linked, []);
-    assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM report_issue WHERE report_id = ?").bind(NEW).first<{ n: number }>().then((r) => r?.n), 0, "a regression is linked by the issue ingest files, not here");
+    assert.equal(
+      await db
+        .prepare("SELECT COUNT(*) AS n FROM report_issue WHERE report_id = ?")
+        .bind(NEW)
+        .first<{ n: number }>()
+        .then((r) => r?.n),
+      0,
+      "a regression is linked by the issue ingest files, not here",
+    );
   });
 
   it("links a report from an older build to the closed issue quietly", async () => {
@@ -298,38 +372,73 @@ describe("GET /report?unfiled=1 against closed issues", () => {
     assert.equal(out.regressions, 0);
     assert.deepEqual(out.reports, []);
     assert.deepEqual(out.linked, [{ report_id: NEW, issue: 412, state: "closed" }]);
-    const row = await db.prepare("SELECT source, linked_by FROM report_issue WHERE report_id = ?").bind(NEW).first();
+    const row = await db
+      .prepare("SELECT source, linked_by FROM report_issue WHERE report_id = ?")
+      .bind(NEW)
+      .first();
     assert.deepEqual(row, { source: "signature", linked_by: "ingest" });
   });
 
   it("links to a closed issue without a fix only on the same version line", async () => {
     let out = await pull(await setup("0.9.7", null));
-    assert.deepEqual(out.linked.map((l) => l.issue), [412]);
+    assert.deepEqual(
+      out.linked.map((l) => l.issue),
+      [412],
+    );
     assert.deepEqual(out.reports, []);
     out = await pull(await setup("0.10.0", null));
     assert.deepEqual(out.linked, []);
-    assert.deepEqual(out.reports.map((r) => [r.report_id, r.regression_of]), [[NEW, null]], "a new line goes to triage");
+    assert.deepEqual(
+      out.reports.map((r) => [r.report_id, r.regression_of]),
+      [[NEW, null]],
+      "a new line goes to triage",
+    );
   });
 
   it("honors a member's exclusion from the closed issue", async () => {
     const db = await setup("0.9.3", "0.9.2");
-    await db.prepare("INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, 412, 'excluded')").bind(NEW).run();
+    await db
+      .prepare(
+        "INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, 412, 'excluded')",
+      )
+      .bind(NEW)
+      .run();
     const out = await pull(db);
-    assert.deepEqual(out.reports.map((r) => r.regression_of), [null]);
+    assert.deepEqual(
+      out.reports.map((r) => r.regression_of),
+      [null],
+    );
   });
 
   /** Adds a second closed issue tracking the same signature through a report of `version`. */
-  async function closedIssue(db: TestD1, number: number, version: string, fixedIn: string | null): Promise<void> {
+  async function closedIssue(
+    db: TestD1,
+    number: number,
+    version: string,
+    fixedIn: string | null,
+  ): Promise<void> {
     const id = `${String(number).padStart(8, "0")}-0000-4000-8000-000000000000`;
     await db
-      .prepare("INSERT INTO issues (number, title, state, kind, created_at, updated_at, closed_at) VALUES (?, 'Again', 'closed', 'triage', 4, 5, 5)")
+      .prepare(
+        "INSERT INTO issues (number, title, state, kind, created_at, updated_at, closed_at) VALUES (?, 'Again', 'closed', 'triage', 4, 5, 5)",
+      )
       .bind(number)
       .run();
-    await db.prepare("INSERT INTO reports (report_id, object_key, received_at, version, signature) VALUES (?, ?, 2, ?, 'sig')").bind(id, `diagnostics/${version}/${id}.json`, version).run();
-    await db.prepare("INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, ?, 'filed')").bind(id, number).run();
+    await db
+      .prepare(
+        "INSERT INTO reports (report_id, object_key, received_at, version, signature) VALUES (?, ?, 2, ?, 'sig')",
+      )
+      .bind(id, `diagnostics/${version}/${id}.json`, version)
+      .run();
+    await db
+      .prepare("INSERT INTO report_issue (report_id, issue_number, source) VALUES (?, ?, 'filed')")
+      .bind(id, number)
+      .run();
     if (fixedIn) {
       await db
-        .prepare("INSERT INTO issue_fix (issue_number, recorded_at, source, fixed_in, pr_number, merge_sha, recorded_by) VALUES (?, 6, 'release', ?, 430, ?, 'sync')")
+        .prepare(
+          "INSERT INTO issue_fix (issue_number, recorded_at, source, fixed_in, pr_number, merge_sha, recorded_by) VALUES (?, 6, 'release', ?, 430, ?, 'sync')",
+        )
         .bind(number, fixedIn, SHA)
         .run();
     }
@@ -339,11 +448,21 @@ describe("GET /report?unfiled=1 against closed issues", () => {
     const db = await setup("0.9.9", "0.9.2");
     await closedIssue(db, 420, "0.9.3", "0.9.5");
     const out = await pull(db);
-    assert.deepEqual(out.reports.map((r) => [r.regression_of?.issue, r.regression_of?.fixed_in, r.regression_of?.pr_number]), [[420, "0.9.5", 430]]);
+    assert.deepEqual(
+      out.reports.map((r) => [
+        r.regression_of?.issue,
+        r.regression_of?.fixed_in,
+        r.regression_of?.pr_number,
+      ]),
+      [[420, "0.9.5", 430]],
+    );
     // Before the newer fix shipped, the older fix is the one that came back.
     const older = await setup("0.9.4", "0.9.2");
     await closedIssue(older, 420, "0.9.3", "0.9.5");
-    assert.deepEqual((await pull(older)).reports.map((r) => r.regression_of?.issue), [412]);
+    assert.deepEqual(
+      (await pull(older)).reports.map((r) => r.regression_of?.issue),
+      [412],
+    );
   });
 
   it("joins a closed regression issue on the line instead of filing another", async () => {
@@ -359,7 +478,10 @@ describe("GET /report?unfiled=1 against closed issues", () => {
     // A report from another line is still a regression of the fixed issue.
     const next = await setup("0.10.0", "0.9.2");
     await closedIssue(next, 420, "0.9.3", null);
-    assert.deepEqual((await pull(next)).reports.map((r) => r.regression_of?.issue), [412]);
+    assert.deepEqual(
+      (await pull(next)).reports.map((r) => r.regression_of?.issue),
+      [412],
+    );
   });
 });
 
@@ -393,26 +515,45 @@ describe("ingest cursor routes", () => {
     res = await commit(env, JSON.stringify({ since: 5, after: "" }));
     assert.deepEqual(await res.json<CursorAnswer>(), { ok: true, advanced: false, ...later });
     // Same time, later name: moves.
-    res = await commit(env, JSON.stringify({ ...later, after: "diagnostics/0.0.0-synthetic/c.json" }));
+    res = await commit(
+      env,
+      JSON.stringify({ ...later, after: "diagnostics/0.0.0-synthetic/c.json" }),
+    );
     assert.equal((await res.json<CursorAnswer>()).advanced, true);
 
     let listedFrom = false;
     stubFetch({
       b2_authorize_account: () =>
-        Response.json({ apiUrl: "https://b2.test", downloadUrl: "https://d.test", authorizationToken: "t" }),
+        Response.json({
+          apiUrl: "https://b2.test",
+          downloadUrl: "https://d.test",
+          authorizationToken: "t",
+        }),
       b2_list_file_names: () => {
         listedFrom = true;
         return Response.json({
           files: [
-            { action: "upload", fileName: "diagnostics/0.0.0-synthetic/b.json", fileId: "1", uploadTimestamp: later.since },
-            { action: "upload", fileName: "diagnostics/0.0.0-synthetic/c.json", fileId: "2", uploadTimestamp: later.since },
+            {
+              action: "upload",
+              fileName: "diagnostics/0.0.0-synthetic/b.json",
+              fileId: "1",
+              uploadTimestamp: later.since,
+            },
+            {
+              action: "upload",
+              fileName: "diagnostics/0.0.0-synthetic/c.json",
+              fileId: "2",
+              uploadTimestamp: later.since,
+            },
           ],
           nextFileName: null,
         });
       },
     });
     res = await worker.fetch(
-      new Request("https://collector.test/report?cursor=stored&baseline_version=", { headers: { authorization: `Bearer ${KEY}` } }),
+      new Request("https://collector.test/report?cursor=stored&baseline_version=", {
+        headers: { authorization: `Bearer ${KEY}` },
+      }),
       env,
       CTX,
     );
@@ -430,12 +571,24 @@ describe("ingest cursor routes", () => {
     await commit(env, JSON.stringify({ since: 99, after: "x" }));
     stubFetch({
       b2_authorize_account: () =>
-        Response.json({ apiUrl: "https://b2.test", downloadUrl: "https://d.test", authorizationToken: "t" }),
+        Response.json({
+          apiUrl: "https://b2.test",
+          downloadUrl: "https://d.test",
+          authorizationToken: "t",
+        }),
       b2_list_file_names: () => Response.json({ files: [], nextFileName: null }),
     });
     const get = (q: string, e: Env): Promise<Response> =>
-      worker.fetch(new Request(`https://collector.test/report?${q}&baseline_version=`, { headers: { authorization: `Bearer ${KEY}` } }), e, CTX);
-    const fresh = await (await get("cursor=stored", { ...ENV, DASHBOARD_DB: createD1() })).json<ReportAnswer>();
+      worker.fetch(
+        new Request(`https://collector.test/report?${q}&baseline_version=`, {
+          headers: { authorization: `Bearer ${KEY}` },
+        }),
+        e,
+        CTX,
+      );
+    const fresh = await (
+      await get("cursor=stored", { ...ENV, DASHBOARD_DB: createD1() })
+    ).json<ReportAnswer>();
     assert.deepEqual([fresh.since, fresh.after, fresh.cursor_source], [0, "", "stored"]);
     const forced = await (await get("cursor=stored&since=0", env)).json<ReportAnswer>();
     assert.deepEqual([forced.since, forced.after, forced.cursor_source], [0, "", "query"]);
@@ -443,14 +596,20 @@ describe("ingest cursor routes", () => {
 
   it("refuses a missing key, a malformed body and a missing database", async () => {
     const env = { ...ENV, DASHBOARD_DB: createD1() };
-    const anon = await worker.fetch(new Request("https://collector.test/report/cursor", { method: "POST", body: '{"since":1}' }), env, CTX);
+    const anon = await worker.fetch(
+      new Request("https://collector.test/report/cursor", { method: "POST", body: '{"since":1}' }),
+      env,
+      CTX,
+    );
     assert.equal(anon.status, 401);
     for (const bad of ['{"since":-1}', '{"since":1,"after":"a\\u0000"}', "x".repeat(2000), "[]"]) {
       assert.equal((await commit(env, bad)).status, 400, bad);
     }
     assert.equal((await commit(ENV, '{"since":1}')).status, 503);
     const stored = await worker.fetch(
-      new Request("https://collector.test/report?cursor=stored", { headers: { authorization: `Bearer ${KEY}` } }),
+      new Request("https://collector.test/report?cursor=stored", {
+        headers: { authorization: `Bearer ${KEY}` },
+      }),
       ENV,
       CTX,
     );

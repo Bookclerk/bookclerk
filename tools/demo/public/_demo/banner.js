@@ -58,7 +58,8 @@
     left.textContent = s > 0 ? `${m}:${String(s % 60).padStart(2, "0")} left` : "Time is up";
     // The session tells the page when it has ended; leave anyway if that
     // news does not arrive soon after the time is up.
-    if (s === 0 && !leaving && !startingOver) leaving = setTimeout(() => window.location.assign("/"), 10000);
+    if (s === 0 && !leaving && !startingOver)
+      leaving = setTimeout(() => window.location.assign("/"), 10000);
   };
   window.bookclerkDemoLive.follow((s) => {
     if (s.siteUrl) {

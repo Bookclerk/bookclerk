@@ -158,7 +158,10 @@ describe("live hub", () => {
     const a = fakeSocket(NOW + 60_000);
     const b = fakeSocket(NOW + 60_000);
     const hub = makeHub([a, b]);
-    assert.equal((await hub.fetch(new Request("https://live/close-all", { method: "POST" }), NOW)).status, 204);
+    assert.equal(
+      (await hub.fetch(new Request("https://live/close-all", { method: "POST" }), NOW)).status,
+      204,
+    );
     assert.equal(closeCode(a), 1008);
     assert.equal(closeCode(b), 1008);
   });
@@ -166,13 +169,27 @@ describe("live hub", () => {
   it("refuses a connect without an upgrade, with a bad expiry, or past the cap", async () => {
     const hub = makeHub([]);
     const upgrade = { headers: { Upgrade: "websocket" } };
-    assert.equal((await hub.fetch(new Request(`https://live/connect?expires=${NOW + 1000}`), NOW)).status, 426);
+    assert.equal(
+      (await hub.fetch(new Request(`https://live/connect?expires=${NOW + 1000}`), NOW)).status,
+      426,
+    );
     for (const bad of ["", "abc", String(NOW), "1e400", String(NOW + 0.5)]) {
-      assert.equal((await hub.fetch(new Request(`https://live/connect?expires=${bad}`, upgrade), NOW)).status, 400, bad);
+      assert.equal(
+        (await hub.fetch(new Request(`https://live/connect?expires=${bad}`, upgrade), NOW)).status,
+        400,
+        bad,
+      );
     }
     const full = makeHub(Array.from({ length: MAX_SOCKETS }, () => fakeSocket(NOW + 60_000)));
-    assert.equal((await full.fetch(new Request(`https://live/connect?expires=${NOW + 1000}`, upgrade), NOW)).status, 503);
-    assert.equal((await hub.fetch(new Request("https://live/other", { method: "POST" }), NOW)).status, 404);
+    assert.equal(
+      (await full.fetch(new Request(`https://live/connect?expires=${NOW + 1000}`, upgrade), NOW))
+        .status,
+      503,
+    );
+    assert.equal(
+      (await hub.fetch(new Request("https://live/other", { method: "POST" }), NOW)).status,
+      404,
+    );
   });
 
   it("ignores page messages and answers a close", () => {
@@ -202,7 +219,8 @@ function fakeLive(calls: HubCall[]): DurableObjectNamespace {
     idFromName: (name: string) => `id:${name}`,
     get: (id: string) => ({
       fetch: async (url: string, init: RequestInit = {}) => {
-        const upgrade = init.headers === undefined ? null : new Headers(init.headers).get("upgrade");
+        const upgrade =
+          init.headers === undefined ? null : new Headers(init.headers).get("upgrade");
         calls.push({ id, url: String(url), method: init.method || "GET", upgrade });
         return new Response(null, { status: 204 });
       },
@@ -251,13 +269,20 @@ async function call(env: Env, req: Request, b2: B2Access = makeB2()): Promise<Re
  * @returns `name=value`.
  */
 async function signedIn(env: DashboardEnv, role: "admin" | "member" = "member"): Promise<string> {
-  return (await createSession(env.DASHBOARD_DB, { userId: 7, login: "octo", role }, NOW)).split(";")[0] ?? "";
+  return (
+    (await createSession(env.DASHBOARD_DB, { userId: 7, login: "octo", role }, NOW)).split(
+      ";",
+    )[0] ?? ""
+  );
 }
 
 describe("link fingerprint", () => {
   it("changes with a pull request's title, even at the same length", async () => {
     const db = createD1();
-    await run(db, "INSERT INTO issue_pr (issue_number, pr_number, title, state, merged_at) VALUES (400, 9, 'Fix A', 'open', NULL)");
+    await run(
+      db,
+      "INSERT INTO issue_pr (issue_number, pr_number, title, state, merged_at) VALUES (400, 9, 'Fix A', 'open', NULL)",
+    );
     const before = await linkFingerprint(db);
     assert.equal(await linkFingerprint(db), before);
     await run(db, "UPDATE issue_pr SET title = 'Fix B'");
@@ -269,7 +294,10 @@ describe("live route", () => {
   it("hands a signed-in, same-origin upgrade to the hub with the session expiry", async () => {
     const env = makeEnv();
     const cookie = await signedIn(env);
-    const res = await call(env, new Request(`${ORIGIN}/live`, { headers: { cookie, upgrade: "websocket", origin: ORIGIN } }));
+    const res = await call(
+      env,
+      new Request(`${ORIGIN}/live`, { headers: { cookie, upgrade: "websocket", origin: ORIGIN } }),
+    );
     assert.equal(res.status, 204); // the fake hub's answer
     const [c] = env.calls;
     assert.ok(c !== undefined);
@@ -282,17 +310,35 @@ describe("live route", () => {
   it("refuses other origins, plain requests and visitors", async () => {
     const env = makeEnv();
     const cookie = await signedIn(env);
-    const cross = await call(env, new Request(`${ORIGIN}/live`, { headers: { cookie, upgrade: "websocket", origin: "https://evil.example" } }));
+    const cross = await call(
+      env,
+      new Request(`${ORIGIN}/live`, {
+        headers: { cookie, upgrade: "websocket", origin: "https://evil.example" },
+      }),
+    );
     assert.equal(cross.status, 400);
-    const plain = await call(env, new Request(`${ORIGIN}/live`, { headers: { cookie, origin: ORIGIN } }));
+    const plain = await call(
+      env,
+      new Request(`${ORIGIN}/live`, { headers: { cookie, origin: ORIGIN } }),
+    );
     assert.equal(plain.status, 400);
-    const visitor = await call(env, new Request(`${ORIGIN}/live`, { headers: { upgrade: "websocket", origin: ORIGIN } }));
+    const visitor = await call(
+      env,
+      new Request(`${ORIGIN}/live`, { headers: { upgrade: "websocket", origin: ORIGIN } }),
+    );
     assert.equal(visitor.status, 303);
     assert.equal(env.calls.length, 0);
   });
 
   it("is a 404 path when the dashboard is off", async () => {
-    const res = await dashboardFetch(new Request(`${ORIGIN}/live`), { LIVE: fakeLive([]) }, { waitUntil() {} }, "/live", makeB2(), NOW);
+    const res = await dashboardFetch(
+      new Request(`${ORIGIN}/live`),
+      { LIVE: fakeLive([]) },
+      { waitUntil() {} },
+      "/live",
+      makeB2(),
+      NOW,
+    );
     assert.equal(res, null);
   });
 
@@ -303,10 +349,24 @@ describe("live route", () => {
       received_at_unix_ms: NOW,
       payload: { trigger: "manual", version: "0.9.0", os: "linux", arch: "x86_64", events: [] },
     };
-    assert.equal(await dashboardIndexSubmitted(env, enriched, "diagnostics/0.9.0/a.json"), "indexed");
-    assert.deepEqual(env.calls.map((c) => [c.url, c.method]), [["https://live/changed", "POST"]]);
+    assert.equal(
+      await dashboardIndexSubmitted(env, enriched, "diagnostics/0.9.0/a.json"),
+      "indexed",
+    );
+    assert.deepEqual(
+      env.calls.map((c) => [c.url, c.method]),
+      [["https://live/changed", "POST"]],
+    );
     // Same report again under a cap of zero: nothing new, no push.
-    assert.equal(await indexSubmitted(env.DASHBOARD_DB, { ...enriched, report_id: "d2b80f13-0000-4000-8000-000000000002" }, "k", 0), "capped");
+    assert.equal(
+      await indexSubmitted(
+        env.DASHBOARD_DB,
+        { ...enriched, report_id: "d2b80f13-0000-4000-8000-000000000002" },
+        "k",
+        0,
+      ),
+      "capped",
+    );
     assert.equal((await all(env.DASHBOARD_DB, "SELECT report_id FROM reports")).length, 1);
     assert.equal(env.calls.length, 1);
   });
@@ -314,20 +374,41 @@ describe("live route", () => {
   it("closes live pages when an owner signs everyone out", async () => {
     const env = makeEnv();
     const cookie = await signedIn(env, "admin");
-    const res = await call(env, new Request(`${ORIGIN}/admin/sign-out-all`, { method: "POST", headers: { cookie, origin: ORIGIN } }));
+    const res = await call(
+      env,
+      new Request(`${ORIGIN}/admin/sign-out-all`, {
+        method: "POST",
+        headers: { cookie, origin: ORIGIN },
+      }),
+    );
     assert.equal(res.status, 303);
-    assert.deepEqual(env.calls.map((c) => c.url), ["https://live/close-all"]);
+    assert.deepEqual(
+      env.calls.map((c) => c.url),
+      ["https://live/close-all"],
+    );
   });
 
   it("refreshes a report page without reading storage or logging the view again", async () => {
     const env = makeEnv();
     const id = "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4";
-    await indexSubmitted(env.DASHBOARD_DB, { report_id: id, received_at_unix_ms: NOW, payload: { events: [] } }, "diagnostics/0.9.0/a.json", Infinity);
+    await indexSubmitted(
+      env.DASHBOARD_DB,
+      { report_id: id, received_at_unix_ms: NOW, payload: { events: [] } },
+      "diagnostics/0.9.0/a.json",
+      Infinity,
+    );
     const cookie = await signedIn(env);
-    const views = async () => (await all(env.DASHBOARD_DB, "SELECT * FROM access_log WHERE action = 'view-report'")).length;
+    const views = async () =>
+      (await all(env.DASHBOARD_DB, "SELECT * FROM access_log WHERE action = 'view-report'")).length;
     // The header cannot hide a first view: it is read and logged as usual.
     let reads = 0;
-    const b2: B2Access = { ...makeB2(), authorize: async () => { reads += 1; throw new Error("offline"); } };
+    const b2: B2Access = {
+      ...makeB2(),
+      authorize: async () => {
+        reads += 1;
+        throw new Error("offline");
+      },
+    };
     const live = { headers: { cookie, "bookclerk-live": "1" } };
     assert.equal((await call(env, new Request(`${ORIGIN}/reports/${id}`, live), b2)).status, 200);
     assert.equal(await views(), 1);
@@ -342,15 +423,22 @@ describe("live route", () => {
 
   it("keeps working without the binding", async () => {
     const { LIVE: _, ...env } = makeEnv();
-    const enriched = { report_id: "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4", received_at_unix_ms: NOW, payload: { events: [] } };
+    const enriched = {
+      report_id: "7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4",
+      received_at_unix_ms: NOW,
+      payload: { events: [] },
+    };
     assert.equal(await dashboardIndexSubmitted(env, enriched, "k"), "indexed");
-    const res = await call(env, new Request(`${ORIGIN}/live`, {
-      headers: {
-        cookie: await signedIn(env),
-        upgrade: "websocket",
-        origin: ORIGIN,
-      },
-    }));
+    const res = await call(
+      env,
+      new Request(`${ORIGIN}/live`, {
+        headers: {
+          cookie: await signedIn(env),
+          upgrade: "websocket",
+          origin: ORIGIN,
+        },
+      }),
+    );
     assert.equal(res.status, 404);
   });
 });

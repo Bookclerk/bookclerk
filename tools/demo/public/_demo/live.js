@@ -27,7 +27,8 @@
       const s = JSON.parse(data);
       if (!s || typeof s !== "object" || !STATES.has(s.state)) return null;
       const remaining = Number.isFinite(s.remaining) ? Math.max(0, s.remaining) : 0;
-      const siteUrl = typeof s.siteUrl === "string" && s.siteUrl.startsWith("https://") ? s.siteUrl : "";
+      const siteUrl =
+        typeof s.siteUrl === "string" && s.siteUrl.startsWith("https://") ? s.siteUrl : "";
       return { state: s.state, remaining, siteUrl };
     } catch {
       return null;
@@ -71,9 +72,12 @@
         return;
       }
       const current = socket;
-      setTimeout(() => {
-        if (!opened && !closed) current.close();
-      }, Math.min(HANDSHAKE_MS, maxRetryMs));
+      setTimeout(
+        () => {
+          if (!opened && !closed) current.close();
+        },
+        Math.min(HANDSHAKE_MS, maxRetryMs),
+      );
       socket.addEventListener("open", () => {
         opened = true;
       });

@@ -59,7 +59,21 @@ const DIAGRAM_TYPES: ReadonlyMap<string, string> = new Map([
 ]);
 
 /** SVG elements kept; see SKIPPED for those dropped, anything else rejects the diagram. */
-const ELEMENTS: ReadonlySet<string> = new Set(["svg", "g", "defs", "marker", "path", "polygon", "polyline", "line", "rect", "circle", "ellipse", "text", "tspan"]);
+const ELEMENTS: ReadonlySet<string> = new Set([
+  "svg",
+  "g",
+  "defs",
+  "marker",
+  "path",
+  "polygon",
+  "polyline",
+  "line",
+  "rect",
+  "circle",
+  "ellipse",
+  "text",
+  "tspan",
+]);
 
 /**
  * Elements dropped with their contents: the renderer's stylesheet (site.css
@@ -72,11 +86,44 @@ const MONO_CLASS = "mono";
 
 /** Attributes kept; `class` (but `mono`), `style` and `data-*` are dropped, anything else rejects the diagram. */
 const ATTRIBUTES: ReadonlySet<string> = new Set([
-  "xmlns", "viewBox", "width", "height", "id", "transform",
-  "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "d", "points", "dy",
-  "markerWidth", "markerHeight", "refX", "refY", "orient", "marker-start", "marker-end",
-  "fill", "stroke", "stroke-width", "stroke-dasharray", "stroke-linecap", "stroke-linejoin",
-  "font-size", "font-weight", "font-style", "text-anchor", "text-decoration",
+  "xmlns",
+  "viewBox",
+  "width",
+  "height",
+  "id",
+  "transform",
+  "x",
+  "y",
+  "x1",
+  "y1",
+  "x2",
+  "y2",
+  "cx",
+  "cy",
+  "r",
+  "rx",
+  "ry",
+  "d",
+  "points",
+  "dy",
+  "markerWidth",
+  "markerHeight",
+  "refX",
+  "refY",
+  "orient",
+  "marker-start",
+  "marker-end",
+  "fill",
+  "stroke",
+  "stroke-width",
+  "stroke-dasharray",
+  "stroke-linecap",
+  "stroke-linejoin",
+  "font-size",
+  "font-weight",
+  "font-style",
+  "text-anchor",
+  "text-decoration",
 ]);
 
 /**

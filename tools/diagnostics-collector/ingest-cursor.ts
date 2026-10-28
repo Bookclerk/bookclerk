@@ -95,11 +95,16 @@ export async function readCursor(db: D1Database): Promise<Cursor> {
  * @returns Whether it moved,
  *   and the cursor now stored.
  */
-export async function commitCursor(db: D1Database, next: Cursor): Promise<{ advanced: boolean; cursor: Cursor; }> {
+export async function commitCursor(
+  db: D1Database,
+  next: Cursor,
+): Promise<{ advanced: boolean; cursor: Cursor }> {
   const stored = await readCursor(db);
   if (!cursorBefore(stored, next)) return { advanced: false, cursor: stored };
   await db
-    .prepare("INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+    .prepare(
+      "INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+    )
     .bind(CURSOR_KEY, JSON.stringify({ since: next.since, after: next.after }))
     .run();
   return { advanced: true, cursor: next };

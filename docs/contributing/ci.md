@@ -203,6 +203,8 @@ paths):
 | `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |
 | `tools/diagnostics-collector/**` | The collector's tests (`collector_test`) |
 | `tools/demo/**` and the files the demo copies | The hosted demo Worker's tests (`demo_test`) |
+| Markdown, TypeScript, JavaScript, JSON, YAML or CSS anywhere (not lockfiles) | Formatting and Markdown lint (`lint`), on top of whatever else the file selects |
+| `.prettierrc.json`, `.prettierignore`, `.markdownlint-cli2.jsonc`, `tools/lint/**` | Only `lint` |
 | Root `Cargo.toml` or `Cargo.lock`, the toolchain, `.cargo/`, workflows, the planner, `fuzz/Cargo.*`, unknown paths, planner errors | **Full suite** |
 | `fuzz/corpus/<target>/**`, `fuzz/oracles/<target>.rs` | The owning crate's tests |
 | `fuzz/fuzz_targets/**`, `fuzz/dictionaries/**` | Nothing here |
@@ -332,7 +334,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | Job | Runs when | Checks |
 | --- | --- | --- |
 | `plan` | Always | Planner, executor, contract and guardrail tests; DB isolation and docs lints; `resolve`; the `ci-plan` artifact |
-| `fmt / clippy / docs` | Any of its checks is selected | `ui`, `plugin_sdk_abi`, `python_sdk`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
+| `fmt / clippy / docs` | Any of its checks is selected | `lint`, `ui`, `plugin_sdk_abi`, `python_sdk`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
 | `unit + integration tests` | `rust_test` is selected | nextest over the affected packages (the workspace on the full suite), custom-harness targets, feature test runs, bench and example builds |
 | `staged plugin installation (e2e)` | `e2e` is selected | Builds, installs and stages the guests in scope, then the `bookclerk-plugin-e2e` staged targets |
 | `release build` | A shipped binary (hosts, helpers, platform guests) is compiled-affected | See [Release build](#release-build) |
@@ -347,6 +349,32 @@ when a step matches no test. Name such tests `postgres_*`.
 
 The postgres owners are the library, the db guest, the postgres guest and
 the plugin host's RPC `LIKE`.
+
+### Formatting and Markdown lint
+
+The `lint` check needs no Rust toolchain. It installs `tools/lint` (pinned
+Prettier and markdownlint-cli2) and runs both from the repository root:
+
+- **Prettier** checks TypeScript, JavaScript, JSON, YAML and CSS against
+  `.prettierrc.json`. `.prettierignore` leaves out Markdown, HTML (page
+  templates whose whitespace reaches the output), lockfiles, generated
+  files, byte-identical mirrors, fuzz or test corpora, and the build output
+  that nested `.gitignore` files hide.
+- **markdownlint** checks every Markdown file against
+  `.markdownlint-cli2.jsonc`, which relaxes the rules that fight GitHub-first
+  docs (see [Writing docs](writing-docs.md#markdown-lint)).
+
+Each language's own linter runs in its own check: oxlint in `ui`, the
+TypeScript SDK and the three Workers, and `ruff check` plus
+`ruff format --check` in `python_sdk`.
+
+To fix formatting locally:
+
+```console
+$ npm ci --prefix tools/lint
+$ node tools/lint/node_modules/prettier/bin/prettier.cjs --write .
+$ node tools/lint/node_modules/markdownlint-cli2/markdownlint-cli2-bin.mjs --fix
+```
 
 ### Release build
 
@@ -422,18 +450,19 @@ One `cpu.max` core means one media worker.
 
 The job's checks are selected by path, with no Rust toolchain:
 
-- **`site_test`**: `npm run typecheck` (strict `tsc --noEmit`) and
-  `npm test` in `tools/site`, covering the generator, the Worker and the
+- **`site_test`**: `npm run typecheck` (strict `tsc --noEmit`),
+  `npm run lint` (oxlint) and `npm test` in `tools/site`, covering the
+  generator, the Worker and the
   docs link check. Selected by `tools/site/**`, `assets/brand/**` or
   `docs/**`.
 - **`site_audit`**: `tsc` on the audit, then Lighthouse and axe-core on the
   built site (see [Website checks](automation.md#website-checks)).
   Selected by `tools/site/**` or `assets/brand/**`.
-- **`collector_test`**: `npm run typecheck` (strict `tsc --noEmit`) and
-  `npm test` in
+- **`collector_test`**: `npm run typecheck` (strict `tsc --noEmit`),
+  `npm run lint` (oxlint) and `npm test` in
   `tools/diagnostics-collector`. Selected by its folder.
-- **`demo_test`**: `npm run typecheck` (strict `tsc --noEmit`) and
-  `npm test` in `tools/demo`.
+- **`demo_test`**: `npm run typecheck` (strict `tsc --noEmit`),
+  `npm run lint` (oxlint) and `npm test` in `tools/demo`.
   Selected by its folder.
 
 The full suite runs all four.
@@ -620,12 +649,12 @@ With `SELECTIVE_CI=1`, a pull request should see these jobs after `plan`:
 
 | Change | Jobs after `plan` | Notes |
 | --- | --- | --- |
-| `docs/**` only | Workers (`site_test` only) | The site's link check covers the docs it publishes |
-| `tools/site/**` only | Workers (`site_test`, `site_audit`) | No Rust toolchain |
-| `tools/diagnostics-collector/**` only | Workers (`collector_test`) | No Rust toolchain |
-| `tools/demo/**` only | Workers (`demo_test`) | No Rust toolchain; `packaging/demo/**` selects nothing |
-| `README.md`, `AGENTS.md`, other top-level prose, `config/config.example.toml`, `scripts/tests/**` | None | The plan job runs the planner and lint tests on every event |
-| `ui/**` only | `fmt / clippy / docs` (UI and UI API docs) | No Rust toolchain checks |
+| `docs/**` only | Workers (`site_test` only), `fmt / clippy / docs` (`lint` only) | The site's link check covers the docs it publishes |
+| `tools/site/**` only | Workers (`site_test`, `site_audit`), `fmt / clippy / docs` (`lint` only) | No Rust toolchain |
+| `tools/diagnostics-collector/**` only | Workers (`collector_test`), `fmt / clippy / docs` (`lint` only) | No Rust toolchain |
+| `tools/demo/**` only | Workers (`demo_test`), `fmt / clippy / docs` (`lint` only) | No Rust toolchain; `packaging/demo/**` selects nothing |
+| `README.md`, `AGENTS.md`, other top-level prose, `config/config.example.toml`, `scripts/tests/**` | `fmt / clippy / docs` (`lint` only) for Markdown and JSON | The plan job runs the planner and lint tests on every event |
+| `ui/**` only | `fmt / clippy / docs` (UI, UI API docs and `lint`) | No Rust toolchain checks |
 | `crates/bookclerk-cli/src/**` | check, test (`-p bookclerk-cli`), release (`bookclerk-cli`) | No postgres, no E2E |
 | `crates/bookclerk-plugin-host/src/**` | check, test (host and dependents), e2e (runtime smoke), release (hosts), native gateway (3 OS), postgres (`rpc_like` only) | No sandbox matrix |
 | One optional guest (such as Libro) | check, test (guest tests), e2e (`libro` only) | Other storefronts are neither built nor staged |

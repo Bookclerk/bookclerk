@@ -10,18 +10,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import secrets
 import sys
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from .ensure import package_root
 from ..path_guard import (
-    resolve_under,
-    refuse_symlink_path,
-    ensure_dir_under,
-    write_file_under,
     copy_file_under,
+    ensure_dir_under,
+    refuse_symlink_path,
+    resolve_under,
+    write_file_under,
 )
 from ..tools import (
     apply_author_compatibility_date,
@@ -31,6 +29,7 @@ from ..tools import (
     validate_author_compatibility_flags,
     workerd_module_is_embedded,
 )
+from .ensure import package_root
 
 SDK_JS_MODULE_NAMES = ("@bookclerk/plugin-sdk/workerd", "@bookclerk/plugin-sdk")
 """Module names used when embedding the TypeScript workerd SDK."""
@@ -50,9 +49,9 @@ Native guests use Rust serve() / PluginWorker instead.
 '''
 """Source text embedded as ``bookclerk_plugin_sdk/__init__.py`` in the isolate."""
 
-ADAPTER_JS = '''import { wrapPluginFromBinding } from "@bookclerk/plugin-sdk/workerd";
+ADAPTER_JS = """import { wrapPluginFromBinding } from "@bookclerk/plugin-sdk/workerd";
 export default wrapPluginFromBinding();
-'''
+"""
 """First-party adapter isolate module (mirrors ``ADAPTER_JS`` in ``config.rs``)."""
 
 ENTRYPOINT_SERVICE_BINDINGS: dict[str, tuple[str, str]] = {
@@ -78,9 +77,9 @@ def manifest_capabilities(m: dict[str, Any]) -> dict[str, Any]:
     bindings: list[str] = []
     if m.get("vars") is not None:
         bindings.append("CONFIG")
-    secrets = m.get("secrets")
-    if isinstance(secrets, dict):
-        bindings.append(str(secrets.get("binding") or "SECRETS"))
+    secrets_grant = m.get("secrets")
+    if isinstance(secrets_grant, dict):
+        bindings.append(str(secrets_grant.get("binding") or "SECRETS"))
     work_fs = m.get("work_fs")
     if isinstance(work_fs, dict):
         bindings.append(str(work_fs.get("binding") or "WORK_FS"))
@@ -235,9 +234,7 @@ def collect_modules(directory: Path, *, plugin_root: Path | None = None) -> list
     def walk(d: Path) -> None:
         for entry in sorted(d.iterdir(), key=lambda p: p.name):
             if entry.is_symlink():
-                raise ValueError(
-                    f"refusing symlink in workerd modules tree: {entry}"
-                )
+                raise ValueError(f"refusing symlink in workerd modules tree: {entry}")
             p = resolve_under(root, entry.relative_to(root))
             if entry.is_dir():
                 walk(p)
@@ -319,13 +316,7 @@ def _relative_manifest_path(value: str, label: str) -> str:
 
 
 def _single_file_name(value: str, label: str) -> str:
-    if (
-        not value
-        or "\0" in value
-        or "/" in value
-        or "\\" in value
-        or value in {".", ".."}
-    ):
+    if not value or "\0" in value or "/" in value or "\\" in value or value in {".", ".."}:
         raise ValueError(f"{label} must be a single path component: {value}")
     return value
 
@@ -405,9 +396,7 @@ def materialize_config(
     workerd = manifest.get("workerd")
     if not isinstance(workerd, dict):
         raise ValueError("missing [workerd] table")
-    applied_date = apply_author_compatibility_date(
-        str(workerd.get("compatibility_date") or "")
-    )
+    applied_date = apply_author_compatibility_date(str(workerd.get("compatibility_date") or ""))
     if applied_date.warning:
         print(applied_date.warning, file=sys.stderr)
 
@@ -553,9 +542,7 @@ def materialize_config(
         listed = ", ".join(f'"{escape_capnp(f)}"' for f in flags)
         flags_line = f"compatibilityFlags = [{listed}],"
 
-    domains = egress_domains_for(
-        declares_python(manifest), network_mode, network_domains
-    )
+    domains = egress_domains_for(declares_python(manifest), network_mode, network_domains)
     policy_json = json.dumps(
         {
             "mode": "outbound" if network_mode == "outbound" else "deny",
@@ -587,9 +574,7 @@ def materialize_config(
     plugin_outbound = plugin_global_outbound(network_mode)
     if not bridge_token:
         raise ValueError("bridge_token is required")
-    bridge_token_binding = (
-        f'(name = "BRIDGE_TOKEN", text = "{escape_capnp(bridge_token)}")'
-    )
+    bridge_token_binding = f'(name = "BRIDGE_TOKEN", text = "{escape_capnp(bridge_token)}")'
 
     compat_date = escape_capnp(applied_date.applied)
     modules_joined = ",\n    ".join(module_embeds)

@@ -52,7 +52,13 @@
 import { API_INDEX } from "./api-reference.ts";
 import { datedPages, LAST_UPDATED_FILE, MAX_LAST_UPDATED_BYTES, pageDate } from "./last-updated.ts";
 import type { IsoDate } from "./last-updated.ts";
-import { docMarkdownUrl, docUrl, renderDocPage, renderSitemapPage, renderUnavailablePage } from "./render.ts";
+import {
+  docMarkdownUrl,
+  docUrl,
+  renderDocPage,
+  renderSitemapPage,
+  renderUnavailablePage,
+} from "./render.ts";
 import type { DocsShell, DocsVersion, SitemapPageLink } from "./render.ts";
 import { MAX_SITEMAP_URLS, sitemapIndexXml, sitemapXml } from "./sitemap.ts";
 import type { SitemapEntry } from "./sitemap.ts";
@@ -137,7 +143,8 @@ export const PAGE_MARKDOWN: ReadonlyMap<string, string> = new Map([
  * Media types the Worker compresses: text, and the structured-text types the
  * site serves. Fonts and images are already compressed.
  */
-const COMPRESSIBLE_RE = /^(?:text\/[a-z0-9.+-]+|application\/(?:[a-z0-9.-]+\+)?(?:json|xml)|image\/svg\+xml)$/;
+const COMPRESSIBLE_RE =
+  /^(?:text\/[a-z0-9.+-]+|application\/(?:[a-z0-9.-]+\+)?(?:json|xml)|image\/svg\+xml)$/;
 
 /** Content codings the Worker can apply, most preferred first. */
 const ENCODINGS = ["br", "gzip"] as const;
@@ -339,9 +346,11 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
   }
   if (!DOC_REST_RE.test(rest)) return { kind: "missing" };
   const last = rest.slice(rest.lastIndexOf("/") + 1);
-  if (last.endsWith(".md")) return { kind: "markdown", version, keys: [rest.slice(0, -".md".length)] };
+  if (last.endsWith(".md"))
+    return { kind: "markdown", version, keys: [rest.slice(0, -".md".length)] };
   if (last.endsWith(".html")) {
-    const page = last === "index.html" ? rest.slice(0, -"index.html".length) : rest.slice(0, -".html".length);
+    const page =
+      last === "index.html" ? rest.slice(0, -"index.html".length) : rest.slice(0, -".html".length);
     const location = (version.base + page).replace(/\/$/, "");
     // `a.html/index.html` lands on `a.html`, which would redirect again.
     const next = docsTarget(location, versions);
@@ -366,7 +375,11 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
  * @throws {Error} When the docs repository fails or redirects, or the file
  *   is over MAX_DOC_BYTES.
  */
-export async function fetchDoc(ref: string, key: string, fetcher: DocsFetch): Promise<string | null> {
+export async function fetchDoc(
+  ref: string,
+  key: string,
+  fetcher: DocsFetch,
+): Promise<string | null> {
   return fetchDocsFile(ref, `${key}.md`, fetcher, MAX_DOC_BYTES);
 }
 
@@ -386,7 +399,9 @@ async function fetchApiIndex(ref: string, fetcher: DocsFetch): Promise<DatesFile
     const text = await fetchDoc(ref, API_INDEX, fetcher);
     return text === null ? { kind: "missing" } : { kind: "file", text };
   } catch (err) {
-    console.error(`Web API index fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(
+      `Web API index fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return { kind: "failed" };
   }
 }
@@ -432,17 +447,27 @@ async function fetchLastUpdated(ref: string, fetcher: DocsFetch): Promise<DatesF
  * @throws {Error} When the docs repository fails or redirects, or the file
  *   is over `limit`.
  */
-async function fetchDocsFile(ref: string, file: string, fetcher: DocsFetch, limit: number): Promise<string | null> {
+async function fetchDocsFile(
+  ref: string,
+  file: string,
+  fetcher: DocsFetch,
+  limit: number,
+): Promise<string | null> {
   const ttl = ttlFor(ref);
   const response = await fetcher(`${DOCS_RAW_BASE}${ref}/${file}`, {
     // The Workers runtime rejects `redirect: "error"` outright, so redirects
     // are taken as answers and refused below.
     redirect: "manual",
-    cf: { cacheEverything: true, cacheTtlByStatus: { "200-299": ttl, 404: MISSING_TTL, "500-599": 0 } },
+    cf: {
+      cacheEverything: true,
+      cacheTtlByStatus: { "200-299": ttl, 404: MISSING_TTL, "500-599": 0 },
+    },
   });
   if (response.status === 404) return null;
-  if (response.status >= 300 && response.status < 400) throw new Error(`docs repository redirected ${ref}/${file}`);
-  if (!response.ok) throw new Error(`docs repository answered ${response.status} for ${ref}/${file}`);
+  if (response.status >= 300 && response.status < 400)
+    throw new Error(`docs repository redirected ${ref}/${file}`);
+  if (!response.ok)
+    throw new Error(`docs repository answered ${response.status} for ${ref}/${file}`);
   const declared = Number(response.headers.get("Content-Length") ?? "0");
   if (declared > limit) throw new Error(`${ref}/${file} is ${declared} bytes`);
   // UTF-8, with invalid bytes replaced rather than refused.
@@ -491,8 +516,15 @@ async function readCapped(response: Response, name: string, limit: number): Prom
  * @param status - Status to use instead of the response's.
  * @returns The new response.
  */
-function withHeaders(response: Response, headers: Readonly<Record<string, string>>, status?: number): Response {
-  const init = status === undefined ? { status: response.status, statusText: response.statusText } : { status };
+function withHeaders(
+  response: Response,
+  headers: Readonly<Record<string, string>>,
+  status?: number,
+): Response {
+  const init =
+    status === undefined
+      ? { status: response.status, statusText: response.statusText }
+      : { status };
   const out = new Response(response.body, { ...init, headers: response.headers });
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) out.headers.set(name, value);
   for (const [name, value] of Object.entries(headers)) out.headers.set(name, value);
@@ -509,7 +541,9 @@ function withHeaders(response: Response, headers: Readonly<Record<string, string
 function varyAdd(headers: Headers, name: string): string {
   const current = headers.get("Vary");
   if (!current) return name;
-  return current.split(",").some((v) => v.trim().toLowerCase() === name.toLowerCase()) ? current : `${current}, ${name}`;
+  return current.split(",").some((v) => v.trim().toLowerCase() === name.toLowerCase())
+    ? current
+    : `${current}, ${name}`;
 }
 
 /**
@@ -520,7 +554,9 @@ function varyAdd(headers: Headers, name: string): string {
  * @returns A permanent redirect that keeps the query string.
  */
 function redirect(url: URL, location: string): Response {
-  return withHeaders(new Response(null, { status: 301 }), { Location: `${url.origin}${location}${url.search}` });
+  return withHeaders(new Response(null, { status: 301 }), {
+    Location: `${url.origin}${location}${url.search}`,
+  });
 }
 
 /**
@@ -537,7 +573,10 @@ function redirect(url: URL, location: string): Response {
  */
 function toDocsHome(url: URL, base: string, markdown: boolean): Response {
   const location = markdown ? docMarkdownUrl("README", base) : docUrl("README", base);
-  return withHeaders(new Response(null, { status: 302 }), { Location: `${url.origin}${location}`, "Cache-Control": "no-store" });
+  return withHeaders(new Response(null, { status: 302 }), {
+    Location: `${url.origin}${location}`,
+    "Cache-Control": "no-store",
+  });
 }
 
 /**
@@ -549,13 +588,24 @@ function toDocsHome(url: URL, base: string, markdown: boolean): Response {
  * @param assets - The static assets.
  * @returns The page with status 404.
  */
-async function notFound(url: URL, method: string, markdown: boolean, assets: Assets): Promise<Response> {
+async function notFound(
+  url: URL,
+  method: string,
+  markdown: boolean,
+  assets: Assets,
+): Promise<Response> {
   const file = markdown ? NOT_FOUND_MARKDOWN : "/404.html";
   const found = await assets.fetch(new URL(file, url), { method });
-  const fallback = markdown ? "# Not found\n" : "<!doctype html><title>Not found</title><h1>Not found</h1>";
+  const fallback = markdown
+    ? "# Not found\n"
+    : "<!doctype html><title>Not found</title><h1>Not found</h1>";
   const body = found.ok ? found : new Response(fallback);
   const type = markdown ? MARKDOWN_CONTENT_TYPE : "text/html; charset=utf-8";
-  return withHeaders(body, { "Content-Type": type, Vary: "Accept", "X-Robots-Tag": "noindex" }, 404);
+  return withHeaders(
+    body,
+    { "Content-Type": type, Vary: "Accept", "X-Robots-Tag": "noindex" },
+    404,
+  );
 }
 
 /**
@@ -568,7 +618,8 @@ async function notFound(url: URL, method: string, markdown: boolean, assets: Ass
  */
 async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Response> {
   const target = docsTarget(url.pathname, deps.shell.versions);
-  const wantsMarkdown = target.kind === "markdown" || prefersMarkdown(request.headers.get("Accept"));
+  const wantsMarkdown =
+    target.kind === "markdown" || prefersMarkdown(request.headers.get("Accept"));
   if (target.kind === "redirect") return redirect(url, target.location);
   if (target.kind === "missing") return toDocsHome(url, "/docs/", url.pathname.endsWith(".md"));
 
@@ -589,7 +640,10 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   // Fetched beside the page and only for HTML, which shows the date.
   const dates = wantsMarkdown ? null : fetchLastUpdated(version.ref, deps.fetch);
   // A Web API page's sidebar lists the route groups its index names.
-  const apiIndex = wantsMarkdown || !target.keys.some((k) => k.startsWith("api/web/") && k !== API_INDEX) ? null : fetchApiIndex(version.ref, deps.fetch);
+  const apiIndex =
+    wantsMarkdown || !target.keys.some((k) => k.startsWith("api/web/") && k !== API_INDEX)
+      ? null
+      : fetchApiIndex(version.ref, deps.fetch);
   let key: string | null = null;
   let source: string | null = null;
   // The last key asked for, so the unavailable page links on GitHub to the
@@ -597,7 +651,10 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   // A slash-free path can name a page or a directory; trying the spelling
   // the sidebar lists first saves a docs repository miss for directories.
   const listed = new Set(deps.shell.nav.flatMap((group) => group.pages.map((p) => p.key)));
-  const keys = [...target.keys.filter((k) => listed.has(k)), ...target.keys.filter((k) => !listed.has(k))];
+  const keys = [
+    ...target.keys.filter((k) => listed.has(k)),
+    ...target.keys.filter((k) => !listed.has(k)),
+  ];
   let attempted = keys[0] ?? target.keys[0];
   try {
     for (const candidate of keys) {
@@ -610,18 +667,31 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
     }
   } catch (err) {
     console.error(`docs fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-    const page = renderUnavailablePage(deps.shell, keys[0] ?? target.keys[0], { ref: version.ref, base: version.base, githubKey: attempted });
+    const page = renderUnavailablePage(deps.shell, keys[0] ?? target.keys[0], {
+      ref: version.ref,
+      base: version.base,
+      githubKey: attempted,
+    });
     const body = request.method === "HEAD" ? null : wantsMarkdown ? page.markdown : page.html;
     const type = wantsMarkdown ? MARKDOWN_CONTENT_TYPE : "text/html; charset=utf-8";
     return withHeaders(
       new Response(body),
-      { "Content-Type": type, "Retry-After": "60", "Cache-Control": "no-store", Vary: "Accept", "X-Robots-Tag": "noindex" },
+      {
+        "Content-Type": type,
+        "Retry-After": "60",
+        "Cache-Control": "no-store",
+        Vary: "Accept",
+        "X-Robots-Tag": "noindex",
+      },
       503,
     );
   }
   if (key === null || source === null) {
     // The home page itself missing would send the reader in a loop.
-    const home = target.kind === "markdown" ? docMarkdownUrl("README", version.base) : docUrl("README", version.base);
+    const home =
+      target.kind === "markdown"
+        ? docMarkdownUrl("README", version.base)
+        : docUrl("README", version.base);
     if (url.pathname === home) return notFound(url, request.method, wantsMarkdown, deps.assets);
     return toDocsHome(url, version.base, target.kind === "markdown");
   }
@@ -636,14 +706,25 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   // cache so the date comes back once the docs repository answers again.
   const index = apiIndex === null || key === API_INDEX ? null : await apiIndex;
   const cacheable = datesFile?.kind !== "failed" && index?.kind !== "failed";
-  const rendered = renderDocPage(deps.shell, source, key, { ref: version.ref, base: version.base, updated, apiIndex: index?.kind === "file" ? index.text : null });
-  const cacheControl = cacheable ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}` : `public, max-age=${MISSING_TTL}, s-maxage=0`;
+  const rendered = renderDocPage(deps.shell, source, key, {
+    ref: version.ref,
+    base: version.base,
+    updated,
+    apiIndex: index?.kind === "file" ? index.text : null,
+  });
+  const cacheControl = cacheable
+    ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`
+    : `public, max-age=${MISSING_TTL}, s-maxage=0`;
   const common: Record<string, string> = { "Cache-Control": cacheControl, Vary: "Accept" };
   // Only the default version is for search engines; older releases and main
   // (once a release exists) are reachable but not indexed.
   if (version !== deps.shell.versions[0]) common["X-Robots-Tag"] = "noindex";
   const response = wantsMarkdown
-    ? withHeaders(new Response(rendered.markdown), { ...common, "Content-Type": MARKDOWN_CONTENT_TYPE, Link: `<${url.origin}${page}>; rel="canonical"` })
+    ? withHeaders(new Response(rendered.markdown), {
+        ...common,
+        "Content-Type": MARKDOWN_CONTENT_TYPE,
+        Link: `<${url.origin}${page}>; rel="canonical"`,
+      })
     : withHeaders(new Response(rendered.html), {
         ...common,
         "Content-Type": "text/html; charset=utf-8",
@@ -704,14 +785,21 @@ export function sitemapSection(key: string): string {
 async function serveSitemap(request: Request, url: URL, deps: DocsDeps): Promise<Response> {
   const isIndex = url.pathname === SITEMAP_PATH;
   const [version] = deps.shell.versions;
-  if (version === undefined) return isIndex ? fallbackSitemap(request, url, deps.assets, MISSING_TTL) : notFound(url, request.method, false, deps.assets);
-  const cacheKey = new Request(`${url.origin}${url.pathname}?ref=${encodeURIComponent(version.ref)}&shell=${encodeURIComponent(deps.shell.id)}`);
+  if (version === undefined)
+    return isIndex
+      ? fallbackSitemap(request, url, deps.assets, MISSING_TTL)
+      : notFound(url, request.method, false, deps.assets);
+  const cacheKey = new Request(
+    `${url.origin}${url.pathname}?ref=${encodeURIComponent(version.ref)}&shell=${encodeURIComponent(deps.shell.id)}`,
+  );
   if (deps.cache) {
     const hit = await deps.cache.match(cacheKey);
     if (hit) return request.method === "HEAD" ? new Response(null, hit) : hit;
   }
   const { file, docs: listed } = await listDocs(version, deps);
-  const sections = new Map<string, SitemapEntry[]>([[SITE_SECTION, siteSitemapPages(deps.shell).map((path) => ({ path, lastmod: null }))]]);
+  const sections = new Map<string, SitemapEntry[]>([
+    [SITE_SECTION, siteSitemapPages(deps.shell).map((path) => ({ path, lastmod: null }))],
+  ]);
   const docs = listed.length;
   for (const { key, path, date } of listed) {
     const name = sitemapSection(key);
@@ -727,7 +815,11 @@ async function serveSitemap(request: Request, url: URL, deps: DocsDeps): Promise
     // keeps like its pages; a failed or empty read is retried in a minute.
     if (!isIndex) {
       if (file.kind === "missing") return notFound(url, request.method, false, deps.assets);
-      return withHeaders(new Response(null), { "Retry-After": "60", "Cache-Control": "no-store" }, 503);
+      return withHeaders(
+        new Response(null),
+        { "Retry-After": "60", "Cache-Control": "no-store" },
+        503,
+      );
     }
     const ttl = file.kind === "missing" ? ttlFor(version.ref) : MISSING_TTL;
     response = await fallbackSitemap(request, url, deps.assets, ttl);
@@ -735,16 +827,30 @@ async function serveSitemap(request: Request, url: URL, deps: DocsDeps): Promise
   } else if (isIndex) {
     const index = [...sections].map(([name, entries]) => ({
       path: `/sitemap-${name}.xml`,
-      lastmod: entries.reduce<SitemapEntry["lastmod"]>((newest, e) => (e.lastmod !== null && (newest === null || e.lastmod > newest) ? e.lastmod : newest), null),
+      lastmod: entries.reduce<SitemapEntry["lastmod"]>(
+        (newest, e) =>
+          e.lastmod !== null && (newest === null || e.lastmod > newest) ? e.lastmod : newest,
+        null,
+      ),
     }));
-    response = withHeaders(new Response(sitemapIndexXml(deps.shell.origin, index)), { "Content-Type": XML_CONTENT_TYPE, "Cache-Control": cached });
+    response = withHeaders(new Response(sitemapIndexXml(deps.shell.origin, index)), {
+      "Content-Type": XML_CONTENT_TYPE,
+      "Cache-Control": cached,
+    });
   } else {
     const entries = sections.get(SECTION_PATH_RE.exec(url.pathname)?.[1] ?? "");
     if (entries === undefined) return notFound(url, request.method, false, deps.assets);
-    if (entries.length > MAX_SITEMAP_URLS) console.error(`${url.pathname} lists the first ${MAX_SITEMAP_URLS} of ${entries.length} pages`);
-    response = withHeaders(new Response(sitemapXml(deps.shell.origin, entries)), { "Content-Type": XML_CONTENT_TYPE, "Cache-Control": cached });
+    if (entries.length > MAX_SITEMAP_URLS)
+      console.error(
+        `${url.pathname} lists the first ${MAX_SITEMAP_URLS} of ${entries.length} pages`,
+      );
+    response = withHeaders(new Response(sitemapXml(deps.shell.origin, entries)), {
+      "Content-Type": XML_CONTENT_TYPE,
+      "Cache-Control": cached,
+    });
   }
-  if (deps.cache && request.method === "GET") deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
+  if (deps.cache && request.method === "GET")
+    deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
   return request.method === "HEAD" ? new Response(null, response) : response;
 }
 
@@ -767,13 +873,17 @@ interface ListedDoc {
  * @param deps - The shell and fetcher.
  * @returns What reading the dates file gave, and the docs in its order.
  */
-async function listDocs(version: DocsVersion, deps: DocsDeps): Promise<{ file: DatesFile; docs: ListedDoc[] }> {
+async function listDocs(
+  version: DocsVersion,
+  deps: DocsDeps,
+): Promise<{ file: DatesFile; docs: ListedDoc[] }> {
   const file = await fetchLastUpdated(version.ref, deps.fetch);
   const docs: ListedDoc[] = [];
   for (const { key, date } of file.kind === "file" ? (datedPages(file.text) ?? []) : []) {
     const path = docUrl(key, version.base);
     const target = docsTarget(path, deps.shell.versions);
-    if (target.kind === "page" && target.version === version && target.keys.includes(key)) docs.push({ key, path, date });
+    if (target.kind === "page" && target.version === version && target.keys.includes(key))
+      docs.push({ key, path, date });
   }
   return { file, docs };
 }
@@ -801,30 +911,45 @@ function siteSitemapPages(shell: DocsShell): string[] {
  * @param markdown - Whether to answer with the Markdown version.
  * @returns The page.
  */
-async function serveSitemapPage(request: Request, url: URL, deps: DocsDeps, markdown: boolean): Promise<Response> {
+async function serveSitemapPage(
+  request: Request,
+  url: URL,
+  deps: DocsDeps,
+  markdown: boolean,
+): Promise<Response> {
   const [version] = deps.shell.versions;
   if (version === undefined) return notFound(url, request.method, markdown, deps.assets);
   const format = markdown ? "md" : "html";
-  const cacheKey = new Request(`${url.origin}${SITEMAP_PAGE_PATH}?format=${format}&ref=${encodeURIComponent(version.ref)}&shell=${encodeURIComponent(deps.shell.id)}`);
+  const cacheKey = new Request(
+    `${url.origin}${SITEMAP_PAGE_PATH}?format=${format}&ref=${encodeURIComponent(version.ref)}&shell=${encodeURIComponent(deps.shell.id)}`,
+  );
   if (deps.cache) {
     const hit = await deps.cache.match(cacheKey);
     if (hit) return request.method === "HEAD" ? new Response(null, hit) : hit;
   }
   const { file, docs } = await listDocs(version, deps);
-  const titles = new Map(deps.shell.nav.flatMap((g) => g.pages.map((p) => [p.key, p.title] as const)));
-  const pageTitles = new Map(deps.shell.pages.map((path, i) => [path, deps.shell.pageTitles[i] ?? path] as const));
+  const titles = new Map(
+    deps.shell.nav.flatMap((g) => g.pages.map((p) => [p.key, p.title] as const)),
+  );
+  const pageTitles = new Map(
+    deps.shell.pages.map((path, i) => [path, deps.shell.pageTitles[i] ?? path] as const),
+  );
   const links: SitemapPageLink[] = siteSitemapPages(deps.shell)
     .filter((path) => path !== SITEMAP_PAGE_PATH)
     .map((path) => ({ key: null, path, title: pageTitles.get(path) ?? path, updated: null }));
   if (docs.length > 0) {
-    for (const d of docs) links.push({ key: d.key, path: d.path, title: titles.get(d.key) ?? null, updated: d.date });
+    for (const d of docs)
+      links.push({ key: d.key, path: d.path, title: titles.get(d.key) ?? null, updated: d.date });
   } else {
     links.push({ key: "README", path: docUrl("README", version.base), title: null, updated: null });
-    for (const [key, title] of titles) links.push({ key, path: docUrl(key, version.base), title, updated: null });
+    for (const [key, title] of titles)
+      links.push({ key, path: docUrl(key, version.base), title, updated: null });
   }
   const page = renderSitemapPage(deps.shell, links);
   const cacheable = docs.length > 0 || file.kind === "missing";
-  const cacheControl = cacheable ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}` : `public, max-age=${MISSING_TTL}, s-maxage=0`;
+  const cacheControl = cacheable
+    ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`
+    : `public, max-age=${MISSING_TTL}, s-maxage=0`;
   const response = markdown
     ? withHeaders(new Response(page.markdown), {
         "Cache-Control": cacheControl,
@@ -838,7 +963,8 @@ async function serveSitemapPage(request: Request, url: URL, deps: DocsDeps, mark
         "Content-Type": "text/html; charset=utf-8",
         Link: `<${url.origin}${SITEMAP_PAGE_PATH}.md>; rel="alternate"; type="text/markdown"`,
       });
-  if (deps.cache && cacheable && request.method === "GET") deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
+  if (deps.cache && cacheable && request.method === "GET")
+    deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
   return request.method === "HEAD" ? new Response(null, response) : response;
 }
 
@@ -854,10 +980,18 @@ async function serveSitemapPage(request: Request, url: URL, deps: DocsDeps, mark
  * @returns The built sitemap, or the assets' answer unchanged when it is
  *   not there.
  */
-async function fallbackSitemap(request: Request, url: URL, assets: Assets, ttl: number): Promise<Response> {
+async function fallbackSitemap(
+  request: Request,
+  url: URL,
+  assets: Assets,
+  ttl: number,
+): Promise<Response> {
   const built = await assets.fetch(new URL(SITEMAP_PATH, url), { method: request.method });
   if (!built.ok) return built;
-  return withHeaders(built, { "Content-Type": XML_CONTENT_TYPE, "Cache-Control": `public, max-age=${MISSING_TTL}, s-maxage=${ttl}` });
+  return withHeaders(built, {
+    "Content-Type": XML_CONTENT_TYPE,
+    "Cache-Control": `public, max-age=${MISSING_TTL}, s-maxage=${ttl}`,
+  });
 }
 
 /** Everything the docs route needs besides the request. */
@@ -940,12 +1074,17 @@ export function compress(request: Request, response: Response): Response {
   const notModified = response.status === 304;
   if (response.body === null && request.method !== "HEAD" && !notModified) return response;
   if (response.status === 204 || response.status === 206) return response;
-  if (response.headers.has("Content-Encoding") || response.headers.has("Content-Range")) return response;
-  if (/(?:^|,)\s*no-transform\s*(?:,|$)/i.test(response.headers.get("Cache-Control") ?? "")) return response;
-  const type = (response.headers.get("Content-Type") ?? "").split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  if (response.headers.has("Content-Encoding") || response.headers.has("Content-Range"))
+    return response;
+  if (/(?:^|,)\s*no-transform\s*(?:,|$)/i.test(response.headers.get("Cache-Control") ?? ""))
+    return response;
+  const type =
+    (response.headers.get("Content-Type") ?? "").split(";", 1)[0]?.trim().toLowerCase() ?? "";
   // A 304 may leave out Content-Type; it stands for the page the client has.
   if (!COMPRESSIBLE_RE.test(type) && !(notModified && type === "")) return response;
-  const encoding = pickEncoding(clientAcceptEncoding(request) ?? request.headers.get("Accept-Encoding"));
+  const encoding = pickEncoding(
+    clientAcceptEncoding(request) ?? request.headers.get("Accept-Encoding"),
+  );
   const out = new Response(response.body, response);
   out.headers.set("Vary", varyAdd(out.headers, "Accept-Encoding"));
   if (encoding === null) return out;
@@ -985,7 +1124,11 @@ export async function handle(request: Request, env: Env, docs: DocsOptions): Pro
  */
 export function sitePageLocation(pathname: string, pages: readonly string[]): string | null {
   if (pathname === "/index.html") return "/";
-  const stem = pathname.endsWith("/") ? pathname.slice(0, -1) : pathname.endsWith(".html") ? pathname.slice(0, -".html".length) : null;
+  const stem = pathname.endsWith("/")
+    ? pathname.slice(0, -1)
+    : pathname.endsWith(".html")
+      ? pathname.slice(0, -".html".length)
+      : null;
   return stem !== null && stem.length > 1 && pages.includes(stem) ? stem : null;
 }
 
@@ -1009,15 +1152,18 @@ async function route(request: Request, env: Env, docs: DocsOptions): Promise<Res
     cache: docs.cache ?? null,
     waitUntil: docs.waitUntil ?? (() => {}),
   };
-  if (isRead && (url.pathname === "/docs" || url.pathname.startsWith("/docs/"))) return serveDocs(request, url, deps);
+  if (isRead && (url.pathname === "/docs" || url.pathname.startsWith("/docs/")))
+    return serveDocs(request, url, deps);
   const canonical = isRead ? sitePageLocation(url.pathname, deps.shell.pages) : null;
   if (canonical !== null) return redirect(url, canonical);
-  if (isRead && (url.pathname === SITEMAP_PATH || SECTION_PATH_RE.test(url.pathname))) return serveSitemap(request, url, deps);
+  if (isRead && (url.pathname === SITEMAP_PATH || SECTION_PATH_RE.test(url.pathname)))
+    return serveSitemap(request, url, deps);
   if (isRead && (url.pathname === SITEMAP_PAGE_PATH || url.pathname === `${SITEMAP_PAGE_PATH}/`)) {
     if (url.pathname.endsWith("/")) return redirect(url, SITEMAP_PAGE_PATH);
     return serveSitemapPage(request, url, deps, prefersMarkdown(request.headers.get("Accept")));
   }
-  if (isRead && url.pathname === `${SITEMAP_PAGE_PATH}.md`) return serveSitemapPage(request, url, deps, true);
+  if (isRead && url.pathname === `${SITEMAP_PAGE_PATH}.md`)
+    return serveSitemapPage(request, url, deps, true);
   const md = isRead ? markdownPath(url.pathname) : null;
 
   if (md !== null && prefersMarkdown(request.headers.get("Accept"))) {
@@ -1048,12 +1194,18 @@ async function route(request: Request, env: Env, docs: DocsOptions): Promise<Res
     return withHeaders(response, headers);
   }
   if (isRead && url.pathname === NOT_FOUND_MARKDOWN) {
-    return withHeaders(response, { "Content-Type": MARKDOWN_CONTENT_TYPE, "X-Robots-Tag": "noindex" });
+    return withHeaders(response, {
+      "Content-Type": MARKDOWN_CONTENT_TYPE,
+      "X-Robots-Tag": "noindex",
+    });
   }
   const page = isRead ? htmlPath(url.pathname) : null;
   if (page !== null && (response.ok || response.status === 304)) {
     // A Markdown copy requested by name: point search engines at the page.
-    return withHeaders(response, { "Content-Type": MARKDOWN_CONTENT_TYPE, Link: `<${url.origin}${page}>; rel="canonical"` });
+    return withHeaders(response, {
+      "Content-Type": MARKDOWN_CONTENT_TYPE,
+      Link: `<${url.origin}${page}>; rel="canonical"`,
+    });
   }
   return response;
 }
