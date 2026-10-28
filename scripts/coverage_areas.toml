@@ -23,7 +23,7 @@ report = "rust/lcov.info"
 root = "."
 paths = ["crates/", "fuzz/", "examples/"]
 suffixes = [".rs"]
-floor = 0
+floor = 73
 workspace_check = "rust_test"
 
 [areas.site]
