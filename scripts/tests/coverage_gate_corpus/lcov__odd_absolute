@@ -1,0 +1,9 @@
+SF://w/a.ts
+DA:1,1
+end_of_record
+SF:/w/./b/../c.ts
+DA:1,1
+end_of_record
+SF:/../w/d.ts
+DA:1,1
+end_of_record

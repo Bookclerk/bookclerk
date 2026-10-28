@@ -168,9 +168,16 @@ DOC_FILES = frozenset(
 # Tests and fixtures the plan job runs on every event, before any check.
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 # Scripts that only plan-job tests exercise (the CLA checker runs in its own
-# workflow, from the default branch, and builds nothing).
+# workflow, from the default branch, and builds nothing; the coverage gate
+# runs in CI Gate on every run).
 PLAN_JOB_SCRIPT_FILES = frozenset(
-    {"scripts/cla_check.py", "scripts/cla_branch/README.md", "scripts/cla_branch/setup-rulesets.sh"}
+    {
+        "scripts/cla_check.py",
+        "scripts/cla_branch/README.md",
+        "scripts/cla_branch/setup-rulesets.sh",
+        "scripts/coverage_gate.py",
+        "scripts/coverage_areas.toml",
+    }
 )
 
 KNOWN_TOP_LEVEL = frozenset(

@@ -1,0 +1,55 @@
+# Coverage areas for CI Gate, read by scripts/coverage_gate.py.
+#
+# Each area is one test job's LCOV report. `report` is where the job writes it
+# under the coverage directory (and so under CI Gate's download of the
+# `coverage-*` artifacts), `root` the directory the report's
+# relative paths start from, `paths` the repository-relative prefixes the area
+# owns and `suffixes` the file types it measures. `floor` is the lowest line
+# coverage, in percent, the area may report: raise it when coverage rises
+# (keep it a little below the measured value so noise does not fail a run),
+# and never lower it to make a change pass. `workspace_check` names the CI
+# plan check whose selective runs test only the affected packages: the floor
+# is then not checked, while patch coverage still is.
+#
+# `mode = "report"` only warns; `mode = "enforce"` fails CI Gate when patch
+# coverage is below `patch_target` or an area is below its floor. See
+# docs/contributing/ci.md#coverage.
+
+mode = "report"
+patch_target = 80
+
+[areas.rust]
+report = "rust/lcov.info"
+root = "."
+paths = ["crates/", "fuzz/", "examples/"]
+suffixes = [".rs"]
+floor = 73
+workspace_check = "rust_test"
+
+[areas.site]
+report = "site/lcov.info"
+root = "tools/site"
+paths = ["tools/site/"]
+suffixes = [".ts"]
+floor = 98
+
+[areas.demo]
+report = "demo/lcov.info"
+root = "tools/demo"
+paths = ["tools/demo/"]
+suffixes = [".ts"]
+floor = 78
+
+[areas.collector]
+report = "collector/lcov.info"
+root = "tools/diagnostics-collector"
+paths = ["tools/diagnostics-collector/"]
+suffixes = [".ts"]
+floor = 93
+
+[areas.python-sdk]
+report = "python-sdk/lcov.info"
+root = "."
+paths = ["packages/plugin-sdk-python/src/"]
+suffixes = [".py"]
+floor = 60

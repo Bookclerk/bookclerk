@@ -181,6 +181,7 @@ jobs:
           "$PY" scripts/tests/test_release_baseline.py
           "$PY" scripts/tests/test_image_release_tags.py
           "$PY" scripts/tests/test_cla_check.py
+          "$PY" scripts/tests/test_coverage_gate.py
           "$PY" scripts/tests/test_dev_env.py
 
       - name: Database plugin isolation
@@ -215,6 +216,29 @@ jobs:
           name: ci-plan
           path: ${{ runner.temp }}/ci-plan/ci-plan.json
           if-no-files-found: error
+
+      # The lines the change adds, for CI Gate's patch coverage (CI Gate
+      # checks out one commit and cannot diff). Hunk headers only: the gate
+      # needs line numbers, not content. Not for an unpublished OSV
+      # remediation bump, whose diff would name the bumped versions.
+      - name: Write the change's added lines
+        if: ${{ !inputs.private-head }}
+        env:
+          BASE: ${{ steps.shas.outputs.base }}
+          HEAD: ${{ steps.shas.outputs.head }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ci-patch"
+          git -c core.quotePath=false diff --unified=0 --no-color --no-ext-diff "$BASE...$HEAD" \
+            | { grep -E '^(\+\+\+ |@@ )' || true; } > "$RUNNER_TEMP/ci-patch/patch.diff"
+
+      - if: ${{ !inputs.private-head }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-patch
+          path: ${{ runner.temp }}/ci-patch/patch.diff
+          if-no-files-found: error
+          retention-days: 7
 
   check:
     name: fmt / clippy / docs
@@ -322,7 +346,18 @@ jobs:
 
       - name: Python plugin SDK tools conformance
         if: needs.plan.outputs.check_python_sdk == 'true'
+        env:
+          CI_COVERAGE_DIR: ${{ runner.temp }}/coverage
         run: python3 scripts/ci-exec.py run python_sdk
+
+      - name: Upload the Python SDK coverage report
+        if: needs.plan.outputs.check_python_sdk == 'true' && !inputs.private-head
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-python-sdk
+          path: ${{ runner.temp }}/coverage
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Author surface check
         if: needs.plan.outputs.check_author_surface == 'true'
@@ -385,11 +420,18 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
+          components: llvm-tools-preview
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-nextest@0.9.146
+
+      - name: Install cargo-llvm-cov
+        if: env.CI_BUILD_ONLY != 'true'
+        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-llvm-cov@0.9.1
 
       - name: Install capnproto
         run: |
@@ -425,8 +467,29 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
+      # Coverage: `cargo llvm-cov show-env` sets a rustc wrapper that
+      # instruments only the workspace crates, so dependencies still come
+      # from the cache above. Exported after the cache step on purpose: the
+      # cache key hashes CARGO*/RUST* variables, and the build-only main push
+      # that saves the cache runs uninstrumented.
+      - name: Instrument the build for coverage
+        if: env.CI_BUILD_ONLY != 'true'
+        run: |
+          set -euo pipefail
+          cargo llvm-cov show-env --sh | sed -e 's/^export //' -e "s/='\(.*\)'$/=\1/" >> "$GITHUB_ENV"
+          echo "CI_COVERAGE_DIR=$RUNNER_TEMP/coverage" >> "$GITHUB_ENV"
+
       - name: Test
         run: python3 scripts/ci-exec.py run rust_test
+
+      - name: Upload the Rust coverage report
+        if: env.CI_BUILD_ONLY != 'true' && !inputs.private-head
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-rust
+          path: ${{ runner.temp }}/coverage
+          if-no-files-found: error
+          retention-days: 7
 
   e2e:
     name: staged plugin installation (e2e)
@@ -1003,6 +1066,8 @@ jobs:
 
       - name: Website tests
         if: needs.plan.outputs.check_site_test == 'true'
+        env:
+          CI_COVERAGE_DIR: ${{ runner.temp }}/coverage
         run: python3 scripts/ci-exec.py run site_test
 
       # Lighthouse and axe-core against the built site under `wrangler dev`,
@@ -1024,11 +1089,25 @@ jobs:
 
       - name: Diagnostics collector tests
         if: needs.plan.outputs.check_collector_test == 'true'
+        env:
+          CI_COVERAGE_DIR: ${{ runner.temp }}/coverage
         run: python3 scripts/ci-exec.py run collector_test
 
       - name: Hosted demo tests
         if: needs.plan.outputs.check_demo_test == 'true'
+        env:
+          CI_COVERAGE_DIR: ${{ runner.temp }}/coverage
         run: python3 scripts/ci-exec.py run demo_test
+
+      # One artifact for the Workers that ran: site/, collector/ and demo/.
+      - name: Upload the Workers coverage reports
+        if: ${{ !inputs.private-head }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-workers
+          path: ${{ runner.temp }}/coverage
+          if-no-files-found: ignore
+          retention-days: 7
 
   # A merge group, like an OSV remediation run, only needs to know whether it
   # can land. Once any job fails, cancel the rest of the run so CI Gate
@@ -1117,3 +1196,29 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: python3 scripts/ci-exec.py gate
+
+      # Coverage (docs/contributing/ci.md#coverage): patch coverage of the
+      # change and each area's floor, from the reports the test jobs
+      # uploaded. Report-only while scripts/coverage_areas.toml says so.
+      - name: Download the coverage reports
+        if: ${{ !cancelled() && !inputs.private-head }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/coverage
+
+      - name: Download the change's added lines
+        if: ${{ !cancelled() && !inputs.private-head }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-patch
+          path: ${{ runner.temp }}/ci-patch
+
+      - name: Coverage
+        if: ${{ !cancelled() && !inputs.private-head }}
+        run: >-
+          python3 scripts/coverage_gate.py
+          --reports "$RUNNER_TEMP/coverage"
+          --diff "$RUNNER_TEMP/ci-patch/patch.diff"
+          --plan "$RUNNER_TEMP/ci-plan/ci-plan.json"

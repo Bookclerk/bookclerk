@@ -124,9 +124,14 @@ class WorkflowContractTests(unittest.TestCase):
             if name in ("plan", FAIL_FAST_JOB):
                 continue
             steps = job["steps"]
-            download = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("actions/download-artifact@")]
+            downloads = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("actions/download-artifact@")]
+            download = [i for i in downloads if steps[i]["with"].get("name") == "ci-plan"]
             self.assertEqual(len(download), 1, name)
-            self.assertEqual(steps[download[0]]["with"]["name"], "ci-plan", name)
+            self.assertEqual(downloads[0], download[0], f"{name}: the plan comes first")
+            # Only CI Gate downloads more: the coverage reports and the diff.
+            for i in downloads[1:]:
+                self.assertEqual(name, "ci-gate")
+                self.assertIn(steps[i]["with"].get("name", steps[i]["with"].get("pattern")), ("ci-patch", "coverage-*"))
             self.assertEqual(steps[download[0]]["with"]["path"], "${{ runner.temp }}/ci-plan", name)
             execs = [i for i, s in enumerate(steps) if "ci-exec.py" in s.get("run", "")]
             self.assertTrue(execs, name)
@@ -139,7 +144,9 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(len(resolve), 1)
         self.assertEqual(resolve[0].get("id"), "resolve")
         self.assertIn('--selective "$SELECTIVE_CI"', resolve[0]["run"])
-        upload = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+        upload = [
+            s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@") and s["with"]["name"] == "ci-plan"
+        ]
         self.assertEqual(len(upload), 1)
         self.assertEqual(upload[0]["with"]["path"], "${{ runner.temp }}/ci-plan/ci-plan.json")
         self.assertEqual(upload[0]["with"]["if-no-files-found"], "error")
@@ -158,8 +165,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(gate["name"], "CI Gate")
         self.assertEqual(gate["if"], "always()")
         self.assertEqual(set(gate["needs"]), {"plan", *JOB_CHECKS})
-        run = gate["steps"][-1]
-        self.assertIn("ci-exec.py gate", run["run"])
+        run = next(s for s in gate["steps"] if "ci-exec.py gate" in s.get("run", ""))
         self.assertEqual(run["env"]["NEEDS_JSON"], "${{ toJSON(needs) }}")
 
     def test_native_gateway_runs_on_every_os(self) -> None:
@@ -287,8 +293,9 @@ class WorkflowContractTests(unittest.TestCase):
         uses = [str(s.get("uses", "")) for s in job["steps"]]
         self.assertFalse([u for u in uses if u.startswith(("dtolnay/", "Swatinem/"))], "the site job runs no cargo")
         upload = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
-        self.assertEqual(len(upload), 1)
-        self.assertIn("!inputs.private-head", upload[0]["if"])
+        self.assertEqual(len(upload), 2)
+        for step in upload:
+            self.assertIn("!inputs.private-head", step["if"], step["with"]["name"])
         node = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/setup-node@"))
         for lock in ("tools/site/package-lock.json", "tools/site/audit/package-lock.json", "tools/diagnostics-collector/package-lock.json", "tools/demo/package-lock.json"):
             self.assertIn(lock, node["with"]["cache-dependency-path"])
@@ -310,8 +317,36 @@ class WorkflowContractTests(unittest.TestCase):
     def test_test_job_installs_pinned_nextest(self) -> None:
         steps = self.jobs["test"]["steps"]
         install = [s for s in steps if str(s.get("uses", "")).startswith("taiki-e/install-action@")]
-        self.assertEqual(len(install), 1)
+        self.assertEqual(len(install), 2)
         self.assertRegex(install[0]["with"]["tool"], r"^cargo-nextest@\d+\.\d+\.\d+$")
+        self.assertRegex(install[1]["with"]["tool"], r"^cargo-llvm-cov@\d+\.\d+\.\d+$")
+
+    def test_coverage_reports_flow_to_the_gate(self) -> None:
+        """Test jobs upload `coverage-*` reports; CI Gate judges them after the job comparison."""
+        uploads = {
+            s["with"]["name"]: (name, s)
+            for name, job in self.jobs.items()
+            for s in job["steps"]
+            if str(s.get("uses", "")).startswith("actions/upload-artifact@") and s["with"]["name"].startswith("coverage-")
+        }
+        self.assertEqual(set(uploads), {"coverage-rust", "coverage-python-sdk", "coverage-workers"})
+        for artifact, (job, step) in uploads.items():
+            self.assertEqual(step["with"]["path"], "${{ runner.temp }}/coverage", artifact)
+            # Not for an unpublished OSV remediation bump (see the plan job).
+            self.assertIn("!inputs.private-head", step["if"], artifact)
+        patch = next(s for s in self.jobs["plan"]["steps"] if s.get("with", {}).get("name") == "ci-patch")
+        self.assertIn("!inputs.private-head", patch["if"])
+        # Instrumentation is exported after the cache step, so the cache key
+        # (which hashes CARGO*/RUST* variables) stays the uninstrumented one.
+        steps = self.jobs["test"]["steps"]
+        names = [s.get("name") for s in steps]
+        self.assertLess(names.index("Cache cargo"), names.index("Instrument the build for coverage"))
+        self.assertLess(names.index("Instrument the build for coverage"), names.index("Test"))
+        gate = self.jobs["ci-gate"]["steps"]
+        compare = next(i for i, s in enumerate(gate) if "ci-exec.py gate" in s.get("run", ""))
+        coverage = next(i for i, s in enumerate(gate) if "coverage_gate.py" in s.get("run", ""))
+        self.assertLess(compare, coverage)
+        self.assertIn("!inputs.private-head", gate[coverage]["if"])
 
     def test_custom_harness_targets_are_listed(self) -> None:
         """Every `harness = false` test target runs outside nextest (see CUSTOM_HARNESS_TESTS)."""

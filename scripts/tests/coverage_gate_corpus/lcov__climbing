@@ -1,0 +1,9 @@
+SF:../../../etc/passwd
+DA:1,1
+end_of_record
+SF:../site/b.ts
+DA:2,1
+end_of_record
+SF:..
+DA:1,1
+end_of_record
