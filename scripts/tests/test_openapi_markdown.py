@@ -252,9 +252,22 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("$ref", json.dumps(schema))
         # Every status is listed, with a sentence where there is no example.
         self.assertIn("\n\nStatus `404`: No | such book. No body.\n", get)
-        # Untyped and binary bodies get no example.
+        # An untyped body gets no example; a binary one gets a sentence and its schema.
         self.assertNotIn("Example response", self.pages["other.md"])
-        self.assertNotIn("Example response", self.pages["books.md"].split("## `POST /books`")[1])
+        post = self.pages["books.md"].split("## `POST /books`")[1]
+        self.assertIn("Status `201`: Added. The body is binary (`image/png`).\n\nSchema:\n\n```json\n", post)
+        self.assertIn('"format": "binary"', post)
+        # A text body gets a block in its own language and its schema.
+        doc = json.loads(json.dumps(DOCUMENT))
+        doc["paths"]["/books/{id}"]["get"]["responses"]["504"] = {"description": "Slow.", "content": {"text/plain": {"schema": {"type": "string", "example": "timed out"}}}}
+        doc["paths"]["/books/{id}"]["get"]["responses"]["200"]["content"]["text/markdown"] = {"schema": {"type": "string"}}
+        text = om.Document(doc).render_all()["books.md"].split("## `GET /books/{id}`")[1]
+        self.assertIn("Status `504`: Slow.\n\n```text\ntimed out\n```\n\nSchema:\n\n```json\n{\n  \"type\": \"string\",\n  \"example\": \"timed out\"\n}\n```\n", text)
+        # A status offering JSON and another type shows the JSON.
+        self.assertIn("Status `200`: The book.\n\n```json\n", text)
+        self.assertEqual(om.fence_language("text/markdown; charset=utf-8"), "markdown")
+        self.assertEqual(om.fence_language("application/problem+json"), "json")
+        self.assertEqual(om.fence_language("image/svg+xml"), "xml")
 
     def test_examples_follow_references_and_stop_at_cycles(self) -> None:
         doc = om.Document(

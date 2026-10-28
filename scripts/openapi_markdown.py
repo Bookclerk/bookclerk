@@ -711,25 +711,28 @@ class Document:
     def example_response(self, op: Operation) -> list[str]:
         """Render an example of each of an operation's responses.
 
-        Every status gets a ``Status `<code>`: <description>`` line, then a
-        ``json`` block built from its schema and, after a ``Schema:`` line,
-        a ``json`` block holding the body's JSON Schema itself (see
-        :meth:`schema_text`), or a sentence saying the response has no body
-        or one the schemas do not describe (yet). The site shows the
-        statuses as tabs and the two blocks as an Example/Schema switch.
+        Every status gets a ``Status `<code>`: <description>`` line, then an
+        example block built from its schema (``json`` for a JSON body, the
+        media type's own language for a text body) and, after a ``Schema:``
+        line, a ``json`` block holding the body's JSON Schema itself (see
+        :meth:`schema_text`). A binary body has no example to build, so a
+        sentence stands in for the block and its schema still follows. A
+        response with no body, or a JSON one the schemas do not describe
+        (yet), gets a sentence only. The site shows the statuses as tabs
+        and the two blocks as an Example/Schema switch.
 
         Args:
             op: The operation.
 
         Returns:
             Markdown lines: an ``Example response`` heading and one entry per
-            status; nothing when no status has a JSON example.
+            status; nothing when no status has a described body.
         """
         responses = op.spec.get("responses", {})
         if not isinstance(responses, Mapping):
             return []
         entries: list[str] = []
-        examples = 0
+        described = 0
         for status, response in responses.items():
             if not isinstance(response, Mapping):
                 continue
@@ -739,22 +742,25 @@ class Document:
             if not isinstance(content, Mapping) or not content:
                 entries += [f"{label} No body.", ""]
                 continue
-            entry = content.get("application/json")
-            value = self.example(entry.get("schema", {})) if isinstance(entry, Mapping) else NO_EXAMPLE
-            if value is NO_EXAMPLE:
-                media = ", ".join(code(str(m)) for m in content)
-                note = (
-                    "The body is JSON the schemas do not describe yet."
-                    if isinstance(entry, Mapping)
-                    else f"The body is {media}."
-                )
-                entries += [f"{label} {note}", ""]
+            # A JSON body is the one shown when a status offers several.
+            media = "application/json" if "application/json" in content else str(next(iter(content)))
+            entry = content.get(media)
+            schema = entry.get("schema", {}) if isinstance(entry, Mapping) else {}
+            value = self.example(schema)
+            if value is NO_EXAMPLE and media == "application/json":
+                entries += [f"{label} The body is JSON the schemas do not describe yet.", ""]
                 continue
-            examples += 1
-            text = json.dumps(value, indent=2, ensure_ascii=False)
-            schema = self.schema_text(entry.get("schema", {}))
-            entries += [label, "", "```json", text, "```", "", "Schema:", "", "```json", schema, "```", ""]
-        if examples == 0:
+            described += 1
+            if value is NO_EXAMPLE:
+                entries += [f"{label} The body is binary ({code(media)}).", ""]
+            elif media == "application/json":
+                text = json.dumps(value, indent=2, ensure_ascii=False)
+                entries += [label, "", "```json", text, "```", ""]
+            else:
+                text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+                entries += [label, "", f"```{fence_language(media)}", text, "```", ""]
+            entries += ["Schema:", "", "```json", self.schema_text(schema), "```", ""]
+        if described == 0:
             return []
         return ["### Example response", "", *entries]
 
@@ -1006,10 +1012,10 @@ class Document:
         """List one response: its status, description and body.
 
         The item reads ``- `200` — The book. Body: [`Book`](…) (`application/json`)``;
-        a response whose JSON body is an object, or an array of objects,
-        lists the object's fields under it, so the route reads without a
-        trip to the schemas page. A response without content says
-        ``No body.``
+        a response whose body is an object, or an array of objects, lists
+        the object's fields under it whatever its media type, so the route
+        reads without a trip to the schemas page. A response without
+        content says ``No body.``
 
         Args:
             status: The status code, range or ``default``.
@@ -1029,7 +1035,7 @@ class Document:
         for media, entry in content.items():
             schema = entry.get("schema", {}) if isinstance(entry, Mapping) else {}
             bodies.append(f"{self.type_of(schema, here)} ({code(str(media))})")
-            if media == "application/json" and not fields:
+            if not fields:
                 target, _name = self.resolve(schema)
                 # An array of objects lists the fields of one item.
                 if isinstance(target, Mapping) and not _inline_object(target) and "items" in target:
@@ -1089,6 +1095,25 @@ class _NoExample:
 
 #: The one :class:`_NoExample` value.
 NO_EXAMPLE = _NoExample()
+
+
+def fence_language(media: str) -> str:
+    """Name the fence language that shows a body of a media type.
+
+    Args:
+        media: The media type, such as ``text/markdown``.
+
+    Returns:
+        ``json`` for JSON, the subtype for the text types code viewers know
+        (``markdown``, ``html``, ``xml``, ``csv``), otherwise ``text``.
+    """
+    base = media.split(";", 1)[0].strip().lower()
+    if base == "application/json" or base.endswith("+json"):
+        return "json"
+    subtype = base.split("/", 1)[1] if "/" in base else ""
+    if subtype.endswith("+xml") or subtype == "xml":
+        return "xml"
+    return subtype if subtype in ("markdown", "html", "csv") else "text"
 
 
 @dataclass(frozen=True)

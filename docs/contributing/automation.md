@@ -541,7 +541,8 @@ Rust crates and the web UI library.
     Any other list, and the tables of pages generated before this format,
     pass through unchanged.
   - The example responses become one panel per status with a colored
-    status mark, each holding the example body and then, after a
+    status mark, each holding the example body (JSON, or a text body in
+    its own language; a binary body gets a sentence) and then, after a
     `Schema:` line, the body's JSON Schema (component references expanded
     in place); the page's script shows the statuses as tabs in one card
     with an Example/Schema switch between the two. The example request's
