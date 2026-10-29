@@ -127,28 +127,57 @@ struct ProviderQuery {
     get,
     path = "/api/auth/oidc/providers",
     responses(
-        (status = 200, description = "Enabled identity providers (id and name).", body = serde_json::Value),
+        (status = 200, description = "Enabled identity providers (id and name).", body = OidcProvidersResponse),
     ),
 )]
-async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Value> {
+async fn list_providers(State(state): State<Arc<AppState>>) -> Json<OidcProvidersResponse> {
     let cfg = state.config.read().await;
-    let providers: Vec<Value> = cfg
+    let providers = cfg
         .auth
         .oidc
         .enabled_providers()
         .into_iter()
-        .map(|p| {
-            serde_json::json!({
-                "id": p.id,
-                "name": p.display_name(),
-                "preset": p.social_preset(),
-            })
+        .map(|p| crate::auth::SigninOidcProvider {
+            id: p.id.clone(),
+            name: p.display_name().to_owned(),
+            preset: p.social_preset().map(str::to_owned),
         })
         .collect();
-    Json(serde_json::json!({
-        "enabled": cfg.auth.oidc.enabled,
-        "providers": providers,
-    }))
+    Json(OidcProvidersResponse {
+        enabled: cfg.auth.oidc.enabled,
+        providers,
+    })
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/auth/oidc/providers`.
+pub struct OidcProvidersResponse {
+    /// Whether the OIDC broker is switched on at all.
+    #[schema(example = true)]
+    pub enabled: bool,
+    /// Providers enabled in configuration, in configuration order (empty while the broker is off).
+    pub providers: Vec<crate::auth::SigninOidcProvider>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/auth/oidc/identities`.
+pub struct LinkedIdentitiesResponse {
+    /// Every sign-in identity linked to the caller's user, the local one included.
+    pub identities: Vec<LinkedIdentity>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// One sign-in identity linked to a user.
+pub struct LinkedIdentity {
+    /// Identity-broker id (`local`, `oidc:google`, …).
+    #[schema(example = "oidc:google")]
+    pub provider: String,
+    /// Provider-stable subject.
+    #[schema(example = "118234509876543210987")]
+    pub external_user_id: String,
+    /// Operator-facing label, when the provider supplied one.
+    #[schema(example = "sam@example.com")]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -320,10 +349,11 @@ fn default_groups_claim() -> String {
 fn oidc_config_error(status: StatusCode, message: impl Into<String>) -> Response {
     (
         status,
-        Json(serde_json::json!({
-            "error": "oidc_config",
-            "message": message.into(),
-        })),
+        Json(crate::http_error::ErrorJson::new(
+            status,
+            "oidc_config",
+            message.into(),
+        )),
     )
         .into_response()
 }
@@ -669,6 +699,11 @@ async fn delete_named_oidc_secret(state: &AppState, name: &str) -> Result<(), St
     path = "/api/auth/oidc/config",
     responses(
         (status = 200, description = "Broker settings, with secrets as presence flags.", body = OidcConfigResponse),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
     ),
 )]
 async fn get_oidc_config(
@@ -735,8 +770,20 @@ async fn get_oidc_config(
     request_body = OidcConfigPut,
     responses(
         (status = 200, description = "The settings after the change.", body = OidcConfigResponse),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 400, description = "A provider, the public origin or the provider count is invalid (`oidc_config`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_config", "message": "at most 16 identity providers", "status": 400})),
+        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_config`).", body = crate::http_error::ErrorJson, examples(
+            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_config", "message": "recent authentication required to change sign-in providers", "status": 401}))),
+            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
+        )),
+        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_config` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_config", "message": "forbidden", "status": 403}))),
+            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 500, description = "The configuration file or the sealed secrets could not be written, or an Owner's current password could not be read or checked (`oidc_config`).", body = crate::http_error::ErrorJson, examples(
+            ("config_write" = (summary = "The configuration file could not be written.", value = json!({"error": "oidc_config", "message": "failed to write config.toml: Permission denied (os error 13)", "status": 500}))),
+            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_config", "message": "the current password could not be checked", "status": 500}))),
+        )),
     ),
 )]
 async fn put_oidc_config(
@@ -751,6 +798,8 @@ async fn put_oidc_config(
                 status,
                 if status == StatusCode::UNAUTHORIZED {
                     "recent authentication required to change sign-in providers"
+                } else if status == StatusCode::INTERNAL_SERVER_ERROR {
+                    "the current password could not be checked"
                 } else {
                     "forbidden"
                 },
@@ -990,15 +1039,15 @@ async fn put_oidc_config(
     path = "/api/auth/oidc/identities",
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "The caller's linked identities.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 200, description = "The caller's linked identities.", body = LinkedIdentitiesResponse),
+        (status = 401, description = "The caller is not signed in, or has no first-party user."),
+        (status = 500, description = "The identities could not be read."),
     ),
 )]
 async fn list_identities(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<LinkedIdentitiesResponse>, StatusCode> {
     let library = state.library_snapshot().await;
     let identity = timed_portal_identity_from_headers(&library, &headers)
         .await
@@ -1009,17 +1058,15 @@ async fn list_identities(
         .list_portal_identities_for_user(user.id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let identities: Vec<Value> = rows
+    let identities = rows
         .into_iter()
-        .map(|p| {
-            serde_json::json!({
-                "provider": p.provider,
-                "external_user_id": p.external_user_id,
-                "label": p.label,
-            })
+        .map(|p| LinkedIdentity {
+            provider: p.provider,
+            external_user_id: p.external_user_id,
+            label: p.label,
         })
         .collect();
-    Ok(Json(serde_json::json!({ "identities": identities })))
+    Ok(Json(LinkedIdentitiesResponse { identities }))
 }
 
 /// Starts an OIDC login authorize redirect, honoring login throttle.

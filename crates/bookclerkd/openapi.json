@@ -13896,7 +13896,9 @@
             "description": "Claims for the token's user.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UserinfoResponse"
+                }
               }
             }
           },
@@ -13992,27 +13994,14 @@
             "description": "Registered clients (no secrets).",
             "content": {
               "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
-            "content": {
-              "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                },
-                "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
+                  "$ref": "#/components/schemas/OidcClientsResponse"
                 }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
+            "description": "The caller is not signed in.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14027,30 +14016,43 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller is neither the operator nor an Owner.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The Owner must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The clients could not be read (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "error": "oidc_client",
+                  "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
                   "status": 500
                 }
               }
@@ -14102,81 +14104,130 @@
             "description": "The client; a confidential client's secret appears once.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OidcClientView"
+                }
               }
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The client id or a redirect URI is invalid (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
+                  "error": "oidc_client",
+                  "message": "at least one redirect URI is required",
                   "status": 400
                 }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
+            "description": "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "The caller is not signed in.",
+                    "value": {
+                      "error": "unauthorized",
+                      "message": "Operator authentication is required. Sign in with your operator token.",
+                      "status": 401
+                    }
+                  },
+                  "reauth_required": {
+                    "summary": "The Owner must re-authenticate.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "recent authentication required to change OIDC clients",
+                      "status": 401
+                    }
+                  }
                 }
               }
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller is neither the operator nor an Owner.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "forbidden",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The Owner must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "not_allowed": {
+                    "summary": "The session middleware refused the caller.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
           },
           "409": {
-            "description": "A client with this id already exists.",
+            "description": "A client with this id already exists (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "conflict",
-                  "message": "Conflict",
+                  "error": "oidc_client",
+                  "message": "a client with this id already exists",
                   "status": 409
                 }
               }
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                "examples": {
+                  "password_check": {
+                    "summary": "The Owner's current password could not be checked.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "the current password could not be checked",
+                      "status": 500
+                    }
+                  },
+                  "store": {
+                    "summary": "The client could not be read or stored.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
+                      "status": 500
+                    }
+                  }
                 }
               }
             }
@@ -14240,81 +14291,130 @@
             "description": "The client after the change.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OidcClientView"
+                }
               }
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The client id or a redirect URI is invalid (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
+                  "error": "oidc_client",
+                  "message": "client id may only contain letters, digits, '.', '_', '-', and '~'",
                   "status": 400
                 }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
+            "description": "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "The caller is not signed in.",
+                    "value": {
+                      "error": "unauthorized",
+                      "message": "Operator authentication is required. Sign in with your operator token.",
+                      "status": 401
+                    }
+                  },
+                  "reauth_required": {
+                    "summary": "The Owner must re-authenticate.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "recent authentication required to change OIDC clients",
+                      "status": 401
+                    }
+                  }
                 }
               }
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller is neither the operator nor an Owner.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "forbidden",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The Owner must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "not_allowed": {
+                    "summary": "The session middleware refused the caller.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
           },
           "404": {
-            "description": "No such client.",
+            "description": "No such client (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "not_found",
-                  "message": "That page or resource was not found.",
+                  "error": "oidc_client",
+                  "message": "unknown client",
                   "status": 404
                 }
               }
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                "examples": {
+                  "password_check": {
+                    "summary": "The Owner's current password could not be checked.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "the current password could not be checked",
+                      "status": 500
+                    }
+                  },
+                  "store": {
+                    "summary": "The client could not be read or stored.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
+                      "status": 500
+                    }
+                  }
                 }
               }
             }
@@ -14382,92 +14482,124 @@
           "204": {
             "description": "The client was deleted."
           },
-          "400": {
-            "description": "The body is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                },
-                "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
-                }
-              }
-            }
-          },
           "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
+            "description": "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "The caller is not signed in.",
+                    "value": {
+                      "error": "unauthorized",
+                      "message": "Operator authentication is required. Sign in with your operator token.",
+                      "status": 401
+                    }
+                  },
+                  "reauth_required": {
+                    "summary": "The Owner must re-authenticate.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "recent authentication required to change OIDC clients",
+                      "status": 401
+                    }
+                  }
                 }
               }
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller is neither the operator nor an Owner.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "forbidden",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The Owner must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "not_allowed": {
+                    "summary": "The session middleware refused the caller.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
           },
           "404": {
-            "description": "No such client.",
+            "description": "No such client (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "not_found",
-                  "message": "That page or resource was not found.",
+                  "error": "oidc_client",
+                  "message": "unknown client",
                   "status": 404
                 }
               }
             }
           },
           "409": {
-            "description": "The client is provided by a plugin; disable it instead.",
+            "description": "The client is provided by a plugin; disable it instead (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "conflict",
-                  "message": "Conflict",
+                  "error": "oidc_client",
+                  "message": "plugin-provided clients cannot be deleted; disable them instead",
                   "status": 409
                 }
               }
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The client could not be read or removed, or an Owner's current password could not be read or checked (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                "examples": {
+                  "password_check": {
+                    "summary": "The Owner's current password could not be checked.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "the current password could not be checked",
+                      "status": 500
+                    }
+                  },
+                  "store": {
+                    "summary": "The client could not be read or removed.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
+                      "status": 500
+                    }
+                  }
                 }
               }
             }
@@ -14534,84 +14666,118 @@
         },
         "responses": {
           "200": {
-            "description": "The new secret (shown once).",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
+            "description": "The client with its new secret (shown once).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                },
-                "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
+                  "$ref": "#/components/schemas/OidcClientView"
                 }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
+            "description": "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "The caller is not signed in.",
+                    "value": {
+                      "error": "unauthorized",
+                      "message": "Operator authentication is required. Sign in with your operator token.",
+                      "status": 401
+                    }
+                  },
+                  "reauth_required": {
+                    "summary": "The Owner must re-authenticate.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "recent authentication required to change OIDC clients",
+                      "status": 401
+                    }
+                  }
                 }
               }
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller is neither the operator nor an Owner.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "forbidden",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The Owner must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "not_allowed": {
+                    "summary": "The session middleware refused the caller.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
           },
           "404": {
-            "description": "No such client.",
+            "description": "No such client (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "not_found",
-                  "message": "That page or resource was not found.",
+                  "error": "oidc_client",
+                  "message": "unknown client",
                   "status": 404
                 }
               }
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The secret could not be stored, or an Owner's current password could not be read or checked (`oidc_client`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                "examples": {
+                  "password_check": {
+                    "summary": "The Owner's current password could not be checked.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "the current password could not be checked",
+                      "status": 500
+                    }
+                  },
+                  "store": {
+                    "summary": "The secret could not be stored.",
+                    "value": {
+                      "error": "oidc_client",
+                      "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
+                      "status": 500
+                    }
+                  }
                 }
               }
             }
@@ -14654,7 +14820,9 @@
             "description": "Enabled identity providers (id and name).",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OidcProvidersResponse"
+                }
               }
             }
           },
@@ -14686,12 +14854,14 @@
             "description": "The caller's linked identities.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/LinkedIdentitiesResponse"
+                }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, or has no first-party user.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14705,17 +14875,17 @@
               }
             }
           },
-          "403": {
-            "description": "The caller may not do this.",
+          "500": {
+            "description": "The identities could not be read.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
                 },
                 "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -15079,7 +15249,7 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
+            "description": "The caller is not signed in.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15094,16 +15264,29 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller is neither the operator nor an Owner.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The Owner must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
@@ -15161,61 +15344,108 @@
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "A provider, the public origin or the provider count is invalid (`oidc_config`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
+                  "error": "oidc_config",
+                  "message": "at most 16 identity providers",
                   "status": 400
                 }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
+            "description": "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_config`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "The caller is not signed in.",
+                    "value": {
+                      "error": "unauthorized",
+                      "message": "Operator authentication is required. Sign in with your operator token.",
+                      "status": 401
+                    }
+                  },
+                  "reauth_required": {
+                    "summary": "The Owner must re-authenticate.",
+                    "value": {
+                      "error": "oidc_config",
+                      "message": "recent authentication required to change sign-in providers",
+                      "status": 401
+                    }
+                  }
                 }
               }
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_config` from it), or must enroll a second factor first (`mfa_enrollment_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller is neither the operator nor an Owner.",
+                    "value": {
+                      "error": "oidc_config",
+                      "message": "forbidden",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The Owner must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "not_allowed": {
+                    "summary": "The session middleware refused the caller.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The configuration file or the sealed secrets could not be written, or an Owner's current password could not be read or checked (`oidc_config`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                "examples": {
+                  "config_write": {
+                    "summary": "The configuration file could not be written.",
+                    "value": {
+                      "error": "oidc_config",
+                      "message": "failed to write config.toml: Permission denied (os error 13)",
+                      "status": 500
+                    }
+                  },
+                  "password_check": {
+                    "summary": "The Owner's current password could not be checked.",
+                    "value": {
+                      "error": "oidc_config",
+                      "message": "the current password could not be checked",
+                      "status": 500
+                    }
+                  }
                 }
               }
             }
@@ -21440,6 +21670,50 @@
         },
         "additionalProperties": false
       },
+      "LinkedIdentitiesResponse": {
+        "type": "object",
+        "description": "JSON body for `GET /api/auth/oidc/identities`.",
+        "required": [
+          "identities"
+        ],
+        "properties": {
+          "identities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkedIdentity"
+            },
+            "description": "Every sign-in identity linked to the caller's user, the local one included."
+          }
+        }
+      },
+      "LinkedIdentity": {
+        "type": "object",
+        "description": "One sign-in identity linked to a user.",
+        "required": [
+          "provider",
+          "external_user_id"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "Identity-broker id (`local`, `oidc:google`, …).",
+            "example": "oidc:google"
+          },
+          "external_user_id": {
+            "type": "string",
+            "description": "Provider-stable subject.",
+            "example": "118234509876543210987"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Operator-facing label, when the provider supplied one.",
+            "example": "sam@example.com"
+          }
+        }
+      },
       "LoginBegin": {
         "type": "object",
         "description": "Login-name or email used to start a discoverable-less passkey login.",
@@ -22142,6 +22416,92 @@
         },
         "additionalProperties": false
       },
+      "OidcClientView": {
+        "type": "object",
+        "description": "A Bookclerk-as-IdP client as operators see it; the secret appears only when freshly minted.",
+        "required": [
+          "client_id",
+          "redirect_uris",
+          "confidential",
+          "issue_refresh_token",
+          "allowed_scopes",
+          "has_secret",
+          "enabled"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "description": "Public client id used at the authorize and token endpoints.",
+            "example": "audiobookshelf"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Operator-facing display name.",
+            "example": "Audiobookshelf"
+          },
+          "redirect_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Allowed OAuth redirect URIs.",
+            "example": [
+              "https://abs.example.com/auth/openid/callback"
+            ]
+          },
+          "confidential": {
+            "type": "boolean",
+            "description": "Whether the client authenticates with a secret (otherwise it is a public PKCE client).",
+            "example": true
+          },
+          "issue_refresh_token": {
+            "type": "boolean",
+            "description": "Whether token responses include a refresh token.",
+            "example": true
+          },
+          "allowed_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Scopes the client may be granted.",
+            "example": [
+              "openid",
+              "profile",
+              "email"
+            ]
+          },
+          "has_secret": {
+            "type": "boolean",
+            "description": "Same as `confidential`: a secret hash is stored.",
+            "example": true
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the authorize and token endpoints accept this client.",
+            "example": true
+          },
+          "plugin_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Plugin that provides this client, or `null` for an operator-created one.",
+            "example": "audiobookshelf"
+          },
+          "client_secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The new secret, shown once after create or rotate-secret; never stored in clear.",
+            "example": "Qm9va2NsZXJrLXNlY3JldC1leGFtcGxlLXZhbHVl"
+          }
+        }
+      },
       "OidcClientWrite": {
         "type": "object",
         "description": "Body for creating or updating a Bookclerk-as-IdP client.",
@@ -22192,6 +22552,22 @@
               "null"
             ],
             "description": "Required for a non-elevated Owner whose portal session is older than 15 minutes."
+          }
+        }
+      },
+      "OidcClientsResponse": {
+        "type": "object",
+        "description": "JSON body for `GET /api/auth/oidc/clients`.",
+        "required": [
+          "clients"
+        ],
+        "properties": {
+          "clients": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OidcClientView"
+            },
+            "description": "Every registered client, without secrets."
           }
         }
       },
@@ -22556,6 +22932,28 @@
           "secret_source": {
             "type": "string",
             "description": "Where the client secret was found: `env`, `config`, `store`, or `none`."
+          }
+        }
+      },
+      "OidcProvidersResponse": {
+        "type": "object",
+        "description": "JSON body for `GET /api/auth/oidc/providers`.",
+        "required": [
+          "enabled",
+          "providers"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the OIDC broker is switched on at all.",
+            "example": true
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SigninOidcProvider"
+            },
+            "description": "Providers enabled in configuration, in configuration order (empty while the broker is off)."
           }
         }
       },
@@ -28543,6 +28941,52 @@
           "has_password": {
             "type": "boolean",
             "description": "Whether a local password is stored for the user.",
+            "example": true
+          }
+        }
+      },
+      "UserinfoResponse": {
+        "type": "object",
+        "description": "Standard OIDC claims for `GET /oidc/userinfo`, limited to the token's scopes.",
+        "required": [
+          "sub"
+        ],
+        "properties": {
+          "sub": {
+            "type": "string",
+            "description": "Subject: the Bookclerk `users.id` as a string.",
+            "example": "7"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name (`profile` scope), when the user has one.",
+            "example": "Sam"
+          },
+          "preferred_username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Login name (`profile` scope), when the user has one.",
+            "example": "sam"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Email (`email` scope), when the user has one.",
+            "example": "sam@example.com"
+          },
+          "email_verified": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Always `true` when `email` is present: Bookclerk trusts the address the Owner recorded.",
             "example": true
           }
         }

@@ -616,7 +616,7 @@ async fn mint_tokens(
     path = "/oidc/userinfo",
     security(("oidcAccessToken" = [])),
     responses(
-        (status = 200, description = "Claims for the token's user.", body = serde_json::Value),
+        (status = 200, description = "Claims for the token's user.", body = UserinfoResponse),
         (status = 401, description = "The access token is missing or invalid."),
         (status = 403, description = "The token's user is disabled."),
         (status = 500, description = "The user could not be read."),
@@ -625,7 +625,7 @@ async fn mint_tokens(
 async fn userinfo(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<UserinfoResponse>, StatusCode> {
     let token = bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let hmac_key = signing_key(&state).await;
     let claims = verify_jwt(&hmac_key, token).ok_or(StatusCode::UNAUTHORIZED)?;
@@ -650,10 +650,16 @@ async fn userinfo(
         .get("scope")
         .and_then(|v| v.as_str())
         .unwrap_or("openid profile");
-    let mut body = serde_json::json!({ "sub": sub });
+    let mut body = UserinfoResponse {
+        sub: sub.to_owned(),
+        name: None,
+        preferred_username: None,
+        email: None,
+        email_verified: None,
+    };
     if scope_has(scope, "profile") {
-        body["name"] = serde_json::json!(user.display_name);
-        body["preferred_username"] = serde_json::json!(user.login_name);
+        body.name = user.display_name.clone();
+        body.preferred_username = user.login_name.clone();
     }
     if scope_has(scope, "email") {
         if let Some(email) = user
@@ -662,11 +668,35 @@ async fn userinfo(
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            body["email"] = serde_json::json!(email);
-            body["email_verified"] = serde_json::json!(true);
+            body.email = Some(email.to_owned());
+            body.email_verified = Some(true);
         }
     }
     Ok(Json(body))
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// Standard OIDC claims for `GET /oidc/userinfo`, limited to the token's scopes.
+pub struct UserinfoResponse {
+    /// Subject: the Bookclerk `users.id` as a string.
+    #[schema(example = "7")]
+    pub sub: String,
+    /// Display name (`profile` scope), when the user has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Sam")]
+    pub name: Option<String>,
+    /// Login name (`profile` scope), when the user has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "sam")]
+    pub preferred_username: Option<String>,
+    /// Email (`email` scope), when the user has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "sam@example.com")]
+    pub email: Option<String>,
+    /// Always `true` when `email` is present: Bookclerk trusts the address the Owner recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = true)]
+    pub email_verified: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -1131,14 +1161,15 @@ fn intersect_scopes(requested: &str, allowed: &[String]) -> String {
     }
 }
 
-/// JSON error body for OIDC client admin APIs.
+/// JSON error body for OIDC client admin APIs (`error` is always `oidc_client`).
 fn oidc_client_error(status: StatusCode, message: impl Into<String>) -> Response {
     (
         status,
-        Json(serde_json::json!({
-            "error": "oidc_client",
-            "message": message.into(),
-        })),
+        Json(crate::http_error::ErrorJson::new(
+            status,
+            "oidc_client",
+            message.into(),
+        )),
     )
         .into_response()
 }
@@ -1206,26 +1237,66 @@ fn generate_client_secret() -> String {
     URL_SAFE_NO_PAD.encode(buf)
 }
 
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// A Bookclerk-as-IdP client as operators see it; the secret appears only when freshly minted.
+pub struct OidcClientView {
+    /// Public client id used at the authorize and token endpoints.
+    #[schema(example = "audiobookshelf")]
+    pub client_id: String,
+    /// Operator-facing display name.
+    #[schema(example = "Audiobookshelf")]
+    pub name: Option<String>,
+    /// Allowed OAuth redirect URIs.
+    #[schema(example = json!(["https://abs.example.com/auth/openid/callback"]))]
+    pub redirect_uris: Vec<String>,
+    /// Whether the client authenticates with a secret (otherwise it is a public PKCE client).
+    #[schema(example = true)]
+    pub confidential: bool,
+    /// Whether token responses include a refresh token.
+    #[schema(example = true)]
+    pub issue_refresh_token: bool,
+    /// Scopes the client may be granted.
+    #[schema(example = json!(["openid", "profile", "email"]))]
+    pub allowed_scopes: Vec<String>,
+    /// Same as `confidential`: a secret hash is stored.
+    #[schema(example = true)]
+    pub has_secret: bool,
+    /// Whether the authorize and token endpoints accept this client.
+    #[schema(example = true)]
+    pub enabled: bool,
+    /// Plugin that provides this client, or `null` for an operator-created one.
+    #[schema(example = "audiobookshelf")]
+    pub plugin_id: Option<String>,
+    /// The new secret, shown once after create or rotate-secret; never stored in clear.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Qm9va2NsZXJrLXNlY3JldC1leGFtcGxlLXZhbHVl")]
+    pub client_secret: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/auth/oidc/clients`.
+pub struct OidcClientsResponse {
+    /// Every registered client, without secrets.
+    pub clients: Vec<OidcClientView>,
+}
+
 /// Operator JSON for a client; `secret` is included only when freshly minted.
 fn client_view(
     client: &bookclerk_library::OidcClientRecord,
     secret: Option<String>,
-) -> serde_json::Value {
-    let mut body = serde_json::json!({
-        "client_id": client.client_id,
-        "name": client.name,
-        "redirect_uris": client.redirect_uris,
-        "confidential": client.has_secret(),
-        "issue_refresh_token": client.issue_refresh_token,
-        "allowed_scopes": client.allowed_scopes,
-        "has_secret": client.has_secret(),
-        "enabled": client.enabled,
-        "plugin_id": client.plugin_id,
-    });
-    if let Some(secret) = secret {
-        body["client_secret"] = serde_json::json!(secret);
+) -> OidcClientView {
+    OidcClientView {
+        client_id: client.client_id.clone(),
+        name: client.name.clone(),
+        redirect_uris: client.redirect_uris.clone(),
+        confidential: client.has_secret(),
+        issue_refresh_token: client.issue_refresh_token,
+        allowed_scopes: client.allowed_scopes.clone(),
+        has_secret: client.has_secret(),
+        enabled: client.enabled,
+        plugin_id: client.plugin_id.clone(),
+        client_secret: secret,
     }
-    body
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -1275,6 +1346,8 @@ async fn require_client_admin(
                 status,
                 if status == StatusCode::UNAUTHORIZED {
                     "recent authentication required to change OIDC clients"
+                } else if status == StatusCode::INTERNAL_SERVER_ERROR {
+                    "the current password could not be checked"
                 } else {
                     "forbidden"
                 },
@@ -1287,22 +1360,26 @@ async fn require_client_admin(
     get,
     path = "/api/auth/oidc/clients",
     responses(
-        (status = 200, description = "Registered clients (no secrets).", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 200, description = "Registered clients (no secrets).", body = OidcClientsResponse),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 500, description = "The clients could not be read (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500})),
     ),
 )]
 async fn list_clients(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<OidcClientsResponse>, Response> {
     let library = state.library_snapshot().await;
     let clients = library
         .list_oidc_clients()
         .await
         .map_err(|err| oidc_client_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    Ok(Json(serde_json::json!({
-        "clients": clients.iter().map(|c| client_view(c, None)).collect::<Vec<_>>(),
-    })))
+    Ok(Json(OidcClientsResponse {
+        clients: clients.iter().map(|c| client_view(c, None)).collect(),
+    }))
 }
 
 /// Create a client; confidential clients return the generated secret once.
@@ -1311,17 +1388,29 @@ async fn list_clients(
     path = "/api/auth/oidc/clients",
     request_body = OidcClientWrite,
     responses(
-        (status = 200, description = "The client; a confidential client's secret appears once.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 409, description = "A client with this id already exists."),
+        (status = 200, description = "The client; a confidential client's secret appears once.", body = OidcClientView),
+        (status = 400, description = "The client id or a redirect URI is invalid (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "at least one redirect URI is required", "status": 400})),
+        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
+            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
+            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
+        )),
+        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
+            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 409, description = "A client with this id already exists (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "a client with this id already exists", "status": 409})),
+        (status = 500, description = "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
+            ("store" = (summary = "The client could not be read or stored.", value = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500}))),
+            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_client", "message": "the current password could not be checked", "status": 500}))),
+        )),
     ),
 )]
 async fn create_client(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<OidcClientWrite>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<OidcClientView>, Response> {
     require_client_admin(&state, &headers, body.current_password.as_deref()).await?;
     let client_id = body.client_id.unwrap_or_default();
     validate_client_id(&client_id)
@@ -1373,10 +1462,22 @@ async fn create_client(
     params(("client_id" = String, Path, description = "Client id.")),
     request_body = OidcClientWrite,
     responses(
-        (status = 200, description = "The client after the change.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such client."),
+        (status = 200, description = "The client after the change.", body = OidcClientView),
+        (status = 400, description = "The client id or a redirect URI is invalid (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "client id may only contain letters, digits, '.', '_', '-', and '~'", "status": 400})),
+        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
+            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
+            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
+        )),
+        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
+            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 404, description = "No such client (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "unknown client", "status": 404})),
+        (status = 500, description = "The client could not be read or stored, or an Owner's current password could not be read or checked (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
+            ("store" = (summary = "The client could not be read or stored.", value = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500}))),
+            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_client", "message": "the current password could not be checked", "status": 500}))),
+        )),
     ),
 )]
 async fn update_client(
@@ -1384,7 +1485,7 @@ async fn update_client(
     headers: HeaderMap,
     Path(client_id): Path<String>,
     Json(body): Json<OidcClientWrite>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<OidcClientView>, Response> {
     require_client_admin(&state, &headers, body.current_password.as_deref()).await?;
     validate_client_id(&client_id)
         .map_err(|msg| oidc_client_error(StatusCode::BAD_REQUEST, msg))?;
@@ -1439,10 +1540,21 @@ async fn update_client(
     ),
     responses(
         (status = 204, description = "The client was deleted."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such client."),
-        (status = 409, description = "The client is provided by a plugin; disable it instead."),
+        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
+            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
+            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
+        )),
+        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
+            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 404, description = "No such client (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "unknown client", "status": 404})),
+        (status = 409, description = "The client is provided by a plugin; disable it instead (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "plugin-provided clients cannot be deleted; disable them instead", "status": 409})),
+        (status = 500, description = "The client could not be read or removed, or an Owner's current password could not be read or checked (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
+            ("store" = (summary = "The client could not be read or removed.", value = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500}))),
+            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_client", "message": "the current password could not be checked", "status": 500}))),
+        )),
     ),
 )]
 async fn delete_client(
@@ -1495,10 +1607,21 @@ struct RotateSecretBody {
     params(("client_id" = String, Path, description = "Client id.")),
     request_body = Option<RotateSecretBody>,
     responses(
-        (status = 200, description = "The new secret (shown once).", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such client."),
+        (status = 200, description = "The client with its new secret (shown once).", body = OidcClientView),
+        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
+            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
+            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
+        )),
+        (status = 403, description = "The caller is neither the operator nor an Owner (the standard error body before the handler, `oidc_client` from it), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "oidc_client", "message": "forbidden", "status": 403}))),
+            ("not_allowed" = (summary = "The session middleware refused the caller.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 404, description = "No such client (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "unknown client", "status": 404})),
+        (status = 500, description = "The secret could not be stored, or an Owner's current password could not be read or checked (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
+            ("store" = (summary = "The secret could not be stored.", value = json!({"error": "oidc_client", "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "status": 500}))),
+            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "oidc_client", "message": "the current password could not be checked", "status": 500}))),
+        )),
     ),
 )]
 async fn rotate_client_secret(
@@ -1506,7 +1629,7 @@ async fn rotate_client_secret(
     headers: HeaderMap,
     Path(client_id): Path<String>,
     body: Option<Json<RotateSecretBody>>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<OidcClientView>, Response> {
     let password = body
         .as_ref()
         .and_then(|Json(body)| body.current_password.as_deref());
