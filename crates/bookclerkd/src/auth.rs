@@ -383,21 +383,26 @@ pub struct LoginRequest {
     pub token: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// JSON body for `GET /api/auth/me`.
 pub struct AuthMeResponse {
     /// Whether the request resolved to an operator, portal, or impersonated session.
+    #[schema(example = true)]
     pub authenticated: bool,
     /// `operator`, `administrator`, or `member` (legacy clients may still send `portal`).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "administrator")]
     pub role: Option<String>,
     /// Configured post-auth landing view (`discover` / `library` / `accounts`).
     /// Loaded from per-user DB preferences (not config.toml).
+    #[schema(example = "library")]
     pub default_view: String,
     /// Whether this session may acquire / scan / manage jobs.
     /// True for operator and administrator.
+    #[schema(example = true)]
     pub can_acquire: bool,
     /// True when this operator session was created via Owner elevate.
+    #[schema(example = false)]
     pub elevated: bool,
     /// Present when the operator is impersonating a User.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -413,90 +418,339 @@ pub struct AuthMeResponse {
     pub second_factor: Option<AuthSecondFactor>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Host MFA policy plus whether this user has TOTP and/or passkeys.
 pub struct AuthSecondFactor {
     /// `daemon.auth.require_second_factor`.
+    #[schema(example = false)]
     pub required: bool,
     /// Confirmed authenticator-app TOTP.
+    #[schema(example = true)]
     pub totp: bool,
     /// Number of registered passkeys.
+    #[schema(example = 1)]
     pub passkey_count: u64,
     /// True when TOTP is enabled or at least one passkey exists.
+    #[schema(example = true)]
     pub enrolled: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Target user shown while an operator session is impersonating.
 pub struct AuthMeImpersonating {
     /// First-party `users.id` being impersonated.
+    #[schema(example = 7)]
     pub user_id: i64,
     /// Display name of the impersonated user when the row exists.
+    #[schema(example = "Sam")]
     pub display_name: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// First-party user snapshot attached to `/me` when a `users` row is linked.
 pub struct AuthMeUser {
     /// First-party `users.id`.
+    #[schema(example = 7)]
     pub id: i64,
     /// Role string (`owner`, `administrator`, `member`).
+    #[schema(example = "member")]
     pub role: String,
     /// Optional human-readable name from the user row.
+    #[schema(example = "Sam")]
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional email; omitted from JSON when unset.
+    #[schema(example = "sam@example.com")]
     pub email: Option<String>,
     /// True when a local password hash is stored (invite users may be false).
+    #[schema(example = true)]
     pub has_password: bool,
     /// True when a JPEG avatar is stored under `files_dir/avatars/{id}.*`.
+    #[schema(example = false)]
     pub has_avatar: bool,
     /// Selected picture source (`auto`, `monogram`, `gravatar`, `upload`, `sso:{id}`).
+    #[schema(example = "auto")]
     pub avatar_source: String,
     /// SHA-256 hex of the contact email for Gravatar, when an email is set.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "0bc83cb571cd1c50ba6f3e8a78ef1346b6b31bd4d35b8d3dc1f0c8a3b4a9f7e2")]
     pub gravatar_hash: Option<String>,
     /// IdP-supplied pictures the user can pick.
     #[serde(default)]
     pub sso_pictures: Vec<AuthSsoPicture>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// HTTPS picture from a linked identity provider.
 pub struct AuthSsoPicture {
     /// `portal_identities.id`.
+    #[schema(example = 3)]
     pub identity_id: i64,
     /// Identity-broker id (`oidc:google`, …).
+    #[schema(example = "oidc:google")]
     pub provider: String,
     /// HTTPS URL to display.
+    #[schema(example = "https://lh3.googleusercontent.com/a/example=s96-c")]
     pub picture_url: String,
     /// RFC 3339 last portal-session activity for this identity, when any.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2026-10-29T08:15:00Z")]
     pub last_used_at: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Portal identity fields exposed on `/me` for SSO / local-portal callers.
 pub struct PortalMeInfo {
     /// `portal_identities.id` for this session.
+    #[schema(example = 3)]
     pub identity_id: i64,
     /// Identity-broker id (`local`, OIDC provider name, …).
+    #[schema(example = "local")]
     pub provider: String,
     /// Provider-stable subject / external user id.
+    #[schema(example = "7")]
     pub external_user_id: String,
     /// Optional operator-facing label for the identity.
+    #[schema(example = "Sam")]
     pub label: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// JSON body after a successful operator token login.
 struct LoginResponse {
     /// Always `true` on this success path.
+    #[schema(example = true)]
     ok: bool,
     /// Issued role (`operator` for token login).
+    #[schema(example = "operator")]
     role: String,
     /// Post-login SPA landing view from operator preferences (`discover` on lookup failure).
+    #[schema(example = "discover")]
     default_view: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// Acknowledgement body (`{"ok": true}`) for actions with nothing else to report.
+pub(crate) struct OkResponse {
+    /// Always `true`: a failure answers with an error status instead.
+    #[schema(example = true)]
+    pub(crate) ok: bool,
+}
+
+impl OkResponse {
+    /// The acknowledgement.
+    pub(crate) const OK: Self = Self { ok: true };
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/auth/signin`: the ways this library lets people sign in.
+pub struct SigninMethods {
+    /// Whether the operator token may be entered in the SPA (only before an Owner exists).
+    #[schema(example = false)]
+    pub operator_token: bool,
+    /// Enabled OIDC identity providers, in configuration order.
+    pub oidc: Vec<SigninOidcProvider>,
+    /// Integrations that accept their own credentials at sign-in.
+    pub integrations: Vec<SigninIntegration>,
+    /// Whether `daemon.auth.require_second_factor` is on, so clients can explain the enrollment step.
+    #[schema(example = false)]
+    pub require_second_factor: bool,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// One OIDC identity provider offered on the sign-in page.
+pub struct SigninOidcProvider {
+    /// Provider id from `[auth.oidc.providers]`, used in `/api/auth/oidc/{id}/start`.
+    #[schema(example = "google")]
+    pub id: String,
+    /// Button label.
+    #[schema(example = "Google")]
+    pub name: String,
+    /// Known social preset the client may style (`google`, `github`, …), when the provider matches one.
+    #[schema(example = "google")]
+    pub preset: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// One integration that signs people in with its own credentials.
+pub struct SigninIntegration {
+    /// Integration id, used in `/api/integrations/{id}/login`.
+    #[schema(example = "audiobookshelf")]
+    pub id: String,
+    /// Button label.
+    #[schema(example = "Audiobookshelf")]
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after a successful Owner elevation.
+pub struct Elevated {
+    /// Always `true` on this success path.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// Always `true`: the cookie the response sets is an elevated operator session.
+    #[schema(example = true)]
+    pub elevated: bool,
+    /// Seconds until the elevated session expires.
+    #[schema(example = 900)]
+    pub expires_in_secs: u64,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after a portal session was minted for a first-party user.
+pub struct PortalSessionIssued {
+    /// Always `true` on this success path.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// The user's role (`owner`, `administrator`, `member`).
+    #[schema(example = "member")]
+    pub role: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(untagged)]
+// Documents the two shapes of the 200; the handler writes each one where it
+// sets its cookie (`issue_portal_session`, `totp::after_password_verified`).
+#[allow(dead_code)]
+/// JSON body of a successful `POST /api/auth/password`.
+pub enum PasswordLoginOutcome {
+    /// The password was enough; the response sets the portal session cookie.
+    Session(PortalSessionIssued),
+    /// The user has an authenticator app, so a code is needed before a session is issued.
+    Challenge(crate::totp::TotpChallenge),
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after an operator session started impersonating a user.
+pub struct ImpersonationStarted {
+    /// Always `true` on this success path.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// The user the session now acts as.
+    pub impersonating: AuthMeImpersonating,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after the first Owner was created.
+pub struct OwnerBootstrapped {
+    /// Always `true` on this success path.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// `users.id` of the new Owner.
+    #[schema(example = 1)]
+    pub user_id: i64,
+    /// Single-use claim ticket that signs the Owner in once (valid for seven days).
+    #[schema(example = "5f1c9a2e-7b3d-4e6f-8a90-1b2c3d4e5f60")]
+    pub claim_ticket: String,
+    /// Invite link carrying the ticket, for the browser.
+    #[schema(
+        example = "https://books.example.com/invite?ticket=5f1c9a2e-7b3d-4e6f-8a90-1b2c3d4e5f60"
+    )]
+    pub invite_url: String,
+    /// Login name the Owner signs in with, when one was given.
+    #[schema(example = "casey")]
+    pub login_name: Option<String>,
+    /// Whether a password was set, so password sign-in works right away.
+    #[schema(example = true)]
+    pub has_password: bool,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after a password was set.
+pub struct PasswordSet {
+    /// Always `true` on this success path.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// Portal sessions of that user revoked by the change (the caller signs in again).
+    #[schema(example = 2)]
+    pub revoked_sessions: u64,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/auth/sessions`.
+pub struct SessionsResponse {
+    /// The caller's sessions, newest first; empty for a Bearer-only caller, who has no session rows.
+    pub sessions: Vec<SessionView>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(untagged)]
+/// One session in the caller's list: an operator session or a portal (user) session.
+pub enum SessionView {
+    /// An operator session (`kind` is `operator`).
+    Operator(OperatorSessionView),
+    /// A portal session (`kind` is `portal`).
+    Portal(PortalSessionView),
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// An operator session as listed by `GET /api/auth/sessions`.
+pub struct OperatorSessionView {
+    /// Session id, for `DELETE /api/auth/sessions/{id}`.
+    #[schema(example = 12)]
+    pub id: i64,
+    /// Always `operator`.
+    #[schema(example = "operator")]
+    pub kind: &'static str,
+    /// RFC 3339 time the session was created.
+    #[schema(example = "2026-10-28T19:02:11Z")]
+    pub created_at: String,
+    /// RFC 3339 time of the last authenticated use, when any.
+    #[schema(example = "2026-10-29T08:15:00Z")]
+    pub last_used_at: Option<String>,
+    /// RFC 3339 expiry.
+    #[schema(example = "2026-11-04T19:02:11Z")]
+    pub expires_at: String,
+    /// Whether an Owner elevated into this session (rather than the operator token).
+    #[schema(example = false)]
+    pub elevated: bool,
+    /// User the session is impersonating, when it is.
+    #[schema(example = 7)]
+    pub impersonating_user_id: Option<i64>,
+    /// Whether this is the session making the request.
+    #[schema(example = true)]
+    pub is_current: bool,
+    /// Best-effort OS or client label from the User-Agent.
+    #[schema(example = "Windows")]
+    pub client_label: Option<String>,
+    /// Best-effort device class (`desktop`, `mobile`, `tablet`, `api`).
+    #[schema(example = "desktop")]
+    pub device_type: Option<String>,
+    /// Raw User-Agent captured when the session was created.
+    #[schema(example = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/134.0")]
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// A portal (user) session as listed by `GET /api/auth/sessions`.
+pub struct PortalSessionView {
+    /// Session id, for `DELETE /api/auth/sessions/{id}`.
+    #[schema(example = 31)]
+    pub id: i64,
+    /// Always `portal`.
+    #[schema(example = "portal")]
+    pub kind: &'static str,
+    /// RFC 3339 time the session was created.
+    #[schema(example = "2026-10-28T19:02:11Z")]
+    pub created_at: String,
+    /// RFC 3339 expiry.
+    #[schema(example = "2026-11-27T19:02:11Z")]
+    pub expires_at: String,
+    /// RFC 3339 time of the last authenticated use, when any.
+    #[schema(example = "2026-10-29T08:15:00Z")]
+    pub last_used_at: Option<String>,
+    /// Whether this is the session making the request.
+    #[schema(example = true)]
+    pub is_current: bool,
+    /// Best-effort OS or client label from the User-Agent.
+    #[schema(example = "Android")]
+    pub client_label: Option<String>,
+    /// Best-effort device class (`desktop`, `mobile`, `tablet`, `api`).
+    #[schema(example = "mobile")]
+    pub device_type: Option<String>,
+    /// Raw User-Agent captured when the session was created.
+    #[schema(example = "Mozilla/5.0 (Linux; Android 15) Chrome/131.0 Mobile")]
+    pub user_agent: Option<String>,
 }
 
 /// Validates the operator token (throttled, constant-time) and issues a hashed session cookie.
@@ -505,10 +759,11 @@ struct LoginResponse {
     path = "/api/auth/login",
     request_body = LoginRequest,
     responses(
-        (status = 200, description = "Signed in; the response sets the operator session cookie.", body = serde_json::Value),
-        (status = 401, description = "The token is wrong."),
-        (status = 403, description = "An Owner exists, so operator sign-in is off (`operator_login_disabled`); sign in as a user.", body = crate::http_error::ErrorJson),
-        (status = 429, description = "Too many attempts; retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
+        (status = 200, description = "Signed in; the response sets the operator session cookie.", body = LoginResponse),
+        (status = 401, description = "The token is wrong (`unauthorized`).", body = crate::http_error::ErrorJson, example = json!({"error": "unauthorized", "message": "Invalid operator token.", "status": 401})),
+        (status = 403, description = "An Owner exists, so operator sign-in is off (`operator_login_disabled`); sign in as a user.", body = crate::http_error::ErrorJson, example = json!({"error": "operator_login_disabled", "message": "Operator token sign-in is unavailable after an Owner account exists. Open Bookclerk from the system tray, or elevate from an Owner session.", "status": 403})),
+        (status = 429, description = "Too many attempts from this client; retry after `Retry-After` seconds.", body = LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
+        (status = 500, description = "The library could not be read."),
     ),
 )]
 pub async fn login(
@@ -545,30 +800,22 @@ pub async fn login(
             return Ok(too_many_requests(retry_after));
         }
         // Explicit JSON so the brand-error middleware keeps a precise message.
-        return Ok((
+        return Ok(json_auth_error(
             StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({
-                "error": "unauthorized",
-                "message": "Invalid operator token.",
-                "status": 401
-            })),
-        )
-            .into_response());
+            "unauthorized",
+            "Invalid operator token.",
+        ));
     }
 
     if spa_operator_token_allowed(&library).await? {
         auth.clear_login_failures(&client_key).await;
         return Ok(issue_operator_session(&state, &auth, default_view, &headers).await);
     }
-    Ok((
+    Ok(json_auth_error(
         StatusCode::FORBIDDEN,
-        Json(serde_json::json!({
-            "error": "operator_login_disabled",
-            "message": "Operator token sign-in is unavailable after an Owner account exists. Open Bookclerk from the system tray, or elevate from an Owner session.",
-            "status": 403
-        })),
-    )
-        .into_response())
+        "operator_login_disabled",
+        "Operator token sign-in is unavailable after an Owner account exists. Open Bookclerk from the system tray, or elevate from an Owner session.",
+    ))
 }
 
 /// Whether the SPA may present operator-token sign-in (no active Owner yet).
@@ -603,24 +850,23 @@ async fn spa_operator_token_allowed(
     get,
     path = "/api/auth/signin",
     responses(
-        (status = 200, description = "The sign-in methods this library offers.", body = serde_json::Value),
+        (status = 200, description = "The sign-in methods this library offers.", body = SigninMethods),
+        (status = 500, description = "The library could not be read."),
     ),
 )]
 pub async fn signin_methods(State(state): State<Arc<AppState>>) -> Result<Response, StatusCode> {
     let library = state.library_snapshot().await;
     let operator_token = spa_operator_token_allowed(&library).await?;
     let cfg = state.config.read().await;
-    let oidc: Vec<serde_json::Value> = if cfg.auth.oidc.enabled {
+    let oidc = if cfg.auth.oidc.enabled {
         cfg.auth
             .oidc
             .enabled_providers()
             .into_iter()
-            .map(|p| {
-                serde_json::json!({
-                    "id": p.id,
-                    "name": p.display_name(),
-                    "preset": p.social_preset(),
-                })
+            .map(|p| SigninOidcProvider {
+                id: p.id.clone(),
+                name: p.display_name().to_owned(),
+                preset: p.social_preset().map(str::to_owned),
             })
             .collect()
     } else {
@@ -628,22 +874,20 @@ pub async fn signin_methods(State(state): State<Arc<AppState>>) -> Result<Respon
     };
     drop(cfg);
     let integrations = state.integrations.read().await;
-    let integrations: Vec<serde_json::Value> = integrations
+    let integrations = integrations
         .credential_login_providers()
         .into_iter()
-        .map(|i| {
-            serde_json::json!({
-                "id": i.id(),
-                "name": i.display_name(),
-            })
+        .map(|i| SigninIntegration {
+            id: i.id().to_owned(),
+            name: i.display_name().to_owned(),
         })
         .collect();
-    Ok(Json(serde_json::json!({
-        "operator_token": operator_token,
-        "oidc": oidc,
-        "integrations": integrations,
-        "require_second_factor": crate::totp::require_second_factor(&state).await,
-    }))
+    Ok(Json(SigninMethods {
+        operator_token,
+        oidc,
+        integrations,
+        require_second_factor: crate::totp::require_second_factor(&state).await,
+    })
     .into_response())
 }
 
@@ -664,11 +908,11 @@ pub async fn signin_methods(State(state): State<Arc<AppState>>) -> Result<Respon
     path = "/api/auth/tray-handoff/prepare",
     security(("operatorToken" = [])),
     responses(
-        (status = 200, description = "A single-use tray ticket.", body = serde_json::Value),
+        (status = 200, description = "A single-use tray ticket.", body = TrayHandoffPrepareResponse),
         (status = 204, description = "Operator authentication is off, so no ticket is needed."),
         (status = 401, description = "The Bearer token is missing or wrong."),
         (status = 403, description = "The request did not come straight from loopback."),
-        (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
+        (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds.", body = LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
     ),
 )]
 pub async fn tray_handoff_prepare(
@@ -768,11 +1012,13 @@ pub(crate) struct TrayHandoffQuery {
 }
 
 /// JSON returned to the tray after a successful prepare.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 struct TrayHandoffPrepareResponse {
     /// Single-use loopback handoff code for `GET /api/auth/tray-handoff?code=`.
+    #[schema(example = "9b4f1c2e-3d5a-4b6c-8e7f-0a1b2c3d4e5f")]
     code: String,
     /// Seconds until this ticket expires (matches the in-process deadline).
+    #[schema(example = 180)]
     expires_in_secs: u64,
 }
 
@@ -939,14 +1185,14 @@ pub(crate) fn session_client_from_headers(headers: &HeaderMap) -> SessionClientI
 /// * `status` - HTTP status for the response.
 /// * `error` - Machine-readable slug (`invalid_credentials`, …).
 /// * `message` - Caller-facing explanation.
-pub(crate) fn json_auth_error(status: StatusCode, error: &str, message: &str) -> Response {
+pub(crate) fn json_auth_error(
+    status: StatusCode,
+    error: &'static str,
+    message: &'static str,
+) -> Response {
     (
         status,
-        Json(serde_json::json!({
-            "error": error,
-            "message": message,
-            "status": status.as_u16()
-        })),
+        Json(crate::http_error::ErrorJson::new(status, error, message)),
     )
         .into_response()
 }
@@ -981,20 +1227,37 @@ fn invalid_login_or_password() -> Response {
     )
 }
 
+/// JSON body of a 429 after too many failed sign-in attempts from one client.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct LoginThrottled {
+    /// Always `too_many_requests`.
+    #[schema(example = "too_many_requests")]
+    error: &'static str,
+    /// Caller-facing explanation naming the wait.
+    #[schema(example = "Too many failed login attempts. Try again in 45 seconds.")]
+    message: String,
+    /// Always 429 (duplicates the response status for clients).
+    #[schema(example = 429)]
+    status: u16,
+    /// Seconds until this client may try again; the same value as `Retry-After`.
+    #[schema(example = 45)]
+    retry_after_secs: u64,
+}
+
 /// Builds a 429 JSON body with `Retry-After` in whole seconds (at least 1).
 pub(crate) fn too_many_requests(retry_after: Duration) -> Response {
     let secs = retry_after.as_secs().max(1);
     let mut res = (
         StatusCode::TOO_MANY_REQUESTS,
-        Json(serde_json::json!({
-            "error": "too_many_requests",
-            "message": format!(
+        Json(LoginThrottled {
+            error: "too_many_requests",
+            message: format!(
                 "Too many failed login attempts. Try again in {secs} second{}.",
                 if secs == 1 { "" } else { "s" }
             ),
-            "status": 429,
-            "retry_after_secs": secs
-        })),
+            status: StatusCode::TOO_MANY_REQUESTS.as_u16(),
+            retry_after_secs: secs,
+        }),
     )
         .into_response();
     if let Ok(value) = HeaderValue::from_str(&secs.to_string()) {
@@ -1008,7 +1271,7 @@ pub(crate) fn too_many_requests(retry_after: Duration) -> Response {
     post,
     path = "/api/auth/logout",
     responses(
-        (status = 200, description = "Signed out; both session cookies are cleared.", body = serde_json::Value),
+        (status = 200, description = "Signed out; both session cookies are cleared.", body = OkResponse),
     ),
 )]
 pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -1038,12 +1301,7 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
             hdrs.append(header::SET_COOKIE, v);
         }
     }
-    (
-        StatusCode::OK,
-        hdrs,
-        Json(serde_json::json!({ "ok": true })),
-    )
-        .into_response()
+    (StatusCode::OK, hdrs, Json(OkResponse::OK)).into_response()
 }
 
 /// Resolves the caller and returns `/me` JSON; unauthenticated callers get 401.
@@ -1052,8 +1310,8 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     path = "/api/auth/me",
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
-        (status = 200, description = "Who the caller is (operator, portal user, or impersonation).", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in."),
+        (status = 200, description = "Who the caller is (operator, portal user, or impersonation).", body = AuthMeResponse),
+        (status = 401, description = "Nobody is signed in: the same body with `authenticated` false, so the app can show the sign-in screen.", body = AuthMeResponse, example = json!({"authenticated": false, "default_view": "discover", "can_acquire": false, "elevated": false})),
     ),
 )]
 pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
@@ -1948,11 +2206,12 @@ pub struct ImpersonateRequest {
     request_body = ElevateRequest,
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
-        (status = 200, description = "Elevated; the response sets a short-lived operator cookie.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 200, description = "Elevated; the response sets a short-lived operator cookie.", body = Elevated),
+        (status = 401, description = "No portal session is signed in, or the password is wrong."),
+        (status = 403, description = "The caller is not an Owner, or the Owner has no password to check."),
         (status = 400, description = "Operator auth is off, or the password is empty."),
         (status = 409, description = "The caller is already an operator."),
+        (status = 500, description = "The password hash could not be read, or the elevated session could not be stored."),
     ),
 )]
 pub async fn elevate(
@@ -2042,11 +2301,11 @@ pub(crate) async fn issue_elevation(
     Ok((
         StatusCode::OK,
         [(header::SET_COOKIE, cookie)],
-        Json(serde_json::json!({
-            "ok": true,
-            "elevated": true,
-            "expires_in_secs": max_age
-        })),
+        Json(Elevated {
+            ok: true,
+            elevated: true,
+            expires_in_secs: max_age,
+        }),
     )
         .into_response())
 }
@@ -2091,10 +2350,10 @@ pub(crate) async fn issue_portal_session(
     Ok((
         StatusCode::OK,
         [(header::SET_COOKIE, cookie)],
-        Json(serde_json::json!({
-            "ok": true,
-            "role": user.role.as_str(),
-        })),
+        Json(PortalSessionIssued {
+            ok: true,
+            role: user.role.as_str().to_owned(),
+        }),
     )
         .into_response())
 }
@@ -2105,9 +2364,9 @@ pub(crate) async fn issue_portal_session(
     path = "/api/auth/elevate",
     security(("operatorSession" = [])),
     responses(
-        (status = 200, description = "Elevation ended.", body = serde_json::Value),
+        (status = 200, description = "Elevation ended.", body = OkResponse),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 403, description = "The session is impersonating a user."),
         (status = 400, description = "The session is not an elevated one."),
     ),
 )]
@@ -2141,7 +2400,7 @@ pub async fn elevate_end(
             header::SET_COOKIE,
             format!("{SESSION_COOKIE}=; {flags}; Max-Age=0"),
         )],
-        Json(serde_json::json!({ "ok": true })),
+        Json(OkResponse::OK),
     )
         .into_response())
 }
@@ -2152,11 +2411,12 @@ pub async fn elevate_end(
     path = "/api/auth/impersonate",
     request_body = ImpersonateRequest,
     responses(
-        (status = 200, description = "The session now acts as the user.", body = serde_json::Value),
+        (status = 200, description = "The session now acts as the user.", body = ImpersonationStarted),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 403, description = "The session is already impersonating a user, or the target user is disabled."),
         (status = 404, description = "No such user."),
         (status = 400, description = "Operator auth is off."),
+        (status = 500, description = "The user could not be read, or the session could not be stored."),
     ),
 )]
 pub async fn impersonate(
@@ -2238,13 +2498,13 @@ pub async fn impersonate(
             Some(&format!(r#"{{"user_id":{}}}"#, target.id)),
         )
         .await;
-    let body = Json(serde_json::json!({
-        "ok": true,
-        "impersonating": {
-            "user_id": target.id,
-            "display_name": target.display_name,
-        }
-    }));
+    let body = Json(ImpersonationStarted {
+        ok: true,
+        impersonating: AuthMeImpersonating {
+            user_id: target.id,
+            display_name: target.display_name,
+        },
+    });
     let mut response = (StatusCode::OK, body).into_response();
     for cookie in set_cookies {
         response.headers_mut().append(header::SET_COOKIE, cookie);
@@ -2258,9 +2518,9 @@ pub async fn impersonate(
     path = "/api/auth/impersonate",
     security(("operatorSession" = [])),
     responses(
-        (status = 200, description = "Impersonation ended.", body = serde_json::Value),
+        (status = 200, description = "Impersonation ended.", body = OkResponse),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 500, description = "The session could not be updated."),
     ),
 )]
 pub async fn impersonate_end(
@@ -2272,7 +2532,7 @@ pub async fn impersonate_end(
         return Err(StatusCode::UNAUTHORIZED);
     };
     if op.impersonating_user_id.is_none() {
-        return Ok(Json(serde_json::json!({ "ok": true })).into_response());
+        return Ok(Json(OkResponse::OK).into_response());
     }
     let library = state.library_snapshot().await;
     let prev = op.impersonating_user_id;
@@ -2300,7 +2560,7 @@ pub async fn impersonate_end(
     Ok((
         StatusCode::OK,
         [(header::SET_COOKIE, clear)],
-        Json(serde_json::json!({ "ok": true })),
+        Json(OkResponse::OK),
     )
         .into_response())
 }
@@ -2771,18 +3031,18 @@ pub struct BootstrapRequest {
     request_body = BootstrapRequest,
     security(("operatorToken" = []), ("operatorSession" = [])),
     responses(
-        (status = 200, description = "The first Owner was created.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 409, description = "An Owner already exists."),
+        (status = 200, description = "The first Owner was created.", body = OwnerBootstrapped),
+        (status = 401, description = "The caller is not the operator."),
+        (status = 409, description = "An Owner or Administrator already exists."),
         (status = 400, description = "The email is invalid."),
+        (status = 500, description = "The library could not be read or written."),
     ),
 )]
 pub async fn bootstrap(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<BootstrapRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<OwnerBootstrapped>, StatusCode> {
     let auth = state.auth_snapshot().await;
     if auth.enabled && !authorize_operator(&state, &auth, &headers).await {
         return Err(StatusCode::UNAUTHORIZED);
@@ -2853,14 +3113,14 @@ pub async fn bootstrap(
         )
         .await;
     let invite_url = invite_magic_link(&state, &headers, &claim);
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "user_id": user.id,
-        "claim_ticket": claim,
-        "invite_url": invite_url,
-        "login_name": user.login_name,
-        "has_password": password_hash.is_some(),
-    })))
+    Ok(Json(OwnerBootstrapped {
+        ok: true,
+        user_id: user.id,
+        claim_ticket: claim,
+        invite_url,
+        login_name: user.login_name,
+        has_password: password_hash.is_some(),
+    }))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -3000,10 +3260,14 @@ pub struct PasswordLoginRequest {
     path = "/api/auth/password",
     request_body = PasswordLoginRequest,
     responses(
-        (status = 200, description = "Signed in (portal session cookie), or a TOTP challenge.", body = serde_json::Value),
-        (status = 401, description = "The login or password is wrong."),
-        (status = 429, description = "Too many attempts; retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
-        (status = 403, description = "The account is disabled (`account_disabled`)."),
+        (status = 200, description = "Signed in (portal session cookie), or a TOTP challenge.", body = PasswordLoginOutcome),
+        (status = 401, description = "The login or password is wrong, or the user has no password (`invalid_credentials`).", body = crate::http_error::ErrorJson, example = json!({"error": "invalid_credentials", "message": "Invalid login or password.", "status": 401})),
+        (status = 429, description = "Too many attempts from this client; retry after `Retry-After` seconds.", body = LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
+        (status = 403, description = "The account is disabled (`account_disabled`), or the server requires a second factor and the user has a passkey but no authenticator app (`passkey_required`).", body = crate::http_error::ErrorJson, examples(
+            ("account_disabled" = (summary = "The account is disabled.", value = json!({"error": "account_disabled", "message": "This account is disabled.", "status": 403}))),
+            ("passkey_required" = (summary = "The server requires a passkey.", value = json!({"error": "passkey_required", "message": "This server requires a passkey or authenticator app. Sign in with a passkey.", "status": 403}))),
+        )),
+        (status = 500, description = "The user or password hash could not be read, or the session could not be stored."),
     ),
 )]
 pub async fn password_login(
@@ -3086,18 +3350,19 @@ pub struct SetPasswordRequest {
     request_body = SetPasswordRequest,
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
-        (status = 200, description = "The password was set and other sessions revoked.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The password is too weak or the request is invalid."),
+        (status = 200, description = "The password was set and other sessions revoked.", body = PasswordSet),
+        (status = 401, description = "The caller is not signed in, or the caller already has a password and `current_password` is missing or wrong."),
+        (status = 403, description = "The caller may not set that user's password: not a provisioner, a role they cannot manage, their own account through `user_id`, or a second factor must be enrolled first."),
+        (status = 400, description = "The password is empty."),
         (status = 404, description = "No such user."),
+        (status = 500, description = "The password could not be hashed, or the library could not be read."),
     ),
 )]
 pub async fn set_password(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<SetPasswordRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<PasswordSet>, StatusCode> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     let password = body.password.trim();
@@ -3162,10 +3427,10 @@ pub async fn set_password(
             Some(&format!(r#"{{"revoked_sessions":{revoked}}}"#)),
         )
         .await;
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "revoked_sessions": revoked,
-    })))
+    Ok(Json(PasswordSet {
+        ok: true,
+        revoked_sessions: revoked,
+    }))
 }
 
 /// Who may provision users, and which roles they may assign or manage.
@@ -3553,16 +3818,16 @@ pub struct UserDeletedResponse {
     get,
     path = "/api/auth/sessions",
     responses(
-        (status = 200, description = "The caller's sessions.", body = serde_json::Value),
+        (status = 200, description = "The caller's sessions.", body = SessionsResponse),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 404, description = "The user has no sign-in identity."),
+        (status = 404, description = "The impersonated user has no sign-in identity."),
+        (status = 500, description = "The sessions could not be read."),
     ),
 )]
 pub async fn list_sessions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<SessionsResponse>, StatusCode> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     if let Some(op) = resolve_operator_session(&state, &auth, &headers).await {
@@ -3573,9 +3838,9 @@ pub async fn list_sessions(
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
                 .ok_or(StatusCode::NOT_FOUND)?;
-            return Ok(Json(serde_json::json!({
-                "sessions": portal_session_rows(&library, identity.id, None).await?
-            })));
+            return Ok(Json(SessionsResponse {
+                sessions: portal_session_rows(&library, identity.id, None).await?,
+            }));
         }
         let current_id = library
             .get_operator_session(&op.token_hash)
@@ -3587,38 +3852,40 @@ pub async fn list_sessions(
             .list_operator_sessions()
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let sessions: Vec<_> = rows
+        let sessions = rows
             .into_iter()
             .filter(|s| s.elevated_from_user_id == elevated_from)
             .map(|s| {
-                serde_json::json!({
-                    "id": s.id,
-                    "kind": "operator",
-                    "created_at": s.created_at.to_rfc3339(),
-                    "last_used_at": s.last_used_at.map(|t| t.to_rfc3339()),
-                    "expires_at": s.expires_at.to_rfc3339(),
-                    "elevated": s.elevated_from_user_id.is_some(),
-                    "impersonating_user_id": s.impersonating_user_id,
-                    "is_current": current_id == Some(s.id),
-                    "client_label": s.client_label,
-                    "device_type": s.device_type,
-                    "user_agent": s.user_agent,
+                SessionView::Operator(OperatorSessionView {
+                    id: s.id,
+                    kind: "operator",
+                    created_at: s.created_at.to_rfc3339(),
+                    last_used_at: s.last_used_at.map(|t| t.to_rfc3339()),
+                    expires_at: s.expires_at.to_rfc3339(),
+                    elevated: s.elevated_from_user_id.is_some(),
+                    impersonating_user_id: s.impersonating_user_id,
+                    is_current: current_id == Some(s.id),
+                    client_label: s.client_label,
+                    device_type: s.device_type,
+                    user_agent: s.user_agent,
                 })
             })
             .collect();
-        return Ok(Json(serde_json::json!({ "sessions": sessions })));
+        return Ok(Json(SessionsResponse { sessions }));
     }
     if !auth.enabled || authorize_operator_bearer_only(&auth, &headers) {
         // Bearer-only: no durable session rows to list for "this device".
-        return Ok(Json(serde_json::json!({ "sessions": [] })));
+        return Ok(Json(SessionsResponse {
+            sessions: Vec::new(),
+        }));
     }
     let identity = timed_portal_identity_from_headers(&library, &headers)
         .await
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let current_portal = cookie_value(&headers, PORTAL_SESSION_COOKIE).map(|raw| hash_token(&raw));
-    Ok(Json(serde_json::json!({
-        "sessions": portal_session_rows(&library, identity.id, current_portal.as_deref()).await?
-    })))
+    Ok(Json(SessionsResponse {
+        sessions: portal_session_rows(&library, identity.id, current_portal.as_deref()).await?,
+    }))
 }
 
 /// Portal session records for one identity, marking the current hashed cookie when provided.
@@ -3626,7 +3893,7 @@ async fn portal_session_rows(
     library: &bookclerk_library::LibraryStore,
     identity_id: i64,
     current_token_hash: Option<&str>,
-) -> Result<Vec<serde_json::Value>, StatusCode> {
+) -> Result<Vec<SessionView>, StatusCode> {
     let sessions = library
         .list_portal_session_records_for_identity(identity_id)
         .await
@@ -3637,16 +3904,16 @@ async fn portal_session_rows(
             let is_current = current_token_hash
                 .map(|h| h == row.token_hash.as_str())
                 .unwrap_or(false);
-            serde_json::json!({
-                "id": row.id,
-                "kind": "portal",
-                "created_at": row.created_at,
-                "expires_at": row.expires_at,
-                "last_used_at": row.last_used_at,
-                "is_current": is_current,
-                "client_label": row.client_label,
-                "device_type": row.device_type,
-                "user_agent": row.user_agent,
+            SessionView::Portal(PortalSessionView {
+                id: row.id,
+                kind: "portal",
+                created_at: row.created_at,
+                expires_at: row.expires_at,
+                last_used_at: row.last_used_at,
+                is_current,
+                client_label: row.client_label,
+                device_type: row.device_type,
+                user_agent: row.user_agent,
             })
         })
         .collect())
@@ -3659,17 +3926,17 @@ async fn portal_session_rows(
     path = "/api/auth/sessions/{id}",
     params(("id" = i64, Path, description = "Session id.")),
     responses(
-        (status = 200, description = "The session was revoked.", body = serde_json::Value),
+        (status = 200, description = "The session was revoked.", body = OkResponse),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 404, description = "No such session."),
+        (status = 404, description = "No such session, or it belongs to someone else."),
+        (status = 500, description = "The session could not be deleted."),
     ),
 )]
 pub async fn revoke_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<i64>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<OkResponse>, StatusCode> {
     let auth = state.auth_snapshot().await;
     let library = state.library_snapshot().await;
     if !auth.enabled || authorize_operator(&state, &auth, &headers).await {
@@ -3687,7 +3954,7 @@ pub async fn revoke_session(
                 Some(&format!(r#"{{"id":{id}}}"#)),
             )
             .await;
-        return Ok(Json(serde_json::json!({ "ok": true })));
+        return Ok(Json(OkResponse::OK));
     }
     let identity = timed_portal_identity_from_headers(&library, &headers)
         .await
@@ -3707,7 +3974,7 @@ pub async fn revoke_session(
             Some(&format!(r#"{{"id":{id}}}"#)),
         )
         .await;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(Json(OkResponse::OK))
 }
 
 /// Extracts a non-empty Bearer token from `Authorization`; missing or empty fails closed.

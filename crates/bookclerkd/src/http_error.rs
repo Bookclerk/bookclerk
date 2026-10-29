@@ -6,6 +6,7 @@ use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
+use std::borrow::Cow;
 
 /// Rewrite empty 4xx/5xx responses into Bookclerk-branded HTML or JSON.
 ///
@@ -53,11 +54,7 @@ impl ErrorBody {
         if prefer_json {
             (
                 self.status,
-                Json(ErrorJson {
-                    error: self.code,
-                    message: self.message,
-                    status: self.status.as_u16(),
-                }),
+                Json(ErrorJson::new(self.status, self.code, self.message)),
             )
                 .into_response()
         } else {
@@ -108,10 +105,10 @@ impl ErrorMessage {
 pub(crate) struct ErrorJson {
     /// Machine slug (same as [`ErrorBody::code`]).
     #[schema(example = "not_found")]
-    error: &'static str,
+    error: Cow<'static, str>,
     /// Operator-facing explanation.
     #[schema(example = "That page or resource was not found.")]
-    message: &'static str,
+    message: Cow<'static, str>,
     /// Numeric HTTP status (duplicates the response status for clients).
     #[schema(example = 404)]
     status: u16,
@@ -123,9 +120,26 @@ impl ErrorJson {
     /// `Content-Type` and so bypasses the middleware.
     pub(crate) fn for_status(status: StatusCode) -> Self {
         let (error, message) = describe(status);
+        Self::new(status, error, message)
+    }
+
+    /// A body with the handler's own slug and message, for a precise error
+    /// (`invalid_credentials`, `operator_login_disabled`, …) that the
+    /// middleware's generic copy would not describe.
+    ///
+    /// # Arguments
+    ///
+    /// * `status` - HTTP status the response carries; also written into the body.
+    /// * `error` - Stable machine slug clients branch on.
+    /// * `message` - Caller-facing explanation.
+    pub(crate) fn new(
+        status: StatusCode,
+        error: impl Into<Cow<'static, str>>,
+        message: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Self {
-            error,
-            message,
+            error: error.into(),
+            message: message.into(),
             status: status.as_u16(),
         }
     }
