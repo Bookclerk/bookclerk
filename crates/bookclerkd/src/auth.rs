@@ -5823,6 +5823,196 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn users_list_carries_sso_pictures() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (_state, app, library) = phase2_harness("op-token-users").await;
+        let picture = "https://pictures.example/member.png";
+        library
+            .set_portal_identity_picture("test", "member-ext", Some(picture))
+            .await
+            .unwrap();
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        let listed = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/users")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&listed.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let member = body["users"]
+            .as_array()
+            .expect("users array")
+            .iter()
+            .find(|row| {
+                row["identities"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|identity| identity["external_user_id"] == "member-ext")
+            })
+            .expect("member-ext");
+        let pictures = member["sso_pictures"].as_array().expect("sso_pictures");
+        assert_eq!(pictures.len(), 1);
+        assert_eq!(pictures[0]["provider"], "test");
+        assert_eq!(pictures[0]["picture_url"], picture);
+        assert!(pictures[0]["identity_id"].as_i64().is_some());
+        assert!(pictures[0]["last_used_at"].is_null());
+    }
+
+    #[tokio::test]
+    async fn patch_invalid_email_names_itself() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (_state, app, library) = phase2_harness("op-token-users").await;
+        let member_user_id = library
+            .get_portal_identity("test", "member-ext")
+            .await
+            .unwrap()
+            .unwrap()
+            .user_id
+            .expect("bridged");
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/users/{member_user_id}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(r#"{"email":"not-an-address"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": "invalid_email",
+                "message": "Enter a valid email address.",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn last_administrator_conflict_body() {
+        use axum::http::StatusCode;
+        use http_body_util::BodyExt;
+
+        let resp = last_administrator_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body, serde_json::json!({"error": "last_administrator"}));
+    }
+
+    #[tokio::test]
+    async fn reset_password_returns_ticket_and_revoked_count() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use bookclerk_library::hash_token;
+        use chrono::{Duration as ChronoDuration, Utc};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        use uuid::Uuid;
+
+        let (_state, app, library) = phase2_harness("op-token-users").await;
+        let member = library
+            .get_portal_identity("test", "member-ext")
+            .await
+            .unwrap()
+            .unwrap();
+        let member_user_id = member.user_id.expect("bridged");
+        library
+            .insert_portal_session(
+                &hash_token(&Uuid::new_v4().to_string()),
+                member.id,
+                Utc::now() + ChronoDuration::hours(1),
+            )
+            .await
+            .unwrap();
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/users/{member_user_id}/reset-password"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["revoked_sessions"], 1);
+        let raw = body["claim_ticket"].as_str().expect("claim_ticket");
+        assert!(library
+            .get_claim_ticket_by_hash(&hash_token(raw))
+            .await
+            .unwrap()
+            .is_some());
+        assert!(library
+            .list_portal_sessions_for_identity(member.id)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_user_returns_ok_body() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (_state, app, library) = phase2_harness("op-token-users").await;
+        let member_user_id = library
+            .get_portal_identity("test", "member-ext")
+            .await
+            .unwrap()
+            .unwrap()
+            .user_id
+            .expect("bridged");
+        let cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/users/{member_user_id}"))
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body, serde_json::json!({"ok": true}));
+        assert!(library.get_user(member_user_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn claim_ticket_remint() {
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
