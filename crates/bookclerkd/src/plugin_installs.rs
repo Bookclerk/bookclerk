@@ -562,7 +562,7 @@ pub async fn put_active_version(
     responses(
         (status = 200, description = "The plugin was uninstalled.", body = PluginUninstalled),
         (status = 404, description = "No such plugin.", body = ErrorMessage),
-        (status = 409, description = "A deployment changed under the request; nothing was cleared.", body = ErrorMessage),
+        (status = 409, description = "A deployment changed under the request. The install was not cleared, but deployments of earlier instances may already be stopped; retry the request.", body = ErrorMessage),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
     ),
 )]

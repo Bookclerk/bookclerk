@@ -44,12 +44,35 @@ pub const MAX_INSTANCE_SETTING_BYTES: usize = 1024;
 pub enum SettingValue {
     /// JSON boolean.
     Bool(bool),
-    /// Finite JSON number.
-    #[schema(value_type = f64)]
+    /// Finite JSON number: an integer kind stores an `i64`, so the schema
+    /// is an unformatted `number` rather than a `double`.
+    #[schema(value_type = SettingNumber)]
     Number(serde_json::Number),
     /// JSON string, at most 1024 bytes.
     String(String),
 }
+
+/// Schema-only stand-in for [`SettingValue::Number`]: a JSON number with no
+/// format, since an integer setting is an `i64` that a `double` cannot
+/// always hold exactly. Never constructed; the variant keeps its
+/// [`serde_json::Number`].
+#[allow(dead_code)]
+pub struct SettingNumber;
+
+impl utoipa::PartialSchema for SettingNumber {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{ObjectBuilder, Type};
+        ObjectBuilder::new()
+            .schema_type(Type::Number)
+            .description(Some(
+                "A finite JSON number; an integer for integer settings.",
+            ))
+            .examples([serde_json::json!(8)])
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for SettingNumber {}
 
 /// A name in `encrypted_secrets`. The ciphertext is not part of the document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]

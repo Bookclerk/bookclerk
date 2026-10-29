@@ -4131,11 +4131,11 @@
             }
           },
           "409": {
-            "description": "The instance is placed by the scheduler (`error` message), or `expected_revision` is stale (`revision_conflict`).",
+            "description": "The instance is placed by the scheduler (an `error` message), or `expected_revision` is stale (`revision_conflict` with `current_revision`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RevisionConflict"
+                  "$ref": "#/components/schemas/DeploymentConflict"
                 }
               }
             }
@@ -4957,7 +4957,7 @@
             }
           },
           "409": {
-            "description": "A deployment changed under the request; nothing was cleared.",
+            "description": "A deployment changed under the request. The install was not cleared, but deployments of earlier instances may already be stopped; retry the request.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16288,6 +16288,19 @@
           }
         }
       },
+      "DeploymentConflict": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/RevisionConflict",
+            "description": "`expected_revision` lost to a newer revision of the row."
+          },
+          {
+            "$ref": "#/components/schemas/ErrorMessage",
+            "description": "The scheduler places the instance, so its deployments are not\nhand-managed; `error` says so and names the way out."
+          }
+        ],
+        "description": "`PUT /api/config/plugin-instances/{id}/deployments/{node_id}` `409`\nbody: the two conflicts a deployment write can hit."
+      },
       "DesiredState": {
         "type": "string",
         "description": "What a deployment row asks its node to do, and who decided it.\n\nOperators write [`DesiredState::Present`] and [`DesiredState::Absent`]\n(`plugins deploy|undeploy`, the Settings switch). The placement scheduler\nwrites [`DesiredState::Placed`] and [`DesiredState::Unplaced`] for an\ninstance it owns. A node runs the instance for `present` and `placed`\nand retires it for `absent` and `unplaced`; the split only records whose\ndecision the row carries, so \"the operator turned this off\" never reads\nlike \"the scheduler put the replica elsewhere\".",
@@ -21212,6 +21225,13 @@
         ],
         "example": "string"
       },
+      "SettingNumber": {
+        "type": "number",
+        "description": "A finite JSON number; an integer for integer settings.",
+        "examples": [
+          8
+        ]
+      },
       "SettingSpec": {
         "type": "object",
         "description": "One setting a plugin declares in its `plugin.toml` `[[settings]]`:\nits key, value type, default and help text.",
@@ -21278,9 +21298,8 @@
             "description": "JSON boolean."
           },
           {
-            "type": "number",
-            "format": "double",
-            "description": "Finite JSON number."
+            "$ref": "#/components/schemas/SettingNumber",
+            "description": "Finite JSON number: an integer kind stores an `i64`, so the schema\nis an unformatted `number` rather than a `double`."
           },
           {
             "type": "string",

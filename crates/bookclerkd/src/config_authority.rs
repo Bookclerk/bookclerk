@@ -1466,6 +1466,18 @@ pub(crate) struct PluginDeploymentChanged {
     revision: i64,
 }
 
+/// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}` `409`
+/// body: the two conflicts a deployment write can hit.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(untagged)]
+pub(crate) enum DeploymentConflict {
+    /// `expected_revision` lost to a newer revision of the row.
+    Revision(RevisionConflict),
+    /// The scheduler places the instance, so its deployments are not
+    /// hand-managed; `error` says so and names the way out.
+    SchedulerManaged(ErrorMessage),
+}
+
 /// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}`: the
 /// Deployed switch. Creates the row when the node has none.
 #[utoipa::path(
@@ -1477,7 +1489,7 @@ pub(crate) struct PluginDeploymentChanged {
         (status = 200, description = "The deployment after the change.", body = PluginDeploymentChanged),
         (status = 400, description = "The body is invalid.", body = ErrorMessage),
         (status = 404, description = "No such instance or node.", body = ErrorMessage),
-        (status = 409, description = "The instance is placed by the scheduler (`error` message), or `expected_revision` is stale (`revision_conflict`).", body = RevisionConflict),
+        (status = 409, description = "The instance is placed by the scheduler (an `error` message), or `expected_revision` is stale (`revision_conflict` with `current_revision`).", body = DeploymentConflict),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
     ),
 )]
@@ -1502,7 +1514,16 @@ pub async fn put_plugin_deployment(
         })?;
     bookclerk_library::control_plane::ensure_hand_managed(&library, &instance_id)
         .await
-        .map_err(events_error)?;
+        .map_err(|err| match err {
+            bookclerk_library::LibraryError::Conflict(message) => (
+                StatusCode::CONFLICT,
+                Json(DeploymentConflict::SchedulerManaged(ErrorMessage::new(
+                    message,
+                ))),
+            )
+                .into_response(),
+            other => events_error(other),
+        })?;
     let node_id = node_id.trim().to_string();
     if !list_node_ids(&library)
         .await
@@ -1558,7 +1579,14 @@ pub async fn put_plugin_deployment(
                 DeploymentReplace::Applied(row) => row,
                 DeploymentReplace::Replayed { .. } => current,
                 DeploymentReplace::Conflict { current_revision } => {
-                    return Err(conflict(current_revision))
+                    return Err((
+                        StatusCode::CONFLICT,
+                        Json(DeploymentConflict::Revision(RevisionConflict {
+                            error: "revision_conflict",
+                            current_revision,
+                        })),
+                    )
+                        .into_response())
                 }
             }
         }
@@ -2547,6 +2575,12 @@ mod tests {
             written["secret_refs"],
             json!([{ "key": "api_token", "name": "api_token" }])
         );
+        // Reading the document back names the secret but never its value.
+        let (status, reread) = send(&app, "GET", &config_uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{reread}");
+        assert_eq!(reread["revision"], revision + 1);
+        assert_eq!(reread["secret_refs"][0]["name"], "api_token");
+        assert!(!reread.to_string().contains("s3cret"), "{reread}");
         let (status, stale) = send(
             &app,
             "PUT",
