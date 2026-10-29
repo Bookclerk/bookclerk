@@ -3383,7 +3383,7 @@
         },
         "responses": {
           "200": {
-            "description": "The settings after the change, or a `replayed` note when the same change had already been written.",
+            "description": "The settings after the change.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3551,7 +3551,7 @@
         },
         "responses": {
           "200": {
-            "description": "The settings after the change, or a `replayed` note when the same change had already been written.",
+            "description": "The settings after the change.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17219,7 +17219,8 @@
             "default": false,
             "example": false
           }
-        }
+        },
+        "additionalProperties": false
       },
       "LeaveBody": {
         "type": "object",
@@ -17779,7 +17780,7 @@
             "title": "Bookclerk daemon API",
             "version": "0.1.0"
           },
-          "openapi": "3.1.0",
+          "openapi": "3.0.3",
           "paths": {
             "/health": {
               "get": {
@@ -17865,7 +17866,7 @@
       },
       "OutputFormat": {
         "type": "string",
-        "description": "Post-download output formatting. Default is enriched M4B (tags + chapters).",
+        "description": "Post-download output formatting. Default is enriched M4B (tags + chapters).\n`split_mp3_by_size` and `opus` parse but are not implemented yet: the\nacquire pipeline rejects a job that selects either before downloading.",
         "enum": [
           "enriched_m4b",
           "single_mp3",
@@ -17938,8 +17939,8 @@
           },
           "widevine_cdm_provider": {
             "type": "string",
-            "description": "Remote L3 CDM provider (`None` = AudibleCdm, empty/`off` disables).",
-            "example": "audible",
+            "description": "Remote L3 CDM provider endpoint URL (`None` = the built-in AudibleCdm\nprovider, empty/`off` disables provisioning).",
+            "example": null,
             "nullable": true
           },
           "naming_profile": {
@@ -20606,7 +20607,8 @@
             "description": "Replacement text (may be empty to strip `find`).",
             "example": " -"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "RequestStatus": {
         "type": "string",

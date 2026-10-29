@@ -468,7 +468,35 @@ pub fn document() -> OpenApi {
         .insert(API_ERROR.to_string(), api_error_schema());
     add_middleware_refusals(&mut doc);
     fill_untyped_content(&mut doc);
+    close_nested_output_schemas(&mut doc);
     doc
+}
+
+/// Schemas nested in `OutputSettingsV1` whose unknown keys the daemon
+/// rejects: its deserializer checks `lame` and each `replacement_characters`
+/// rule itself (`reject_unknown_keys` in `bookclerk_library::control_plane::output`),
+/// while the same `bookclerk_config` types parsed from `config.toml` keep
+/// ignoring unknown keys, so the `additionalProperties: false` the published
+/// contract needs cannot come from a serde attribute on the types.
+const CLOSED_OUTPUT_SCHEMAS: &[&str] = &["LameConfig", "ReplacementRule"];
+
+/// Publishes `additionalProperties: false` on [`CLOSED_OUTPUT_SCHEMAS`], so
+/// a client validating against the document rejects what the route would.
+///
+/// # Arguments
+///
+/// * `doc` - The document, after every group is added.
+fn close_nested_output_schemas(doc: &mut OpenApi) {
+    use utoipa::openapi::schema::{AdditionalProperties, Schema};
+    use utoipa::openapi::RefOr;
+    let Some(components) = doc.components.as_mut() else {
+        return;
+    };
+    for name in CLOSED_OUTPUT_SCHEMAS {
+        if let Some(RefOr::T(Schema::Object(object))) = components.schemas.get_mut(*name) {
+            object.additional_properties = Some(Box::new(AdditionalProperties::FreeForm(false)));
+        }
+    }
 }
 
 /// The [`API_ERROR`] schema: `error` always, `message` and `status` when the
@@ -756,7 +784,22 @@ fn document_v30(doc: &OpenApi) -> anyhow::Result<v30::Json> {
     // Through text, not `serde_json::Value`, whose maps would sort the keys.
     let text = serde_json::to_string(doc)?;
     let tree: v30::Json = serde_json::from_str(&text)?;
-    Ok(v30::downgrade(&tree)?)
+    let mut restated = v30::downgrade(&tree)?;
+    // The shared `OpenApiDocument` example shows the 3.1 document; the
+    // restated document's copy shows itself.
+    if let Some(version) = [
+        "components",
+        "schemas",
+        "OpenApiDocument",
+        "example",
+        "openapi",
+    ]
+    .iter()
+    .try_fold(&mut restated, |node, key| node.get_mut(key))
+    {
+        *version = v30::Json::String("3.0.3".to_string());
+    }
+    Ok(restated)
 }
 
 /// The 3.0.3 document, built once per process (when the router is built)
@@ -1046,6 +1089,23 @@ mod tests {
         let v30: serde_json::Value =
             serde_json::from_str(&document_v30_json().expect("restates")).expect("JSON");
         assert_eq!(v30["openapi"], "3.0.3");
+        for name in CLOSED_OUTPUT_SCHEMAS {
+            for doc in [&v31, &v30] {
+                assert_eq!(
+                    doc["components"]["schemas"][*name]["additionalProperties"], false,
+                    "{name} must publish additionalProperties: false"
+                );
+            }
+        }
+        // The shared `OpenApiDocument` example describes each document as itself.
+        assert_eq!(
+            v31["components"]["schemas"]["OpenApiDocument"]["examples"][0]["openapi"],
+            "3.1.0"
+        );
+        assert_eq!(
+            v30["components"]["schemas"]["OpenApiDocument"]["example"]["openapi"],
+            "3.0.3"
+        );
         let mut problems = Vec::new();
         check(&v30, "", &mut problems);
         assert!(problems.is_empty(), "{problems:#?}");

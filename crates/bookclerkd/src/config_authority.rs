@@ -241,7 +241,7 @@ pub async fn get_events_domain(
     path = "/api/config/domains/core.events",
     request_body = PutEventsDomainRequest,
     responses(
-        (status = 200, description = "The settings after the change, or a `replayed` note when the same change had already been written.", body = EventsDomainChange),
+        (status = 200, description = "The settings after the change.", body = EventsDomainChange),
         (status = 400, description = "The body is invalid."),
         (status = 409, description = "`expected_revision` is stale; `current_revision` is the revision to retry against.", body = RevisionConflict),
         (status = 500, description = "The configuration could not be read or written."),
@@ -629,7 +629,7 @@ pub async fn get_output_domain(
     path = "/api/config/domains/core.output",
     request_body = PutOutputDomainRequest,
     responses(
-        (status = 200, description = "The settings after the change, or a `replayed` note when the same change had already been written.", body = OutputDomainChange),
+        (status = 200, description = "The settings after the change.", body = OutputDomainChange),
         (status = 400, description = "The body is invalid."),
         (status = 409, description = "`expected_revision` is stale; `current_revision` is the revision to retry against.", body = RevisionConflict),
         (status = 500, description = "The configuration could not be read or written."),
@@ -2288,11 +2288,14 @@ mod tests {
         assert_eq!(output_value["namespace"], "core.output");
         assert_eq!(output_value["revision"], 1);
         assert!(output_value["document"].is_object());
+        assert_eq!(output_value["document"]["create_cue"], false);
+        let mut changed = output.document.clone();
+        changed.create_cue = true;
         let Json(applied) = put_output_domain(
             State(state.clone()),
             Json(PutOutputDomainRequest {
                 expected_revision: 1,
-                document: output.document.clone(),
+                document: changed.clone(),
             }),
         )
         .await
@@ -2300,7 +2303,13 @@ mod tests {
         let applied = serde_json::to_value(&applied).unwrap();
         assert_eq!(applied["namespace"], "core.output");
         assert_eq!(applied["revision"], 2);
-        assert_eq!(applied["document"], output_value["document"]);
+        assert_eq!(applied["document"]["create_cue"], true);
+        assert_eq!(applied["document"], serde_json::to_value(&changed).unwrap());
+        // The change is what a later read returns.
+        let Json(reread) = get_output_domain(State(state.clone())).await.unwrap();
+        let reread = serde_json::to_value(&reread).unwrap();
+        assert_eq!(reread["revision"], 2);
+        assert_eq!(reread["document"], applied["document"]);
         let conflict = put_output_domain(
             State(state.clone()),
             Json(PutOutputDomainRequest {

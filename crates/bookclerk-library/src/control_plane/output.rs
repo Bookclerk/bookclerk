@@ -139,8 +139,9 @@ pub struct OutputSettingsV1 {
     /// Optional `.wvd` path; relative paths resolve under each host's files dir.
     #[schema(value_type = Option<String>, example = "cdm/device.wvd")]
     pub widevine_cdm: Option<PathBuf>,
-    /// Remote L3 CDM provider (`None` = AudibleCdm, empty/`off` disables).
-    #[schema(example = "audible")]
+    /// Remote L3 CDM provider endpoint URL (`None` = the built-in AudibleCdm
+    /// provider, empty/`off` disables provisioning).
+    #[schema(example = json!(null))]
     pub widevine_cdm_provider: Option<String>,
     /// Named path-template preset.
     pub naming_profile: NamingProfile,

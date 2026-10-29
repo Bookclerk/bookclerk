@@ -6117,6 +6117,11 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         let body = serde_json::to_value(body).unwrap();
         assert_eq!(body["status"], 500);
+        assert_eq!(body["error"], "internal_error");
+        assert_eq!(
+            body["message"],
+            "Something went wrong on the Bookclerk daemon."
+        );
         assert_eq!(
             body,
             serde_json::to_value(crate::http_error::ErrorJson::for_status(
