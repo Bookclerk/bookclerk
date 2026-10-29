@@ -201,6 +201,18 @@ jobs:
           wranglerVersion: "4.151.1"
           command: deploy --var DEMO_VERSION:${{ github.sha }}${{ steps.route.outputs.site && format(' --var SITE_URL:{0}', steps.route.outputs.site) || '' }}
 
+      # Cloudflare's own startup figure for this deploy
+      # (docs/contributing/ci.md#worker-startup-time); warns near the limit.
+      - name: Report the startup time
+        if: steps.gate.outputs.deploy == 'true'
+        # The job runs in the Worker's directory; the script and its budgets
+        # are repository-relative. Reporting never fails a deploy.
+        working-directory: .
+        continue-on-error: true
+        env:
+          WRANGLER_OUTPUT: ${{ steps.deploy.outputs.command-output }}
+        run: python3 scripts/worker_startup.py deploy --worker demo
+
       # The binding has no id: wrangler created the database on deploy, so
       # migrations can only run now. Applied migrations are skipped.
       - name: Apply database migrations

@@ -1,0 +1,29 @@
+# Worker startup budgets for scripts/worker_startup.py
+# (docs/contributing/ci.md#worker-startup-time).
+#
+# `limit_ms` is the largest median LOCAL startup (wrangler check startup, in
+# workerd on the CI runner) that passes. Local figures are not Cloudflare's:
+# they track the trend. Budgets sit well above today's medians so only a
+# real jump warns; lower them as the figures settle.
+
+# report: warn only. enforce: a Worker over budget fails its check.
+mode = "report"
+# Local profiles per pull request run; the median is reported.
+runs = 7
+# Cloudflare rejects a deploy whose startup passes 1000 ms. A deploy whose
+# measured startup passes this warns in its workflow.
+deploy_warn_ms = 500
+
+[workers.site]
+path = "tools/site"
+limit_ms = 150
+
+[workers.collector]
+path = "tools/diagnostics-collector"
+limit_ms = 100
+
+[workers.demo]
+path = "tools/demo"
+limit_ms = 100
+# The container image is not built: only the Worker's script counts.
+extra_args = ["--containers-rollout=none"]

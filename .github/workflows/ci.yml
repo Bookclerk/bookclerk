@@ -182,6 +182,7 @@ jobs:
           "$PY" scripts/tests/test_image_release_tags.py
           "$PY" scripts/tests/test_cla_check.py
           "$PY" scripts/tests/test_coverage_gate.py
+          "$PY" scripts/tests/test_worker_startup.py
           "$PY" scripts/tests/test_dev_env.py
 
       - name: Database plugin isolation
@@ -1103,6 +1104,7 @@ jobs:
         if: needs.plan.outputs.check_site_audit == 'true'
         env:
           CI_BUNDLE_DIR: ${{ runner.temp }}/bundles
+          CI_WORKER_STARTUP: "1"
         run: python3 scripts/ci-exec.py run site_audit
 
       # Lighthouse reports for a failed audit. Not for an unpublished OSV
@@ -1121,6 +1123,7 @@ jobs:
         env:
           CI_COVERAGE_DIR: ${{ runner.temp }}/coverage
           CI_BUNDLE_DIR: ${{ runner.temp }}/bundles
+          CI_WORKER_STARTUP: "1"
         run: python3 scripts/ci-exec.py run collector_test
 
       - name: Hosted demo tests
@@ -1128,6 +1131,7 @@ jobs:
         env:
           CI_COVERAGE_DIR: ${{ runner.temp }}/coverage
           CI_BUNDLE_DIR: ${{ runner.temp }}/bundles
+          CI_WORKER_STARTUP: "1"
         run: python3 scripts/ci-exec.py run demo_test
 
       # One artifact for the Workers that ran: site/, collector/ and demo/,

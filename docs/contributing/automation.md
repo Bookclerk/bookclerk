@@ -690,6 +690,11 @@ served on the account's workers.dev subdomain instead (see
 [Diagnostics](../server/diagnostics.md) and
 [`tools/demo/README.md`](../../tools/demo/README.md)).
 
+After each deploy, a step reads the startup time Cloudflare measured from
+wrangler's output and writes it to the run summary, with a warning past
+500 ms (Cloudflare's limit is 1000 ms). See
+[Worker startup time](ci.md#worker-startup-time).
+
 ### The demo deploy
 
 The demo deploy builds the production builder and image from the deployed

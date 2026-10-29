@@ -796,6 +796,35 @@ script size limit.
 The bundle status is informational, like the coverage statuses; its
 settings are under `bundle_analysis` in `.github/codecov.yml`.
 
+## Worker startup time
+
+Cloudflare rejects a deploy whose Worker takes more than one second to run
+its global scope. CI tracks how close each Worker (site, demo, collector)
+is, with [`scripts/worker_startup.py`](../../scripts/worker_startup.py) and
+the budgets in
+[`scripts/worker_startup.toml`](../../scripts/worker_startup.toml).
+
+- **Pull requests:** each Worker check (`site_audit`, `collector_test`,
+  `demo_test`) bundles its Worker and runs `wrangler check startup` on it
+  seven times. That profiles startup locally in workerd and needs no
+  Cloudflare account, so forks get it too. The step summary shows each
+  run's active CPU time and the median, and a median over the Worker's
+  `limit_ms` budget warns.
+- **Deploys:** `wrangler deploy` prints the startup time Cloudflare
+  measured. Each deploy workflow writes it to its run summary and warns
+  past `deploy_warn_ms` (500 ms).
+
+> [!NOTE]
+> Local figures are a trend, not Cloudflare's numbers: the runner's CPU
+> differs, the profiler samples roughly every 10 ms (a small Worker reads
+> as 0 to 15 ms), and the first run is often a cold start. The median of
+> seven runs smooths that out; budgets sit well above today's medians so
+> only a real jump, such as a large library imported at the top level,
+> warns.
+
+Both start in `report` mode. Set `mode = "enforce"` in the budgets file
+to make a Worker over budget fail its check.
+
 ## Branch protection and the merge queue
 
 Configure repository rulesets or branch protection so the **required** CI check is

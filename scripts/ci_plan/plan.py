@@ -93,6 +93,8 @@ SITE_PREFIX = "tools/site/"
 BRAND_PREFIX = "assets/brand/"
 COLLECTOR_PREFIX = "tools/diagnostics-collector/"
 DEMO_PREFIX = "tools/demo/"
+# Run by every Worker check to profile its Worker's startup.
+WORKER_STARTUP_FILES = frozenset({"scripts/worker_startup.py", "scripts/worker_startup.toml"})
 # Files outside tools/demo/ that its tests read: the route table must give
 # every operation in the daemon's OpenAPI document a verdict, and the demo's
 # pages must carry the website's footer note, fonts and the app's mark
@@ -841,6 +843,11 @@ def build_plan(
             surf.collector.append(path)
             classified = True
         if path.startswith(DEMO_PREFIX):
+            surf.demo.append(path)
+            classified = True
+        if path in WORKER_STARTUP_FILES:
+            surf.site.append(path)
+            surf.collector.append(path)
             surf.demo.append(path)
             classified = True
         if path in DEMO_TEST_INPUTS:

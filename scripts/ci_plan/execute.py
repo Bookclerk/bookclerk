@@ -483,6 +483,19 @@ def _worker_bundle(bundle: str, path: str, cwd: str, *extra: str) -> list[Comman
     return [Command(f"bundle ({path})", argv, cwd=cwd, env={"WRANGLER_SEND_METRICS": "false"})]
 
 
+# Set by the workflow on the Worker checks: each profiles its Worker's startup
+# with scripts/worker_startup.py (docs/contributing/ci.md#worker-startup-time).
+# Unset, nothing is profiled.
+WORKER_STARTUP_ENV = "CI_WORKER_STARTUP"
+
+
+def _worker_startup(worker: str) -> list[Command]:
+    """Profile ``worker``'s startup against its budget, or nothing when not asked to."""
+    if not os.environ.get(WORKER_STARTUP_ENV):
+        return []
+    return [Command(f"startup ({worker})", ["python3", "scripts/worker_startup.py", "profile", "--worker", worker])]
+
+
 def _copy_bundle(bundle: str, built: Path) -> list[Command]:
     """Keep an already built bundle, or nothing when bundles are not kept."""
     out = _bundle_dir(bundle)
@@ -644,6 +657,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             ),
             # After the build: the Worker imports what it generates.
             *_worker_bundle("site", "tools/site", str(site)),
+            *_worker_startup("site"),
         ]
     if check == "collector_test":
         collector = str(ctx.workspace / "tools" / "diagnostics-collector")
@@ -653,6 +667,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("oxlint (tools/diagnostics-collector)", ["npm", "run", "lint"], cwd=collector),
             _worker_test("collector", "tools/diagnostics-collector", collector),
             *_worker_bundle("collector", "tools/diagnostics-collector", collector),
+            *_worker_startup("collector"),
         ]
     if check == "demo_test":
         demo = str(ctx.workspace / "tools" / "demo")
@@ -663,6 +678,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             _worker_test("demo", "tools/demo", demo),
             # The container image is not built: only the Worker's script counts.
             *_worker_bundle("demo", "tools/demo", demo, "--containers-rollout=none"),
+            *_worker_startup("demo"),
         ]
     if check == "lint":
         # Repository-wide: Prettier formatting and markdownlint, both run from
