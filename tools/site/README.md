@@ -295,7 +295,12 @@ versions.
   `build.ts` wrote (the pages and the sidebar's docs, no dates) for a
   minute and section sitemaps answer 503. Keys the docs route would not
   serve at their URL are left out, and each sitemap lists at most 50,000
-  URLs. `robots.txt` allows all crawlers and points to `/sitemap.xml`.
+  URLs. `robots.txt` allows all crawlers, points to `/sitemap.xml` and
+  carries a `Content-Signal` line (`search=yes, ai-input=yes, ai-train=yes,
+  use=reference`: any use, as long as reuse links back) under the Content
+  Signals policy text. Cloudflare prepends its own managed rules to this file
+  when Bot Preference Sync is on with a blocking AI bot policy, so keep that
+  setting off for bookclerk.app.
 - `/sitemap` is the same list for people, linked from the footer. It is a
   website page like `/privacy`, not a docs page: `build.ts` bakes
   `src/sitemap.html` into the shell and the Worker fills in the list

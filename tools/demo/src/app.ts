@@ -1,7 +1,7 @@
 // The demo Worker's request handling, apart from the container class so the
 // tests can run it under Node. worker.ts wires it to Cloudflare.
 //
-// Every visitor request goes through here: Worker endpoints under /_demo/,
+// Every visitor request goes through here: robots.txt, Worker endpoints under /_demo/,
 // the launch page for a browser without a session, and otherwise the route
 // check (routes.ts) before the request reaches the visitor's own container.
 
@@ -32,6 +32,7 @@ import {
   htmlResponse,
   launchPage,
   REFUSALS,
+  ROBOTS_TXT,
   SECURITY_HEADERS,
   waitPage,
 } from "./pages.ts";
@@ -595,6 +596,16 @@ export async function handle(
 ): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
+  // Answered before the session lookup, so it never reaches a container.
+  if (path === "/robots.txt" && (request.method === "GET" || request.method === "HEAD")) {
+    return new Response(request.method === "HEAD" ? null : ROBOTS_TXT, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "public, max-age=3600",
+        ...SECURITY_HEADERS,
+      },
+    });
+  }
   if (path === "/_demo/health") {
     return json(
       { ok: true, version: String(env.DEMO_VERSION ?? ""), configured: configured(env) },

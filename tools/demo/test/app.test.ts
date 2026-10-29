@@ -1,5 +1,5 @@
 // The demo Worker's request handling under Node: launch and admission,
-// Turnstile, the route check in front of the container, cookie handling,
+// robots.txt, Turnstile, the route check in front of the container, cookie handling,
 // the banner, sign-in limits and the sweep. The session class is replaced
 // by a fake that records what the Worker asks of it.
 
@@ -197,6 +197,42 @@ function onlyStub(env: TestEnv): FakeStub {
 }
 
 beforeEach(() => resetEstimateCache());
+
+describe("robots.txt", () => {
+  it("blocks every crawler and refuses every content signal, without a session", async () => {
+    const env = makeEnv();
+    const res = await handle(new Request(`${ORIGIN}/robots.txt`), env, makeDeps());
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("Content-Type"), "text/plain; charset=utf-8");
+    assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
+    const body = await res.text();
+    assert.match(
+      body,
+      /^User-agent: \*\nContent-Signal: search=no, ai-input=no, ai-train=no, use=immediate\nDisallow: \/$/m,
+    );
+    assert.ok(body.startsWith("# As a condition of accessing this website"));
+    assert.equal(env.stubs.size, 0, "no session is looked up or started");
+  });
+
+  it("is the Worker's own file even during a session", async () => {
+    const env = makeEnv();
+    const deps = makeDeps();
+    const { cookie } = await startSession(env, deps);
+    const stub = onlyStub(env);
+    stub.state = "ready";
+    const res = await handle(
+      new Request(`${ORIGIN}/robots.txt`, { headers: { Cookie: cookie } }),
+      env,
+      deps,
+    );
+    assert.match(await res.text(), /^Disallow: \/$/m);
+    assert.equal(stub.forwarded.length, 0);
+
+    const head = await handle(new Request(`${ORIGIN}/robots.txt`, { method: "HEAD" }), env, deps);
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "");
+  });
+});
 
 describe("launch and admission", () => {
   it("shows the launch page with the Turnstile widget and a strict CSP", async () => {

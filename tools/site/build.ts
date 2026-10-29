@@ -971,10 +971,62 @@ function writeCrawlerFiles(context: SiteContext, paths: readonly string[], outDi
       paths.map((path) => ({ path, lastmod: null })),
     ),
   );
-  writeFileSync(
-    join(outDir, "robots.txt"),
-    `User-agent: *\nAllow: /\n\nSitemap: ${origin}/sitemap.xml\n`,
-  );
+  writeFileSync(join(outDir, "robots.txt"), robotsTxt(origin));
+}
+
+/**
+ * The Content Signals policy text, as comments, that robots.txt opens with.
+ *
+ * The wording is Cloudflare's Content Signals Policy (contentsignals.org)
+ * with a line for its `use` field, so crawlers read the terms the
+ * `Content-Signal` line refers to.
+ */
+const CONTENT_SIGNALS_POLICY = `# As a condition of accessing this website, you agree to abide by the
+# following content signals:
+
+# (a)  If a content-signal = yes, you may collect content for the
+#      corresponding use.
+# (b)  If a content-signal = no, you may not collect content for the
+#      corresponding use.
+# (c)  If the website operator does not include a content signal for a
+#      corresponding use, the website operator neither grants nor restricts
+#      permission via content signal with respect to the corresponding use.
+
+# The content signals and their meanings are:
+
+# search: building a search index and providing search results (e.g., returning
+#         hyperlinks and short excerpts from your website's contents). Search
+#         does not include providing AI-generated search summaries.
+# ai-input: inputting content into one or more AI models (e.g., retrieval
+#           augmented generation, grounding, or other real-time taking of
+#           content for generative AI search answers).
+# ai-train: training or fine-tuning AI models.
+# use: what may be kept and reused after accessing the content. "reference"
+#      means index, excerpt, and link back to the source page.
+
+# ANY RESTRICTIONS EXPRESSED VIA CONTENT SIGNALS ARE EXPRESS RESERVATIONS OF
+# RIGHTS UNDER ARTICLE 4 OF THE EUROPEAN UNION DIRECTIVE 2019/790 ON COPYRIGHT
+# AND RELATED RIGHTS IN THE DIGITAL SINGLE MARKET.
+`;
+
+/**
+ * The site's robots.txt: every crawler may read every page, under content
+ * signals that allow search, AI input and AI training as long as reuse links
+ * back (`use=reference`).
+ *
+ * @param origin - Site origin, without a trailing slash.
+ * @returns The file's text.
+ */
+function robotsTxt(origin: string): string {
+  return [
+    CONTENT_SIGNALS_POLICY,
+    "User-agent: *",
+    "Content-Signal: search=yes, ai-input=yes, ai-train=yes, use=reference",
+    "Allow: /",
+    "",
+    `Sitemap: ${origin}/sitemap.xml`,
+    "",
+  ].join("\n");
 }
 
 /**
