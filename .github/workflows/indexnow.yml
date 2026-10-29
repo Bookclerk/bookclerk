@@ -69,11 +69,13 @@ jobs:
         with:
           node-version: "26"
 
-      # The newest snapshot any earlier run saved.
+      # The newest snapshot any earlier run saved. Restore and save use the
+      # same path: the cache's version includes it, so another path would
+      # never find the saved snapshot.
       - name: Restore the previous snapshot
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/indexnow-previous.json
+          path: ${{ runner.temp }}/indexnow-snapshot.json
           key: indexnow-snapshot-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: indexnow-snapshot-
 
@@ -83,12 +85,14 @@ jobs:
         env:
           INDEXNOW_KEY: ${{ vars.INDEXNOW_KEY }}
           SITE_ORIGIN: https://${{ vars.DOMAIN || 'bookclerk.app' }}
-          PREVIOUS: ${{ runner.temp }}/indexnow-previous.json
-          NEXT: ${{ runner.temp }}/indexnow-snapshot.json
+          SNAPSHOT: ${{ runner.temp }}/indexnow-snapshot.json
         run: |
           set -euo pipefail
-          node indexnow-run.ts "$PREVIOUS" "$NEXT"
-          if [[ -f "$NEXT" ]]; then echo "saved=true" >> "$GITHUB_OUTPUT"; fi
+          node indexnow-run.ts "$SNAPSHOT" "$SNAPSHOT.next"
+          if [[ -f "$SNAPSHOT.next" ]]; then
+            mv "$SNAPSHOT.next" "$SNAPSHOT"
+            echo "saved=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # Written only when IndexNow accepted the submission; a skipped or
       # refused run leaves the previous snapshot for the next one.
