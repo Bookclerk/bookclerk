@@ -27,11 +27,11 @@ use bookclerk_plugin_host::{
     host_artifact, install_version, version_consent_request, InstallRequest, PluginError,
     AUTHORIZED_PACKAGE_DIR,
 };
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::config_authority::events_error as library_error;
+use crate::http_error::ErrorMessage;
 
 /// Operator actor recorded on install writes from the daemon.
 fn operator_actor() -> ConfigActor {
@@ -42,7 +42,7 @@ fn operator_actor() -> ConfigActor {
 
 /// JSON error response.
 fn error(status: StatusCode, message: impl std::fmt::Display) -> Response {
-    (status, Json(json!({ "error": message.to_string() }))).into_response()
+    (status, Json(ErrorMessage::new(message))).into_response()
 }
 
 /// Maps an install failure onto an HTTP status by its kind: a clash with
@@ -57,51 +57,258 @@ fn install_error(err: PluginError) -> Response {
     error(status, err)
 }
 
-/// JSON projection of one installed version.
-fn version_json(version: &PluginVersion, active: bool) -> serde_json::Value {
-    json!({
-        "plugin_key": version.plugin_key,
-        "id": version.manifest_id,
-        "version": version.version,
-        "active": active,
-        "approved": !version.grant_json.is_empty(),
-        "publisher_verified": version.publisher_verified,
-        "coordinate": version.coordinate,
-        "installed_at": version.installed_at,
-        "installed_by": version.installed_by,
-        "host_payload_root_sha256": host_artifact(version).ok().map(|a| a.payload_root_sha256.clone()),
-        "artifacts": version.artifacts.iter().map(|a| json!({
-            "target": a.target,
-            "url": a.url,
-            "archive_sha256": a.archive_sha256,
-            "payload_root_sha256": a.payload_root_sha256,
-        })).collect::<Vec<_>>(),
-    })
+/// One downloadable artifact of an installed version, as the API renders
+/// it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginArtifactSummary {
+    /// Bookclerk target (`linux-x64-gnu`, …; `any` for workerd packages).
+    #[schema(example = "linux-x64-gnu")]
+    target: String,
+    /// Where nodes fetch the archive: `https:`, `file:`, or
+    /// `blob:sha256:<hex>`.
+    #[schema(example = "https://plugins.example/source-libro-0.4.2-linux-x64-gnu.tar.gz")]
+    url: String,
+    /// Lowercase hex SHA-256 of the archive bytes.
+    #[schema(example = "9b74c9897bac770ffc029102a200c5de3f4b2b1a0b5e6c7d8e9f0a1b2c3d4e5f")]
+    archive_sha256: String,
+    /// Payload-root digest of the extracted plugin tree.
+    #[schema(example = "1f2e3d4c5b6a79880970a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5")]
+    payload_root_sha256: String,
 }
 
-/// JSON projection of one installed plugin: its active version and every
-/// installed version, newest first.
-fn plugin_json(
-    plugin_key: &str,
-    versions: &[&PluginVersion],
-    install: Option<&PluginInstall>,
-) -> serde_json::Value {
-    let active = install.map(|i| i.version.as_str());
-    let alias = versions
-        .iter()
-        .find(|v| Some(v.version.as_str()) == active)
-        .or_else(|| versions.first())
-        .map(|v| v.manifest_id.clone());
-    json!({
-        "plugin_key": plugin_key,
-        "id": alias,
-        "active_version": active,
-        "revision": install.map(|i| i.revision),
-        "versions": versions
+/// One installed version of a plugin, as the API renders it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginVersionSummary {
+    /// Canonical plugin key.
+    #[schema(example = "libro")]
+    plugin_key: String,
+    /// Manifest id (display alias).
+    #[schema(example = "libro")]
+    id: String,
+    /// Semver package version.
+    #[schema(example = "0.4.2")]
+    version: String,
+    /// True when this is the plugin's active version.
+    #[schema(example = true)]
+    active: bool,
+    /// True once an operator approved the version's consent request.
+    #[schema(example = true)]
+    approved: bool,
+    /// True when the publisher was verified at install time.
+    #[schema(example = true)]
+    publisher_verified: bool,
+    /// Package coordinate the version was resolved from; empty for a local
+    /// archive.
+    #[schema(example = "registry:plugins.example#source-libro@0.4.2")]
+    coordinate: String,
+    /// RFC 3339 install time.
+    #[schema(example = "2026-10-20T10:15:00Z")]
+    installed_at: String,
+    /// Audit identity of the installer.
+    #[schema(example = "operator")]
+    installed_by: String,
+    /// Payload-root digest of the artifact this host would run; `null` when
+    /// no artifact fits the host's target.
+    #[schema(example = "1f2e3d4c5b6a79880970a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5")]
+    host_payload_root_sha256: Option<String>,
+    /// Per-target artifacts.
+    artifacts: Vec<PluginArtifactSummary>,
+}
+
+impl PluginVersionSummary {
+    /// Projects `version`, flagged active or not.
+    fn from_row(version: &PluginVersion, active: bool) -> Self {
+        Self {
+            plugin_key: version.plugin_key.clone(),
+            id: version.manifest_id.clone(),
+            version: version.version.clone(),
+            active,
+            approved: !version.grant_json.is_empty(),
+            publisher_verified: version.publisher_verified,
+            coordinate: version.coordinate.clone(),
+            installed_at: version.installed_at.clone(),
+            installed_by: version.installed_by.clone(),
+            host_payload_root_sha256: host_artifact(version)
+                .ok()
+                .map(|a| a.payload_root_sha256.clone()),
+            artifacts: version
+                .artifacts
+                .iter()
+                .map(|a| PluginArtifactSummary {
+                    target: a.target.clone(),
+                    url: a.url.clone(),
+                    archive_sha256: a.archive_sha256.clone(),
+                    payload_root_sha256: a.payload_root_sha256.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// One installed plugin: its active version and every installed version,
+/// newest first.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct InstalledPluginSummary {
+    /// Canonical plugin key.
+    #[schema(example = "libro")]
+    plugin_key: String,
+    /// Manifest id (display alias) of the active version, or of the newest
+    /// one when none is active; `null` without versions.
+    #[schema(example = "libro")]
+    id: Option<String>,
+    /// Active version; `null` when the plugin is installed but not
+    /// activated.
+    #[schema(example = "0.4.2")]
+    active_version: Option<String>,
+    /// Compare-and-swap revision of the active-version pointer; `null`
+    /// when nothing is active.
+    #[schema(example = 3)]
+    revision: Option<i64>,
+    /// Every installed version, newest first.
+    versions: Vec<PluginVersionSummary>,
+}
+
+impl InstalledPluginSummary {
+    /// Projects `plugin_key` with its `versions` and active-version
+    /// pointer.
+    fn from_rows(
+        plugin_key: &str,
+        versions: &[&PluginVersion],
+        install: Option<&PluginInstall>,
+    ) -> Self {
+        let active = install.map(|i| i.version.as_str());
+        let alias = versions
             .iter()
-            .map(|v| version_json(v, Some(v.version.as_str()) == active))
-            .collect::<Vec<_>>(),
-    })
+            .find(|v| Some(v.version.as_str()) == active)
+            .or_else(|| versions.first())
+            .map(|v| v.manifest_id.clone());
+        Self {
+            plugin_key: plugin_key.to_string(),
+            id: alias,
+            active_version: active.map(str::to_string),
+            revision: install.map(|i| i.revision),
+            versions: versions
+                .iter()
+                .map(|v| PluginVersionSummary::from_row(v, Some(v.version.as_str()) == active))
+                .collect(),
+        }
+    }
+}
+
+/// `GET /api/config/plugins` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct InstalledPluginsResponse {
+    /// Every plugin with at least one installed version, by key.
+    plugins: Vec<InstalledPluginSummary>,
+}
+
+/// The settings schema pinned for a plugin, as the API renders it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PinnedSchemaSummary {
+    /// Manifest id (display alias) at pin time.
+    #[schema(example = "libro")]
+    manifest_id: String,
+    /// Fingerprint of the normalized schema.
+    #[schema(example = "4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091")]
+    schema_sha256: String,
+    /// Semver package version that produced the pinned schema.
+    #[schema(example = "0.4.2")]
+    package_version: String,
+    /// RFC 3339 time of the last pin.
+    #[schema(example = "2026-10-20T10:15:05Z")]
+    recorded_at: String,
+    /// Node that recorded the last pin.
+    #[schema(example = "node-7f3a9c")]
+    recorded_by_node: String,
+    /// Declared settings.
+    #[schema(value_type = Vec<crate::openapi::SettingSpecDoc>)]
+    settings: Vec<bookclerk_plugin_abi::SettingSpec>,
+}
+
+/// `GET /api/config/plugins/{key}` body: the plugin and its pinned schema.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct InstalledPluginDetail {
+    /// The plugin with its versions.
+    #[serde(flatten)]
+    plugin: InstalledPluginSummary,
+    /// The pinned settings schema; `null` until a node pins one.
+    schema: Option<PinnedSchemaSummary>,
+}
+
+/// `POST /api/config/plugins` body: what the install did.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginInstalled {
+    /// True when the version row was written now; false when the same
+    /// version with the same artifacts was installed already.
+    #[schema(example = true)]
+    created: bool,
+    /// Id of the plugin's default instance.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// The installed version.
+    version: PluginVersionSummary,
+}
+
+/// `PUT /api/config/plugins/{key}/active` body: the pointer after the move.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct ActiveVersionChanged {
+    /// Canonical plugin key.
+    #[schema(example = "libro")]
+    plugin_key: String,
+    /// Version now active.
+    #[schema(example = "0.4.2")]
+    version: String,
+    /// Compare-and-swap revision of the pointer after the move.
+    #[schema(example = 4)]
+    revision: i64,
+}
+
+/// `DELETE /api/config/plugins/{key}` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginUninstalled {
+    /// Canonical plugin key.
+    #[schema(example = "libro")]
+    plugin_key: String,
+    /// True when an active-version pointer existed and was cleared.
+    #[schema(example = true)]
+    uninstalled: bool,
+    /// Deployment rows switched to `absent` across the plugin's instances.
+    #[schema(example = 2)]
+    deployments_undeployed: usize,
+}
+
+/// `POST /api/config/plugins/{key}/versions/{version}/approve` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginVersionApproved {
+    /// Canonical plugin key.
+    #[schema(example = "libro")]
+    plugin_key: String,
+    /// Semver version whose grant was approved.
+    #[schema(example = "0.4.2")]
+    version: String,
+    /// Always true: a version that cannot be approved is an error instead.
+    #[schema(example = true)]
+    approved: bool,
+    /// The consent grant recorded for every node: the entrypoints, events,
+    /// jobs, network domains and TCP targets the manifest asked for.
+    #[schema(value_type = Object, example = json!({
+        "schemaVersion": 1,
+        "pluginKey": "libro",
+        "pluginId": "libro",
+        "entrypoints": ["source"],
+        "producers": [],
+        "consumers": [],
+        "jobs": ["scan"],
+        "networkMode": "domains",
+        "domains": ["libro.fm", "api.libro.fm"],
+        "manifestDomains": ["libro.fm", "api.libro.fm"],
+        "operatorAddedDomains": [],
+        "operatorDeniedDomains": [],
+        "tcp": [],
+        "manifestTcp": [],
+        "operatorAddedTcp": []
+    }))]
+    grant: bookclerk_plugin_host::PluginGrant,
 }
 
 /// `GET /api/config/plugins`: every installed plugin.
@@ -109,14 +316,13 @@ fn plugin_json(
     get,
     path = "/api/config/plugins",
     responses(
-        (status = 200, description = "Every installed plugin.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 200, description = "Every installed plugin.", body = InstalledPluginsResponse),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage),
     ),
 )]
 pub async fn get_plugins(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<InstalledPluginsResponse>, Response> {
     let library = state.library_snapshot().await;
     let installs = list_installs(&library).await.map_err(library_error)?;
     let versions = list_versions(&library, None).await.map_err(library_error)?;
@@ -128,10 +334,14 @@ pub async fn get_plugins(
         .map(|key| {
             let of_key: Vec<&PluginVersion> =
                 versions.iter().filter(|v| v.plugin_key == key).collect();
-            plugin_json(key, &of_key, installs.iter().find(|i| i.plugin_key == key))
+            InstalledPluginSummary::from_rows(
+                key,
+                &of_key,
+                installs.iter().find(|i| i.plugin_key == key),
+            )
         })
         .collect();
-    Ok(Json(json!({ "plugins": plugins })))
+    Ok(Json(InstalledPluginsResponse { plugins }))
 }
 
 /// `GET /api/config/plugins/{key}`: one installed plugin with its pinned
@@ -141,16 +351,15 @@ pub async fn get_plugins(
     path = "/api/config/plugins/{key}",
     params(("key" = String, Path, description = "Plugin key.")),
     responses(
-        (status = 200, description = "The plugin with its pinned versions.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such plugin."),
+        (status = 200, description = "The plugin with its installed versions and pinned schema.", body = InstalledPluginDetail),
+        (status = 404, description = "No such plugin.", body = ErrorMessage),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage),
     ),
 )]
 pub async fn get_plugin(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<InstalledPluginDetail>, Response> {
     let library = state.library_snapshot().await;
     let versions = list_versions(&library, Some(&key))
         .await
@@ -163,21 +372,19 @@ pub async fn get_plugin(
     }
     let install = load_install(&library, &key).await.map_err(library_error)?;
     let of_key: Vec<&PluginVersion> = versions.iter().collect();
-    let mut body = plugin_json(&key, &of_key, install.as_ref());
+    let plugin = InstalledPluginSummary::from_rows(&key, &of_key, install.as_ref());
     let schema = load_plugin_schema(&library, &key)
         .await
-        .map_err(library_error)?;
-    body["schema"] = schema.map_or(serde_json::Value::Null, |pinned| {
-        json!({
-            "manifest_id": pinned.manifest_id,
-            "schema_sha256": pinned.schema_sha256,
-            "package_version": pinned.package_version,
-            "recorded_at": pinned.recorded_at,
-            "recorded_by_node": pinned.recorded_by_node,
-            "settings": pinned.schema.settings,
-        })
-    });
-    Ok(Json(body))
+        .map_err(library_error)?
+        .map(|pinned| PinnedSchemaSummary {
+            manifest_id: pinned.manifest_id,
+            schema_sha256: pinned.schema_sha256,
+            package_version: pinned.package_version,
+            recorded_at: pinned.recorded_at,
+            recorded_by_node: pinned.recorded_by_node,
+            settings: pinned.schema.settings,
+        });
+    Ok(Json(InstalledPluginDetail { plugin, schema }))
 }
 
 /// `POST /api/config/plugins` body: exactly one of `coordinate` or
@@ -207,18 +414,20 @@ pub(crate) struct PostPluginInstall {
     path = "/api/config/plugins",
     request_body = PostPluginInstall,
     responses(
-        (status = 200, description = "The installed version.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 409, description = "The version is already installed."),
-        (status = 404, description = "A local package is missing its `package.json` or `archive.tar.gz`."),
-        (status = 502, description = "The package catalog could not be reached or answered badly."),
+        (status = 200, description = "The installed version.", body = PluginInstalled),
+        (status = 400, description = "The body is invalid: neither or both of `coordinate` and `package`, a malformed coordinate or package name, or a manifest the host rejects.", body = ErrorMessage),
+        (status = 403, description = "The publisher is unverified and `allow_unverified_publisher` is off.", body = ErrorMessage),
+        (status = 404, description = "A local package is missing its `package.json` or `archive.tar.gz`.", body = ErrorMessage),
+        (status = 409, description = "The version is already installed with different artifacts.", body = ErrorMessage),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
+        (status = 502, description = "The package catalog could not be reached or answered badly.", body = ErrorMessage),
+        (status = 503, description = "The install needs a helper that is unavailable.", body = ErrorMessage),
     ),
 )]
 pub async fn post_plugin_install(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PostPluginInstall>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<PluginInstalled>, Response> {
     let config = state.config.read().await.clone();
     let files_dir = config.paths().files_dir.clone();
     let trust = TrustPolicy {
@@ -291,11 +500,11 @@ pub async fn post_plugin_install(
     )
     .await
     .map_err(install_error)?;
-    Ok(Json(json!({
-        "created": installed.created,
-        "plugin_instance_id": installed.instance.id.to_string(),
-        "version": version_json(&installed.version, installed.active),
-    })))
+    Ok(Json(PluginInstalled {
+        created: installed.created,
+        plugin_instance_id: installed.instance.id.to_string(),
+        version: PluginVersionSummary::from_row(&installed.version, installed.active),
+    }))
 }
 
 /// `PUT /api/config/plugins/{key}/active` body.
@@ -312,17 +521,17 @@ pub(crate) struct PutActiveVersion {
     params(("key" = String, Path, description = "Plugin key.")),
     request_body = PutActiveVersion,
     responses(
-        (status = 200, description = "The active version after the change.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such plugin."),
+        (status = 200, description = "The active version after the change.", body = ActiveVersionChanged),
+        (status = 400, description = "The body is invalid.", body = ErrorMessage),
+        (status = 404, description = "No such plugin or version.", body = ErrorMessage),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
     ),
 )]
 pub async fn put_active_version(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
     Json(body): Json<PutActiveVersion>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<ActiveVersionChanged>, Response> {
     let config = state.config.read().await.clone();
     let node_id = load_or_create_node_identity(&config.paths().files_dir)
         .map_err(library_error)?
@@ -337,11 +546,11 @@ pub async fn put_active_version(
     )
     .await
     .map_err(library_error)?;
-    Ok(Json(json!({
-        "plugin_key": pointer.plugin_key,
-        "version": pointer.version,
-        "revision": pointer.revision,
-    })))
+    Ok(Json(ActiveVersionChanged {
+        plugin_key: pointer.plugin_key,
+        version: pointer.version,
+        revision: pointer.revision,
+    }))
 }
 
 /// `DELETE /api/config/plugins/{key}`: uninstall the plugin (active version
@@ -351,16 +560,16 @@ pub async fn put_active_version(
     path = "/api/config/plugins/{key}",
     params(("key" = String, Path, description = "Plugin key.")),
     responses(
-        (status = 200, description = "The plugin was uninstalled.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such plugin."),
+        (status = 200, description = "The plugin was uninstalled.", body = PluginUninstalled),
+        (status = 404, description = "No such plugin.", body = ErrorMessage),
+        (status = 409, description = "A deployment changed under the request. The install was not cleared, but deployments of earlier instances may already be stopped; retry the request.", body = ErrorMessage),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
     ),
 )]
 pub async fn delete_plugin_install(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<PluginUninstalled>, Response> {
     let library = state.library_snapshot().await;
     let mut disabled = 0;
     // Every instance must be stopped before the active version goes; a
@@ -376,11 +585,11 @@ pub async fn delete_plugin_install(
     let cleared = clear_install(&library, &operator_actor(), &key)
         .await
         .map_err(library_error)?;
-    Ok(Json(json!({
-        "plugin_key": key,
-        "uninstalled": cleared,
-        "deployments_undeployed": disabled,
-    })))
+    Ok(Json(PluginUninstalled {
+        plugin_key: key,
+        uninstalled: cleared,
+        deployments_undeployed: disabled,
+    }))
 }
 
 /// `POST /api/config/plugins/{key}/versions/{version}/approve`: record the
@@ -390,16 +599,16 @@ pub async fn delete_plugin_install(
     path = "/api/config/plugins/{key}/versions/{version}/approve",
     params(("key" = String, Path, description = "Plugin key."), ("version" = String, Path, description = "Semver version.")),
     responses(
-        (status = 200, description = "The version's grant was approved.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such plugin."),
+        (status = 200, description = "The version's grant was approved.", body = PluginVersionApproved),
+        (status = 400, description = "The version's manifest does not parse.", body = ErrorMessage),
+        (status = 404, description = "No such plugin or version.", body = ErrorMessage),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
     ),
 )]
 pub async fn approve_plugin_version(
     State(state): State<Arc<AppState>>,
     Path((key, version)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<PluginVersionApproved>, Response> {
     let library = state.library_snapshot().await;
     let row = load_version(&library, &key, &version)
         .await
@@ -411,12 +620,12 @@ pub async fn approve_plugin_version(
     let row = approve_version_grant(&library, &operator_actor(), &key, &version, &grant_json)
         .await
         .map_err(library_error)?;
-    Ok(Json(json!({
-        "plugin_key": row.plugin_key,
-        "version": row.version,
-        "approved": true,
-        "grant": grant,
-    })))
+    Ok(Json(PluginVersionApproved {
+        plugin_key: row.plugin_key,
+        version: row.version,
+        approved: true,
+        grant,
+    }))
 }
 
 #[cfg(test)]

@@ -247,6 +247,10 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("placed by the scheduler"));
+        assert!(
+            refused.get("current_revision").is_none(),
+            "a scheduler-managed refusal carries no revision: {refused}"
+        );
 
         let (status, dropped) = send(&app, "DELETE", &placement_uri, Value::Null).await;
         assert_eq!(status, StatusCode::OK);

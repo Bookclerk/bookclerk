@@ -710,6 +710,90 @@ pub fn replicas_schema() -> utoipa::openapi::schema::Schema {
     )
 }
 
+/// One setting a plugin declares in its `plugin.toml` `[[settings]]`:
+/// its key, value type, default and help text.
+//
+// This is the OpenAPI mirror of `bookclerk_plugin_abi::SettingSpec`, whose
+// crate carries no schema derive. The fields and their serialized names
+// match the ABI type; the struct exists only to describe it in the
+// document and is never constructed.
+#[allow(dead_code)] // Described, never constructed: `SettingSpec` is the wire type.
+#[derive(utoipa::ToSchema)]
+#[schema(as = SettingSpec)]
+pub(crate) struct SettingSpecDoc {
+    /// Setting key (`[a-z][a-z0-9_]*`, at most 64 bytes).
+    #[schema(example = "root")]
+    key: String,
+    /// Operator-facing label; omitted when the key is shown.
+    #[schema(example = "Library root")]
+    label: Option<String>,
+    /// Value type: `string`, `bool`, `integer`, `enum` or `secret`.
+    #[schema(rename = "type", example = "string")]
+    kind: SettingKindDoc,
+    /// Allowed values of an `enum` setting; omitted for other kinds.
+    values: Option<Vec<SettingValueSpecDoc>>,
+    /// Default applied when the instance document has no value; omitted
+    /// when there is none.
+    #[schema(schema_with = setting_default_schema)]
+    default: Option<serde_json::Value>,
+    /// True when the instance cannot run without a value; omitted when
+    /// false.
+    #[schema(example = true)]
+    required: Option<bool>,
+    /// Help text shown beside the setting; omitted when there is none.
+    #[schema(example = "Directory the finished audiobooks are written to.")]
+    description: Option<String>,
+}
+
+/// Value type of a declared plugin setting.
+//
+// Mirror of `bookclerk_plugin_abi::SettingKind`; see `SettingSpecDoc`.
+#[allow(dead_code)] // Described, never constructed: `SettingKind` is the wire type.
+#[derive(utoipa::ToSchema)]
+#[schema(as = SettingKind, rename_all = "snake_case", example = "string")]
+pub(crate) enum SettingKindDoc {
+    /// A UTF-8 string of at most 1024 bytes.
+    String,
+    /// A boolean.
+    Bool,
+    /// A 64-bit signed integer.
+    Integer,
+    /// One of the declared `values`.
+    Enum,
+    /// A secret stored through the secrets binding, never in the document.
+    Secret,
+}
+
+/// One allowed value of an `enum` setting: the stored id and its label.
+//
+// Mirror of `bookclerk_plugin_abi::SettingValueSpec`; see `SettingSpecDoc`.
+#[allow(dead_code)] // Described, never constructed: `SettingValueSpec` is the wire type.
+#[derive(utoipa::ToSchema)]
+#[schema(as = SettingValueSpec)]
+pub(crate) struct SettingValueSpecDoc {
+    /// Stored value.
+    #[schema(example = "sync_missing")]
+    id: String,
+    /// Operator-facing label; omitted when the id is shown.
+    #[schema(example = "Sync missing")]
+    label: Option<String>,
+}
+
+/// Schema of a declared setting's `default`: any JSON scalar, since the
+/// value's type follows the setting's `type`.
+fn setting_default_schema() -> utoipa::openapi::schema::Schema {
+    use utoipa::openapi::schema::{ObjectBuilder, SchemaType};
+    ObjectBuilder::new()
+        .schema_type(SchemaType::AnyValue)
+        .description(Some(
+            "Default applied when the instance document has no value; omitted when there is \
+             none. A string, boolean or integer, as the setting's `type` says.",
+        ))
+        .examples([serde_json::json!("/srv/audiobooks")])
+        .build()
+        .into()
+}
+
 /// The document, built once per process and shared by every router.
 ///
 /// # Returns
