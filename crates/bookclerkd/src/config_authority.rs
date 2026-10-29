@@ -1158,7 +1158,8 @@ pub(crate) struct PluginInstanceDeleted {
     /// Id of the instance that was removed.
     #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
     plugin_instance_id: String,
-    /// Always true: a missing instance is a `404` instead.
+    /// Always true: removing an instance that is already gone answers the
+    /// same way.
     #[schema(example = true)]
     deleted: bool,
 }
@@ -2353,6 +2354,279 @@ mod tests {
             .expect("bootstrap");
         overlay_events(&mut config, &session.events, &session.cluster_id);
         (store, session, config, files)
+    }
+
+    /// Sends one JSON request to `app` and reads the JSON body back.
+    async fn send(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let request = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// A bootstrapped daemon state on a file-backed SQLite library, with
+    /// this node's id.
+    async fn daemon_state() -> (
+        std::sync::Arc<crate::api::AppState>,
+        LibraryStore,
+        String,
+        tempfile::TempDir,
+    ) {
+        let files = tempfile::tempdir().unwrap();
+        let files_path = files.path();
+        std::fs::write(files_path.join("config.toml"), "").unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&files_path.join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        let session = bootstrap_control_plane(
+            &store,
+            files_path,
+            &files_path.join("cache"),
+            None,
+            &Config::default(),
+        )
+        .await
+        .unwrap();
+        let config = Config::load(
+            Some(files_path.to_path_buf()),
+            Some(files_path.join("config.toml")),
+        )
+        .unwrap();
+        let state = std::sync::Arc::new(control_plane_test_state(store.clone(), config));
+        (state, store, session.node.node_id, files)
+    }
+
+    #[tokio::test]
+    async fn plugin_instance_routes_return_typed_bodies() {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use bookclerk_plugin_abi::{SettingKind, SettingSpec, SettingsSchema};
+        use serde_json::{json, Value};
+
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let (state, store, node, _files) = daemon_state().await;
+        let key = "path:file:///tmp/typed-bodies#typed";
+        let schema = SettingsSchema::new(vec![
+            SettingSpec {
+                key: "root".into(),
+                label: "Library root".into(),
+                kind: SettingKind::String,
+                values: Vec::new(),
+                default: Some(json!("/srv/audiobooks")),
+                required: false,
+                description: Some("Where finished books go.".into()),
+            },
+            SettingSpec {
+                key: "api_token".into(),
+                label: String::new(),
+                kind: SettingKind::Secret,
+                values: Vec::new(),
+                default: None,
+                required: false,
+                description: None,
+            },
+        ]);
+        bookclerk_library::control_plane::pin_plugin_schema(
+            &store,
+            &bookclerk_library::control_plane::SchemaPin {
+                plugin_key: key,
+                manifest_id: "typed",
+                package_version: "0.1.0",
+                schema: &schema,
+                node_id: &node,
+            },
+        )
+        .await
+        .unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/api/config/plugin-instances",
+                get(super::get_plugin_instances).post(super::post_plugin_instance),
+            )
+            .route(
+                "/api/config/plugin-instances/{id}",
+                axum::routing::delete(super::delete_plugin_instance_route),
+            )
+            .route(
+                "/api/config/plugin-instances/{id}/config",
+                get(super::get_plugin_instance_config).put(super::put_plugin_instance_config),
+            )
+            .route("/api/config/clerks", get(super::get_clerks))
+            .route(
+                "/api/config/nodes/{node_id}",
+                axum::routing::delete(super::delete_owner_node),
+            )
+            .route("/api/cluster/status", get(super::get_cluster_status))
+            .layer(axum::Extension(crate::auth::NodeAdminCaller::Operator))
+            .with_state(std::sync::Arc::clone(&state));
+
+        // Create a second instance; the body names it and its plugin.
+        let (status, created) = send(
+            &app,
+            "POST",
+            "/api/config/plugin-instances",
+            json!({ "plugin_key": key, "display_name": " Archive " }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        assert_eq!(created["plugin_key"], key);
+        assert_eq!(created["display_name"], "Archive");
+        assert_eq!(created["owner_node_id"], Value::Null);
+        let id = created["plugin_instance_id"].as_str().unwrap().to_string();
+        let (status, missing) = send(
+            &app,
+            "POST",
+            "/api/config/plugin-instances",
+            json!({ "plugin_key": "path:file:///tmp/nope#nope" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+        assert!(missing["error"].as_str().unwrap().contains("nope"));
+
+        // The listing carries the pinned schema and an empty document.
+        let (status, listed) = send(&app, "GET", "/api/config/plugin-instances", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{listed}");
+        assert_eq!(listed["node_id"], json!(node));
+        let instance = listed["instances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["plugin_instance_id"] == json!(id))
+            .expect("new instance listed");
+        assert_eq!(instance["alias"], "typed");
+        assert!(instance["is_default"].is_boolean());
+        assert_eq!(instance["schema"][0]["key"], "root");
+        assert_eq!(instance["schema"][0]["type"], "string");
+        assert_eq!(instance["config"]["settings"], json!({}));
+        assert_eq!(instance["deployments"], json!([]));
+
+        // The document reads back with the effective (defaulted) settings.
+        let config_uri = format!("/api/config/plugin-instances/{id}/config");
+        let (status, document) = send(&app, "GET", &config_uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{document}");
+        assert_eq!(document["plugin_key"], key);
+        assert_eq!(document["effective"]["root"], "/srv/audiobooks");
+        assert_eq!(document["schema"][1]["type"], "secret");
+        let revision = document["revision"].as_i64().unwrap();
+
+        // A write applies, seals the secret and reports the next revision.
+        let (status, written) = send(
+            &app,
+            "PUT",
+            &config_uri,
+            json!({
+                "expected_revision": revision,
+                "settings": { "root": "/srv/archive" },
+                "secrets": { "api_token": "s3cret" },
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{written}");
+        assert_eq!(written["plugin_instance_id"], json!(id));
+        assert_eq!(written["revision"], revision + 1);
+        assert_eq!(written["settings"]["root"], "/srv/archive");
+        assert_eq!(
+            written["secret_refs"],
+            json!([{ "key": "api_token", "name": "api_token" }])
+        );
+        let (status, stale) = send(
+            &app,
+            "PUT",
+            &config_uri,
+            json!({ "expected_revision": revision, "settings": { "root": "/x" } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+        assert_eq!(
+            stale,
+            json!({ "error": "revision_conflict", "current_revision": revision + 1 })
+        );
+        let (status, invalid) = send(
+            &app,
+            "PUT",
+            &config_uri,
+            json!({ "expected_revision": revision + 1, "settings": { "root": 7 } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{invalid}");
+        assert!(invalid["error"].as_str().unwrap().contains("root"));
+
+        // Removing it is idempotent; its document is gone afterwards.
+        let delete_uri = format!("/api/config/plugin-instances/{id}");
+        let (status, deleted) = send(&app, "DELETE", &delete_uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{deleted}");
+        assert_eq!(
+            deleted,
+            json!({ "plugin_instance_id": id, "deleted": true })
+        );
+        let (status, again) = send(&app, "DELETE", &delete_uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{again}");
+        let (status, _) = send(&app, "GET", &config_uri, Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, bad_id) = send(
+            &app,
+            "DELETE",
+            "/api/config/plugin-instances/nope",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad_id}");
+
+        // Clerks: this node, with no owner; removing it is refused and an
+        // unknown node is 404.
+        let (status, clerks) = send(&app, "GET", "/api/config/clerks", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{clerks}");
+        assert_eq!(clerks["node_id"], json!(node));
+        assert_eq!(clerks["nodes"][0]["node_id"], json!(node));
+        assert_eq!(clerks["nodes"][0]["this_node"], true);
+        assert_eq!(clerks["nodes"][0]["owner"], Value::Null);
+        assert_eq!(clerks["nodes"][0]["kind"], "owner");
+        let (status, refused) = send(
+            &app,
+            "DELETE",
+            &format!("/api/config/nodes/{node}"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert!(refused["error"].is_string());
+        let (status, _) = send(
+            &app,
+            "DELETE",
+            "/api/config/nodes/no-such-node",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Cluster status: counters, the schema state and the node list.
+        let (status, cluster) = send(&app, "GET", "/api/cluster/status", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{cluster}");
+        assert_eq!(cluster["cluster"]["nodes"], 1);
+        assert_eq!(cluster["cluster"]["schema"]["compatible"], true);
+        assert!(cluster["cluster"]["schema"]["state"].is_string());
+        assert!(cluster["cluster"]["schema"].get("error").is_none());
+        assert!(cluster["cluster"]["deliveries"]["pending"].is_i64());
+        assert_eq!(cluster["capabilities"]["scope"], "all");
+        assert_eq!(cluster["nodes"][0]["node_id"], json!(node));
     }
 
     #[tokio::test]

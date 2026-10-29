@@ -19867,7 +19867,7 @@
           },
           "deleted": {
             "type": "boolean",
-            "description": "Always true: a missing instance is a `404` instead.",
+            "description": "Always true: removing an instance that is already gone answers the\nsame way.",
             "example": true
           }
         }
