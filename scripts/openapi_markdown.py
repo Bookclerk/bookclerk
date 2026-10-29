@@ -781,12 +781,16 @@ class Document:
 
         Returns:
             ``binary bytes`` for a ``binary``-format string, ``a string``
-            (naming any other ``format``) for a string schema, or ``None``
-            for a schema that is not a string, which the JSON Schema block
-            then shows.
+            (naming any other ``format``) for a string schema, nullable or
+            not, or ``None`` for a schema that is not a string, which the
+            JSON Schema block then shows.
         """
         target, _name = self.resolve(schema)
-        if not isinstance(target, Mapping) or target.get("type") != "string":
+        if not isinstance(target, Mapping):
+            return None
+        types = target.get("type")
+        names = [t for t in types if t != "null"] if isinstance(types, list) else [types]
+        if names != ["string"]:
             return None
         fmt = target.get("format")
         if fmt == "binary":

@@ -268,7 +268,9 @@ class RenderTest(unittest.TestCase):
         document = om.Document(doc)
         self.assertEqual(document.body_shape({"type": "string", "format": "date-time"}), "a string in `date-time` form")
         self.assertEqual(document.body_shape({"type": "string", "format": "byte"}), "base64 text")
+        self.assertEqual(document.body_shape({"type": ["string", "null"]}), "a string")
         self.assertIsNone(document.body_shape({"type": "object"}))
+        self.assertIsNone(document.body_shape({"type": ["object", "null"]}))
         # A status offering JSON and another type shows the JSON.
         self.assertIn("Status `200`: The book.\n\n```json\n", text)
         self.assertEqual(om.fence_language("text/markdown; charset=utf-8"), "markdown")

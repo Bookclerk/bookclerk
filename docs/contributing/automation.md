@@ -557,8 +557,10 @@ Rust crates and the web UI library.
     its own language; a binary body gets a sentence) and then, after a
     `Schema:` line, the body's schema: its JSON Schema for a JSON body
     (component references expanded in place), or a sentence naming the
-    media type and the shape for any other body, such as "A `text/plain`
-    body: a string."; the page's script shows the statuses as tabs in one card
+    media type and the shape for any other body whose schema is a string,
+    such as "A `text/plain` body: a string." (a non-JSON body with another
+    schema keeps the JSON Schema block); the page's script shows the
+    statuses as tabs in one card
     with an Example/Schema switch between the two. The example request's
     samples become one panel per language the same way, and the page's
     script shows them as a language picker. Picking a language or a view
