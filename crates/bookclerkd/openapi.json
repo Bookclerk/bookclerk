@@ -16289,17 +16289,17 @@
         }
       },
       "DeploymentConflict": {
-        "oneOf": [
+        "anyOf": [
           {
             "$ref": "#/components/schemas/RevisionConflict",
             "description": "`expected_revision` lost to a newer revision of the row."
           },
           {
             "$ref": "#/components/schemas/ErrorMessage",
-            "description": "The scheduler places the instance, so its deployments are not\nhand-managed; `error` says so and names the way out."
+            "description": "The scheduler places the instance, so its deployments are not hand-managed; `error` says so and names the way out."
           }
         ],
-        "description": "`PUT /api/config/plugin-instances/{id}/deployments/{node_id}` `409`\nbody: the two conflicts a deployment write can hit."
+        "description": "`PUT /api/config/plugin-instances/{id}/deployments/{node_id}` `409` body: the two conflicts a deployment write can hit."
       },
       "DesiredState": {
         "type": "string",

@@ -1468,7 +1468,11 @@ pub(crate) struct PluginDeploymentChanged {
 
 /// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}` `409`
 /// body: the two conflicts a deployment write can hit.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+///
+/// The schema is written by hand as an `anyOf`: a revision conflict also
+/// satisfies [`ErrorMessage`] (it has an `error` and that schema admits
+/// extra properties), so the derived `oneOf` would reject it.
+#[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub(crate) enum DeploymentConflict {
     /// `expected_revision` lost to a newer revision of the row.
@@ -1476,6 +1480,46 @@ pub(crate) enum DeploymentConflict {
     /// The scheduler places the instance, so its deployments are not
     /// hand-managed; `error` says so and names the way out.
     SchedulerManaged(ErrorMessage),
+}
+
+impl utoipa::PartialSchema for DeploymentConflict {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{AnyOfBuilder, RefBuilder};
+        AnyOfBuilder::new()
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("RevisionConflict")
+                    .description(Some(
+                        "`expected_revision` lost to a newer revision of the row.",
+                    )),
+            )
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("ErrorMessage")
+                    .description(Some(
+                        "The scheduler places the instance, so its deployments are not \
+                     hand-managed; `error` says so and names the way out.",
+                    )),
+            )
+            .description(Some(
+                "`PUT /api/config/plugin-instances/{id}/deployments/{node_id}` `409` body: \
+                 the two conflicts a deployment write can hit.",
+            ))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for DeploymentConflict {
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        use utoipa::PartialSchema;
+        schemas.push(("RevisionConflict".to_string(), RevisionConflict::schema()));
+        schemas.push(("ErrorMessage".to_string(), ErrorMessage::schema()));
+    }
 }
 
 /// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}`: the
