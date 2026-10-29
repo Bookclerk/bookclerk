@@ -38,23 +38,27 @@ pub const MAX_INSTANCE_SECRET_REFS: usize = 16;
 pub const MAX_INSTANCE_SETTING_BYTES: usize = 1024;
 
 /// One scalar setting. Nested objects and arrays are not representable.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(untagged)]
+#[schema(example = "/srv/audiobooks")]
 pub enum SettingValue {
     /// JSON boolean.
     Bool(bool),
     /// Finite JSON number.
+    #[schema(value_type = f64)]
     Number(serde_json::Number),
     /// JSON string, at most 1024 bytes.
     String(String),
 }
 
 /// A name in `encrypted_secrets`. The ciphertext is not part of the document.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct InstanceSecretRefV1 {
     /// Key in the `SECRETS` object delivered to the guest.
+    #[schema(example = "api_token")]
     pub key: String,
     /// `encrypted_secrets.name` for this instance.
+    #[schema(example = "api_token")]
     pub name: String,
 }
 

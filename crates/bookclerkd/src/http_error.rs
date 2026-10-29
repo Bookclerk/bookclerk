@@ -85,6 +85,24 @@ pub fn document_error(status: StatusCode, message: &'static str) -> Response {
     .into_response_for(false)
 }
 
+/// JSON error object with a single `error` message, written by handlers
+/// that report a library or plugin error in their own words.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct ErrorMessage {
+    /// What went wrong, as the handler describes it.
+    #[schema(example = "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found")]
+    pub(crate) error: String,
+}
+
+impl ErrorMessage {
+    /// The body for `message`.
+    pub(crate) fn new(message: impl std::fmt::Display) -> Self {
+        Self {
+            error: message.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// JSON error object (`error`, `message`, numeric `status`) for API clients.
 pub(crate) struct ErrorJson {

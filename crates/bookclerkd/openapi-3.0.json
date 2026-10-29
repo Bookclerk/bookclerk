@@ -3644,16 +3644,8 @@
             "description": "Every plugin instance with its deployments.",
             "content": {
               "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
-            "content": {
-              "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/PluginInstancesResponse"
                 }
               }
             }
@@ -3679,11 +3671,11 @@
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The configuration could not be read.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -3730,7 +3722,9 @@
             "description": "The new instance.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PluginInstanceCreated"
+                }
               }
             }
           },
@@ -3739,7 +3733,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -3765,11 +3759,11 @@
             }
           },
           "404": {
-            "description": "No such plugin.",
+            "description": "No such plugin, or it has no pinned schema.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -3779,7 +3773,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -3789,7 +3783,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -3839,16 +3833,18 @@
             "description": "The instance was removed.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PluginInstanceDeleted"
+                }
               }
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The id is not a plugin instance id.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -3878,7 +3874,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -3888,7 +3884,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -3898,7 +3894,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -3945,19 +3941,21 @@
         ],
         "responses": {
           "200": {
-            "description": "The instance's settings document (secrets as presence flags).",
+            "description": "The instance's settings document (secrets as names only).",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PluginInstanceConfigResponse"
+                }
               }
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The id is not a plugin instance id.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -3983,21 +3981,21 @@
             }
           },
           "404": {
-            "description": "No such instance.",
+            "description": "No such instance, or it has no document yet.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The configuration could not be read.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4056,16 +4054,18 @@
             "description": "The document after the change.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PluginInstanceConfigChanged"
+                }
               }
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The body is invalid, or a value does not fit the pinned schema.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4091,21 +4091,31 @@
             }
           },
           "404": {
-            "description": "No such instance.",
+            "description": "No such instance, or its plugin has no pinned schema.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`expected_revision` is not the current revision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionConflict"
                 }
               }
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The configuration could not be read or written, or a secret was not stored.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4174,7 +4184,9 @@
             "description": "The deployment after the change.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PluginDeploymentChanged"
+                }
               }
             }
           },
@@ -4183,7 +4195,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4209,21 +4221,21 @@
             }
           },
           "404": {
-            "description": "No such instance.",
+            "description": "No such instance or node.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
           },
           "409": {
-            "description": "The instance is placed by the scheduler.",
+            "description": "The instance is placed by the scheduler (`error` message), or `expected_revision` is stale (`revision_conflict`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/RevisionConflict"
                 }
               }
             }
@@ -4233,7 +4245,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4293,7 +4305,9 @@
             "description": "The scheduler now places the instance.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PluginPlacementChanged"
+                }
               }
             }
           },
@@ -4302,7 +4316,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4332,7 +4346,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`expected_revision` is not the current revision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionConflict"
                 }
               }
             }
@@ -4342,7 +4366,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4390,16 +4414,18 @@
             "description": "The instance is back to manual deployment.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PluginPlacementDeleted"
+                }
               }
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The id is not a plugin instance id.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4429,7 +4455,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4439,7 +4465,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4696,16 +4722,8 @@
             "description": "Every installed plugin.",
             "content": {
               "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
-            "content": {
-              "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/InstalledPluginsResponse"
                 }
               }
             }
@@ -4731,11 +4749,11 @@
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The configuration could not be read.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4782,16 +4800,18 @@
             "description": "The installed version.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PluginInstalled"
+                }
               }
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The body is invalid: neither or both of `coordinate` and `package`, a malformed coordinate or package name, or a manifest the host rejects.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4807,11 +4827,11 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The publisher is unverified and `allow_unverified_publisher` is off. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4821,17 +4841,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
           },
           "409": {
-            "description": "The version is already installed.",
+            "description": "The version is already installed with different artifacts.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4841,7 +4861,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4851,7 +4871,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The install needs a helper that is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4898,19 +4928,11 @@
         ],
         "responses": {
           "200": {
-            "description": "The plugin with its pinned versions.",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
+            "description": "The plugin with its installed versions and pinned schema.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/InstalledPluginDetail"
                 }
               }
             }
@@ -4940,17 +4962,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The configuration could not be read.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -4998,16 +5020,8 @@
             "description": "The plugin was uninstalled.",
             "content": {
               "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
-            "content": {
-              "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/PluginUninstalled"
                 }
               }
             }
@@ -5037,7 +5051,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A deployment changed under the request; nothing was cleared.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -5047,7 +5071,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -5107,7 +5131,9 @@
             "description": "The active version after the change.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveVersionChanged"
+                }
               }
             }
           },
@@ -5116,7 +5142,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -5142,11 +5168,11 @@
             }
           },
           "404": {
-            "description": "No such plugin.",
+            "description": "No such plugin or version.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -5156,7 +5182,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -5215,16 +5241,18 @@
             "description": "The version's grant was approved.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PluginVersionApproved"
+                }
               }
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The version's manifest does not parse.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -5250,11 +5278,11 @@
             }
           },
           "404": {
-            "description": "No such plugin.",
+            "description": "No such plugin or version.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -5264,7 +5292,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 }
               }
             }
@@ -15180,6 +15208,33 @@
           }
         }
       },
+      "ActiveVersionChanged": {
+        "type": "object",
+        "description": "`PUT /api/config/plugins/{key}/active` body: the pointer after the move.",
+        "required": [
+          "plugin_key",
+          "version",
+          "revision"
+        ],
+        "properties": {
+          "plugin_key": {
+            "type": "string",
+            "description": "Canonical plugin key.",
+            "example": "libro"
+          },
+          "version": {
+            "type": "string",
+            "description": "Version now active.",
+            "example": "0.4.2"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Compare-and-swap revision of the pointer after the move.",
+            "example": 4
+          }
+        }
+      },
       "ApiError": {
         "type": "object",
         "description": "An error. `error` is a stable slug; bodies the error middleware writes also carry `message` and `status`, and some routes add fields of their own.",
@@ -16748,6 +16803,20 @@
           }
         }
       },
+      "ErrorMessage": {
+        "type": "object",
+        "description": "JSON error object with a single `error` message, written by handlers\nthat report a library or plugin error in their own words.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "What went wrong, as the handler describes it.",
+            "example": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
+          }
+        }
+      },
       "EventDeliveryInfo": {
         "type": "object",
         "description": "Operator JSON for one `event_deliveries` row.",
@@ -17037,6 +17106,183 @@
           }
         },
         "additionalProperties": false
+      },
+      "InstalledPluginDetail": {
+        "allOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstalledPluginSummary"
+              }
+            ],
+            "description": "The plugin with its versions."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "schema": {
+                "description": "The pinned settings schema; `null` until a node pins one.",
+                "type": "object",
+                "required": [
+                  "manifest_id",
+                  "schema_sha256",
+                  "package_version",
+                  "recorded_at",
+                  "recorded_by_node",
+                  "settings"
+                ],
+                "properties": {
+                  "manifest_id": {
+                    "type": "string",
+                    "description": "Manifest id (display alias) at pin time.",
+                    "example": "libro"
+                  },
+                  "schema_sha256": {
+                    "type": "string",
+                    "description": "Fingerprint of the normalized schema.",
+                    "example": "4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091"
+                  },
+                  "package_version": {
+                    "type": "string",
+                    "description": "Semver package version that produced the pinned schema.",
+                    "example": "0.4.2"
+                  },
+                  "recorded_at": {
+                    "type": "string",
+                    "description": "RFC 3339 time of the last pin.",
+                    "example": "2026-10-20T10:15:05Z"
+                  },
+                  "recorded_by_node": {
+                    "type": "string",
+                    "description": "Node that recorded the last pin.",
+                    "example": "node-7f3a9c"
+                  },
+                  "settings": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/SettingSpec"
+                    },
+                    "description": "Declared settings."
+                  }
+                },
+                "nullable": true
+              }
+            }
+          }
+        ],
+        "description": "`GET /api/config/plugins/{key}` body: the plugin and its pinned schema."
+      },
+      "InstalledPluginSummary": {
+        "type": "object",
+        "description": "One installed plugin: its active version and every installed version,\nnewest first.",
+        "required": [
+          "plugin_key",
+          "versions"
+        ],
+        "properties": {
+          "plugin_key": {
+            "type": "string",
+            "description": "Canonical plugin key.",
+            "example": "libro"
+          },
+          "id": {
+            "type": "string",
+            "description": "Manifest id (display alias) of the active version, or of the newest\none when none is active; `null` without versions.",
+            "example": "libro",
+            "nullable": true
+          },
+          "active_version": {
+            "type": "string",
+            "description": "Active version; `null` when the plugin is installed but not\nactivated.",
+            "example": "0.4.2",
+            "nullable": true
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Compare-and-swap revision of the active-version pointer; `null`\nwhen nothing is active.",
+            "example": 3,
+            "nullable": true
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginVersionSummary"
+            },
+            "description": "Every installed version, newest first."
+          }
+        }
+      },
+      "InstalledPluginsResponse": {
+        "type": "object",
+        "description": "`GET /api/config/plugins` body.",
+        "required": [
+          "plugins"
+        ],
+        "properties": {
+          "plugins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstalledPluginSummary"
+            },
+            "description": "Every plugin with at least one installed version, by key."
+          }
+        }
+      },
+      "InstanceConfigView": {
+        "type": "object",
+        "description": "Instance document as the API renders it: values and secret *names* only.",
+        "required": [
+          "revision",
+          "settings",
+          "secret_refs"
+        ],
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Compare-and-swap revision.",
+            "example": 5
+          },
+          "settings": {
+            "type": "object",
+            "description": "Scalar settings the operator wrote.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SettingValue"
+            },
+            "example": {
+              "multi_destination": "sync_missing",
+              "root": "/srv/audiobooks"
+            }
+          },
+          "secret_refs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstanceSecretRefV1"
+            },
+            "description": "Secret refs; ciphertext stays in `encrypted_secrets`."
+          }
+        }
+      },
+      "InstanceSecretRefV1": {
+        "type": "object",
+        "description": "A name in `encrypted_secrets`. The ciphertext is not part of the document.",
+        "required": [
+          "key",
+          "name"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Key in the `SECRETS` object delivered to the guest.",
+            "example": "api_token"
+          },
+          "name": {
+            "type": "string",
+            "description": "`encrypted_secrets.name` for this instance.",
+            "example": "api_token"
+          }
+        }
       },
       "IntegrationLoginBody": {
         "type": "object",
@@ -18333,6 +18579,52 @@
         ],
         "example": "auto"
       },
+      "PinnedSchemaSummary": {
+        "type": "object",
+        "description": "The settings schema pinned for a plugin, as the API renders it.",
+        "required": [
+          "manifest_id",
+          "schema_sha256",
+          "package_version",
+          "recorded_at",
+          "recorded_by_node",
+          "settings"
+        ],
+        "properties": {
+          "manifest_id": {
+            "type": "string",
+            "description": "Manifest id (display alias) at pin time.",
+            "example": "libro"
+          },
+          "schema_sha256": {
+            "type": "string",
+            "description": "Fingerprint of the normalized schema.",
+            "example": "4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091"
+          },
+          "package_version": {
+            "type": "string",
+            "description": "Semver package version that produced the pinned schema.",
+            "example": "0.4.2"
+          },
+          "recorded_at": {
+            "type": "string",
+            "description": "RFC 3339 time of the last pin.",
+            "example": "2026-10-20T10:15:05Z"
+          },
+          "recorded_by_node": {
+            "type": "string",
+            "description": "Node that recorded the last pin.",
+            "example": "node-7f3a9c"
+          },
+          "settings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SettingSpec"
+            },
+            "description": "Declared settings."
+          }
+        }
+      },
       "PlacementView": {
         "type": "object",
         "description": "Scheduler placement of one instance: the operator's intent and the last\npass's result.",
@@ -18366,30 +18658,71 @@
             "items": {
               "type": "string"
             },
-            "description": "Label constraints every chosen node must satisfy."
+            "description": "Label constraints every chosen node must satisfy.",
+            "example": [
+              "target=linux-x64-gnu",
+              "!drain"
+            ]
           },
           "revision": {
             "type": "integer",
             "format": "int64",
-            "description": "Compare-and-swap revision of the intent."
+            "description": "Compare-and-swap revision of the intent.",
+            "example": 2
           },
           "placed": {
             "type": "integer",
             "format": "int32",
             "description": "Replicas the last scheduler pass placed.",
+            "example": 1,
             "minimum": 0
           },
           "detail": {
             "type": "string",
-            "description": "Why fewer than requested are placed; empty when satisfied."
+            "description": "Why fewer than requested are placed; empty when satisfied.",
+            "example": ""
           },
           "scheduled_at": {
             "type": "string",
-            "description": "RFC 3339 time the scheduler last changed the status."
+            "description": "RFC 3339 time the scheduler last changed the status.",
+            "example": "2026-10-28T19:07:00Z"
           },
           "updated_at": {
             "type": "string",
-            "description": "RFC 3339 time of the last intent write."
+            "description": "RFC 3339 time of the last intent write.",
+            "example": "2026-10-28T19:05:00Z"
+          }
+        }
+      },
+      "PluginArtifactSummary": {
+        "type": "object",
+        "description": "One downloadable artifact of an installed version, as the API renders\nit.",
+        "required": [
+          "target",
+          "url",
+          "archive_sha256",
+          "payload_root_sha256"
+        ],
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "Bookclerk target (`linux-x64-gnu`, …; `any` for workerd packages).",
+            "example": "linux-x64-gnu"
+          },
+          "url": {
+            "type": "string",
+            "description": "Where nodes fetch the archive: `https:`, `file:`, or\n`blob:sha256:<hex>`.",
+            "example": "https://plugins.example/source-libro-0.4.2-linux-x64-gnu.tar.gz"
+          },
+          "archive_sha256": {
+            "type": "string",
+            "description": "Lowercase hex SHA-256 of the archive bytes.",
+            "example": "9b74c9897bac770ffc029102a200c5de3f4b2b1a0b5e6c7d8e9f0a1b2c3d4e5f"
+          },
+          "payload_root_sha256": {
+            "type": "string",
+            "description": "Payload-root digest of the extracted plugin tree.",
+            "example": "1f2e3d4c5b6a79880970a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5"
           }
         }
       },
@@ -18947,6 +19280,48 @@
           }
         }
       },
+      "PluginDeploymentChanged": {
+        "type": "object",
+        "description": "`PUT /api/config/plugin-instances/{id}/deployments/{node_id}` body: the\ndeployment row after the write.",
+        "required": [
+          "deployment_id",
+          "plugin_instance_id",
+          "node_id",
+          "desired",
+          "revision"
+        ],
+        "properties": {
+          "deployment_id": {
+            "type": "string",
+            "description": "Deployment row id.",
+            "example": "8c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+          },
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Instance the row belongs to.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "Node the row targets.",
+            "example": "node-7f3a9c"
+          },
+          "desired": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DesiredState"
+              }
+            ],
+            "description": "Desired state now stored."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Compare-and-swap revision after the write.",
+            "example": 4
+          }
+        }
+      },
       "PluginDeploymentView": {
         "type": "object",
         "description": "This node's view of one deployment row, with its latest observation.",
@@ -18959,11 +19334,13 @@
         "properties": {
           "deployment_id": {
             "type": "string",
-            "description": "Deployment row id."
+            "description": "Deployment row id.",
+            "example": "8c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
           },
           "node_id": {
             "type": "string",
-            "description": "Node the row targets."
+            "description": "Node the row targets.",
+            "example": "node-7f3a9c"
           },
           "desired": {
             "allOf": [
@@ -18976,27 +19353,32 @@
           "revision": {
             "type": "integer",
             "format": "int64",
-            "description": "Compare-and-swap revision of the desired row."
+            "description": "Compare-and-swap revision of the desired row.",
+            "example": 3
           },
           "status": {
             "type": "string",
             "description": "Latest observation status from that node, when it reported one.",
+            "example": "healthy",
             "nullable": true
           },
           "detail": {
             "type": "string",
             "description": "Observation detail (error text, redacted).",
+            "example": "",
             "nullable": true
           },
           "applied_config_revision": {
             "type": "integer",
             "format": "int64",
             "description": "Document revision the running guest applied.",
+            "example": 5,
             "nullable": true
           },
           "observed_at": {
             "type": "string",
             "description": "RFC 3339 time of the observation.",
+            "example": "2026-10-28T19:07:00Z",
             "nullable": true
           }
         }
@@ -19310,6 +19692,417 @@
           }
         }
       },
+      "PluginInstalled": {
+        "type": "object",
+        "description": "`POST /api/config/plugins` body: what the install did.",
+        "required": [
+          "created",
+          "plugin_instance_id",
+          "version"
+        ],
+        "properties": {
+          "created": {
+            "type": "boolean",
+            "description": "True when the version row was written now; false when the same\nversion with the same artifacts was installed already.",
+            "example": true
+          },
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Id of the plugin's default instance.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "version": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PluginVersionSummary"
+              }
+            ],
+            "description": "The installed version."
+          }
+        }
+      },
+      "PluginInstanceConfigChanged": {
+        "type": "object",
+        "description": "`PUT /api/config/plugin-instances/{id}/config` body: the document after\nthe write.",
+        "required": [
+          "plugin_instance_id",
+          "revision",
+          "settings",
+          "secret_refs"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Instance id.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Revision after the write; unchanged when the same write was\nreplayed.",
+            "example": 6
+          },
+          "settings": {
+            "type": "object",
+            "description": "Scalar settings now stored.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SettingValue"
+            },
+            "example": {
+              "root": "/srv/audiobooks"
+            }
+          },
+          "secret_refs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstanceSecretRefV1"
+            },
+            "description": "Secret refs now stored, the newly sealed secrets included."
+          }
+        }
+      },
+      "PluginInstanceConfigResponse": {
+        "type": "object",
+        "description": "`GET /api/config/plugin-instances/{id}/config` body: the stored document\nand the configuration the guest receives.",
+        "required": [
+          "plugin_instance_id",
+          "plugin_key",
+          "revision",
+          "settings",
+          "secret_refs",
+          "effective",
+          "schema"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Instance id.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "plugin_key": {
+            "type": "string",
+            "description": "Canonical plugin key.",
+            "example": "local"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Compare-and-swap revision of the document.",
+            "example": 5
+          },
+          "settings": {
+            "type": "object",
+            "description": "Scalar settings the operator wrote.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SettingValue"
+            },
+            "example": {
+              "root": "/srv/audiobooks"
+            }
+          },
+          "secret_refs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstanceSecretRefV1"
+            },
+            "description": "Secret refs; ciphertext stays in `encrypted_secrets`."
+          },
+          "effective": {
+            "type": "object",
+            "description": "Settings as the guest sees them: schema defaults overlaid with the\nstored values. Empty when the plugin has no pinned schema."
+          },
+          "schema": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SettingSpec"
+            },
+            "description": "Declared settings from the pinned schema; empty when there is none."
+          }
+        }
+      },
+      "PluginInstanceCreated": {
+        "type": "object",
+        "description": "`POST /api/config/plugin-instances` body: the instance that was created.",
+        "required": [
+          "plugin_instance_id",
+          "plugin_key",
+          "display_name"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Id of the new instance.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "plugin_key": {
+            "type": "string",
+            "description": "Canonical plugin key the instance belongs to.",
+            "example": "s3"
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Operator-facing name, trimmed.",
+            "example": "Archive bucket"
+          },
+          "owner_node_id": {
+            "type": "string",
+            "description": "Node the instance is local to; `null` for a cluster-wide instance.",
+            "example": "node-7f3a9c",
+            "nullable": true
+          }
+        }
+      },
+      "PluginInstanceDeleted": {
+        "type": "object",
+        "description": "`DELETE /api/config/plugin-instances/{id}` body.",
+        "required": [
+          "plugin_instance_id",
+          "deleted"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Id of the instance that was removed.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "Always true: a missing instance is a `404` instead.",
+            "example": true
+          }
+        }
+      },
+      "PluginInstanceView": {
+        "type": "object",
+        "description": "One plugin instance with its schema, document, and deployments.",
+        "required": [
+          "plugin_instance_id",
+          "plugin_key",
+          "alias",
+          "display_name",
+          "is_default",
+          "created_at",
+          "schema",
+          "deployments"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Instance id.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "plugin_key": {
+            "type": "string",
+            "description": "Canonical plugin key.",
+            "example": "local"
+          },
+          "alias": {
+            "type": "string",
+            "description": "Manifest id recorded with the pinned schema (display alias).",
+            "example": "local"
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Operator-facing name; empty for the default instance.",
+            "example": ""
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "True when a bare plugin key or alias routes to this instance.",
+            "example": true
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 creation time.",
+            "example": "2026-10-01T08:00:00Z"
+          },
+          "schema": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SettingSpec"
+            },
+            "description": "Declared settings from the pinned schema."
+          },
+          "config": {
+            "description": "Current document, when the instance has one.",
+            "type": "object",
+            "required": [
+              "revision",
+              "settings",
+              "secret_refs"
+            ],
+            "properties": {
+              "revision": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Compare-and-swap revision.",
+                "example": 5
+              },
+              "settings": {
+                "type": "object",
+                "description": "Scalar settings the operator wrote.",
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/SettingValue"
+                },
+                "example": {
+                  "multi_destination": "sync_missing",
+                  "root": "/srv/audiobooks"
+                }
+              },
+              "secret_refs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/InstanceSecretRefV1"
+                },
+                "description": "Secret refs; ciphertext stays in `encrypted_secrets`."
+              }
+            },
+            "nullable": true
+          },
+          "deployments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginDeploymentView"
+            },
+            "description": "Deployment rows across nodes."
+          },
+          "placement": {
+            "description": "Scheduler placement; absent when the instance is hand-managed.",
+            "type": "object",
+            "required": [
+              "replicas",
+              "constraints",
+              "revision",
+              "placed",
+              "detail",
+              "scheduled_at",
+              "updated_at"
+            ],
+            "properties": {
+              "replicas": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "string",
+                    "enum": [
+                      "all"
+                    ]
+                  }
+                ],
+                "description": "A replica count (0 stops every replica) or `\"all\"`."
+              },
+              "constraints": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Label constraints every chosen node must satisfy.",
+                "example": [
+                  "target=linux-x64-gnu",
+                  "!drain"
+                ]
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Compare-and-swap revision of the intent.",
+                "example": 2
+              },
+              "placed": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Replicas the last scheduler pass placed.",
+                "example": 1,
+                "minimum": 0
+              },
+              "detail": {
+                "type": "string",
+                "description": "Why fewer than requested are placed; empty when satisfied.",
+                "example": ""
+              },
+              "scheduled_at": {
+                "type": "string",
+                "description": "RFC 3339 time the scheduler last changed the status.",
+                "example": "2026-10-28T19:07:00Z"
+              },
+              "updated_at": {
+                "type": "string",
+                "description": "RFC 3339 time of the last intent write.",
+                "example": "2026-10-28T19:05:00Z"
+              }
+            },
+            "nullable": true
+          }
+        }
+      },
+      "PluginInstancesResponse": {
+        "type": "object",
+        "description": "`GET /api/config/plugin-instances` body: every instance as this node\nsees it.",
+        "required": [
+          "node_id",
+          "instances"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "Id of the node that answered; its deployments carry its own\nobservations.",
+            "example": "node-7f3a9c"
+          },
+          "instances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginInstanceView"
+            },
+            "description": "Every plugin instance in the cluster."
+          }
+        }
+      },
+      "PluginPlacementChanged": {
+        "type": "object",
+        "description": "`PUT /api/config/plugin-instances/{id}/placement` body: the placement\nafter the write.",
+        "required": [
+          "plugin_instance_id",
+          "placement"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Instance the scheduler now places.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "placement": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PlacementView"
+              }
+            ],
+            "description": "The stored intent and the last scheduler pass's result."
+          }
+        }
+      },
+      "PluginPlacementDeleted": {
+        "type": "object",
+        "description": "`DELETE /api/config/plugin-instances/{id}/placement` body.",
+        "required": [
+          "plugin_instance_id",
+          "deleted"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Instance that is hand-managed again.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "True when a placement existed and was removed; false when the\ninstance was hand-managed already.",
+            "example": true
+          }
+        }
+      },
       "PluginSettingChoice": {
         "type": "object",
         "description": "One selectable value for a Settings dropdown.",
@@ -19444,11 +20237,13 @@
             "properties": {
               "deployment_id": {
                 "type": "string",
-                "description": "Deployment row id."
+                "description": "Deployment row id.",
+                "example": "8c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
               },
               "node_id": {
                 "type": "string",
-                "description": "Node the row targets."
+                "description": "Node the row targets.",
+                "example": "node-7f3a9c"
               },
               "desired": {
                 "allOf": [
@@ -19461,27 +20256,32 @@
               "revision": {
                 "type": "integer",
                 "format": "int64",
-                "description": "Compare-and-swap revision of the desired row."
+                "description": "Compare-and-swap revision of the desired row.",
+                "example": 3
               },
               "status": {
                 "type": "string",
                 "description": "Latest observation status from that node, when it reported one.",
+                "example": "healthy",
                 "nullable": true
               },
               "detail": {
                 "type": "string",
                 "description": "Observation detail (error text, redacted).",
+                "example": "",
                 "nullable": true
               },
               "applied_config_revision": {
                 "type": "integer",
                 "format": "int64",
                 "description": "Document revision the running guest applied.",
+                "example": 5,
                 "nullable": true
               },
               "observed_at": {
                 "type": "string",
                 "description": "RFC 3339 time of the observation.",
+                "example": "2026-10-28T19:07:00Z",
                 "nullable": true
               }
             },
@@ -19520,30 +20320,39 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Label constraints every chosen node must satisfy."
+                "description": "Label constraints every chosen node must satisfy.",
+                "example": [
+                  "target=linux-x64-gnu",
+                  "!drain"
+                ]
               },
               "revision": {
                 "type": "integer",
                 "format": "int64",
-                "description": "Compare-and-swap revision of the intent."
+                "description": "Compare-and-swap revision of the intent.",
+                "example": 2
               },
               "placed": {
                 "type": "integer",
                 "format": "int32",
                 "description": "Replicas the last scheduler pass placed.",
+                "example": 1,
                 "minimum": 0
               },
               "detail": {
                 "type": "string",
-                "description": "Why fewer than requested are placed; empty when satisfied."
+                "description": "Why fewer than requested are placed; empty when satisfied.",
+                "example": ""
               },
               "scheduled_at": {
                 "type": "string",
-                "description": "RFC 3339 time the scheduler last changed the status."
+                "description": "RFC 3339 time the scheduler last changed the status.",
+                "example": "2026-10-28T19:07:00Z"
               },
               "updated_at": {
                 "type": "string",
-                "description": "RFC 3339 time of the last intent write."
+                "description": "RFC 3339 time of the last intent write.",
+                "example": "2026-10-28T19:05:00Z"
               }
             },
             "nullable": true
@@ -19554,6 +20363,140 @@
               "type": "string"
             },
             "description": "Nodes whose deployment of the instance is `present`."
+          }
+        }
+      },
+      "PluginUninstalled": {
+        "type": "object",
+        "description": "`DELETE /api/config/plugins/{key}` body.",
+        "required": [
+          "plugin_key",
+          "uninstalled",
+          "deployments_undeployed"
+        ],
+        "properties": {
+          "plugin_key": {
+            "type": "string",
+            "description": "Canonical plugin key.",
+            "example": "libro"
+          },
+          "uninstalled": {
+            "type": "boolean",
+            "description": "True when an active-version pointer existed and was cleared.",
+            "example": true
+          },
+          "deployments_undeployed": {
+            "type": "integer",
+            "description": "Deployment rows switched to `absent` across the plugin's instances.",
+            "example": 2,
+            "minimum": 0
+          }
+        }
+      },
+      "PluginVersionApproved": {
+        "type": "object",
+        "description": "`POST /api/config/plugins/{key}/versions/{version}/approve` body.",
+        "required": [
+          "plugin_key",
+          "version",
+          "approved",
+          "grant"
+        ],
+        "properties": {
+          "plugin_key": {
+            "type": "string",
+            "description": "Canonical plugin key.",
+            "example": "libro"
+          },
+          "version": {
+            "type": "string",
+            "description": "Semver version whose grant was approved.",
+            "example": "0.4.2"
+          },
+          "approved": {
+            "type": "boolean",
+            "description": "Always true: a version that cannot be approved is an error instead.",
+            "example": true
+          },
+          "grant": {
+            "type": "object",
+            "description": "The consent grant recorded for every node: the entrypoints, events,\njobs, network domains and TCP targets the manifest asked for."
+          }
+        }
+      },
+      "PluginVersionSummary": {
+        "type": "object",
+        "description": "One installed version of a plugin, as the API renders it.",
+        "required": [
+          "plugin_key",
+          "id",
+          "version",
+          "active",
+          "approved",
+          "publisher_verified",
+          "coordinate",
+          "installed_at",
+          "installed_by",
+          "artifacts"
+        ],
+        "properties": {
+          "plugin_key": {
+            "type": "string",
+            "description": "Canonical plugin key.",
+            "example": "libro"
+          },
+          "id": {
+            "type": "string",
+            "description": "Manifest id (display alias).",
+            "example": "libro"
+          },
+          "version": {
+            "type": "string",
+            "description": "Semver package version.",
+            "example": "0.4.2"
+          },
+          "active": {
+            "type": "boolean",
+            "description": "True when this is the plugin's active version.",
+            "example": true
+          },
+          "approved": {
+            "type": "boolean",
+            "description": "True once an operator approved the version's consent request.",
+            "example": true
+          },
+          "publisher_verified": {
+            "type": "boolean",
+            "description": "True when the publisher was verified at install time.",
+            "example": true
+          },
+          "coordinate": {
+            "type": "string",
+            "description": "Package coordinate the version was resolved from; empty for a local\narchive.",
+            "example": "registry:plugins.example#source-libro@0.4.2"
+          },
+          "installed_at": {
+            "type": "string",
+            "description": "RFC 3339 install time.",
+            "example": "2026-10-20T10:15:00Z"
+          },
+          "installed_by": {
+            "type": "string",
+            "description": "Audit identity of the installer.",
+            "example": "operator"
+          },
+          "host_payload_root_sha256": {
+            "type": "string",
+            "description": "Payload-root digest of the artifact this host would run; `null` when\nno artifact fits the host's target.",
+            "example": "1f2e3d4c5b6a79880970a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5",
+            "nullable": true
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginArtifactSummary"
+            },
+            "description": "Per-target artifacts."
           }
         }
       },
@@ -20759,6 +21702,110 @@
             "type": "integer",
             "format": "int64",
             "description": "Target `users.id` when a provisioner sets another user's password.",
+            "nullable": true
+          }
+        }
+      },
+      "SettingKind": {
+        "type": "string",
+        "description": "Value type of a declared plugin setting.",
+        "enum": [
+          "string",
+          "bool",
+          "integer",
+          "enum",
+          "secret"
+        ],
+        "example": "string"
+      },
+      "SettingSpec": {
+        "type": "object",
+        "description": "One setting a plugin declares in its `plugin.toml` `[[settings]]`:\nits key, value type, default and help text.",
+        "required": [
+          "key",
+          "type"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Setting key (`[a-z][a-z0-9_]*`, at most 64 bytes).",
+            "example": "root"
+          },
+          "label": {
+            "type": "string",
+            "description": "Operator-facing label; omitted when the key is shown.",
+            "example": "Library root",
+            "nullable": true
+          },
+          "type": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SettingKind"
+              }
+            ],
+            "description": "Value type: `string`, `bool`, `integer`, `enum` or `secret`."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SettingValueSpec"
+            },
+            "description": "Allowed values of an `enum` setting; omitted for other kinds.",
+            "nullable": true
+          },
+          "default": {
+            "description": "Default applied when the instance document has no value; omitted when there is none. A string, boolean or integer, as the setting's `type` says.",
+            "example": "/srv/audiobooks"
+          },
+          "required": {
+            "type": "boolean",
+            "description": "True when the instance cannot run without a value; omitted when\nfalse.",
+            "example": true,
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "description": "Help text shown beside the setting; omitted when there is none.",
+            "example": "Directory the finished audiobooks are written to.",
+            "nullable": true
+          }
+        }
+      },
+      "SettingValue": {
+        "oneOf": [
+          {
+            "type": "boolean",
+            "description": "JSON boolean."
+          },
+          {
+            "type": "number",
+            "format": "double",
+            "description": "Finite JSON number."
+          },
+          {
+            "type": "string",
+            "description": "JSON string, at most 1024 bytes."
+          }
+        ],
+        "description": "One scalar setting. Nested objects and arrays are not representable.",
+        "example": "/srv/audiobooks"
+      },
+      "SettingValueSpec": {
+        "type": "object",
+        "description": "One allowed value of an `enum` setting: the stored id and its label.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stored value.",
+            "example": "sync_missing"
+          },
+          "label": {
+            "type": "string",
+            "description": "Operator-facing label; omitted when the id is shown.",
+            "example": "Sync missing",
             "nullable": true
           }
         }

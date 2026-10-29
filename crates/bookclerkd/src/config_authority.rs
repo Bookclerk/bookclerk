@@ -27,6 +27,7 @@ use serde_json::json;
 
 use crate::api::AppState;
 use crate::auth::NodeAdminCaller;
+use crate::http_error::ErrorMessage;
 
 /// Operator actor recorded on configuration commits from the daemon.
 fn operator_actor() -> ConfigActor {
@@ -816,34 +817,44 @@ pub(crate) async fn reconcile_deployments(state: &AppState) -> anyhow::Result<()
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub(crate) struct PluginDeploymentView {
     /// Deployment row id.
+    #[schema(example = "8c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f")]
     pub deployment_id: String,
     /// Node the row targets.
+    #[schema(example = "node-7f3a9c")]
     pub node_id: String,
     /// What the row asks the node to do: `present` / `absent` from an
     /// operator, `placed` / `unplaced` from the scheduler.
+    #[schema(example = "present")]
     pub desired: bookclerk_library::control_plane::DesiredState,
     /// Compare-and-swap revision of the desired row.
+    #[schema(example = 3)]
     pub revision: i64,
     /// Latest observation status from that node, when it reported one.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "healthy")]
     pub status: Option<String>,
     /// Observation detail (error text, redacted).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "")]
     pub detail: Option<String>,
     /// Document revision the running guest applied.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 5)]
     pub applied_config_revision: Option<i64>,
     /// RFC 3339 time of the observation.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2026-10-28T19:07:00Z")]
     pub observed_at: Option<String>,
 }
 
 /// Instance document as the API renders it: values and secret *names* only.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub(crate) struct InstanceConfigView {
     /// Compare-and-swap revision.
+    #[schema(example = 5)]
     pub revision: i64,
     /// Scalar settings the operator wrote.
+    #[schema(example = json!({"root": "/srv/audiobooks", "multi_destination": "sync_missing"}))]
     pub settings:
         std::collections::BTreeMap<String, bookclerk_library::control_plane::SettingValue>,
     /// Secret refs; ciphertext stays in `encrypted_secrets`.
@@ -858,16 +869,22 @@ pub(crate) struct PlacementView {
     #[schema(schema_with = crate::openapi::replicas_schema)]
     pub replicas: bookclerk_library::control_plane::Replicas,
     /// Label constraints every chosen node must satisfy.
+    #[schema(example = json!(["target=linux-x64-gnu", "!drain"]))]
     pub constraints: Vec<String>,
     /// Compare-and-swap revision of the intent.
+    #[schema(example = 2)]
     pub revision: i64,
     /// Replicas the last scheduler pass placed.
+    #[schema(example = 1)]
     pub placed: u32,
     /// Why fewer than requested are placed; empty when satisfied.
+    #[schema(example = "")]
     pub detail: String,
     /// RFC 3339 time the scheduler last changed the status.
+    #[schema(example = "2026-10-28T19:07:00Z")]
     pub scheduled_at: String,
     /// RFC 3339 time of the last intent write.
+    #[schema(example = "2026-10-28T19:05:00Z")]
     pub updated_at: String,
 }
 
@@ -886,21 +903,28 @@ impl From<bookclerk_library::control_plane::PluginPlacement> for PlacementView {
 }
 
 /// One plugin instance with its schema, document, and deployments.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub(crate) struct PluginInstanceView {
     /// Instance id.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
     pub plugin_instance_id: String,
     /// Canonical plugin key.
+    #[schema(example = "local")]
     pub plugin_key: String,
     /// Manifest id recorded with the pinned schema (display alias).
+    #[schema(example = "local")]
     pub alias: String,
     /// Operator-facing name; empty for the default instance.
+    #[schema(example = "")]
     pub display_name: String,
     /// True when a bare plugin key or alias routes to this instance.
+    #[schema(example = true)]
     pub is_default: bool,
     /// RFC 3339 creation time.
+    #[schema(example = "2026-10-01T08:00:00Z")]
     pub created_at: String,
     /// Declared settings from the pinned schema.
+    #[schema(value_type = Vec<crate::openapi::SettingSpecDoc>)]
     pub schema: Vec<bookclerk_plugin_abi::SettingSpec>,
     /// Current document, when the instance has one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1010,29 +1034,37 @@ fn this_node_id(config: &bookclerk_config::Config) -> Result<String, Response> {
         .map_err(events_error)
 }
 
+/// `GET /api/config/plugin-instances` body: every instance as this node
+/// sees it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginInstancesResponse {
+    /// Id of the node that answered; its deployments carry its own
+    /// observations.
+    #[schema(example = "node-7f3a9c")]
+    node_id: String,
+    /// Every plugin instance in the cluster.
+    instances: Vec<PluginInstanceView>,
+}
+
 /// `GET /api/config/plugin-instances`.
 #[utoipa::path(
     get,
     path = "/api/config/plugin-instances",
     responses(
-        (status = 200, description = "Every plugin instance with its deployments.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 200, description = "Every plugin instance with its deployments.", body = PluginInstancesResponse),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage),
     ),
 )]
 pub async fn get_plugin_instances(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<PluginInstancesResponse>, Response> {
     let cfg = state.config.read().await.clone();
     let node_id = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
     let instances = list_plugin_instance_views(&library, &node_id)
         .await
         .map_err(events_error)?;
-    Ok(Json(json!({
-        "node_id": node_id,
-        "instances": instances,
-    })))
+    Ok(Json(PluginInstancesResponse { node_id, instances }))
 }
 
 /// `POST /api/config/plugin-instances` body.
@@ -1049,6 +1081,23 @@ pub(crate) struct CreatePluginInstance {
     node_id: Option<String>,
 }
 
+/// `POST /api/config/plugin-instances` body: the instance that was created.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginInstanceCreated {
+    /// Id of the new instance.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// Canonical plugin key the instance belongs to.
+    #[schema(example = "s3")]
+    plugin_key: String,
+    /// Operator-facing name, trimmed.
+    #[schema(example = "Archive bucket")]
+    display_name: String,
+    /// Node the instance is local to; `null` for a cluster-wide instance.
+    #[schema(example = "node-7f3a9c")]
+    owner_node_id: Option<String>,
+}
+
 /// `POST /api/config/plugin-instances`: a second (non-default) instance of
 /// a plugin, with an empty document so schema defaults apply. With
 /// `node_id`, the instance is local to that node.
@@ -1057,17 +1106,17 @@ pub(crate) struct CreatePluginInstance {
     path = "/api/config/plugin-instances",
     request_body = CreatePluginInstance,
     responses(
-        (status = 200, description = "The new instance.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such plugin."),
-        (status = 409, description = "The instance id is taken."),
+        (status = 200, description = "The new instance.", body = PluginInstanceCreated),
+        (status = 400, description = "The body is invalid.", body = ErrorMessage),
+        (status = 404, description = "No such plugin, or it has no pinned schema.", body = ErrorMessage),
+        (status = 409, description = "The instance id is taken.", body = ErrorMessage),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
     ),
 )]
 pub async fn post_plugin_instance(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreatePluginInstance>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<PluginInstanceCreated>, Response> {
     use bookclerk_library::control_plane::{
         create_node_local_instance, create_plugin_instance, import_instance_config_if_absent,
         require_plugin_schema, PluginInstanceConfigV1,
@@ -1095,12 +1144,23 @@ pub async fn post_plugin_instance(
     )
     .await
     .map_err(events_error)?;
-    Ok(Json(json!({
-        "plugin_instance_id": instance.id.to_string(),
-        "plugin_key": instance.plugin_key,
-        "display_name": instance.display_name,
-        "owner_node_id": instance.owner_node_id,
-    })))
+    Ok(Json(PluginInstanceCreated {
+        plugin_instance_id: instance.id.to_string(),
+        plugin_key: instance.plugin_key,
+        display_name: instance.display_name,
+        owner_node_id: instance.owner_node_id,
+    }))
+}
+
+/// `DELETE /api/config/plugin-instances/{id}` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginInstanceDeleted {
+    /// Id of the instance that was removed.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// Always true: a missing instance is a `404` instead.
+    #[schema(example = true)]
+    deleted: bool,
 }
 
 /// `DELETE /api/config/plugin-instances/{id}`: removes an instance that has
@@ -1110,26 +1170,54 @@ pub async fn post_plugin_instance(
     path = "/api/config/plugin-instances/{id}",
     params(("id" = String, Path, description = "Plugin instance id.")),
     responses(
-        (status = 200, description = "The instance was removed.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such instance."),
-        (status = 409, description = "The instance is a default or still deployed."),
+        (status = 200, description = "The instance was removed.", body = PluginInstanceDeleted),
+        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage),
+        (status = 404, description = "No such instance.", body = ErrorMessage),
+        (status = 409, description = "The instance is a default or still deployed.", body = ErrorMessage),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
     ),
 )]
 pub async fn delete_plugin_instance_route(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<PluginInstanceDeleted>, Response> {
     use bookclerk_library::control_plane::{delete_plugin_instance, PluginInstanceId};
     let instance_id = PluginInstanceId::parse(&id).map_err(events_error)?;
     let library = state.library_snapshot().await;
     delete_plugin_instance(&library, &operator_actor(), &instance_id)
         .await
         .map_err(events_error)?;
-    Ok(Json(
-        json!({ "plugin_instance_id": instance_id.to_string(), "deleted": true }),
-    ))
+    Ok(Json(PluginInstanceDeleted {
+        plugin_instance_id: instance_id.to_string(),
+        deleted: true,
+    }))
+}
+
+/// `GET /api/config/plugin-instances/{id}/config` body: the stored document
+/// and the configuration the guest receives.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginInstanceConfigResponse {
+    /// Instance id.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// Canonical plugin key.
+    #[schema(example = "local")]
+    plugin_key: String,
+    /// Compare-and-swap revision of the document.
+    #[schema(example = 5)]
+    revision: i64,
+    /// Scalar settings the operator wrote.
+    #[schema(example = json!({"root": "/srv/audiobooks"}))]
+    settings: std::collections::BTreeMap<String, bookclerk_library::control_plane::SettingValue>,
+    /// Secret refs; ciphertext stays in `encrypted_secrets`.
+    secret_refs: Vec<bookclerk_library::control_plane::InstanceSecretRefV1>,
+    /// Settings as the guest sees them: schema defaults overlaid with the
+    /// stored values. Empty when the plugin has no pinned schema.
+    #[schema(value_type = Object, example = json!({"root": "/srv/audiobooks", "multi_destination": "sync_missing"}))]
+    effective: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Declared settings from the pinned schema; empty when there is none.
+    #[schema(value_type = Vec<crate::openapi::SettingSpecDoc>)]
+    schema: Vec<bookclerk_plugin_abi::SettingSpec>,
 }
 
 /// `GET /api/config/plugin-instances/{id}/config`.
@@ -1138,16 +1226,16 @@ pub async fn delete_plugin_instance_route(
     path = "/api/config/plugin-instances/{id}/config",
     params(("id" = String, Path, description = "Plugin instance id.")),
     responses(
-        (status = 200, description = "The instance's settings document (secrets as presence flags).", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such instance."),
+        (status = 200, description = "The instance's settings document (secrets as names only).", body = PluginInstanceConfigResponse),
+        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage),
+        (status = 404, description = "No such instance, or it has no document yet.", body = ErrorMessage),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage),
     ),
 )]
 pub async fn get_plugin_instance_config(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<PluginInstanceConfigResponse>, Response> {
     use bookclerk_library::control_plane::{
         load_instance_config, load_plugin_instance, load_plugin_schema, PluginInstanceId,
     };
@@ -1179,15 +1267,17 @@ pub async fn get_plugin_instance_config(
             pinned.schema.effective_config(&settings).config
         })
         .unwrap_or_default();
-    Ok(Json(json!({
-        "plugin_instance_id": instance_id.to_string(),
-        "plugin_key": instance.plugin_key,
-        "revision": document.revision,
-        "settings": document.body.settings,
-        "secret_refs": document.body.secret_refs,
-        "effective": effective,
-        "schema": schema.map(|pinned| pinned.schema.settings).unwrap_or_default(),
-    })))
+    Ok(Json(PluginInstanceConfigResponse {
+        plugin_instance_id: instance_id.to_string(),
+        plugin_key: instance.plugin_key,
+        revision: document.revision,
+        settings: document.body.settings,
+        secret_refs: document.body.secret_refs,
+        effective,
+        schema: schema
+            .map(|pinned| pinned.schema.settings)
+            .unwrap_or_default(),
+    }))
 }
 
 /// JSON form of a stored setting value.
@@ -1221,6 +1311,24 @@ pub(crate) struct PutPluginInstanceConfig {
     secrets: std::collections::BTreeMap<String, String>,
 }
 
+/// `PUT /api/config/plugin-instances/{id}/config` body: the document after
+/// the write.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginInstanceConfigChanged {
+    /// Instance id.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// Revision after the write; unchanged when the same write was
+    /// replayed.
+    #[schema(example = 6)]
+    revision: i64,
+    /// Scalar settings now stored.
+    #[schema(example = json!({"root": "/srv/audiobooks"}))]
+    settings: std::collections::BTreeMap<String, bookclerk_library::control_plane::SettingValue>,
+    /// Secret refs now stored, the newly sealed secrets included.
+    secret_refs: Vec<bookclerk_library::control_plane::InstanceSecretRefV1>,
+}
+
 /// `PUT /api/config/plugin-instances/{id}/config`.
 ///
 /// Operator principal only. The route is mounted on the operator router.
@@ -1232,17 +1340,18 @@ pub(crate) struct PutPluginInstanceConfig {
     params(("id" = String, Path, description = "Plugin instance id.")),
     request_body = PutPluginInstanceConfig,
     responses(
-        (status = 200, description = "The document after the change.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such instance."),
+        (status = 200, description = "The document after the change.", body = PluginInstanceConfigChanged),
+        (status = 400, description = "The body is invalid, or a value does not fit the pinned schema.", body = ErrorMessage),
+        (status = 404, description = "No such instance, or its plugin has no pinned schema.", body = ErrorMessage),
+        (status = 409, description = "`expected_revision` is not the current revision.", body = RevisionConflict),
+        (status = 500, description = "The configuration could not be read or written, or a secret was not stored.", body = ErrorMessage),
     ),
 )]
 pub async fn put_plugin_instance_config(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<PutPluginInstanceConfig>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<PluginInstanceConfigChanged>, Response> {
     use bookclerk_library::control_plane::{
         load_instance_config, load_plugin_instance, replace_instance_config, require_plugin_schema,
         seal_instance_secret, set_secret_ref, InstanceConfigReplace, PluginInstanceConfigV1,
@@ -1313,12 +1422,12 @@ pub async fn put_plugin_instance_config(
     let doc = load_instance_config(&library, &instance_id)
         .await
         .map_err(events_error)?;
-    Ok(Json(json!({
-        "plugin_instance_id": instance_id.to_string(),
-        "revision": doc.revision,
-        "settings": doc.body.settings,
-        "secret_refs": doc.body.secret_refs,
-    })))
+    Ok(Json(PluginInstanceConfigChanged {
+        plugin_instance_id: instance_id.to_string(),
+        revision: doc.revision,
+        settings: doc.body.settings,
+        secret_refs: doc.body.secret_refs,
+    }))
 }
 
 /// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}` body.
@@ -1335,6 +1444,27 @@ pub(crate) struct PutPluginDeployment {
     expected_revision: Option<i64>,
 }
 
+/// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}` body: the
+/// deployment row after the write.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginDeploymentChanged {
+    /// Deployment row id.
+    #[schema(example = "8c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f")]
+    deployment_id: String,
+    /// Instance the row belongs to.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// Node the row targets.
+    #[schema(example = "node-7f3a9c")]
+    node_id: String,
+    /// Desired state now stored.
+    #[schema(example = "present")]
+    desired: bookclerk_library::control_plane::DesiredState,
+    /// Compare-and-swap revision after the write.
+    #[schema(example = 4)]
+    revision: i64,
+}
+
 /// `PUT /api/config/plugin-instances/{id}/deployments/{node_id}`: the
 /// Deployed switch. Creates the row when the node has none.
 #[utoipa::path(
@@ -1343,18 +1473,18 @@ pub(crate) struct PutPluginDeployment {
     params(("id" = String, Path, description = "Plugin instance id."), ("node_id" = String, Path, description = "Node id.")),
     request_body = PutPluginDeployment,
     responses(
-        (status = 200, description = "The deployment after the change.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such instance."),
-        (status = 409, description = "The instance is placed by the scheduler."),
+        (status = 200, description = "The deployment after the change.", body = PluginDeploymentChanged),
+        (status = 400, description = "The body is invalid.", body = ErrorMessage),
+        (status = 404, description = "No such instance or node.", body = ErrorMessage),
+        (status = 409, description = "The instance is placed by the scheduler (`error` message), or `expected_revision` is stale (`revision_conflict`).", body = RevisionConflict),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
     ),
 )]
 pub async fn put_plugin_deployment(
     State(state): State<Arc<AppState>>,
     axum::extract::Path((id, node_id)): axum::extract::Path<(String, String)>,
     Json(body): Json<PutPluginDeployment>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<PluginDeploymentChanged>, Response> {
     use bookclerk_library::control_plane::{
         ensure_plugin_deployment, list_node_ids, load_deployment_for_node, load_plugin_instance,
         replace_plugin_deployment, DeploymentReplace, PluginInstanceId,
@@ -1432,13 +1562,13 @@ pub async fn put_plugin_deployment(
             }
         }
     };
-    Ok(Json(json!({
-        "deployment_id": row.deployment_id,
-        "plugin_instance_id": row.plugin_instance_id.to_string(),
-        "node_id": row.node_id,
-        "desired": row.desired.as_str(),
-        "revision": row.revision,
-    })))
+    Ok(Json(PluginDeploymentChanged {
+        deployment_id: row.deployment_id,
+        plugin_instance_id: row.plugin_instance_id.to_string(),
+        node_id: row.node_id,
+        desired: row.desired,
+        revision: row.revision,
+    }))
 }
 
 /// Nodes `caller` may see: every node for an operator, the owned ones for
@@ -1970,6 +2100,29 @@ pub(crate) struct PutPluginPlacement {
     expected_revision: Option<i64>,
 }
 
+/// `PUT /api/config/plugin-instances/{id}/placement` body: the placement
+/// after the write.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginPlacementChanged {
+    /// Instance the scheduler now places.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// The stored intent and the last scheduler pass's result.
+    placement: PlacementView,
+}
+
+/// `DELETE /api/config/plugin-instances/{id}/placement` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginPlacementDeleted {
+    /// Instance that is hand-managed again.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// True when a placement existed and was removed; false when the
+    /// instance was hand-managed already.
+    #[schema(example = true)]
+    deleted: bool,
+}
+
 /// `PUT /api/config/plugin-instances/{id}/placement`: hand the instance's
 /// deployments to the scheduler with a replica count and constraints.
 #[utoipa::path(
@@ -1978,17 +2131,18 @@ pub(crate) struct PutPluginPlacement {
     params(("id" = String, Path, description = "Plugin instance id.")),
     request_body = PutPluginPlacement,
     responses(
-        (status = 200, description = "The scheduler now places the instance.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such instance."),
+        (status = 200, description = "The scheduler now places the instance.", body = PluginPlacementChanged),
+        (status = 400, description = "The body is invalid.", body = ErrorMessage),
+        (status = 404, description = "No such instance.", body = ErrorMessage),
+        (status = 409, description = "`expected_revision` is not the current revision.", body = RevisionConflict),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
     ),
 )]
 pub async fn put_plugin_placement_route(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<PutPluginPlacement>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<PluginPlacementChanged>, Response> {
     use bookclerk_library::control_plane::{
         put_plugin_placement, PlacementSpec, PlacementWrite, PluginInstanceId,
     };
@@ -2008,10 +2162,10 @@ pub async fn put_plugin_placement_route(
     .await
     .map_err(events_error)?
     {
-        PlacementWrite::Applied(placement) => Ok(Json(json!({
-            "plugin_instance_id": instance_id.to_string(),
-            "placement": PlacementView::from(placement),
-        }))),
+        PlacementWrite::Applied(placement) => Ok(Json(PluginPlacementChanged {
+            plugin_instance_id: instance_id.to_string(),
+            placement: PlacementView::from(placement),
+        })),
         PlacementWrite::Conflict { current_revision } => Err(conflict(current_revision)),
     }
 }
@@ -2024,26 +2178,26 @@ pub async fn put_plugin_placement_route(
     path = "/api/config/plugin-instances/{id}/placement",
     params(("id" = String, Path, description = "Plugin instance id.")),
     responses(
-        (status = 200, description = "The instance is back to manual deployment.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such instance."),
+        (status = 200, description = "The instance is back to manual deployment.", body = PluginPlacementDeleted),
+        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage),
+        (status = 404, description = "No such instance.", body = ErrorMessage),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
     ),
 )]
 pub async fn delete_plugin_placement_route(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<PluginPlacementDeleted>, Response> {
     use bookclerk_library::control_plane::{delete_plugin_placement, PluginInstanceId};
     let instance_id = PluginInstanceId::parse(&id).map_err(events_error)?;
     let library = state.library_snapshot().await;
     let deleted = delete_plugin_placement(&library, &operator_actor(), &instance_id)
         .await
         .map_err(events_error)?;
-    Ok(Json(json!({
-        "plugin_instance_id": instance_id.to_string(),
-        "deleted": deleted,
-    })))
+    Ok(Json(PluginPlacementDeleted {
+        plugin_instance_id: instance_id.to_string(),
+        deleted,
+    }))
 }
 
 /// 409 body carrying the revision that won.
@@ -2073,13 +2227,7 @@ pub(crate) fn library_status(err: &bookclerk_library::LibraryError) -> StatusCod
 
 /// Maps a library configuration error onto an HTTP status.
 pub(crate) fn events_error(err: bookclerk_library::LibraryError) -> Response {
-    (
-        library_status(&err),
-        Json(json!({
-            "error": err.to_string(),
-        })),
-    )
-        .into_response()
+    (library_status(&err), Json(ErrorMessage::new(err))).into_response()
 }
 
 /// In-memory daemon state for control-plane publication tests.
