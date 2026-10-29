@@ -164,6 +164,9 @@ class WiringTest(unittest.TestCase):
                 self.assertEqual(report["env"]["WRANGLER_OUTPUT"], "${{ steps.deploy.outputs.command-output }}")
                 self.assertEqual(report["run"], f"python3 scripts/worker_startup.py deploy --worker {worker}")
                 self.assertEqual(report.get("if"), deploy.get("if"))
+                # The deploy jobs default to the Worker's directory.
+                self.assertEqual(report.get("working-directory"), ".")
+                self.assertIs(report.get("continue-on-error"), True)
 
     def test_ci_profiles_each_worker(self) -> None:
         sys.path.insert(0, str(ROOT / "scripts"))

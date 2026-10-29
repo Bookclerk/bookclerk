@@ -153,6 +153,10 @@ jobs:
       # Cloudflare's own startup figure for this deploy
       # (docs/contributing/ci.md#worker-startup-time); warns near the limit.
       - name: Report the startup time
+        # The job runs in the Worker's directory; the script and its budgets
+        # are repository-relative. Reporting never fails a deploy.
+        working-directory: .
+        continue-on-error: true
         env:
           WRANGLER_OUTPUT: ${{ steps.deploy.outputs.command-output }}
         run: python3 scripts/worker_startup.py deploy --worker collector
