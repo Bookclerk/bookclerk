@@ -669,10 +669,12 @@ const PARAMETER_LOCATIONS: ReadonlySet<string> = new Set(["path", "query", "head
  * `ul.api-props`; each item is `li.api-prop` whose head holds the name,
  * location, type and required mark in spans, with the description after it,
  * and a nested list (an inline object's fields, or a response's) folds into
- * a `details`. A response item is `li.api-prop api-response-item` with a
- * status mark; the first response's fold starts open and docs.js keeps one
- * open at a time. Lists with any other item pass through, as do tables, so
- * pages generated before this format still render.
+ * a `details` whose `summary` is the whole row, head and description, with
+ * the field count at its end, so the row itself is the tap target. A
+ * response item is `li.api-prop api-response-item` with a status mark;
+ * every fold starts closed and docs.js keeps at most one response's open
+ * at a time. Lists with any other item pass through, as do
+ * tables, so pages generated before this format still render.
  *
  * @param tokens - The page's block tokens.
  * @param make - markdown-it's token constructor.
@@ -725,8 +727,6 @@ export function layoutProperties(tokens: readonly Token[], make: MakeToken): Tok
     const parsed = items.map((item) => propertyItem(item.inline.children ?? []));
     if (parsed.some((p) => p === null)) continue;
     out[open]?.attrJoin("class", "api-props");
-    // The first response body's fields start open; docs.js keeps one open.
-    let opened = false;
     items.forEach((item, n) => {
       const prop = parsed[n];
       if (prop === null || prop === undefined) return;
@@ -752,14 +752,17 @@ export function layoutProperties(tokens: readonly Token[], make: MakeToken): Tok
           .slice(i, end)
           .filter((t) => t.type === "list_item_open" && t.level === token.level + 1).length;
         const noun = count === 1 ? "field" : "fields";
-        // An object's fields start folded; the first response body's start open.
-        const state = prop.kind === "response" && !opened ? " open" : "";
-        if (prop.kind === "response") opened = true;
+        // The whole row is the fold's summary, so the reader taps anywhere
+        // on it (the count at its end says what opens); every fold starts
+        // closed, a response body's included, and the reader opens the
+        // status they came for.
+        inserts.push({
+          at: item.open + 1,
+          token: html('<details class="api-prop-nested"><summary>'),
+        });
         inserts.push({
           at: i,
-          token: html(
-            `<details class="api-prop-nested"${state}><summary>${count} ${noun}</summary>\n`,
-          ),
+          token: html(`<span class="api-prop-count">${count} ${noun}</span></summary>\n`),
         });
         inserts.push({ at: end + 1, token: html("</details>\n") });
         break;
