@@ -1038,15 +1038,22 @@ function checkApiPage(source: string, context: string): void {
     props === 0 || laid.includes('<ul class="api-props">'),
     `property row outside a property list: ${context}`,
   );
+  // A fold's summary is the whole row (head, description, count) and its
+  // list follows the summary.
   const folds = (laid.match(/<details class="api-prop-nested"/g) ?? []).length;
   assert.equal(
     folds,
     (
       laid.match(
-        /<details class="api-prop-nested"(?: open)?><summary>\d+ fields?<\/summary>\n<ul class="api-props">/g,
+        /<details class="api-prop-nested"><summary><span class="api-prop-head">[^]*?<span class="api-prop-count">\d+ fields?<\/span><\/summary>\n<ul class="api-props">/g,
       ) ?? []
     ).length,
     `fold without its summary and list: ${context}`,
+  );
+  assert.equal(
+    folds,
+    (laid.match(/<\/summary>/g) ?? []).length,
+    `summary outside a fold: ${context}`,
   );
   const badges = (laid.match(/<span class="api-method /g) ?? []).length;
   assert.equal(badges, sections.length, `badge outside an operation heading: ${context}`);
@@ -1070,7 +1077,9 @@ function checkApiPage(source: string, context: string): void {
     "()".repeat(count(/<span class="api-prop-in">/g)) +
     ",".repeat(count(/<span class="api-prop-required">/g)) +
     "—".repeat(count(/<span class="api-prop-desc">/g));
-  const added = [...laid.matchAll(/<summary>(\d+ fields?)<\/summary>/g)].map((m) => m[1]).join("");
+  const added = [...laid.matchAll(/<span class="api-prop-count">(\d+ fields?)<\/span>/g)]
+    .map((m) => m[1])
+    .join("");
   assert.equal(chars(laid + methods + dropped), chars(plain + added), `text changed: ${context}`);
 }
 

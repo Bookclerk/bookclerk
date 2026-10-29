@@ -2369,19 +2369,58 @@ code.inline {
 .api-prop-desc > * + * {
   margin-top: 0.5em;
 }
+/* A row with a fold is all summary: the head, the description and the
+   field count, so a tap anywhere on the row (the list item's full padding
+   box, by the negative margins) opens it. A chevron at the right says the
+   row opens; it turns when the row is open. */
 .doc .api-prop-nested {
-  margin: 8px 0 0;
+  margin: 0;
 }
 .doc .api-prop-nested > summary {
+  position: relative;
+  display: block;
+  margin: -10px -12px;
+  padding: 10px 40px 10px 12px;
   cursor: pointer;
+  list-style: none;
+}
+.doc .api-prop-nested > summary::-webkit-details-marker {
+  display: none;
+}
+.doc .api-prop-nested > summary::after {
+  content: "";
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 8px;
+  height: 8px;
+  border: solid var(--docs-soft);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+.doc .api-prop-nested[open] > summary::after {
+  transform: rotate(225deg);
+  top: 20px;
+}
+.doc .api-prop-nested > summary:hover {
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+.doc .api-prop-nested > summary:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+}
+.doc .api-prop-nested > summary .api-prop-count {
+  display: block;
+  margin-top: 3px;
   font-size: 13px;
   color: var(--docs-soft);
 }
-.doc .api-prop-nested > summary:hover {
-  color: var(--ink);
+.doc .api-prop-nested[open] > summary {
+  margin-bottom: 0;
 }
 .doc .api-prop-nested > ul.api-props {
-  margin-top: 6px;
+  margin-top: 8px;
   background: color-mix(in srgb, var(--ink) 2.5%, transparent);
 }
 /* Example responses (layoutResponses): one panel per status. docs.js turns

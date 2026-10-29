@@ -795,9 +795,9 @@ test("property lists become property rows with a folded nested object", () => {
   );
   assert.ok(
     out.html.includes(
-      '<code class="api-prop-name">meta</code><span class="api-prop-type">object</span></span><details class="api-prop-nested"><summary>2 fields</summary>\n<ul class="api-props">\n<li class="api-prop"><span class="api-prop-head"><code class="api-prop-name">pages</code>',
+      '<li class="api-prop">\n<details class="api-prop-nested"><summary><span class="api-prop-head"><code class="api-prop-name">meta</code><span class="api-prop-type">object</span></span><span class="api-prop-count">2 fields</span></summary>\n<ul class="api-props">\n<li class="api-prop"><span class="api-prop-head"><code class="api-prop-name">pages</code>',
     ),
-    "a nested object folds, closed, with its field count",
+    "a nested object folds, closed, behind its whole row with the field count",
   );
   assert.ok(
     out.html.includes(
@@ -806,6 +806,7 @@ test("property lists become property rows with a folded nested object", () => {
     "a linked type keeps its link",
   );
   assert.equal(out.html.split("<details").length, out.html.split("</details>").length);
+  assert.equal(out.html.split("<summary>").length, out.html.split("</summary>").length);
 });
 
 test("response lists become status rows; every body's fields start closed", () => {
@@ -825,9 +826,9 @@ test("response lists become status rows; every body's fields start closed", () =
   const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
   assert.ok(
     out.html.includes(
-      '<li class="api-prop api-response-item"><span class="api-prop-head"><span class="api-status api-status-2xx">200</span></span><span class="api-prop-desc">The book. Body: <a href="/docs/api/web/schemas#book"><code>Book</code></a> (<code>application/json</code>)</span><details class="api-prop-nested"><summary>1 field</summary>',
+      '<li class="api-prop api-response-item">\n<details class="api-prop-nested"><summary><span class="api-prop-head"><span class="api-status api-status-2xx">200</span></span><span class="api-prop-desc">The book. Body: <a href="/docs/api/web/schemas#book"><code>Book</code></a> (<code>application/json</code>)</span><span class="api-prop-count">1 field</span></summary>\n<ul class="api-props">',
     ),
-    "the first response's fields start closed too",
+    "the first response's fields start closed too, behind the whole row",
   );
   assert.ok(
     out.html.includes(
@@ -836,7 +837,7 @@ test("response lists become status rows; every body's fields start closed", () =
   );
   assert.ok(
     out.html.includes(
-      '<span class="api-status api-status-4xx">401</span></span><span class="api-prop-desc">Not signed in. Body: <a href="/docs/api/web/schemas#errorjson"><code>ErrorJson</code></a> (<code>application/json</code>)</span><details class="api-prop-nested"><summary>1 field</summary>',
+      '<li class="api-prop api-response-item">\n<details class="api-prop-nested"><summary><span class="api-prop-head"><span class="api-status api-status-4xx">401</span></span><span class="api-prop-desc">Not signed in. Body: <a href="/docs/api/web/schemas#errorjson"><code>ErrorJson</code></a> (<code>application/json</code>)</span><span class="api-prop-count">1 field</span></summary>',
     ),
     "a later response's fields start closed",
   );

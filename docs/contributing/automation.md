@@ -548,8 +548,9 @@ Rust crates and the web UI library.
     `layoutProperties`): name, location, type and a required mark on one
     line, the description under it, a nested object's fields folded with
     their count, and each response's body fields folded under its status
-    mark, every fold closed on load; the page's script keeps at most one
-    response's open at a time.
+    mark. A row that folds is the fold's summary, so a tap anywhere on it
+    opens the fields; every fold is closed on load and the page's script
+    keeps at most one response's open at a time.
     Any other list, and the tables of pages generated before this format,
     pass through unchanged.
   - The example responses become one panel per status with a colored
