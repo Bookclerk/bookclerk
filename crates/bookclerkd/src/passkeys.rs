@@ -15,7 +15,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use bookclerk_library::{UserRole, UserStatus};
 use chrono::{Duration as ChronoDuration, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
 use uuid::Uuid;
@@ -27,7 +27,8 @@ use webauthn_rs::prelude::{
 use crate::api::AppState;
 use crate::auth::{
     issue_elevation, issue_portal_session, require_recent_portal_reauth,
-    resolve_portal_caller_identity, timed_portal_identity_from_headers, ClientIp,
+    resolve_portal_caller_identity, timed_portal_identity_from_headers, ClientIp, Elevated,
+    OkResponse, PortalSessionIssued,
 };
 
 /// Passkey HTTP routes. They carry no auth layer: each handler resolves the
@@ -108,6 +109,96 @@ async fn origin_webauthn(state: &AppState, headers: &HeaderMap) -> Result<Webaut
     build_webauthn(&origin)
 }
 
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+// Documents the body `ceremony_json` builds from the webauthn-rs options
+// object, whose own type carries no schema.
+#[allow(dead_code)]
+/// WebAuthn creation options for `navigator.credentials.create()`, plus the challenge id for the finish step.
+pub struct PasskeyCreationOptions {
+    /// Server-issued challenge id to send back with the attestation; consumed once, five-minute lifetime.
+    #[schema(example = "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f")]
+    pub challenge_id: String,
+    /// The W3C `PublicKeyCredentialCreationOptions`, with binary fields base64url-encoded.
+    #[serde(rename = "publicKey")]
+    #[schema(schema_with = public_key_creation_schema)]
+    pub public_key: Value,
+}
+
+/// Schema for the `publicKey` member of [`PasskeyCreationOptions`].
+fn public_key_creation_schema() -> utoipa::openapi::schema::Schema {
+    utoipa::openapi::ObjectBuilder::new()
+        .schema_type(utoipa::openapi::schema::SchemaType::AnyValue)
+        .description(Some(
+            "W3C PublicKeyCredentialCreationOptions (relying party, user, challenge, algorithms, excluded credentials), binary fields base64url-encoded.",
+        ))
+        .examples([serde_json::json!({
+            "rp": { "name": "Bookclerk", "id": "books.example.com" },
+            "user": { "id": "AAAAAAAAAAAAAAAAAAAABw", "name": "sam", "displayName": "Sam" },
+            "challenge": "k9u2Xo3cZ1Qp7mT4vW8yA2bC5dE6fG7hI8jK9lM0nO1",
+            "pubKeyCredParams": [{ "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -257 }],
+            "timeout": 60000,
+            "attestation": "none",
+            "excludeCredentials": [],
+            "authenticatorSelection": { "residentKey": "required", "userVerification": "preferred" }
+        })])
+        .build()
+        .into()
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+// Documents the body `ceremony_json` builds from the webauthn-rs options
+// object, whose own type carries no schema.
+#[allow(dead_code)]
+/// WebAuthn request options for `navigator.credentials.get()`, plus the challenge id for the finish step.
+pub struct PasskeyRequestOptions {
+    /// Server-issued challenge id to send back with the assertion; consumed once, five-minute lifetime.
+    #[schema(example = "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f")]
+    pub challenge_id: String,
+    /// The W3C `PublicKeyCredentialRequestOptions`, with binary fields base64url-encoded.
+    #[serde(rename = "publicKey")]
+    #[schema(schema_with = public_key_request_schema)]
+    pub public_key: Value,
+}
+
+/// Schema for the `publicKey` member of [`PasskeyRequestOptions`].
+fn public_key_request_schema() -> utoipa::openapi::schema::Schema {
+    utoipa::openapi::ObjectBuilder::new()
+        .schema_type(utoipa::openapi::schema::SchemaType::AnyValue)
+        .description(Some(
+            "W3C PublicKeyCredentialRequestOptions (challenge, relying party id, allowed credentials), binary fields base64url-encoded.",
+        ))
+        .examples([serde_json::json!({
+            "challenge": "k9u2Xo3cZ1Qp7mT4vW8yA2bC5dE6fG7hI8jK9lM0nO1",
+            "rpId": "books.example.com",
+            "timeout": 60000,
+            "userVerification": "preferred",
+            "allowCredentials": [{ "type": "public-key", "id": "pQECAyYgASFYIE" }]
+        })])
+        .build()
+        .into()
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/auth/passkeys`.
+pub struct PasskeysResponse {
+    /// The caller's passkeys, oldest first.
+    pub passkeys: Vec<PasskeySummary>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// One stored passkey.
+pub struct PasskeySummary {
+    /// Row id, for `DELETE /api/auth/passkeys/{id}`.
+    #[schema(example = 4)]
+    pub id: i64,
+    /// Base64url credential id the authenticator reports.
+    #[schema(example = "pQECAyYgASFYIE9ZJ2kLm3nO4pQ5rS6tU7vW8xY9zA0")]
+    pub credential_id: String,
+    /// Label chosen at registration (`Passkey` when none was given).
+    #[schema(example = "YubiKey 5C")]
+    pub name: String,
+}
+
 /// Serializes a WebAuthn options object and injects `challenge_id` for the finish step.
 fn ceremony_json<T: serde::Serialize>(
     challenge_id: &str,
@@ -173,32 +264,30 @@ async fn require_user(
     path = "/api/auth/passkeys",
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "The caller's passkeys.", body = serde_json::Value),
+        (status = 200, description = "The caller's passkeys.", body = PasskeysResponse),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 500, description = "The passkeys could not be read."),
     ),
 )]
 async fn list_passkeys(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<PasskeysResponse>, StatusCode> {
     let user = require_user(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let rows = library
         .list_webauthn_credentials(user.id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let passkeys: Vec<Value> = rows
+    let passkeys = rows
         .into_iter()
-        .map(|row| {
-            serde_json::json!({
-                "id": row.id,
-                "credential_id": row.credential_id,
-                "name": row.name.as_deref().unwrap_or("Passkey"),
-            })
+        .map(|row| PasskeySummary {
+            id: row.id,
+            credential_id: row.credential_id,
+            name: row.name.unwrap_or_else(|| String::from("Passkey")),
         })
         .collect();
-    Ok(Json(serde_json::json!({ "passkeys": passkeys })))
+    Ok(Json(PasskeysResponse { passkeys }))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -217,9 +306,10 @@ struct ReauthBody {
     request_body = ReauthBody,
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "WebAuthn creation options.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 200, description = "WebAuthn creation options.", body = PasskeyCreationOptions),
+        (status = 400, description = "The daemon's origin is not a valid WebAuthn relying party (set `integrations.public_origin`)."),
+        (status = 401, description = "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong."),
+        (status = 500, description = "The library could not be read, or the challenge could not be stored."),
     ),
 )]
 async fn register_begin(
@@ -304,18 +394,19 @@ struct CeremonyFinish {
     request_body = CeremonyFinish,
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "The passkey was stored.", body = serde_json::Value),
+        (status = 200, description = "The passkey was stored.", body = OkResponse),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The attestation is invalid."),
+        (status = 403, description = "The challenge was issued to another user."),
+        (status = 400, description = "The challenge is unknown or expired, the attestation is invalid, or the daemon's origin is not a valid WebAuthn relying party."),
         (status = 409, description = "The passkey is already registered."),
+        (status = 500, description = "The library could not be read or written."),
     ),
 )]
 async fn register_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<CeremonyFinish>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<OkResponse>, StatusCode> {
     let user = require_user(&state, &headers).await?;
     let webauthn = origin_webauthn(&state, &headers).await?;
     let library = state.library_snapshot().await;
@@ -350,7 +441,7 @@ async fn register_finish(
     let _ = library
         .insert_security_audit_event(&format!("user:{}", user.id), "passkey_register", None)
         .await;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(Json(OkResponse::OK))
 }
 
 /// Deletes one passkey after recent reauth; 404 when the id is not this user's.
@@ -361,10 +452,10 @@ async fn register_finish(
     request_body = ReauthBody,
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "The passkey was deleted.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 200, description = "The passkey was deleted.", body = OkResponse),
+        (status = 401, description = "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong."),
         (status = 404, description = "No such passkey for this user."),
+        (status = 500, description = "The library could not be read or written."),
     ),
 )]
 async fn delete_passkey(
@@ -372,7 +463,7 @@ async fn delete_passkey(
     headers: HeaderMap,
     Path(id): Path<i64>,
     Json(body): Json<ReauthBody>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<OkResponse>, StatusCode> {
     let user = require_user(&state, &headers).await?;
     require_recent_portal_reauth(&state, &headers, user.id, body.current_password.as_deref())
         .await?;
@@ -387,7 +478,7 @@ async fn delete_passkey(
     let _ = library
         .delete_elevated_operator_sessions_for_user(user.id)
         .await;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(Json(OkResponse::OK))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -403,12 +494,13 @@ struct LoginBegin {
     path = "/api/auth/passkeys/login/begin",
     request_body = LoginBegin,
     responses(
-        (status = 200, description = "WebAuthn request options.", body = serde_json::Value),
-        (status = 400, description = "The request is invalid."),
+        (status = 200, description = "WebAuthn request options.", body = PasskeyRequestOptions),
+        (status = 400, description = "The daemon's origin is not a valid WebAuthn relying party (set `integrations.public_origin`)."),
         (status = 401, description = "No user has this login name or email."),
         (status = 403, description = "The user is disabled."),
         (status = 404, description = "The user has no usable passkeys."),
-        (status = 429, description = "Too many attempts; try later."),
+        (status = 429, description = "Too many failed attempts from this client; try later."),
+        (status = 500, description = "The library could not be read, or the challenge could not be stored."),
     ),
 )]
 async fn login_begin(
@@ -506,10 +598,11 @@ async fn login_begin_inner(
     path = "/api/auth/passkeys/login/finish",
     request_body = CeremonyFinish,
     responses(
-        (status = 200, description = "Signed in; the response sets the portal session cookie.", body = serde_json::Value),
-        (status = 400, description = "The challenge is unknown or expired, or the credential is malformed."),
-        (status = 401, description = "The assertion is invalid."),
+        (status = 200, description = "Signed in; the response sets the portal session cookie.", body = PortalSessionIssued),
+        (status = 400, description = "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party."),
+        (status = 401, description = "The assertion does not verify, or the credential is not one of the challenged user's."),
         (status = 403, description = "The user is disabled."),
+        (status = 500, description = "The library could not be read or written."),
     ),
 )]
 async fn login_finish(
@@ -570,10 +663,12 @@ async fn login_finish(
     path = "/api/auth/passkeys/elevate/begin",
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "WebAuthn request options.", body = serde_json::Value),
+        (status = 200, description = "WebAuthn request options.", body = PasskeyRequestOptions),
+        (status = 400, description = "The daemon's origin is not a valid WebAuthn relying party (set `integrations.public_origin`)."),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 403, description = "The caller is not an Owner."),
         (status = 404, description = "The caller has no passkeys."),
+        (status = 500, description = "The library could not be read, or the challenge could not be stored."),
     ),
 )]
 async fn elevate_begin(
@@ -623,10 +718,11 @@ async fn elevate_begin(
     request_body = CeremonyFinish,
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "Elevated; the response sets a short-lived operator cookie.", body = serde_json::Value),
-        (status = 400, description = "The challenge is unknown or expired, or the credential is malformed."),
-        (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 200, description = "Elevated; the response sets a short-lived operator cookie.", body = Elevated),
+        (status = 400, description = "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party."),
+        (status = 401, description = "The caller is not signed in, the assertion does not verify or was not user-verified, or the credential is not the caller's."),
+        (status = 403, description = "The caller is not an Owner, or the challenge was issued to another user."),
+        (status = 500, description = "The library could not be read or written."),
     ),
 )]
 async fn elevate_finish(

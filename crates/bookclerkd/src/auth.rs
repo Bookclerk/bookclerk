@@ -1936,7 +1936,7 @@ async fn second_factor_for(
 }
 
 /// Maps a library user row onto the `/me` user object (no password hash).
-fn auth_me_user(user: &bookclerk_library::UserRecord) -> AuthMeUser {
+pub(crate) fn auth_me_user(user: &bookclerk_library::UserRecord) -> AuthMeUser {
     AuthMeUser {
         id: user.id,
         role: user.role.as_str().to_string(),
@@ -1951,7 +1951,7 @@ fn auth_me_user(user: &bookclerk_library::UserRecord) -> AuthMeUser {
 }
 
 /// Sets stored-upload and SSO picture fields on a `/me` user object.
-async fn attach_avatar_fields(
+pub(crate) async fn attach_avatar_fields(
     library: &bookclerk_library::LibraryStore,
     mut user: AuthMeUser,
     files_dir: Option<&std::path::Path>,

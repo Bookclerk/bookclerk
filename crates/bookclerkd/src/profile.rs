@@ -8,7 +8,7 @@ use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::auth;
@@ -262,44 +262,38 @@ pub(crate) fn avatar_source_wire(source: Option<&str>) -> String {
         .unwrap_or_else(|| String::from("auto"))
 }
 
-/// IdP pictures as JSON objects for `/me` and user lists.
-pub(crate) fn sso_pictures_json(
-    pictures: &[bookclerk_library::UserSsoPicture],
-) -> Vec<serde_json::Value> {
-    pictures
-        .iter()
-        .map(|p| {
-            serde_json::json!({
-                "identity_id": p.identity_id,
-                "provider": p.provider,
-                "picture_url": p.picture_url,
-                "last_used_at": p.last_used_at.map(|t| t.to_rfc3339()),
-            })
-        })
-        .collect()
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after `PATCH /api/auth/profile`.
+pub struct ProfileChanged {
+    /// Always `true` on this success path.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// The profile after the change, as `GET /api/auth/me` reports it.
+    pub user: auth::AuthMeUser,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after the caller's avatar was stored or removed.
+pub struct AvatarChanged {
+    /// Always `true` on this success path.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// Whether an uploaded picture is stored now.
+    #[schema(example = true)]
+    pub has_avatar: bool,
+    /// The picture source after the change (`upload` once a picture is stored); absent after a removal, when the source is unchanged unless it was `upload`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "upload")]
+    pub avatar_source: Option<&'static str>,
 }
 
 /// Profile snapshot including resolved avatar choices.
-pub(crate) async fn profile_user_json(
+pub(crate) async fn profile_user(
     library: &bookclerk_library::LibraryStore,
     user: &bookclerk_library::UserRecord,
     files: Option<&Path>,
-) -> serde_json::Value {
-    let pictures = library
-        .list_user_sso_pictures(user.id)
-        .await
-        .unwrap_or_default();
-    serde_json::json!({
-        "id": user.id,
-        "role": user.role.as_str(),
-        "display_name": user.display_name,
-        "email": user.email,
-        "has_password": user.has_password,
-        "has_avatar": files.is_some_and(|d| avatar_exists(d, user.id)),
-        "avatar_source": avatar_source_wire(user.avatar_source.as_deref()),
-        "gravatar_hash": gravatar_hash_for(user.email.as_deref()),
-        "sso_pictures": sso_pictures_json(&pictures),
-    })
+) -> auth::AuthMeUser {
+    auth::attach_avatar_fields(library, auth::auth_me_user(user), files).await
 }
 
 /// Resolves the signed-in first-party user; impersonation and operator-only sessions are refused.
@@ -327,12 +321,18 @@ pub(crate) async fn require_self_user_id(
     path = "/api/auth/profile",
     request_body = PatchProfileRequest,
     responses(
-        (status = 200, description = "The profile after the change.", body = serde_json::Value),
+        (status = 200, description = "The profile after the change.", body = ProfileChanged),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "A value is invalid."),
+        (status = 403, description = "The session is impersonating a user, is a plain operator session, or has no first-party user."),
+        (status = 400, description = "A value is invalid (`display_name_too_long`, `invalid_email`, `invalid_avatar_source`), or the body changes nothing (the standard error body).", body = crate::http_error::ErrorJson, examples(
+            ("display_name_too_long" = (summary = "The display name is too long.", value = json!({"error": "display_name_too_long", "message": "Display name must be 80 characters or fewer.", "status": 400}))),
+            ("invalid_email" = (summary = "The email is invalid.", value = json!({"error": "invalid_email", "message": "Enter a valid email address.", "status": 400}))),
+            ("invalid_avatar_source" = (summary = "The picture source is invalid.", value = json!({"error": "invalid_avatar_source", "message": "Choose a valid picture source.", "status": 400}))),
+            ("nothing_to_change" = (summary = "The body changes nothing.", value = json!({"error": "bad_request", "message": "The request could not be understood.", "status": 400}))),
+        )),
         (status = 404, description = "The caller's user no longer exists."),
-        (status = 409, description = "The email is used by another account (`email_in_use`)."),
+        (status = 409, description = "The email is used by another account (`email_in_use`).", body = crate::http_error::ErrorJson, example = json!({"error": "email_in_use", "message": "That email is already used by another account.", "status": 409})),
+        (status = 500, description = "The library could not be read or written."),
     ),
 )]
 pub async fn patch_profile(
@@ -414,10 +414,10 @@ pub async fn patch_profile(
         .await;
 
     let files = files_dir(&state).await;
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "user": profile_user_json(&library, &user, files.as_deref()).await,
-    }))
+    Ok(Json(ProfileChanged {
+        ok: true,
+        user: profile_user(&library, &user, files.as_deref()).await,
+    })
     .into_response())
 }
 
@@ -427,11 +427,12 @@ pub async fn patch_profile(
     path = "/api/auth/profile/avatar",
     request_body(content = crate::openapi::BinaryBody, content_type = "image/*"),
     responses(
-        (status = 200, description = "The avatar was stored.", body = serde_json::Value),
+        (status = 200, description = "The avatar was stored.", body = AvatarChanged),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The image is not JPEG, PNG or WebP."),
-        (status = 413, description = "The image is too large."),
+        (status = 403, description = "The session is impersonating a user, is a plain operator session, or has no first-party user."),
+        (status = 400, description = "The body is empty or not a JPEG, PNG or WebP image."),
+        (status = 413, description = "The image is larger than 1.5 MB."),
+        (status = 500, description = "The files directory is unknown, or the image could not be written."),
     ),
 )]
 pub async fn put_avatar(
@@ -493,10 +494,12 @@ pub async fn put_avatar(
         )
         .await;
 
-    Ok(
-        Json(serde_json::json!({ "ok": true, "has_avatar": true, "avatar_source": "upload" }))
-            .into_response(),
-    )
+    Ok(Json(AvatarChanged {
+        ok: true,
+        has_avatar: true,
+        avatar_source: Some("upload"),
+    })
+    .into_response())
 }
 
 /// Removes the caller's stored avatar, if any.
@@ -504,9 +507,10 @@ pub async fn put_avatar(
     delete,
     path = "/api/auth/profile/avatar",
     responses(
-        (status = 200, description = "The avatar was removed.", body = serde_json::Value),
+        (status = 200, description = "The avatar was removed.", body = AvatarChanged),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 403, description = "The session is impersonating a user, is a plain operator session, or has no first-party user."),
+        (status = 500, description = "The files directory is unknown."),
     ),
 )]
 pub async fn delete_avatar(
@@ -531,7 +535,12 @@ pub async fn delete_avatar(
             Some(&format!(r#"{{"user_id":{user_id}}}"#)),
         )
         .await;
-    Ok(Json(serde_json::json!({ "ok": true, "has_avatar": false })).into_response())
+    Ok(Json(AvatarChanged {
+        ok: true,
+        has_avatar: false,
+        avatar_source: None,
+    })
+    .into_response())
 }
 
 /// Serves a stored avatar JPEG for any authenticated household member.
@@ -545,7 +554,9 @@ pub async fn delete_avatar(
             (crate::openapi::BinaryBody = "image/png"),
             (crate::openapi::BinaryBody = "image/webp"),
         )),
-        (status = 404, description = "The user has no avatar."),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 404, description = "No such user, or the user has no avatar."),
+        (status = 500, description = "The user could not be read."),
     ),
 )]
 pub async fn get_avatar(
@@ -655,10 +666,10 @@ fn is_unique_violation(err: &bookclerk_library::LibraryError) -> bool {
 }
 
 /// JSON error body with a machine `error` slug and human `message`.
-fn json_error(status: StatusCode, error: &str, message: &str) -> Response {
+fn json_error(status: StatusCode, error: &'static str, message: &'static str) -> Response {
     (
         status,
-        Json(serde_json::json!({ "error": error, "message": message })),
+        Json(crate::http_error::ErrorJson::new(status, error, message)),
     )
         .into_response()
 }
