@@ -40,6 +40,24 @@ DOCUMENT = {
                 "responses": {
                     "200": {"description": "The book.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Book"}}}},
                     "404": {"description": "No | such book."},
+                    "409": {
+                        "description": "Checked out.",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Book"},
+                                "example": {"error": "book 7 is checked out by sam"},
+                            }
+                        },
+                    },
+                    "410": {
+                        "description": "Pulped.",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Book"},
+                                "examples": {"pulped": {"value": {"error": "book 7 was pulped"}}},
+                            }
+                        },
+                    },
                 },
             },
             "delete": {"tags": ["Books"], "summary": "Deletes it.", "deprecated": True, "security": [{}], "responses": {"204": {"description": "Gone."}}},
@@ -252,6 +270,10 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("$ref", json.dumps(schema))
         # Every status is listed, with a sentence where there is no example.
         self.assertIn("\n\nStatus `404`: No | such book. No body.\n", get)
+        # A route's own example (or the first of its examples) beats the one
+        # built from the schema, so an error shows the message it returns.
+        self.assertIn('Status `409`: Checked out.\n\n```json\n{\n  "error": "book 7 is checked out by sam"\n}\n```\n', get)
+        self.assertIn('Status `410`: Pulped.\n\n```json\n{\n  "error": "book 7 was pulped"\n}\n```\n', get)
         # An untyped body gets no example; a binary one gets a sentence and its shape.
         self.assertNotIn("Example response", self.pages["other.md"])
         post = self.pages["books.md"].split("## `POST /books`")[1]

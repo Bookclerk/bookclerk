@@ -2432,9 +2432,9 @@ fn last_owner_response() -> Response {
         (status = 200, description = "The user after the change.", body = UserChangeResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "A value is invalid. An invalid email names itself; any other invalid value gets the standard error body.", body = UserChangeInvalid),
+        (status = 400, description = "A value is invalid. An invalid email names itself; any other invalid value gets the standard error body.", body = UserChangeInvalid, example = json!({"error": "invalid_email", "message": "Enter a valid email address."})),
         (status = 404, description = "No such user."),
-        (status = 409, description = "The change would leave the library without an owner or administrator (`error` names which), or the login name or email is taken by another user (the standard error body).", body = UserChangeConflict),
+        (status = 409, description = "The change would leave the library without an owner or administrator (`error` names which), or the login name or email is taken by another user (the standard error body).", body = UserChangeConflict, example = json!({"error": "last_owner"})),
     ),
 )]
 pub async fn patch_user(

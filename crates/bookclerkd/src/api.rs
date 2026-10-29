@@ -1329,6 +1329,9 @@ async fn html_document_no_cache(req: Request, next: Next) -> Response {
     res
 }
 
+/// The `text/plain` body of the 504 [`api_timeout_middleware`] returns.
+pub(crate) const API_TIMEOUT_MESSAGE: &str = "request timed out";
+
 /// Enforces per-path API deadlines and returns 504 when a `/api/` handler overruns its budget.
 pub(crate) async fn api_timeout_middleware(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
@@ -1357,7 +1360,7 @@ pub(crate) async fn api_timeout_middleware(req: Request, next: Next) -> Response
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "request timed out in api timeout middleware"
             );
-            (StatusCode::GATEWAY_TIMEOUT, "request timed out").into_response()
+            (StatusCode::GATEWAY_TIMEOUT, API_TIMEOUT_MESSAGE).into_response()
         }
     }
 }
@@ -3784,11 +3787,11 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
     request_body = Option<ScanRequest>,
     responses(
         (status = 200, description = "The scan jobs were accepted.", body = ScanPlanResponse),
-        (status = 400, description = "The body names no valid target.", body = ActionResponse),
-        (status = 403, description = "The caller may not scan these accounts.", body = ActionResponse),
-        (status = 409, description = "A scan is already pending or running.", body = ScanPlanResponse),
-        (status = 422, description = "No account matched.", body = ScanPlanResponse),
-        (status = 429, description = "The job queue is full.", body = ScanPlanResponse),
+        (status = 400, description = "The body names no valid target.", body = ActionResponse, example = json!({"ok": false, "message": "the account named is blank", "job_id": "", "error": "invalid"})),
+        (status = 403, description = "The caller may not scan these accounts.", body = ActionResponse, example = json!({"ok": false, "message": "this user may not scan the library", "job_id": "", "error": "forbidden"})),
+        (status = 409, description = "A scan is already pending or running.", body = ScanPlanResponse, example = json!({"ok": false, "message": "scan already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"})),
+        (status = 422, description = "No account matched.", body = ScanPlanResponse, example = json!({"ok": false, "message": "scan planned: 0 accepted, 0 already pending or running, 0 not admitted (queue full)", "job_id": "", "job_ids": [], "error": "nothing_to_scan"})),
+        (status = 429, description = "The job queue is full.", body = ScanPlanResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "job_ids": [], "error": "queue_full"})),
     ),
 )]
 async fn trigger_scan(
@@ -3965,12 +3968,12 @@ fn plan_response(kind: &str, admits: Vec<AdmitJob>) -> Response {
     request_body = Option<AcquireRequestBody>,
     responses(
         (status = 200, description = "The acquire jobs were accepted.", body = ActionResponse),
-        (status = 400, description = "The body names no valid title.", body = ActionResponse),
-        (status = 403, description = "The caller may not acquire for these accounts.", body = ActionResponse),
-        (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = ActionResponse),
-        (status = 429, description = "The job queue is full.", body = ActionResponse),
-        (status = 503, description = "Job admission is paused.", body = ActionResponse),
-        (status = 500, description = "The jobs could not be queued.", body = ActionResponse),
+        (status = 400, description = "The body names no valid title.", body = ActionResponse, example = json!({"ok": false, "message": "every title id given is blank", "job_id": "", "error": "invalid"})),
+        (status = 403, description = "The caller may not acquire for these accounts.", body = ActionResponse, example = json!({"ok": false, "message": "that title is not in a store account linked to this user", "job_id": "", "error": "forbidden"})),
+        (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = ActionResponse, example = json!({"ok": false, "message": "acquire already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "error": "conflict"})),
+        (status = 429, description = "The job queue is full.", body = ActionResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "error": "queue_full"})),
+        (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
+        (status = 500, description = "The jobs could not be queued.", body = ActionResponse, example = json!({"ok": false, "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "job_id": "", "error": "internal_error"})),
     ),
 )]
 async fn trigger_acquire(
@@ -4664,10 +4667,10 @@ async fn legacy_cancel_job(
     request_body = Option<IntegrationScanRequest>,
     responses(
         (status = 200, description = "The job was accepted.", body = ActionResponse),
-        (status = 409, description = "The same job is already pending or running, or no node can run it.", body = ActionResponse),
-        (status = 429, description = "The job queue is full.", body = ActionResponse),
-        (status = 503, description = "Job admission is paused.", body = ActionResponse),
-        (status = 500, description = "The job could not be queued.", body = ActionResponse),
+        (status = 409, description = "The same job is already pending or running, or no node can run it.", body = ActionResponse, example = json!({"ok": false, "message": "integration_scan already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "error": "conflict"})),
+        (status = 429, description = "The job queue is full.", body = ActionResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "error": "queue_full"})),
+        (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
+        (status = 500, description = "The job could not be queued.", body = ActionResponse, example = json!({"ok": false, "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "job_id": "", "error": "internal_error"})),
         (status = 404, description = "No integration with this id.", body = crate::http_error::ErrorJson),
         (status = 400, description = "The integration cannot scan a library.", body = crate::http_error::ErrorJson),
     ),
@@ -4956,9 +4959,9 @@ struct CatalogSearchQuery {
     params(RecommendQuery),
     responses(
         (status = 200, description = "The Discover feed.", body = bookclerk_discover::DiscoverFeed),
-        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
-        (status = 503, description = "Discover is shutting down; try again."),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("Failed to deserialize query string: invalid digit found in string")),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
+        (status = 503, description = "Discover is shutting down; try again.", body = String, content_type = "text/plain", example = json!("discover gate closed")),
     ),
 )]
 async fn discover_recommendations(
@@ -5086,8 +5089,8 @@ async fn discover_recommendations(
     request_body = bookclerk_discover::PurchaseHintsQuery,
     responses(
         (status = 200, description = "Prices and availability.", body = bookclerk_discover::PurchaseHintsResponse),
-        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("title, asin, isbn, or candidate_product_id is required")),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
     ),
 )]
 async fn discover_purchase_hints(
@@ -5127,8 +5130,8 @@ struct PurchaseHintsBatchResponse {
     request_body = PurchaseHintsBatchBody,
     responses(
         (status = 200, description = "One result per query, in order.", body = PurchaseHintsBatchResponse),
-        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("at most 24 purchase-hint queries per batch")),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
     ),
 )]
 async fn discover_purchase_hints_batch(
@@ -5192,8 +5195,8 @@ fn validate_purchase_hints_query(
     request_body = bookclerk_discover::TitleMetaQuery,
     responses(
         (status = 200, description = "The metadata, or null when nothing matched.", body = Option<bookclerk_discover::TitleMeta>),
-        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("title, asin, or isbn is required")),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
     ),
 )]
 async fn discover_title_meta(
@@ -5215,8 +5218,8 @@ async fn discover_title_meta(
     request_body = bookclerk_discover::TitleReviewsQuery,
     responses(
         (status = 200, description = "A page of reviews.", body = bookclerk_discover::TitleReviewsPage),
-        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("asin is required")),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
     ),
 )]
 async fn discover_title_reviews(
@@ -5253,8 +5256,8 @@ struct TitleMetaBatchResponse {
     request_body = TitleMetaBatchBody,
     responses(
         (status = 200, description = "One result per query, in order.", body = TitleMetaBatchResponse),
-        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("at most 24 title-meta queries per batch")),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
     ),
 )]
 async fn discover_title_meta_batch(
@@ -5345,8 +5348,8 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
     params(CatalogSearchQuery),
     responses(
         (status = 200, description = "A page of catalog results.", body = bookclerk_discover::CatalogSearchPage),
-        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain"),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain"),
+        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("catalog query must be 256 bytes or fewer")),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
     ),
 )]
 async fn discover_catalog_search(
@@ -5482,8 +5485,8 @@ fn work_key_for_request(body: &CreateRequestBody) -> String {
     path = "/api/wishlist",
     responses(
         (status = 200, description = "The caller's open requests.", body = Vec<bookclerk_library::TitleRequestRecord>),
-        (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain"),
-        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain"),
+        (status = 401, description = "No signed-in caller."),
+        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
     ),
 )]
 async fn list_wishlist(
@@ -5508,9 +5511,9 @@ async fn list_wishlist(
     request_body = CreateRequestBody,
     responses(
         (status = 200, description = "The new request.", body = bookclerk_library::TitleRequestRecord),
-        (status = 400, description = "The title is missing or invalid.", body = String, content_type = "text/plain"),
-        (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain"),
-        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain"),
+        (status = 400, description = "The title is missing or invalid.", body = String, content_type = "text/plain", example = json!("title is required")),
+        (status = 401, description = "No signed-in caller."),
+        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
     ),
 )]
 async fn create_wishlist(
@@ -5528,11 +5531,11 @@ async fn create_wishlist(
     params(("uuid" = String, Path, description = "Request UUID.")),
     responses(
         (status = 200, description = "The cancelled request.", body = bookclerk_library::TitleRequestRecord),
-        (status = 403, description = "The request belongs to someone else.", body = String, content_type = "text/plain"),
-        (status = 404, description = "No such request.", body = String, content_type = "text/plain"),
-        (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain"),
-        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain"),
-        (status = 400, description = "Only open wishlist items can be removed."),
+        (status = 403, description = "The request belongs to someone else.", body = String, content_type = "text/plain", example = json!("not your wishlist item")),
+        (status = 404, description = "No such request.", body = String, content_type = "text/plain", example = json!("wishlist item not found: 0b7e4c1d-2a3f-4e5d-9c8b-7a6f5e4d3c2b")),
+        (status = 401, description = "No signed-in caller."),
+        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
+        (status = 400, description = "Only open wishlist items can be removed.", body = String, content_type = "text/plain", example = json!("only open wishlist items can be removed")),
     ),
 )]
 async fn delete_wishlist(
@@ -5604,8 +5607,8 @@ fn hydrate_queue_wishers(wishers: &mut [QueueWisher], files: Option<&Path>) {
     path = "/api/request-queue",
     responses(
         (status = 200, description = "Open requests, ranked.", body = Vec<bookclerk_discover::RankedQueueEntry>),
-        (status = 500, description = "The queue could not be ranked.", body = String, content_type = "text/plain"),
-        (status = 503, description = "Discover is shutting down; try again."),
+        (status = 500, description = "The queue could not be ranked.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
+        (status = 503, description = "Discover is shutting down; try again.", body = String, content_type = "text/plain", example = json!("discover gate closed")),
     ),
 )]
 async fn list_request_queue(
@@ -5850,11 +5853,11 @@ fn source_from_purchase_hint(
     path = "/api/discover/sync-listening",
     responses(
         (status = 200, description = "The job was accepted.", body = ActionResponse),
-        (status = 409, description = "The same job is already pending or running, or no node can run it.", body = ActionResponse),
-        (status = 429, description = "The job queue is full.", body = ActionResponse),
-        (status = 503, description = "Job admission is paused.", body = ActionResponse),
-        (status = 500, description = "The job could not be queued.", body = ActionResponse),
-        (status = 400, description = "No listening-capable integration is enabled.", body = String, content_type = "text/plain"),
+        (status = 409, description = "The same job is already pending or running, or no node can run it.", body = ActionResponse, example = json!({"ok": false, "message": "listen_sync already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "error": "conflict"})),
+        (status = 429, description = "The job queue is full.", body = ActionResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "error": "queue_full"})),
+        (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
+        (status = 500, description = "The job could not be queued.", body = ActionResponse, example = json!({"ok": false, "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "job_id": "", "error": "internal_error"})),
+        (status = 400, description = "No listening-capable integration is enabled.", body = String, content_type = "text/plain", example = json!("no listening-capable integrations are enabled")),
     ),
 )]
 async fn sync_listening(State(state): State<Arc<AppState>>) -> Response {
@@ -5931,8 +5934,8 @@ where
     path = "/api/preferences",
     responses(
         (status = 200, description = "The caller's preferences.", body = PreferencesResponse),
-        (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain"),
-        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain"),
+        (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
+        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain", example = json!("Internal Server Error")),
     ),
 )]
 async fn get_preferences(
@@ -5966,9 +5969,9 @@ async fn get_preferences(
     request_body = PatchPreferencesBody,
     responses(
         (status = 200, description = "The preferences after the change.", body = PreferencesResponse),
-        (status = 400, description = "A value is invalid.", body = String, content_type = "text/plain"),
-        (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain"),
-        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain"),
+        (status = 400, description = "A value is invalid.", body = String, content_type = "text/plain", example = json!("Bad Request")),
+        (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
+        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain", example = json!("Internal Server Error")),
     ),
 )]
 async fn patch_preferences(

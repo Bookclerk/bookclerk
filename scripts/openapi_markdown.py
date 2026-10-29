@@ -712,14 +712,18 @@ class Document:
         """Render an example of each of an operation's responses.
 
         Every status gets a ``Status `<code>`: <description>`` line, then an
-        example block built from its schema (``json`` for a JSON body, the
-        media type's own language for a text body) and, after a ``Schema:``
+        example block (``json`` for a JSON body, the media type's own
+        language for a text body) and, after a ``Schema:``
         line, the body's schema: a ``json`` block holding the JSON Schema
         itself for a JSON body (see :meth:`schema_text`), or for any other
         media type a sentence naming the type and the shape (see
         :meth:`body_shape`), since a JSON Schema block misdescribes a body
         that is not JSON. A status offering several media types shows the
-        JSON one (see :func:`shown_media`). A binary body has no example to
+        JSON one (see :func:`shown_media`). The example is the media type's
+        own ``example`` (or the first of its ``examples``) when the route
+        gives one, so an error status can show the message that route
+        actually returns, and otherwise is built from the schema (see
+        :meth:`example` and :func:`response_example`). A binary body has no example to
         build, so a sentence stands in for the block and its schema still
         follows. A response with no body, or one whose schema says nothing
         about its shape (yet), gets a sentence only. The
@@ -751,7 +755,9 @@ class Document:
             media = shown_media(content)
             entry = content.get(media)
             schema = entry.get("schema", {}) if isinstance(entry, Mapping) else {}
-            value = self.example(schema)
+            value = response_example(entry)
+            if value is NO_EXAMPLE:
+                value = self.example(schema)
             if value is NO_EXAMPLE and not self.is_binary(schema):
                 what = "JSON" if is_json(media) else f"{code(media)} content"
                 entries += [f"{label} The body is {what} the schemas do not describe yet.", ""]
@@ -1178,6 +1184,29 @@ def is_json(media: str) -> bool:
         ``application/problem+json``.
     """
     return fence_language(media) == "json"
+
+
+def response_example(entry: Any) -> Any:
+    """Read the example a media type object carries for a response.
+
+    Args:
+        entry: The media type object (``content.<media>``) of a response.
+
+    Returns:
+        Its ``example``, or the ``value`` of the first of its ``examples``
+        (an OpenAPI example object; a ``$ref`` example is skipped), or
+        :data:`NO_EXAMPLE` when it carries neither.
+    """
+    if not isinstance(entry, Mapping):
+        return NO_EXAMPLE
+    if "example" in entry:
+        return entry["example"]
+    examples = entry.get("examples")
+    if isinstance(examples, Mapping):
+        for example in examples.values():
+            if isinstance(example, Mapping) and "value" in example:
+                return example["value"]
+    return NO_EXAMPLE
 
 
 def shown_media(content: Mapping[str, Any]) -> str:

@@ -468,8 +468,69 @@ pub fn document() -> OpenApi {
         .insert(API_ERROR.to_string(), api_error_schema());
     add_middleware_refusals(&mut doc);
     fill_untyped_content(&mut doc);
+    add_middleware_error_examples(&mut doc);
     close_nested_output_schemas(&mut doc);
     doc
+}
+
+/// Gives every error response the middleware answers its example: the
+/// `ErrorJson` [`crate::http_error::brand_error_responses`] writes for that
+/// status (slug, message and status, as [`crate::http_error::ErrorJson::for_status`]
+/// builds them) on a JSON body typed [`API_ERROR`] or `ErrorJson`, and the
+/// 504's text on its `text/plain` body. A response whose route states its
+/// own example (`example` or `examples`) keeps it, so a handler that writes
+/// its own words shows them.
+///
+/// # Arguments
+///
+/// * `doc` - The document, after [`fill_untyped_content`] typed every error body.
+fn add_middleware_error_examples(doc: &mut OpenApi) {
+    use axum::http::StatusCode;
+    use utoipa::openapi::schema::Schema;
+    use utoipa::openapi::RefOr;
+    let branded = |schema: &Option<RefOr<Schema>>| match schema {
+        Some(RefOr::Ref(reference)) => {
+            let name = reference
+                .ref_location
+                .rsplit('/')
+                .next()
+                .unwrap_or_default();
+            name == API_ERROR || name == "ErrorJson"
+        }
+        _ => false,
+    };
+    for item in doc.paths.paths.values_mut() {
+        for op in operations_mut(item) {
+            for (status, response) in op.responses.responses.iter_mut() {
+                let RefOr::T(response) = response else {
+                    continue;
+                };
+                let Some(status) = status
+                    .parse()
+                    .ok()
+                    .and_then(|code| StatusCode::from_u16(code).ok())
+                else {
+                    continue;
+                };
+                if !(status.is_client_error() || status.is_server_error()) {
+                    continue;
+                }
+                for (media, content) in response.content.iter_mut() {
+                    let RefOr::T(content) = content else { continue };
+                    if content.example.is_some() || !content.examples.is_empty() {
+                        continue;
+                    }
+                    if media.starts_with("application/json") && branded(&content.schema) {
+                        content.example =
+                            serde_json::to_value(crate::http_error::ErrorJson::for_status(status))
+                                .ok();
+                    } else if media == "text/plain" && status == StatusCode::GATEWAY_TIMEOUT {
+                        content.example = Some(crate::api::API_TIMEOUT_MESSAGE.into());
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Schemas nested in `OutputSettingsV1` whose unknown keys the daemon
@@ -916,7 +977,7 @@ pub fn shared_v30_document() -> V30Document {
                    the schema it names.",
     responses(
         (status = 200, description = "The OpenAPI 3.0.3 document for this daemon's version.", body = OpenApiDocument),
-        (status = 500, description = "The document could not be restated; this is a bug.", body = OpenApiV30Unavailable),
+        (status = 500, description = "The document could not be restated; this is a bug.", body = OpenApiV30Unavailable, example = json!({"error": "openapi_v30_unavailable", "message": "The OpenAPI 3.0 document could not be built; see the daemon log."})),
     ),
 )]
 pub async fn get_openapi_v30(
@@ -1305,6 +1366,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An error response the middleware answers shows the body it writes
+    /// for that status, and a route's own example is kept.
+    #[test]
+    fn middleware_error_responses_carry_their_example() {
+        let doc = document_value();
+        let users = &doc["paths"]["/api/users"]["get"]["responses"];
+        assert_eq!(
+            users["401"]["content"]["application/json"]["example"],
+            serde_json::json!({
+                "error": "unauthorized",
+                "message": "Operator authentication is required. Sign in with your operator token.",
+                "status": 401
+            })
+        );
+        assert_eq!(
+            users["504"]["content"]["text/plain"]["example"],
+            serde_json::json!("request timed out")
+        );
+        let logo = &doc["paths"]["/api/plugins/{kind}/{id}/logo"]["get"]["responses"]["404"];
+        assert_eq!(
+            logo["content"]["application/json"]["example"]["error"],
+            serde_json::json!("not_found")
+        );
+        let patch = &doc["paths"]["/api/users/{id}"]["patch"]["responses"];
+        assert_eq!(
+            patch["409"]["content"]["application/json"]["example"],
+            serde_json::json!({ "error": "last_owner" })
+        );
     }
 
     /// A handler that reads a JSON body declares it, so generated clients
