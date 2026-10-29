@@ -293,7 +293,8 @@ class WorkflowContractTests(unittest.TestCase):
         uses = [str(s.get("uses", "")) for s in job["steps"]]
         self.assertFalse([u for u in uses if u.startswith(("dtolnay/", "Swatinem/"))], "the site job runs no cargo")
         upload = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
-        self.assertEqual(len(upload), 2)
+        # Lighthouse reports, coverage and the Worker bundles.
+        self.assertEqual(len(upload), 3)
         for step in upload:
             self.assertIn("!inputs.private-head", step["if"], step["with"]["name"])
         node = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/setup-node@"))
@@ -336,7 +337,7 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn("!inputs.private-head", step["if"], artifact)
             # A build-only main push runs no tests: a step that requires
             # files must skip it (a missing report failed every main push).
-            if step["with"].get("if-no-files-found") == "error":
+            if "error" in str(step["with"].get("if-no-files-found")):
                 self.assertIn("env.CI_BUILD_ONLY != 'true'", step["if"], artifact)
         patch = next(s for s in self.jobs["plan"]["steps"] if s.get("with", {}).get("name") == "ci-patch")
         self.assertIn("!inputs.private-head", patch["if"])

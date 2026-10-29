@@ -34,17 +34,23 @@ from the repository root (``--summary FILE`` defaults to
 ci-plan.json --export OUT`` instead writes each area's report, read by the
 same parser and made repository-relative, to ``OUT/<area>.lcov`` (or
 ``OUT/<area>-partial.lcov``, see :func:`export`) for the Codecov upload
-(``.github/workflows/coverage-upload.yml``).
+(``.github/workflows/coverage-upload.yml``); with ``--bundles DIR`` it also
+copies the built bundles' files that :func:`select_bundle_files` keeps to
+``OUT/bundles/<bundle>/`` for Bundle Analysis.
 """
 
 from __future__ import annotations
 
 import argparse
+import enum
 import json
+import math
 import os
 import posixpath
 import re
+import stat
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -66,6 +72,41 @@ DIGITS_RE = re.compile(r"[0-9]+")
 #: Executable lines of one file: line number to hit count.
 LineHits = dict[int, int]
 
+#: The largest JUnit report the test results parser reads, in characters;
+#: a larger one is skipped whole.
+MAX_JUNIT_CHARS = 64 * 1024 * 1024
+#: The most test cases kept from one JUnit report.
+MAX_TEST_CASES = 200_000
+#: The longest test name, class name or suite name kept, in characters.
+MAX_NAME_CHARS = 1_000
+#: The longest failure text kept per test case, in characters.
+MAX_FAILURE_CHARS = 16 * 1024
+#: The longest test duration kept, in seconds; longer ones are clamped.
+MAX_TEST_SECONDS = 1_000_000.0
+#: Characters a kept name or failure text never contains: C0 controls other
+#: than tab and newline (carriage return spelled out), DEL to U+009F, and the
+#: non-characters XML 1.0 forbids.
+UNSAFE_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\r\x0e-\x1f\x7f-\x9f\ufffe\uffff]")
+#: Markup a JUnit report never needs and the parser refuses: a document type
+#: declaration (and with it every entity declaration).
+DTD_RE = re.compile(r"<!DOCTYPE|<!ENTITY", re.IGNORECASE)
+
+#: The bundles CI keeps for Codecov Bundle Analysis, each a directory of the
+#: ``bundle-*`` artifacts: the web UI and the three Workers.
+BUNDLES = ("ui", "site", "demo", "collector")
+#: A kept bundle file's path: up to eight segments of safe characters, none
+#: starting with a dot (so no ``..``, no hidden files) or a dash.
+BUNDLE_PATH_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}(?:/[A-Za-z0-9_][A-Za-z0-9._-]{0,127}){0,7}")
+#: The asset kinds Bundle Analysis sizes; source maps and notes are left out.
+BUNDLE_EXTENSIONS = frozenset(
+    {"js", "mjs", "cjs", "css", "html", "wasm", "json", "svg", "png", "jpg", "jpeg", "webp", "avif", "ico", "woff", "woff2", "ttf"}
+)
+#: Limits on one bundle: a file (Cloudflare's own script limit is 10 MiB
+#: compressed), the files kept, and their total size, in bytes.
+MAX_BUNDLE_FILE_BYTES = 32 * 1024 * 1024
+MAX_BUNDLE_FILES = 5_000
+MAX_BUNDLE_BYTES = 128 * 1024 * 1024
+
 
 @dataclass(frozen=True)
 class Area:
@@ -85,6 +126,9 @@ class Area:
             only the affected packages on a selective run). The floor is
             checked only when the plan says that check ran the whole
             workspace; ``None`` when the area's tests always run in full.
+        test_results: The area's JUnit report, relative to the reports
+            directory, for Codecov Test Analytics; ``None`` when its tests
+            write none.
     """
 
     name: str
@@ -94,6 +138,7 @@ class Area:
     suffixes: tuple[str, ...]
     floor: float
     workspace_check: str | None = None
+    test_results: str | None = None
 
     def owns(self, path: str) -> bool:
         """Say whether a repository-relative path belongs to this area.
@@ -116,11 +161,15 @@ class Config:
             warns (``mode = "report"``).
         patch_target: The lowest patch coverage, in percent, a change may have.
         areas: The areas, in file order.
+        generated: Repository-relative paths of generated files. They are
+            left out of every area's coverage and of patch coverage, and
+            ``.github/codecov.yml`` ignores the same list.
     """
 
     enforce: bool
     patch_target: float
     areas: tuple[Area, ...]
+    generated: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -183,13 +232,15 @@ def parse_config(text: str) -> Config:
                     suffixes=tuple(str(s) for s in raw["suffixes"]),
                     floor=float(raw["floor"]),
                     workspace_check=str(raw["workspace_check"]) if "workspace_check" in raw else None,
+                    test_results=str(raw["test_results"]) if "test_results" in raw else None,
                 )
             )
+        generated = frozenset(str(p) for p in data.get("generated", []))
     except (tomllib.TOMLDecodeError, KeyError, TypeError, ValueError, AttributeError) as err:
         if isinstance(err, ConfigError):
             raise
         raise ConfigError(f"{AREAS_FILE}: {err}") from err
-    return Config(enforce=mode == "enforce", patch_target=target, areas=tuple(areas))
+    return Config(enforce=mode == "enforce", patch_target=target, areas=tuple(areas), generated=generated)
 
 
 def normalize(source: str, root: str, workspace: str) -> str | None:
@@ -346,6 +397,8 @@ def judge(config: Config, results: list[AreaResult], added: dict[str, set[int]])
     files: list[FileOutcome] = []
     unmeasured: list[str] = []
     for path in sorted(added):
+        if path in config.generated:
+            continue
         result = next((r for r in results if r.area.owns(path)), None)
         if result is None:
             continue
@@ -486,7 +539,8 @@ def read_reports(config: Config, reports: Path, full: frozenset[str]) -> list[Ar
 
     Returns:
         Each area's result, in the areas file's order; an area without a
-        report is not measured. Only the area's own files are kept.
+        report is not measured. Only the area's own files are kept, and
+        never a generated one.
     """
     workspace = Path.cwd().resolve().as_posix()
     results = []
@@ -496,10 +550,184 @@ def read_reports(config: Config, reports: Path, full: frozenset[str]) -> list[Ar
             results.append(AreaResult(area, measured=False))
             continue
         text = report.read_text(encoding="utf-8", errors="replace")
-        hits = {p: h for p, h in parse_lcov(text, area.root, workspace).items() if area.owns(p)}
+        hits = {p: h for p, h in parse_lcov(text, area.root, workspace).items() if area.owns(p) and p not in config.generated}
         partial = area.workspace_check is not None and area.workspace_check not in full
         results.append(AreaResult(area, measured=True, hits=hits, partial=partial))
     return results
+
+
+class Outcome(enum.Enum):
+    """How one test case ended."""
+
+    #: The test ran and passed (a retried test that passed in the end too).
+    PASSED = "passed"
+    #: An assertion failed (``<failure>``).
+    FAILED = "failed"
+    #: The test could not run to an assertion (``<error>``).
+    ERROR = "error"
+    #: The test was not run (``<skipped>``).
+    SKIPPED = "skipped"
+
+
+@dataclass(frozen=True)
+class TestCase:
+    """One test case read from a JUnit report.
+
+    Attributes:
+        classname: The test's suite or module, at most ``MAX_NAME_CHARS``.
+        name: The test's name, at most ``MAX_NAME_CHARS``.
+        seconds: How long it ran, rounded to milliseconds, between 0 and
+            ``MAX_TEST_SECONDS``.
+        outcome: How it ended.
+        failure: The failure's message and output, at most
+            ``MAX_FAILURE_CHARS``; empty unless it failed or errored.
+    """
+
+    __test__ = False  # Not a unittest class, despite the name.
+
+    classname: str
+    name: str
+    seconds: float
+    outcome: Outcome
+    failure: str = ""
+
+
+def clean_name(value: str | None) -> str:
+    """Keep a JUnit name as one line of safe characters.
+
+    Args:
+        value: An attribute value, or ``None`` when it was missing.
+
+    Returns:
+        The value with tabs and line breaks turned into spaces, other unsafe
+        characters removed, and cut to ``MAX_NAME_CHARS``.
+    """
+    text = re.sub(r"[\t\r\n]", " ", value or "")
+    return UNSAFE_CHARS_RE.sub("", text)[:MAX_NAME_CHARS]
+
+
+def clean_failure(value: str) -> str:
+    """Keep a failure's text as safe characters.
+
+    Args:
+        value: The failure's message and output.
+
+    Returns:
+        The text with line breaks as ``\\n``, other unsafe characters
+        removed, and cut to ``MAX_FAILURE_CHARS``.
+    """
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    return UNSAFE_CHARS_RE.sub("", text)[:MAX_FAILURE_CHARS]
+
+
+def parse_seconds(value: str | None) -> float:
+    """Read a JUnit ``time`` attribute.
+
+    Args:
+        value: The attribute, or ``None`` when it was missing.
+
+    Returns:
+        Seconds rounded to milliseconds and clamped to
+        ``0..MAX_TEST_SECONDS``; 0 for a missing or unreadable value.
+    """
+    try:
+        seconds = float(value or "0")
+    except ValueError:
+        return 0.0
+    if not math.isfinite(seconds) or seconds < 0:
+        return 0.0
+    return round(min(seconds, MAX_TEST_SECONDS), 3)
+
+
+def parse_junit(text: str) -> list[TestCase]:
+    """Read the test cases of a JUnit XML report.
+
+    The report comes from the pull request's own CI run, so it is untrusted:
+    a report with a document type declaration, one over
+    ``MAX_JUNIT_CHARS`` and one that is not well-formed XML all read as
+    empty. Every ``<testcase>`` element counts, however it is nested; a
+    ``<failure>`` or ``<error>`` child makes it failed or errored (an error
+    wins), otherwise a ``<skipped>`` child makes it skipped. Retries
+    reported as ``<flakyFailure>`` or ``<rerunFailure>`` do not change the
+    outcome.
+
+    Args:
+        text: The report.
+
+    Returns:
+        At most ``MAX_TEST_CASES`` test cases, in document order.
+    """
+    if len(text) > MAX_JUNIT_CHARS or DTD_RE.search(text):
+        return []
+    try:
+        root = ET.fromstring(text)
+    except (ET.ParseError, ValueError):
+        return []
+    cases: list[TestCase] = []
+    for element in root.iter("testcase"):
+        if len(cases) == MAX_TEST_CASES:
+            break
+        outcome = Outcome.PASSED
+        failure = ""
+        for tag, kind in (("error", Outcome.ERROR), ("failure", Outcome.FAILED)):
+            found = element.find(tag)
+            if found is not None:
+                outcome = kind
+                parts = [p for p in (found.get("message") or "", found.text or "") if p.strip()]
+                failure = clean_failure("\n".join(parts))
+                break
+        else:
+            if element.find("skipped") is not None:
+                outcome = Outcome.SKIPPED
+        cases.append(
+            TestCase(
+                classname=clean_name(element.get("classname")),
+                name=clean_name(element.get("name")),
+                seconds=parse_seconds(element.get("time")),
+                outcome=outcome,
+                failure=failure,
+            )
+        )
+    return cases
+
+
+def write_junit(suite: str, cases: list[TestCase]) -> str:
+    """Write test cases back out as a minimal JUnit report.
+
+    The Codecov upload sends these instead of the downloaded reports, so
+    only what :func:`parse_junit` accepted leaves the run: names, durations,
+    outcomes and failure text.
+
+    Args:
+        suite: The suite's name (the area).
+        cases: The test cases.
+
+    Returns:
+        One ``<testsuites>`` document holding one ``<testsuite>``.
+    """
+    counts = {o: sum(1 for c in cases if c.outcome is o) for o in Outcome}
+    root = ET.Element("testsuites")
+    element = ET.SubElement(
+        root,
+        "testsuite",
+        name=clean_name(suite),
+        tests=str(len(cases)),
+        failures=str(counts[Outcome.FAILED]),
+        errors=str(counts[Outcome.ERROR]),
+        skipped=str(counts[Outcome.SKIPPED]),
+    )
+    for case in cases:
+        test = ET.SubElement(element, "testcase", classname=case.classname, name=case.name, time=f"{case.seconds:.3f}")
+        match case.outcome:
+            case Outcome.FAILED:
+                ET.SubElement(test, "failure").text = case.failure
+            case Outcome.ERROR:
+                ET.SubElement(test, "error").text = case.failure
+            case Outcome.SKIPPED:
+                ET.SubElement(test, "skipped")
+            case Outcome.PASSED:
+                pass
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
 
 
 def write_lcov(hits: dict[str, LineHits]) -> str:
@@ -526,7 +754,8 @@ def write_lcov(hits: dict[str, LineHits]) -> str:
 def export(config: Config, reports: Path, out: Path, full: frozenset[str]) -> list[str]:
     """Write each measured area's report for the Codecov upload.
 
-    A whole area goes to ``<out>/<area>.lcov``. A partial one (a selective
+    A whole area goes to ``<out>/<area>.lcov``, and its test results, read
+    by :func:`parse_junit`, to ``<out>/<area>.junit.xml``. A partial one (a selective
     run that tested only the affected packages) goes to
     ``<out>/<area>-partial.lcov`` instead: uploaded under the area's own
     flag it would replace the area's carried-forward figure with the
@@ -540,7 +769,7 @@ def export(config: Config, reports: Path, out: Path, full: frozenset[str]) -> li
         full: The plan's checks that ran the whole workspace.
 
     Returns:
-        The names of the files written, without ``.lcov``.
+        The names of the files written, without their extension.
     """
     out.mkdir(parents=True, exist_ok=True)
     written = []
@@ -548,6 +777,88 @@ def export(config: Config, reports: Path, out: Path, full: frozenset[str]) -> li
         if result.measured and result.hits:
             name = f"{result.area.name}-partial" if result.partial else result.area.name
             (out / f"{name}.lcov").write_text(write_lcov(result.hits), encoding="utf-8")
+            written.append(name)
+    for area in config.areas:
+        if area.test_results is None:
+            continue
+        report = reports / area.test_results
+        # Checked before reading: a UTF-8 character is at most four bytes.
+        if not report.is_file() or report.stat().st_size > 4 * MAX_JUNIT_CHARS:
+            continue
+        cases = parse_junit(report.read_text(encoding="utf-8", errors="replace"))
+        if cases:
+            (out / f"{area.name}.junit.xml").write_text(write_junit(area.name, cases), encoding="utf-8")
+            written.append(f"{area.name} test results")
+    return written
+
+
+def select_bundle_files(entries: list[tuple[str, int]]) -> list[str]:
+    """Pick the files of one downloaded bundle that are sent to Codecov.
+
+    The bundle comes from the pull request's own run, so its file names and
+    sizes are untrusted. A file is kept when its path matches
+    :data:`BUNDLE_PATH_RE`, its extension is in :data:`BUNDLE_EXTENSIONS`
+    and it is at most :data:`MAX_BUNDLE_FILE_BYTES`. Kept files are taken in
+    path order until :data:`MAX_BUNDLE_FILES` or :data:`MAX_BUNDLE_BYTES`
+    would be passed.
+
+    Args:
+        entries: Each regular file as (path relative to the bundle with ``/``
+            separators, size in bytes); symbolic links are never listed.
+
+    Returns:
+        The kept paths, sorted and without duplicates.
+    """
+    kept: list[str] = []
+    total = 0
+    for path, size in sorted(set(entries)):
+        if not BUNDLE_PATH_RE.fullmatch(path) or not 0 <= size <= MAX_BUNDLE_FILE_BYTES:
+            continue
+        _, dot, extension = path.rpartition("/")[2].rpartition(".")
+        if not dot or extension.lower() not in BUNDLE_EXTENSIONS:
+            continue
+        if len(kept) == MAX_BUNDLE_FILES or total + size > MAX_BUNDLE_BYTES:
+            break
+        kept.append(path)
+        total += size
+    return kept
+
+
+def export_bundles(bundles: Path, out: Path) -> list[str]:
+    """Copy the files :func:`select_bundle_files` keeps to ``<out>/<bundle>/``.
+
+    Only the bundles named in :data:`BUNDLES` are read; a missing one is
+    skipped. Symbolic links, hard-linked files and anything that is not a
+    regular file are never followed or copied.
+
+    Args:
+        bundles: The directory the ``bundle-*`` artifacts were downloaded to.
+        out: The directory to write to; created when missing.
+
+    Returns:
+        The names of the bundles written.
+    """
+    written = []
+    for name in BUNDLES:
+        root = bundles / name
+        if root.is_symlink() or not root.is_dir():
+            continue
+        entries = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            # os.walk does not descend into linked directories by default.
+            for filename in filenames:
+                file = Path(dirpath) / filename
+                info = file.lstat()
+                # Regular files with one link only: no symbolic or hard links.
+                if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                    entries.append((file.relative_to(root).as_posix(), info.st_size))
+            dirnames.sort()
+        kept = select_bundle_files(entries)
+        for path in kept:
+            target = out / name / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((root / path).read_bytes())
+        if kept:
             written.append(name)
     return written
 
@@ -568,6 +879,9 @@ def main(argv: list[str] | None = None) -> int:
         "--export", type=Path, default=None, help="write each area's report, repository-relative, to <dir>/<area>.lcov and stop"
     )
     parser.add_argument("--plan", type=Path, default=None, help="the run's ci-plan.json (see full_workspace_checks)")
+    parser.add_argument(
+        "--bundles", type=Path, default=None, help="with --export: the downloaded bundles, copied to <export>/bundles/<bundle>/"
+    )
     parser.add_argument("--summary", type=Path, default=None, help="Markdown output (default $GITHUB_STEP_SUMMARY)")
     args = parser.parse_args(argv)
 
@@ -580,6 +894,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"::warning title=Coverage upload::No CI plan at {args.plan}; workspace-gated areas upload as partial.")
         print("Exported: " + (", ".join(export(config, args.reports, args.export, full)) or "nothing"))
+        if args.bundles is not None:
+            bundles = export_bundles(args.bundles, args.export / "bundles")
+            print("Bundles: " + (", ".join(bundles) or "none"))
         return 0
     if args.diff is None:
         parser.error("--diff is required unless --export is given")

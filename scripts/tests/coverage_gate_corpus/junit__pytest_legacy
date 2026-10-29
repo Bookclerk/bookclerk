@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="1" failures="1" skipped="1" tests="4" time="0.5" timestamp="2026-10-28T21:00:00" hostname="vm"><testcase classname="tests.test_tools" name="test_ok" time="0.001" /><testcase classname="tests.test_tools" name="test_bad" time="0.002"><failure message="AssertionError: assert 1 == 2">def test_bad():
+&gt;       assert 1 == 2
+E       assert 1 == 2
+
+tests/test_tools.py:9: AssertionError</failure></testcase><testcase classname="tests.test_tools" name="test_skip" time="0.000"><skipped type="pytest.skip" message="needs uv">tests/test_tools.py:12: needs uv</skipped></testcase><testcase classname="tests.test_tools" name="test_setup" time="0.000"><error message="failed on setup with &quot;fixture 'x' not found&quot;">fixture 'x' not found</error></testcase></testsuite></testsuites>

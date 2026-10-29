@@ -1,0 +1,2 @@
+<testsuites><testsuite name="x"><testcase classname="a	b
+c" name="&#x7f;del &#x85;next &#x9b;csi" time="nan"/><testcase classname="a" name="neg" time="-3"/><testcase classname="a" name="huge" time="1e300"/><testcase name="no class" time="x"/><testcase classname="a" name="crlf" time="0.1"><failure message="m&#13;&#10;line">body&#13;text</failure></testcase><testcase classname="a" name="inf" time="inf"><skipped/><failure>   </failure></testcase></testsuite></testsuites>

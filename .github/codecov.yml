@@ -24,10 +24,29 @@ coverage:
         target: 80%
         informational: true
 
+# Generated files, the same list as `generated` in
+# scripts/coverage_areas.toml (a test keeps them equal).
+ignore:
+  - crates/bookclerk-plugin-abi/src/generated.rs
+  - crates/bookclerk-workerd/src/pin.rs
+  - packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_abi.py
+  - packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_wire.py
+  - packages/plugin-sdk-python/src/bookclerk_plugin_sdk/abi.py
+
 comment:
-  layout: "condensed_header, diff, flags, files"
+  layout: "condensed_header, diff, flags, components, files"
   # Comment only when coverage changes, not on every docs-only change.
   require_changes: true
+  # The same for bundle sizes: only a change of at least 1 KiB.
+  require_bundle_changes: true
+  bundle_change_threshold: "1Kb"
+
+# Bundle sizes of the web UI and the three Workers
+# (docs/contributing/ci.md#bundle-sizes). Informational during the trial,
+# like the coverage statuses: a change past the threshold warns.
+bundle_analysis:
+  warning_threshold: "5%"
+  status: "informational"
 
 # One flag per area of scripts/coverage_areas.toml. A selective run measures
 # only the areas whose tests it ran; carryforward keeps the others at their
@@ -55,3 +74,39 @@ flag_management:
       paths: [tools/diagnostics-collector/]
     - name: python-sdk
       paths: [packages/plugin-sdk-python/src/]
+
+# Components: coverage of parts of the code that cut across flags, each with
+# its own figure on the dashboard and in the comment. They are views only;
+# statuses stay as configured above.
+component_management:
+  individual_components:
+    # The security surface named in AGENTS.md.
+    - component_id: security-surface
+      name: security surface
+      paths:
+        - crates/bookclerk-jail/
+        - crates/bookclerk-sandbox/
+        - crates/bookclerk-workerd/
+        - crates/bookclerk-plugin-host/
+        - crates/bookclerk-plugin-abi/
+        - crates/bookclerk-db-exec/
+        - crates/bookclerk-media-worker/
+        - crates/bookclerk-mp4/
+    - component_id: daemon
+      name: daemon
+      paths: [crates/bookclerkd/]
+    - component_id: cli
+      name: CLI
+      paths: [crates/bookclerk-cli/]
+    - component_id: plugins
+      name: plugins
+      paths: [crates/bookclerk-plugins/]
+    - component_id: plugin-sdks
+      name: plugin SDKs
+      paths:
+        - crates/bookclerk-plugin-sdk/
+        - crates/bookclerk-plugin-manifest/
+        - packages/plugin-sdk-python/src/
+    - component_id: workers
+      name: Workers
+      paths: [tools/]

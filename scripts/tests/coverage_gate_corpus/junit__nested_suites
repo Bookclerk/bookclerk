@@ -1,0 +1,1 @@
+<testsuites><testsuite name="outer"><testsuite name="inner"><testcase classname="inner" name="deep" time="0.5"><skipped/></testcase></testsuite><testcase classname="outer" name="both" time="0.25"><failure message="f">ff</failure><error message="e">ee</error></testcase></testsuite></testsuites>

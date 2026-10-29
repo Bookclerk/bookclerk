@@ -681,6 +681,13 @@ Floors ratchet. Raise an area's floor when its coverage rises, keeping it a
 little below the measured value so noise does not fail a run. Never lower a
 floor to make a change pass.
 
+Generated files are left out of both figures. They are listed under
+`generated` in the areas file, because tests exercise the generator rather
+than each line it writes. A file that an area owns and that starts with a
+generated-file header (`GENERATED FILE - do not edit`) must be on that
+list, or a test fails. Add a new generated file there when its generator
+lands.
+
 > [!NOTE]
 > An unpublished OSV remediation run uploads no coverage and CI Gate skips
 > the report. The diff and reports would show the bumped versions.
@@ -723,9 +730,13 @@ area keeps that area's last figure. A selective run that tests only some
 Rust packages uploads under `rust-partial` instead of `rust`. That flag is
 never carried forward, so the whole-workspace `rust` figure stays as it
 was while the change's own lines are still measured. The patch target
-matches CI Gate's.
-A test checks that the flags, their paths and the target agree with
-`scripts/coverage_areas.toml`.
+matches CI Gate's, and Codecov ignores the same generated files. A test
+checks that the flags, their paths, the target and the ignored files agree
+with `scripts/coverage_areas.toml`.
+
+Components give parts of the code that cut across flags their own figure
+on the dashboard and in the comment: the security surface, the daemon, the
+CLI, the plugins, the plugin SDKs and the Workers.
 
 Merge groups upload too. Their commit is the one that lands on `main`, so it
 gives later pull requests their base.
@@ -740,6 +751,50 @@ To make `codecov/patch` required later:
 1. Remove its `informational: true` line in `.github/codecov.yml`.
 2. Add `codecov/patch` to the default branch's ruleset, with the Codecov
    App as its source.
+
+### Test results
+
+The test jobs that measure coverage also write a JUnit report beside each
+LCOV report. The upload workflow sends them to Codecov Test Analytics, under
+the same flags. Codecov then lists a pull request's failed tests in its
+comment and, from merge group runs, finds tests that are flaky on `main`.
+
+- Rust: the main nextest run uses the `ci` profile in
+  [`.config/nextest.toml`](../../.config/nextest.toml), which writes
+  `target/nextest/ci/junit.xml`. A workflow step copies it into the
+  coverage directory, even when tests fail. Feature-test runs and
+  custom-harness tests write no report.
+- The Workers: Vitest's `junit` reporter, next to the coverage run.
+- The Python SDK: pytest's `--junitxml`.
+
+The test jobs upload their artifacts even when tests fail, so failures reach
+Codecov. Like the coverage reports, the JUnit reports come from the pull
+request's own run. `coverage_gate.py --export` reads each one with a fuzzed
+parser and writes back only test names, durations, outcomes and failure
+text.
+
+### Bundle sizes
+
+Codecov Bundle Analysis tracks the size of the web UI and of each
+Cloudflare Worker script, and comments when a pull request changes one by
+at least 1 KiB. That gives early notice before a Worker nears Cloudflare's
+script size limit.
+
+1. The `ui` check keeps `ui/dist` after its build. The Worker checks
+   (`site_audit`, `collector_test`, `demo_test`) bundle each Worker with
+   `wrangler deploy --dry-run --outdir`, the same bundling a deploy does,
+   without deploying or needing an account. Each lands in
+   `$CI_BUNDLE_DIR/<bundle>/`, uploaded as a `bundle-*` artifact.
+2. The upload workflow downloads them. `coverage_gate.py --export --bundles`
+   copies only regular files with safe names, known asset types and bounded
+   sizes (`select_bundle_files`, a fuzzed boundary). Source maps are left
+   out.
+3. The pinned `@codecov/bundle-analyzer` in `tools/codecov`, installed
+   without install scripts, sends each bundle's file names and sizes to
+   Codecov, signed in with OIDC like the coverage uploads.
+
+The bundle status is informational, like the coverage statuses; its
+settings are under `bundle_analysis` in `.github/codecov.yml`.
 
 ## Branch protection and the merge queue
 

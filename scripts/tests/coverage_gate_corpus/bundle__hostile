@@ -1,0 +1,18 @@
+10	../escape.js
+10	/abs.js
+10	.hidden.js
+10	assets/.git/x.js
+10	a//b.js
+10	-flag.js
+10	a\\b.js
+10	noextension
+10	a b.js
+10	ok.JS
+-1	neg.js
+33554433	too-big.js
+33554432	at-limit.js
+10	a/b/c/d/e/f/g/h.js
+10	a/b/c/d/e/f/g/h/i.js
+x	not-a-size.js
+10	dup.js
+10	dup.js

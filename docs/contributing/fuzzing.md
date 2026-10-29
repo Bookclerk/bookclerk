@@ -211,6 +211,26 @@ The tests live in `scripts/tests/`, and each corpus beside them.
   - The Codecov upload sends only what this parser accepted:
     `--export` writes each parsed report back out, and a test checks that
     the written report reads back the same.
+- **JUnit test results reader** (`parse_junit` in `scripts/coverage_gate.py`).
+  The Codecov upload reads the JUnit reports the pull request's own run
+  uploaded, so a pull request chooses their bytes.
+  - Test and corpus: the same test file and corpus (`junit__<case>`).
+  - Oracle: the boundary's contract, since the standard library has no
+    second XML parser. A report with a document type declaration reads as
+    empty. Every kept name is one line of safe characters within its
+    limit. Durations are finite and in range. Failure text appears only on
+    a failed or errored case. The report the export writes reads back to
+    the same test cases.
+- **Bundle file selection** (`select_bundle_files` and `export_bundles` in
+  `scripts/coverage_gate.py`). The Codecov upload reads the built bundles
+  the pull request's own run uploaded, so a pull request chooses their file
+  names and sizes.
+  - Test and corpus: the same test file and corpus (`bundle__<case>`, one
+    `<size>` tab `<path>` line per file).
+  - Oracle: a second selection that splits each path into segments instead
+    of matching one pattern. Kept paths never start with `/`, climb with
+    `..` or hold a backslash, and the kept files stay within the count and
+    size limits. Symbolic and hard links are never followed or copied.
 
 ### Diagnostics collector Worker
 

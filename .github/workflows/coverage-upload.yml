@@ -13,14 +13,21 @@
 #   input. The job checks out the default branch only and runs no pull
 #   request code. `scripts/coverage_gate.py --export` reads each report with
 #   the fuzzed parser CI Gate uses and writes back only repository-relative
-#   paths, line numbers and hit counts; only those files are uploaded. The
+#   paths, line numbers and hit counts. JUnit reports go through a fuzzed
+#   parser too, which keeps test names, durations, outcomes and failure
+#   text. Only those rewritten files are uploaded. The
 #   commit, branch and pull request come from the event GitHub records for
 #   the run, never from an artifact.
-# - Uploads are one per area, each with the area's Codecov flag. Selective
+# - Uploads are one per area, each with the area's Codecov flag, and the
+#   area's test results go to Codecov Test Analytics the same way. Selective
 #   runs measure only some areas; `codecov.yml` carries the others forward.
 #   A selective Rust run tests only the affected packages, so its report
 #   goes up under `rust-partial`, which is never carried forward, and the
 #   whole-workspace `rust` figure stays as it was.
+#
+# - The built web UI and Worker bundles go to Codecov Bundle Analysis
+#   through the pinned `@codecov/bundle-analyzer` in tools/codecov, which
+#   reads only the files the export kept and sends their names and sizes.
 #
 # Setup: install the Codecov GitHub App on the repository
 # (docs/contributing/ci.md#codecov).
@@ -77,10 +84,23 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
 
+      # The built UI and Worker bundles, for Bundle Analysis. The export
+      # copies only files with safe names, known asset types and bounded
+      # sizes (see select_bundle_files in scripts/coverage_gate.py).
+      - name: Download the bundles
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/bundles
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
       - name: Export the reports
         run: >-
           python3 scripts/coverage_gate.py --reports "$RUNNER_TEMP/coverage"
-          --plan "$RUNNER_TEMP/plan/ci-plan.json" --export coverage-upload
+          --plan "$RUNNER_TEMP/plan/ci-plan.json" --bundles "$RUNNER_TEMP/bundles"
+          --export coverage-upload
 
       # Fork branches go to Codecov as `<owner>:<branch>`, so they never
       # land on a branch of this repository with the same name. A branch
@@ -255,3 +275,129 @@ jobs:
           override_pr: ${{ steps.target.outputs.pr }}
           override_build: ${{ github.event.workflow_run.id }}
           override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      # Test results for Codecov Test Analytics: failed tests in the pull
+      # request comment and, from merge groups, flaky tests on main.
+      - name: Upload rust test results
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/rust.junit.xml') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          report_type: test_results
+          files: coverage-upload/rust.junit.xml
+          flags: rust
+          disable_search: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      - name: Upload site test results
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/site.junit.xml') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          report_type: test_results
+          files: coverage-upload/site.junit.xml
+          flags: site
+          disable_search: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      - name: Upload demo test results
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/demo.junit.xml') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          report_type: test_results
+          files: coverage-upload/demo.junit.xml
+          flags: demo
+          disable_search: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      - name: Upload collector test results
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/collector.junit.xml') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          report_type: test_results
+          files: coverage-upload/collector.junit.xml
+          flags: collector
+          disable_search: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      - name: Upload python-sdk test results
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/python-sdk.junit.xml') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          report_type: test_results
+          files: coverage-upload/python-sdk.junit.xml
+          flags: python-sdk
+          disable_search: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      # Bundle Analysis (docs/contributing/ci.md#bundle-sizes). The analyzer
+      # is this checkout's pinned tooling, installed without install scripts.
+      - name: Set up Node.js
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/bundles/**') != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+
+      - name: Upload the bundle sizes
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/bundles/**') != ''
+        # Like the coverage uploads, a Codecov failure never fails the run.
+        continue-on-error: true
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          BRANCH: ${{ steps.target.outputs.branch }}
+          PR: ${{ steps.target.outputs.pr }}
+          BUILD: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund --prefix tools/codecov
+          # The analyzer reads its overrides from a file, written from the
+          # validated values above; it signs in with this job's OIDC token.
+          python3 - "$RUNNER_TEMP/codecov-bundles.json" <<'PY'
+          import json, os, sys
+          overrides = {"sha": os.environ["SHA"], "branch": os.environ["BRANCH"], "build": os.environ["BUILD"], "slug": os.environ["GITHUB_REPOSITORY"]}
+          if os.environ["PR"]:
+              overrides["pr"] = os.environ["PR"]
+          config = {"gitService": "github", "oidc": {"useGitHubOIDC": True}, "telemetry": False, "uploadOverrides": overrides}
+          with open(sys.argv[1], "w", encoding="utf-8") as fh:
+              json.dump(config, fh)
+          PY
+          for bundle in ui site demo collector; do
+            if [ -d "coverage-upload/bundles/$bundle" ]; then
+              tools/codecov/node_modules/.bin/bundle-analyzer "coverage-upload/bundles/$bundle" \
+                --bundle-name="$bundle" --config-file "$RUNNER_TEMP/codecov-bundles.json" \
+                || echo "::warning title=Bundle upload::The $bundle bundle did not upload."
+            fi
+          done
