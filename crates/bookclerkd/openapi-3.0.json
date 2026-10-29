@@ -804,7 +804,9 @@
             "description": "The library's users.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UserListResponse"
+                }
               }
             }
           },
@@ -873,7 +875,9 @@
             "description": "The new user, with an invite link when one was asked for.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UserCreatedResponse"
+                }
               }
             }
           },
@@ -967,7 +971,9 @@
             "description": "The user and their personal data were deleted.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UserDeletedResponse"
+                }
               }
             }
           },
@@ -1068,16 +1074,18 @@
             "description": "The user after the change.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UserChangeResponse"
+                }
               }
             }
           },
           "400": {
-            "description": "A value is invalid.",
+            "description": "A value is invalid. An invalid email names itself; any other invalid value gets the standard error body.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/UserChangeInvalid"
                 }
               }
             }
@@ -1113,11 +1121,11 @@
             }
           },
           "409": {
-            "description": "The login name or email is taken by another user.",
+            "description": "The change would leave the library without an owner or administrator (`error` names which), or the login name or email is taken by another user (the standard error body).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/UserChangeConflict"
                 }
               }
             }
@@ -1171,7 +1179,9 @@
             "description": "A fresh claim ticket.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UserClaimTicketResponse"
+                }
               }
             }
           },
@@ -1254,7 +1264,9 @@
             "description": "The password was cleared; a claim ticket for the reset.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UserPasswordResetResponse"
+                }
               }
             }
           },
@@ -21314,6 +21326,477 @@
           }
         },
         "additionalProperties": false
+      },
+      "UserChangeConflict": {
+        "type": "object",
+        "description": "Body of a `409 Conflict` from a user change that would leave the\nlibrary without an owner or administrator.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Why the change was refused: `last_owner` or `last_administrator`.",
+            "example": "last_owner"
+          }
+        }
+      },
+      "UserChangeInvalid": {
+        "type": "object",
+        "description": "Body of a `400 Bad Request` from a user change with an invalid email.",
+        "required": [
+          "error",
+          "message"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Machine slug for the rejected value.",
+            "example": "invalid_email"
+          },
+          "message": {
+            "type": "string",
+            "description": "A sentence to show the person who made the request.",
+            "example": "Enter a valid email address."
+          }
+        }
+      },
+      "UserChangeResponse": {
+        "type": "object",
+        "description": "Body of a user change that succeeded: the user as stored afterwards.",
+        "required": [
+          "ok",
+          "user"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always true; the status code says the change was applied.",
+            "example": true
+          },
+          "user": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UserSummary"
+              }
+            ],
+            "description": "The user after the change."
+          }
+        }
+      },
+      "UserClaimTicketResponse": {
+        "type": "object",
+        "description": "Body of `POST /api/users/{id}/claim-ticket`.",
+        "required": [
+          "ok",
+          "claim_ticket",
+          "invite_url"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always true; the status code says the ticket was minted.",
+            "example": true
+          },
+          "claim_ticket": {
+            "type": "string",
+            "description": "Opaque single-use claim ticket for the user.",
+            "example": "7Qf3kZp0wL2mN9xT1cRb8vHd"
+          },
+          "invite_url": {
+            "type": "string",
+            "description": "Invite link that redeems the claim ticket.",
+            "example": "https://books.example.com/invite?ticket=7Qf3kZp0wL2mN9xT1cRb8vHd"
+          }
+        }
+      },
+      "UserCreatedResponse": {
+        "type": "object",
+        "description": "Body of `POST /api/users`: the new user and, when one was asked for,\nthe invite that lets them claim it.",
+        "required": [
+          "ok",
+          "user"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always true; the status code says the user was created.",
+            "example": true
+          },
+          "user": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UserSummary"
+              }
+            ],
+            "description": "The user as created."
+          },
+          "claim_ticket": {
+            "type": "string",
+            "description": "Opaque single-use claim ticket, when `mint_invite` was true.",
+            "example": "7Qf3kZp0wL2mN9xT1cRb8vHd",
+            "nullable": true
+          },
+          "invite_url": {
+            "type": "string",
+            "description": "Invite link that redeems the claim ticket, when one was minted.",
+            "example": "https://books.example.com/invite?ticket=7Qf3kZp0wL2mN9xT1cRb8vHd",
+            "nullable": true
+          }
+        }
+      },
+      "UserDeletedResponse": {
+        "type": "object",
+        "description": "Body of `DELETE /api/users/{id}`.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always true; the status code says the user was deleted.",
+            "example": true
+          }
+        }
+      },
+      "UserIdentitySummary": {
+        "type": "object",
+        "description": "An external sign-in identity linked to a user.",
+        "required": [
+          "provider",
+          "external_user_id"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "Identity-broker id (`oidc:google`, `oidc:github`, …).",
+            "example": "oidc:github"
+          },
+          "external_user_id": {
+            "type": "string",
+            "description": "The user's id at the provider.",
+            "example": "8675309"
+          },
+          "label": {
+            "type": "string",
+            "description": "Operator-facing label for the identity, when one was set.",
+            "example": "sam-reader",
+            "nullable": true
+          }
+        }
+      },
+      "UserIntegrationHint": {
+        "type": "object",
+        "description": "Storefront / integration connection summary for admin user lists.",
+        "required": [
+          "source",
+          "account_id"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Content-source or integration plugin id (`audible`, `libro`, …).",
+            "example": "audible"
+          },
+          "account_id": {
+            "type": "string",
+            "description": "Store or operator account id this row belongs to.",
+            "example": "sam@example.com"
+          },
+          "label": {
+            "type": "string",
+            "description": "Optional operator-facing account label.",
+            "example": "Sam's Audible",
+            "nullable": true
+          }
+        }
+      },
+      "UserListEntry": {
+        "allOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UserSummary"
+              }
+            ],
+            "description": "The user's profile, role and status."
+          },
+          {
+            "type": "object",
+            "required": [
+              "online",
+              "has_avatar",
+              "avatar_source",
+              "sso_pictures",
+              "integrations",
+              "identities"
+            ],
+            "properties": {
+              "online": {
+                "type": "boolean",
+                "description": "Whether the user has a portal session that has not expired.",
+                "example": true
+              },
+              "last_active_at": {
+                "type": "string",
+                "description": "RFC 3339 time of the most recent activity on an unexpired portal\nsession, when the user is online.",
+                "example": "2026-10-28T09:15:10+00:00",
+                "nullable": true
+              },
+              "last_seen_at": {
+                "type": "string",
+                "description": "RFC 3339 time of the last authenticated portal activity; kept\nafter the session ends.",
+                "example": "2026-10-28T09:15:10+00:00",
+                "nullable": true
+              },
+              "has_avatar": {
+                "type": "boolean",
+                "description": "Whether an uploaded avatar is stored for the user.",
+                "example": false
+              },
+              "avatar_source": {
+                "type": "string",
+                "description": "Which avatar the user shows: `auto`, `upload`, `gravatar`, or an\nidentity's picture.",
+                "example": "auto"
+              },
+              "gravatar_hash": {
+                "type": "string",
+                "description": "SHA-256 digest of the user's email for Gravatar, when they have one.",
+                "example": "c5e3d8f1a9b24e7b6f0c2a1d4e8b9f3a7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f",
+                "nullable": true
+              },
+              "sso_pictures": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/UserSsoPictureSummary"
+                },
+                "description": "Pictures the user's identity providers supplied."
+              },
+              "listening": {
+                "description": "The most recent unfinished listen within the last 30 minutes, if any.",
+                "type": "object",
+                "required": [
+                  "provider",
+                  "last_listened_at"
+                ],
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "description": "Display title when the provider reported one.",
+                    "example": "The Left Hand of Darkness",
+                    "nullable": true
+                  },
+                  "provider": {
+                    "type": "string",
+                    "description": "Integration / storefront provider id.",
+                    "example": "audiobookshelf"
+                  },
+                  "last_listened_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "RFC 3339 time of the last playback update.",
+                    "example": "2026-10-28T09:12:44Z"
+                  }
+                },
+                "nullable": true
+              },
+              "integrations": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/UserIntegrationHint"
+                },
+                "description": "Storefront and integration accounts linked to the user."
+              },
+              "identities": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/UserIdentitySummary"
+                },
+                "description": "External sign-in identities linked to the user."
+              }
+            }
+          }
+        ],
+        "description": "One user in the list `GET /api/users` returns: the summary plus\npresence, avatar and connection details for administration."
+      },
+      "UserListResponse": {
+        "type": "object",
+        "description": "Body of `GET /api/users`.",
+        "required": [
+          "users"
+        ],
+        "properties": {
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserListEntry"
+            },
+            "description": "Every first-party user."
+          }
+        }
+      },
+      "UserListeningHint": {
+        "type": "object",
+        "description": "Recent unfinished listening hint for admin user lists.",
+        "required": [
+          "provider",
+          "last_listened_at"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Display title when the provider reported one.",
+            "example": "The Left Hand of Darkness",
+            "nullable": true
+          },
+          "provider": {
+            "type": "string",
+            "description": "Integration / storefront provider id.",
+            "example": "audiobookshelf"
+          },
+          "last_listened_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC 3339 time of the last playback update.",
+            "example": "2026-10-28T09:12:44Z"
+          }
+        }
+      },
+      "UserPasswordResetResponse": {
+        "type": "object",
+        "description": "Body of `POST /api/users/{id}/reset-password`.",
+        "required": [
+          "ok",
+          "claim_ticket",
+          "revoked_sessions"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always true; the status code says the password was cleared.",
+            "example": true
+          },
+          "claim_ticket": {
+            "type": "string",
+            "description": "Opaque single-use claim ticket that lets the user set a new password.",
+            "example": "7Qf3kZp0wL2mN9xT1cRb8vHd"
+          },
+          "revoked_sessions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many of the user's portal sessions were signed out.",
+            "example": 2,
+            "minimum": 0
+          }
+        }
+      },
+      "UserRole": {
+        "type": "string",
+        "description": "First-party user role (`owner` | `administrator` | `host` | `member`).",
+        "enum": [
+          "owner",
+          "administrator",
+          "host",
+          "member"
+        ]
+      },
+      "UserSsoPictureSummary": {
+        "type": "object",
+        "description": "A profile picture an identity provider supplied for a user.",
+        "required": [
+          "identity_id",
+          "provider",
+          "picture_url"
+        ],
+        "properties": {
+          "identity_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The linked identity the picture came from.",
+            "example": 12
+          },
+          "provider": {
+            "type": "string",
+            "description": "Identity-broker id (`oidc:google`, `oidc:github`, …).",
+            "example": "oidc:github"
+          },
+          "picture_url": {
+            "type": "string",
+            "description": "HTTPS URL of the picture at the provider or its CDN.",
+            "example": "https://avatars.githubusercontent.com/u/8675309"
+          },
+          "last_used_at": {
+            "type": "string",
+            "description": "RFC 3339 time the identity last signed in, when it has.",
+            "example": "2026-10-27T18:40:02+00:00",
+            "nullable": true
+          }
+        }
+      },
+      "UserStatus": {
+        "type": "string",
+        "description": "First-party user status.",
+        "enum": [
+          "active",
+          "disabled"
+        ]
+      },
+      "UserSummary": {
+        "type": "object",
+        "description": "A first-party user as the Users routes return one: profile, role and\nstatus, never the password hash.",
+        "required": [
+          "id",
+          "role",
+          "status",
+          "has_password"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Surrogate primary key assigned by the database.",
+            "example": 7
+          },
+          "role": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UserRole"
+              }
+            ],
+            "description": "First-party role."
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UserStatus"
+              }
+            ],
+            "description": "Whether the account may sign in."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Human-readable name shown in the UI, when set.",
+            "example": "Sam Reader",
+            "nullable": true
+          },
+          "login_name": {
+            "type": "string",
+            "description": "Local username for password login, when set.",
+            "example": "sam",
+            "nullable": true
+          },
+          "email": {
+            "type": "string",
+            "description": "Contact email, when set.",
+            "example": "sam@example.com",
+            "nullable": true
+          },
+          "has_password": {
+            "type": "boolean",
+            "description": "Whether a local password is stored for the user.",
+            "example": true
+          }
+        }
       },
       "WishlistPurchaseHint": {
         "type": "object",
