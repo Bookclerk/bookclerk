@@ -241,7 +241,7 @@ pub async fn get_events_domain(
     path = "/api/config/domains/core.events",
     request_body = PutEventsDomainRequest,
     responses(
-        (status = 200, description = "The settings after the change.", body = EventsDomainChange),
+        (status = 200, description = "The settings after the change, or a `replayed: true` note with the committed revision when another write landed between this one and its read-back.", body = EventsDomainChange),
         (status = 400, description = "The body is invalid."),
         (status = 409, description = "`expected_revision` is stale; `current_revision` is the revision to retry against.", body = RevisionConflict),
         (status = 500, description = "The configuration could not be read or written."),
@@ -435,8 +435,10 @@ impl EventsDomainResponse {
     }
 }
 
-/// Body of a `PUT` to a configuration domain that changed nothing because
-/// the same change (by its request id) had already been written.
+/// Body of a `PUT` to a configuration domain whose write committed but
+/// could not be read back as the current document: another write landed
+/// between the commit and the read-back, so only the committed revision is
+/// reported (the library also returns it when a request id is replayed).
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct DomainReplayed {
     /// Domain namespace (`core.events` or `core.output`).
@@ -468,7 +470,7 @@ impl DomainReplayed {
 pub enum EventsDomainChange {
     /// The change was written; these are the settings now.
     Applied(EventsDomainResponse),
-    /// The same change had already been written.
+    /// The write committed; another write landed before the read-back.
     Replayed(DomainReplayed),
 }
 
@@ -629,7 +631,7 @@ pub async fn get_output_domain(
     path = "/api/config/domains/core.output",
     request_body = PutOutputDomainRequest,
     responses(
-        (status = 200, description = "The settings after the change.", body = OutputDomainChange),
+        (status = 200, description = "The settings after the change, or a `replayed: true` note with the committed revision when another write landed between this one and its read-back.", body = OutputDomainChange),
         (status = 400, description = "The body is invalid."),
         (status = 409, description = "`expected_revision` is stale; `current_revision` is the revision to retry against.", body = RevisionConflict),
         (status = 500, description = "The configuration could not be read or written."),
@@ -766,7 +768,7 @@ pub enum OutputDomainChange {
     /// The change was written; these are the settings now (boxed: the
     /// output document is far larger than a replay note).
     Applied(Box<OutputDomainResponse>),
-    /// The same change had already been written.
+    /// The write committed; another write landed before the read-back.
     Replayed(DomainReplayed),
 }
 
@@ -2320,6 +2322,12 @@ mod tests {
         .await
         .expect_err("stale revision must be refused");
         assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let body = conflict.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "error": "revision_conflict", "current_revision": 2 })
+        );
         let replayed = serde_json::to_value(OutputDomainChange::Replayed(DomainReplayed::new(
             bookclerk_library::control_plane::OUTPUT_NAMESPACE,
             2,

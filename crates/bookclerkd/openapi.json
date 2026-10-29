@@ -3283,7 +3283,7 @@
         },
         "responses": {
           "200": {
-            "description": "The settings after the change.",
+            "description": "The settings after the change, or a `replayed: true` note with the committed revision when another write landed between this one and its read-back.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3451,7 +3451,7 @@
         },
         "responses": {
           "200": {
-            "description": "The settings after the change.",
+            "description": "The settings after the change, or a `replayed: true` note with the committed revision when another write landed between this one and its read-back.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16456,7 +16456,7 @@
       },
       "DomainReplayed": {
         "type": "object",
-        "description": "Body of a `PUT` to a configuration domain that changed nothing because\nthe same change (by its request id) had already been written.",
+        "description": "Body of a `PUT` to a configuration domain whose write committed but\ncould not be read back as the current document: another write landed\nbetween the commit and the read-back, so only the committed revision is\nreported (the library also returns it when a request id is replayed).",
         "required": [
           "namespace",
           "replayed",
@@ -16803,7 +16803,7 @@
           },
           {
             "$ref": "#/components/schemas/DomainReplayed",
-            "description": "The same change had already been written."
+            "description": "The write committed; another write landed before the read-back."
           }
         ],
         "description": "Body of `PUT /api/config/domains/core.events`: the settings after the\nchange, or a replay note."
@@ -17732,7 +17732,7 @@
           },
           {
             "$ref": "#/components/schemas/DomainReplayed",
-            "description": "The same change had already been written."
+            "description": "The write committed; another write landed before the read-back."
           }
         ],
         "description": "Body of `PUT /api/config/domains/core.output`: the settings after the\nchange, or a replay note."
