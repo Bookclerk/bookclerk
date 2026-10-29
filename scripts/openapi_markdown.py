@@ -714,12 +714,15 @@ class Document:
         Every status gets a ``Status `<code>`: <description>`` line, then an
         example block built from its schema (``json`` for a JSON body, the
         media type's own language for a text body) and, after a ``Schema:``
-        line, a ``json`` block holding the body's JSON Schema itself (see
-        :meth:`schema_text`). A status offering several media types shows
-        the JSON one (see :func:`shown_media`). A binary body has no
-        example to build, so a sentence stands in for the block and its
-        schema still follows. A response with no body, or one whose schema
-        says nothing about its shape (yet), gets a sentence only. The
+        line, the body's schema: a ``json`` block holding the JSON Schema
+        itself for a JSON body (see :meth:`schema_text`), or for any other
+        media type a sentence naming the type and the shape (see
+        :meth:`body_shape`), since a JSON Schema block misdescribes a body
+        that is not JSON. A status offering several media types shows the
+        JSON one (see :func:`shown_media`). A binary body has no example to
+        build, so a sentence stands in for the block and its schema still
+        follows. A response with no body, or one whose schema says nothing
+        about its shape (yet), gets a sentence only. The
         fences are longer than any backtick run inside them, so a Markdown
         example cannot close one early. The site shows the statuses as
         tabs and the two blocks as an Example/Schema switch.
@@ -761,10 +764,36 @@ class Document:
             else:
                 text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
                 entries += [label, "", *fenced(fence_language(media), text), ""]
-            entries += ["Schema:", "", *fenced("json", self.schema_text(schema)), ""]
+            shape = None if is_json(media) else self.body_shape(schema)
+            if shape is None:
+                entries += ["Schema:", "", *fenced("json", self.schema_text(schema)), ""]
+            else:
+                entries += ["Schema:", "", f"A {code(media)} body: {shape}.", ""]
         if described == 0:
             return []
         return ["### Example response", "", *entries]
+
+    def body_shape(self, schema: Any) -> str | None:
+        """Describe a non-JSON body's shape in a few words.
+
+        Args:
+            schema: The body's schema object, possibly a reference.
+
+        Returns:
+            ``binary bytes`` for a ``binary``-format string, ``a string``
+            (naming any other ``format``) for a string schema, or ``None``
+            for a schema that is not a string, which the JSON Schema block
+            then shows.
+        """
+        target, _name = self.resolve(schema)
+        if not isinstance(target, Mapping) or target.get("type") != "string":
+            return None
+        fmt = target.get("format")
+        if fmt == "binary":
+            return "binary bytes"
+        if fmt == "byte":
+            return "base64 text"
+        return f"a string in {code(str(fmt))} form" if fmt else "a string"
 
     def is_binary(self, schema: Any) -> bool:
         """Whether a schema describes a binary body (a ``binary`` or ``byte`` string).

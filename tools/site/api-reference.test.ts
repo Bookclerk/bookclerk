@@ -536,6 +536,21 @@ Status \`404\`: Again.
   );
   assert.equal(out.html.split('<div class="api-response-schema">').length, 2);
   assert.ok(out.html.includes(`id="${id}-response-404" data-status="404"`));
+  // A non-JSON body's schema view is the generator's sentence, not a block.
+  const text = renderDoc(
+    page.replace(
+      'Schema:\n\n```json\n{ "type": "object" }\n```',
+      "Schema:\n\nA `text/plain` body: a string.",
+    ),
+    "api/web/books",
+    { blobBase: BLOB },
+  );
+  assert.ok(
+    text.html.includes(
+      '<div class="api-response-schema">\n<p class="api-response-view-label">Schema:</p>\n<p>A <code>text/plain</code> body: a string.</p>\n</div>\n</div>\n',
+    ),
+    "the sentence sits in the schema view",
+  );
   assert.match(
     out.html,
     new RegExp(`id="${id}-response-404-\\d+" data-status="404"`),
@@ -793,7 +808,7 @@ test("property lists become property rows with a folded nested object", () => {
   assert.equal(out.html.split("<details").length, out.html.split("</details>").length);
 });
 
-test("response lists become status rows; the first body's fields start open", () => {
+test("response lists become status rows; every body's fields start closed", () => {
   const page = `# Books
 
 ## \`GET /api/books/{id}\`
@@ -810,8 +825,9 @@ test("response lists become status rows; the first body's fields start open", ()
   const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
   assert.ok(
     out.html.includes(
-      '<li class="api-prop api-response-item"><span class="api-prop-head"><span class="api-status api-status-2xx">200</span></span><span class="api-prop-desc">The book. Body: <a href="/docs/api/web/schemas#book"><code>Book</code></a> (<code>application/json</code>)</span><details class="api-prop-nested" open><summary>1 field</summary>',
+      '<li class="api-prop api-response-item"><span class="api-prop-head"><span class="api-status api-status-2xx">200</span></span><span class="api-prop-desc">The book. Body: <a href="/docs/api/web/schemas#book"><code>Book</code></a> (<code>application/json</code>)</span><details class="api-prop-nested"><summary>1 field</summary>',
     ),
+    "the first response's fields start closed too",
   );
   assert.ok(
     out.html.includes(

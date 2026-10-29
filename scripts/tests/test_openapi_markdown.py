@@ -252,17 +252,23 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("$ref", json.dumps(schema))
         # Every status is listed, with a sentence where there is no example.
         self.assertIn("\n\nStatus `404`: No | such book. No body.\n", get)
-        # An untyped body gets no example; a binary one gets a sentence and its schema.
+        # An untyped body gets no example; a binary one gets a sentence and its shape.
         self.assertNotIn("Example response", self.pages["other.md"])
         post = self.pages["books.md"].split("## `POST /books`")[1]
-        self.assertIn("Status `201`: Added. The body is binary (`image/png`).\n\nSchema:\n\n```json\n", post)
-        self.assertIn('"format": "binary"', post)
-        # A text body gets a block in its own language and its schema.
+        self.assertIn("Status `201`: Added. The body is binary (`image/png`).\n\nSchema:\n\nA `image/png` body: binary bytes.\n", post)
+        self.assertNotIn('"format": "binary"', post)
+        # A text body gets a block in its own language and a sentence for its
+        # schema: a JSON Schema block would misdescribe a body that is not JSON.
         doc = json.loads(json.dumps(DOCUMENT))
         doc["paths"]["/books/{id}"]["get"]["responses"]["504"] = {"description": "Slow.", "content": {"text/plain": {"schema": {"type": "string", "example": "timed out"}}}}
         doc["paths"]["/books/{id}"]["get"]["responses"]["200"]["content"]["text/markdown"] = {"schema": {"type": "string"}}
         text = om.Document(doc).render_all()["books.md"].split("## `GET /books/{id}`")[1]
-        self.assertIn("Status `504`: Slow.\n\n```text\ntimed out\n```\n\nSchema:\n\n```json\n{\n  \"type\": \"string\",\n  \"example\": \"timed out\"\n}\n```\n", text)
+        self.assertIn("Status `504`: Slow.\n\n```text\ntimed out\n```\n\nSchema:\n\nA `text/plain` body: a string.\n", text)
+        self.assertNotIn('"type": "string"', text.split("Status `504`")[1].split("Status `")[0])
+        document = om.Document(doc)
+        self.assertEqual(document.body_shape({"type": "string", "format": "date-time"}), "a string in `date-time` form")
+        self.assertEqual(document.body_shape({"type": "string", "format": "byte"}), "base64 text")
+        self.assertIsNone(document.body_shape({"type": "object"}))
         # A status offering JSON and another type shows the JSON.
         self.assertIn("Status `200`: The book.\n\n```json\n", text)
         self.assertEqual(om.fence_language("text/markdown; charset=utf-8"), "markdown")
@@ -286,7 +292,7 @@ class RenderTest(unittest.TestCase):
         text = page.split("## `GET /books/{id}`")[1]
         self.assertIn("Status `504`: Slow. The body is `text/plain` content the schemas do not describe yet.\n", text)
         self.assertIn('Status `409`: Busy.\n\n```json\n{\n  "title": "busy"\n}\n```\n', text)
-        self.assertIn("Status `418`: Tea.\n\n````markdown\n```sh\nbrew\n```\n````\n\nSchema:\n", text)
+        self.assertIn("Status `418`: Tea.\n\n````markdown\n```sh\nbrew\n```\n````\n\nSchema:\n\nA `text/markdown` body: a string.\n", text)
         # The Responses list takes its fields from the body the example shows.
         self.assertIn("- `409` — Busy. Body: string (`text/plain`); object (`application/problem+json`)\n  - `title` *string*", page)
         self.assertEqual(om.shown_media({"text/plain": {}, "application/problem+json": {}}), "application/problem+json")

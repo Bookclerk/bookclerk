@@ -548,14 +548,17 @@ Rust crates and the web UI library.
     `layoutProperties`): name, location, type and a required mark on one
     line, the description under it, a nested object's fields folded with
     their count, and each response's body fields folded under its status
-    mark, the first open; the page's script keeps one open at a time.
+    mark, every fold closed on load; the page's script keeps at most one
+    response's open at a time.
     Any other list, and the tables of pages generated before this format,
     pass through unchanged.
   - The example responses become one panel per status with a colored
     status mark, each holding the example body (JSON, or a text body in
     its own language; a binary body gets a sentence) and then, after a
-    `Schema:` line, the body's JSON Schema (component references expanded
-    in place); the page's script shows the statuses as tabs in one card
+    `Schema:` line, the body's schema: its JSON Schema for a JSON body
+    (component references expanded in place), or a sentence naming the
+    media type and the shape for any other body, such as "A `text/plain`
+    body: a string."; the page's script shows the statuses as tabs in one card
     with an Example/Schema switch between the two. The example request's
     samples become one panel per language the same way, and the page's
     script shows them as a language picker. Picking a language or a view
