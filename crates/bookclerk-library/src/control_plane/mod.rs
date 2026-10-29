@@ -290,20 +290,24 @@ impl EventsSettingsV1 {
 /// operator label, and the budget the scheduler may commit on this node.
 /// Budgets are shares of the capacity the node detects at heartbeat
 /// (CPU cores and memory, the tighter of the machine and its cgroup).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct NodeRuntimeSettingsV1 {
     /// Operator label shown for this node. Empty is allowed.
+    #[schema(example = "Living-room server")]
     pub label: String,
     /// Share of detected CPU cores the scheduler may commit to plugin
     /// guests on this node (1..=100).
     #[serde(default = "default_cpu_budget_percent")]
+    #[schema(example = 80)]
     pub cpu_budget_percent: u8,
     /// Share of detected memory the scheduler may commit (1..=100).
     #[serde(default = "default_memory_budget_percent")]
+    #[schema(example = 75)]
     pub memory_budget_percent: u8,
     /// False drains the node: the scheduler places nothing new here and
     /// moves its replicas elsewhere. Hand-managed deployments still run.
     #[serde(default = "default_schedulable")]
+    #[schema(example = true)]
     pub schedulable: bool,
 }
 

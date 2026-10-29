@@ -1661,46 +1661,188 @@ async fn visible_nodes(
     }
 }
 
-/// JSON for `nodes` as `caller` sees them.
-async fn nodes_json(
+/// The user who owns a node, as the nodes listing shows them.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct NodeOwnerSummary {
+    /// The owner's user id.
+    #[schema(example = 7)]
+    user_id: i64,
+    /// Display name, or the login name when none is set; `null` when the
+    /// user has neither.
+    #[schema(example = "Sam Reader")]
+    display_name: Option<String>,
+    /// The owner's role (`owner`, `administrator` or `member`).
+    #[schema(example = "administrator")]
+    role: &'static str,
+}
+
+/// One node with its latest heartbeat, budget and owner.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct NodeView {
+    /// Node id.
+    #[schema(example = "node-7f3a9c")]
+    node_id: String,
+    /// Cluster the node belongs to.
+    #[schema(example = "c0ffee12-3456-4789-8abc-def012345678")]
+    cluster_id: String,
+    /// RFC 3339 time the node first enrolled.
+    #[schema(example = "2026-10-01T08:00:00Z")]
+    created_at: String,
+    /// RFC 3339 time of the last heartbeat the node row recorded.
+    #[schema(example = "2026-10-28T19:07:00Z")]
+    heartbeat_at: String,
+    /// Bookclerk version the node runs.
+    #[schema(example = "0.3.1")]
+    software_version: String,
+    /// Database schema the node last applied.
+    #[schema(example = "frozen@12+a1b2c3d4")]
+    schema_state: String,
+    /// True when the node's schema matches the one this daemon applies.
+    #[schema(example = true)]
+    compatible: bool,
+    /// Bookclerk target the node runs on.
+    #[schema(example = "linux-x64-gnu")]
+    target: String,
+    /// Operator-set placement labels.
+    #[schema(example = json!(["rack=a"]))]
+    labels: Vec<String>,
+    /// Labels the scheduler adds for the node (its id and target).
+    #[schema(example = json!(["node=node-7f3a9c", "target=linux-x64-gnu"]))]
+    implicit_labels: Vec<String>,
+    /// True while the last heartbeat is recent enough.
+    #[schema(example = true)]
+    live: bool,
+    /// The node's runtime document, or the defaults when it never wrote
+    /// one.
+    runtime: bookclerk_library::control_plane::NodeRuntimeSettingsV1,
+    /// The latest heartbeat; `null` before the first one.
+    status: Option<bookclerk_library::control_plane::NodeStatus>,
+    /// True for the node that answered the request.
+    #[schema(example = true)]
+    this_node: bool,
+    /// `owner` for a node sharing this library, `host` for an enrolled
+    /// host.
+    kind: bookclerk_library::control_plane::NodeKind,
+    /// User id of the node's owner; `null` when unassigned.
+    #[schema(example = 7)]
+    owner_user_id: Option<i64>,
+    /// A branch's sharing setting, as it last reported it; `null` for an
+    /// owner node.
+    #[schema(example = json!(null))]
+    share_books: Option<bool>,
+    /// A branch's include-branches setting, as it last reported it;
+    /// `null` for an owner node.
+    #[schema(example = json!(null))]
+    include_branches: Option<bool>,
+    /// The owner, when the node has one and the user still exists.
+    owner: Option<NodeOwnerSummary>,
+}
+
+/// Every node in `nodes` as a [`NodeView`], with its heartbeat, runtime
+/// document and owner looked up.
+async fn node_views(
     library: &LibraryStore,
     this_node: &str,
     nodes: &[bookclerk_library::control_plane::NodeRecord],
-) -> Result<Vec<serde_json::Value>, Response> {
+) -> Result<Vec<NodeView>, Response> {
     let statuses = node_statuses(library).await?;
     let mut out = Vec::with_capacity(nodes.len());
     for node in nodes {
-        let runtime = node_runtime_or_default(library, &node.node_id).await?;
-        let owner = match node.owner_user_id {
-            Some(user_id) => library
-                .get_user(user_id)
-                .await
-                .map_err(events_error)?
-                .map(|user| {
-                    json!({
-                        "user_id": user.id,
-                        "display_name": user.display_name.or(user.login_name),
-                        "role": user.role.as_str(),
-                    })
-                }),
-            None => None,
-        };
-        let mut value = node_json(node, this_node, statuses.get(&node.node_id), &runtime);
-        value["owner"] = owner.unwrap_or(serde_json::Value::Null);
-        out.push(value);
+        out.push(node_view(library, node, this_node, statuses.get(&node.node_id)).await?);
     }
     Ok(out)
 }
 
-/// What `caller` may do on the nodes it sees.
-fn node_capabilities(caller: NodeAdminCaller) -> serde_json::Value {
-    let operator = caller == NodeAdminCaller::Operator;
-    json!({
-        "scope": if operator { "all" } else { "owned" },
-        "can_edit_runtime": true,
-        "can_edit_labels": operator,
-        "can_assign_owner": operator,
+/// One node as a [`NodeView`]: its runtime document (or the defaults) and
+/// its owner are read from the library.
+async fn node_view(
+    library: &LibraryStore,
+    node: &bookclerk_library::control_plane::NodeRecord,
+    this_node: &str,
+    status: Option<&bookclerk_library::control_plane::NodeStatus>,
+) -> Result<NodeView, Response> {
+    let runtime = node_runtime_or_default(library, &node.node_id).await?;
+    let owner = match node.owner_user_id {
+        Some(user_id) => library
+            .get_user(user_id)
+            .await
+            .map_err(events_error)?
+            .map(|user| NodeOwnerSummary {
+                user_id: user.id,
+                display_name: user.display_name.or(user.login_name),
+                role: user.role.as_str(),
+            }),
+        None => None,
+    };
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    Ok(NodeView {
+        node_id: node.node_id.clone(),
+        cluster_id: node.cluster_id.clone(),
+        created_at: node.created_at.clone(),
+        heartbeat_at: node.heartbeat_at.clone(),
+        software_version: node.software_version.clone(),
+        schema_state: node.schema_state.clone(),
+        compatible: node.compatible,
+        target: node.target.clone(),
+        labels: node.labels.clone(),
+        implicit_labels: bookclerk_library::control_plane::effective_node_labels(node)
+            .into_iter()
+            .filter(|label| !node.labels.contains(label))
+            .collect(),
+        live: status.is_some_and(|s| s.is_live(now_ms)),
+        runtime,
+        status: status.cloned(),
+        this_node: node.node_id == this_node,
+        kind: node.kind,
+        owner_user_id: node.owner_user_id,
+        // A branch's two sharing settings, as it last reported them.
+        share_books: node.share_books,
+        include_branches: node.include_branches,
+        owner,
     })
+}
+
+/// What the caller may do on the nodes it sees.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct NodeCapabilities {
+    /// `all` for the operator, `owned` for a node owner.
+    #[schema(example = "all")]
+    scope: &'static str,
+    /// True: every caller may edit the runtime settings of the nodes it
+    /// sees.
+    #[schema(example = true)]
+    can_edit_runtime: bool,
+    /// True for the operator, who may replace placement labels.
+    #[schema(example = true)]
+    can_edit_labels: bool,
+    /// True for the operator, who may assign or clear a node's owner.
+    #[schema(example = true)]
+    can_assign_owner: bool,
+}
+
+impl NodeCapabilities {
+    /// The capabilities of `caller`.
+    fn of(caller: NodeAdminCaller) -> Self {
+        let operator = caller == NodeAdminCaller::Operator;
+        Self {
+            scope: if operator { "all" } else { "owned" },
+            can_edit_runtime: true,
+            can_edit_labels: operator,
+            can_assign_owner: operator,
+        }
+    }
+}
+
+/// `GET /api/config/nodes` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct NodesResponse {
+    /// Id of the node that answered.
+    #[schema(example = "node-7f3a9c")]
+    node_id: String,
+    /// The nodes the caller administers.
+    nodes: Vec<NodeView>,
+    /// What the caller may do with them.
+    capabilities: NodeCapabilities,
 }
 
 /// `GET /api/config/nodes`: every node for an operator; the caller's own
@@ -1709,27 +1851,135 @@ fn node_capabilities(caller: NodeAdminCaller) -> serde_json::Value {
     get,
     path = "/api/config/nodes",
     responses(
-        (status = 200, description = "The nodes the caller administers.", body = serde_json::Value),
+        (status = 200, description = "The nodes the caller administers.", body = NodesResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_nodes(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<NodeAdminCaller>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<NodesResponse>, Response> {
     let cfg = state.config.read().await.clone();
     let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
     let nodes = visible_nodes(&library, caller).await?;
-    let nodes = nodes_json(&library, &this_node, &nodes).await?;
-    Ok(Json(json!({
-        "node_id": this_node,
-        "nodes": nodes,
-        "capabilities": node_capabilities(caller),
-    })))
+    let nodes = node_views(&library, &this_node, &nodes).await?;
+    Ok(Json(NodesResponse {
+        node_id: this_node,
+        nodes,
+        capabilities: NodeCapabilities::of(caller),
+    }))
+}
+
+/// Event delivery backlog across the cluster.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct DeliveryBacklog {
+    /// Deliveries waiting for a consumer.
+    #[schema(example = 3)]
+    pending: i64,
+    /// Deliveries a consumer is handling now.
+    #[schema(example = 1)]
+    running: i64,
+    /// Deliveries that exhausted their retries.
+    #[schema(example = 0)]
+    dead_letter: i64,
+    /// Age of the oldest pending delivery in seconds; `null` when none is
+    /// pending.
+    #[schema(example = 12)]
+    oldest_pending_age_secs: Option<i64>,
+}
+
+/// A cluster lease as the status page shows it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct LeaseView {
+    /// Lease name.
+    #[schema(example = "scheduler")]
+    name: String,
+    /// Holder (a node id).
+    #[schema(example = "node-7f3a9c")]
+    holder: String,
+    /// Fencing token; a new holder always gets a larger one.
+    #[schema(example = 42)]
+    token: i64,
+    /// True while the lease has not expired.
+    #[schema(example = true)]
+    held: bool,
+    /// Expiry in Unix milliseconds.
+    #[schema(example = 1_793_214_480_000_i64)]
+    expires_at_ms: i64,
+}
+
+/// Whether the database carries exactly the schema this binary applies.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct SchemaStateView {
+    /// The schema state (`uninitialized`, `unreleased@base<n>+<checksum>`
+    /// or `frozen@<n>+<checksum>`); `null` when it could not be read.
+    #[schema(example = "frozen@12+a1b2c3d4")]
+    state: Option<String>,
+    /// True when this binary can run against that schema.
+    #[schema(example = true)]
+    compatible: bool,
+    /// Why the state could not be read; omitted when it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "database is locked")]
+    error: Option<String>,
+}
+
+/// Cluster-wide counters every node administrator may see.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct ClusterSummary {
+    /// Nodes in the library's node list.
+    #[schema(example = 3)]
+    nodes: usize,
+    /// Nodes whose last heartbeat is recent enough.
+    #[schema(example = 3)]
+    live: u64,
+    /// Live nodes an operator drained.
+    #[schema(example = 0)]
+    drained: u64,
+    /// Enrolled hosts (nodes with their own database).
+    #[schema(example = 1)]
+    host_nodes: u64,
+    /// CPU the scheduler may commit across live nodes, in millicores.
+    #[schema(example = 19_200)]
+    cpu_budget_millicores: i64,
+    /// CPU the running guests' ceilings add up to, in millicores.
+    #[schema(example = 3200)]
+    cpu_reserved_millicores: i64,
+    /// Memory the scheduler may commit across live nodes, in bytes.
+    #[schema(example = 37_748_736_000_i64)]
+    memory_budget_bytes: i64,
+    /// Memory the running guests' ceilings add up to, in bytes.
+    #[schema(example = 2_147_483_648_i64)]
+    memory_reserved_bytes: i64,
+    /// Guests running across live nodes.
+    #[schema(example = 4)]
+    running_guests: i64,
+    /// Jobs queued or running.
+    #[schema(example = 2)]
+    active_jobs: i64,
+    /// Event delivery backlog.
+    deliveries: DeliveryBacklog,
+    /// Every cluster lease, held or expired.
+    leases: Vec<LeaseView>,
+    /// The database schema against this binary.
+    schema: SchemaStateView,
+}
+
+/// `GET /api/cluster/status` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct ClusterStatusResponse {
+    /// Cluster-wide counters.
+    cluster: ClusterSummary,
+    /// Id of the node that answered.
+    #[schema(example = "node-7f3a9c")]
+    node_id: String,
+    /// The nodes the caller administers.
+    nodes: Vec<NodeView>,
+    /// What the caller may do with them.
+    capabilities: NodeCapabilities,
 }
 
 /// `GET /api/cluster/status`: cluster-wide health every node administrator
@@ -1739,17 +1989,16 @@ pub async fn get_nodes(
     get,
     path = "/api/cluster/status",
     responses(
-        (status = 200, description = "Cluster-wide node health.", body = serde_json::Value),
+        (status = 200, description = "Cluster-wide node health.", body = ClusterStatusResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_cluster_status(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<NodeAdminCaller>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<ClusterStatusResponse>, Response> {
     let cfg = state.config.read().await.clone();
     let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
@@ -1792,55 +2041,58 @@ pub async fn get_cluster_status(
         .await
         .map_err(events_error)?;
     let visible = visible_nodes(&library, caller).await?;
-    let nodes = nodes_json(&library, &this_node, &visible).await?;
-    let leases: Vec<serde_json::Value> = bookclerk_library::control_plane::list_leases(&library)
+    let nodes = node_views(&library, &this_node, &visible).await?;
+    let leases = bookclerk_library::control_plane::list_leases(&library)
         .await
         .map_err(events_error)?
         .into_iter()
-        .map(|lease| {
-            json!({
-                "name": lease.name,
-                "holder": lease.holder,
-                "token": lease.token,
-                "held": lease.is_held_at(now_ms),
-                "expires_at_ms": lease.expires_at_ms,
-            })
+        .map(|lease| LeaseView {
+            held: lease.is_held_at(now_ms),
+            name: lease.name,
+            holder: lease.holder,
+            token: lease.token,
+            expires_at_ms: lease.expires_at_ms,
         })
         .collect();
     // Whether the database is exactly the schema this binary applies; the
     // migration lease (above) names the last migrator.
     let schema = match bookclerk_library::current_schema_state(library.db()).await {
-        Ok(state) => json!({
-            "state": state.to_string(),
-            "compatible": bookclerk_library::schema_state_compatible(&state),
-        }),
-        Err(err) => json!({ "state": null, "compatible": false, "error": err.to_string() }),
-    };
-    Ok(Json(json!({
-        "cluster": {
-            "nodes": all.len(),
-            "live": live,
-            "drained": drained,
-            "host_nodes": host_nodes,
-            "cpu_budget_millicores": cpu_budget,
-            "cpu_reserved_millicores": cpu_reserved,
-            "memory_budget_bytes": memory_budget,
-            "memory_reserved_bytes": memory_reserved,
-            "running_guests": running_guests,
-            "active_jobs": active_jobs,
-            "deliveries": {
-                "pending": events.pending,
-                "running": events.running,
-                "dead_letter": events.dead_letter,
-                "oldest_pending_age_secs": events.oldest_pending_age_secs,
-            },
-            "leases": leases,
-            "schema": schema,
+        Ok(state) => SchemaStateView {
+            state: Some(state.to_string()),
+            compatible: bookclerk_library::schema_state_compatible(&state),
+            error: None,
         },
-        "node_id": this_node,
-        "nodes": nodes,
-        "capabilities": node_capabilities(caller),
-    })))
+        Err(err) => SchemaStateView {
+            state: None,
+            compatible: false,
+            error: Some(err.to_string()),
+        },
+    };
+    Ok(Json(ClusterStatusResponse {
+        cluster: ClusterSummary {
+            nodes: all.len(),
+            live,
+            drained,
+            host_nodes,
+            cpu_budget_millicores: cpu_budget,
+            cpu_reserved_millicores: cpu_reserved,
+            memory_budget_bytes: memory_budget,
+            memory_reserved_bytes: memory_reserved,
+            running_guests,
+            active_jobs,
+            deliveries: DeliveryBacklog {
+                pending: events.pending,
+                running: events.running,
+                dead_letter: events.dead_letter,
+                oldest_pending_age_secs: events.oldest_pending_age_secs,
+            },
+            leases,
+            schema,
+        },
+        node_id: this_node,
+        nodes,
+        capabilities: NodeCapabilities::of(caller),
+    }))
 }
 
 /// Every node's latest heartbeat, by node id.
@@ -1872,40 +2124,6 @@ async fn node_runtime_or_default(
     }
 }
 
-/// JSON projection of one node row with its latest heartbeat and budget.
-fn node_json(
-    node: &bookclerk_library::control_plane::NodeRecord,
-    this_node: &str,
-    status: Option<&bookclerk_library::control_plane::NodeStatus>,
-    runtime: &bookclerk_library::control_plane::NodeRuntimeSettingsV1,
-) -> serde_json::Value {
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    json!({
-        "node_id": node.node_id,
-        "cluster_id": node.cluster_id,
-        "created_at": node.created_at,
-        "heartbeat_at": node.heartbeat_at,
-        "software_version": node.software_version,
-        "schema_state": node.schema_state,
-        "compatible": node.compatible,
-        "target": node.target,
-        "labels": node.labels,
-        "implicit_labels": bookclerk_library::control_plane::effective_node_labels(node)
-            .into_iter()
-            .filter(|label| !node.labels.contains(label))
-            .collect::<Vec<_>>(),
-        "live": status.is_some_and(|s| s.is_live(now_ms)),
-        "runtime": runtime,
-        "status": status,
-        "this_node": node.node_id == this_node,
-        "kind": node.kind.as_str(),
-        "owner_user_id": node.owner_user_id,
-        // A branch's two sharing settings, as it last reported them.
-        "share_books": node.share_books,
-        "include_branches": node.include_branches,
-    })
-}
-
 /// The clerk actor for a node-administration `caller`: the library's
 /// clerk rules (an Owner reaches every owner node) are checked on it.
 fn clerk_actor(caller: NodeAdminCaller) -> bookclerk_library::control_plane::EnrollmentActor {
@@ -1928,17 +2146,16 @@ fn clerk_actor(caller: NodeAdminCaller) -> bookclerk_library::control_plane::Enr
     get,
     path = "/api/config/clerks",
     responses(
-        (status = 200, description = "This node and its clerks.", body = serde_json::Value),
+        (status = 200, description = "This node and its clerks.", body = ClerksResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_clerks(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<NodeAdminCaller>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<ClerksResponse>, Response> {
     let cfg = state.config.read().await.clone();
     let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
@@ -1946,8 +2163,32 @@ pub async fn get_clerks(
         bookclerk_library::control_plane::owner_nodes_visible_to(&library, &clerk_actor(caller))
             .await
             .map_err(events_error)?;
-    let nodes = nodes_json(&library, &this_node, &nodes).await?;
-    Ok(Json(json!({ "node_id": this_node, "nodes": nodes })))
+    let nodes = node_views(&library, &this_node, &nodes).await?;
+    Ok(Json(ClerksResponse {
+        node_id: this_node,
+        nodes,
+    }))
+}
+
+/// `GET /api/config/clerks` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct ClerksResponse {
+    /// Id of the node that answered.
+    #[schema(example = "node-7f3a9c")]
+    node_id: String,
+    /// This node and the clerks the caller may see.
+    nodes: Vec<NodeView>,
+}
+
+/// `DELETE /api/config/nodes/{node_id}` body.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct OwnerNodeRemoved {
+    /// Id of the node that was removed, trimmed.
+    #[schema(example = "node-2b8d4e")]
+    node_id: String,
+    /// Always true: a refused removal is an error status instead.
+    #[schema(example = true)]
+    removed: bool,
 }
 
 /// `DELETE /api/config/nodes/{node_id}`: remove an owner node (a clerk, or
@@ -1960,19 +2201,20 @@ pub async fn get_clerks(
     path = "/api/config/nodes/{node_id}",
     params(("node_id" = String, Path, description = "Node id.")),
     responses(
-        (status = 200, description = "The owner node was removed.", body = serde_json::Value),
+        (status = 200, description = "The owner node was removed.", body = OwnerNodeRemoved),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such node, or not one the caller administers."),
+        (status = 404, description = "No such node, or not one the caller administers.", body = ErrorMessage, example = json!({"error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"})),
+        (status = 409, description = "The node is still running.", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is running; stop Bookclerk there first"})),
+        (status = 400, description = "The node is this node, or a branch (revoke it instead).", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is a branch: revoke it instead"})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn delete_owner_node(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<NodeAdminCaller>,
     axum::extract::Path(node_id): axum::extract::Path<String>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<OwnerNodeRemoved>, Response> {
     let cfg = state.config.read().await.clone();
     let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
@@ -1981,7 +2223,24 @@ pub async fn delete_owner_node(
     bookclerk_library::control_plane::remove_owner_node(&library, &actor, &node_id, &this_node)
         .await
         .map_err(events_error)?;
-    Ok(Json(json!({ "node_id": node_id, "removed": true })))
+    Ok(Json(OwnerNodeRemoved {
+        node_id,
+        removed: true,
+    }))
+}
+
+/// `PUT /api/config/nodes/{node_id}/runtime` body: the document after the
+/// write.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct NodeRuntimeChanged {
+    /// Node id, trimmed.
+    #[schema(example = "node-7f3a9c")]
+    node_id: String,
+    /// Compare-and-swap revision of the runtime document after the write.
+    #[schema(example = 4)]
+    revision: i64,
+    /// The runtime document now stored.
+    runtime: bookclerk_library::control_plane::NodeRuntimeSettingsV1,
 }
 
 /// `PUT /api/config/nodes/{node_id}/runtime` body: any subset of the
@@ -2011,12 +2270,12 @@ pub(crate) struct PutNodeRuntime {
     params(("node_id" = String, Path, description = "Node id.")),
     request_body = PutNodeRuntime,
     responses(
-        (status = 200, description = "The node's runtime settings after the change.", body = serde_json::Value),
+        (status = 200, description = "The node's runtime settings after the change.", body = NodeRuntimeChanged),
+        (status = 400, description = "The body is invalid, or a budget is outside 1..=100.", body = ErrorMessage, example = json!({"error": "invalid configuration: cpu_budget_percent must be between 1 and 100"})),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such node, or not one the caller administers."),
+        (status = 403, description = "The caller may not do this.", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is not owned by this user"})),
+        (status = 404, description = "No such node, or not one the caller administers.", body = ErrorMessage, example = json!({"error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn put_node_runtime(
@@ -2024,7 +2283,7 @@ pub async fn put_node_runtime(
     Extension(caller): Extension<NodeAdminCaller>,
     axum::extract::Path(node_id): axum::extract::Path<String>,
     Json(body): Json<PutNodeRuntime>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<NodeRuntimeChanged>, Response> {
     let library = state.library_snapshot().await;
     let node_id = node_id.trim().to_string();
     let actor = match caller {
@@ -2061,11 +2320,11 @@ pub async fn put_node_runtime(
     )
     .await
     .map_err(events_error)?;
-    Ok(Json(json!({
-        "node_id": node_id,
-        "revision": document.revision,
-        "runtime": document.body,
-    })))
+    Ok(Json(NodeRuntimeChanged {
+        node_id,
+        revision: document.revision,
+        runtime: document.body,
+    }))
 }
 
 /// `PUT /api/config/nodes/{node_id}/labels` body.
@@ -2083,17 +2342,17 @@ pub(crate) struct PutNodeLabels {
     params(("node_id" = String, Path, description = "Node id.")),
     request_body = PutNodeLabels,
     responses(
-        (status = 200, description = "The node's labels after the change.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such node, or not one the caller administers."),
+        (status = 200, description = "The node after the change.", body = NodeView),
+        (status = 400, description = "The body is invalid, or a label is malformed.", body = ErrorMessage, example = json!({"error": "invalid configuration: label `Region=EU` must be `name` or `name=value` using lowercase letters, digits, and `._/-` (at most 63 bytes)"})),
+        (status = 404, description = "No such node.", body = ErrorMessage, example = json!({"error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn put_node_labels(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(node_id): axum::extract::Path<String>,
     Json(body): Json<PutNodeLabels>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<NodeView>, Response> {
     let cfg = state.config.read().await.clone();
     let this_node = this_node_id(&cfg)?;
     let library = state.library_snapshot().await;
@@ -2106,13 +2365,21 @@ pub async fn put_node_labels(
     .await
     .map_err(events_error)?;
     let statuses = node_statuses(&library).await?;
-    let runtime = node_runtime_or_default(&library, &node.node_id).await?;
-    Ok(Json(node_json(
-        &node,
-        &this_node,
-        statuses.get(&node.node_id),
-        &runtime,
-    )))
+    Ok(Json(
+        node_view(&library, &node, &this_node, statuses.get(&node.node_id)).await?,
+    ))
+}
+
+/// `PUT /api/config/nodes/{node_id}/owner` body: the owner after the
+/// change.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct NodeOwnerChanged {
+    /// Node id.
+    #[schema(example = "node-7f3a9c")]
+    node_id: String,
+    /// User id of the owner; `null` when cleared.
+    #[schema(example = 7)]
+    owner_user_id: Option<i64>,
 }
 
 /// `PUT /api/config/nodes/{node_id}/owner` body.
@@ -2131,17 +2398,17 @@ pub(crate) struct PutNodeOwner {
     params(("node_id" = String, Path, description = "Node id.")),
     request_body = PutNodeOwner,
     responses(
-        (status = 200, description = "The node's owner after the change.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such node, or not one the caller administers."),
+        (status = 200, description = "The node's owner after the change.", body = NodeOwnerChanged),
+        (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "user 42 is disabled and cannot own a node"})),
+        (status = 404, description = "No such node or user.", body = ErrorMessage, example = json!({"error": "book not found: user 42"})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn put_node_owner(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(node_id): axum::extract::Path<String>,
     Json(body): Json<PutNodeOwner>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<NodeOwnerChanged>, Response> {
     let library = state.library_snapshot().await;
     let node = bookclerk_library::control_plane::set_node_owner(
         &library,
@@ -2151,10 +2418,10 @@ pub async fn put_node_owner(
     )
     .await
     .map_err(events_error)?;
-    Ok(Json(json!({
-        "node_id": node.node_id,
-        "owner_user_id": node.owner_user_id,
-    })))
+    Ok(Json(NodeOwnerChanged {
+        node_id: node.node_id,
+        owner_user_id: node.owner_user_id,
+    }))
 }
 
 /// `PUT /api/config/plugin-instances/{id}/placement` body.
