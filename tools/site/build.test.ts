@@ -472,7 +472,6 @@ test("a release build states its version in structured data", () => {
       ldNode(ldGraph(site.page("index.html")), "SoftwareApplication").softwareVersion,
       "0.1.0",
     );
-    assert.ok(!site.page("index.html").includes("noarchive"));
   } finally {
     site.done();
   }
@@ -668,4 +667,52 @@ test("the docs shell has every hole and marker the Worker fills, once", () => {
   } finally {
     site.done();
   }
+});
+
+test("no page asks search engines not to keep a copy", () => {
+  // Bing reads noarchive as "leave this page out of Copilot answers", and
+  // the site wants to be found and cited there too.
+  for (const env of [PRE, REL]) {
+    const site = built(env);
+    try {
+      for (const name of ["index.html", "download.html", "privacy.html", "404.html"])
+        assert.ok(!site.page(name).includes("noarchive"), name);
+      assert.ok(!JSON.stringify(site.shell()).includes("noarchive"), "docs shell");
+    } finally {
+      site.done();
+    }
+  }
+});
+
+test("readState reads an IndexNow key and rejects a malformed one", () => {
+  assert.equal(readState(PRE).indexNowKey, null);
+  assert.equal(readState({ ...PRE, SITE_INDEXNOW_KEY: " " }).indexNowKey, null);
+  const key = "0123456789abcdef-ABCDEF";
+  assert.equal(readState({ ...PRE, SITE_INDEXNOW_KEY: ` ${key} ` }).indexNowKey, key);
+  assert.equal(readState({ ...REL, SITE_INDEXNOW_KEY: key }).indexNowKey, key);
+  for (const bad of ["short", "x".repeat(129), "has space key", "../../../etc", "key.txt-key"])
+    assert.throws(() => readState({ ...PRE, SITE_INDEXNOW_KEY: bad }), /SITE_INDEXNOW_KEY/, bad);
+});
+
+test("a build with an IndexNow key serves the key file", () => {
+  const key = "4f0c9d2b7e1a4c3d8b6a5e9f0d1c2b3a";
+  const site = built({ ...PRE, SITE_INDEXNOW_KEY: key });
+  try {
+    assert.ok(site.files.includes(`${key}.txt`));
+    assert.equal(site.page(`${key}.txt`), `${key}\n`);
+  } finally {
+    site.done();
+  }
+  const plain = built(PRE);
+  try {
+    assert.ok(
+      !plain.files.some((f) => f.endsWith(".txt") && !/^(robots|llms|llms-full)\.txt$/.test(f)),
+    );
+  } finally {
+    plain.done();
+  }
+});
+
+test("an IndexNow key that names one of the site's files is refused", () => {
+  assert.throws(() => built({ ...PRE, SITE_INDEXNOW_KEY: "llms-full" }), /llms-full\.txt/);
 });

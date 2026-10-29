@@ -1,0 +1,94 @@
+# Tell search engines which bookclerk.app pages are new or changed, through
+# IndexNow (https://www.indexnow.org; Bing, Yandex, Seznam, Naver and Yep
+# share what it receives). Runs after each site deploy and docs publish,
+# daily, and by hand.
+#
+# tools/site/indexnow-run.ts reads every URL the live /sitemap.xml index
+# lists, fingerprints each one (its <lastmod>, else a hash of the page as
+# Markdown), compares them with the snapshot the previous run kept in the
+# Actions cache, and submits the new, changed and removed URLs, each at most
+# once per UTC day. With no snapshot (the first run, or one evicted after 7
+# days without a run) every URL is submitted. See
+# docs/contributing/automation.md#indexnow.
+#
+# Variable INDEXNOW_KEY (repository or organization; public by design): the
+# key site-deploy.yml serves as https://<DOMAIN>/<key>.txt. Without it the job
+# is skipped, so forks submit nothing. No secrets; the only network access is
+# to the site and api.indexnow.org.
+#
+# GITHUB_TOKEN permission keys:
+# https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#permissions-for-the-github_token
+
+name: indexnow
+
+on:
+  workflow_run:
+    workflows: [site-deploy, docs-publish]
+    types: [completed]
+  # Catches changes the edge caches still hid from an earlier run.
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+# Least privilege for GITHUB_TOKEN:
+#   contents → checkout
+permissions:
+  contents: read
+
+# One run at a time, each reading the snapshot the previous one saved.
+concurrency:
+  group: indexnow
+  cancel-in-progress: false
+
+jobs:
+  submit:
+    if: >-
+      vars.INDEXNOW_KEY != '' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/site
+
+      # The script imports nothing outside tools/site, so no npm install.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+
+      # The site serves main's docs from the edge cache for up to five
+      # minutes, and GitHub's raw files are cached as long again.
+      - name: Wait for the published docs to reach the site
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.name == 'docs-publish'
+        run: sleep 600
+
+      # The newest snapshot any earlier run saved.
+      - name: Restore the previous snapshot
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/indexnow-previous.json
+          key: indexnow-snapshot-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: indexnow-snapshot-
+
+      - name: Submit new and changed URLs
+        id: submit
+        working-directory: tools/site
+        env:
+          INDEXNOW_KEY: ${{ vars.INDEXNOW_KEY }}
+          SITE_ORIGIN: https://${{ vars.DOMAIN || 'bookclerk.app' }}
+          PREVIOUS: ${{ runner.temp }}/indexnow-previous.json
+          NEXT: ${{ runner.temp }}/indexnow-snapshot.json
+        run: |
+          set -euo pipefail
+          node indexnow-run.ts "$PREVIOUS" "$NEXT"
+          if [[ -f "$NEXT" ]]; then echo "saved=true" >> "$GITHUB_OUTPUT"; fi
+
+      # Written only when IndexNow accepted the submission; a skipped or
+      # refused run leaves the previous snapshot for the next one.
+      - name: Keep the new snapshot
+        if: steps.submit.outputs.saved == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/indexnow-snapshot.json
+          key: indexnow-snapshot-${{ github.run_id }}-${{ github.run_attempt }}

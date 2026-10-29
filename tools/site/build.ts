@@ -32,6 +32,9 @@
 //   SITE_DEMO_URL      origin of the hosted demo (tools/demo), e.g.
 //                      https://demo.bookclerk.app; empty or unset means the
 //                      deployment has no demo, and every demo link is left out
+//   SITE_INDEXNOW_KEY  the site's IndexNow key (8-128 letters, digits or -),
+//                      written to /<key>.txt for the indexnow workflow; empty
+//                      or unset means no key file
 //
 // Every value is validated before it reaches a template, and every template
 // value is HTML-escaped.
@@ -79,6 +82,8 @@ export interface ReleaseState {
   demoUrl: string | null;
   /** Release tags with published docs, newest first. */
   docsTags: string[];
+  /** The IndexNow key served at `/<key>.txt`, or null for none. */
+  indexNowKey: string | null;
 }
 
 /**
@@ -341,6 +346,9 @@ const COMMIT_RE = /^[0-9a-f]{7,40}$/;
 /** An https origin with a lowercase hostname and no port or path. */
 const ORIGIN_RE = /^https:\/\/([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
+/** An IndexNow key, per the protocol (https://www.indexnow.org/documentation). */
+const INDEXNOW_KEY_RE = /^[A-Za-z0-9-]{8,128}$/;
+
 /** Most release tags the docs version picker lists. */
 const MAX_DOCS_VERSIONS = 100;
 
@@ -383,6 +391,7 @@ export function readState(env: BuildEnv): ReleaseState {
   const origin = (env["SITE_ORIGIN"] ?? "").trim() || DEFAULT_ORIGIN;
   const listed = (env["SITE_DOCS_VERSIONS"] ?? "").split(/\s+/).filter((t) => t !== "");
   const demoUrl = (env["SITE_DEMO_URL"] ?? "").trim() || null;
+  const indexNowKey = (env["SITE_INDEXNOW_KEY"] ?? "").trim() || null;
 
   if (!COMMIT_RE.test(commit)) {
     throw new Error(`SITE_COMMIT must be 7-40 lowercase hex digits, got ${JSON.stringify(commit)}`);
@@ -400,13 +409,16 @@ export function readState(env: BuildEnv): ReleaseState {
       `SITE_DEMO_URL must be https://<lowercase hostname>, got ${JSON.stringify(demoUrl)}`,
     );
   }
+  if (indexNowKey !== null && !INDEXNOW_KEY_RE.test(indexNowKey)) {
+    throw new Error("SITE_INDEXNOW_KEY must be 8-128 ASCII letters, digits or '-'");
+  }
   for (const t of listed) {
     if (!TAG_RE.test(t))
       throw new Error(`SITE_DOCS_VERSIONS must hold tags like v1.2.3, got ${JSON.stringify(t)}`);
   }
   if (tag === "") {
     if (listed.length > 0) throw new Error("SITE_DOCS_VERSIONS is set but SITE_RELEASE_TAG is not");
-    return { release: null, commit, builtOn, origin, demoUrl, docsTags: [] };
+    return { release: null, commit, builtOn, origin, demoUrl, docsTags: [], indexNowKey };
   }
   if (!TAG_RE.test(tag)) {
     throw new Error(`SITE_RELEASE_TAG must look like v1.2.3, got ${JSON.stringify(tag)}`);
@@ -418,7 +430,7 @@ export function readState(env: BuildEnv): ReleaseState {
   }
   // The picker keeps the newest MAX_DOCS_VERSIONS tags; older ones drop off.
   const docsTags = [...new Set(listed)].slice(0, MAX_DOCS_VERSIONS);
-  return { release: { tag, date }, commit, builtOn, origin, demoUrl, docsTags };
+  return { release: { tag, date }, commit, builtOn, origin, demoUrl, docsTags, indexNowKey };
 }
 
 /**
@@ -978,6 +990,23 @@ function writeCrawlerFiles(context: SiteContext, paths: readonly string[], outDi
 }
 
 /**
+ * Writes the IndexNow key file `<key>.txt`, which IndexNow fetches to check
+ * that a submission came from the site (the indexnow workflow submits).
+ * Written last, so a key that names one of the site's own files is refused
+ * rather than replacing it.
+ *
+ * @param key - The validated key.
+ * @param outDir - Output directory.
+ * @throws {Error} When `<key>.txt` already exists, as `llms-full.txt` does.
+ */
+function writeIndexNowKey(key: string, outDir: string): void {
+  const file = join(outDir, `${key}.txt`);
+  if (existsSync(file))
+    throw new Error(`SITE_INDEXNOW_KEY names one of the site's files: ${key}.txt`);
+  writeFileSync(file, `${key}\n`);
+}
+
+/**
  * Builds the whole site.
  *
  * @param env - Release state (see top).
@@ -1069,6 +1098,7 @@ export function build(
   }
   for (const [from, to] of BRAND_FILES)
     cpSync(join(REPO_ROOT, "assets/brand", from), join(outDir, to));
+  if (state.indexNowKey !== null) writeIndexNowKey(state.indexNowKey, outDir);
   return readdirSync(outDir).sort();
 }
 
