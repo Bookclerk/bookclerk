@@ -32,6 +32,12 @@ export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
 /** Longest fingerprint a snapshot may hold: `sha256:` and 64 hex digits fit. */
 const MAX_FINGERPRINT_LENGTH = 128;
 
+/**
+ * The fingerprint a snapshot records for a URL submitted as removed, kept
+ * until the next UTC day so a page restored the same day waits for it.
+ */
+const REMOVED_FINGERPRINT = "removed";
+
 /** The `version` of the snapshot this module writes and reads. */
 const SNAPSHOT_VERSION = 1;
 
@@ -81,7 +87,7 @@ export interface SitemapItem {
 
 /** What the previous run recorded about one URL. */
 export interface SnapshotEntry {
-  /** The fingerprint last submitted (`lastmod:<date>` or `sha256:<hex>`). */
+  /** The fingerprint last submitted (`lastmod:<date>`, `sha256:<hex>` or `removed`). */
   fp: string;
   /** The UTC day it was last submitted. */
   sent: IsoDate;
@@ -234,7 +240,8 @@ export function writeSnapshot(snapshot: Snapshot): string {
  * submitted when it is new, its fingerprint changed, or it is no longer
  * listed (a removed page), unless it was already submitted `today`: then
  * its old entry is kept, so the next day's run still sees the change. A
- * removed URL is dropped from the snapshot once submitted.
+ * removed URL is recorded as `removed` on the day it is submitted, so a page
+ * restored that day waits for the next one, and is dropped on a later day.
  *
  * A dated page's fingerprint (`lastmod:<day>`) cannot show a second change
  * on the day it was submitted, so a page submitted on the day it is dated
@@ -266,7 +273,11 @@ export function planSubmission(
   for (const [url, before] of previous ?? []) {
     if (current.has(url)) continue;
     if (before.sent === today) next.set(url, before);
-    else submit.push(url);
+    else if (before.fp === REMOVED_FINGERPRINT) continue;
+    else {
+      submit.push(url);
+      next.set(url, { fp: REMOVED_FINGERPRINT, sent: today });
+    }
   }
   submit.sort();
   return { submit, next };

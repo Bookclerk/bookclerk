@@ -89,7 +89,12 @@ async function fetchText(deps: RunDeps, url: string, accept: string): Promise<st
   if (response.status !== 200) throw new Stop(`${url} answered ${response.status}`);
   const length = Number(response.headers.get("Content-Length") ?? "0");
   if (length > MAX_DOCUMENT_BYTES) throw new Stop(`${url} is larger than the reader accepts`);
-  const text = await response.text();
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (err) {
+    throw new Stop(`${url}: ${err instanceof Error ? err.message : String(err)}`);
+  }
   if (text.length > MAX_DOCUMENT_BYTES) throw new Stop(`${url} is larger than the reader accepts`);
   return text;
 }

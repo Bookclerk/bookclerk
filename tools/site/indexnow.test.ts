@@ -211,9 +211,27 @@ test("planSubmission submits new, changed and removed URLs once a day", () => {
       // Kept as it was, so tomorrow's run still sees the change.
       [url("/changed-again"), { fp: "a", sent: today }],
       [url("/new"), { fp: "a", sent: today }],
+      [url("/removed"), { fp: "removed", sent: today }],
       [url("/removed-today"), { fp: "a", sent: today }],
     ]),
   );
+});
+
+test("planSubmission holds a page removed and restored on one day for the next", () => {
+  const today = day("2026-10-29");
+  const tomorrow = day("2026-10-30");
+  const previous: Snapshot = new Map([
+    [url("/back"), { fp: "removed", sent: today }],
+    [url("/gone"), { fp: "removed", sent: today }],
+  ]);
+  const restored = planSubmission(previous, new Map([[url("/back"), "a"]]), today);
+  assert.deepEqual(restored.submit, []);
+  assert.deepEqual(restored.next, previous);
+
+  const later = planSubmission(restored.next, new Map([[url("/back"), "a"]]), tomorrow);
+  // The restored page is submitted again; the removal is not repeated.
+  assert.deepEqual(later.submit, [url("/back")]);
+  assert.deepEqual(later.next, new Map([[url("/back"), { fp: "a", sent: tomorrow }]]));
 });
 
 test("planSubmission resubmits a page once after a submission on its own date", () => {
@@ -443,10 +461,37 @@ test("a page that cannot be fetched keeps its previous fingerprint", async () =>
 
 test("a declared oversized response is refused before it is read", async () => {
   const h = harness(SITE);
+  let read = false;
+  // No high-water mark, so the stream is pulled only when something reads it.
+  const body = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        read = true;
+        controller.close();
+      },
+    },
+    { highWaterMark: 0 },
+  );
   const big = (async () =>
-    new Response("small", {
+    new Response(body, {
       headers: { "Content-Length": String(10 * 1024 * 1024 + 1) },
     })) as typeof fetch;
   assert.equal(await run(["in.json", "out.json"], { ...h.deps, fetch: big }), 0);
   assert.match(h.lines.join("\n"), /larger than the reader accepts/);
+  assert.equal(read, false);
+});
+
+test("a body that fails while it is read skips the run", async () => {
+  const h = harness(SITE);
+  const broken = (async () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.error(new Error("connection reset"));
+        },
+      }),
+    )) as typeof fetch;
+  assert.equal(await run(["in.json", "out.json"], { ...h.deps, fetch: broken }), 0);
+  assert.match(h.lines.join("\n"), /connection reset/);
+  assert.equal(h.seen.filter((s) => s.method === "POST").length, 0);
 });
