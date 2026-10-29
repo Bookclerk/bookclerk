@@ -21,6 +21,7 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 
 import {
   INDEXNOW_ENDPOINT,
+  ORIGIN_RE,
   MAX_DOCUMENT_BYTES,
   parseKey,
   planSubmission,
@@ -29,7 +30,7 @@ import {
   submissionBodies,
   writeSnapshot,
 } from "./indexnow.ts";
-import type { IndexNowKey, SiteUrl } from "./indexnow.ts";
+import type { IndexNowKey, SiteUrl, Snapshot } from "./indexnow.ts";
 import { parseIsoDate } from "./last-updated.ts";
 
 /** How long one request may take, in milliseconds. */
@@ -40,9 +41,6 @@ const FETCH_CONCURRENCY = 4;
 
 /** URLs the job summary lists before it says how many more there are. */
 const SUMMARY_URLS = 50;
-
-/** An https origin with a lowercase hostname and no port or path (as build.ts checks). */
-const ORIGIN_RE = /^https:\/\/([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 /** A run that stops without submitting, with the reason to print. */
 class Stop extends Error {}
@@ -74,15 +72,23 @@ export interface RunDeps {
  * @param url - The URL.
  * @param accept - The `Accept` header to send.
  * @returns The body as text.
- * @throws {Stop} When the response is not a 200 or is larger than MAX_DOCUMENT_BYTES.
+ * @throws {Stop} When the request fails (network, timeout or a redirect),
+ *   the response is not a 200, or it is larger than MAX_DOCUMENT_BYTES.
  */
 async function fetchText(deps: RunDeps, url: string, accept: string): Promise<string> {
-  const response = await deps.fetch(url, {
-    headers: { Accept: accept, "User-Agent": "bookclerk-indexnow (+https://www.indexnow.org)" },
-    redirect: "error",
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
+  let response: Response;
+  try {
+    response = await deps.fetch(url, {
+      headers: { Accept: accept, "User-Agent": "bookclerk-indexnow (+https://www.indexnow.org)" },
+      redirect: "error",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new Stop(`${url}: ${err instanceof Error ? err.message : String(err)}`);
+  }
   if (response.status !== 200) throw new Stop(`${url} answered ${response.status}`);
+  const length = Number(response.headers.get("Content-Length") ?? "0");
+  if (length > MAX_DOCUMENT_BYTES) throw new Stop(`${url} is larger than the reader accepts`);
   const text = await response.text();
   if (text.length > MAX_DOCUMENT_BYTES) throw new Stop(`${url} is larger than the reader accepts`);
   return text;
@@ -91,14 +97,24 @@ async function fetchText(deps: RunDeps, url: string, accept: string): Promise<st
 /**
  * Reads every URL the live sitemaps list, with its fingerprint.
  *
- * @param deps - The fetcher.
+ * A page without a `<lastmod>` that cannot be fetched keeps the
+ * fingerprint the previous snapshot gives it, so it reads as unchanged
+ * rather than removed, with a warning; one that is not in the snapshot
+ * either is left out until a later run can fetch it.
+ *
+ * @param deps - The fetcher and logger.
  * @param origin - The site's origin.
+ * @param previous - The previous snapshot, for pages that cannot be fetched.
  * @returns Fingerprint by URL.
  * @throws {Stop} When /sitemap.xml is not an index (the Worker's fallback
  *   while the docs dates cannot be read) or a section cannot be read; a
  *   partial list would read as removed pages.
  */
-async function currentUrls(deps: RunDeps, origin: string): Promise<Map<SiteUrl, string>> {
+async function currentUrls(
+  deps: RunDeps,
+  origin: string,
+  previous: Snapshot | null,
+): Promise<Map<SiteUrl, string>> {
   const index = readSitemap(
     await fetchText(deps, `${origin}/sitemap.xml`, "application/xml"),
     origin,
@@ -119,12 +135,21 @@ async function currentUrls(deps: RunDeps, origin: string): Promise<Map<SiteUrl, 
   }
   for (let at = 0; at < undated.length; at += FETCH_CONCURRENCY) {
     const batch = undated.slice(at, at + FETCH_CONCURRENCY);
-    const bodies = await Promise.all(batch.map((url) => fetchText(deps, url, "text/markdown")));
+    const bodies = await Promise.all(
+      batch.map((url) =>
+        fetchText(deps, url, "text/markdown").catch((err: unknown) => {
+          if (!(err instanceof Stop)) throw err;
+          deps.log(`::warning::${err.message}; it keeps its previous fingerprint`);
+          return null;
+        }),
+      ),
+    );
     batch.forEach((url, i) => {
-      const hash = createHash("sha256")
-        .update(bodies[i] ?? "")
-        .digest("hex");
-      current.set(url, `sha256:${hash}`);
+      const body = bodies[i] ?? null;
+      const kept = previous?.get(url)?.fp;
+      if (body !== null)
+        current.set(url, `sha256:${createHash("sha256").update(body).digest("hex")}`);
+      else if (kept !== undefined) current.set(url, kept);
     });
   }
   return current;
@@ -217,25 +242,26 @@ export async function run(argv: readonly string[], deps: RunDeps): Promise<numbe
 
   try {
     if (!dryRun) await checkKeyFile(deps, origin, key);
-    const current = await currentUrls(deps, origin);
     const stored = deps.readFile(snapshotIn);
     const previous = stored === null ? null : readSnapshot(stored, origin);
+    const current = await currentUrls(deps, origin, previous);
     const plan = planSubmission(previous, current, today);
     const what = previous === null ? "no previous snapshot, so every URL" : "new or changed URLs";
     deps.log(`${current.size} URLs listed; submitting ${plan.submit.length} (${what}).`);
-    const shown = plan.submit.slice(0, SUMMARY_URLS).map((url) => `- ${url}\n`);
-    const more = plan.submit.length - shown.length;
-    summary(
-      deps,
-      `### IndexNow\n\n${current.size} URLs listed; ${plan.submit.length} ${dryRun ? "to submit (dry run)" : "submitted"} (${what}).\n\n` +
-        `${shown.join("")}${more > 0 ? `- ...and ${more} more\n` : ""}`,
-    );
     if (dryRun) {
       for (const url of plan.submit) deps.log(url);
-      return 0;
+    } else {
+      await post(deps, submissionBodies(origin, key, plan.submit));
+      deps.writeFile(snapshotOut, writeSnapshot(plan.next));
     }
-    await post(deps, submissionBodies(origin, key, plan.submit));
-    deps.writeFile(snapshotOut, writeSnapshot(plan.next));
+    const shown = plan.submit.slice(0, SUMMARY_URLS).map((url) => `- ${url}\n`);
+    const more = plan.submit.length - shown.length;
+    const done = dryRun ? "to submit (dry run)" : "submitted";
+    summary(
+      deps,
+      `### IndexNow\n\n${current.size} URLs listed; ${plan.submit.length} ${done} (${what}).\n\n` +
+        `${shown.join("")}${more > 0 ? `- ...and ${more} more\n` : ""}`,
+    );
     return 0;
   } catch (err) {
     if (err instanceof Stop) {
@@ -249,7 +275,8 @@ export async function run(argv: readonly string[], deps: RunDeps): Promise<numbe
 }
 
 /* v8 ignore start -- the command line itself; tests call run() */
-if (import.meta.main) {
+// import.meta.main needs Node 24.2; the site supports Node 22.18.
+if (process.argv[1] === import.meta.filename) {
   process.exitCode = await run(process.argv.slice(2), {
     env: process.env,
     fetch,

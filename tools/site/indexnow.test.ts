@@ -216,6 +216,22 @@ test("planSubmission submits new, changed and removed URLs once a day", () => {
   );
 });
 
+test("planSubmission resubmits a page once after a submission on its own date", () => {
+  const dated = day("2026-10-28");
+  const previous: Snapshot = new Map([
+    [url("/same-day"), { fp: "lastmod:2026-10-28", sent: dated }],
+    [url("/later"), { fp: "lastmod:2026-10-27", sent: dated }],
+  ]);
+  const current = new Map([
+    [url("/same-day"), "lastmod:2026-10-28"],
+    [url("/later"), "lastmod:2026-10-27"],
+  ]);
+  assert.deepEqual(planSubmission(previous, current, dated).submit, []);
+  const next = planSubmission(previous, current, day("2026-10-29"));
+  assert.deepEqual(next.submit, [url("/same-day")]);
+  assert.deepEqual(planSubmission(next.next, current, day("2026-10-30")).submit, []);
+});
+
 test("submissionBodies splits at the protocol's limit", () => {
   const key = parseKey(KEY) as IndexNowKey;
   assert.deepEqual(submissionBodies(ORIGIN, key, []), []);
@@ -363,8 +379,6 @@ test("a run that cannot read the site skips without a snapshot", async () => {
     },
     { [`${ORIGIN}/sitemap-guide.xml`]: undefined },
     { [`${ORIGIN}/sitemap-guide.xml`]: SITE[`${ORIGIN}/sitemap.xml`] },
-    { [`${ORIGIN}/`]: undefined },
-    { [`${ORIGIN}/`]: "x".repeat(10 * 1024 * 1024 + 1) },
   ];
   for (const change of cases) {
     const site: Record<string, string> = { ...SITE };
@@ -386,8 +400,53 @@ test("a refused submission fails the run and keeps no snapshot", async () => {
     assert.equal(await run(["in.json", "out.json"], h.deps), 1, String(status));
     assert.equal(h.files.has("out.json"), false);
     assert.match(h.lines.join("\n"), new RegExp(`::error::IndexNow answered ${status}: refused`));
+    assert.equal(h.files.has("summary.md"), false, "no summary claims a submission");
   }
   const pending = harness(SITE, 202);
   assert.equal(await run(["in.json", "out.json"], pending.deps), 0, "202: key still checked");
   assert.ok(pending.files.has("out.json"));
+});
+
+test("a run that cannot reach the site skips without a snapshot", async () => {
+  const h = harness(SITE);
+  const failing = (async () => {
+    throw new TypeError("fetch failed");
+  }) as typeof fetch;
+  assert.equal(await run(["in.json", "out.json"], { ...h.deps, fetch: failing }), 0);
+  assert.equal(h.files.has("out.json"), false);
+  assert.match(h.lines.join("\n"), /::warning::IndexNow skipped: .*fetch failed/);
+});
+
+test("a page that cannot be fetched keeps its previous fingerprint", async () => {
+  const first = harness(SITE);
+  await run(["in.json", "out.json"], first.deps);
+  const before = readSnapshot(first.files.get("out.json") ?? "", ORIGIN);
+  for (const body of [undefined, "x".repeat(10 * 1024 * 1024 + 1)]) {
+    const site: Record<string, string> = { ...SITE };
+    if (body === undefined) delete site[`${ORIGIN}/`];
+    else site[`${ORIGIN}/`] = body;
+    const h = harness(site);
+    h.files.set("in.json", first.files.get("out.json") ?? "");
+    assert.equal(await run(["in.json", "out.json"], h.deps), 0);
+    assert.equal(h.seen.filter((s) => s.method === "POST").length, 0, "nothing changed");
+    assert.match(h.lines.join("\n"), /::warning::.*keeps its previous fingerprint/);
+    assert.deepEqual(readSnapshot(h.files.get("out.json") ?? "", ORIGIN), before);
+  }
+  // With no previous fingerprint the page waits for a run that can fetch it.
+  const site: Record<string, string> = { ...SITE };
+  delete site[`${ORIGIN}/`];
+  const fresh = harness(site);
+  assert.equal(await run(["in.json", "out.json"], fresh.deps), 0);
+  const posted = fresh.seen.find((s) => s.method === "POST");
+  assert.deepEqual(JSON.parse(posted?.body ?? "").urlList, [`${ORIGIN}/docs/guide/stores`]);
+});
+
+test("a declared oversized response is refused before it is read", async () => {
+  const h = harness(SITE);
+  const big = (async () =>
+    new Response("small", {
+      headers: { "Content-Length": String(10 * 1024 * 1024 + 1) },
+    })) as typeof fetch;
+  assert.equal(await run(["in.json", "out.json"], { ...h.deps, fetch: big }), 0);
+  assert.match(h.lines.join("\n"), /larger than the reader accepts/);
 });

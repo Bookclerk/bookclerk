@@ -35,6 +35,12 @@ const MAX_FINGERPRINT_LENGTH = 128;
 /** The `version` of the snapshot this module writes and reads. */
 const SNAPSHOT_VERSION = 1;
 
+/**
+ * An https origin with a lowercase hostname and no port or path: the site
+ * origins build.ts and indexnow-run.ts accept.
+ */
+export const ORIGIN_RE = /^https:\/\/([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
 /** An IndexNow key: 8 to 128 ASCII letters, digits and `-`, per the protocol. */
 const KEY_RE = /^[A-Za-z0-9-]{8,128}$/;
 
@@ -230,6 +236,10 @@ export function writeSnapshot(snapshot: Snapshot): string {
  * its old entry is kept, so the next day's run still sees the change. A
  * removed URL is dropped from the snapshot once submitted.
  *
+ * A dated page's fingerprint (`lastmod:<day>`) cannot show a second change
+ * on the day it was submitted, so a page submitted on the day it is dated
+ * is submitted once more on a later day.
+ *
  * @param previous - The previous run's snapshot, or null for none.
  * @param current - Fingerprint by URL, for every URL listed now.
  * @param today - The run's UTC day.
@@ -244,7 +254,9 @@ export function planSubmission(
   const next: Snapshot = new Map();
   for (const [url, fp] of current) {
     const before = previous?.get(url);
-    if (before !== undefined && (before.fp === fp || before.sent === today)) {
+    const sameDay = before !== undefined && before.fp === `lastmod:${before.sent}`;
+    const unchanged = before !== undefined && before.fp === fp && !sameDay;
+    if (before !== undefined && (unchanged || before.sent === today)) {
       next.set(url, before);
     } else {
       submit.push(url);

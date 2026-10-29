@@ -61,6 +61,7 @@ import {
   SHELL_VALUES,
   SITEMAP_MARKER,
 } from "./render.ts";
+import { ORIGIN_RE, parseKey } from "./indexnow.ts";
 import { sitemapXml } from "./sitemap.ts";
 import type { DocsShell, DocsVersion } from "./render.ts";
 import type { RenderedDocs } from "./docs.ts";
@@ -343,12 +344,6 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** An abbreviated or full git commit id. */
 const COMMIT_RE = /^[0-9a-f]{7,40}$/;
 
-/** An https origin with a lowercase hostname and no port or path. */
-const ORIGIN_RE = /^https:\/\/([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-
-/** An IndexNow key, per the protocol (https://www.indexnow.org/documentation). */
-const INDEXNOW_KEY_RE = /^[A-Za-z0-9-]{8,128}$/;
-
 /** Most release tags the docs version picker lists. */
 const MAX_DOCS_VERSIONS = 100;
 
@@ -409,7 +404,7 @@ export function readState(env: BuildEnv): ReleaseState {
       `SITE_DEMO_URL must be https://<lowercase hostname>, got ${JSON.stringify(demoUrl)}`,
     );
   }
-  if (indexNowKey !== null && !INDEXNOW_KEY_RE.test(indexNowKey)) {
+  if (indexNowKey !== null && parseKey(indexNowKey) === null) {
     throw new Error("SITE_INDEXNOW_KEY must be 8-128 ASCII letters, digits or '-'");
   }
   for (const t of listed) {

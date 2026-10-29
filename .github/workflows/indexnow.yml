@@ -35,17 +35,29 @@ on:
 permissions:
   contents: read
 
-# One run at a time, each reading the snapshot the previous one saved.
-concurrency:
-  group: indexnow
-  cancel-in-progress: false
-
 jobs:
-  submit:
+  # Outside the submit job's concurrency group, so a wait never holds up
+  # another run.
+  wait:
     if: >-
       vars.INDEXNOW_KEY != '' &&
       (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
+    steps:
+      # The site serves main's docs from the edge cache for up to five
+      # minutes, and GitHub's raw files are cached as long again.
+      - name: Wait for the published docs to reach the site
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.name == 'docs-publish'
+        run: sleep 600
+
+  submit:
+    needs: wait
+    runs-on: ubuntu-latest
+    # One submission at a time, each reading the snapshot the previous one
+    # saved.
+    concurrency:
+      group: indexnow
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -56,12 +68,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "26"
-
-      # The site serves main's docs from the edge cache for up to five
-      # minutes, and GitHub's raw files are cached as long again.
-      - name: Wait for the published docs to reach the site
-        if: github.event_name == 'workflow_run' && github.event.workflow_run.name == 'docs-publish'
-        run: sleep 600
 
       # The newest snapshot any earlier run saved.
       - name: Restore the previous snapshot

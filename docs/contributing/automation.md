@@ -779,7 +779,9 @@ edge cache shows the published docs.
 2. It compares them with the snapshot that the previous run kept in the
    Actions cache. URLs that are new, changed or no longer listed are
    submitted, each at most once per UTC day. A change made after that
-   day's submission waits for the next day's run.
+   day's submission waits for the next day's run. A dated page submitted on
+   the day it is dated is submitted once more on a later day, since its
+   date cannot show a second change that day.
 3. Only once IndexNow accepts the URLs does it save the new snapshot, so a
    failed run is retried in full.
 
@@ -794,9 +796,11 @@ unused) every URL is submitted.
   workflow by hand.
 - **Forks.** Without the variable the job is skipped, and the site has no
   key file.
-- **Skipped runs.** A run warns and submits nothing when the key file is
-  missing, or when `/sitemap.xml` is the build's fallback (the docs dates
-  could not be read). A refusal from IndexNow fails the run.
+- **Skipped runs.** A run warns and submits nothing when the site cannot
+  be reached, the key file is missing, a section sitemap cannot be read, or
+  `/sitemap.xml` is the build's fallback (the docs dates could not be read).
+  An undated page that cannot be fetched keeps its previous fingerprint,
+  with a warning. A refusal from IndexNow fails the run.
 - **Locally.** In `tools/site`, run
   `INDEXNOW_KEY=<key> INDEXNOW_DRY_RUN=1 node indexnow-run.ts in.json out.json`
   to list the URLs that would be submitted, with no key file needed.
