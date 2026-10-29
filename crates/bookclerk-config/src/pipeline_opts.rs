@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 /// Default is [`Self::Off`]. Replaces the old `save_chapter_json` bool +
 /// `chapter_layout` pair for *sidecar output* (Audible API fetch layout is
 /// chosen separately when chapters are needed for embedding).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
+#[schema(example = "off")]
 pub enum ChapterJsonMode {
     /// Do not write chapter JSON sidecars.
     #[default]
@@ -54,8 +55,11 @@ impl ChapterJsonMode {
 }
 
 /// Post-download output formatting. Default is enriched M4B (tags + chapters).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// `split_mp3_by_size` and `opus` parse but are not implemented yet: the
+/// acquire pipeline rejects a job that selects either before downloading.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[schema(example = "enriched_m4b")]
 pub enum OutputFormat {
     /// Remux/transcode to M4B and embed metadata/chapters (default).
     #[default]
@@ -64,9 +68,11 @@ pub enum OutputFormat {
     SingleMp3,
     /// One MP3 per chapter (after M4B chapter split).
     SplitMp3ByChapter,
-    /// Split MP3 by target file size (see `split_mp3_max_mb`).
+    /// Split MP3 by target file size (see `split_mp3_max_mb`). Not yet
+    /// implemented: the acquire pipeline rejects it before downloading.
     SplitMp3BySize,
-    /// Opus output (not yet implemented).
+    /// Opus output. Not yet implemented: the acquire pipeline rejects it
+    /// before downloading.
     Opus,
     /// Leave store-delivered media as-is (no remux/transcode/re-encode).
     None,

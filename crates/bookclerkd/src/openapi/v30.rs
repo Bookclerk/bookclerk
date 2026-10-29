@@ -130,6 +130,14 @@ impl Json {
     fn get(&self, key: &str) -> Option<&Json> {
         self.as_object().and_then(|map| map.get(key))
     }
+
+    /// The value at `key`, mutably, when this is an object holding it.
+    pub(crate) fn get_mut(&mut self, key: &str) -> Option<&mut Json> {
+        match self {
+            Json::Object(map) => map.get_mut(key),
+            _ => None,
+        }
+    }
 }
 
 /// Why a 3.1 document could not be restated as 3.0.

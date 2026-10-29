@@ -4700,15 +4700,15 @@ async fn trigger_integration_scan(
     params(BooksQuery),
     responses(
         (status = 200, description = "A page of titles.", body = BooksResponse),
-        (status = 400, description = "A filter is invalid.", body = serde_json::Value),
-        (status = 500, description = "The library could not be read.", body = serde_json::Value),
+        (status = 400, description = "A filter is invalid."),
+        (status = 500, description = "The library could not be read.", body = crate::http_error::ErrorJson),
     ),
 )]
 async fn list_books(
     State(state): State<Arc<AppState>>,
     _headers: HeaderMap,
     Query(query): Query<BooksQuery>,
-) -> Result<Json<BooksResponse>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<BooksResponse>, (StatusCode, Json<crate::http_error::ErrorJson>)> {
     let library = state.library_snapshot().await;
     let limit = query.limit.unwrap_or(40).clamp(1, 500);
     let offset = query.offset.unwrap_or(0);
@@ -4757,15 +4757,15 @@ async fn list_books(
 }
 
 /// Logs one library-books failure and returns the branded internal-error body.
-fn books_query_error(err: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
+fn books_query_error(
+    err: impl std::fmt::Display,
+) -> (StatusCode, Json<crate::http_error::ErrorJson>) {
     tracing::error!(error = %err, "GET /api/library/books failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({
-            "error": "internal_error",
-            "message": "Something went wrong on the Bookclerk daemon.",
-            "status": 500,
-        })),
+        Json(crate::http_error::ErrorJson::for_status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+        )),
     )
 }
 
@@ -6111,6 +6111,26 @@ fn internal_err(err: impl std::fmt::Display) -> (StatusCode, String) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn books_query_error_returns_the_branded_internal_error_body() {
+        let (status, axum::Json(body)) = super::books_query_error("boom");
+        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        let body = serde_json::to_value(body).unwrap();
+        assert_eq!(body["status"], 500);
+        assert_eq!(body["error"], "internal_error");
+        assert_eq!(
+            body["message"],
+            "Something went wrong on the Bookclerk daemon."
+        );
+        assert_eq!(
+            body,
+            serde_json::to_value(crate::http_error::ErrorJson::for_status(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+            .unwrap()
+        );
+    }
+
     use super::{
         allowed_setting_key, apply_database_enable_updates, build_approved_grant,
         build_database_settings_group, current_settings_snapshot,

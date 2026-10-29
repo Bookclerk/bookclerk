@@ -468,7 +468,35 @@ pub fn document() -> OpenApi {
         .insert(API_ERROR.to_string(), api_error_schema());
     add_middleware_refusals(&mut doc);
     fill_untyped_content(&mut doc);
+    close_nested_output_schemas(&mut doc);
     doc
+}
+
+/// Schemas nested in `OutputSettingsV1` whose unknown keys the daemon
+/// rejects: its deserializer checks `lame` and each `replacement_characters`
+/// rule itself (`reject_unknown_keys` in `bookclerk_library::control_plane::output`),
+/// while the same `bookclerk_config` types parsed from `config.toml` keep
+/// ignoring unknown keys, so the `additionalProperties: false` the published
+/// contract needs cannot come from a serde attribute on the types.
+const CLOSED_OUTPUT_SCHEMAS: &[&str] = &["LameConfig", "ReplacementRule"];
+
+/// Publishes `additionalProperties: false` on [`CLOSED_OUTPUT_SCHEMAS`], so
+/// a client validating against the document rejects what the route would.
+///
+/// # Arguments
+///
+/// * `doc` - The document, after every group is added.
+fn close_nested_output_schemas(doc: &mut OpenApi) {
+    use utoipa::openapi::schema::{AdditionalProperties, Schema};
+    use utoipa::openapi::RefOr;
+    let Some(components) = doc.components.as_mut() else {
+        return;
+    };
+    for name in CLOSED_OUTPUT_SCHEMAS {
+        if let Some(RefOr::T(Schema::Object(object))) = components.schemas.get_mut(*name) {
+            object.additional_properties = Some(Box::new(AdditionalProperties::FreeForm(false)));
+        }
+    }
 }
 
 /// The [`API_ERROR`] schema: `error` always, `message` and `status` when the
@@ -692,11 +720,41 @@ pub fn shared_document() -> Arc<OpenApi> {
     DOCUMENT.get_or_init(|| Arc::new(document())).clone()
 }
 
+/// An OpenAPI document as this daemon serves it: the `openapi` version
+/// string, `info` about the daemon, every route under `paths` and the
+/// schemas under `components`.
+pub struct OpenApiDocument;
+
+impl utoipa::PartialSchema for OpenApiDocument {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::ObjectBuilder::new()
+            .description(Some(
+                "An OpenAPI document as this daemon serves it: the `openapi` version string, \
+                 `info` about the daemon, every route under `paths` and the schemas under \
+                 `components`.",
+            ))
+            .examples([serde_json::json!({
+                "openapi": "3.1.0",
+                "info": {"title": "Bookclerk daemon API", "version": "0.1.0"},
+                "paths": {"/health": {"get": {"responses": {"200": {"description": "The daemon is up."}}}}},
+                "components": {"schemas": {}}
+            })])
+            .build()
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for OpenApiDocument {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("OpenApiDocument")
+    }
+}
+
 /// Serves the OpenAPI document.
 #[utoipa::path(
     get,
     path = "/api/openapi.json",
-    responses((status = 200, description = "The OpenAPI 3.1 document for this daemon's version.", content_type = "application/json")),
+    responses((status = 200, description = "The OpenAPI 3.1 document for this daemon's version.", body = OpenApiDocument)),
 )]
 pub async fn get_openapi(
     axum::extract::State(doc): axum::extract::State<Arc<OpenApi>>,
@@ -726,7 +784,22 @@ fn document_v30(doc: &OpenApi) -> anyhow::Result<v30::Json> {
     // Through text, not `serde_json::Value`, whose maps would sort the keys.
     let text = serde_json::to_string(doc)?;
     let tree: v30::Json = serde_json::from_str(&text)?;
-    Ok(v30::downgrade(&tree)?)
+    let mut restated = v30::downgrade(&tree)?;
+    // The shared `OpenApiDocument` example shows the 3.1 document; the
+    // restated document's copy shows itself.
+    if let Some(version) = [
+        "components",
+        "schemas",
+        "OpenApiDocument",
+        "example",
+        "openapi",
+    ]
+    .iter()
+    .try_fold(&mut restated, |node, key| node.get_mut(key))
+    {
+        *version = v30::Json::String("3.0.3".to_string());
+    }
+    Ok(restated)
 }
 
 /// The 3.0.3 document, built once per process (when the router is built)
@@ -758,8 +831,8 @@ pub fn shared_v30_document() -> V30Document {
                    nullable types use `nullable: true`, and a nullable reference is a copy of \
                    the schema it names.",
     responses(
-        (status = 200, description = "The OpenAPI 3.0.3 document for this daemon's version.", content_type = "application/json"),
-        (status = 500, description = "The document could not be restated; this is a bug."),
+        (status = 200, description = "The OpenAPI 3.0.3 document for this daemon's version.", body = OpenApiDocument),
+        (status = 500, description = "The document could not be restated; this is a bug.", body = OpenApiV30Unavailable),
     ),
 )]
 pub async fn get_openapi_v30(
@@ -770,13 +843,25 @@ pub async fn get_openapi_v30(
         Ok(value) => Json(value).into_response(),
         Err(_) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "openapi_v30_unavailable",
-                "message": "The OpenAPI 3.0 document could not be built; see the daemon log.",
-            })),
+            Json(OpenApiV30Unavailable {
+                error: "openapi_v30_unavailable",
+                message: "The OpenAPI 3.0 document could not be built; see the daemon log.",
+            }),
         )
             .into_response(),
     }
+}
+
+/// Body of the `500` from `GET /api/openapi-3.0.json` when the 3.1
+/// document could not be restated as 3.0.3.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct OpenApiV30Unavailable {
+    /// Always `openapi_v30_unavailable`.
+    #[schema(example = "openapi_v30_unavailable")]
+    pub error: &'static str,
+    /// What to do: the daemon log names the form that could not be restated.
+    #[schema(example = "The OpenAPI 3.0 document could not be built; see the daemon log.")]
+    pub message: &'static str,
 }
 
 /// The document as pretty JSON, as `bookclerkd --print-openapi` prints it
@@ -819,6 +904,21 @@ pub fn document_v30_json() -> anyhow::Result<String> {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[tokio::test]
+    async fn v30_route_reports_a_document_that_could_not_be_built() {
+        use http_body_util::BodyExt;
+        let doc: V30Document = Arc::new(Err("boom".to_string()));
+        let response = get_openapi_v30(axum::extract::State(doc)).await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "openapi_v30_unavailable");
+        assert!(body["message"].as_str().unwrap().contains("3.0"));
+    }
     use std::path::Path;
 
     /// HTTP methods an OpenAPI path item can hold, in JSON key form.
@@ -989,6 +1089,23 @@ mod tests {
         let v30: serde_json::Value =
             serde_json::from_str(&document_v30_json().expect("restates")).expect("JSON");
         assert_eq!(v30["openapi"], "3.0.3");
+        for name in CLOSED_OUTPUT_SCHEMAS {
+            for doc in [&v31, &v30] {
+                assert_eq!(
+                    doc["components"]["schemas"][*name]["additionalProperties"], false,
+                    "{name} must publish additionalProperties: false"
+                );
+            }
+        }
+        // The shared `OpenApiDocument` example describes each document as itself.
+        assert_eq!(
+            v31["components"]["schemas"]["OpenApiDocument"]["examples"][0]["openapi"],
+            "3.1.0"
+        );
+        assert_eq!(
+            v30["components"]["schemas"]["OpenApiDocument"]["example"]["openapi"],
+            "3.0.3"
+        );
         let mut problems = Vec::new();
         check(&v30, "", &mut problems);
         assert!(problems.is_empty(), "{problems:#?}");

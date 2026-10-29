@@ -227,13 +227,16 @@ pub const MAX_EVENTS_RETENTION_DAYS: u64 = 3650;
 pub const MAX_EVENTS_CONCURRENCY: u32 = 32;
 
 /// Typed `[events]` document, schema version 1.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct EventsSettingsV1 {
     /// Days to keep acked and rejected deliveries.
+    #[schema(example = 30)]
     pub retention_days: u64,
     /// Days to keep dead-lettered deliveries.
+    #[schema(example = 90)]
     pub dead_letter_retention_days: u64,
     /// Local delivery workers and the cluster in-flight cap.
+    #[schema(example = 4)]
     pub concurrency: u32,
 }
 

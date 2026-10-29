@@ -89,11 +89,28 @@ pub fn document_error(status: StatusCode, message: &'static str) -> Response {
 /// JSON error object (`error`, `message`, numeric `status`) for API clients.
 pub(crate) struct ErrorJson {
     /// Machine slug (same as [`ErrorBody::code`]).
+    #[schema(example = "not_found")]
     error: &'static str,
     /// Operator-facing explanation.
+    #[schema(example = "That page or resource was not found.")]
     message: &'static str,
     /// Numeric HTTP status (duplicates the response status for clients).
+    #[schema(example = 404)]
     status: u16,
+}
+
+impl ErrorJson {
+    /// The body the middleware would write for `status`: its slug and
+    /// message from [`describe`], for a handler that sets its own
+    /// `Content-Type` and so bypasses the middleware.
+    pub(crate) fn for_status(status: StatusCode) -> Self {
+        let (error, message) = describe(status);
+        Self {
+            error,
+            message,
+            status: status.as_u16(),
+        }
+    }
 }
 
 /// Maps common statuses to a slug and Bookclerk-branded message.
@@ -439,6 +456,15 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    #[test]
+    fn for_status_restates_the_middleware_body() {
+        let body = serde_json::to_value(ErrorJson::for_status(StatusCode::NOT_FOUND)).unwrap();
+        let (slug, message) = describe(StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], slug);
+        assert_eq!(body["message"], message);
+        assert_eq!(body["status"], 404);
+    }
 
     async fn forbidden() -> StatusCode {
         StatusCode::FORBIDDEN

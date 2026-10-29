@@ -1588,6 +1588,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ureq",
+ "utoipa",
  "windows-sys 0.61.2",
 ]
 
