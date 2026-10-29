@@ -861,6 +861,21 @@ pub fn document_v30_json() -> anyhow::Result<String> {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[tokio::test]
+    async fn v30_route_reports_a_document_that_could_not_be_built() {
+        use http_body_util::BodyExt;
+        let doc: V30Document = Arc::new(Err("boom".to_string()));
+        let response = get_openapi_v30(axum::extract::State(doc)).await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "openapi_v30_unavailable");
+        assert!(body["message"].as_str().unwrap().contains("3.0"));
+    }
     use std::path::Path;
 
     /// HTTP methods an OpenAPI path item can hold, in JSON key form.

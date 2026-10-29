@@ -457,6 +457,15 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn for_status_restates_the_middleware_body() {
+        let body = serde_json::to_value(ErrorJson::for_status(StatusCode::NOT_FOUND)).unwrap();
+        let (slug, message) = describe(StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], slug);
+        assert_eq!(body["message"], message);
+        assert_eq!(body["status"], 404);
+    }
+
     async fn forbidden() -> StatusCode {
         StatusCode::FORBIDDEN
     }

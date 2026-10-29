@@ -6111,6 +6111,21 @@ fn internal_err(err: impl std::fmt::Display) -> (StatusCode, String) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn books_query_error_returns_the_branded_internal_error_body() {
+        let (status, axum::Json(body)) = super::books_query_error("boom");
+        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        let body = serde_json::to_value(body).unwrap();
+        assert_eq!(body["status"], 500);
+        assert_eq!(
+            body,
+            serde_json::to_value(crate::http_error::ErrorJson::for_status(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))
+            .unwrap()
+        );
+    }
+
     use super::{
         allowed_setting_key, apply_database_enable_updates, build_approved_grant,
         build_database_settings_group, current_settings_snapshot,

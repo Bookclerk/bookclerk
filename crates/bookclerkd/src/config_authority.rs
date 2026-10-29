@@ -2206,6 +2206,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn domain_routes_return_typed_bodies_and_revision_conflicts() {
+        use super::{
+            get_events_domain, get_output_domain, put_events_domain, put_output_domain,
+            DomainReplayed, EventsDomainChange, OutputDomainChange, PutEventsDomainRequest,
+            PutOutputDomainRequest,
+        };
+        use axum::extract::State;
+        use axum::http::StatusCode;
+        use axum::Json;
+        use http_body_util::BodyExt;
+
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let (store, _session, config, _files) = enrolled().await;
+        let state = std::sync::Arc::new(control_plane_test_state(store, config));
+
+        // GET: the revision metadata and the settings share one object.
+        let Json(current) = get_events_domain(State(state.clone())).await.unwrap();
+        let current = serde_json::to_value(&current).unwrap();
+        assert_eq!(current["namespace"], "core.events");
+        assert_eq!(current["scope_type"], "cluster");
+        assert_eq!(current["revision"], 1);
+        assert!(current["retention_days"].is_u64());
+        assert!(current["dead_letter_retention_days"].is_u64());
+        assert!(current["concurrency"].is_u64());
+
+        // PUT against the current revision applies and reports the next one.
+        let Json(applied) = put_events_domain(
+            State(state.clone()),
+            Json(PutEventsDomainRequest {
+                expected_revision: 1,
+                retention_days: 9,
+                dead_letter_retention_days: 45,
+                concurrency: 2,
+            }),
+        )
+        .await
+        .unwrap();
+        let applied = serde_json::to_value(&applied).unwrap();
+        assert_eq!(applied["namespace"], "core.events");
+        assert_eq!(applied["revision"], 2);
+        assert_eq!(applied["retention_days"], 9);
+        assert_eq!(applied["concurrency"], 2);
+        assert!(applied.get("replayed").is_none());
+
+        // PUT against a stale revision is a 409 naming the revision that won.
+        let conflict = put_events_domain(
+            State(state.clone()),
+            Json(PutEventsDomainRequest {
+                expected_revision: 1,
+                retention_days: 3,
+                dead_letter_retention_days: 3,
+                concurrency: 1,
+            }),
+        )
+        .await
+        .expect_err("stale revision must be refused");
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let body = conflict.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "error": "revision_conflict", "current_revision": 2 })
+        );
+
+        // A replayed write renders the namespace, the flag and the revision.
+        let replayed = serde_json::to_value(EventsDomainChange::Replayed(DomainReplayed::new(
+            "core.events",
+            2,
+        )))
+        .unwrap();
+        assert_eq!(
+            replayed,
+            serde_json::json!({ "namespace": "core.events", "replayed": true, "revision": 2 })
+        );
+
+        // The output domain follows the same shape, with the settings under
+        // `document`.
+        let Json(output) = get_output_domain(State(state.clone())).await.unwrap();
+        let output_value = serde_json::to_value(&output).unwrap();
+        assert_eq!(output_value["namespace"], "core.output");
+        assert_eq!(output_value["revision"], 1);
+        assert!(output_value["document"].is_object());
+        let Json(applied) = put_output_domain(
+            State(state.clone()),
+            Json(PutOutputDomainRequest {
+                expected_revision: 1,
+                document: output.document.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        let applied = serde_json::to_value(&applied).unwrap();
+        assert_eq!(applied["namespace"], "core.output");
+        assert_eq!(applied["revision"], 2);
+        assert_eq!(applied["document"], output_value["document"]);
+        let conflict = put_output_domain(
+            State(state.clone()),
+            Json(PutOutputDomainRequest {
+                expected_revision: 1,
+                document: output.document.clone(),
+            }),
+        )
+        .await
+        .expect_err("stale revision must be refused");
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let replayed = serde_json::to_value(OutputDomainChange::Replayed(DomainReplayed::new(
+            bookclerk_library::control_plane::OUTPUT_NAMESPACE,
+            2,
+        )))
+        .unwrap();
+        assert_eq!(replayed["namespace"], "core.output");
+        assert_eq!(replayed["replayed"], true);
+    }
+
+    #[tokio::test]
     async fn stale_read_cannot_replace_a_newer_publication() {
         let _dek = crate::auth::tests::process_dek_lock().await;
         let (store, session, config, _files) = enrolled().await;
