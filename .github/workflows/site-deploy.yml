@@ -22,6 +22,10 @@
 # Organization variable DOMAIN (default bookclerk.app): the Worker is served on
 # the custom domain <DOMAIN>, whose zone must be in the Cloudflare account.
 #
+# Variable INDEXNOW_KEY (optional, public by design): the site serves it as
+# /<key>.txt, which IndexNow checks before accepting the URLs indexnow.yml
+# submits after each deploy. Unset means no key file and no submissions.
+#
 # The pages link to the hosted demo (demo-deploy.yml) found the way that
 # workflow publishes it: https://demo.<DOMAIN> when DOMAIN is set, otherwise
 # the Actions variable DEMO_URL it records for a workers.dev deploy. With
@@ -191,6 +195,7 @@ jobs:
           SITE_RELEASE_DATE: ${{ steps.release.outputs.date }}
           SITE_DOCS_VERSIONS: ${{ steps.release.outputs.tags }}
           SITE_ORIGIN: https://${{ vars.DOMAIN || 'bookclerk.app' }}
+          SITE_INDEXNOW_KEY: ${{ vars.INDEXNOW_KEY }}
           DOMAIN: ${{ vars.DOMAIN }}
           DEMO_URL: ${{ vars.DEMO_URL }}
         run: |

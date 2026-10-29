@@ -6,7 +6,8 @@
 //   makes in Node before the tests start.
 // - `node` runs the tests of the build itself (build.ts writes dist/ and
 //   reads the repository) and of the docs pages against the whole docs/
-//   tree and the browser scripts.
+//   tree and the browser scripts, and the IndexNow command line
+//   (indexnow.test.ts), which runs in Node from the indexnow workflow.
 
 import { readFileSync } from "node:fs";
 import { URL } from "node:url";
@@ -21,7 +22,7 @@ const COMPATIBILITY_DATE = /^compatibility_date = "([0-9-]+)"$/m.exec(
 if (COMPATIBILITY_DATE === undefined) throw new Error("wrangler.toml has no compatibility_date");
 
 /** Tests that run outside the Workers runtime. */
-const NODE_TESTS = ["build.test.ts", "docs.test.ts"];
+const NODE_TESTS = ["build.test.ts", "docs.test.ts", "indexnow.test.ts"];
 
 /**
  * FUZZ_SEED and FUZZ_ITERATIONS from the shell, passed on to fuzz.test.ts,

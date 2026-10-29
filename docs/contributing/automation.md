@@ -767,6 +767,54 @@ permissions that every deploy uses: D1 for `bookclerk-diagnostics` and
 > Renaming a Worker in `wrangler.toml` creates a new Worker. That repeats
 > this step and leaves the old one behind, so keep the names as they are.
 
+## IndexNow
+
+`indexnow.yml` tells search engines which pages of the website are new or
+changed, through [IndexNow](https://www.indexnow.org). Bing, Yandex,
+Seznam, Naver and Yep share what it receives, so they need not wait to
+recrawl the site.
+
+It runs after each `site-deploy` and `docs-publish` run, daily, and on
+demand. A run after `docs-publish` first waits ten minutes, until the site's
+edge cache shows the published docs.
+
+1. It reads every URL that the live `/sitemap.xml` index lists, and gives
+   each one a fingerprint: its `<lastmod>`, or a SHA-256 of the page as
+   Markdown for pages without one.
+2. It compares them with the snapshot that the previous run kept in the
+   Actions cache. URLs that are new, changed or no longer listed are
+   submitted, each at most once per UTC day. A change made after that
+   day's submission waits for the next day's run. A dated page submitted on
+   the day it is dated is submitted once more on a later day, since its
+   date cannot show a second change that day.
+3. Only once IndexNow accepts the URLs does it save the new snapshot, so a
+   failed run is retried in full.
+
+With no snapshot (the first run, or a run after the cache went 7 days
+unused) every URL is submitted.
+
+- **Setup.** Set the repository or organization variable `INDEXNOW_KEY` to
+  8 to 128 letters, digits or `-`, for example `uuidgen | tr -d -`. The key
+  is public by design: `site-deploy.yml` serves it as
+  `https://<DOMAIN>/<key>.txt`, and IndexNow fetches that file to check that
+  a submission came from the site. Deploy the site once, then run the
+  workflow by hand.
+- **Forks.** Without the variable the job is skipped, and the site has no
+  key file.
+- **Skipped runs.** A run warns and submits nothing when the site cannot
+  be reached, the key file is missing, a section sitemap cannot be read, or
+  `/sitemap.xml` is the build's fallback (the docs dates could not be read).
+  An undated page that cannot be fetched keeps its previous fingerprint,
+  with a warning. A refusal from IndexNow fails the run.
+- **Locally.** In `tools/site`, run
+  `INDEXNOW_KEY=<key> INDEXNOW_DRY_RUN=1 node indexnow-run.ts in.json out.json`
+  to list the URLs that would be submitted, with no key file needed.
+
+> [!NOTE]
+> Cloudflare's Crawler Hints also sends IndexNow signals, but only for
+> responses that miss the zone's cache. The docs pages are rendered by the
+> Worker and skip that cache, so Crawler Hints covers the static files only.
+
 ## Next steps
 
 - [Continuous integration](ci.md): the checks these workflows build on.

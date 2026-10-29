@@ -433,6 +433,17 @@ fuzzing in `npm test`.
   document's shape read through property descriptors, the date digit by
   digit against a days-in-month table, and each sitemap key segment by
   segment. The date shown is only `Mon D, YYYY`.
+- **IndexNow sitemap reader** (`readSitemap` in `tools/site/indexnow.ts`)
+  reads the live site's sitemaps in the `indexnow` workflow, which then
+  submits the URLs they list. Corpus `tools/site/fuzz/indexnow_sitemap/`.
+  Oracle: a hand-written scanner for the entries the Worker writes, its own
+  entity decoder, a URL check against the site's origin and the
+  last-updated date oracle.
+- **IndexNow snapshot reader** (`readSnapshot` in `tools/site/indexnow.ts`)
+  reads the previous run's snapshot back from the Actions cache. Corpus
+  `tools/site/fuzz/indexnow_snapshot/`. Oracle: the document read through
+  property descriptors, each URL checked against the site's origin and each
+  date by the last-updated date oracle.
 
 ### Hosted demo Worker
 
