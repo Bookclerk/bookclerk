@@ -39,6 +39,8 @@ FULL_SUITE_PATHS = frozenset(
 
 FULL_SUITE_PATH_PREFIXES = (
     ".cargo/",
+    # nextest profiles: every Rust test run reads them.
+    ".config/",
     ".github/workflows/",
     "scripts/ci_plan/",
     "fuzz/",
@@ -91,6 +93,8 @@ SITE_PREFIX = "tools/site/"
 BRAND_PREFIX = "assets/brand/"
 COLLECTOR_PREFIX = "tools/diagnostics-collector/"
 DEMO_PREFIX = "tools/demo/"
+# Run by every Worker check to profile its Worker's startup.
+WORKER_STARTUP_FILES = frozenset({"scripts/worker_startup.py", "scripts/worker_startup.toml"})
 # Files outside tools/demo/ that its tests read: the route table must give
 # every operation in the daemon's OpenAPI document a verdict, and the demo's
 # pages must carry the website's footer note, fonts and the app's mark
@@ -169,7 +173,8 @@ DOC_FILES = frozenset(
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 # Scripts that only plan-job tests exercise (the CLA checker runs in its own
 # workflow, from the default branch, and builds nothing; the coverage gate
-# runs in CI Gate on every run, and Codecov reads its settings itself).
+# runs in CI Gate on every run, Codecov reads its settings itself, and the
+# bundle uploader in tools/codecov only runs in coverage-upload.yml).
 PLAN_JOB_SCRIPT_FILES = frozenset(
     {
         "scripts/cla_check.py",
@@ -178,12 +183,15 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
         "scripts/coverage_gate.py",
         "scripts/coverage_areas.toml",
         ".github/codecov.yml",
+        "tools/codecov/package.json",
+        "tools/codecov/package-lock.json",
     }
 )
 
 KNOWN_TOP_LEVEL = frozenset(
     {
         ".cargo",
+        ".config",
         ".cursor",
         ".dockerignore",
         ".devcontainer",
@@ -835,6 +843,11 @@ def build_plan(
             surf.collector.append(path)
             classified = True
         if path.startswith(DEMO_PREFIX):
+            surf.demo.append(path)
+            classified = True
+        if path in WORKER_STARTUP_FILES:
+            surf.site.append(path)
+            surf.collector.append(path)
             surf.demo.append(path)
             classified = True
         if path in DEMO_TEST_INPUTS:

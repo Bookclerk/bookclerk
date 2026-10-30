@@ -22,6 +22,10 @@
 # Organization variable DOMAIN (default bookclerk.app): the Worker is served on
 # the custom domain <DOMAIN>, whose zone must be in the Cloudflare account.
 #
+# Variable INDEXNOW_KEY (optional, public by design): the site serves it as
+# /<key>.txt, which IndexNow checks before accepting the URLs indexnow.yml
+# submits after each deploy. Unset means no key file and no submissions.
+#
 # The pages link to the hosted demo (demo-deploy.yml) found the way that
 # workflow publishes it: https://demo.<DOMAIN> when DOMAIN is set, otherwise
 # the Actions variable DEMO_URL it records for a workers.dev deploy. With
@@ -191,6 +195,7 @@ jobs:
           SITE_RELEASE_DATE: ${{ steps.release.outputs.date }}
           SITE_DOCS_VERSIONS: ${{ steps.release.outputs.tags }}
           SITE_ORIGIN: https://${{ vars.DOMAIN || 'bookclerk.app' }}
+          SITE_INDEXNOW_KEY: ${{ vars.INDEXNOW_KEY }}
           DOMAIN: ${{ vars.DOMAIN }}
           DEMO_URL: ${{ vars.DEMO_URL }}
         run: |
@@ -225,9 +230,21 @@ jobs:
           echo "Site URL: https://${DOMAIN}"
 
       - name: Deploy Worker
+        id: deploy
         uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: tools/site
           command: deploy
+
+      # Cloudflare's own startup figure for this deploy
+      # (docs/contributing/ci.md#worker-startup-time); warns near the limit.
+      - name: Report the startup time
+        # The job runs in the Worker's directory; the script and its budgets
+        # are repository-relative. Reporting never fails a deploy.
+        working-directory: .
+        continue-on-error: true
+        env:
+          WRANGLER_OUTPUT: ${{ steps.deploy.outputs.command-output }}
+        run: python3 scripts/worker_startup.py deploy --worker site

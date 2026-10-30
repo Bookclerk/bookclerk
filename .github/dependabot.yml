@@ -87,6 +87,15 @@ updates:
     cooldown:
       default-days: 7
 
+  # Codecov Bundle Analysis uploader for coverage-upload.yml.
+  - package-ecosystem: npm
+    directory: "/tools/codecov"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+
   # Web UI bundled into ui/dist and served by bookclerkd.
   - package-ecosystem: npm
     directory: "/ui"

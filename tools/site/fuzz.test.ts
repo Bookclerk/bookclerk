@@ -14,6 +14,7 @@ import { cleanSvg, diagram } from "./diagram.ts";
 import { HTTP_METHODS } from "./api-reference.ts";
 import { highlight } from "./highlight.ts";
 import { datedPages, formatDate, MAX_DOC_KEY_LENGTH, pageDate } from "./last-updated.ts";
+import { MAX_DOCUMENT_BYTES, MAX_SITEMAP_ENTRIES, readSitemap, readSnapshot } from "./indexnow.ts";
 import { renderDoc, SEARCH_INDEX } from "./render.ts";
 import { docsTarget, pickEncoding, sitePageLocation } from "./worker.ts";
 import type { Encoding } from "./worker.ts";
@@ -1038,15 +1039,22 @@ function checkApiPage(source: string, context: string): void {
     props === 0 || laid.includes('<ul class="api-props">'),
     `property row outside a property list: ${context}`,
   );
+  // A fold's summary is the whole row (head, description, count) and its
+  // list follows the summary.
   const folds = (laid.match(/<details class="api-prop-nested"/g) ?? []).length;
   assert.equal(
     folds,
     (
       laid.match(
-        /<details class="api-prop-nested"(?: open)?><summary>\d+ fields?<\/summary>\n<ul class="api-props">/g,
+        /<details class="api-prop-nested"><summary><span class="api-prop-head">[^]*?<span class="api-prop-count">\d+ fields?<\/span><\/summary>\n<ul class="api-props">/g,
       ) ?? []
     ).length,
     `fold without its summary and list: ${context}`,
+  );
+  assert.equal(
+    folds,
+    (laid.match(/<\/summary>/g) ?? []).length,
+    `summary outside a fold: ${context}`,
   );
   const badges = (laid.match(/<span class="api-method /g) ?? []).length;
   assert.equal(badges, sections.length, `badge outside an operation heading: ${context}`);
@@ -1070,7 +1078,9 @@ function checkApiPage(source: string, context: string): void {
     "()".repeat(count(/<span class="api-prop-in">/g)) +
     ",".repeat(count(/<span class="api-prop-required">/g)) +
     "—".repeat(count(/<span class="api-prop-desc">/g));
-  const added = [...laid.matchAll(/<summary>(\d+ fields?)<\/summary>/g)].map((m) => m[1]).join("");
+  const added = [...laid.matchAll(/<span class="api-prop-count">(\d+ fields?)<\/span>/g)]
+    .map((m) => m[1])
+    .join("");
   assert.equal(chars(laid + methods + dropped), chars(plain + added), `text changed: ${context}`);
 }
 
@@ -1329,5 +1339,317 @@ test("the site and docs redirects keep mutated paths canonical", () => {
       PATH_FRAGMENTS,
     );
     checkRedirects(path, `FUZZ_SEED=${SEED} iteration ${i}: ${JSON.stringify(path)}`);
+  }
+});
+
+/** The origin the IndexNow readers are fuzzed against. */
+const INDEXNOW_ORIGIN = "https://bookclerk.app";
+
+/** Fragments sitemap mutations splice in: its tags, entities, dates and other URLs. */
+const SITEMAP_FRAGMENTS = [
+  "<url>",
+  "</url>",
+  "<sitemap>",
+  "</sitemap>",
+  "<loc>",
+  "</loc>",
+  "<lastmod>",
+  "</lastmod>",
+  "<urlset>",
+  "<sitemapindex>",
+  "&amp;",
+  "&lt;",
+  "&#39;",
+  "&nbsp;",
+  "&",
+  ";",
+  "https://bookclerk.app/",
+  "https://example.com/",
+  "http://bookclerk.app/",
+  "?q=1",
+  "#x",
+  "2026-10-29",
+  "2026-02-30",
+  " ",
+  "\n",
+  "\u00a0",
+  "\u3000",
+  "<",
+  ">",
+  "/",
+];
+
+/** Fragments snapshot mutations splice in: its keys, values and JSON syntax. */
+const SNAPSHOT_FRAGMENTS = [
+  '"version"',
+  '"urls"',
+  '"fp"',
+  '"sent"',
+  '"https://bookclerk.app/x"',
+  '"https://example.com/"',
+  '"2026-10-29"',
+  '"2026-02-30"',
+  '"__proto__"',
+  "1",
+  "2",
+  "null",
+  "[]",
+  "{}",
+  ",",
+  ":",
+  "{",
+  "}",
+  '"',
+  '""',
+];
+
+/**
+ * Tells whether a character is JavaScript's `\s`, listed by hand.
+ *
+ * @param ch - One UTF-16 code unit.
+ * @returns True for white space and line terminators.
+ */
+function oracleSpace(ch: string): boolean {
+  return (
+    "\t\n\v\f\r \u00a0\u1680\u2028\u2029\u202f\u205f\u3000\ufeff".includes(ch) ||
+    (ch >= "\u2000" && ch <= "\u200a")
+  );
+}
+
+/**
+ * Decodes the five entities escapeHtml writes, scanning by hand.
+ *
+ * @param text - Element text.
+ * @returns The text, or null when an `&` starts anything else.
+ */
+function oracleEntities(text: string): string | null {
+  const names: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" };
+  let out = "";
+  let at = 0;
+  while (at < text.length) {
+    const amp = text.indexOf("&", at);
+    if (amp === -1) return out + text.slice(at);
+    const semi = text.indexOf(";", amp);
+    if (semi === -1) return null;
+    const value = names[text.slice(amp + 1, semi)];
+    if (value === undefined || !Object.hasOwn(names, text.slice(amp + 1, semi))) return null;
+    out += text.slice(at, amp) + value;
+    at = semi + 1;
+  }
+  return out;
+}
+
+/**
+ * Checks a URL the way the readers must, written apart from indexnow.ts.
+ *
+ * @param text - The candidate.
+ * @returns True for a URL on INDEXNOW_ORIGIN in normal form with no query,
+ *   fragment or credentials.
+ */
+function oracleSiteUrl(text: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return false;
+  }
+  return (
+    url.href === text &&
+    url.protocol === "https:" &&
+    url.host === "bookclerk.app" &&
+    !text.includes("?") &&
+    !text.includes("#") &&
+    !text.includes("@")
+  );
+}
+
+/**
+ * Checks a date with the last-updated oracle.
+ *
+ * @param value - The candidate.
+ * @returns The date, or null.
+ */
+function oracleDate(value: unknown): string | null {
+  return oraclePageDate(JSON.stringify({ version: 1, pages: { d: value } }), "d");
+}
+
+/**
+ * Reads a sitemap by scanning it by hand: the entries the reader must
+ * return, or null when it must refuse the document.
+ *
+ * @param xml - The document.
+ * @returns The expected result.
+ */
+function oracleSitemap(
+  xml: string,
+): { kind: string; entries: { url: string; lastmod: string | null }[] } | null {
+  if (xml.length > MAX_DOCUMENT_BYTES) return null;
+  const index = xml.includes("<sitemapindex");
+  if (index === xml.includes("<urlset")) return null;
+  const want = index ? "sitemap" : "url";
+  const entries: { url: string; lastmod: string | null }[] = [];
+  /** Skips white space from `at`. */
+  const skip = (at: number): number => {
+    let i = at;
+    while (i < xml.length && oracleSpace(xml[i] ?? "")) i++;
+    return i;
+  };
+  /** Reads `<tag>text</tag>` at `at`: the text and the end, or null. */
+  const element = (at: number, tag: string): { text: string; end: number } | null => {
+    if (!xml.startsWith(`<${tag}>`, at)) return null;
+    const from = at + tag.length + 2;
+    const lt = xml.indexOf("<", from);
+    if (lt === -1 || !xml.startsWith(`</${tag}>`, lt)) return null;
+    return { text: xml.slice(from, lt), end: lt + tag.length + 3 };
+  };
+  let at = 0;
+  while (at < xml.length) {
+    const name = xml.startsWith("<url>", at)
+      ? "url"
+      : xml.startsWith("<sitemap>", at)
+        ? "sitemap"
+        : "";
+    if (name === "") {
+      at++;
+      continue;
+    }
+    const loc = element(skip(at + name.length + 2), "loc");
+    if (loc === null) {
+      at++;
+      continue;
+    }
+    const afterLoc = skip(loc.end);
+    const lastmod = element(afterLoc, "lastmod");
+    let end = -1;
+    let date: string | undefined;
+    if (lastmod !== null && xml.startsWith(`</${name}>`, skip(lastmod.end))) {
+      end = skip(lastmod.end) + name.length + 3;
+      date = lastmod.text;
+    } else if (xml.startsWith(`</${name}>`, afterLoc)) {
+      end = afterLoc + name.length + 3;
+    }
+    if (end === -1) {
+      at++;
+      continue;
+    }
+    if (entries.length >= MAX_SITEMAP_ENTRIES) break;
+    if (name !== want) return null;
+    const decoded = oracleEntities(loc.text);
+    if (decoded !== null && oracleSiteUrl(decoded))
+      entries.push({ url: decoded, lastmod: date === undefined ? null : oracleDate(date) });
+    at = end;
+  }
+  return { kind: index ? "index" : "urlset", entries };
+}
+
+/**
+ * Checks one readSitemap run against the oracle.
+ *
+ * @param xml - The document.
+ * @param context - What to print on failure.
+ */
+function checkSitemap(xml: string, context: string): void {
+  assert.deepEqual(
+    readSitemap(xml, INDEXNOW_ORIGIN),
+    oracleSitemap(xml),
+    `${context}: ${JSON.stringify(xml)}`,
+  );
+}
+
+test("readSitemap agrees with the oracle on its seed corpus", () => {
+  const seeds = corpus("indexnow_sitemap");
+  assert.ok(seeds.length >= 10);
+  let read = 0;
+  for (const seed of seeds) {
+    checkSitemap(seed, "seed");
+    read += readSitemap(seed, INDEXNOW_ORIGIN)?.entries.length ?? 0;
+  }
+  assert.ok(read >= 10, "the seeds hold entries");
+});
+
+test("readSitemap agrees with the oracle on mutated inputs", () => {
+  const seeds = corpus("indexnow_sitemap");
+  const rand = prng(SEED ^ 0x1d);
+  for (let i = 0; i < ITERATIONS; i++) {
+    const xml = mutate(
+      seeds[Math.floor(rand() * seeds.length)] ?? "",
+      seeds,
+      rand,
+      SITEMAP_FRAGMENTS,
+    );
+    checkSitemap(xml, `FUZZ_SEED=${SEED} iteration ${i}`);
+  }
+});
+
+/**
+ * Reads a snapshot apart from indexnow.ts: the entries the reader must keep,
+ * or null when it must refuse the document.
+ *
+ * @param json - The document.
+ * @returns URL → entry, as plain pairs.
+ */
+function oracleSnapshot(json: string): [string, { fp: string; sent: string }][] | null {
+  if (json.length > MAX_DOCUMENT_BYTES) return null;
+  let document: unknown;
+  try {
+    document = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  const isObject = (v: unknown): v is object =>
+    typeof v === "object" && v !== null && !(v instanceof Array);
+  if (!isObject(document)) return null;
+  const version = Object.getOwnPropertyDescriptor(document, "version")?.value;
+  const urls = Object.getOwnPropertyDescriptor(document, "urls")?.value;
+  if (version !== 1 || !isObject(urls)) return null;
+  const out: [string, { fp: string; sent: string }][] = [];
+  for (const name of Object.getOwnPropertyNames(urls)) {
+    const value: unknown = Object.getOwnPropertyDescriptor(urls, name)?.value;
+    if (!oracleSiteUrl(name) || !isObject(value)) continue;
+    const fp: unknown = Object.getOwnPropertyDescriptor(value, "fp")?.value;
+    const sent = oracleDate(Object.getOwnPropertyDescriptor(value, "sent")?.value);
+    if (typeof fp !== "string" || fp.length === 0 || fp.length > 128 || sent === null) continue;
+    out.push([name, { fp, sent }]);
+  }
+  return out;
+}
+
+/**
+ * Checks one readSnapshot run against the oracle.
+ *
+ * @param json - The document.
+ * @param context - What to print on failure.
+ */
+function checkSnapshot(json: string, context: string): void {
+  const got = readSnapshot(json, INDEXNOW_ORIGIN);
+  assert.deepEqual(
+    got === null ? null : [...got],
+    oracleSnapshot(json),
+    `${context}: ${JSON.stringify(json)}`,
+  );
+}
+
+test("readSnapshot agrees with the oracle on its seed corpus", () => {
+  const seeds = corpus("indexnow_snapshot");
+  assert.ok(seeds.length >= 8);
+  let kept = 0;
+  for (const seed of seeds) {
+    checkSnapshot(seed, "seed");
+    kept += readSnapshot(seed, INDEXNOW_ORIGIN)?.size ?? 0;
+  }
+  assert.ok(kept >= 5, "the seeds hold entries");
+});
+
+test("readSnapshot agrees with the oracle on mutated inputs", () => {
+  const seeds = corpus("indexnow_snapshot");
+  const rand = prng(SEED ^ 0x5a);
+  for (let i = 0; i < ITERATIONS; i++) {
+    const json = mutate(
+      seeds[Math.floor(rand() * seeds.length)] ?? "",
+      seeds,
+      rand,
+      SNAPSHOT_FRAGMENTS,
+    );
+    checkSnapshot(json, `FUZZ_SEED=${SEED} iteration ${i}`);
   }
 });

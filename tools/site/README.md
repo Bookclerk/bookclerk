@@ -32,6 +32,7 @@ instead of `main`'s.
 | `SITE_COMMIT` | commit the site is built from |
 | `SITE_BUILT_ON` | build date, `YYYY-MM-DD` (default: today) |
 | `SITE_ORIGIN` | `https://<host>` the site is served from, for canonical and preview URLs (default `https://bookclerk.app`) |
+| `SITE_INDEXNOW_KEY` | the site's IndexNow key, written to `/<key>.txt`; empty means no key file. The workflow passes the `INDEXNOW_KEY` variable (see [IndexNow](../../docs/contributing/automation.md#indexnow)) |
 | `SITE_DEMO_URL` | `https://<host>` of the hosted demo ([`tools/demo`](../demo/README.md)); empty means no demo, and the pages leave out every demo link. The workflow uses `https://demo.<DOMAIN>`, else the `DEMO_URL` variable, and none when `DEMO_URL` is `none` |
 
 ## Local preview
@@ -298,9 +299,15 @@ versions.
   URLs. `robots.txt` allows all crawlers, points to `/sitemap.xml` and
   carries a `Content-Signal` line (`search=yes, ai-input=yes, ai-train=yes,
   use=reference`: index, excerpt, and link back to the source page) under
-  the Content Signals policy text. Cloudflare prepends its own managed rules to this file
-  when Bot Preference Sync is on with a blocking AI bot policy, so keep that
-  setting off for bookclerk.app.
+  the Content Signals policy text. Cloudflare prepends its own managed rules
+  to this file when Bot Preference Sync is on with a blocking AI bot policy,
+  so keep that setting off for bookclerk.app.
+- No page carries `noarchive`. Bing reads it as "leave this page out of
+  Copilot answers", and the site wants to be found and cited there too.
+- IndexNow: with `SITE_INDEXNOW_KEY` set, the build writes the key file,
+  and the `indexnow` workflow (`indexnow-run.ts`, planned by `indexnow.ts`)
+  submits the URLs the live sitemaps list as new or changed. See
+  [IndexNow](../../docs/contributing/automation.md#indexnow).
 - `/sitemap` is the same list for people, linked from the footer. It is a
   website page like `/privacy`, not a docs page: `build.ts` bakes
   `src/sitemap.html` into the shell and the Worker fills in the list

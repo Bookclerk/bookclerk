@@ -1,0 +1,16 @@
+{
+  "name": "bookclerk-codecov",
+  "private": true,
+  "description": "Codecov Bundle Analysis uploader for .github/workflows/coverage-upload.yml; CI only, never shipped.",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "devDependencies": {
+    "@codecov/bundle-analyzer": "2.0.1"
+  },
+  "overrides": {
+    "zod": "4.6.7"
+  }
+}

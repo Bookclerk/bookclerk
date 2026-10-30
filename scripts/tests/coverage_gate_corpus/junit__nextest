@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="4" skipped="0" failures="1" errors="0" time="1.6">
+    <testsuite name="bookclerk-naming::templates" tests="4" skipped="0" errors="0" failures="1">
+        <testcase name="cmp" classname="bookclerk-naming::templates" timestamp="2026-10-28T21:43:11.647+00:00" time="0.033"/>
+        <testcase name="empty_fields" classname="bookclerk-naming::templates" timestamp="2026-10-28T21:43:11.647+00:00" time="0.073"/>
+        <testcase name="rejects_climbing" classname="bookclerk-naming::templates" timestamp="2026-10-28T21:40:40.956+00:00" time="1.250">
+            <failure message="test failed" type="test failure">thread 'rejects_climbing' panicked at crates/bookclerk-naming/src/lib.rs:12:5:
+assertion `left == right` failed
+  left: 1
+ right: 2</failure>
+            <system-out>captured stdout</system-out>
+            <system-err>captured stderr</system-err>
+        </testcase>
+        <testcase name="retried" classname="bookclerk-naming::templates" time="0.200">
+            <flakyFailure message="test failed" type="test failure">first attempt failed</flakyFailure>
+        </testcase>
+    </testsuite>
+</testsuites>

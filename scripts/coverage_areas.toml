@@ -4,10 +4,11 @@
 # under the coverage directory (and so under CI Gate's download of the
 # `coverage-*` artifacts), `root` the directory the report's
 # relative paths start from, `paths` the repository-relative prefixes the area
-# owns and `suffixes` the file types it measures. `floor` is the lowest line
-# coverage, in percent, the area may report: raise it when coverage rises
-# (keep it a little below the measured value so noise does not fail a run),
-# and never lower it to make a change pass. `workspace_check` names the CI
+# owns and `suffixes` the file types it measures. `test_results` is the
+# job's JUnit report beside it, sent to Codecov Test Analytics. `floor` is
+# the lowest line coverage, in percent, the area may report: raise it when
+# coverage rises (keep it a little below the measured value so noise does
+# not fail a run), and never lower it to make a change pass. `workspace_check` names the CI
 # plan check whose selective runs test only the affected packages: the floor
 # is then not checked, while patch coverage still is.
 #
@@ -18,8 +19,21 @@
 mode = "report"
 patch_target = 80
 
+# Generated files: left out of every area's coverage and of patch coverage,
+# since tests exercise the generator, not each line it writes.
+# `.github/codecov.yml` ignores the same list, and a test fails when a file
+# an area owns carries a generated-file header but is missing here.
+generated = [
+  "crates/bookclerk-plugin-abi/src/generated.rs",
+  "crates/bookclerk-workerd/src/pin.rs",
+  "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_abi.py",
+  "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_wire.py",
+  "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/abi.py",
+]
+
 [areas.rust]
 report = "rust/lcov.info"
+test_results = "rust/junit.xml"
 root = "."
 paths = ["crates/", "fuzz/", "examples/"]
 suffixes = [".rs"]
@@ -28,6 +42,7 @@ workspace_check = "rust_test"
 
 [areas.site]
 report = "site/lcov.info"
+test_results = "site/junit.xml"
 root = "tools/site"
 paths = ["tools/site/"]
 suffixes = [".ts"]
@@ -35,6 +50,7 @@ floor = 98
 
 [areas.demo]
 report = "demo/lcov.info"
+test_results = "demo/junit.xml"
 root = "tools/demo"
 paths = ["tools/demo/"]
 suffixes = [".ts"]
@@ -42,6 +58,7 @@ floor = 78
 
 [areas.collector]
 report = "collector/lcov.info"
+test_results = "collector/junit.xml"
 root = "tools/diagnostics-collector"
 paths = ["tools/diagnostics-collector/"]
 suffixes = [".ts"]
@@ -49,6 +66,7 @@ floor = 93
 
 [areas.python-sdk]
 report = "python-sdk/lcov.info"
+test_results = "python-sdk/junit.xml"
 root = "."
 paths = ["packages/plugin-sdk-python/src/"]
 suffixes = [".py"]

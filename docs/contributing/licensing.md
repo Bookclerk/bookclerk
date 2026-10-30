@@ -149,7 +149,11 @@ like any other App's checks. While a check runs, it is in progress with
 again, press **Re-run** on the check or comment `@bookclerk recheck`. The
 button needs no webhook: GitHub starts the `CLA` workflow for a re-run of a
 check run that another App created. The comment also names who signed on
-the pull request ("Signed on this pull request: @alice."). Merge
+the pull request ("Signed on this pull request: @alice."). The check's own
+page repeats that comment, and its duration runs from when the check
+started to its verdict. GitHub's mobile app does not show an App's check
+page and offers to open it in a browser; only GitHub Actions jobs list
+steps there. Merge
 queue runs report a passing **Bookclerk CLA** check, because each pull request
 passed it to enter the queue.
 

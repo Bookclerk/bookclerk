@@ -218,7 +218,7 @@ wiremock = "0.6"
 proptest = "1"
 
 # HTML / media helpers
-scraper = "0.27"
+scraper = "0.29"
 html-escape = "0.3"
 infer = "0.22"
 mime_guess = "2"
