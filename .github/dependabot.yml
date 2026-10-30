@@ -36,6 +36,14 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    # Versions pinned in .tool-versions move there first
+    # (docs/contributing/ci.md#tool-versions): tool-versions-bump.yml bumps uv's
+    # tag and digest together, and a Node.js major is changed by hand.
+    # Dependabot still moves the node digest within the pinned major.
+    ignore:
+      - dependency-name: "ghcr.io/astral-sh/uv"
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
     groups:
       # One PR per round across all four directories, so an image used in
       # several Dockerfiles moves to the same digest everywhere at once.

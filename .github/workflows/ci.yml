@@ -184,6 +184,7 @@ jobs:
           "$PY" scripts/tests/test_coverage_gate.py
           "$PY" scripts/tests/test_worker_startup.py
           "$PY" scripts/tests/test_dev_env.py
+          "$PY" scripts/tests/test_tool_versions.py
 
       - name: Database plugin isolation
         run: python3 scripts/tests/test_db_plugin_isolation.py -q
@@ -440,10 +441,15 @@ jobs:
           toolchain: stable
           components: llvm-tools-preview
 
+      # Tool versions shared with the Dev Container (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
-          tool: cargo-nextest@0.9.146
+          tool: cargo-nextest@${{ steps.pins.outputs.cargo-nextest }}
 
       - name: Install cargo-llvm-cov
         if: env.CI_BUILD_ONLY != 'true'

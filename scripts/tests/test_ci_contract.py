@@ -319,7 +319,11 @@ class WorkflowContractTests(unittest.TestCase):
         steps = self.jobs["test"]["steps"]
         install = [s for s in steps if str(s.get("uses", "")).startswith("taiki-e/install-action@")]
         self.assertEqual(len(install), 2)
-        self.assertRegex(install[0]["with"]["tool"], r"^cargo-nextest@\d+\.\d+\.\d+$")
+        # The nextest pin lives in .tool-versions (test_dev_env.py checks it).
+        self.assertEqual(install[0]["with"]["tool"], "cargo-nextest@${{ steps.pins.outputs.cargo-nextest }}")
+        pins = [s for s in steps if s.get("id") == "pins"]
+        self.assertEqual(len(pins), 1)
+        self.assertLess(steps.index(pins[0]), steps.index(install[0]))
         self.assertRegex(install[1]["with"]["tool"], r"^cargo-llvm-cov@\d+\.\d+\.\d+$")
 
     def test_coverage_reports_flow_to_the_gate(self) -> None:

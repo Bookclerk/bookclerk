@@ -9,15 +9,31 @@ configurations from drifting apart.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load(name: str, path: Path):
+    """Import a script that is not on the module path."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+tool_versions = _load("tool_versions", ROOT / "scripts" / "tool_versions.py")
 PROVISION = ROOT / "scripts" / "dev-env" / "provision.sh"
 DEVCONTAINER_DOCKERFILE = ROOT / ".devcontainer" / "Dockerfile"
 DEVCONTAINER_DEFAULT = ROOT / ".devcontainer" / "devcontainer.json"
@@ -109,17 +125,12 @@ def _split_ref(ref: str) -> tuple[str, str, str]:
 
 
 def _tool_versions() -> dict[str, str]:
-    """Parse the repository's central tool pins in ``.tool-versions``.
+    """Return the central tool pins in ``.tool-versions``.
 
     Returns:
-        Tool name to version, one entry per ``<tool> <version>`` line.
+        Tool name to version, as ``scripts/tool_versions.py`` parses them.
     """
-    pins: dict[str, str] = {}
-    for line in TOOL_VERSIONS.read_text(encoding="utf-8").splitlines():
-        content = line.split("#", 1)[0].split()
-        if content:
-            pins[content[0]] = content[1]
-    return pins
+    return tool_versions.parse_pins(TOOL_VERSIONS.read_text(encoding="utf-8"))
 
 
 def _setup_steps(action: str) -> list[tuple[str, dict]]:
@@ -144,21 +155,21 @@ def _setup_steps(action: str) -> list[tuple[str, dict]]:
 class ProvisionScriptTests(unittest.TestCase):
     """The provision script is the Dev Container's one tool list."""
 
-    def test_nextest_version_matches_ci_pin(self) -> None:
-        """cargo-nextest in the Dev Container is the version CI runs."""
+    def test_nextest_comes_from_tool_versions(self) -> None:
+        """provision.sh and CI both install the ``cargo-nextest`` pin in ``.tool-versions``."""
         script = PROVISION.read_text(encoding="utf-8")
-        ours = re.search(r'^NEXTEST_VERSION="([^"]+)"$', script, re.MULTILINE)
-        self.assertIsNotNone(ours, "NEXTEST_VERSION not found in provision.sh")
-        ci = re.findall(r"tool:\s*cargo-nextest@(\S+)", CI_WORKFLOW.read_text(encoding="utf-8"))
-        self.assertTrue(ci, "cargo-nextest pin not found in ci.yml")
-        self.assertEqual({ours.group(1)}, set(ci))
+        self.assertIn('awk \'$1 == "cargo-nextest" { print $2 }\' "${repo}/.tool-versions"', script)
+        self.assertNotRegex(script, r'NEXTEST_VERSION="[0-9]')
+        ci = re.findall(r"tool:\s*cargo-nextest@(.+)$", CI_WORKFLOW.read_text(encoding="utf-8"), re.MULTILINE)
+        self.assertTrue(ci, "cargo-nextest install not found in ci.yml")
+        self.assertEqual({"${{ steps.pins.outputs.cargo-nextest }}"}, set(ci))
+        dockerfile = DEVCONTAINER_DOCKERFILE.read_text(encoding="utf-8")
+        self.assertIn("COPY .tool-versions /tmp/bookclerk-dev/.tool-versions", dockerfile)
 
-    def test_tool_versions_pins_node_and_uv(self) -> None:
-        """``.tool-versions`` is the one pin for Node.js (a major) and uv (exact)."""
+    def test_tool_versions_parses(self) -> None:
+        """``.tool-versions`` holds exactly the pins ``scripts/tool_versions.py`` knows."""
         pins = _tool_versions()
-        self.assertEqual({"nodejs", "uv"}, set(pins))
-        self.assertRegex(pins["nodejs"], r"^\d+$")
-        self.assertRegex(pins["uv"], r"^\d+\.\d+\.\d+$")
+        self.assertEqual(tool_versions.parse_pins(TOOL_VERSIONS.read_text(encoding="utf-8")), pins)
         # actions/setup-node takes the first line its pattern matches,
         # `^(?:node(js)?\s+)?v?(?<version>[^\s]+)$` (multiline), so check it
         # reads our Node.js pin rather than another tool's line or a comment.
@@ -202,6 +213,22 @@ class ProvisionScriptTests(unittest.TestCase):
                         seen.add(name)
                         self.assertEqual(pins["uv"], tag)
         self.assertEqual({"node", "ghcr.io/astral-sh/uv"}, seen)
+
+    def test_bump_workflow_covers_every_released_tool(self) -> None:
+        """tool-versions-bump.yml bumps each pin that has a release repository."""
+        workflow = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "tool-versions-bump.yml").read_text(encoding="utf-8")
+        )
+        matrix = workflow["jobs"]["bump"]["strategy"]["matrix"]["tool"]
+        self.assertEqual([t.name for t in tool_versions.TOOLS if t.repo is not None], matrix)
+
+    def test_dependabot_leaves_tool_versions_pins_alone(self) -> None:
+        """Dependabot skips the uv image and Node.js majors, which .tool-versions owns."""
+        config = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
+        docker = next(u for u in config["updates"] if u["package-ecosystem"] == "docker")
+        ignored = {i["dependency-name"]: i.get("update-types") for i in docker.get("ignore", [])}
+        self.assertEqual(None, ignored.get("ghcr.io/astral-sh/uv", "missing"))
+        self.assertEqual(["version-update:semver-major"], ignored.get("node"))
 
     def test_session_setup_finds_node_and_uv_images(self) -> None:
         """session-setup.sh copies Node.js and uv out of these two FROM lines."""

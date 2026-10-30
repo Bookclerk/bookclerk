@@ -358,17 +358,38 @@ the plugin host's RPC `LIKE`.
 ### Tool versions
 
 The root [`.tool-versions`](../../.tool-versions) file is the one pin for
-Node.js (a major) and uv (an exact version). Every `actions/setup-node` and
-`astral-sh/setup-uv` step reads it through `node-version-file` /
-`version-file`, never a literal version.
+every tool version that crosses a boundary between workflows, images and
+scripts:
 
-The `node` and `ghcr.io/astral-sh/uv` base images in the Dockerfiles must name
-the same versions; `scripts/tests/test_dev_env.py` (in the `plan` job) fails
-on any drift. A change to `.tool-versions` runs the full suite.
+| Pin | Read by | Bumped by |
+| --- | --- | --- |
+| `nodejs` (a major) | Every `actions/setup-node` step (`node-version-file`); the `node` images' tags | Hand, with the `node` image tags |
+| `uv` | Every `astral-sh/setup-uv` step (`version-file`); the Dev Container's `ghcr.io/astral-sh/uv` image | `tool-versions-bump.yml` |
+| `cargo-nextest` | The `unit + integration tests` job (through `scripts/tool_versions.py github-output`); `scripts/dev-env/provision.sh` | `tool-versions-bump.yml` |
+
+`scripts/tests/test_dev_env.py` (in the `plan` job) fails when a workflow
+sets one of these versions itself, or when a Dockerfile's `node` or uv image
+disagrees with the file. A change to `.tool-versions` runs the full suite and
+rebuilds the Dev Container image.
+
+`scripts/tool_versions.py` parses the file strictly: exactly the pins above,
+in that order, one `<tool> <version>` per line, no comments.
+`actions/setup-node` reads the first line that looks like a version, so
+`nodejs` stays first.
+
+The daily `tool-versions-bump.yml` workflow takes the newest release of uv
+and cargo-nextest that is at least 7 days old (the same cooldown as
+Dependabot and the workerd pin). For uv it also resolves the image digest
+and rewrites every Dockerfile that builds from the image. It opens one pull
+request per tool with the [automation App](automation.md#automation-app) and
+turns on auto-merge. Dependabot ignores the uv image and Node.js majors, so
+the two never race.
 
 > [!NOTE]
-> Keep the `nodejs` line first and comments out of the file:
-> `actions/setup-node` reads the first line that looks like a version.
+> The Rust toolchain keeps its own pin in `rust-toolchain.toml`, and the
+> workerd binary in `crates/bookclerk-workerd/workerd-pin.json`. Base image
+> digests shared by several Dockerfiles stay with Dependabot's grouped
+> updates; `test_dev_env.py` checks they match.
 
 ### Formatting and Markdown lint
 
@@ -573,7 +594,7 @@ contributor toolchain inside it as the dev user (cargo, rustfmt, Clippy,
 cargo-nextest, `capnp`, Node.js, npm, uv, PyYAML, git, ssh). It runs
 weekly, on demand, and on pull requests that touch `.devcontainer/**`,
 `scripts/dev-env/**`, `scripts/tests/requirements.txt`,
-`rust-toolchain.toml`, `.dockerignore` or the workflow.
+`rust-toolchain.toml`, `.tool-versions`, `.dockerignore` or the workflow.
 
 `scripts/tests/test_dev_env.py` (in the plan job) checks on every run that
 the image's tool pins match CI and [`.tool-versions`](#tool-versions), and that every Dockerfile's base images are

@@ -17,7 +17,8 @@
 #   scripts/dev-env/provision.sh [--repo <checkout>]
 #
 # --repo defaults to the checkout this script lives in; the Dockerfile copies
-# the script and scripts/tests/requirements.txt into the same layout.
+# the script, scripts/tests/requirements.txt and .tool-versions into the same
+# layout.
 #
 # Environment:
 #   BOOKCLERK_DEV_VENV       virtualenv for the script tests (default
@@ -31,10 +32,6 @@
 # Idempotent: re-running skips what is already installed at the right
 # version. Never touches anything under the checkout.
 set -euo pipefail
-
-# cargo-nextest version. Keep equal to the `tool: cargo-nextest@…` pin in
-# .github/workflows/ci.yml; scripts/tests/test_dev_env.py checks it.
-NEXTEST_VERSION="0.9.146"
 
 # System packages, one per line with the reason. Rust and Node.js come from
 # the base images (or, outside a container, rustup and the Node.js image).
@@ -96,6 +93,14 @@ fi
 requirements="${repo}/scripts/tests/requirements.txt"
 if [[ ! -f "${requirements}" ]]; then
   log "missing ${requirements}; pass --repo <checkout>"
+  exit 1
+fi
+
+# cargo-nextest version: the pin in the repository's .tool-versions, which CI
+# installs too (docs/contributing/ci.md#tool-versions).
+NEXTEST_VERSION="$(awk '$1 == "cargo-nextest" { print $2 }' "${repo}/.tool-versions" 2>/dev/null || true)"
+if [[ ! "${NEXTEST_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  log "no cargo-nextest pin in ${repo}/.tool-versions; pass --repo <checkout>"
   exit 1
 fi
 

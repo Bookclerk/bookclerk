@@ -36,6 +36,7 @@ on:
       - ".devcontainer/**"
       - "scripts/dev-env/**"
       - "scripts/tests/requirements.txt"
+      - ".tool-versions"
   pull_request:
     paths:
       - ".github/workflows/images-publish.yml"
