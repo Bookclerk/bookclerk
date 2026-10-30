@@ -56,7 +56,10 @@ jobs:
           summary=""
           for tool in $(python3 scripts/tool_versions.py bumpable); do
             repo="$(python3 scripts/tool_versions.py repo "$tool")"
-            gh api "repos/${repo}/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+            # Every page, cut to the fields the selector reads.
+            gh api --paginate "repos/${repo}/releases?per_page=100" \
+              --jq '.[] | {tag_name, draft, prerelease, published_at}' \
+              | jq -s . > "$RUNNER_TEMP/releases.json"
             code=0
             version="$(python3 scripts/tool_versions.py select "$tool" \
               --releases "$RUNNER_TEMP/releases.json" \

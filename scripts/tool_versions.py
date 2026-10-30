@@ -208,6 +208,39 @@ def select_release(tool: Tool, raw: bytes, current: str, now: datetime, cooldown
     return best
 
 
+#: Largest digest read, in bytes; a sha256 digest is 71.
+MAX_DIGEST_BYTES = 256
+
+
+def parse_digest(raw: bytes) -> str:
+    """Reads an image digest as the registry tool printed it.
+
+    One trailing newline is allowed; anything else must be exactly
+    ``sha256:`` and 64 lowercase hex digits.
+
+    Args:
+        raw: The digest bytes.
+
+    Returns:
+        The ``sha256:<hex>`` digest.
+
+    Raises:
+        ToolVersionsError: The input is too long, not ASCII, or not a sha256
+            digest.
+    """
+    if len(raw) > MAX_DIGEST_BYTES:
+        raise ToolVersionsError("digest too long")
+    if raw.endswith(b"\n"):
+        raw = raw[:-1]
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError as err:
+        raise ToolVersionsError("digest is not ASCII") from err
+    if DIGEST.fullmatch(text) is None:
+        raise ToolVersionsError("digest must be sha256:<64 lowercase hex>")
+    return text
+
+
 def rewrite_image(text: str, image: str, version: str, digest: str) -> str:
     """Points every ``FROM <image>:<tag>@<digest>`` line at a new tag and digest.
 
@@ -289,7 +322,7 @@ def main(argv: list[str]) -> int:
                     print(tool.name)
             return 0
         tool: Tool = args.tool
-        if args.command in ("repo", "select") and tool.repo is None:
+        if args.command in ("repo", "select", "apply") and tool.repo is None:
             raise ToolVersionsError(f"{tool.name} is bumped by hand")
         if args.command == "repo":
             print(tool.repo)
@@ -308,17 +341,31 @@ def main(argv: list[str]) -> int:
             return 0
         if tool.version.fullmatch(args.version) is None:
             raise ToolVersionsError(f"bad {tool.name} version {args.version!r}")
-        if tool.image is not None and (args.digest is None or DIGEST.fullmatch(args.digest) is None):
+        if tool.image is not None and args.digest is None:
             raise ToolVersionsError(f"{tool.name} needs --digest sha256:<64 hex> for {tool.image}")
+        if tool.image is None and args.digest is not None:
+            raise ToolVersionsError(f"{tool.name} has no image to take a digest")
+        # Work out every new file first, then write them, restoring the
+        # originals if a write fails, so a failed apply changes nothing.
         pins[tool.name] = args.version
-        TOOL_VERSIONS.write_text(render_pins(pins), encoding="utf-8")
+        writes = {TOOL_VERSIONS: render_pins(pins)}
         if tool.image is not None:
+            digest = parse_digest(args.digest.encode("utf-8"))
             for dockerfile in _tracked_dockerfiles():
                 text = dockerfile.read_text(encoding="utf-8")
-                updated = rewrite_image(text, tool.image, args.version, args.digest)
+                updated = rewrite_image(text, tool.image, args.version, digest)
                 if updated != text:
-                    dockerfile.write_text(updated, encoding="utf-8")
-                    print(f"updated {dockerfile.relative_to(ROOT)}", file=sys.stderr)
+                    writes[dockerfile] = updated
+        originals = {path: path.read_text(encoding="utf-8") for path in writes}
+        try:
+            for path, text in writes.items():
+                path.write_text(text, encoding="utf-8")
+        except OSError:
+            for path, text in originals.items():
+                path.write_text(text, encoding="utf-8")
+            raise
+        for path in writes:
+            print(f"updated {path.relative_to(ROOT)}", file=sys.stderr)
         return 0
     except (OSError, subprocess.CalledProcessError, ToolVersionsError) as err:
         print(f"tool_versions: {err}", file=sys.stderr)

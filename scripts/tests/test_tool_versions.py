@@ -19,12 +19,14 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = Path(__file__).resolve().parent / "tool_versions_corpus"
+DIGEST_CORPUS = CORPUS / "digest"
 
 
-def _load(name: str, path: Path):
+def _load(name: str, path: Path) -> ModuleType:
     """Import a script that is not on the module path."""
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
@@ -218,6 +220,75 @@ class MutationFuzzTests(unittest.TestCase):
             tool = rng.choice(["uv", "cargo-nextest"])
             raw = json.dumps(listing).encode()
             self.assertEqual(run(tool, raw), expected(tool, raw), f"generated {n}: {raw!r}")
+
+
+HEX = "0123456789abcdef"
+
+
+def run_digest(raw: bytes) -> str | type:
+    """Reads a digest, mapping a refusal to the ``ToolVersionsError`` class."""
+    try:
+        return tv.parse_digest(raw)
+    except tv.ToolVersionsError:
+        return tv.ToolVersionsError
+
+
+def expected_digest(raw: bytes) -> str | type:
+    """Independent oracle for ``parse_digest``, byte by byte."""
+    if len(raw) > 256:
+        return tv.ToolVersionsError
+    if raw[-1:] == b"\n":
+        raw = raw[:-1]
+    if len(raw) != 71 or raw[:7] != b"sha256:":
+        return tv.ToolVersionsError
+    for byte in raw[7:]:
+        if chr(byte) not in HEX:
+            return tv.ToolVersionsError
+    return raw.decode("ascii")
+
+
+def digest_corpus() -> list[tuple[str, bytes]]:
+    """Returns ``(name, bytes)`` for each digest corpus file."""
+    return [(p.name, p.read_bytes()) for p in sorted(DIGEST_CORPUS.iterdir()) if p.is_file()]
+
+
+class DigestTests(unittest.TestCase):
+    """Replays and mutation-fuzzes the image digest reader."""
+
+    def test_corpus_matches_oracle(self) -> None:
+        accepted = {"typical_newline", "no_newline"}
+        for name, raw in digest_corpus():
+            with self.subTest(case=name):
+                got = run_digest(raw)
+                self.assertEqual(got, expected_digest(raw))
+                self.assertEqual(isinstance(got, str), name in accepted)
+
+    def test_oversized_digest_is_refused(self) -> None:
+        self.assertIs(run_digest(b"sha256:" + b"a" * 64 + b"\n" * tv.MAX_DIGEST_BYTES), tv.ToolVersionsError)
+
+    def test_mutations_match_oracle(self) -> None:
+        seeds = [raw for _, raw in digest_corpus()]
+        rng = random.Random(20261031)
+        for n in range(MutationFuzzTests.ITERATIONS):
+            raw = bytearray(rng.choice(seeds))
+            for _ in range(rng.randint(1, 3)):
+                pos = rng.randint(0, len(raw))
+                op = rng.random()
+                if op < 0.4:
+                    raw[pos:pos] = bytes([rng.choice(b"0af9AFgz:\n\r \x00\xc3\xa9")])
+                elif op < 0.7:
+                    del raw[pos:pos + 1]
+                else:
+                    raw[pos:pos + 1] = bytes([rng.randint(0, 0xFF)])
+            got = run_digest(bytes(raw))
+            self.assertEqual(got, expected_digest(bytes(raw)), f"iteration {n}: {bytes(raw)!r}")
+
+
+class CommandTests(unittest.TestCase):
+    """Command-line refusals that need no network."""
+
+    def test_apply_refuses_hand_bumped_tools(self) -> None:
+        self.assertEqual(tv.main(["apply", "nodejs", "27"]), 1)
 
 
 class PinFileTests(unittest.TestCase):

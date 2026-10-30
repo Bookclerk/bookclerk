@@ -16,13 +16,14 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from types import ModuleType
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load(name: str, path: Path):
+def _load(name: str, path: Path) -> ModuleType:
     """Import a script that is not on the module path."""
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
@@ -220,7 +221,7 @@ class ProvisionScriptTests(unittest.TestCase):
             (ROOT / ".github" / "workflows" / "tool-versions-bump.yml").read_text(encoding="utf-8")
         )
         runs = "\n".join(step.get("run", "") for step in workflow["jobs"]["bump"]["steps"])
-        self.assertIn("$(python3 scripts/tool_versions.py bumpable)", runs)
+        self.assertIn("for tool in $(python3 scripts/tool_versions.py bumpable); do", runs)
         self.assertNotIn("matrix", workflow["jobs"]["bump"].get("strategy", {}))
 
     def test_dependabot_leaves_tool_versions_pins_alone(self) -> None:
