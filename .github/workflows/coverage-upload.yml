@@ -369,7 +369,7 @@ jobs:
         if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/bundles/**') != ''
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26"
+          node-version-file: .tool-versions
 
       - name: Upload the bundle sizes
         if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/bundles/**') != ''

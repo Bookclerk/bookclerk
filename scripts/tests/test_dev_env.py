@@ -9,15 +9,32 @@ configurations from drifting apart.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import subprocess
+import sys
 import unittest
 from pathlib import Path
+from types import ModuleType
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load(name: str, path: Path) -> ModuleType:
+    """Import a script that is not on the module path."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+tool_versions = _load("tool_versions", ROOT / "scripts" / "tool_versions.py")
 PROVISION = ROOT / "scripts" / "dev-env" / "provision.sh"
 DEVCONTAINER_DOCKERFILE = ROOT / ".devcontainer" / "Dockerfile"
 DEVCONTAINER_DEFAULT = ROOT / ".devcontainer" / "devcontainer.json"
@@ -25,6 +42,7 @@ DEVCONTAINER_DESKTOP = ROOT / ".devcontainer" / "devcontainer.linux-desktop.json
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "images-publish.yml"
+TOOL_VERSIONS = ROOT / ".tool-versions"
 
 # Keys the Linux desktop configuration must share verbatim with the default
 # one; it only adds mounts, runArgs and desktop environment variables.
@@ -107,47 +125,112 @@ def _split_ref(ref: str) -> tuple[str, str, str]:
     return name, tag, digest
 
 
-def _action_inputs(action: str, key: str) -> list[str]:
-    """Return one input of every step that uses an action, across the workflows.
+def _tool_versions() -> dict[str, str]:
+    """Return the central tool pins in ``.tool-versions``.
+
+    Returns:
+        Tool name to version, as ``scripts/tool_versions.py`` parses them.
+    """
+    return tool_versions.parse_pins(TOOL_VERSIONS.read_text(encoding="utf-8"))
+
+
+def _setup_steps(action: str) -> list[tuple[str, dict]]:
+    """Return every step that uses an action, across the workflows.
 
     Args:
         action: Action name without the ref, e.g. ``astral-sh/setup-uv``.
-        key: Input under the step's ``with:`` mapping.
 
     Returns:
-        The input's value for each such step; a step without it yields ``""``
-        so a missing pin fails the comparison instead of being skipped.
+        ``(workflow:job, step)`` for each such step.
     """
-    found: list[str] = []
+    found: list[tuple[str, dict]] = []
     for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
         jobs = yaml.safe_load(workflow.read_text(encoding="utf-8")).get("jobs", {})
-        for job in jobs.values():
+        for name, job in jobs.items():
             for step in job.get("steps", []):
                 if str(step.get("uses", "")).split("@", 1)[0] == action:
-                    found.append(str((step.get("with") or {}).get(key, "")))
+                    found.append((f"{workflow.name}:{name}", step))
     return found
 
 
 class ProvisionScriptTests(unittest.TestCase):
     """The provision script is the Dev Container's one tool list."""
 
-    def test_nextest_version_matches_ci_pin(self) -> None:
-        """cargo-nextest in the Dev Container is the version CI runs."""
+    def test_nextest_comes_from_tool_versions(self) -> None:
+        """provision.sh and CI both install the ``cargo-nextest`` pin in ``.tool-versions``."""
         script = PROVISION.read_text(encoding="utf-8")
-        ours = re.search(r'^NEXTEST_VERSION="([^"]+)"$', script, re.MULTILINE)
-        self.assertIsNotNone(ours, "NEXTEST_VERSION not found in provision.sh")
-        ci = re.findall(r"tool:\s*cargo-nextest@(\S+)", CI_WORKFLOW.read_text(encoding="utf-8"))
-        self.assertTrue(ci, "cargo-nextest pin not found in ci.yml")
-        self.assertEqual({ours.group(1)}, set(ci))
+        self.assertIn('awk \'$1 == "cargo-nextest" { print $2 }\' "${repo}/.tool-versions"', script)
+        self.assertNotRegex(script, r'NEXTEST_VERSION="[0-9]')
+        ci = re.findall(r"tool:\s*cargo-nextest@(.+)$", CI_WORKFLOW.read_text(encoding="utf-8"), re.MULTILINE)
+        self.assertTrue(ci, "cargo-nextest install not found in ci.yml")
+        self.assertEqual({"${{ steps.pins.outputs.cargo-nextest }}"}, set(ci))
+        dockerfile = DEVCONTAINER_DOCKERFILE.read_text(encoding="utf-8")
+        self.assertIn("COPY .tool-versions /tmp/bookclerk-dev/.tool-versions", dockerfile)
 
-    def test_image_tools_match_ci_versions(self) -> None:
-        """uv and the Node.js major in the Dev Container are the ones CI sets up."""
-        images = {_split_ref(ref)[0]: _split_ref(ref)[1] for ref in _base_images(DEVCONTAINER_DOCKERFILE)}
-        uv = _action_inputs("astral-sh/setup-uv", "version")
-        node = _action_inputs("actions/setup-node", "node-version")
-        self.assertTrue(uv and node, "no setup-uv or setup-node step found")
-        self.assertEqual({images["ghcr.io/astral-sh/uv"]}, set(uv))
-        self.assertEqual({images["node"].split("-", 1)[0]}, set(node))
+    def test_tool_versions_parses(self) -> None:
+        """``.tool-versions`` holds exactly the pins ``scripts/tool_versions.py`` knows."""
+        pins = _tool_versions()
+        self.assertEqual(tool_versions.parse_pins(TOOL_VERSIONS.read_text(encoding="utf-8")), pins)
+        # actions/setup-node takes the first line its pattern matches,
+        # `^(?:node(js)?\s+)?v?(?<version>[^\s]+)$` (multiline), so check it
+        # reads our Node.js pin rather than another tool's line or a comment.
+        found = re.search(
+            r"^(?:node(js)?\s+)?v?(?P<version>[^\s]+)$",
+            TOOL_VERSIONS.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(found)
+        self.assertEqual(pins["nodejs"], found.group("version"))
+
+    def test_workflows_read_node_and_uv_from_tool_versions(self) -> None:
+        """Every setup-node and setup-uv step reads ``.tool-versions``, never a literal."""
+        for action, file_key, literal_key in (
+            ("actions/setup-node", "node-version-file", "node-version"),
+            ("astral-sh/setup-uv", "version-file", "version"),
+        ):
+            steps = _setup_steps(action)
+            self.assertTrue(steps, f"no {action} step found")
+            for where, step in steps:
+                with self.subTest(action=action, job=where):
+                    inputs = step.get("with") or {}
+                    self.assertEqual(".tool-versions", inputs.get(file_key))
+                    self.assertNotIn(literal_key, inputs)
+
+    def test_images_match_tool_versions(self) -> None:
+        """Every Node.js and uv base image is the version ``.tool-versions`` pins."""
+        pins = _tool_versions()
+        seen: set[str] = set()
+        for dockerfile in _tracked_dockerfiles():
+            for ref in _base_images(dockerfile):
+                if "@" not in ref:
+                    continue
+                name, tag, _ = _split_ref(ref)
+                where = f"{dockerfile.relative_to(ROOT)}: {name}"
+                with self.subTest(image=where):
+                    if name == "node":
+                        seen.add(name)
+                        self.assertEqual(pins["nodejs"], tag.split("-", 1)[0].split(".", 1)[0])
+                    elif name == "ghcr.io/astral-sh/uv":
+                        seen.add(name)
+                        self.assertEqual(pins["uv"], tag)
+        self.assertEqual({"node", "ghcr.io/astral-sh/uv"}, seen)
+
+    def test_bump_workflow_reads_tools_from_the_script(self) -> None:
+        """tool-versions-bump.yml bumps whatever ``tool_versions.py bumpable`` lists."""
+        workflow = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "tool-versions-bump.yml").read_text(encoding="utf-8")
+        )
+        runs = "\n".join(step.get("run", "") for step in workflow["jobs"]["bump"]["steps"])
+        self.assertIn("for tool in $(python3 scripts/tool_versions.py bumpable); do", runs)
+        self.assertNotIn("matrix", workflow["jobs"]["bump"].get("strategy", {}))
+
+    def test_dependabot_leaves_tool_versions_pins_alone(self) -> None:
+        """Dependabot skips the uv image and Node.js majors, which .tool-versions owns."""
+        config = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
+        docker = next(u for u in config["updates"] if u["package-ecosystem"] == "docker")
+        ignored = {i["dependency-name"]: i.get("update-types") for i in docker.get("ignore", [])}
+        self.assertEqual(None, ignored.get("ghcr.io/astral-sh/uv", "missing"))
+        self.assertEqual(["version-update:semver-major"], ignored.get("node"))
 
     def test_session_setup_finds_node_and_uv_images(self) -> None:
         """session-setup.sh copies Node.js and uv out of these two FROM lines."""

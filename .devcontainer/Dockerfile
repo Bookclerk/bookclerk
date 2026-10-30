@@ -1,10 +1,11 @@
 # Dev Container base image for Bookclerk.
 #
 # The Dev Container bind-mounts the repo, so do not COPY sources. The only
-# files taken from the build context are scripts/dev-env/provision.sh and
-# scripts/tests/requirements.txt (so .dockerignore must keep them). The images are
-# pinned by digest; Dependabot (docker ecosystem) bumps the FROM lines, the same
-# rust and node images as packaging/docker/Dockerfile so the two stay aligned.
+# files taken from the build context are scripts/dev-env/provision.sh,
+# scripts/tests/requirements.txt and .tool-versions (so .dockerignore must keep
+# them). The images are pinned by digest; Dependabot (docker ecosystem) bumps
+# the FROM lines except uv's (see below), the same rust and node images as
+# packaging/docker/Dockerfile so the two stay aligned.
 # Debian 13 (trixie) throughout, matching the production image.
 #
 # Do NOT set WORKDIR or ENV paths under the workspace here: the image must not
@@ -13,14 +14,15 @@
 # and pointed at via remoteEnv.
 
 # Node.js for `ui/` and the Workers under tools/: taken from the official image
-# rather than an apt repository so Dependabot tracks the version.
+# rather than an apt repository so Dependabot tracks its digest. The major is
+# the `nodejs` pin in /.tool-versions, moved by hand (scripts/tests/test_dev_env.py).
 FROM node:26-trixie-slim@sha256:36793bcbb160a6a16cede1e62b93f84e26b78a972a8a4c0b879c1c12f22761ec AS node
 
 # uv installs the Python plugin SDK's dev/docs tools from its uv.lock (the
-# `python_sdk` CI check and `generate-api-docs.sh --python`). Same version as
-# CI's setup-uv step. A FROM stage rather than a bare COPY --from so Dependabot
-# sees it.
-FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
+# `python_sdk` CI check and `generate-api-docs.sh --python`). The tag is the
+# `uv` pin in /.tool-versions; tool-versions-bump.yml moves both together, so
+# Dependabot leaves this image alone.
+FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
 
 FROM rust:1-trixie@sha256:931c2c0531a8b143e044f0f3914dfe802f15bb3d1955f0b657e9359327ac2ffc
 
@@ -38,6 +40,7 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 # development environment needs, so add tools there, not here.
 COPY scripts/dev-env/provision.sh /tmp/bookclerk-dev/scripts/dev-env/provision.sh
 COPY scripts/tests/requirements.txt /tmp/bookclerk-dev/scripts/tests/requirements.txt
+COPY .tool-versions /tmp/bookclerk-dev/.tool-versions
 #
 # An optional `extra_ca` build secret (a PEM bundle) is trusted for these
 # downloads, for builds behind a TLS-intercepting proxy:

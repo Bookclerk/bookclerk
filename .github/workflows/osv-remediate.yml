@@ -107,14 +107,14 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26"
+          node-version-file: .tool-versions
 
       # The Python SDK's uv.lock is updated with `uv lock`. No cache: the
       # bump is not public yet.
       - name: Install uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          version: "0.13.5" # = the Dev Container uv image (scripts/tests/test_dev_env.py)
+          version-file: .tool-versions
           enable-cache: false
 
       - name: Mint alert-read token

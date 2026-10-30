@@ -30,6 +30,8 @@ FULL_SUITE_PATHS = frozenset(
         "Cargo.toml",
         "Cargo.lock",
         "rust-toolchain.toml",
+        # Node.js and uv for every workflow and image (scripts/tests/test_dev_env.py).
+        ".tool-versions",
         "scripts/ci-plan.py",
         "scripts/ci-exec.py",
         "scripts/check-store-free-hosts.sh",
@@ -226,6 +228,7 @@ KNOWN_TOP_LEVEL = frozenset(
         "deny.toml",
         "osv-scanner.toml",
         "rust-toolchain.toml",
+        ".tool-versions",
         "rustfmt.toml",
         "workerd.pin.json",
         ".gitattributes",

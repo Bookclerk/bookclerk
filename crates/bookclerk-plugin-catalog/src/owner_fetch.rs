@@ -419,10 +419,7 @@ mod tests {
 
     /// A [`NextTimeout`] that never fires.
     fn no_timeout() -> NextTimeout {
-        NextTimeout {
-            after: ureq::unversioned::transport::time::Duration::NotHappening,
-            reason: ureq::Timeout::Global,
-        }
+        NextTimeout::default()
     }
 
     /// Resolves `url` through a [`PublicOnlyResolver`] over `inner`.

@@ -1,0 +1,155 @@
+# Daily bump of the tool pins in .tool-versions (docs/contributing/ci.md#tool-versions).
+#
+# Policy:
+# - Only consider releases published ≥ 7 days ago (supply-chain cooldown, as
+#   for Dependabot and the workerd pin).
+# - scripts/tool_versions.py reads the releases listing and the image digest
+#   (both untrusted) and rewrites .tool-versions and, for a tool with an
+#   image, every Dockerfile FROM line that builds from it.
+# - Open one PR for every tool due that day (one branch, so two bumps never
+#   conflict on .tool-versions) with the automation App token and turn on
+#   auto-merge, so the merge queue lands it once the PR's required checks pass.
+#
+# Node.js majors are a decision, so `nodejs` is bumped by hand.
+#
+# The App token is required: the organization does not let GITHUB_TOKEN open
+# pull requests, and pushes made with GITHUB_TOKEN would not start CI on the
+# PR. See docs/contributing/automation.md#automation-app.
+
+name: tool versions bump
+
+on:
+  schedule:
+    # Daily 06:41 UTC, offset from workerd-pin-bump.yml.
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+# The branch, PR and auto-merge are written with the automation App token.
+permissions:
+  contents: read
+
+concurrency:
+  group: tool-versions-bump
+  cancel-in-progress: false
+
+env:
+  TOOL_VERSIONS_COOLDOWN_DAYS: "7"
+
+jobs:
+  bump:
+    name: bump pins + PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # For each tool the script bumps: read its releases, pick the newest
+      # past the cooldown and, for a tool with an image, resolve the new
+      # tag's digest; then rewrite the pins.
+      - name: Select and apply eligible releases
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          summary=""
+          for tool in $(python3 scripts/tool_versions.py bumpable); do
+            repo="$(python3 scripts/tool_versions.py repo "$tool")"
+            # Every page, cut to the fields the selector reads.
+            gh api --paginate "repos/${repo}/releases?per_page=100" \
+              --jq '.[] | {tag_name, draft, prerelease, published_at}' \
+              | jq -s . > "$RUNNER_TEMP/releases.json"
+            code=0
+            version="$(python3 scripts/tool_versions.py select "$tool" \
+              --releases "$RUNNER_TEMP/releases.json" \
+              --cooldown-days "$TOOL_VERSIONS_COOLDOWN_DAYS")" || code=$?
+            if [[ "$code" -eq 2 ]]; then
+              continue
+            elif [[ "$code" -ne 0 ]]; then
+              exit "$code"
+            fi
+            image="$(python3 scripts/tool_versions.py image "$tool")"
+            if [[ -n "$image" ]]; then
+              digest="$(docker buildx imagetools inspect "${image}:${version}" --format '{{.Manifest.Digest}}')"
+              python3 scripts/tool_versions.py apply "$tool" "$version" --digest "$digest"
+            else
+              python3 scripts/tool_versions.py apply "$tool" "$version"
+            fi
+            summary="${summary:+$summary, }${tool} ${version}"
+          done
+          git diff --stat
+          if [[ -n "$summary" ]]; then
+            echo "bump=true" >> "$GITHUB_OUTPUT"
+            echo "summary=$summary" >> "$GITHUB_OUTPUT"
+          else
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "Every pin is current (cooldown ${TOOL_VERSIONS_COOLDOWN_DAYS}d)."
+          fi
+
+      - name: Check the pins agree
+        if: steps.bump.outputs.bump == 'true'
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --require-hashes -r scripts/tests/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" scripts/tests/test_dev_env.py
+          "$RUNNER_TEMP/venv/bin/python" scripts/tests/test_tool_versions.py
+
+      - name: Mint automation App token
+        if: steps.bump.outputs.bump == 'true'
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Create or update pull request
+        if: steps.bump.outputs.bump == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.app.outputs.token }}
+          # Commit through the API so the commit is signed and attributed to the App.
+          sign-commits: true
+          commit-message: |
+            build(deps): bump ${{ steps.bump.outputs.summary }}
+
+            The pins live in .tool-versions; a release is taken only after a
+            ${{ env.TOOL_VERSIONS_COOLDOWN_DAYS }}-day publish cooldown (supply-chain).
+          branch: deps/tool-versions
+          delete-branch: true
+          title: "build(deps): bump ${{ steps.bump.outputs.summary }}"
+          body: |
+            ## Summary
+            - Bump `.tool-versions` to ${{ steps.bump.outputs.summary }} (and a tool's image in every Dockerfile that builds from it)
+            - Cooldown: releases must be published ≥ **${{ env.TOOL_VERSIONS_COOLDOWN_DAYS }} days** ago
+
+            ## Test plan
+            - [x] `scripts/tool_versions.py` (cooldown filter, version and digest checks)
+            - [x] `scripts/tests/test_dev_env.py` (workflows, Dockerfiles and `provision.sh` agree with `.tool-versions`)
+
+            Auto-merge is on: the merge queue lands this PR once its required
+            checks pass.
+          labels: |
+            dependencies
+          # Git pathspec wildcards cross directories: every Dockerfile.
+          add-paths: |
+            .tool-versions
+            *Dockerfile
+
+      # Runs even when the branch was already up to date, so a run whose
+      # earlier `gh pr merge --auto` failed gets another try.
+      - name: Enable auto-merge
+        if: steps.bump.outputs.bump == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head deps/tool-versions --state open --json number --jq '.[0].number // empty')"
+          if [[ -z "$pr" ]]; then
+            echo "No open tool versions pull request."
+            exit 0
+          fi
+          gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --auto --squash

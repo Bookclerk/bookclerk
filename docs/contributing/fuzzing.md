@@ -173,6 +173,24 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     three dot-separated ASCII numbers of one to nine digits without
     leading zeros.
 
+### Tool versions bump (Python)
+
+- **Releases listing and digest readers** (`select_release` and
+  `parse_digest` in `scripts/tool_versions.py`). `tool-versions-bump.yml`
+  reads a tool's GitHub releases listing and its image digest from the
+  registry. The chosen version is written to `.tool-versions`, the
+  Dockerfiles and the pull request title; the digest to the Dockerfiles'
+  `FROM` lines.
+  - Test and corpus: `scripts/tests/test_tool_versions.py`,
+    `scripts/tests/tool_versions_corpus/` (listings named `<tool>__<case>`;
+    digests under `digest/`).
+  - Oracle: an independent reading of the listing by exact JSON types,
+    each version digit by digit, and each `published_at` against a
+    days-in-month table; the pick must be the newest non-draft,
+    non-prerelease release past the cooldown and above the pin. A digest
+    is accepted only as `sha256:` and 64 lowercase hex digits, checked
+    character by character.
+
 ### CLA check (Python)
 
 - **CLA checker** (`scripts/cla_check.py`). It reads the workflow event

@@ -41,6 +41,13 @@ cover every lockfile of a shipped artifact or its build:
 - GitHub Actions;
 - the digest-pinned base images of `packaging/docker/Dockerfile`.
 
+Tool versions that several workflows, images and scripts share live in
+[`.tool-versions`](ci.md#tool-versions) instead. Dependabot leaves the uv
+image and Node.js majors alone; the
+[tool versions bump](ci.md#tool-versions) moves uv and cargo-nextest, and a
+Node.js major moves by hand. Dependabot still updates the `node` image's
+digest within the pinned major.
+
 `examples/` lockfiles are left out, because they are reference plugins and
 never packaged. The full OSV scan still reports them.
 
@@ -122,6 +129,7 @@ GitHub App as [Dependabot auto-merge](#dependabot-auto-merge), not
 | Workflow | Writes |
 | --- | --- |
 | `workerd-pin-bump.yml` | The `deps/workerd-pin` branch, pull request and auto-merge |
+| `tool-versions-bump.yml` | The `deps/tool-versions` branch, pull request and auto-merge ([tool versions](ci.md#tool-versions)) |
 | `librofm-apk-probe.yml` | An `api-drift` issue; the `api-drift/librofm` branch and pull request |
 | `graphicaudio-api-probe.yml` | An `api-drift` issue; the `api-drift/graphicaudio` branch and pull request |
 | `chirp-api-probe.yml` | An `api-drift` issue; the `api-drift/chirp` branch and pull request |

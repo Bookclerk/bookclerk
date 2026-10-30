@@ -1,0 +1,20 @@
+[
+ {
+  "tag_name": "cargo-nextest-",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-10-01T12:00:00Z"
+ },
+ {
+  "tag_name": "cargo-nextest-0.9.200-beta.1",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-10-01T12:00:00Z"
+ },
+ {
+  "tag_name": "0.9.150",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-10-01T12:00:00Z"
+ }
+]

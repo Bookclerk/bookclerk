@@ -124,9 +124,9 @@ for everything else.
 | Piece | Notes |
 | --- | --- |
 | `rust:1-trixie` (digest-pinned, bumped by Dependabot) | The base image only (see below) |
-| Node.js 26 (from the digest-pinned `node:26-trixie-slim` image) | The `ui/` Vite build and the Workers under `tools/` |
-| uv (from its image, same version as CI) | Python plugin SDK development and docs tools |
-| `cargo-nextest` | The same version CI pins; `rust_test` runs under it |
+| Node.js (from the digest-pinned `node:<major>-trixie-slim` image, the major in [`.tool-versions`](../../.tool-versions)) | The `ui/` Vite build and the Workers under `tools/` |
+| uv (from its image, the version in [`.tool-versions`](../../.tool-versions), as in CI) | Python plugin SDK development and docs tools |
+| `cargo-nextest` | The version in [`.tool-versions`](../../.tool-versions), as in CI; `rust_test` runs under it |
 | Python 3 + a virtualenv with `scripts/tests/requirements.txt` | First on `PATH`, so `python3` has PyYAML for the CI planner tests |
 | `pkg-config` + `libssl-dev` | Fixes the local OpenSSL / `openssl-sys` failure |
 | `capnproto` | Compiles `schema/plugin.capnp` (the plugin ABI's native RPC) |

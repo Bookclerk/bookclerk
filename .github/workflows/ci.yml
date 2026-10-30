@@ -184,6 +184,7 @@ jobs:
           "$PY" scripts/tests/test_coverage_gate.py
           "$PY" scripts/tests/test_worker_startup.py
           "$PY" scripts/tests/test_dev_env.py
+          "$PY" scripts/tests/test_tool_versions.py
 
       - name: Database plugin isolation
         run: python3 scripts/tests/test_db_plugin_isolation.py -q
@@ -280,7 +281,7 @@ jobs:
         if: needs.plan.outputs.check_needs_node == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26"
+          node-version-file: .tool-versions
           # No npm cache for an unpublished OSV remediation bump.
           cache: ${{ !inputs.private-head && 'npm' || '' }}
           cache-dependency-path: |
@@ -295,7 +296,7 @@ jobs:
         if: needs.plan.outputs.check_needs_uv == 'true'
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          version: "0.13.5" # = the Dev Container uv image (scripts/tests/test_dev_env.py)
+          version-file: .tool-versions
           enable-cache: false
 
       - name: Install capnproto
@@ -440,10 +441,15 @@ jobs:
           toolchain: stable
           components: llvm-tools-preview
 
+      # Tool versions shared with the Dev Container (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        id: pins
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
-          tool: cargo-nextest@0.9.146
+          tool: cargo-nextest@${{ steps.pins.outputs.cargo-nextest }}
 
       - name: Install cargo-llvm-cov
         if: env.CI_BUILD_ONLY != 'true'
@@ -599,7 +605,7 @@ jobs:
         if: needs.plan.outputs.release_mode == 'full'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26"
+          node-version-file: .tool-versions
           # No npm cache for an unpublished OSV remediation bump.
           cache: ${{ !inputs.private-head && 'npm' || '' }}
           cache-dependency-path: ui/package-lock.json
@@ -1083,7 +1089,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26"
+          node-version-file: .tool-versions
           # No npm cache for an unpublished OSV remediation bump.
           cache: ${{ !inputs.private-head && 'npm' || '' }}
           cache-dependency-path: |
