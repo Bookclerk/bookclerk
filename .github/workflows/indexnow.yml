@@ -67,7 +67,7 @@ jobs:
       # The script imports nothing outside tools/site, so no npm install.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26"
+          node-version-file: .tool-versions
 
       # The newest snapshot any earlier run saved. Restore and save use the
       # same path: the cache's version includes it, so another path would

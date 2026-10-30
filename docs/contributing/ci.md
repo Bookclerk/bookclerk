@@ -355,6 +355,21 @@ when a step matches no test. Name such tests `postgres_*`.
 The postgres owners are the library, the db guest, the postgres guest and
 the plugin host's RPC `LIKE`.
 
+### Tool versions
+
+The root [`.tool-versions`](../../.tool-versions) file is the one pin for
+Node.js (a major) and uv (an exact version). Every `actions/setup-node` and
+`astral-sh/setup-uv` step reads it through `node-version-file` /
+`version-file`, never a literal version.
+
+The `node` and `ghcr.io/astral-sh/uv` base images in the Dockerfiles must name
+the same versions; `scripts/tests/test_dev_env.py` (in the `plan` job) fails
+on any drift. A change to `.tool-versions` runs the full suite.
+
+> [!NOTE]
+> Keep the `nodejs` line first and comments out of the file:
+> `actions/setup-node` reads the first line that looks like a version.
+
 ### Formatting and Markdown lint
 
 The `lint` check needs no Rust toolchain. It installs `tools/lint` (pinned
@@ -561,7 +576,7 @@ weekly, on demand, and on pull requests that touch `.devcontainer/**`,
 `rust-toolchain.toml`, `.dockerignore` or the workflow.
 
 `scripts/tests/test_dev_env.py` (in the plan job) checks on every run that
-the image's tool pins match CI, and that every Dockerfile's base images are
+the image's tool pins match CI and [`.tool-versions`](#tool-versions), and that every Dockerfile's base images are
 tag and digest pinned, aligned, and covered by Dependabot.
 
 ### Native-behind-workerd gateway smoke

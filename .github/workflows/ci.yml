@@ -280,7 +280,7 @@ jobs:
         if: needs.plan.outputs.check_needs_node == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26"
+          node-version-file: .tool-versions
           # No npm cache for an unpublished OSV remediation bump.
           cache: ${{ !inputs.private-head && 'npm' || '' }}
           cache-dependency-path: |
@@ -295,7 +295,7 @@ jobs:
         if: needs.plan.outputs.check_needs_uv == 'true'
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          version: "0.13.6" # = the Dev Container uv image (scripts/tests/test_dev_env.py)
+          version-file: .tool-versions
           enable-cache: false
 
       - name: Install capnproto
@@ -599,7 +599,7 @@ jobs:
         if: needs.plan.outputs.release_mode == 'full'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26"
+          node-version-file: .tool-versions
           # No npm cache for an unpublished OSV remediation bump.
           cache: ${{ !inputs.private-head && 'npm' || '' }}
           cache-dependency-path: ui/package-lock.json
@@ -1083,7 +1083,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26"
+          node-version-file: .tool-versions
           # No npm cache for an unpublished OSV remediation bump.
           cache: ${{ !inputs.private-head && 'npm' || '' }}
           cache-dependency-path: |

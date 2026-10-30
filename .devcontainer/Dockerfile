@@ -13,12 +13,13 @@
 # and pointed at via remoteEnv.
 
 # Node.js for `ui/` and the Workers under tools/: taken from the official image
-# rather than an apt repository so Dependabot tracks the version.
+# rather than an apt repository so Dependabot tracks the version. The major
+# must equal the `nodejs` pin in /.tool-versions (scripts/tests/test_dev_env.py).
 FROM node:26-trixie-slim@sha256:36793bcbb160a6a16cede1e62b93f84e26b78a972a8a4c0b879c1c12f22761ec AS node
 
 # uv installs the Python plugin SDK's dev/docs tools from its uv.lock (the
-# `python_sdk` CI check and `generate-api-docs.sh --python`). Same version as
-# CI's setup-uv step. A FROM stage rather than a bare COPY --from so Dependabot
+# `python_sdk` CI check and `generate-api-docs.sh --python`). The tag must equal
+# the `uv` pin in /.tool-versions, which CI's setup-uv steps read. A FROM stage rather than a bare COPY --from so Dependabot
 # sees it.
 FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
 
