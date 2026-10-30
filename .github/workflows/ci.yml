@@ -447,13 +447,13 @@ jobs:
         run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-nextest@${{ steps.pins.outputs.cargo-nextest }}
 
       - name: Install cargo-llvm-cov
         if: env.CI_BUILD_ONLY != 'true'
-        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-llvm-cov@0.9.1
 
