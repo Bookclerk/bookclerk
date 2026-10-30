@@ -1011,8 +1011,9 @@ const CONTENT_SIGNALS_POLICY = `# As a condition of accessing this website, you 
 
 /**
  * The site's robots.txt: every crawler may read every page, under content
- * signals that allow search, AI input and AI training as long as reuse links
- * back (`use=reference`).
+ * signals that allow search, AI input and AI training, and limit what is
+ * kept to indexing, excerpts and a link back to the source page
+ * (`use=reference`).
  *
  * @param origin - Site origin, without a trailing slash.
  * @returns The file's text.

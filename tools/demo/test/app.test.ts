@@ -210,6 +210,7 @@ describe("robots.txt", () => {
       body,
       /^User-agent: \*\nContent-Signal: search=no, ai-input=no, ai-train=no, use=immediate\nDisallow: \/$/m,
     );
+    assert.equal(body.match(/^User-agent:/gim)?.length, 1, "exactly one user-agent group");
     assert.ok(body.startsWith("# As a condition of accessing this website"));
     assert.equal(env.stubs.size, 0, "no session is looked up or started");
   });

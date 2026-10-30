@@ -492,7 +492,8 @@ test("crawler and agent files list the site", () => {
       /^User-agent: \*\nContent-Signal: search=yes, ai-input=yes, ai-train=yes, use=reference\nAllow: \/$/m,
     );
     assert.ok(robots.startsWith("# As a condition of accessing this website"));
-    assert.ok(robots.includes("# use: "), "the policy explains the use field");
+    assert.ok(robots.includes("# use: what may be kept and reused after accessing the content."));
+    assert.ok(robots.includes("RIGHTS UNDER ARTICLE 4 OF THE EUROPEAN UNION DIRECTIVE 2019/790"));
     assert.ok(!/^Disallow:/m.test(robots), "nothing is blocked");
 
     const llms = site.page("llms.txt");
