@@ -1,7 +1,7 @@
 // Error handling of the authenticated routes: a failed upstream call comes
 // back as JSON naming the stage, never as Cloudflare's opaque error 1101.
 // Also the /report filter that passes over reports an issue already lists.
-// Also the ingest cursor the Action stores and pulls from.
+// Also the ingest cursor the Action stores and pulls from, and robots.txt.
 
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "vitest";
@@ -55,6 +55,30 @@ function stubFetch(routes: Record<string, () => Response>): void {
 function report(headers: Record<string, string> = {}): Request {
   return new Request("https://collector.test/report?since=0", { headers });
 }
+
+describe("robots.txt", () => {
+  it("blocks every crawler and refuses every content signal", async () => {
+    stubFetch({});
+    const res = await worker.fetch(new Request("https://collector.test/robots.txt"), ENV, CTX);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("Content-Type"), "text/plain; charset=utf-8");
+    const body = await res.text();
+    assert.match(
+      body,
+      /^User-agent: \*\nContent-Signal: search=no, ai-input=no, ai-train=no, use=immediate\nDisallow: \/$/m,
+    );
+    assert.equal(body.match(/^User-agent:/gim)?.length, 1, "exactly one user-agent group");
+    assert.ok(body.startsWith("# As a condition of accessing this website"));
+
+    const head = await worker.fetch(
+      new Request("https://collector.test/robots.txt", { method: "HEAD" }),
+      ENV,
+      CTX,
+    );
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "");
+  });
+});
 
 describe("worker errors", () => {
   it("names the failed B2 stage to a caller with the report key", async () => {

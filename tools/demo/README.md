@@ -24,6 +24,10 @@ fresh database in CI, so a schema change that breaks it fails there.
 
 ## How a session works
 
+The Worker answers `GET /robots.txt` itself, before any session lookup, so
+a running container never serves it: it disallows every crawler and sets
+every content signal to `no` (`use=immediate`).
+
 1. The launch page (`GET /`) asks for a Turnstile check. `POST /_demo/start`
    verifies it with Siteverify (hostname and action must match), then admits
    the session against the limits below and records it in D1.

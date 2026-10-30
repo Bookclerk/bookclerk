@@ -296,7 +296,12 @@ versions.
   `build.ts` wrote (the pages and the sidebar's docs, no dates) for a
   minute and section sitemaps answer 503. Keys the docs route would not
   serve at their URL are left out, and each sitemap lists at most 50,000
-  URLs. `robots.txt` allows all crawlers and points to `/sitemap.xml`.
+  URLs. `robots.txt` allows all crawlers, points to `/sitemap.xml` and
+  carries a `Content-Signal` line (`search=yes, ai-input=yes, ai-train=yes,
+  use=reference`: index, excerpt, and link back to the source page) under
+  the Content Signals policy text. Cloudflare prepends its own managed rules
+  to this file when Bot Preference Sync is on with a blocking AI bot policy,
+  so keep that setting off for bookclerk.app.
 - No page carries `noarchive`. Bing reads it as "leave this page out of
   Copilot answers", and the site wants to be found and cited there too.
 - IndexNow: with `SITE_INDEXNOW_KEY` set, the build writes the key file,

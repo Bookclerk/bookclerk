@@ -484,7 +484,16 @@ test("crawler and agent files list the site", () => {
     assert.ok(sitemap.includes("<loc>https://bookclerk.app/</loc>"));
     assert.ok(sitemap.includes("<loc>https://bookclerk.app/docs/plugins</loc>"));
     assert.ok(!sitemap.includes("/404"));
-    assert.match(site.page("robots.txt"), /^Sitemap: https:\/\/bookclerk.app\/sitemap.xml$/m);
+    const robots = site.page("robots.txt");
+    assert.match(robots, /^Sitemap: https:\/\/bookclerk.app\/sitemap.xml$/m);
+    assert.match(
+      robots,
+      /^User-agent: \*\nContent-Signal: search=yes, ai-input=yes, ai-train=yes, use=reference\nAllow: \/$/m,
+    );
+    assert.ok(robots.startsWith("# As a condition of accessing this website"));
+    assert.ok(robots.includes("# use: what may be kept and reused after accessing the content."));
+    assert.ok(robots.includes("RIGHTS UNDER ARTICLE 4 OF THE EUROPEAN UNION DIRECTIVE 2019/790"));
+    assert.ok(!/^Disallow:/m.test(robots), "nothing is blocked");
 
     const llms = site.page("llms.txt");
     assert.ok(llms.startsWith("# Bookclerk\n\n> "));

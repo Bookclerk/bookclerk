@@ -18,6 +18,7 @@ fallback).
 | `POST` | `/triage` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `POST` | `/issues/attach` | GitHub Action | `Authorization: Bearer <REPORT_API_KEY>` |
 | `GET` | `/health` | probes | none |
+| `GET` | `/robots.txt` | crawlers | none (disallows everything, all content signals `no`) |
 | `GET` | `/`, `/dash`, `/reports`, `/reports/<id>`, `/issues` | organization members | GitHub sign-in (`/auth/github`), session cookie |
 
 The member dashboard is on only when the automation App's secrets are set;

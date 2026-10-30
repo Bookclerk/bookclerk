@@ -30,6 +30,44 @@ export const SECURITY_HEADERS = Object.freeze({
   "Strict-Transport-Security": "max-age=31536000",
 });
 
+/**
+ * The demo's robots.txt: no crawler may read any page, and the content
+ * signals (Cloudflare's Content Signals Policy, contentsignals.org) refuse
+ * search, AI input, AI training and any reuse. The demo is a throwaway copy
+ * of the app per visitor, with nothing worth indexing.
+ */
+export const ROBOTS_TXT = `# As a condition of accessing this website, you agree to abide by the
+# following content signals:
+
+# (a)  If a content-signal = yes, you may collect content for the
+#      corresponding use.
+# (b)  If a content-signal = no, you may not collect content for the
+#      corresponding use.
+# (c)  If the website operator does not include a content signal for a
+#      corresponding use, the website operator neither grants nor restricts
+#      permission via content signal with respect to the corresponding use.
+
+# The content signals and their meanings are:
+
+# search: building a search index and providing search results (e.g., returning
+#         hyperlinks and short excerpts from your website's contents). Search
+#         does not include providing AI-generated search summaries.
+# ai-input: inputting content into one or more AI models (e.g., retrieval
+#           augmented generation, grounding, or other real-time taking of
+#           content for generative AI search answers).
+# ai-train: training or fine-tuning AI models.
+# use: what may be kept and reused after accessing the content. "immediate"
+#      means interact, but store and reuse nothing.
+
+# ANY RESTRICTIONS EXPRESSED VIA CONTENT SIGNALS ARE EXPRESS RESERVATIONS OF
+# RIGHTS UNDER ARTICLE 4 OF THE EUROPEAN UNION DIRECTIVE 2019/790 ON COPYRIGHT
+# AND RELATED RIGHTS IN THE DIGITAL SINGLE MARKET.
+
+User-agent: *
+Content-Signal: search=no, ai-input=no, ai-train=no, use=immediate
+Disallow: /
+`;
+
 /** The footer note the website carries too (tools/site/src/partials/footer.html), word for word. */
 export const LEGAL =
   "Bookclerk is free software under the GNU AGPL, version 3 or later. Bookclerk and the Bookclerk logo are trademarks of the Bookclerk project. It is not affiliated with or endorsed by Audible, Libro.fm, Chirp or GraphicAudio; their names are trademarks of their owners. Bookclerk is meant for books you have bought, for your own listening.";
