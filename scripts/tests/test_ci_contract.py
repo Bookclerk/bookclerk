@@ -323,6 +323,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(install[0]["with"]["tool"], "cargo-nextest@${{ steps.pins.outputs.cargo-nextest }}")
         pins = [s for s in steps if s.get("id") == "pins"]
         self.assertEqual(len(pins), 1)
+        self.assertIn('python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"', pins[0]["run"])
         self.assertLess(steps.index(pins[0]), steps.index(install[0]))
         self.assertRegex(install[1]["with"]["tool"], r"^cargo-llvm-cov@\d+\.\d+\.\d+$")
 
