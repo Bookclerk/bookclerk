@@ -214,13 +214,14 @@ class ProvisionScriptTests(unittest.TestCase):
                         self.assertEqual(pins["uv"], tag)
         self.assertEqual({"node", "ghcr.io/astral-sh/uv"}, seen)
 
-    def test_bump_workflow_covers_every_released_tool(self) -> None:
-        """tool-versions-bump.yml bumps each pin that has a release repository."""
+    def test_bump_workflow_reads_tools_from_the_script(self) -> None:
+        """tool-versions-bump.yml bumps whatever ``tool_versions.py bumpable`` lists."""
         workflow = yaml.safe_load(
             (ROOT / ".github" / "workflows" / "tool-versions-bump.yml").read_text(encoding="utf-8")
         )
-        matrix = workflow["jobs"]["bump"]["strategy"]["matrix"]["tool"]
-        self.assertEqual([t.name for t in tool_versions.TOOLS if t.repo is not None], matrix)
+        runs = "\n".join(step.get("run", "") for step in workflow["jobs"]["bump"]["steps"])
+        self.assertIn("$(python3 scripts/tool_versions.py bumpable)", runs)
+        self.assertNotIn("matrix", workflow["jobs"]["bump"].get("strategy", {}))
 
     def test_dependabot_leaves_tool_versions_pins_alone(self) -> None:
         """Dependabot skips the uv image and Node.js majors, which .tool-versions owns."""

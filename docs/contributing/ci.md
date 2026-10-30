@@ -381,8 +381,8 @@ The daily `tool-versions-bump.yml` workflow takes the newest release of uv
 and cargo-nextest that is at least 7 days old (the same cooldown as
 Dependabot and the workerd pin). For uv it also resolves the image digest
 and rewrites every Dockerfile that builds from the image. It opens one pull
-request per tool with the [automation App](automation.md#automation-app) and
-turns on auto-merge. Dependabot ignores the uv image and Node.js majors, so
+request for every tool due that day, on the `deps/tool-versions` branch, with
+the [automation App](automation.md#automation-app), and turns on auto-merge. Dependabot ignores the uv image and Node.js majors, so
 the two never race.
 
 > [!NOTE]

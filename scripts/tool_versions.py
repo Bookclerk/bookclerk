@@ -16,9 +16,11 @@ Usage:
 
 ``tool_versions.py github-output``
     Prints ``<tool>=<version>`` for each pin, for ``$GITHUB_OUTPUT``.
-``tool_versions.py describe <tool>``
-    Prints ``repo=<owner/name>`` and ``image=<name>`` (empty when unset) for
-    ``$GITHUB_OUTPUT``. Exits 1 for a tool that is bumped by hand.
+``tool_versions.py bumpable``
+    Prints, one per line, each tool the bump workflow moves.
+``tool_versions.py repo <tool>`` / ``tool_versions.py image <tool>``
+    Prints the tool's release repository, or its image (empty when it has
+    none). ``repo`` exits 1 for a tool that is bumped by hand.
 ``tool_versions.py select <tool> --releases FILE [--cooldown-days N]``
     Prints the newest release older than the cooldown that is newer than the
     pin. Exits 2 when there is none.
@@ -34,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -222,11 +225,18 @@ def rewrite_image(text: str, image: str, version: str, digest: str) -> str:
 
 
 def _tracked_dockerfiles() -> list[Path]:
-    """Lists the repository's Dockerfiles, outside build and dependency trees."""
-    skip = {".git", "target", "node_modules", ".cargo-home", "BookclerkFiles"}
-    return sorted(
-        path for path in ROOT.rglob("Dockerfile") if not skip.intersection(path.relative_to(ROOT).parts)
-    )
+    """Lists the Dockerfiles git tracks (``*Dockerfile``, as the bump workflow commits)."""
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*Dockerfile"], cwd=ROOT, capture_output=True, check=True
+    ).stdout.decode("utf-8")
+    return [ROOT / name for name in out.split("\0") if name]
+
+
+def _cooldown(text: str) -> int:
+    """Parses ``--cooldown-days``: a whole number of days, at least 1."""
+    if not text.isascii() or not text.isdigit() or int(text) < 1:
+        raise argparse.ArgumentTypeError("cooldown must be a whole number of days, at least 1")
+    return int(text)
 
 
 def _tool(name: str) -> Tool:
@@ -248,17 +258,24 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("github-output", help="print <tool>=<version> lines")
-    describe = commands.add_parser("describe", help="print where a tool's releases and image live")
-    describe.add_argument("tool", type=_tool)
+    commands.add_parser("bumpable", help="list the tools the bump workflow moves")
+    for name in ("repo", "image"):
+        command = commands.add_parser(name, help=f"print a tool's {name}")
+        command.add_argument("tool", type=_tool)
     select = commands.add_parser("select", help="pick an eligible release")
     select.add_argument("tool", type=_tool)
     select.add_argument("--releases", type=Path, required=True, help="GitHub releases listing (JSON)")
-    select.add_argument("--cooldown-days", type=int, default=DEFAULT_COOLDOWN_DAYS)
+    select.add_argument("--cooldown-days", type=_cooldown, default=DEFAULT_COOLDOWN_DAYS)
     apply = commands.add_parser("apply", help="write a new pin")
     apply.add_argument("tool", type=_tool)
     apply.add_argument("version")
     apply.add_argument("--digest", help="the tool image's sha256 digest for the new version")
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exit_:
+        # argparse exits 2 on a usage error, which callers read as "nothing
+        # to bump"; report it as an error instead.
+        return 0 if exit_.code == 0 else 1
 
     try:
         pins = parse_pins(TOOL_VERSIONS.read_text(encoding="utf-8"))
@@ -266,12 +283,19 @@ def main(argv: list[str]) -> int:
             for name, version in pins.items():
                 print(f"{name}={version}")
             return 0
+        if args.command == "bumpable":
+            for tool in TOOLS:
+                if tool.repo is not None:
+                    print(tool.name)
+            return 0
         tool: Tool = args.tool
-        if args.command in ("describe", "select") and tool.repo is None:
+        if args.command in ("repo", "select") and tool.repo is None:
             raise ToolVersionsError(f"{tool.name} is bumped by hand")
-        if args.command == "describe":
-            print(f"repo={tool.repo}")
-            print(f"image={tool.image or ''}")
+        if args.command == "repo":
+            print(tool.repo)
+            return 0
+        if args.command == "image":
+            print(tool.image or "")
             return 0
         if args.command == "select":
             with args.releases.open("rb") as handle:
@@ -296,7 +320,7 @@ def main(argv: list[str]) -> int:
                     dockerfile.write_text(updated, encoding="utf-8")
                     print(f"updated {dockerfile.relative_to(ROOT)}", file=sys.stderr)
         return 0
-    except (OSError, ToolVersionsError) as err:
+    except (OSError, subprocess.CalledProcessError, ToolVersionsError) as err:
         print(f"tool_versions: {err}", file=sys.stderr)
         return 1
 
