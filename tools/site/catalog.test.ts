@@ -345,6 +345,14 @@ test("every catalog sheet is complete before JavaScript runs", () => {
   assert.ok(!cards.includes('class="back"'));
 });
 
+test("a stack outside two to four records is refused", () => {
+  const record = catalogRecords[0];
+  assert.ok(record);
+  assert.throws(() => catalogCards([record]), /two to four records/);
+  assert.throws(() => catalogCards(Array.from({ length: 5 }, () => record)), /two to four/);
+  assert.equal(catalogCards([record, record, record]).match(/class="catalog-card"/g)?.length, 3);
+});
+
 test("record text cannot introduce markup or attributes", () => {
   const record = {
     title: '<img src=x onerror="alert(1)">',
