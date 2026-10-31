@@ -649,6 +649,46 @@ nightlies, and `rustdoc_markdown.py` reads format 56.
 through the real Worker under `wrangler dev`, and audits it with the
 runner's Chrome.
 
+The homepage's catalog sheets are rendered at build time from
+`tools/site/src/catalog-records.json`, which is also published unchanged as
+`/catalog-records.json`. Its `series` entries share names/universe context
+and contain ordered `books`; unrelated novels live under `standalones`.
+Each load selects four distinct groups with equal probability, then one
+uniformly selected book per group from the inert rendered pool. Shared
+universes, including the Cosmere, count as one group; unrelated standalones
+count individually. Longer series cannot dominate a stack. The no-script
+fallback also uses four different groups.
+Metadata includes source editions, verification dates, complete narrator
+credits, integer runtimes in minutes and optional series position/universe.
+Tests check series coverage, metadata integrity, escaping and distinct
+group sampling independent of series size; the browser audit checks group
+diversity and every authored card for text/stamp overlap.
+The complete stack drops and stamps
+once it fits below the header. Cards remain hidden until that entrance;
+unsupported animation, reduced motion and very short views retain static
+artwork. The page never captures or repositions ordinary scrolling.
+After the drop, wheel input over an actual sheet optionally cycles the
+front record behind the stack and stamps the next record. A sideways touch
+or mouse drag does the same on release. Native vertical panning and pinch
+zoom remain available. Independent gestures can cycle every record;
+residual wheel momentum cannot start another turn.
+Site tests run the shipped controller with an independent bounds oracle
+and cover local wheel targeting, repeated order changes, drag displacement,
+taps, vertical swipes, multi-touch, lost capture, timeout, resize, navigation
+and reduced motion. The browser audit also exercises real wheel events and
+Chromium touch input, including native vertical scrolling. Cards keep a fixed
+aspect ratio and centered, fitted artwork areas. The first record remains
+visible without JavaScript. Page transitions and FAQ expansion use CSS
+with ordinary navigation and native disclosures as fallbacks.
+
+The pre-release notice measures its full contents and collapses to the
+badge and detail link when it would occupy more than two lines, regardless
+of viewport width. It rechecks after resizing and web-font loading; mobile
+CSS provides the compact fallback when scripts are unavailable.
+Marketing pages share the docs header's sticky behavior. Their section
+links account for the measured header height so headings remain visible
+when navigation wraps.
+
 Docs pages are read from this checkout's `docs/` through a local server
 (`tools/site/audit/entry.ts`), not from the docs repository. So the audit
 covers the docs as the pull request has them, and needs no network. A docs

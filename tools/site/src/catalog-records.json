@@ -1,0 +1,892 @@
+{
+  "series": [
+    {
+      "name": "Dungeon Crawler Carl",
+      "books": [
+        {
+          "title": "Dungeon Crawler Carl",
+          "number": "0412",
+          "author": "Matt Dinniman",
+          "narrators": ["Jeff Hays"],
+          "durationMinutes": 811,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Dinniman/Dungeon Crawler Carl",
+          "sourceUrl": "https://www.audible.com/pd/B08V8B2CGV",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 1
+        },
+        {
+          "title": "Carl's Doomsday Scenario",
+          "number": "0413",
+          "author": "Matt Dinniman",
+          "narrators": ["Jeff Hays"],
+          "durationMinutes": 688,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Dinniman/Carl's Doomsday Scenario",
+          "sourceUrl": "https://www.audible.com/pd/B0934GTSGT",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 2
+        },
+        {
+          "title": "The Dungeon Anarchist's Cookbook",
+          "number": "0414",
+          "author": "Matt Dinniman",
+          "narrators": ["Jeff Hays", "The Critical Drinker"],
+          "durationMinutes": 1014,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Dinniman/The Dungeon Anarchist's Cookbook",
+          "sourceUrl": "https://www.audible.com/pd/B094XCNV6G",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 3
+        },
+        {
+          "title": "The Gate of the Feral Gods",
+          "number": "0415",
+          "author": "Matt Dinniman",
+          "narrators": ["Jeff Hays"],
+          "durationMinutes": 1083,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Dinniman/The Gate of the Feral Gods",
+          "sourceUrl": "https://www.audible.com/pd/B09GCYRZRQ",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 4
+        },
+        {
+          "title": "The Butcher's Masquerade",
+          "number": "0416",
+          "author": "Matt Dinniman",
+          "narrators": ["Jeff Hays"],
+          "durationMinutes": 1413,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Dinniman/The Butcher's Masquerade",
+          "sourceUrl": "https://www.audible.com/pd/B09ZJ82C7Y",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 5
+        },
+        {
+          "title": "The Eye of the Bedlam Bride",
+          "number": "0417",
+          "author": "Matt Dinniman",
+          "narrators": ["Jeff Hays", "Patrick Warburton", "Travis Baldree", "Annie Ellicott"],
+          "durationMinutes": 1606,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Dinniman/The Eye of the Bedlam Bride",
+          "sourceUrl": "https://www.audible.com/pd/B0CDXWSS5D",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 6
+        },
+        {
+          "title": "This Inevitable Ruin",
+          "number": "0418",
+          "author": "Matt Dinniman",
+          "narrators": ["Jeff Hays", "Travis Baldree"],
+          "durationMinutes": 1720,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Dinniman/This Inevitable Ruin",
+          "sourceUrl": "https://www.audible.com/pd/B0DK282SYV",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 7
+        },
+        {
+          "title": "A Parade of Horribles",
+          "number": "0419",
+          "author": "Matt Dinniman",
+          "narrators": ["Jeff Hays"],
+          "durationMinutes": 1227,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Dinniman/A Parade of Horribles",
+          "sourceUrl": "https://www.audible.com/pd/B0FXY6DVJS",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 8
+        }
+      ]
+    },
+    {
+      "name": "The Expanse",
+      "books": [
+        {
+          "title": "Leviathan Wakes",
+          "number": "0420",
+          "author": "James S. A. Corey",
+          "narrators": ["Jefferson Mays"],
+          "durationMinutes": 1149,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Corey/Leviathan Wakes",
+          "sourceUrl": "https://www.audible.com/pd/B00P9XDQFY",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 1
+        },
+        {
+          "title": "Caliban's War",
+          "number": "0421",
+          "author": "James S. A. Corey",
+          "narrators": ["Jefferson Mays"],
+          "durationMinutes": 1260,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Corey/Caliban's War",
+          "sourceUrl": "https://www.audible.com/pd/B075DK95GS",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 2
+        },
+        {
+          "title": "Abaddon's Gate",
+          "number": "0422",
+          "author": "James S. A. Corey",
+          "narrators": ["Jefferson Mays"],
+          "durationMinutes": 1182,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Corey/Abaddon's Gate",
+          "sourceUrl": "https://www.audible.com/pd/1549142194",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 3
+        },
+        {
+          "title": "Cibola Burn",
+          "number": "0423",
+          "author": "James S. A. Corey",
+          "narrators": ["Jefferson Mays"],
+          "durationMinutes": 1207,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Corey/Cibola Burn",
+          "sourceUrl": "https://www.audible.com/pd/B00K7PP15W",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 4
+        },
+        {
+          "title": "Nemesis Games",
+          "number": "0424",
+          "author": "James S. A. Corey",
+          "narrators": ["Jefferson Mays"],
+          "durationMinutes": 1086,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Corey/Nemesis Games",
+          "sourceUrl": "https://www.audible.com/pd/B00XA9CCPO",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 5
+        },
+        {
+          "title": "Babylon's Ashes",
+          "number": "0425",
+          "author": "James S. A. Corey",
+          "narrators": ["Jefferson Mays"],
+          "durationMinutes": 1198,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Corey/Babylon's Ashes",
+          "sourceUrl": "https://www.audible.com/pd/B01D53NPLO",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 6
+        },
+        {
+          "title": "Persepolis Rising",
+          "number": "0426",
+          "author": "James S.A. Corey",
+          "narrators": ["Jefferson Mays"],
+          "durationMinutes": 1234,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Corey/Persepolis Rising",
+          "sourceUrl": "https://www.audible.com/pd/B077XN27GW",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 7
+        },
+        {
+          "title": "Tiamat's Wrath",
+          "number": "0427",
+          "author": "James S. A. Corey",
+          "narrators": ["Jefferson Mays"],
+          "durationMinutes": 1148,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Corey/Tiamat's Wrath",
+          "sourceUrl": "https://www.audible.com/pd/1980006520",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 8
+        },
+        {
+          "title": "Leviathan Falls",
+          "number": "0428",
+          "author": "James S. A. Corey",
+          "narrators": ["Jefferson Mays"],
+          "durationMinutes": 1179,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Corey/Leviathan Falls",
+          "sourceUrl": "https://www.audible.com/pd/1980035962",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 9
+        }
+      ]
+    },
+    {
+      "name": "Dune",
+      "books": [
+        {
+          "title": "Dune",
+          "number": "0429",
+          "author": "Frank Herbert",
+          "narrators": [
+            "Scott Brick",
+            "Orlagh Cassidy",
+            "Euan Morton",
+            "Simon Vance",
+            "Ilyana Kadushin",
+            "Byron Jennings",
+            "David R. Gordon",
+            "Jason Culp",
+            "Kent Broadhurst",
+            "Oliver Wyman",
+            "Patricia Kilgarriff",
+            "Scott Sowers"
+          ],
+          "durationMinutes": 1262,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Herbert/Dune",
+          "sourceUrl": "https://www.audible.com/pd/B002V1OF70",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 1
+        },
+        {
+          "title": "Dune Messiah",
+          "number": "0430",
+          "author": "Frank Herbert",
+          "narrators": ["Scott Brick", "Euan Morton", "Simon Vance", "Katherine Kellgren"],
+          "durationMinutes": 537,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Herbert/Dune Messiah",
+          "sourceUrl": "https://www.audible.com/pd/B002V8H660",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 2
+        },
+        {
+          "title": "Children of Dune",
+          "number": "0431",
+          "author": "Frank Herbert",
+          "narrators": ["Simon Vance", "Scott Brick"],
+          "durationMinutes": 1011,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Herbert/Children of Dune",
+          "sourceUrl": "https://www.audible.com/pd/B002V57VRC",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 3
+        },
+        {
+          "title": "God Emperor of Dune",
+          "number": "0432",
+          "author": "Frank Herbert",
+          "narrators": ["Simon Vance", "Scott Brick", "Katherine Kellgren"],
+          "durationMinutes": 948,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Herbert/God Emperor of Dune",
+          "sourceUrl": "https://www.audible.com/pd/B002V5D08G",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 4
+        },
+        {
+          "title": "Heretics of Dune",
+          "number": "0433",
+          "author": "Frank Herbert",
+          "narrators": ["Simon Vance"],
+          "durationMinutes": 1084,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Herbert/Heretics of Dune",
+          "sourceUrl": "https://www.audible.com/pd/B002V1CA2M",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 5
+        },
+        {
+          "title": "Chapterhouse Dune",
+          "number": "0434",
+          "author": "Frank Herbert",
+          "narrators": ["Scott Brick", "Simon Vance", "Katherine Kellgren", "Euan Morton"],
+          "durationMinutes": 1002,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Herbert/Chapterhouse Dune",
+          "sourceUrl": "https://www.audible.com/pd/B002V0K6D8",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 6
+        }
+      ]
+    },
+    {
+      "name": "Sprawl",
+      "books": [
+        {
+          "title": "Neuromancer",
+          "number": "0435",
+          "author": "William Gibson",
+          "narrators": ["Robertson Dean"],
+          "durationMinutes": 631,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Gibson/Neuromancer",
+          "sourceUrl": "https://www.audible.com/pd/B0057HR4E6",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 1
+        },
+        {
+          "title": "Count Zero",
+          "number": "0436",
+          "author": "William Gibson",
+          "narrators": ["Jonathan Davis"],
+          "durationMinutes": 688,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Gibson/Count Zero",
+          "sourceUrl": "https://www.audible.com/pd/B0036JSWXY",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 2
+        },
+        {
+          "title": "Mona Lisa Overdrive",
+          "number": "0437",
+          "author": "William Gibson",
+          "narrators": ["Jonathan Davis"],
+          "durationMinutes": 650,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Gibson/Mona Lisa Overdrive",
+          "sourceUrl": "https://www.audible.com/pd/B0036JPYD0",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 3
+        }
+      ]
+    },
+    {
+      "name": "Mistborn",
+      "universe": "Cosmere",
+      "books": [
+        {
+          "title": "The Final Empire",
+          "number": "0438",
+          "author": "Brandon Sanderson",
+          "narrators": ["Michael Kramer"],
+          "durationMinutes": 1479,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/The Final Empire",
+          "sourceUrl": "https://www.audible.com/pd/B002V0QCYU",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 1
+        },
+        {
+          "title": "The Well of Ascension",
+          "number": "0439",
+          "author": "Brandon Sanderson",
+          "narrators": ["Michael Kramer"],
+          "durationMinutes": 1736,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/The Well of Ascension",
+          "sourceUrl": "https://www.audible.com/pd/B002V5GLQ4",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 2
+        },
+        {
+          "title": "The Hero of Ages",
+          "number": "0440",
+          "author": "Brandon Sanderson",
+          "narrators": ["Michael Kramer"],
+          "durationMinutes": 1645,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/The Hero of Ages",
+          "sourceUrl": "https://www.audible.com/pd/B002VA9IKK",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 3
+        },
+        {
+          "title": "The Alloy of Law",
+          "number": "0441",
+          "author": "Brandon Sanderson",
+          "narrators": ["Michael Kramer"],
+          "durationMinutes": 648,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/The Alloy of Law",
+          "sourceUrl": "https://www.audible.com/pd/B005ZUI3OA",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 4
+        },
+        {
+          "title": "Shadows of Self",
+          "number": "0442",
+          "author": "Brandon Sanderson",
+          "narrators": ["Michael Kramer"],
+          "durationMinutes": 757,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/Shadows of Self",
+          "sourceUrl": "https://www.audible.com/pd/B014LLCT7A",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 5
+        },
+        {
+          "title": "The Bands of Mourning",
+          "number": "0443",
+          "author": "Brandon Sanderson",
+          "narrators": ["Michael Kramer"],
+          "durationMinutes": 881,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/The Bands of Mourning",
+          "sourceUrl": "https://www.audible.com/pd/B0189QQXRA",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 6
+        },
+        {
+          "title": "The Lost Metal",
+          "number": "0444",
+          "author": "Brandon Sanderson",
+          "narrators": ["Michael Kramer"],
+          "durationMinutes": 1126,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/The Lost Metal",
+          "sourceUrl": "https://www.audible.com/pd/B09N446YK7",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 7
+        }
+      ]
+    },
+    {
+      "name": "Stormlight Archive",
+      "universe": "Cosmere",
+      "books": [
+        {
+          "title": "The Way of Kings",
+          "number": "0445",
+          "author": "Brandon Sanderson",
+          "narrators": ["Michael Kramer", "Kate Reading"],
+          "durationMinutes": 2730,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/The Way of Kings",
+          "sourceUrl": "https://www.audible.com/pd/B003ZWFO7E",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 1
+        },
+        {
+          "title": "Words of Radiance",
+          "number": "0446",
+          "author": "Brandon Sanderson",
+          "narrators": ["Michael Kramer", "Kate Reading"],
+          "durationMinutes": 2895,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/Words of Radiance",
+          "sourceUrl": "https://www.audible.com/pd/B00HWF0MHW",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 2
+        },
+        {
+          "title": "Oathbringer",
+          "number": "0447",
+          "author": "Brandon Sanderson",
+          "narrators": ["Michael Kramer", "Kate Reading"],
+          "durationMinutes": 3305,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/Oathbringer",
+          "sourceUrl": "https://www.audible.com/pd/B0718Z5K4C",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 3
+        },
+        {
+          "title": "Rhythm of War",
+          "number": "0448",
+          "author": "Brandon Sanderson",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 3446,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/Rhythm of War",
+          "sourceUrl": "https://www.audible.com/pd/1250759781",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 4
+        },
+        {
+          "title": "Wind and Truth",
+          "number": "0449",
+          "author": "Brandon Sanderson",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 3768,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/Wind and Truth",
+          "sourceUrl": "https://www.audible.com/pd/B0CQ3759C3",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 5
+        }
+      ]
+    },
+    {
+      "name": "Foundation",
+      "books": [
+        {
+          "title": "Foundation",
+          "number": "0450",
+          "author": "Isaac Asimov",
+          "narrators": ["Scott Brick"],
+          "durationMinutes": 518,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Asimov/Foundation",
+          "sourceUrl": "https://www.audible.com/pd/B003D8W5VS",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 1
+        },
+        {
+          "title": "Foundation and Empire",
+          "number": "0451",
+          "author": "Isaac Asimov",
+          "narrators": ["Scott Brick"],
+          "durationMinutes": 573,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Asimov/Foundation and Empire",
+          "sourceUrl": "https://www.audible.com/pd/B003FCV4O6",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 2
+        },
+        {
+          "title": "Second Foundation",
+          "number": "0452",
+          "author": "Isaac Asimov",
+          "narrators": ["Scott Brick"],
+          "durationMinutes": 561,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Asimov/Second Foundation",
+          "sourceUrl": "https://www.audible.com/pd/B003D8S2ME",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 3
+        },
+        {
+          "title": "Foundation's Edge",
+          "number": "0453",
+          "author": "Isaac Asimov",
+          "narrators": ["Scott Brick"],
+          "durationMinutes": 974,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Asimov/Foundation's Edge",
+          "sourceUrl": "https://www.audible.com/pd/B005WL4R7E",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 4
+        },
+        {
+          "title": "Foundation and Earth",
+          "number": "0454",
+          "author": "Isaac Asimov",
+          "narrators": ["Larry McKeever"],
+          "durationMinutes": 1124,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Asimov/Foundation and Earth",
+          "sourceUrl": "https://www.audible.com/pd/B005WWT7TQ",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 5
+        },
+        {
+          "title": "Prelude to Foundation",
+          "number": "0455",
+          "author": "Isaac Asimov",
+          "narrators": ["Scott Brick"],
+          "durationMinutes": 895,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Asimov/Prelude to Foundation",
+          "sourceUrl": "https://www.audible.com/pd/B005T6ZETM",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 6
+        },
+        {
+          "title": "Forward the Foundation",
+          "number": "0456",
+          "author": "Isaac Asimov",
+          "narrators": ["William Hope"],
+          "durationMinutes": 927,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Asimov/Forward the Foundation",
+          "sourceUrl": "https://www.audible.com/pd/B0CB6WSNS6",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 7
+        }
+      ]
+    },
+    {
+      "name": "The Wheel of Time",
+      "books": [
+        {
+          "title": "New Spring",
+          "number": "0457",
+          "author": "Robert Jordan",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 758,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/New Spring",
+          "sourceUrl": "https://www.audible.com/pd/B002UUFOSG",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 0
+        },
+        {
+          "title": "The Eye of the World",
+          "number": "0458",
+          "author": "Robert Jordan",
+          "narrators": ["Michael Kramer", "Kate Reading"],
+          "durationMinutes": 1797,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/The Eye of the World",
+          "sourceUrl": "https://www.audible.com/pd/B0036NHZ10",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 1
+        },
+        {
+          "title": "The Great Hunt",
+          "number": "0459",
+          "author": "Robert Jordan",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 1594,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/The Great Hunt",
+          "sourceUrl": "https://www.audible.com/pd/B002UP1LXS",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 2
+        },
+        {
+          "title": "The Dragon Reborn",
+          "number": "0460",
+          "author": "Robert Jordan",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 1488,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/The Dragon Reborn",
+          "sourceUrl": "https://www.audible.com/pd/B002V1OIM2",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 3
+        },
+        {
+          "title": "The Shadow Rising",
+          "number": "0461",
+          "author": "Robert Jordan",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 2473,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/The Shadow Rising",
+          "sourceUrl": "https://www.audible.com/pd/B002UZML5K",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 4
+        },
+        {
+          "title": "The Fires of Heaven",
+          "number": "0462",
+          "author": "Robert Jordan",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 2187,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/The Fires of Heaven",
+          "sourceUrl": "https://www.audible.com/pd/B002V0JU3U",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 5
+        },
+        {
+          "title": "Lord of Chaos",
+          "number": "0463",
+          "author": "Robert Jordan",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 2492,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/Lord of Chaos",
+          "sourceUrl": "https://www.audible.com/pd/B002V5BDOE",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 6
+        },
+        {
+          "title": "A Crown of Swords",
+          "number": "0464",
+          "author": "Robert Jordan",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 1824,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/A Crown of Swords",
+          "sourceUrl": "https://www.audible.com/pd/B002V0118W",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 7
+        },
+        {
+          "title": "The Path of Daggers",
+          "number": "0465",
+          "author": "Robert Jordan",
+          "narrators": ["Michael Kramer", "Kate Reading"],
+          "durationMinutes": 1405,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/The Path of Daggers",
+          "sourceUrl": "https://www.audible.com/pd/B002V1AJEI",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 8
+        },
+        {
+          "title": "Winter's Heart",
+          "number": "0466",
+          "author": "Robert Jordan",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 1452,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/Winter's Heart",
+          "sourceUrl": "https://www.audible.com/pd/B004NQKRVE",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 9
+        },
+        {
+          "title": "Crossroads of Twilight",
+          "number": "0467",
+          "author": "Robert Jordan",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 1564,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/Crossroads of Twilight",
+          "sourceUrl": "https://www.audible.com/pd/B0036N9G8K",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 10
+        },
+        {
+          "title": "Knife of Dreams",
+          "number": "0468",
+          "author": "Robert Jordan",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 1939,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/Knife of Dreams",
+          "sourceUrl": "https://www.audible.com/pd/B002V0K6BA",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 11
+        },
+        {
+          "title": "The Gathering Storm",
+          "number": "0469",
+          "author": "Robert Jordan, Brandon Sanderson",
+          "narrators": ["Michael Kramer", "Kate Reading"],
+          "durationMinutes": 1978,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/The Gathering Storm",
+          "sourceUrl": "https://www.audible.com/pd/B002UZN0PA",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 12
+        },
+        {
+          "title": "Towers of Midnight",
+          "number": "0470",
+          "author": "Robert Jordan, Brandon Sanderson",
+          "narrators": ["Kate Reading", "Michael Kramer"],
+          "durationMinutes": 2301,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/Towers of Midnight",
+          "sourceUrl": "https://www.audible.com/pd/B00494LMV4",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 13
+        },
+        {
+          "title": "A Memory of Light",
+          "number": "0471",
+          "author": "Robert Jordan, Brandon Sanderson",
+          "narrators": ["Michael Kramer", "Kate Reading"],
+          "durationMinutes": 2507,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Jordan/A Memory of Light",
+          "sourceUrl": "https://www.audible.com/pd/B009OJXEOW",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 14
+        }
+      ]
+    },
+    {
+      "name": "Elantris",
+      "universe": "Cosmere",
+      "books": [
+        {
+          "title": "Elantris",
+          "number": "0472",
+          "author": "Brandon Sanderson",
+          "narrators": ["Jack Garrett"],
+          "durationMinutes": 1722,
+          "bought": "Audible",
+          "shelved": "/audiobooks/Sanderson/Elantris",
+          "sourceUrl": "https://www.audible.com/pd/B015YEFH40",
+          "verifiedOn": "2026-10-31",
+          "seriesNumber": 1
+        }
+      ]
+    }
+  ],
+  "standalones": [
+    {
+      "title": "Warbreaker",
+      "number": "0473",
+      "author": "Brandon Sanderson",
+      "narrators": ["Alyssa Bresnahan"],
+      "durationMinutes": 1496,
+      "universe": "Cosmere",
+      "bought": "Audible",
+      "shelved": "/audiobooks/Sanderson/Warbreaker",
+      "sourceUrl": "https://www.audible.com/pd/B018UG5HJY",
+      "verifiedOn": "2026-10-31"
+    },
+    {
+      "title": "Tress of the Emerald Sea",
+      "number": "0474",
+      "author": "Brandon Sanderson",
+      "narrators": ["Michael Kramer"],
+      "durationMinutes": 747,
+      "universe": "Cosmere",
+      "bought": "Audible",
+      "shelved": "/audiobooks/Sanderson/Tress of the Emerald Sea",
+      "sourceUrl": "https://www.audible.com/pd/B0D18DYG5C",
+      "verifiedOn": "2026-10-31"
+    },
+    {
+      "title": "Yumi and the Nightmare Painter",
+      "number": "0475",
+      "author": "Brandon Sanderson",
+      "narrators": ["Kate Reading", "Michael Kramer"],
+      "durationMinutes": 883,
+      "universe": "Cosmere",
+      "bought": "Audible",
+      "shelved": "/audiobooks/Sanderson/Yumi and the Nightmare Painter",
+      "sourceUrl": "https://www.audible.com/pd/B0D18CT2VY",
+      "verifiedOn": "2026-10-31"
+    },
+    {
+      "title": "The Sunlit Man",
+      "number": "0476",
+      "author": "Brandon Sanderson",
+      "narrators": ["William DeMeritt"],
+      "durationMinutes": 671,
+      "universe": "Cosmere",
+      "bought": "Audible",
+      "shelved": "/audiobooks/Sanderson/The Sunlit Man",
+      "sourceUrl": "https://www.audible.com/pd/B0D1KV49FL",
+      "verifiedOn": "2026-10-31"
+    },
+    {
+      "title": "Isles of the Emberdark",
+      "number": "0477",
+      "author": "Brandon Sanderson",
+      "narrators": ["Kaleo Griffith", "Jennifer Jill Araya"],
+      "durationMinutes": 1013,
+      "universe": "Cosmere",
+      "bought": "Audible",
+      "shelved": "/audiobooks/Sanderson/Isles of the Emberdark",
+      "sourceUrl": "https://www.audible.com/pd/B0F4RQQC4N",
+      "verifiedOn": "2026-10-31"
+    },
+    {
+      "title": "The Martian",
+      "number": "0478",
+      "author": "Andy Weir",
+      "narrators": ["Wil Wheaton"],
+      "durationMinutes": 659,
+      "bought": "Audible",
+      "shelved": "/audiobooks/Weir/The Martian",
+      "sourceUrl": "https://www.audible.com/pd/B082BHJMFF",
+      "verifiedOn": "2026-10-31"
+    },
+    {
+      "title": "Snow Crash",
+      "number": "0479",
+      "author": "Neal Stephenson",
+      "narrators": ["Jonathan Davis"],
+      "durationMinutes": 1023,
+      "bought": "Audible",
+      "shelved": "/audiobooks/Stephenson/Snow Crash",
+      "sourceUrl": "https://www.audible.com/pd/B002UUKWCY",
+      "verifiedOn": "2026-10-31"
+    },
+    {
+      "title": "Fahrenheit 451",
+      "number": "0480",
+      "author": "Ray Bradbury",
+      "narrators": ["Penn Badgley"],
+      "durationMinutes": 288,
+      "bought": "Audible",
+      "shelved": "/audiobooks/Bradbury/Fahrenheit 451",
+      "sourceUrl": "https://www.audible.com/pd/B0F4TCT1GK",
+      "verifiedOn": "2026-10-31"
+    }
+  ]
+}

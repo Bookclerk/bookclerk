@@ -2,9 +2,10 @@
 
 The public website: a landing page for people who want to use Bookclerk, a
 download page, and the documentation with its generated API reference under
-`/docs/`. It is plain HTML and CSS, plus one small script on docs pages
-(`src/docs.js`) that the pages work without, served by a
-Cloudflare Worker named **`bookclerk-site`** on the domain in the `DOMAIN`
+`/docs/`. It is plain HTML and CSS, with small shared layout enhancements
+(`src/site.js`), plus homepage (`src/catalog.js`) and docs (`src/docs.js`)
+enhancements, served by a Cloudflare Worker named **`bookclerk-site`** on
+the domain in the `DOMAIN`
 organization variable. `build.ts` writes the static pages; the Worker
 (`entry.ts` → `worker.ts`) renders each docs page at request time from the
 docs repository [`Bookclerk/bookclerk-docs`](../../docs/contributing/automation.md#docs-publishing),
@@ -66,6 +67,61 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   combinations, and `{{^flag}}` inverts any of them.
 - `src/site.css` – styles; colors and fonts follow `ui/src/index.css` and
   `assets/brand/README.md`, with a dark scheme from `prefers-color-scheme`.
+- `src/site.js` – measures the sticky header so marketing section links
+  land below it, including when navigation wraps. It also measures the
+  complete pre-release notice and collapses
+  it to its badge and detail link whenever it needs more than two lines.
+  An inert, hidden measurement copy lets it expand again when resizing
+  or a font change makes room. Without the script, mobile CSS provides
+  the compact notice. Headers remain sticky without the script.
+  At 720px and below, marketing navigation puts Download beside the brand
+  and the other links on one line below; GitHub remains visible above 480px.
+- `src/catalog-records.json` – the complete, expandable catalog of English
+  unabridged audiobook editions. The build publishes it unchanged at
+  `/catalog-records.json` and renders an inert sheet pool from the same data.
+  The JSON groups narrative series under `series`, with shared `name` and
+  optional `universe` fields and ordered `books` carrying `seriesNumber`.
+  Independent novels live under `standalones`. Sampling chooses four distinct
+  groups with equal probability, then one uniformly selected book per group.
+  A shared universe, such as the Cosmere, is one sampling group across all
+  its subseries and standalone novels. Unconnected standalones each get their
+  own group. A longer series therefore never receives extra selection weight.
+  Sampling runs before layout or animation, without another request. The
+  no-script fallback also uses four different groups. New entries need only
+  a JSON edit: title, stable unique catalog number, author, all narrator credits,
+  runtime in minutes, series position where applicable, illustrative
+  purchase/shelf fields, the exact edition's source URL and verification date.
+  The initial pool includes the requested main novels, including novel-length
+  prequels, but excludes novellas, collections, graphic novels and unreleased
+  titles. Foundation positions follow publication order; New Spring is
+  The Wheel of Time #0. Large casts display their lead plus the additional
+  narrator count, with full credits in the field's tooltip.
+  `catalog.ts` renders every sheet at build time, all with the same paper
+  and ruling. The homepage's `src/catalog.js` drops the stack into place
+  once the complete rotated stack fits below the sticky header; motion-enabled
+  cards stay hidden until then. The drop and first stamp are the entire
+  automatic sequence. Ordinary page scrolling is never captured or moved.
+  Once the drop finishes, a wheel gesture over an actual sheet optionally
+  shuffles the front record behind the stack and stamps the next one.
+  Each distinct wheel gesture gets one turn; residual momentum cannot
+  start another. The interaction cycles through the four selected records.
+  The front sheet is also draggable with a mouse, touch or pen. A deliberate
+  sideways touch starts the drag, then release sends that sheet to the
+  back. Taps, vertical swipes and pinch-to-zoom retain native behavior.
+  Pointer cancellation, lost capture, keys, resize and navigation release
+  a dragged card. A bounded timer settles each shuffle if its CSS completion
+  event is missed. Reduced motion disables the optional interactions.
+  Cards keep a fixed 446:380 proportion and scale uniformly, including
+  their contents. Stacked hero layouts fit their artwork area to the
+  scaled stack and center static short-screen views. Drop and wheel-lift
+  distances stay within the visible viewport; a deliberate drag can pull
+  a sheet slightly past a horizontal edge before it tucks behind the stack.
+  Unsupported animation, reduced motion and views too short for the complete
+  motion retain static artwork. The script makes no requests and stores
+  nothing; without it the first record remains visible.
+  Buttons, FAQs and the shared brand element use CSS motion, with ordinary
+  navigation and native disclosure behavior as fallbacks. Reduced-motion
+  visitors get a static card and ordinary navigation.
 - `src/fonts/` – the web fonts, served from the site itself (no third-party
   requests), with their licenses and the fallback metrics `site.css` uses to
   keep the layout from shifting while they load; see its README.
@@ -136,7 +192,7 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   both mutated sources and mutated renderer output against an independent
   check of the markup; `diagram.test.ts` runs it without Node's `global`,
   as the Worker does.
-- `src/docs.js` – the docs pages' only script, served from the site: a Copy
+- `src/docs.js` – the docs-specific script, served from the site: a Copy
   button on code blocks, heading self-links that copy their URL, the Copy
   as Markdown button (hidden without the script), the "On this page" link of the
   section being read (`aria-current="location"`), kept in view when the

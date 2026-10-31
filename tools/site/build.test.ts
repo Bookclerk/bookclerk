@@ -21,6 +21,7 @@ import {
 } from "./build.ts";
 import type { BuildEnv } from "./build.ts";
 import { SHELL_MARKERS } from "./render.ts";
+import { catalogRecords, catalogSource } from "./catalog.ts";
 import type { DocsShell } from "./render.ts";
 
 /** One node of the home page's JSON-LD `@graph`, as these tests read it. */
@@ -724,4 +725,17 @@ test("a build with an IndexNow key serves the key file", () => {
 
 test("an IndexNow key that names one of the site's files is refused", () => {
   assert.throws(() => built({ ...PRE, SITE_INDEXNOW_KEY: "llms-full" }), /llms-full\.txt/);
+});
+
+test("the Worker assets publish the raw catalog and the inert sampling pool", () => {
+  const site = built(PRE);
+  try {
+    assert.deepEqual(JSON.parse(site.page("catalog-records.json")), catalogSource);
+    const home = site.page("index.html");
+    assert.ok(home.includes("<template data-catalog-pool>"));
+    assert.equal(home.match(/class="catalog-card"/g)?.length, catalogRecords.length + 4);
+    for (const record of catalogRecords) assert.ok(home.includes(`data-record="${record.number}"`));
+  } finally {
+    site.done();
+  }
 });

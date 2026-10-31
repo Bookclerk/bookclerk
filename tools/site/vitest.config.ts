@@ -22,7 +22,13 @@ const COMPATIBILITY_DATE = /^compatibility_date = "([0-9-]+)"$/m.exec(
 if (COMPATIBILITY_DATE === undefined) throw new Error("wrangler.toml has no compatibility_date");
 
 /** Tests that run outside the Workers runtime. */
-const NODE_TESTS = ["build.test.ts", "docs.test.ts", "indexnow.test.ts"];
+const NODE_TESTS = [
+  "build.test.ts",
+  "docs.test.ts",
+  "indexnow.test.ts",
+  "catalog.test.ts",
+  "site.test.ts",
+];
 
 /**
  * FUZZ_SEED and FUZZ_ITERATIONS from the shell, passed on to fuzz.test.ts,

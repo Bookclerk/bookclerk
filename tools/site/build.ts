@@ -63,6 +63,7 @@ import {
 } from "./render.ts";
 import { ORIGIN_RE, parseKey } from "./indexnow.ts";
 import { sitemapXml } from "./sitemap.ts";
+import { catalogCards, catalogPool } from "./catalog.ts";
 import type { DocsShell, DocsVersion } from "./render.ts";
 import type { RenderedDocs } from "./docs.ts";
 
@@ -318,7 +319,16 @@ const RENDER_LIBRARIES = [
 ];
 
 /** Files copied verbatim from src/ to dist/. */
-const STATIC_FILES = ["site.css", "sitemap.css", "docs.js", "_headers", "social-card.png"];
+const STATIC_FILES = [
+  "site.css",
+  "sitemap.css",
+  "docs.js",
+  "catalog.js",
+  "catalog-records.json",
+  "site.js",
+  "_headers",
+  "social-card.png",
+];
 
 /** Web fonts and their licenses copied from src/fonts/ to dist/fonts/ (see src/fonts/README.md). */
 const FONT_FILE = /^(?:[a-z0-9-]+\.woff2|OFL-[a-z0-9]+\.txt)$/;
@@ -1078,6 +1088,8 @@ export function build(
   partials["logo"] = inlineLogo(
     readFileSync(join(REPO_ROOT, "assets/brand/svg/bookclerk-logo.svg"), "utf8"),
   );
+  partials["catalog"] = catalogCards();
+  partials["catalog-pool"] = catalogPool();
 
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
