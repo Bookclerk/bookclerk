@@ -13,6 +13,13 @@ workers_dev = false
 # and .txt files under other paths) is served from dist/ without it.
 # `npm run build` must run first: entry.ts imports generated/docs-shell.json.
 main = "entry.ts"
+# Never upload source maps (worker.test.ts keeps this). The bundle stays
+# unminified on purpose: minifying cut it from 990 KB to 784 KB gzipped but
+# made `scripts/worker_startup.py` startup about four times slower (33 ms to
+# 130 ms against a 150 ms budget, 2026-10-31). Measure again before turning
+# it on.
+minify = false
+upload_source_maps = false
 
 # `npm run build` writes dist/. /download serves download.html, and unknown
 # paths get 404.html with a 404 status.

@@ -2,9 +2,10 @@
 
 The public website: a landing page for people who want to use Bookclerk, a
 download page, and the documentation with its generated API reference under
-`/docs/`. It is plain HTML and CSS, plus one small script on docs pages
-(`src/docs.js`) that the pages work without, served by a
-Cloudflare Worker named **`bookclerk-site`** on the domain in the `DOMAIN`
+`/docs/`. It is plain HTML and CSS, with small shared layout enhancements
+(`src/site.js`), plus homepage (`src/catalog.js`) and docs (`src/docs.js`)
+enhancements, served by a Cloudflare Worker named **`bookclerk-site`** on
+the domain in the `DOMAIN`
 organization variable. `build.ts` writes the static pages; the Worker
 (`entry.ts` → `worker.ts`) renders each docs page at request time from the
 docs repository [`Bookclerk/bookclerk-docs`](../../docs/contributing/automation.md#docs-publishing),
@@ -14,7 +15,10 @@ Deployed by GitHub Actions:
 [`.github/workflows/site-deploy.yml`](../../.github/workflows/site-deploy.yml),
 on changes to this directory, `docs/` or `assets/brand/` on `main`, on every published
 release, and by hand. The deploy token is scoped to the Worker by name, so keep
-`name` in `wrangler.toml` as it is.
+`name` in `wrangler.toml` as it is. `wrangler.toml` also sets
+`upload_source_maps = false`, so source maps never reach Cloudflare
+(`worker.test.ts` keeps it), and leaves the bundle unminified: minifying saved
+about 200 KB gzipped but made the Worker's startup about four times slower.
 
 ## Release state
 
@@ -66,6 +70,74 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   combinations, and `{{^flag}}` inverts any of them.
 - `src/site.css` – styles; colors and fonts follow `ui/src/index.css` and
   `assets/brand/README.md`, with a dark scheme from `prefers-color-scheme`.
+- `src/site.js` – measures the sticky header so marketing section links
+  land below it, including when navigation wraps. It also measures the
+  complete pre-release notice and collapses
+  it to its badge and detail link whenever it needs more than two lines.
+  An inert, hidden measurement copy lets it expand again when resizing
+  or a font change makes room. Without the script, mobile CSS provides
+  the compact notice. Headers remain sticky without the script.
+  At 720px and below, marketing navigation puts Download beside the brand
+  and the other links on one line below; GitHub remains visible above 480px.
+- `src/catalog-records.json` – the complete, expandable catalog of English
+  unabridged audiobook editions. It is bundled into the build and the Worker
+  but never published: the Worker samples four records per homepage request
+  (`withCatalogSample` in `worker.ts`) and writes their sheets into the page,
+  so visitors make no extra request and never receive the source links.
+  The JSON groups narrative series under `series`, with shared `name` and
+  optional `universe` fields and ordered `books` carrying `seriesNumber`.
+  Independent novels live under `standalones`. Sampling chooses four distinct
+  groups with equal probability, then one uniformly selected book per group.
+  A shared universe, such as the Cosmere, is one sampling group across all
+  its subseries and standalone novels. Unconnected standalones each get their
+  own group. A longer series therefore never receives extra selection weight.
+  The page arrives already sampled, so the script never chooses records and
+  scripts are not needed to see them. The build-time stack, served only if
+  the Worker is bypassed, also uses four different groups. New entries need only
+  a JSON edit: title, stable unique catalog number, author, all narrator credits,
+  runtime in minutes, series position where applicable, an illustrative shelf
+  path, the exact edition's Audible source URL and verification date. `bought`
+  lists the stores a card names (`Audible`, `Libro.fm` or `Chirp`). Name a
+  store only after checking that it sells the same edition (same narrators,
+  purchasable in the US), and record that product page under `listings`;
+  Audible's page is `sourceUrl`. Tests refuse a named store without its
+  listing. GraphicAudio sells its own dramatizations, which are different
+  editions, so no card names it for these books. The listings and source
+  URLs are evidence for maintainers only and never reach the page.
+  The initial pool includes the requested main novels, including novel-length
+  prequels, but excludes novellas, collections, graphic novels and unreleased
+  titles. Foundation positions follow publication order; New Spring is
+  The Wheel of Time #0. Large casts display their lead plus the additional
+  narrator count, with full credits in the field's tooltip.
+  `catalog.ts` renders every sheet at build time, all with the same paper
+  and ruling. The homepage's `src/catalog.js` drops the stack into place
+  once the complete rotated stack fits below the sticky header; motion-enabled
+  cards stay hidden until then. The drop and first stamp are the entire
+  automatic sequence. Ordinary page scrolling is never captured or moved.
+  Once the drop finishes, a wheel gesture over an actual sheet optionally
+  shuffles the front record behind the stack and stamps the next one. The
+  wheel only does this after a mouse or pen has rested on the stack for
+  450 ms; wheel events that arrive sooner restart the delay and scroll the
+  page, so scrolling past the stack is never interrupted.
+  Each distinct wheel gesture gets one turn; residual momentum cannot
+  start another. The interaction cycles through the four selected records.
+  The front sheet is also draggable with a mouse, touch or pen. A deliberate
+  sideways touch starts the drag, then release sends that sheet to the
+  back. Taps, vertical swipes and pinch-to-zoom retain native behavior.
+  Pointer cancellation, lost capture, keys, resize and navigation release
+  a dragged card. A bounded timer settles each shuffle if its CSS completion
+  event is missed. Reduced motion disables the optional interactions; turning it off again restores them without replaying the drop.
+  Cards keep a fixed 446:380 proportion and scale uniformly, including
+  their contents. Stacked hero layouts fit their artwork area to the
+  scaled stack and center static short-screen views. Drop and wheel-lift
+  distances stay within the visible viewport; a deliberate drag can pull
+  a sheet slightly past a horizontal edge before it tucks behind the stack.
+  Unsupported animation, reduced motion and views too short for the complete
+  motion retain static artwork. The script makes no requests and stores
+  nothing; without it the Worker-chosen records remain visible.
+  Buttons, FAQs and the shared brand element use CSS motion, with ordinary
+  navigation and native disclosure behavior as fallbacks. Reduced-motion
+  visitors get a static card and ordinary navigation.
 - `src/fonts/` – the web fonts, served from the site itself (no third-party
   requests), with their licenses and the fallback metrics `site.css` uses to
   keep the layout from shifting while they load; see its README.
@@ -136,7 +208,7 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   both mutated sources and mutated renderer output against an independent
   check of the markup; `diagram.test.ts` runs it without Node's `global`,
   as the Worker does.
-- `src/docs.js` – the docs pages' only script, served from the site: a Copy
+- `src/docs.js` – the docs-specific script, served from the site: a Copy
   button on code blocks, heading self-links that copy their URL, the Copy
   as Markdown button (hidden without the script), the "On this page" link of the
   section being read (`aria-current="location"`), kept in view when the
@@ -190,9 +262,17 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   the Workers runtime through `@cloudflare/vitest-plugin`, against a site
   built once in Node beforehand, and the build and docs tests run in Node.
   `npm run coverage` adds a V8 coverage report.
-- `src/_headers` – security headers, and Markdown and `llms.txt` content
-  types. The CSP allows only the site's own scripts (`'self'`, for
-  `docs.js`) and Cloudflare Web Analytics, which the edge injects into each
+- `src/_headers` – security headers, Markdown and `llms.txt` content
+  types, and a one-year `immutable` cache for `/fonts/*` and `/assets/*`.
+  The build publishes `site.css`, `site.js`, `catalog.js` and `docs.js`
+  under `/assets/` with the first 12 hex digits of their SHA-256 in the
+  name (`HASHED_ASSETS` and `assetUrl` in `build.ts`; templates name them
+  through `{{siteCss}}`, `{{siteJs}}`, `{{catalogJs}}` and `{{docsJs}}`), so
+  a changed file is a new URL and repeat visits fetch nothing. Scripts stay
+  separate files rather than inline, so the CSP needs no hashes and each file
+  is cached once for every page. `sitemap.css` keeps its plain name because
+  the Worker's sitemap XML names it. The CSP allows only the site's own scripts (`'self'`, for
+  `site.js`, `catalog.js` and `docs.js`) and Cloudflare Web Analytics, which the edge injects into each
   page: `script-src 'self' https://static.cloudflareinsights.com` and
   `connect-src https://cloudflareinsights.com` beside `'self'` for its
   reports. No inline script is allowed. That beacon is the one approved

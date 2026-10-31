@@ -9,8 +9,10 @@ import { test } from "vitest";
 import { URL } from "node:url";
 
 import {
+  assetUrl,
   build,
   docsVersions,
+  HASHED_ASSETS,
   escapeHtml,
   inlineLogo,
   jsonLd,
@@ -21,6 +23,7 @@ import {
 } from "./build.ts";
 import type { BuildEnv } from "./build.ts";
 import { SHELL_MARKERS } from "./render.ts";
+import { catalogRecords } from "./catalog.ts";
 import type { DocsShell } from "./render.ts";
 
 /** One node of the home page's JSON-LD `@graph`, as these tests read it. */
@@ -329,7 +332,6 @@ test("the build publishes pages, styles, headers and brand assets", () => {
       "security.html",
       "security.md",
       "404.html",
-      "site.css",
       "sitemap.css",
       "_headers",
       "robots.txt",
@@ -351,10 +353,40 @@ test("the build publishes pages, styles, headers and brand assets", () => {
   }
 });
 
+test("styles and scripts are published under content-hashed names browsers keep for a year", () => {
+  const site = built(PRE);
+  try {
+    for (const file of HASHED_ASSETS) {
+      const url = assetUrl(file);
+      assert.match(url, /^\/assets\/[a-z]+\.[0-9a-f]{12}\.(?:css|js)$/);
+      assert.equal(
+        site.page(url.slice(1)),
+        readFileSync(new URL(`src/${file}`, import.meta.url), "utf8"),
+      );
+      // The plain name is gone, so nothing can be served stale under it.
+      assert.ok(!site.files.includes(file), file);
+    }
+    for (const name of ["index.html", "download.html", "privacy.html", "404.html"]) {
+      const html = site.page(name);
+      assert.ok(html.includes(`<link rel="stylesheet" href="${assetUrl("site.css")}">`), name);
+      assert.ok(html.includes(`<script src="${assetUrl("site.js")}" defer></script>`), name);
+      assert.ok(!/(?:href|src)="\/(?:site|catalog|docs)\.(?:css|js)"/.test(html), name);
+    }
+    assert.ok(site.page("index.html").includes(`src="${assetUrl("catalog.js")}"`));
+    assert.ok(JSON.stringify(site.shell()).includes(`src=\\"${assetUrl("docs.js")}\\"`));
+    assert.match(
+      site.page("_headers"),
+      /\/assets\/\*\n  Cache-Control: public, max-age=31536000, immutable/,
+    );
+  } finally {
+    site.done();
+  }
+});
+
 test("pages load fonts from the site itself, and every font they name is published", () => {
   const site = built(PRE);
   try {
-    const css = site.page("site.css");
+    const css = site.page(assetUrl("site.css").slice(1));
     const named = [...css.matchAll(/url\("\/fonts\/([^"]+)"\)/g)].flatMap((m) => m[1] ?? []);
     assert.ok(named.length > 0);
     for (const name of ["index.html", "download.html", "404.html"]) {
@@ -381,7 +413,7 @@ test("the docs keep a way to the page's sections at every width", () => {
   const site = built(PRE);
   try {
     // Where the rail goes, its menu takes over, before the sidebar's joins it.
-    const css = site.page("site.css");
+    const css = site.page(assetUrl("site.css").slice(1));
     const start = css.indexOf("@media (max-width: 1200px) {");
     const block = css.slice(start, css.indexOf("\n}\n", start));
     assert.ok(start >= 0);
@@ -724,4 +756,21 @@ test("a build with an IndexNow key serves the key file", () => {
 
 test("an IndexNow key that names one of the site's files is refused", () => {
   assert.throws(() => built({ ...PRE, SITE_INDEXNOW_KEY: "llms-full" }), /llms-full\.txt/);
+});
+
+test("the build ships a four-card fallback stack and never the catalog or its sources", () => {
+  const site = built(PRE);
+  try {
+    assert.ok(!site.files.includes("catalog-records.json"));
+    const home = site.page("index.html");
+    assert.ok(!home.includes("data-catalog-pool"));
+    assert.equal(home.match(/class="catalog-card"/g)?.length, 4);
+    for (const file of site.files.filter((f) => /\.(?:html|md|txt|js|json|xml)$/.test(f))) {
+      const text = site.page(file);
+      for (const record of catalogRecords)
+        assert.ok(!text.includes(record.sourceUrl), `${file} leaks ${record.sourceUrl}`);
+    }
+  } finally {
+    site.done();
+  }
 });

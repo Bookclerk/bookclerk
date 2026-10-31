@@ -63,6 +63,7 @@ import {
 } from "./render.ts";
 import { ORIGIN_RE, parseKey } from "./indexnow.ts";
 import { sitemapXml } from "./sitemap.ts";
+import { catalogCards } from "./catalog.ts";
 import type { DocsShell, DocsVersion } from "./render.ts";
 import type { RenderedDocs } from "./docs.ts";
 
@@ -145,6 +146,14 @@ export type SiteValues = {
   releaseUrl: string;
   /** The hosted demo's origin, or empty when there is none. */
   demoUrl: string;
+  /** Content-hashed URL of src/site.css (see HASHED_ASSETS). */
+  siteCss: string;
+  /** Content-hashed URL of src/site.js. */
+  siteJs: string;
+  /** Content-hashed URL of src/catalog.js. */
+  catalogJs: string;
+  /** Content-hashed URL of src/docs.js. */
+  docsJs: string;
 };
 
 /** The flags every page's template can read (see templateContext). */
@@ -318,7 +327,30 @@ const RENDER_LIBRARIES = [
 ];
 
 /** Files copied verbatim from src/ to dist/. */
-const STATIC_FILES = ["site.css", "sitemap.css", "docs.js", "_headers", "social-card.png"];
+const STATIC_FILES = ["sitemap.css", "_headers", "social-card.png"];
+
+/**
+ * Styles and scripts published under /assets/ with a content hash in their
+ * names, so `_headers` can let browsers keep them for a year: a change is a
+ * new URL. sitemap.css keeps its name because the Worker's sitemap XML names
+ * it directly, and social-card.png because link previews cache it by URL.
+ */
+export const HASHED_ASSETS = ["site.css", "site.js", "catalog.js", "docs.js"] as const;
+
+/**
+ * Names one of HASHED_ASSETS by its contents.
+ *
+ * @param file - The file under src/.
+ * @returns Its published path: `/assets/<stem>.<first 12 hex of SHA-256>.<ext>`.
+ */
+export function assetUrl(file: (typeof HASHED_ASSETS)[number]): string {
+  const hash = createHash("sha256")
+    .update(readFileSync(join(HERE, "src", file)))
+    .digest("hex")
+    .slice(0, 12);
+  const dot = file.lastIndexOf(".");
+  return `/assets/${file.slice(0, dot)}.${hash}${file.slice(dot)}`;
+}
 
 /** Web fonts and their licenses copied from src/fonts/ to dist/fonts/ (see src/fonts/README.md). */
 const FONT_FILE = /^(?:[a-z0-9-]+\.woff2|OFL-[a-z0-9]+\.txt)$/;
@@ -479,6 +511,10 @@ export function templateContext(state: ReleaseState): SiteContext {
       releaseDate: state.release ? displayDate(state.release.date) : "",
       releaseUrl: state.release ? `${REPOSITORY_URL}/releases/tag/${state.release.tag}` : "",
       demoUrl: state.demoUrl ?? "",
+      siteCss: assetUrl("site.css"),
+      siteJs: assetUrl("site.js"),
+      catalogJs: assetUrl("catalog.js"),
+      docsJs: assetUrl("docs.js"),
     },
     // Sections do not nest, so the demo's place on a page in each release
     // state gets a flag of its own: before a release the demo is the main
@@ -1078,6 +1114,7 @@ export function build(
   partials["logo"] = inlineLogo(
     readFileSync(join(REPO_ROOT, "assets/brand/svg/bookclerk-logo.svg"), "utf8"),
   );
+  partials["catalog"] = catalogCards();
 
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
@@ -1140,6 +1177,8 @@ export function build(
   if (facts === null) throw new Error("PAGES has no home page");
   writeLlmsTxt(context, rendered, facts, outDir);
   for (const file of STATIC_FILES) cpSync(join(src, file), join(outDir, file));
+  mkdirSync(join(outDir, "assets"));
+  for (const file of HASHED_ASSETS) cpSync(join(src, file), join(outDir, assetUrl(file).slice(1)));
   mkdirSync(join(outDir, "fonts"));
   for (const file of readdirSync(join(src, "fonts"))) {
     if (FONT_FILE.test(file)) cpSync(join(src, "fonts", file), join(outDir, "fonts", file));

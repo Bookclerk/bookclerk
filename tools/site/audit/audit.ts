@@ -46,6 +46,7 @@ import type { Flags, Result } from "lighthouse";
 import desktopConfig from "lighthouse/core/config/desktop-config.js";
 import { chromium } from "playwright-core";
 import type { AxeResults, RunOptions } from "axe-core";
+import { auditCatalog } from "./catalog.ts";
 
 /** Minimum Lighthouse category scores (0-100) by category id, and optionally `cls`, the largest layout shift allowed. */
 export type Limits = Readonly<Record<string, number>>;
@@ -216,6 +217,7 @@ function freePort(): Promise<number> {
 /**
  * Writes the audit Worker's wrangler config: ../wrangler.toml with the audit
  * entry point, so the assets and routing cannot drift from the deployed site.
+ * The audit-only `/__audit/` routes (audit/entry.ts) also run the Worker first.
  *
  * @returns The config file.
  * @throws {Error} When ../wrangler.toml no longer has the lines replaced.
@@ -226,6 +228,7 @@ function writeWranglerConfig(): string {
     [/^name = .*$/m, 'name = "bookclerk-site-audit"'],
     [/^main = .*$/m, 'main = "entry.ts"'],
     [/^directory = .*$/m, 'directory = "../dist"'],
+    [/^run_worker_first = \[/m, 'run_worker_first = ["/__audit/*", '],
   ];
   let config = base;
   for (const [pattern, line] of replacements) {
@@ -461,13 +464,13 @@ async function stopChrome(running: AuditChrome): Promise<void> {
 }
 
 /**
- * Runs axe-core on every page, light and dark, at each AXE_WIDTHS width.
+ * Runs axe-core on every page and trusted input checks on the homepage.
  *
  * @param origin - The site origin.
  * @param chromePath - The browser.
  * @returns One line per violation; empty when clean.
  */
-async function runAxe(origin: string, chromePath: string): Promise<string[]> {
+async function runBrowserChecks(origin: string, chromePath: string): Promise<string[]> {
   const axeSource = readFileSync(join(HERE, "node_modules", "axe-core", "axe.min.js"), "utf8");
   const browser = await chromium.launch({ executablePath: chromePath, args: ["--no-sandbox"] });
   const found: string[] = [];
@@ -503,6 +506,7 @@ async function runAxe(origin: string, chromePath: string): Promise<string[]> {
         }
       }
     }
+    found.push(...(await auditCatalog(browser, origin)));
   } finally {
     await browser.close();
   }
@@ -585,8 +589,8 @@ async function main(): Promise<number> {
     await stopChrome(chrome);
     chrome = null;
 
-    const axe = await runAxe(served.origin, chromePath);
-    failures.push(...axe.map((v) => `axe: ${v}`));
+    const browserChecks = await runBrowserChecks(served.origin, chromePath);
+    failures.push(...browserChecks.map((v) => `browser: ${v}`));
   } finally {
     if (chrome !== null) await stopChrome(chrome);
     site?.stop();
@@ -600,7 +604,7 @@ async function main(): Promise<number> {
     "",
     failures.length
       ? `**${failures.length} problem(s):**\n\n${failures.map((f) => `- ${f}`).join("\n")}`
-      : "Every page passed Lighthouse and axe-core.",
+      : "Every page passed Lighthouse and axe-core; catalog wheel and touch checks passed.",
     "",
   ].join("\n");
   writeFileSync(join(out, "summary.md"), summary);

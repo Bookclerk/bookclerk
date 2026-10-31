@@ -23,20 +23,8 @@
     </div>
     <p class="faint">Free and open source. Runs on Linux, macOS and Windows.</p>
   </div>
-  <div class="hero-art" aria-hidden="true">
-    <div class="back"></div>
-    <div class="mid"></div>
-    <div class="catalog-card">
-      <div class="card-title"><strong>Middlemarch</strong><span class="faint">No. 0412</span></div>
-      <dl>
-        <dt>Author</dt><dd>George Eliot</dd>
-        <dt>Narrator</dt><dd>Juliet Stevenson</dd>
-        <dt>Length</dt><dd>35 h 47 min, 86 chapters</dd>
-        <dt>Bought</dt><dd>Libro.fm, Audible</dd>
-        <dt>Shelved</dt><dd>/audiobooks/Eliot/Middlemarch</dd>
-      </dl>
-      <span class="stamp">ACQUIRED</span>
-    </div>
+  <div class="hero-art" aria-hidden="true" data-catalog>
+    <div class="catalog-stack">{{> catalog}}</div>
   </div>
 </section>
 
@@ -210,5 +198,6 @@ cargo plugin -- check ./my-plugin</code></pre>
 
 </main>
 {{> footer}}
+<script src="{{catalogJs}}" defer></script>
 </body>
 </html>
