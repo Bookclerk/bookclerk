@@ -21,7 +21,7 @@ import {
 } from "./build.ts";
 import type { BuildEnv } from "./build.ts";
 import { SHELL_MARKERS } from "./render.ts";
-import { catalogRecords, catalogSource } from "./catalog.ts";
+import { catalogRecords } from "./catalog.ts";
 import type { DocsShell } from "./render.ts";
 
 /** One node of the home page's JSON-LD `@graph`, as these tests read it. */
@@ -727,14 +727,18 @@ test("an IndexNow key that names one of the site's files is refused", () => {
   assert.throws(() => built({ ...PRE, SITE_INDEXNOW_KEY: "llms-full" }), /llms-full\.txt/);
 });
 
-test("the Worker assets publish the raw catalog and the inert sampling pool", () => {
+test("the build ships a four-card fallback stack and never the catalog or its sources", () => {
   const site = built(PRE);
   try {
-    assert.deepEqual(JSON.parse(site.page("catalog-records.json")), catalogSource);
+    assert.ok(!site.files.includes("catalog-records.json"));
     const home = site.page("index.html");
-    assert.ok(home.includes("<template data-catalog-pool>"));
-    assert.equal(home.match(/class="catalog-card"/g)?.length, catalogRecords.length + 4);
-    for (const record of catalogRecords) assert.ok(home.includes(`data-record="${record.number}"`));
+    assert.ok(!home.includes("data-catalog-pool"));
+    assert.equal(home.match(/class="catalog-card"/g)?.length, 4);
+    for (const file of site.files.filter((f) => /\.(?:html|md|txt|js|json|xml)$/.test(f))) {
+      const text = site.page(file);
+      for (const record of catalogRecords)
+        assert.ok(!text.includes(record.sourceUrl), `${file} leaks ${record.sourceUrl}`);
+    }
   } finally {
     site.done();
   }

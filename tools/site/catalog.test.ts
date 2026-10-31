@@ -6,12 +6,14 @@ import { runInNewContext } from "node:vm";
 import { URL } from "node:url";
 import { test } from "vitest";
 import {
+  catalogCard,
   catalogCards,
-  catalogPool,
   catalogRecords,
   catalogGroups,
+  catalogSample,
   catalogSource,
 } from "./catalog.ts";
+import type { CatalogGroup, CatalogRecord } from "./catalog.ts";
 
 /** Minimal element identity for card-only hit testing. */
 class TestElement {
@@ -326,6 +328,11 @@ function controller(device: Device = {}) {
       preference.matches = true;
       preferenceChanged();
     },
+    /** Rests a mouse over the stack long enough to arm the wheel. */
+    hover: () => {
+      gesture("pointerenter", { pointerType: "mouse" });
+      tick(450);
+    },
   };
 }
 
@@ -387,6 +394,7 @@ test("a stack reached later drops once and then supports the same optional inter
   page.scroll(800);
   assert.equal(page.state(), "entering");
   page.tick(1550);
+  page.hover();
   assert.equal(page.state(), "ready");
   assert.equal(page.gesture("wheel").prevented, true);
   assert.equal(page.y(), 800);
@@ -397,6 +405,7 @@ test("a stack reached later drops once and then supports the same optional inter
 test("only wheel gestures over an actual sheet shuffle; whitespace stays native", () => {
   const page = controller();
   page.tick(1550);
+  page.hover();
   assert.equal(page.gesture("wheel", { target: new TestElement() }).prevented, false);
   assert.equal(page.gesture("wheel", {}, "window").prevented, false);
   page.tick(301);
@@ -411,6 +420,7 @@ test("only wheel gestures over an actual sheet shuffle; whitespace stays native"
 test("repeated independent wheel gestures cycle all records and return to the start", () => {
   const page = controller();
   page.tick(1550);
+  page.hover();
   for (let i = 1; i <= 8; i += 1) {
     assert.equal(page.gesture("wheel", { deltaY: i % 2 ? 100 : -100 }).prevented, true);
     page.tick(1250);
@@ -424,6 +434,7 @@ test("repeated independent wheel gestures cycle all records and return to the st
 test("one wheel burst cannot trigger another turn through residual momentum", () => {
   const page = controller();
   page.tick(1550);
+  page.hover();
   page.gesture("wheel");
   page.tick(1200);
   assert.equal(page.gesture("wheel").prevented, true);
@@ -433,6 +444,31 @@ test("one wheel burst cannot trigger another turn through residual momentum", ()
   assert.deepEqual(page.order(), [1, 2, 3, 0]);
   page.tick(301);
   assert.equal(page.gesture("wheel").prevented, true);
+});
+
+test("the wheel scrolls the page until a mouse has rested on the stack", () => {
+  const page = controller();
+  page.tick(1550);
+  // Scrolling past with the pointer over the cards stays native.
+  assert.equal(page.gesture("wheel").prevented, false);
+  page.gesture("pointerenter", { pointerType: "touch" });
+  page.tick(1000);
+  assert.equal(page.gesture("wheel").prevented, false);
+  page.gesture("pointerenter", { pointerType: "mouse" });
+  page.tick(300);
+  assert.equal(page.gesture("wheel").prevented, false);
+  // Each early wheel event restarts the delay, so a continuous scroll never arms it.
+  page.tick(300);
+  assert.equal(page.gesture("wheel").prevented, false);
+  page.tick(451);
+  assert.equal(page.gesture("wheel").prevented, true);
+  page.tick(1250);
+  assert.deepEqual(page.order(), [1, 2, 3, 0]);
+  page.gesture("pointerleave");
+  page.tick(1000);
+  assert.equal(page.gesture("wheel").prevented, false);
+  assert.deepEqual(page.order(), [1, 2, 3, 0]);
+  assert.equal(page.y(), 0);
 });
 
 test("zoom, sideways and noncancelable wheel input remain native", () => {
@@ -445,6 +481,7 @@ test("zoom, sideways and noncancelable wheel input remain native", () => {
   ]) {
     const page = controller();
     page.tick(1550);
+    page.hover();
     assert.equal(page.gesture("wheel", fields).prevented, false);
     assert.equal(page.state(), "ready");
   }
@@ -527,6 +564,7 @@ test("an old entrance stamp cannot finish a new shuffle; its incoming stamp can"
   const newStamp = page.sheets[1]?.stamp;
   assert.ok(oldStamp);
   assert.ok(newStamp);
+  page.hover();
   page.gesture("wheel");
   page.gesture("animationend", { animationName: "catalog-stamp", target: oldStamp }, "stage");
   assert.equal(page.state(), "shuffling");
@@ -542,6 +580,7 @@ test("reduced motion cancels interaction and releases active pointer ownership",
   page.tick(1550);
   page.gesture("pointerdown");
   page.gesture("pointermove", { clientX: 180 });
+  page.hover();
   page.reduce();
   assert.equal(page.state(), "static");
   assert.equal(page.sheets[0]?.pointers.size, 0);
@@ -555,6 +594,7 @@ test("reduced motion cancels interaction and releases active pointer ownership",
 test("short landscape views keep centered static artwork and native scrolling", () => {
   const page = controller({ width: 844, height: 390, stageTop: 600 });
   assert.equal(page.state(), "static");
+  page.hover();
   assert.equal(page.gesture("wheel").prevented, false);
   assert.ok(parseFloat(page.properties.get("--catalog-offset-x") ?? "0") > 100);
   assert.ok(parseFloat(page.properties.get("--catalog-height") ?? "0") < 320);
@@ -569,6 +609,7 @@ test("optional wheel lifts stay inside complete phone, Duo and landscape views",
   ]) {
     const page = controller(device);
     page.tick(1550);
+    page.hover();
     assert.equal(page.state(), "ready", JSON.stringify(device));
     assert.equal(page.gesture("wheel").prevented, true);
     assert.equal(page.fullyVisible(true), true);
@@ -619,7 +660,8 @@ test("the authored pool includes every main novel in the requested series", () =
       title,
     );
   assert.ok(catalogRecords.length >= 69);
-  assert.equal(catalogPool().match(/class="catalog-card"/g)?.length, catalogRecords.length);
+  for (const record of catalogRecords)
+    assert.equal(catalogCard(record).match(/class="catalog-card"/g)?.length, 1);
 });
 
 test("every edition has complete, uniquely numbered and traceable metadata", () => {
@@ -645,68 +687,55 @@ test("large casts retain full credit without crowding the narrator row", () => {
   assert.ok(rendered.includes("21 h 2 min"));
 });
 
-/** Runs the shipped sampler against deliberately unequal series sizes. */
-function sampled(random: () => number, firstGroupSize = 30) {
-  const originals = [firstGroupSize, 1, 2, 3, 1, 1].map((size, group) =>
-    Array.from({ length: size }, (_, index) => ({
-      id: group * 1000 + index,
-      group,
-      cloneNode: () => ({ id: group * 1000 + index, group }),
+/** Builds synthetic groups of deliberately unequal sizes from one real record. */
+function groupsOf(sizes: readonly number[]): readonly CatalogGroup[] {
+  const base = catalogRecords[0];
+  assert.ok(base);
+  return sizes.map((size, group) => ({
+    key: `series:${group}`,
+    name: String(group),
+    books: Array.from({ length: size }, (_, index): CatalogRecord => ({
+      ...base,
+      number: `${group}-${index}`,
     })),
-  );
-  let chosen: { id: number; group: number }[] = [];
-  const stack = {
-    replaceChildren: (...cards: { id: number; group: number }[]) => {
-      chosen = cards;
-    },
-    querySelectorAll: () => chosen,
-  };
-  const groups = originals.map((books) => ({ querySelectorAll: () => books }));
-  const stage = {
-    querySelector: (selector: string) =>
-      selector === ".catalog-stack" ? stack : { content: { querySelectorAll: () => groups } },
-  };
-  const math = Object.create(Math) as Math;
-  math.random = random;
-  runInNewContext(readFileSync(new URL("src/catalog.js", import.meta.url), "utf8"), {
-    document: { querySelector: () => stage },
-    Math: math,
-    matchMedia: () => ({ matches: true }),
-    CSS: { supports: () => false },
-  });
-  return { chosen, originals: originals.map((books) => books.map((book) => book.id)) };
+  }));
 }
 
-test("each page samples four distinct groups, then one cloned book from each", () => {
-  const low = sampled(() => 0);
-  const high = sampled(() => 0.999999);
-  for (const sample of [low, high]) {
-    assert.equal(sample.chosen.length, 4);
-    assert.equal(new Set(sample.chosen.map((book) => book.group)).size, 4);
-    assert.equal(new Set(sample.chosen.map((book) => book.id)).size, 4);
-    assert.deepEqual(
-      sample.originals[0],
-      Array.from({ length: 30 }, (_, index) => index),
+/** A seeded Lehmer stream, so two runs see the same random values. */
+function seeded(): () => number {
+  let state = 173;
+  return () => {
+    state = (state * 16807) % 2147483647;
+    return state / 2147483647;
+  };
+}
+
+test("each page samples four distinct groups, then one book from each", () => {
+  const groups = groupsOf([30, 1, 2, 3, 1, 1]);
+  const low = catalogSample(() => 0, groups);
+  const high = catalogSample(() => 0.999999, groups);
+  for (const sample of [low, high, catalogSample(Math.random)]) {
+    assert.equal(sample.length, 4);
+    assert.equal(new Set(sample.map((book) => book.number.split("-")[0])).size, 4);
+  }
+  assert.notDeepEqual(low, high);
+  assert.ok(low.some((book) => book.number === "0-0"));
+  assert.ok(high.some((book) => book.number === "0-29"));
+  for (let i = 0; i < 50; i += 1) {
+    const real = catalogSample();
+    assert.equal(
+      new Set(real.map((book) => catalogGroups.find((g) => g.books.includes(book))?.key)).size,
+      4,
     );
   }
-  assert.notDeepEqual(low.chosen, high.chosen);
-  assert.ok(high.chosen.some((book) => book.group === 0 && book.id === 29));
 });
 
 test("adding books to a large series never changes its group-selection probability", () => {
-  /** Replays the same random stream for both catalog sizes. */
-  const seed = () => {
-    let state = 173;
-    return () => {
-      state = (state * 16807) % 2147483647;
-      return state / 2147483647;
-    };
-  };
-  const small = sampled(seed(), 1);
-  const large = sampled(seed(), 300);
+  const small = catalogSample(seeded(), groupsOf([1, 1, 2, 3, 1, 1]));
+  const large = catalogSample(seeded(), groupsOf([300, 1, 2, 3, 1, 1]));
   assert.deepEqual(
-    small.chosen.map((book) => book.group),
-    large.chosen.map((book) => book.group),
+    small.map((book) => book.number.split("-")[0]),
+    large.map((book) => book.number.split("-")[0]),
   );
 });
 

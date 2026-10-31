@@ -649,15 +649,18 @@ nightlies, and `rustdoc_markdown.py` reads format 56.
 through the real Worker under `wrangler dev`, and audits it with the
 runner's Chrome.
 
-The homepage's catalog sheets are rendered at build time from
-`tools/site/src/catalog-records.json`, which is also published unchanged as
-`/catalog-records.json`. Its `series` entries share names/universe context
+The homepage's catalog sheets come from
+`tools/site/src/catalog-records.json`, which the build and the Worker bundle
+but never publish. Its `series` entries share names/universe context
 and contain ordered `books`; unrelated novels live under `standalones`.
-Each load selects four distinct groups with equal probability, then one
-uniformly selected book per group from the inert rendered pool. Shared
+On each homepage request the Worker selects four distinct groups with equal
+probability, then one uniformly selected book per group, and writes those
+four sheets into the page. Visitors get no extra request, and neither the
+full catalog nor its source links reach the page. Shared
 universes, including the Cosmere, count as one group; unrelated standalones
-count individually. Longer series cannot dominate a stack. The no-script
-fallback also uses four different groups.
+count individually. Longer series cannot dominate a stack. The build-time
+stack in `index.html`, used only if the Worker is bypassed, also uses four
+different groups.
 Metadata includes source editions, verification dates, complete narrator
 credits, integer runtimes in minutes and optional series position/universe.
 Tests check series coverage, metadata integrity, escaping and distinct
@@ -668,16 +671,19 @@ once it fits below the header. Cards remain hidden until that entrance;
 unsupported animation, reduced motion and very short views retain static
 artwork. The page never captures or repositions ordinary scrolling.
 After the drop, wheel input over an actual sheet optionally cycles the
-front record behind the stack and stamps the next record. A sideways touch
+front record behind the stack and stamps the next record, but only once a
+mouse or pen has rested on the stack for 450 ms. Wheel events that arrive
+sooner restart that delay, so scrolling past the stack stays ordinary
+scrolling. A sideways touch
 or mouse drag does the same on release. Native vertical panning and pinch
 zoom remain available. Independent gestures can cycle every record;
 residual wheel momentum cannot start another turn.
 Site tests run the shipped controller with an independent bounds oracle
-and cover local wheel targeting, repeated order changes, drag displacement,
+and cover the hover delay, local wheel targeting, repeated order changes, drag displacement,
 taps, vertical swipes, multi-touch, lost capture, timeout, resize, navigation
 and reduced motion. The browser audit also exercises real wheel events and
 Chromium touch input, including native vertical scrolling. Cards keep a fixed
-aspect ratio and centered, fitted artwork areas. The first record remains
+aspect ratio and centered, fitted artwork areas. The Worker-chosen records remain
 visible without JavaScript. Page transitions and FAQ expansion use CSS
 with ordinary navigation and native disclosures as fallbacks.
 

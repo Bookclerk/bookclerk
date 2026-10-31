@@ -217,6 +217,7 @@ function freePort(): Promise<number> {
 /**
  * Writes the audit Worker's wrangler config: ../wrangler.toml with the audit
  * entry point, so the assets and routing cannot drift from the deployed site.
+ * The audit-only `/__audit/` routes (audit/entry.ts) also run the Worker first.
  *
  * @returns The config file.
  * @throws {Error} When ../wrangler.toml no longer has the lines replaced.
@@ -227,6 +228,7 @@ function writeWranglerConfig(): string {
     [/^name = .*$/m, 'name = "bookclerk-site-audit"'],
     [/^main = .*$/m, 'main = "entry.ts"'],
     [/^directory = .*$/m, 'directory = "../dist"'],
+    [/^run_worker_first = \[/m, 'run_worker_first = ["/__audit/*", '],
   ];
   let config = base;
   for (const [pattern, line] of replacements) {

@@ -21,7 +21,9 @@ import {
   SECURITY_HEADERS,
   sitemapSection,
   sitePageLocation,
+  withCatalogSample,
 } from "./worker.ts";
+import { catalogGroups } from "./catalog.ts";
 import type { DocsFetch, Env, PageCache } from "./worker.ts";
 import { docPageTitle, docUrl, TITLE_MAX } from "./render.ts";
 import type { DocsShell, SearchPage } from "./render.ts";
@@ -578,6 +580,66 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
     home.headers.get("Link"),
     '<https://bookclerk.app/index.md>; rel="alternate"; type="text/markdown"',
   );
+});
+
+/**
+ * Reads the record numbers and groups of a page's catalog stack.
+ *
+ * @param html - The homepage.
+ * @returns One entry per card, front to back.
+ */
+function stackOf(html: string): { record: string; group: string }[] {
+  return [...html.matchAll(/data-record="([^"]+)" data-group="([^"]+)"/g)].map((m) => ({
+    record: m[1] ?? "",
+    group: m[2] ?? "",
+  }));
+}
+
+test("the homepage gets four cards from four groups, picked per request", async () => {
+  const seen = new Set<string>();
+  for (let i = 0; i < 12; i += 1) {
+    const res = await get("/", BROWSER);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("ETag"), null, "a sampled page is not one cacheable version");
+    assert.equal(res.headers.get("Cache-Control"), "no-cache");
+    assert.equal(
+      res.headers.get("Content-Security-Policy"),
+      SECURITY_HEADERS["Content-Security-Policy"],
+    );
+    const html = await res.text();
+    const stack = stackOf(html);
+    assert.equal(stack.length, 4);
+    assert.equal(new Set(stack.map((c) => c.group)).size, 4);
+    for (const card of stack) {
+      const group = catalogGroups.find((g) => g.key === card.group);
+      assert.ok(
+        group?.books.some((b) => b.number === card.record),
+        card.record,
+      );
+    }
+    assert.ok(!html.includes("audible.com"), "source links stay out of the page");
+    seen.add(stack.map((c) => c.record).join(","));
+  }
+  assert.ok(seen.size > 1, "different requests see different samples");
+});
+
+test("the catalog sample follows the random source and leaves other answers alone", async () => {
+  const page = (random: () => number) =>
+    handle(new Request("https://bookclerk.app/", { headers: { Accept: BROWSER } }), env, {
+      shell,
+      fetch: docsFetch,
+      random,
+    }).then(async (res) => stackOf(await res.text()));
+  assert.deepEqual(await page(() => 0), await page(() => 0));
+  assert.notDeepEqual(await page(() => 0), await page(() => 0.999999));
+  const notModified = new Response(null, { status: 304, headers: { ETag: '"x"' } });
+  assert.equal(withCatalogSample(notModified), notModified);
+  const text = new Response('<div class="catalog-stack"></div>', {
+    headers: { "Content-Type": "text/plain" },
+  });
+  assert.equal(withCatalogSample(text), text);
+  const md = await get("/", "text/markdown");
+  assert.ok(!(await md.text()).includes("catalog-card"));
 });
 
 test("main's docs say they are the development version and link within main", async () => {

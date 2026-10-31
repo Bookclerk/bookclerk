@@ -64,6 +64,7 @@ import {
 } from "./render.ts";
 import type { DocsShell, DocsVersion, SearchPage, SitemapPageLink } from "./render.ts";
 import { MAX_SITEMAP_URLS, sitemapIndexXml, sitemapXml } from "./sitemap.ts";
+import { catalogCards, catalogSample } from "./catalog.ts";
 import type { SitemapEntry } from "./sitemap.ts";
 
 /** The static assets binding, or a stand-in in tests. */
@@ -99,13 +100,16 @@ export interface DocsOptions {
   cache?: PageCache | null;
   /** The request context's `waitUntil`; default: does nothing. */
   waitUntil?: (promise: Promise<unknown>) => void;
+  /** Uniform source in [0, 1) for the homepage catalog sample; default: `Math.random`. */
+  random?: () => number;
 }
 
 /**
  * Response headers every page gets; the same policy as src/_headers.
  *
- * The site runs no scripts of its own. The one exception, approved by the
- * project owner, is Cloudflare Web Analytics: the edge injects its beacon
+ * The site's own scripts (site.js, catalog.js, docs.js) are files on this
+ * origin, so `'self'` covers them and no inline script runs. The one outside
+ * script, approved by the project owner, is Cloudflare Web Analytics: the edge injects its beacon
  * (`static.cloudflareinsights.com/beacon.min.js`, with an `integrity` hash)
  * into HTML pages, and the beacon reports to `/cdn-cgi/rum` on this origin,
  * or to `cloudflareinsights.com` when embedded by hand. The beacon's URL
@@ -1223,6 +1227,35 @@ export function sitePageLocation(pathname: string, pages: readonly string[]): st
 }
 
 /**
+ * Replaces the homepage's build-time catalog stack with a fresh sample.
+ *
+ * Each visit gets four books from four different series, universes or
+ * standalones without shipping the whole catalog or making another request.
+ * The page differs per response, so its validators are dropped and browsers
+ * revalidate it in full; a 304 or non-HTML answer passes through unchanged.
+ *
+ * @param response - The homepage asset.
+ * @param random - Uniform source in [0, 1) for the sample (default: Math.random).
+ * @returns The page with a sampled stack, or the response as it was.
+ */
+export function withCatalogSample(response: Response, random?: () => number): Response {
+  const type = response.headers.get("Content-Type") ?? "";
+  if (response.status !== 200 || !type.startsWith("text/html")) return response;
+  const cards = catalogCards(catalogSample(random));
+  const rewritten = new HTMLRewriter()
+    .on(".catalog-stack", {
+      element(element) {
+        element.setInnerContent(cards, { html: true });
+      },
+    })
+    .transform(response);
+  const out = new Response(rewritten.body, rewritten);
+  for (const name of ["ETag", "Last-Modified", "Content-Length"]) out.headers.delete(name);
+  out.headers.set("Cache-Control", "no-cache");
+  return out;
+}
+
+/**
  * Answers one request, before compression.
  *
  * @param request - The incoming request.
@@ -1274,7 +1307,8 @@ async function route(request: Request, env: Env, docs: DocsOptions): Promise<Res
     return notFound(url, request.method, true, env.ASSETS);
   }
 
-  const response = await env.ASSETS.fetch(request);
+  const asset = await env.ASSETS.fetch(request);
+  const response = url.pathname === "/" ? withCatalogSample(asset, docs.random) : asset;
   if (md !== null) {
     const contentType = response.headers.get("Content-Type") ?? "";
     const headers: Record<string, string> = { Vary: varyAdd(response.headers, "Accept") };

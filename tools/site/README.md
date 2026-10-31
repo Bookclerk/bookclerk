@@ -77,8 +77,10 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   At 720px and below, marketing navigation puts Download beside the brand
   and the other links on one line below; GitHub remains visible above 480px.
 - `src/catalog-records.json` – the complete, expandable catalog of English
-  unabridged audiobook editions. The build publishes it unchanged at
-  `/catalog-records.json` and renders an inert sheet pool from the same data.
+  unabridged audiobook editions. It is bundled into the build and the Worker
+  but never published: the Worker samples four records per homepage request
+  (`withCatalogSample` in `worker.ts`) and writes their sheets into the page,
+  so visitors make no extra request and never receive the source links.
   The JSON groups narrative series under `series`, with shared `name` and
   optional `universe` fields and ordered `books` carrying `seriesNumber`.
   Independent novels live under `standalones`. Sampling chooses four distinct
@@ -86,8 +88,9 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   A shared universe, such as the Cosmere, is one sampling group across all
   its subseries and standalone novels. Unconnected standalones each get their
   own group. A longer series therefore never receives extra selection weight.
-  Sampling runs before layout or animation, without another request. The
-  no-script fallback also uses four different groups. New entries need only
+  The page arrives already sampled, so the script never chooses records and
+  scripts are not needed to see them. The build-time stack, served only if
+  the Worker is bypassed, also uses four different groups. New entries need only
   a JSON edit: title, stable unique catalog number, author, all narrator credits,
   runtime in minutes, series position where applicable, illustrative
   purchase/shelf fields, the exact edition's source URL and verification date.
@@ -102,7 +105,10 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   cards stay hidden until then. The drop and first stamp are the entire
   automatic sequence. Ordinary page scrolling is never captured or moved.
   Once the drop finishes, a wheel gesture over an actual sheet optionally
-  shuffles the front record behind the stack and stamps the next one.
+  shuffles the front record behind the stack and stamps the next one. The
+  wheel only does this after a mouse or pen has rested on the stack for
+  450 ms; wheel events that arrive sooner restart the delay and scroll the
+  page, so scrolling past the stack is never interrupted.
   Each distinct wheel gesture gets one turn; residual momentum cannot
   start another. The interaction cycles through the four selected records.
   The front sheet is also draggable with a mouse, touch or pen. A deliberate
@@ -118,7 +124,7 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   a sheet slightly past a horizontal edge before it tucks behind the stack.
   Unsupported animation, reduced motion and views too short for the complete
   motion retain static artwork. The script makes no requests and stores
-  nothing; without it the first record remains visible.
+  nothing; without it the Worker-chosen records remain visible.
   Buttons, FAQs and the shared brand element use CSS motion, with ordinary
   navigation and native disclosure behavior as fallbacks. Reduced-motion
   visitors get a static card and ordinary navigation.

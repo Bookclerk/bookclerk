@@ -53,6 +53,8 @@ export async function auditCatalog(browser: Browser, origin: string): Promise<st
     assert.ok(box);
     const next = await page.locator(".catalog-card .card-title strong").nth(1).innerText();
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    // The wheel only shuffles once the mouse has rested on the stack.
+    await page.waitForTimeout(600);
     await page.mouse.wheel(0, 100);
     await page.waitForFunction(
       () =>
@@ -72,8 +74,11 @@ export async function auditCatalog(browser: Browser, origin: string): Promise<st
     const overflow = await page.evaluate(async () => {
       await document.fonts.ready;
       const stack = document.querySelector<HTMLElement>(".catalog-stack");
-      const pool = document.querySelector<HTMLTemplateElement>("[data-catalog-pool]");
-      if (!stack || !pool) return ["The catalog sampling pool is missing"];
+      // Served by the audit Worker only (audit/entry.ts); the site never ships it.
+      const response = await fetch("/__audit/catalog-cards");
+      if (!stack || !response.ok) return ["The audit catalog cards are missing"];
+      const pool = document.createElement("template");
+      pool.innerHTML = await response.text();
       const original = [...stack.childNodes];
       const failures: string[] = [];
       try {

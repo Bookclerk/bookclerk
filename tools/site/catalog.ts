@@ -1,5 +1,7 @@
-// The authored JSON is the only metadata source for the published catalog,
-// inert card pool and complete no-script fallback stack.
+// The authored JSON is the only metadata source for the catalog stack. The
+// build renders a fallback stack into index.html and the Worker replaces it
+// with a fresh four-group sample on each homepage request, so the full JSON
+// (and its source links) never reaches a visitor.
 import records from "./src/catalog-records.json" with { type: "json" };
 import { escapeHtml } from "./render.ts";
 
@@ -65,7 +67,7 @@ export interface CatalogGroup {
   books: readonly CatalogRecord[];
 }
 
-/** The grouped JSON, published unchanged as a Worker asset. */
+/** The grouped JSON, bundled into the build and the Worker but never published. */
 export const catalogSource: CatalogSource = records;
 
 /** All editions with shared series/universe context restored for rendering. */
@@ -115,7 +117,7 @@ export const catalogGroups: readonly CatalogGroup[] = samplingGroups();
  * @param record - The verified edition and its illustrative library fields.
  * @returns Escaped markup; large narrator ensembles retain full credits in a tooltip.
  */
-function catalogCard(record: CatalogRecord): string {
+export function catalogCard(record: CatalogRecord): string {
   const series = [
     record.series ? `${record.series.name} #${record.series.number}` : "",
     record.universe ?? "",
@@ -162,12 +164,32 @@ export function catalogCards(
   return selection.map(catalogCard).join("\n");
 }
 
-/** Renders all editions into the inert pool used for per-load browser sampling. */
-export function catalogPool(): string {
-  return catalogGroups
-    .map(
-      (group) =>
-        `<div data-catalog-group="${escapeHtml(group.key)}">${group.books.map(catalogCard).join("\n")}</div>`,
-    )
-    .join("\n");
+/**
+ * Picks four distinct groups with equal weight, then one book from each.
+ *
+ * Every group draws first, so a series' size never changes how often it is
+ * picked; only then does each picked group choose one of its books.
+ *
+ * @param random - Uniform source in [0, 1); tests pass a seeded one.
+ * @param from - Groups to sample; at least four (default: the whole catalog).
+ * @returns Four editions from four different series, universes or standalones.
+ */
+export function catalogSample(
+  random: () => number = Math.random,
+  from: readonly CatalogGroup[] = catalogGroups,
+): readonly CatalogRecord[] {
+  const groups = [...from];
+  // A partial Fisher-Yates shuffle: the first four slots are a uniform sample.
+  for (let i = 0; i < 4; i += 1) {
+    const j = i + Math.floor(random() * (groups.length - i));
+    const picked = groups[j];
+    const current = groups[i];
+    if (picked === undefined || current === undefined) break;
+    groups[i] = picked;
+    groups[j] = current;
+  }
+  return groups.slice(0, 4).flatMap(({ books }) => {
+    const book = books[Math.floor(random() * books.length)];
+    return book === undefined ? [] : [book];
+  });
 }

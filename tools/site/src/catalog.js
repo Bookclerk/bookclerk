@@ -1,32 +1,12 @@
 // The stack drops in once. Its repeatable shuffle is an optional interaction
-// confined to the cards; ordinary page scrolling is never repositioned.
+// confined to the cards; ordinary page scrolling is never repositioned. The
+// Worker picks the four records per request, so this script never samples.
 (() => {
   "use strict";
 
   /** Decorative artwork and its fixed-proportion sheet container. */
   const stage = document.querySelector("[data-catalog]");
   const stack = stage?.querySelector(".catalog-stack");
-  /** Inert, already escaped sheets rendered from the same JSON as the fallback. */
-  const pool = stage?.querySelector("[data-catalog-pool]")?.content;
-  if (stack && pool) {
-    const groups = [...pool.querySelectorAll("[data-catalog-group]")]
-      .map((group) => [...group.querySelectorAll(".catalog-card")])
-      .filter((books) => books.length > 0);
-    if (groups.length >= 4) {
-      // Equal group weights prevent long series from dominating the sample.
-      for (let i = groups.length - 1; i > 0; i -= 1) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [groups[i], groups[j]] = [groups[j], groups[i]];
-      }
-      stack.replaceChildren(
-        ...groups.slice(0, 4).map((books) => {
-          const chosen = books[Math.floor(Math.random() * books.length)];
-          return chosen.cloneNode(true);
-        }),
-      );
-    }
-  }
-
   /** Current front-to-back order, kept in sync with the rendered DOM. */
   let cards = stack ? [...stack.querySelectorAll(".catalog-card")] : [];
   if (!stack || cards.length < 2) return;
@@ -43,6 +23,14 @@
   let frame = 0;
   /** Last wheel activity; momentum cannot start another shuffle in the same burst. */
   let wheelUntil = 0;
+  /**
+   * When a resting mouse or pen pointer has hovered the stack long enough for
+   * the wheel to shuffle; Infinity while it is elsewhere. Scrolling past the
+   * stack keeps pushing this back, so only a deliberate pause arms the wheel.
+   */
+  let wheelArmedAt = Infinity;
+  /** Hover time, in milliseconds, before a wheel over the stack shuffles it. */
+  const HOVER_DELAY = 450;
   /** Width at shuffle start, so orientation changes settle it immediately. */
   let shuffleWidth = 0;
   /** Only the current incoming stamp may complete the current shuffle. */
@@ -351,8 +339,14 @@
       !event.target.closest(".catalog-card")
     )
       return;
-    const fresh = performance.now() >= wheelUntil;
-    wheelUntil = performance.now() + 300;
+    const now = performance.now();
+    if (now < wheelArmedAt) {
+      // Still scrolling past, or not hovered long enough: the page scrolls.
+      if (Number.isFinite(wheelArmedAt)) wheelArmedAt = now + HOVER_DELAY;
+      return;
+    }
+    const fresh = now >= wheelUntil;
+    wheelUntil = now + 300;
     if (phase === "shuffling") {
       event.preventDefault();
       return;
@@ -362,6 +356,20 @@
     if (!geometry || !fits(geometry, window.scrollY)) return;
     shuffle(geometry);
     event.preventDefault();
+  }
+
+  /**
+   * Starts the hover delay for a mouse or pen; touch has no hover and no wheel.
+   *
+   * @param {PointerEvent} event - The pointer entering the stack.
+   */
+  function onPointerEnter(event) {
+    if (event.pointerType !== "touch") wheelArmedAt = performance.now() + HOVER_DELAY;
+  }
+
+  /** Disarms the wheel as soon as the pointer leaves the stack. */
+  function onPointerLeave() {
+    wheelArmedAt = Infinity;
   }
 
   /**
@@ -519,6 +527,8 @@
     phase = "disabled";
     stage.dataset.catalogState = "static";
     stack.removeEventListener("wheel", onWheel);
+    stack.removeEventListener("pointerenter", onPointerEnter);
+    stack.removeEventListener("pointerleave", onPointerLeave);
     stack.removeEventListener("pointerdown", onPointerDown);
     stack.removeEventListener("pointermove", onPointerMove);
     stack.removeEventListener("pointerup", onPointerUp);
@@ -529,6 +539,8 @@
 
   if (!reduced.matches) {
     stack.addEventListener("wheel", onWheel, { passive: false });
+    stack.addEventListener("pointerenter", onPointerEnter);
+    stack.addEventListener("pointerleave", onPointerLeave);
     stack.addEventListener("pointerdown", onPointerDown);
     stack.addEventListener("pointermove", onPointerMove);
     stack.addEventListener("pointerup", onPointerUp);

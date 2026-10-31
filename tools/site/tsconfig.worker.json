@@ -16,6 +16,7 @@
     "highlight.ts",
     "last-updated.ts",
     "audit/entry.ts",
+    "catalog.ts",
     "generated/docs-shell.d.json.ts"
   ]
 }
