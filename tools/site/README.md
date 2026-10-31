@@ -126,7 +126,7 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   back. Taps, vertical swipes and pinch-to-zoom retain native behavior.
   Pointer cancellation, lost capture, keys, resize and navigation release
   a dragged card. A bounded timer settles each shuffle if its CSS completion
-  event is missed. Reduced motion disables the optional interactions.
+  event is missed. Reduced motion disables the optional interactions; turning it off again restores them without replaying the drop.
   Cards keep a fixed 446:380 proportion and scale uniformly, including
   their contents. Stacked hero layouts fit their artwork area to the
   scaled stack and center static short-screen views. Drop and wheel-lift

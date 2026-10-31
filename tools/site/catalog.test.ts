@@ -328,6 +328,11 @@ function controller(device: Device = {}) {
       preference.matches = true;
       preferenceChanged();
     },
+    /** Turns reduced motion back off. */
+    allow: () => {
+      preference.matches = false;
+      preferenceChanged();
+    },
     /** Rests a mouse over the stack long enough to arm the wheel. */
     hover: () => {
       gesture("pointerenter", { pointerType: "mouse" });
@@ -599,6 +604,24 @@ test("reduced motion cancels interaction and releases active pointer ownership",
   assert.equal(reduced.stackListeners.size, 0);
 });
 
+test("turning reduced motion off again restores the interaction without a reload", () => {
+  for (const page of [controller(), controller({ reduced: true })]) {
+    page.tick(1550);
+    page.reduce();
+    assert.equal(page.state(), "static");
+    page.allow();
+    assert.equal(page.state(), "ready");
+    assert.equal(page.stackListeners.has("pointerdown"), true);
+    page.hover();
+    assert.equal(page.gesture("wheel").prevented, true);
+    page.tick(1250);
+    assert.deepEqual(page.order(), [1, 2, 3, 0]);
+    // A second change while motion is allowed does nothing.
+    page.allow();
+    assert.equal(page.state(), "ready");
+  }
+});
+
 test("short landscape views keep centered static artwork and native scrolling", () => {
   const page = controller({ width: 844, height: 390, stageTop: 600 });
   assert.equal(page.state(), "static");
@@ -775,6 +798,15 @@ test("adding books to a large series never changes its group-selection probabili
     small.map((book) => book.number.split("-")[0]),
     large.map((book) => book.number.split("-")[0]),
   );
+});
+
+test("every group can be picked, including those after the first four", () => {
+  const groups = groupsOf([1, 1, 1, 1, 1, 1]);
+  const random = seeded();
+  const picked = new Set<string | undefined>();
+  for (let i = 0; i < 200; i += 1)
+    for (const book of catalogSample(random, groups)) picked.add(book.number.split("-")[0]);
+  assert.equal(picked.size, groups.length);
 });
 
 test("the grouped JSON has shared series context and exactly one sampling owner per book", () => {

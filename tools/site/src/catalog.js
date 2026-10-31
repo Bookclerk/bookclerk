@@ -537,7 +537,8 @@
     window.removeEventListener("scroll", onScroll);
   }
 
-  if (!reduced.matches) {
+  /** Attaches the optional interaction's card-local and scroll listeners. */
+  function attachMotion() {
     stack.addEventListener("wheel", onWheel, { passive: false });
     stack.addEventListener("pointerenter", onPointerEnter);
     stack.addEventListener("pointerleave", onPointerLeave);
@@ -548,6 +549,16 @@
     stack.addEventListener("lostpointercapture", onPointerCancel);
     window.addEventListener("scroll", onScroll, { passive: true });
   }
+
+  /** Restores the optional interaction, without replaying the drop, when motion is allowed again. */
+  function enableMotion() {
+    if (phase !== "disabled") return;
+    attachMotion();
+    phase = "ready";
+    stage.dataset.catalogState = "ready";
+  }
+
+  if (!reduced.matches) attachMotion();
   window.addEventListener("keydown", () => {
     cancelDrag();
     completeShuffle();
@@ -557,6 +568,7 @@
   window.visualViewport?.addEventListener("resize", resize, { passive: true });
   reduced.addEventListener("change", () => {
     if (reduced.matches) disableMotion();
+    else enableMotion();
   });
   stage.addEventListener("animationend", (event) => {
     if (
