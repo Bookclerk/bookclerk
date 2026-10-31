@@ -187,18 +187,14 @@ export function catalogSample(
   random: () => number = Math.random,
   from: readonly CatalogGroup[] = catalogGroups,
 ): readonly CatalogRecord[] {
-  const groups = [...from];
-  // A partial Fisher-Yates shuffle: the first four slots are a uniform sample.
-  for (let i = 0; i < 4; i += 1) {
-    const j = i + Math.floor(random() * (groups.length - i));
-    const picked = groups[j];
-    const current = groups[i];
-    if (picked === undefined || current === undefined) break;
-    groups[i] = picked;
-    groups[j] = current;
-  }
-  return groups.slice(0, 4).flatMap(({ books }) => {
-    const book = books[Math.floor(random() * books.length)];
-    return book === undefined ? [] : [book];
+  // Sorting by one random key per group is a uniform shuffle; ties keep the
+  // authored order, so a constant source still yields four distinct groups.
+  const picked = from
+    .map((group) => ({ group, key: random() }))
+    .sort((a, b) => a.key - b.key)
+    .slice(0, 4);
+  return picked.flatMap(({ group: { books } }) => {
+    const index = Math.floor(random() * books.length);
+    return books.slice(index, index + 1);
   });
 }
