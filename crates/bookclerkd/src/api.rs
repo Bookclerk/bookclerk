@@ -3790,7 +3790,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         (status = 400, description = "The body names no valid target.", body = ActionResponse, example = json!({"ok": false, "message": "the account named is blank", "job_id": "", "error": "invalid"})),
         (status = 403, description = "The caller may not scan these accounts.", body = ActionResponse, example = json!({"ok": false, "message": "this user may not scan the library", "job_id": "", "error": "forbidden"})),
         (status = 409, description = "A scan is already pending or running.", body = ScanPlanResponse, example = json!({"ok": false, "message": "scan already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"})),
-        (status = 422, description = "No account matched.", body = ScanPlanResponse, example = json!({"ok": false, "message": "scan planned: 0 accepted, 0 already pending or running, 0 not admitted (queue full)", "job_id": "", "job_ids": [], "error": "nothing_to_scan"})),
+        (status = 422, description = "No account matched.", body = ScanPlanResponse, example = json!({"ok": false, "message": "no scan-enabled store account to scan", "job_id": "", "job_ids": [], "error": "nothing_to_scan"})),
         (status = 429, description = "The job queue is full.", body = ScanPlanResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "job_ids": [], "error": "queue_full"})),
     ),
 )]
@@ -3967,11 +3967,12 @@ fn plan_response(kind: &str, admits: Vec<AdmitJob>) -> Response {
     path = "/api/library/acquire",
     request_body = Option<AcquireRequestBody>,
     responses(
-        (status = 200, description = "The acquire jobs were accepted.", body = ActionResponse),
+        (status = 200, description = "The acquire jobs were accepted.", body = ScanPlanResponse),
         (status = 400, description = "The body names no valid title.", body = ActionResponse, example = json!({"ok": false, "message": "every title id given is blank", "job_id": "", "error": "invalid"})),
         (status = 403, description = "The caller may not acquire for these accounts.", body = ActionResponse, example = json!({"ok": false, "message": "that title is not in a store account linked to this user", "job_id": "", "error": "forbidden"})),
-        (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = ActionResponse, example = json!({"ok": false, "message": "acquire already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "error": "conflict"})),
-        (status = 429, description = "The job queue is full.", body = ActionResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "error": "queue_full"})),
+        (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = ScanPlanResponse, example = json!({"ok": false, "message": "acquire already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"})),
+        (status = 422, description = "No account of the caller's can acquire.", body = ScanPlanResponse, example = json!({"ok": false, "message": "no store account of yours to acquire from", "job_id": "", "job_ids": [], "error": "nothing_to_acquire"})),
+        (status = 429, description = "The job queue is full.", body = ScanPlanResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "job_ids": [], "error": "queue_full"})),
         (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
         (status = 500, description = "The jobs could not be queued.", body = ActionResponse, example = json!({"ok": false, "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "job_id": "", "error": "internal_error"})),
     ),
@@ -5350,6 +5351,7 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
         (status = 200, description = "A page of catalog results.", body = bookclerk_discover::CatalogSearchPage),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("catalog query must be 256 bytes or fewer")),
         (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
+        (status = 504, description = "The stores did not answer within the search budget.", body = String, content_type = "text/plain", example = json!("catalog search timed out")),
     ),
 )]
 async fn discover_catalog_search(
@@ -5935,7 +5937,8 @@ where
     responses(
         (status = 200, description = "The caller's preferences.", body = PreferencesResponse),
         (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
-        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain", example = json!("Internal Server Error")),
+        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
+        (status = 504, description = "The preferences row did not load in time.", body = String, content_type = "text/plain", example = json!("preferences lookup timed out")),
     ),
 )]
 async fn get_preferences(
@@ -5969,9 +5972,10 @@ async fn get_preferences(
     request_body = PatchPreferencesBody,
     responses(
         (status = 200, description = "The preferences after the change.", body = PreferencesResponse),
-        (status = 400, description = "A value is invalid.", body = String, content_type = "text/plain", example = json!("Bad Request")),
+        (status = 400, description = "The body is not valid JSON for the patch.", body = String, content_type = "text/plain", example = json!("Failed to deserialize the JSON body into the target type: theme: invalid type: integer `3`, expected a string at line 1 column 11")),
         (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
-        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain", example = json!("Internal Server Error")),
+        (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
+        (status = 504, description = "The preferences row did not load or save in time.", body = String, content_type = "text/plain", example = json!("preferences update timed out")),
     ),
 )]
 async fn patch_preferences(

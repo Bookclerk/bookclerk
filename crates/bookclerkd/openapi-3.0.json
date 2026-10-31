@@ -3507,7 +3507,7 @@
                   "error": "nothing_to_scan",
                   "job_id": "",
                   "job_ids": [],
-                  "message": "scan planned: 0 accepted, 0 already pending or running, 0 not admitted (queue full)",
+                  "message": "no scan-enabled store account to scan",
                   "ok": false
                 }
               }
@@ -3628,7 +3628,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
+                  "$ref": "#/components/schemas/ScanPlanResponse"
                 }
               }
             }
@@ -3685,12 +3685,32 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
+                  "$ref": "#/components/schemas/ScanPlanResponse"
                 },
                 "example": {
                   "error": "conflict",
                   "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "job_ids": [
+                    "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                  ],
                   "message": "acquire already pending or running",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No account of the caller's can acquire.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "error": "nothing_to_acquire",
+                  "job_id": "",
+                  "job_ids": [],
+                  "message": "no store account of yours to acquire from",
                   "ok": false
                 }
               }
@@ -3701,11 +3721,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ActionResponse"
+                  "$ref": "#/components/schemas/ScanPlanResponse"
                 },
                 "example": {
                   "error": "queue_full",
                   "job_id": "",
+                  "job_ids": [],
                   "message": "job queue is full",
                   "ok": false
                 }
@@ -11949,13 +11970,13 @@
             }
           },
           "504": {
-            "description": "The request ran past the API's time budget.",
+            "description": "The stores did not answer within the search budget.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "request timed out"
+                "example": "catalog search timed out"
               }
             }
           }
@@ -13488,18 +13509,18 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Internal Server Error"
+                "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
               }
             }
           },
           "504": {
-            "description": "The request ran past the API's time budget.",
+            "description": "The preferences row did not load in time.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "request timed out"
+                "example": "preferences lookup timed out"
               }
             }
           }
@@ -13545,13 +13566,13 @@
             }
           },
           "400": {
-            "description": "A value is invalid.",
+            "description": "The body is not valid JSON for the patch.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "Bad Request"
+                "example": "Failed to deserialize the JSON body into the target type: theme: invalid type: integer `3`, expected a string at line 1 column 11"
               }
             }
           },
@@ -13588,18 +13609,18 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Internal Server Error"
+                "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
               }
             }
           },
           "504": {
-            "description": "The request ran past the API's time budget.",
+            "description": "The preferences row did not load or save in time.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "request timed out"
+                "example": "preferences update timed out"
               }
             }
           }
