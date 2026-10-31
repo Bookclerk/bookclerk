@@ -183,6 +183,13 @@ function get(path: string, accept: string, method = "GET"): Promise<Response> {
   );
 }
 
+test("the deployed bundle's source maps are never uploaded", () => {
+  assert.match(WRANGLER_TOML, /^upload_source_maps = false$/m);
+  // Top-level keys only count before the first table.
+  const firstTable = WRANGLER_TOML.search(/^\[/m);
+  assert.ok(WRANGLER_TOML.indexOf("\nupload_source_maps = false") < firstTable);
+});
+
 test("acceptWeights reads quality values and counts wildcards as HTML", () => {
   assert.deepEqual(acceptWeights("text/markdown"), { markdown: 1, html: 0 });
   assert.deepEqual(acceptWeights("text/markdown;q=0.5, text/html"), { markdown: 0.5, html: 1 });
@@ -552,7 +559,7 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
     /<div class="docs-menus"><details class="menu menu-nav" name="docs-menu"><summary>Menu<\/summary>/,
   );
   assert.match(html, /<details class="nav-group" open><summary>Build plugins<\/summary>/);
-  assert.match(html, /<script src="\/docs.js" defer><\/script>/);
+  assert.match(html, /<script src="\/assets\/docs\.[0-9a-f]{12}\.js" defer><\/script>/);
   const ld: { "@graph": { "@type": string; url: string }[] } = JSON.parse(
     html.match(/<script type="application\/ld\+json">(.*?)<\/script>/)?.[1] ?? "{}",
   );
@@ -881,7 +888,7 @@ test("the docs-unavailable page keeps the site's look and links to the doc on Gi
     SECURITY_HEADERS["Content-Security-Policy"],
   );
   const html = await page.text();
-  assert.match(html, /<link rel="stylesheet" href="\/site\.css/);
+  assert.match(html, /<link rel="stylesheet" href="\/assets\/site\.[0-9a-f]{12}\.css"/);
   assert.match(html, /class="docs-nav"/);
   assert.doesNotMatch(html, /<h2>Using Bookclerk<\/h2>/, "no sidebar links that would fail too");
   assert.match(html, /<h1>The docs could not be loaded<\/h1>/);

@@ -15,7 +15,10 @@ Deployed by GitHub Actions:
 [`.github/workflows/site-deploy.yml`](../../.github/workflows/site-deploy.yml),
 on changes to this directory, `docs/` or `assets/brand/` on `main`, on every published
 release, and by hand. The deploy token is scoped to the Worker by name, so keep
-`name` in `wrangler.toml` as it is.
+`name` in `wrangler.toml` as it is. `wrangler.toml` also sets
+`upload_source_maps = false`, so source maps never reach Cloudflare
+(`worker.test.ts` keeps it), and leaves the bundle unminified: minifying saved
+about 200 KB gzipped but made the Worker's startup about four times slower.
 
 ## Release state
 
@@ -259,9 +262,17 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   the Workers runtime through `@cloudflare/vitest-plugin`, against a site
   built once in Node beforehand, and the build and docs tests run in Node.
   `npm run coverage` adds a V8 coverage report.
-- `src/_headers` – security headers, and Markdown and `llms.txt` content
-  types. The CSP allows only the site's own scripts (`'self'`, for
-  `docs.js`) and Cloudflare Web Analytics, which the edge injects into each
+- `src/_headers` – security headers, Markdown and `llms.txt` content
+  types, and a one-year `immutable` cache for `/fonts/*` and `/assets/*`.
+  The build publishes `site.css`, `site.js`, `catalog.js` and `docs.js`
+  under `/assets/` with the first 12 hex digits of their SHA-256 in the
+  name (`HASHED_ASSETS` and `assetUrl` in `build.ts`; templates name them
+  through `{{siteCss}}`, `{{siteJs}}`, `{{catalogJs}}` and `{{docsJs}}`), so
+  a changed file is a new URL and repeat visits fetch nothing. Scripts stay
+  separate files rather than inline, so the CSP needs no hashes and each file
+  is cached once for every page. `sitemap.css` keeps its plain name because
+  the Worker's sitemap XML names it. The CSP allows only the site's own scripts (`'self'`, for
+  `site.js`, `catalog.js` and `docs.js`) and Cloudflare Web Analytics, which the edge injects into each
   page: `script-src 'self' https://static.cloudflareinsights.com` and
   `connect-src https://cloudflareinsights.com` beside `'self'` for its
   reports. No inline script is allowed. That beacon is the one approved

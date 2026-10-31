@@ -19,3 +19,8 @@
 # a new URL and browsers may keep these for a year.
 /fonts/*
   Cache-Control: public, max-age=31536000, immutable
+
+# Styles and scripts carry a hash of their contents in the file name (build.ts
+# HASHED_ASSETS), so a change is a new URL and browsers may keep these for a year.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
