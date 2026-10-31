@@ -5,6 +5,9 @@
 import records from "./src/catalog-records.json" with { type: "json" };
 import { escapeHtml } from "./render.ts";
 
+/** A store a catalog card may name as where a book was bought. */
+export type Storefront = "Audible" | "Libro.fm" | "Chirp";
+
 /** An English audiobook edition used in the decorative catalog. */
 export interface CatalogRecord {
   /** Book title, without marketing subtitles or edition suffixes. */
@@ -26,13 +29,19 @@ export interface CatalogRecord {
   };
   /** Shared fictional universe, when broader than the narrative series. */
   universe?: string;
-  /** Illustrative purchase source, not a claim about a visitor's library. */
-  bought: string;
+  /**
+   * Illustrative purchase sources, not a claim about a visitor's library.
+   * Each store must sell this exact edition: Audible through `sourceUrl`,
+   * the others through their entry in `listings`.
+   */
+  bought: readonly Storefront[];
   /** Illustrative destination path, never read from the visitor's machine. */
   shelved: string;
-  /** Public catalog page identifying the exact audiobook edition. */
+  /** Audible catalog page identifying the exact audiobook edition. */
   sourceUrl: string;
-  /** Date its author, narrator credits and runtime were verified, as YYYY-MM-DD. */
+  /** Product pages of other stores selling this edition with the same narrators. */
+  listings?: Readonly<Partial<Record<Exclude<Storefront, "Audible">, string>>>;
+  /** Date its author, narrator credits, runtime and listings were verified, as YYYY-MM-DD. */
   verifiedOn: string;
 }
 
@@ -68,7 +77,7 @@ export interface CatalogGroup {
 }
 
 /** The grouped JSON, bundled into the build and the Worker but never published. */
-export const catalogSource: CatalogSource = records;
+export const catalogSource: CatalogSource = records as CatalogSource;
 
 /** All editions with shared series/universe context restored for rendering. */
 export const catalogRecords: readonly CatalogRecord[] = [
@@ -137,7 +146,7 @@ export function catalogCard(record: CatalogRecord): string {
     ...(series ? [["Series", series] as const] : []),
     ["Narrator", narrator, narrators],
     ["Length", length],
-    ["Bought", record.bought],
+    ["Bought", record.bought.join(", ")],
     ["Shelved", record.shelved],
   ];
   return `<div class="catalog-card" data-record="${escapeHtml(record.number)}" data-group="${escapeHtml(groupKey(record))}">

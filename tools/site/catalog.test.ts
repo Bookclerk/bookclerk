@@ -355,7 +355,7 @@ test("record text cannot introduce markup or attributes", () => {
     series: { name: "<Series>", number: 1 },
     sourceUrl: "https://example.com/edition",
     verifiedOn: "2026-10-31",
-    bought: "A store",
+    bought: ["Audible"] as const,
     shelved: "/audiobooks/<title>",
   };
   const cards = catalogCards([record, record]);
@@ -676,6 +676,36 @@ test("every edition has complete, uniquely numbered and traceable metadata", () 
     if (record.series)
       assert.ok(Number.isInteger(record.series.number) && record.series.number >= 0);
   }
+});
+
+test("every store a card names sells that exact edition", () => {
+  const hosts = { Audible: "www.audible.com", "Libro.fm": "libro.fm", Chirp: "www.chirpbooks.com" };
+  const named = new Set<string>();
+  for (const record of catalogRecords) {
+    assert.ok(record.bought.length > 0, record.title);
+    assert.equal(new Set(record.bought).size, record.bought.length, record.title);
+    for (const store of record.bought) {
+      assert.ok(Object.hasOwn(hosts, store), `${record.title}: unknown store ${store}`);
+      const url = store === "Audible" ? record.sourceUrl : record.listings?.[store];
+      assert.ok(url, `${record.title} names ${store} without its listing`);
+      const parsed = new URL(url);
+      assert.equal(parsed.protocol, "https:");
+      assert.equal(parsed.hostname, hosts[store]);
+      named.add(store);
+    }
+    for (const [store, url] of Object.entries(record.listings ?? {}))
+      assert.equal(new URL(url).hostname, hosts[store as keyof typeof hosts]);
+    assert.ok(catalogCard(record).includes(`<dd>${record.bought.join(", ")}</dd>`));
+  }
+  // The homepage shows several storefronts, not one.
+  assert.deepEqual([...named].sort(), ["Audible", "Chirp", "Libro.fm"]);
+  for (const title of [
+    "Dungeon Crawler Carl",
+    "The Martian",
+    "Snow Crash",
+    "Forward the Foundation",
+  ])
+    assert.deepEqual(catalogRecords.find((r) => r.title === title)?.bought, ["Audible"], title);
 });
 
 test("large casts retain full credit without crowding the narrator row", () => {

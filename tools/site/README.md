@@ -92,8 +92,15 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   scripts are not needed to see them. The build-time stack, served only if
   the Worker is bypassed, also uses four different groups. New entries need only
   a JSON edit: title, stable unique catalog number, author, all narrator credits,
-  runtime in minutes, series position where applicable, illustrative
-  purchase/shelf fields, the exact edition's source URL and verification date.
+  runtime in minutes, series position where applicable, an illustrative shelf
+  path, the exact edition's Audible source URL and verification date. `bought`
+  lists the stores a card names (`Audible`, `Libro.fm` or `Chirp`). Name a
+  store only after checking that it sells the same edition (same narrators,
+  purchasable in the US), and record that product page under `listings`;
+  Audible's page is `sourceUrl`. Tests refuse a named store without its
+  listing. GraphicAudio sells its own dramatizations, which are different
+  editions, so no card names it for these books. The listings and source
+  URLs are evidence for maintainers only and never reach the page.
   The initial pool includes the requested main novels, including novel-length
   prequels, but excludes novellas, collections, graphic novels and unreleased
   titles. Foundation positions follow publication order; New Spring is

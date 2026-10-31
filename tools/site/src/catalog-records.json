@@ -9,7 +9,7 @@
           "author": "Matt Dinniman",
           "narrators": ["Jeff Hays"],
           "durationMinutes": 811,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Dinniman/Dungeon Crawler Carl",
           "sourceUrl": "https://www.audible.com/pd/B08V8B2CGV",
           "verifiedOn": "2026-10-31",
@@ -21,7 +21,7 @@
           "author": "Matt Dinniman",
           "narrators": ["Jeff Hays"],
           "durationMinutes": 688,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Dinniman/Carl's Doomsday Scenario",
           "sourceUrl": "https://www.audible.com/pd/B0934GTSGT",
           "verifiedOn": "2026-10-31",
@@ -33,7 +33,7 @@
           "author": "Matt Dinniman",
           "narrators": ["Jeff Hays", "The Critical Drinker"],
           "durationMinutes": 1014,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Dinniman/The Dungeon Anarchist's Cookbook",
           "sourceUrl": "https://www.audible.com/pd/B094XCNV6G",
           "verifiedOn": "2026-10-31",
@@ -45,7 +45,7 @@
           "author": "Matt Dinniman",
           "narrators": ["Jeff Hays"],
           "durationMinutes": 1083,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Dinniman/The Gate of the Feral Gods",
           "sourceUrl": "https://www.audible.com/pd/B09GCYRZRQ",
           "verifiedOn": "2026-10-31",
@@ -57,7 +57,7 @@
           "author": "Matt Dinniman",
           "narrators": ["Jeff Hays"],
           "durationMinutes": 1413,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Dinniman/The Butcher's Masquerade",
           "sourceUrl": "https://www.audible.com/pd/B09ZJ82C7Y",
           "verifiedOn": "2026-10-31",
@@ -69,7 +69,7 @@
           "author": "Matt Dinniman",
           "narrators": ["Jeff Hays", "Patrick Warburton", "Travis Baldree", "Annie Ellicott"],
           "durationMinutes": 1606,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Dinniman/The Eye of the Bedlam Bride",
           "sourceUrl": "https://www.audible.com/pd/B0CDXWSS5D",
           "verifiedOn": "2026-10-31",
@@ -81,7 +81,7 @@
           "author": "Matt Dinniman",
           "narrators": ["Jeff Hays", "Travis Baldree"],
           "durationMinutes": 1720,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Dinniman/This Inevitable Ruin",
           "sourceUrl": "https://www.audible.com/pd/B0DK282SYV",
           "verifiedOn": "2026-10-31",
@@ -93,7 +93,7 @@
           "author": "Matt Dinniman",
           "narrators": ["Jeff Hays"],
           "durationMinutes": 1227,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Dinniman/A Parade of Horribles",
           "sourceUrl": "https://www.audible.com/pd/B0FXY6DVJS",
           "verifiedOn": "2026-10-31",
@@ -110,7 +110,7 @@
           "author": "James S. A. Corey",
           "narrators": ["Jefferson Mays"],
           "durationMinutes": 1149,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Corey/Leviathan Wakes",
           "sourceUrl": "https://www.audible.com/pd/B00P9XDQFY",
           "verifiedOn": "2026-10-31",
@@ -122,9 +122,13 @@
           "author": "James S. A. Corey",
           "narrators": ["Jefferson Mays"],
           "durationMinutes": 1260,
-          "bought": "Audible",
+          "bought": ["Libro.fm"],
           "shelved": "/audiobooks/Corey/Caliban's War",
           "sourceUrl": "https://www.audible.com/pd/B075DK95GS",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781549168154-caliban-s-war",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/caliban-s-war-by-james-s-a-corey-1f3485928e"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 2
         },
@@ -134,9 +138,13 @@
           "author": "James S. A. Corey",
           "narrators": ["Jefferson Mays"],
           "durationMinutes": 1182,
-          "bought": "Audible",
+          "bought": ["Chirp"],
           "shelved": "/audiobooks/Corey/Abaddon's Gate",
           "sourceUrl": "https://www.audible.com/pd/1549142194",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781549142192-abaddon-s-gate",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/abaddon-s-gate-by-james-s-a-corey"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 3
         },
@@ -146,9 +154,13 @@
           "author": "James S. A. Corey",
           "narrators": ["Jefferson Mays"],
           "durationMinutes": 1207,
-          "bought": "Audible",
+          "bought": ["Libro.fm", "Audible"],
           "shelved": "/audiobooks/Corey/Cibola Burn",
           "sourceUrl": "https://www.audible.com/pd/B00K7PP15W",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781478900825-cibola-burn",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/cibola-burn-by-james-s-a-corey"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 4
         },
@@ -158,9 +170,13 @@
           "author": "James S. A. Corey",
           "narrators": ["Jefferson Mays"],
           "durationMinutes": 1086,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Corey/Nemesis Games",
           "sourceUrl": "https://www.audible.com/pd/B00XA9CCPO",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781478903956-nemesis-games",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/nemesis-games-by-james-s-a-corey"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 5
         },
@@ -170,9 +186,13 @@
           "author": "James S. A. Corey",
           "narrators": ["Jefferson Mays"],
           "durationMinutes": 1198,
-          "bought": "Audible",
+          "bought": ["Chirp", "Libro.fm"],
           "shelved": "/audiobooks/Corey/Babylon's Ashes",
           "sourceUrl": "https://www.audible.com/pd/B01D53NPLO",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781478909521-babylon-s-ashes",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/babylon-s-ashes-by-james-s-a-corey"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 6
         },
@@ -182,9 +202,13 @@
           "author": "James S.A. Corey",
           "narrators": ["Jefferson Mays"],
           "durationMinutes": 1234,
-          "bought": "Audible",
+          "bought": ["Libro.fm"],
           "shelved": "/audiobooks/Corey/Persepolis Rising",
           "sourceUrl": "https://www.audible.com/pd/B077XN27GW",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781501965630-persepolis-rising",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/persepolis-rising-by-james-s-a-corey"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 7
         },
@@ -194,9 +218,13 @@
           "author": "James S. A. Corey",
           "narrators": ["Jefferson Mays"],
           "durationMinutes": 1148,
-          "bought": "Audible",
+          "bought": ["Chirp"],
           "shelved": "/audiobooks/Corey/Tiamat's Wrath",
           "sourceUrl": "https://www.audible.com/pd/1980006520",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781980006527-tiamat-s-wrath",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/tiamat-s-wrath-by-james-s-a-corey"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 8
         },
@@ -206,9 +234,13 @@
           "author": "James S. A. Corey",
           "narrators": ["Jefferson Mays"],
           "durationMinutes": 1179,
-          "bought": "Audible",
+          "bought": ["Libro.fm", "Audible"],
           "shelved": "/audiobooks/Corey/Leviathan Falls",
           "sourceUrl": "https://www.audible.com/pd/1980035962",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781980035961-leviathan-falls",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/leviathan-falls-by-james-s-a-corey"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 9
         }
@@ -236,9 +268,13 @@
             "Scott Sowers"
           ],
           "durationMinutes": 1262,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Herbert/Dune",
           "sourceUrl": "https://www.audible.com/pd/B002V1OF70",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427201447-dune",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/dune-by-frank-herbert"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 1
         },
@@ -248,9 +284,13 @@
           "author": "Frank Herbert",
           "narrators": ["Scott Brick", "Euan Morton", "Simon Vance", "Katherine Kellgren"],
           "durationMinutes": 537,
-          "bought": "Audible",
+          "bought": ["Chirp", "Libro.fm"],
           "shelved": "/audiobooks/Herbert/Dune Messiah",
           "sourceUrl": "https://www.audible.com/pd/B002V8H660",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427202376-dune-messiah",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/dune-messiah-by-frank-herbert"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 2
         },
@@ -260,9 +300,13 @@
           "author": "Frank Herbert",
           "narrators": ["Simon Vance", "Scott Brick"],
           "durationMinutes": 1011,
-          "bought": "Audible",
+          "bought": ["Libro.fm"],
           "shelved": "/audiobooks/Herbert/Children of Dune",
           "sourceUrl": "https://www.audible.com/pd/B002V57VRC",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427202925-children-of-dune",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/children-of-dune-by-frank-herbert"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 3
         },
@@ -272,9 +316,13 @@
           "author": "Frank Herbert",
           "narrators": ["Simon Vance", "Scott Brick", "Katherine Kellgren"],
           "durationMinutes": 948,
-          "bought": "Audible",
+          "bought": ["Chirp"],
           "shelved": "/audiobooks/Herbert/God Emperor of Dune",
           "sourceUrl": "https://www.audible.com/pd/B002V5D08G",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427204332-god-emperor-of-dune",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/god-emperor-of-dune-by-frank-herbert"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 4
         },
@@ -284,9 +332,13 @@
           "author": "Frank Herbert",
           "narrators": ["Simon Vance"],
           "durationMinutes": 1084,
-          "bought": "Audible",
+          "bought": ["Libro.fm", "Audible"],
           "shelved": "/audiobooks/Herbert/Heretics of Dune",
           "sourceUrl": "https://www.audible.com/pd/B002V1CA2M",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427205070-heretics-of-dune",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/heretics-of-dune-by-frank-herbert"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 5
         },
@@ -296,9 +348,13 @@
           "author": "Frank Herbert",
           "narrators": ["Scott Brick", "Simon Vance", "Katherine Kellgren", "Euan Morton"],
           "durationMinutes": 1002,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Herbert/Chapterhouse Dune",
           "sourceUrl": "https://www.audible.com/pd/B002V0K6D8",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427207494-chapterhouse-dune",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/chapterhouse-dune-by-frank-herbert"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 6
         }
@@ -313,9 +369,13 @@
           "author": "William Gibson",
           "narrators": ["Robertson Dean"],
           "durationMinutes": 631,
-          "bought": "Audible",
+          "bought": ["Chirp", "Libro.fm"],
           "shelved": "/audiobooks/Gibson/Neuromancer",
           "sourceUrl": "https://www.audible.com/pd/B0057HR4E6",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781101536698-neuromancer",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/neuromancer-by-william-gibson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 1
         },
@@ -325,7 +385,7 @@
           "author": "William Gibson",
           "narrators": ["Jonathan Davis"],
           "durationMinutes": 688,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Gibson/Count Zero",
           "sourceUrl": "https://www.audible.com/pd/B0036JSWXY",
           "verifiedOn": "2026-10-31",
@@ -337,7 +397,7 @@
           "author": "William Gibson",
           "narrators": ["Jonathan Davis"],
           "durationMinutes": 650,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Gibson/Mona Lisa Overdrive",
           "sourceUrl": "https://www.audible.com/pd/B0036JPYD0",
           "verifiedOn": "2026-10-31",
@@ -355,9 +415,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Michael Kramer"],
           "durationMinutes": 1479,
-          "bought": "Audible",
+          "bought": ["Libro.fm"],
           "shelved": "/audiobooks/Sanderson/The Final Empire",
           "sourceUrl": "https://www.audible.com/pd/B002V0QCYU",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427206374-mistborn",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/mistborn-by-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 1
         },
@@ -367,9 +431,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Michael Kramer"],
           "durationMinutes": 1736,
-          "bought": "Audible",
+          "bought": ["Chirp"],
           "shelved": "/audiobooks/Sanderson/The Well of Ascension",
           "sourceUrl": "https://www.audible.com/pd/B002V5GLQ4",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427206381-the-well-of-ascension",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-well-of-ascension-by-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 2
         },
@@ -379,9 +447,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Michael Kramer"],
           "durationMinutes": 1645,
-          "bought": "Audible",
+          "bought": ["Libro.fm", "Audible"],
           "shelved": "/audiobooks/Sanderson/The Hero of Ages",
           "sourceUrl": "https://www.audible.com/pd/B002VA9IKK",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427206398-the-hero-of-ages",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-hero-of-ages-by-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 3
         },
@@ -391,9 +463,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Michael Kramer"],
           "durationMinutes": 648,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Sanderson/The Alloy of Law",
           "sourceUrl": "https://www.audible.com/pd/B005ZUI3OA",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427221049-the-alloy-of-law",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-alloy-of-law-by-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 4
         },
@@ -403,9 +479,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Michael Kramer"],
           "durationMinutes": 757,
-          "bought": "Audible",
+          "bought": ["Chirp", "Libro.fm"],
           "shelved": "/audiobooks/Sanderson/Shadows of Self",
           "sourceUrl": "https://www.audible.com/pd/B014LLCT7A",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427262240-shadows-of-self",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/shadows-of-self-by-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 5
         },
@@ -415,9 +495,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Michael Kramer"],
           "durationMinutes": 881,
-          "bought": "Audible",
+          "bought": ["Libro.fm"],
           "shelved": "/audiobooks/Sanderson/The Bands of Mourning",
           "sourceUrl": "https://www.audible.com/pd/B0189QQXRA",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427267900-the-bands-of-mourning",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-bands-of-mourning-by-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 6
         },
@@ -427,9 +511,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Michael Kramer"],
           "durationMinutes": 1126,
-          "bought": "Audible",
+          "bought": ["Chirp"],
           "shelved": "/audiobooks/Sanderson/The Lost Metal",
           "sourceUrl": "https://www.audible.com/pd/B09N446YK7",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781250859280-the-lost-metal",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-lost-metal-by-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 7
         }
@@ -445,9 +533,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Michael Kramer", "Kate Reading"],
           "durationMinutes": 2730,
-          "bought": "Audible",
+          "bought": ["Libro.fm", "Audible"],
           "shelved": "/audiobooks/Sanderson/The Way of Kings",
           "sourceUrl": "https://www.audible.com/pd/B003ZWFO7E",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427209764-the-way-of-kings",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-way-of-kings-by-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 1
         },
@@ -457,9 +549,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Michael Kramer", "Kate Reading"],
           "durationMinutes": 2895,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Sanderson/Words of Radiance",
           "sourceUrl": "https://www.audible.com/pd/B00HWF0MHW",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427233080-words-of-radiance",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/words-of-radiance-by-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 2
         },
@@ -469,9 +565,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Michael Kramer", "Kate Reading"],
           "durationMinutes": 3305,
-          "bought": "Audible",
+          "bought": ["Chirp", "Libro.fm"],
           "shelved": "/audiobooks/Sanderson/Oathbringer",
           "sourceUrl": "https://www.audible.com/pd/B0718Z5K4C",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427275936-oathbringer",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/oathbringer-by-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 3
         },
@@ -481,9 +581,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 3446,
-          "bought": "Audible",
+          "bought": ["Libro.fm"],
           "shelved": "/audiobooks/Sanderson/Rhythm of War",
           "sourceUrl": "https://www.audible.com/pd/1250759781",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781250759788-rhythm-of-war",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/rhythm-of-war-by-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 4
         },
@@ -493,9 +597,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 3768,
-          "bought": "Audible",
+          "bought": ["Chirp"],
           "shelved": "/audiobooks/Sanderson/Wind and Truth",
           "sourceUrl": "https://www.audible.com/pd/B0CQ3759C3",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781250368287-wind-and-truth",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/wind-and-truth-by-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 5
         }
@@ -510,9 +618,13 @@
           "author": "Isaac Asimov",
           "narrators": ["Scott Brick"],
           "durationMinutes": 518,
-          "bought": "Audible",
+          "bought": ["Libro.fm", "Audible"],
           "shelved": "/audiobooks/Asimov/Foundation",
           "sourceUrl": "https://www.audible.com/pd/B003D8W5VS",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9780307749703-foundation",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/foundation-by-isaac-asimov"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 1
         },
@@ -522,9 +634,13 @@
           "author": "Isaac Asimov",
           "narrators": ["Scott Brick"],
           "durationMinutes": 573,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Asimov/Foundation and Empire",
           "sourceUrl": "https://www.audible.com/pd/B003FCV4O6",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9780307749727-foundation-and-empire",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/foundation-and-empire-by-isaac-asimov"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 2
         },
@@ -534,9 +650,13 @@
           "author": "Isaac Asimov",
           "narrators": ["Scott Brick"],
           "durationMinutes": 561,
-          "bought": "Audible",
+          "bought": ["Chirp", "Libro.fm"],
           "shelved": "/audiobooks/Asimov/Second Foundation",
           "sourceUrl": "https://www.audible.com/pd/B003D8S2ME",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9780307749741-the-second-foundation",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/second-foundation-by-isaac-asimov"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 3
         },
@@ -546,9 +666,13 @@
           "author": "Isaac Asimov",
           "narrators": ["Scott Brick"],
           "durationMinutes": 974,
-          "bought": "Audible",
+          "bought": ["Libro.fm"],
           "shelved": "/audiobooks/Asimov/Foundation's Edge",
           "sourceUrl": "https://www.audible.com/pd/B005WL4R7E",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9780307967732-foundation-s-edge",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/foundation-s-edge-by-isaac-asimov"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 4
         },
@@ -558,9 +682,13 @@
           "author": "Isaac Asimov",
           "narrators": ["Larry McKeever"],
           "durationMinutes": 1124,
-          "bought": "Audible",
+          "bought": ["Chirp"],
           "shelved": "/audiobooks/Asimov/Foundation and Earth",
           "sourceUrl": "https://www.audible.com/pd/B005WWT7TQ",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9780307967756-foundation-and-earth",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/foundation-and-earth-by-isaac-asimov"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 5
         },
@@ -570,9 +698,13 @@
           "author": "Isaac Asimov",
           "narrators": ["Scott Brick"],
           "durationMinutes": 895,
-          "bought": "Audible",
+          "bought": ["Libro.fm", "Audible"],
           "shelved": "/audiobooks/Asimov/Prelude to Foundation",
           "sourceUrl": "https://www.audible.com/pd/B005T6ZETM",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9780307970602-prelude-to-foundation",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/prelude-to-foundation-by-isaac-asimov"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 6
         },
@@ -582,7 +714,7 @@
           "author": "Isaac Asimov",
           "narrators": ["William Hope"],
           "durationMinutes": 927,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Asimov/Forward the Foundation",
           "sourceUrl": "https://www.audible.com/pd/B0CB6WSNS6",
           "verifiedOn": "2026-10-31",
@@ -599,9 +731,13 @@
           "author": "Robert Jordan",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 758,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Jordan/New Spring",
           "sourceUrl": "https://www.audible.com/pd/B002UUFOSG",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781593973780-new-spring",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/new-spring-by-robert-jordan"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 0
         },
@@ -611,9 +747,13 @@
           "author": "Robert Jordan",
           "narrators": ["Michael Kramer", "Kate Reading"],
           "durationMinutes": 1797,
-          "bought": "Audible",
+          "bought": ["Chirp", "Libro.fm"],
           "shelved": "/audiobooks/Jordan/The Eye of the World",
           "sourceUrl": "https://www.audible.com/pd/B0036NHZ10",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781593974558-the-eye-of-the-world",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-eye-of-the-world-by-robert-jordan"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 1
         },
@@ -623,9 +763,13 @@
           "author": "Robert Jordan",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 1594,
-          "bought": "Audible",
+          "bought": ["Libro.fm"],
           "shelved": "/audiobooks/Jordan/The Great Hunt",
           "sourceUrl": "https://www.audible.com/pd/B002UP1LXS",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781593974565-the-great-hunt",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-great-hunt-by-robert-jordan"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 2
         },
@@ -635,9 +779,13 @@
           "author": "Robert Jordan",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 1488,
-          "bought": "Audible",
+          "bought": ["Chirp"],
           "shelved": "/audiobooks/Jordan/The Dragon Reborn",
           "sourceUrl": "https://www.audible.com/pd/B002V1OIM2",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781593975302-the-dragon-reborn",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-dragon-reborn-by-robert-jordan"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 3
         },
@@ -647,9 +795,13 @@
           "author": "Robert Jordan",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 2473,
-          "bought": "Audible",
+          "bought": ["Libro.fm", "Audible"],
           "shelved": "/audiobooks/Jordan/The Shadow Rising",
           "sourceUrl": "https://www.audible.com/pd/B002UZML5K",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781593975340-the-shadow-rising",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-shadow-rising-by-robert-jordan"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 4
         },
@@ -659,9 +811,13 @@
           "author": "Robert Jordan",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 2187,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Jordan/The Fires of Heaven",
           "sourceUrl": "https://www.audible.com/pd/B002V0JU3U",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781593975821-the-fires-of-heaven",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-fires-of-heaven-by-robert-jordan"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 5
         },
@@ -671,9 +827,13 @@
           "author": "Robert Jordan",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 2492,
-          "bought": "Audible",
+          "bought": ["Chirp", "Libro.fm"],
           "shelved": "/audiobooks/Jordan/Lord of Chaos",
           "sourceUrl": "https://www.audible.com/pd/B002V5BDOE",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781593975838-lord-of-chaos",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/lord-of-chaos-by-robert-jordan"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 6
         },
@@ -683,9 +843,13 @@
           "author": "Robert Jordan",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 1824,
-          "bought": "Audible",
+          "bought": ["Libro.fm"],
           "shelved": "/audiobooks/Jordan/A Crown of Swords",
           "sourceUrl": "https://www.audible.com/pd/B002V0118W",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427200044-a-crown-of-swords",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/a-crown-of-swords-by-robert-jordan"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 7
         },
@@ -695,9 +859,13 @@
           "author": "Robert Jordan",
           "narrators": ["Michael Kramer", "Kate Reading"],
           "durationMinutes": 1405,
-          "bought": "Audible",
+          "bought": ["Chirp"],
           "shelved": "/audiobooks/Jordan/The Path of Daggers",
           "sourceUrl": "https://www.audible.com/pd/B002V1AJEI",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427205094-the-path-of-daggers",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-path-of-daggers-by-robert-jordan"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 8
         },
@@ -707,9 +875,13 @@
           "author": "Robert Jordan",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 1452,
-          "bought": "Audible",
+          "bought": ["Libro.fm", "Audible"],
           "shelved": "/audiobooks/Jordan/Winter's Heart",
           "sourceUrl": "https://www.audible.com/pd/B004NQKRVE",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427210876-winter-s-heart",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/winter-s-heart-by-robert-jordan"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 9
         },
@@ -719,9 +891,13 @@
           "author": "Robert Jordan",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 1564,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Jordan/Crossroads of Twilight",
           "sourceUrl": "https://www.audible.com/pd/B0036N9G8K",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781593970369-crossroads-of-twilight",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/crossroads-of-twilight-by-robert-jordan"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 10
         },
@@ -731,9 +907,13 @@
           "author": "Robert Jordan",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 1939,
-          "bought": "Audible",
+          "bought": ["Chirp", "Libro.fm"],
           "shelved": "/audiobooks/Jordan/Knife of Dreams",
           "sourceUrl": "https://www.audible.com/pd/B002V0K6BA",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781593977665-knife-of-dreams",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/knife-of-dreams-by-robert-jordan"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 11
         },
@@ -743,9 +923,13 @@
           "author": "Robert Jordan, Brandon Sanderson",
           "narrators": ["Michael Kramer", "Kate Reading"],
           "durationMinutes": 1978,
-          "bought": "Audible",
+          "bought": ["Libro.fm"],
           "shelved": "/audiobooks/Jordan/The Gathering Storm",
           "sourceUrl": "https://www.audible.com/pd/B002UZN0PA",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781593977689-the-gathering-storm",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/the-gathering-storm-by-robert-jordan-and-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 12
         },
@@ -755,9 +939,13 @@
           "author": "Robert Jordan, Brandon Sanderson",
           "narrators": ["Kate Reading", "Michael Kramer"],
           "durationMinutes": 2301,
-          "bought": "Audible",
+          "bought": ["Chirp"],
           "shelved": "/audiobooks/Jordan/Towers of Midnight",
           "sourceUrl": "https://www.audible.com/pd/B00494LMV4",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427210234-towers-of-midnight",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/towers-of-midnight-by-robert-jordan-and-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 13
         },
@@ -767,9 +955,13 @@
           "author": "Robert Jordan, Brandon Sanderson",
           "narrators": ["Michael Kramer", "Kate Reading"],
           "durationMinutes": 2507,
-          "bought": "Audible",
+          "bought": ["Libro.fm", "Audible"],
           "shelved": "/audiobooks/Jordan/A Memory of Light",
           "sourceUrl": "https://www.audible.com/pd/B009OJXEOW",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781427210258-a-memory-of-light",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/a-memory-of-light-by-robert-jordan-and-brandon-sanderson"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 14
         }
@@ -785,9 +977,13 @@
           "author": "Brandon Sanderson",
           "narrators": ["Jack Garrett"],
           "durationMinutes": 1722,
-          "bought": "Audible",
+          "bought": ["Audible"],
           "shelved": "/audiobooks/Sanderson/Elantris",
           "sourceUrl": "https://www.audible.com/pd/B015YEFH40",
+          "listings": {
+            "Libro.fm": "https://libro.fm/audiobooks/9781501902062-elantris",
+            "Chirp": "https://www.chirpbooks.com/audiobooks/elantris-by-brandon-sanderson-15807a9ead"
+          },
           "verifiedOn": "2026-10-31",
           "seriesNumber": 1
         }
@@ -802,9 +998,13 @@
       "narrators": ["Alyssa Bresnahan"],
       "durationMinutes": 1496,
       "universe": "Cosmere",
-      "bought": "Audible",
+      "bought": ["Chirp", "Libro.fm"],
       "shelved": "/audiobooks/Sanderson/Warbreaker",
       "sourceUrl": "https://www.audible.com/pd/B018UG5HJY",
+      "listings": {
+        "Libro.fm": "https://libro.fm/audiobooks/9781501915925-warbreaker",
+        "Chirp": "https://www.chirpbooks.com/audiobooks/warbreaker-by-brandon-sanderson"
+      },
       "verifiedOn": "2026-10-31"
     },
     {
@@ -814,9 +1014,13 @@
       "narrators": ["Michael Kramer"],
       "durationMinutes": 747,
       "universe": "Cosmere",
-      "bought": "Audible",
+      "bought": ["Libro.fm"],
       "shelved": "/audiobooks/Sanderson/Tress of the Emerald Sea",
       "sourceUrl": "https://www.audible.com/pd/B0D18DYG5C",
+      "listings": {
+        "Libro.fm": "https://libro.fm/audiobooks/9781938570421-tress-of-the-emerald-sea",
+        "Chirp": "https://www.chirpbooks.com/audiobooks/tress-of-the-emerald-sea-by-brandon-sanderson"
+      },
       "verifiedOn": "2026-10-31"
     },
     {
@@ -826,9 +1030,13 @@
       "narrators": ["Kate Reading", "Michael Kramer"],
       "durationMinutes": 883,
       "universe": "Cosmere",
-      "bought": "Audible",
+      "bought": ["Chirp"],
       "shelved": "/audiobooks/Sanderson/Yumi and the Nightmare Painter",
       "sourceUrl": "https://www.audible.com/pd/B0D18CT2VY",
+      "listings": {
+        "Libro.fm": "https://libro.fm/audiobooks/9781938570445-yumi-and-the-nightmare-painter",
+        "Chirp": "https://www.chirpbooks.com/audiobooks/yumi-and-the-nightmare-painter-by-brandon-sanderson"
+      },
       "verifiedOn": "2026-10-31"
     },
     {
@@ -838,9 +1046,13 @@
       "narrators": ["William DeMeritt"],
       "durationMinutes": 671,
       "universe": "Cosmere",
-      "bought": "Audible",
+      "bought": ["Libro.fm", "Audible"],
       "shelved": "/audiobooks/Sanderson/The Sunlit Man",
       "sourceUrl": "https://www.audible.com/pd/B0D1KV49FL",
+      "listings": {
+        "Libro.fm": "https://libro.fm/audiobooks/9781938570452-the-sunlit-man",
+        "Chirp": "https://www.chirpbooks.com/audiobooks/the-sunlit-man-by-brandon-sanderson"
+      },
       "verifiedOn": "2026-10-31"
     },
     {
@@ -850,9 +1062,13 @@
       "narrators": ["Kaleo Griffith", "Jennifer Jill Araya"],
       "durationMinutes": 1013,
       "universe": "Cosmere",
-      "bought": "Audible",
+      "bought": ["Audible"],
       "shelved": "/audiobooks/Sanderson/Isles of the Emberdark",
       "sourceUrl": "https://www.audible.com/pd/B0F4RQQC4N",
+      "listings": {
+        "Libro.fm": "https://libro.fm/audiobooks/9781938570520-isles-of-the-emberdark",
+        "Chirp": "https://www.chirpbooks.com/audiobooks/isles-of-the-emberdark-by-brandon-sanderson"
+      },
       "verifiedOn": "2026-10-31"
     },
     {
@@ -861,7 +1077,7 @@
       "author": "Andy Weir",
       "narrators": ["Wil Wheaton"],
       "durationMinutes": 659,
-      "bought": "Audible",
+      "bought": ["Audible"],
       "shelved": "/audiobooks/Weir/The Martian",
       "sourceUrl": "https://www.audible.com/pd/B082BHJMFF",
       "verifiedOn": "2026-10-31"
@@ -872,7 +1088,7 @@
       "author": "Neal Stephenson",
       "narrators": ["Jonathan Davis"],
       "durationMinutes": 1023,
-      "bought": "Audible",
+      "bought": ["Audible"],
       "shelved": "/audiobooks/Stephenson/Snow Crash",
       "sourceUrl": "https://www.audible.com/pd/B002UUKWCY",
       "verifiedOn": "2026-10-31"
@@ -883,9 +1099,13 @@
       "author": "Ray Bradbury",
       "narrators": ["Penn Badgley"],
       "durationMinutes": 288,
-      "bought": "Audible",
+      "bought": ["Chirp", "Libro.fm"],
       "shelved": "/audiobooks/Bradbury/Fahrenheit 451",
       "sourceUrl": "https://www.audible.com/pd/B0F4TCT1GK",
+      "listings": {
+        "Libro.fm": "https://libro.fm/audiobooks/9781668133798-fahrenheit-451",
+        "Chirp": "https://www.chirpbooks.com/audiobooks/fahrenheit-451-by-ray-bradbury-2975f138ab"
+      },
       "verifiedOn": "2026-10-31"
     }
   ]

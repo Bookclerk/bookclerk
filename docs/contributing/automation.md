@@ -663,7 +663,10 @@ stack in `index.html`, used only if the Worker is bypassed, also uses four
 different groups.
 Metadata includes source editions, verification dates, complete narrator
 credits, integer runtimes in minutes and optional series position/universe.
-Tests check series coverage, metadata integrity, escaping and distinct
+A card names a store (Audible, Libro.fm or Chirp) only when that store sells
+the same edition; each non-Audible store a record names needs its product
+page under `listings`, and the Audible page is `sourceUrl`.
+Tests check series coverage, metadata integrity, store listings, escaping and distinct
 group sampling independent of series size; the browser audit checks group
 diversity and every authored card for text/stamp overlap.
 The complete stack drops and stamps
