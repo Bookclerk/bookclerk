@@ -23,7 +23,7 @@ import {
   sitePageLocation,
   withCatalogSample,
 } from "./worker.ts";
-import { catalogGroups } from "./catalog.ts";
+import { catalogGroups, catalogRecords } from "./catalog.ts";
 import type { DocsFetch, Env, PageCache } from "./worker.ts";
 import { docPageTitle, docUrl, TITLE_MAX } from "./render.ts";
 import type { DocsShell, SearchPage } from "./render.ts";
@@ -617,7 +617,9 @@ test("the homepage gets four cards from four groups, picked per request", async 
         card.record,
       );
     }
-    assert.ok(!html.includes("audible.com"), "source links stay out of the page");
+    for (const record of catalogRecords)
+      for (const url of [record.sourceUrl, ...Object.values(record.listings ?? {})])
+        assert.ok(!html.includes(url), `source link ${url} stays out of the page`);
     seen.add(stack.map((c) => c.record).join(","));
   }
   assert.ok(seen.size > 1, "different requests see different samples");
