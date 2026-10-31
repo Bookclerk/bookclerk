@@ -493,9 +493,33 @@ body:not(.docs-page) :is(main[id], main [id]) {
   width: 446px;
   aspect-ratio: 446 / 380;
   perspective: 1200px;
+  /* catalog.js fits the stack exactly (--catalog-scale); until it runs, or
+     without it, --catalog-fallback-scale steps it down to fit narrow screens. */
   transform: translate(var(--catalog-offset-x, 0px), var(--catalog-offset-y, 0px))
-    scale(var(--catalog-scale, 1));
+    scale(var(--catalog-scale, var(--catalog-fallback-scale, 1)));
   transform-origin: 0 0;
+}
+/* Each step fits the rotated stack (about 500px wide) at the narrowest
+   width it covers, inside the page gutters. */
+@media (max-width: 559px) {
+  .catalog-stack {
+    --catalog-fallback-scale: 0.86;
+  }
+}
+@media (max-width: 479px) {
+  .catalog-stack {
+    --catalog-fallback-scale: 0.72;
+  }
+}
+@media (max-width: 409px) {
+  .catalog-stack {
+    --catalog-fallback-scale: 0.64;
+  }
+}
+@media (max-width: 369px) {
+  .catalog-stack {
+    --catalog-fallback-scale: 0.54;
+  }
 }
 
 /* The catalog card */

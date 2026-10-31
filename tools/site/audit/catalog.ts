@@ -106,6 +106,33 @@ export async function auditCatalog(browser: Browser, origin: string): Promise<st
     await context.close();
   }
 
+  // Without JavaScript the CSS fallback scale must keep every sheet on screen.
+  for (const width of [320, 390, 480, 600]) {
+    const plain = await browser.newContext({
+      viewport: { width, height: 844 },
+      javaScriptEnabled: false,
+    });
+    try {
+      const page = await plain.newPage();
+      await page.goto(origin, { waitUntil: "load" });
+      const edges = await page.locator(".catalog-stack .catalog-card").evaluateAll((cards) =>
+        cards.map((card) => {
+          const box = card.getBoundingClientRect();
+          return [box.left, box.right] as const;
+        }),
+      );
+      assert.equal(edges.length, 4);
+      for (const [left, right] of edges)
+        assert.ok(left >= 0 && right <= width, `${width}px: a sheet spans ${left}-${right}`);
+    } catch (error) {
+      return [
+        `catalog without JavaScript: ${error instanceof Error ? error.message : String(error)}`,
+      ];
+    } finally {
+      await plain.close();
+    }
+  }
+
   const mobile = await browser.newContext({
     viewport: { width: 390, height: 844 },
     isMobile: true,
