@@ -14219,6 +14219,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/OidcClientsResponse"
+                },
+                "example": {
+                  "clients": [
+                    {
+                      "allowed_scopes": [
+                        "openid",
+                        "profile",
+                        "email"
+                      ],
+                      "client_id": "audiobookshelf",
+                      "confidential": true,
+                      "enabled": true,
+                      "has_secret": true,
+                      "issue_refresh_token": true,
+                      "name": "Audiobookshelf",
+                      "plugin_id": "audiobookshelf",
+                      "redirect_uris": [
+                        "https://abs.example.com/auth/openid/callback"
+                      ]
+                    }
+                  ]
                 }
               }
             }
@@ -14486,7 +14507,7 @@
         "tags": [
           "OIDC provider"
         ],
-        "summary": "Update redirects, name, scopes, and public/confidential mode (no secret echo unless rotating).",
+        "summary": "Update redirects, name, scopes, and public/confidential mode; switching a public client to confidential mints its secret, shown once.",
         "operationId": "update_client",
         "parameters": [
           {
@@ -14511,7 +14532,7 @@
         },
         "responses": {
           "200": {
-            "description": "The client after the change.",
+            "description": "The client after the change; when the update made a public client confidential, its new secret appears once.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15607,7 +15628,7 @@
             }
           },
           "400": {
-            "description": "A provider, the public origin or the provider count is invalid (`oidc_config`).",
+            "description": "A provider or the public origin is invalid (`oidc_config`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -15615,7 +15636,7 @@
                 },
                 "example": {
                   "error": "oidc_config",
-                  "message": "at most 16 identity providers",
+                  "message": "public origin must use http or https",
                   "status": 400
                 }
               }
@@ -22922,7 +22943,7 @@
           },
           "client_secret": {
             "type": "string",
-            "description": "The new secret, shown once after create or rotate-secret; never stored in clear.",
+            "description": "The new secret, shown once after create, rotate-secret, or a PUT that makes a public client confidential; never stored in clear.",
             "example": "Qm9va2NsZXJrLXNlY3JldC1leGFtcGxlLXZhbHVl",
             "nullable": true
           }

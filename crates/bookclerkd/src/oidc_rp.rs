@@ -766,7 +766,7 @@ async fn get_oidc_config(
     request_body = OidcConfigPut,
     responses(
         (status = 200, description = "The settings after the change.", body = OidcConfigResponse),
-        (status = 400, description = "A provider, the public origin or the provider count is invalid (`oidc_config`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_config", "message": "at most 16 identity providers", "status": 400})),
+        (status = 400, description = "A provider or the public origin is invalid (`oidc_config`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_config", "message": "public origin must use http or https", "status": 400})),
         (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_config`).", body = crate::http_error::ErrorJson, examples(
             ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_config", "message": "recent authentication required to change sign-in providers", "status": 401}))),
             ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),

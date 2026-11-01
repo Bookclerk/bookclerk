@@ -687,7 +687,12 @@ impl UserinfoResponse {
             email_verified: None,
         };
         if scope_has(scope, "profile") {
-            body.name = user.display_name.clone();
+            body.name = user
+                .display_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
             body.preferred_username = user.login_name.clone();
         }
         if scope_has(scope, "email") {
@@ -1273,7 +1278,7 @@ pub struct OidcClientView {
     /// Plugin that provides this client, or `null` for an operator-created one.
     #[schema(example = "audiobookshelf")]
     pub plugin_id: Option<String>,
-    /// The new secret, shown once after create or rotate-secret; never stored in clear.
+    /// The new secret, shown once after create, rotate-secret, or a PUT that makes a public client confidential; never stored in clear.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "Qm9va2NsZXJrLXNlY3JldC1leGFtcGxlLXZhbHVl")]
     pub client_secret: Option<String>,
@@ -1363,7 +1368,7 @@ async fn require_client_admin(
     get,
     path = "/api/auth/oidc/clients",
     responses(
-        (status = 200, description = "Registered clients (no secrets).", body = OidcClientsResponse),
+        (status = 200, description = "Registered clients (no secrets).", body = OidcClientsResponse, example = json!({"clients": [{"client_id": "audiobookshelf", "name": "Audiobookshelf", "redirect_uris": ["https://abs.example.com/auth/openid/callback"], "confidential": true, "issue_refresh_token": true, "allowed_scopes": ["openid", "profile", "email"], "has_secret": true, "enabled": true, "plugin_id": "audiobookshelf"}]})),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
             ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
@@ -1458,14 +1463,14 @@ async fn create_client(
     Ok(Json(client_view(&client, secret)))
 }
 
-/// Update redirects, name, scopes, and public/confidential mode (no secret echo unless rotating).
+/// Update redirects, name, scopes, and public/confidential mode; switching a public client to confidential mints its secret, shown once.
 #[utoipa::path(
     put,
     path = "/api/auth/oidc/clients/{client_id}",
     params(("client_id" = String, Path, description = "Client id.")),
     request_body = OidcClientWrite,
     responses(
-        (status = 200, description = "The client after the change.", body = OidcClientView),
+        (status = 200, description = "The client after the change; when the update made a public client confidential, its new secret appears once.", body = OidcClientView),
         (status = 400, description = "The client id or a redirect URI is invalid (`oidc_client`).", body = crate::http_error::ErrorJson, example = json!({"error": "oidc_client", "message": "client id may only contain letters, digits, '.', '_', '-', and '~'", "status": 400})),
         (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).", body = crate::http_error::ErrorJson, examples(
             ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "oidc_client", "message": "recent authentication required to change OIDC clients", "status": 401}))),
@@ -2413,34 +2418,22 @@ mod tests {
         assert!(info_json.get("name").is_none());
     }
 
-    #[tokio::test]
-    async fn id_token_and_userinfo_omit_profile_claims_the_user_lacks() {
+    /// Runs the authorization-code flow for `user` against the client `client_id`
+    /// with `scope`, then returns the ID token's payload and the userinfo body.
+    async fn id_token_and_userinfo(
+        state: Arc<AppState>,
+        library: &bookclerk_library::LibraryStore,
+        client_id: &str,
+        user_id: i64,
+        scope: &str,
+    ) -> (serde_json::Value, serde_json::Value) {
         use axum::body::Body;
         use axum::http::Request;
-        use bookclerk_library::UserRole;
         use chrono::Duration as ChronoDuration;
         use tower::ServiceExt;
 
-        let (state, library) = oidc_test_state().await;
-        library
-            .insert_oidc_client(
-                "no-names",
-                None,
-                &[String::from("https://player.example/callback")],
-                Some("No names"),
-                false,
-                &["openid".into(), "profile".into()],
-                true,
-                None,
-            )
-            .await
-            .unwrap();
-        let user = library
-            .create_user_with_profile(UserRole::Member, None, None, Some("anon@example.com"), None)
-            .await
-            .unwrap();
         let identity = library
-            .ensure_local_portal_identity(user.id, None)
+            .ensure_local_portal_identity(user_id, None)
             .await
             .unwrap();
         let portal_raw = Uuid::new_v4().to_string();
@@ -2454,12 +2447,13 @@ mod tests {
             .unwrap();
         let portal_cookie = format!("{PORTAL_SESSION_COOKIE}={portal_raw}");
         let app = crate::api::router(state, None);
+        let scope_q = scope.replace(' ', "%20");
 
         let authz = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/oidc/authorize?client_id=no-names&redirect_uri=https%3A%2F%2Fplayer.example%2Fcallback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&scope=openid%20profile")
+                    .uri(format!("/oidc/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fplayer.example%2Fcallback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&scope={scope_q}"))
                     .header(header::COOKIE, &portal_cookie)
                     .body(Body::empty())
                     .unwrap(),
@@ -2490,7 +2484,7 @@ mod tests {
                     .uri("/oidc/token")
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .body(Body::from(format!(
-                        "grant_type=authorization_code&code={code}&redirect_uri=https%3A%2F%2Fplayer.example%2Fcallback&client_id=no-names&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+                        "grant_type=authorization_code&code={code}&redirect_uri=https%3A%2F%2Fplayer.example%2Fcallback&client_id={client_id}&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
                     )))
                     .unwrap(),
             )
@@ -2502,10 +2496,6 @@ mod tests {
         let payload = id_token.split('.').nth(1).unwrap();
         let payload: serde_json::Value =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
-        assert_eq!(payload["sub"], user.id.to_string());
-        assert!(payload.get("name").is_none(), "{payload:?}");
-        assert!(payload.get("preferred_username").is_none(), "{payload:?}");
-        assert!(payload.get("email").is_none(), "{payload:?}");
 
         let access = json["access_token"].as_str().unwrap();
         let info = app
@@ -2519,7 +2509,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(info.status(), StatusCode::OK);
-        let info_json = json_body(info).await;
-        assert_eq!(info_json, serde_json::json!({ "sub": user.id.to_string() }));
+        (payload, json_body(info).await)
+    }
+
+    /// Registers a public `openid profile` client for the claim tests.
+    async fn insert_profile_client(library: &bookclerk_library::LibraryStore, client_id: &str) {
+        library
+            .insert_oidc_client(
+                client_id,
+                None,
+                &[String::from("https://player.example/callback")],
+                Some("Profile client"),
+                false,
+                &["openid".into(), "profile".into()],
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn id_token_and_userinfo_omit_profile_claims_the_user_lacks() {
+        use bookclerk_library::UserRole;
+
+        let (state, library) = oidc_test_state().await;
+        insert_profile_client(&library, "no-names").await;
+        let user = library
+            .create_user_with_profile(
+                UserRole::Member,
+                Some("  "),
+                None,
+                Some("anon@example.com"),
+                None,
+            )
+            .await
+            .unwrap();
+        let (payload, info) =
+            id_token_and_userinfo(state, &library, "no-names", user.id, "openid profile").await;
+        assert_eq!(payload["sub"], user.id.to_string());
+        assert!(payload.get("name").is_none(), "{payload:?}");
+        assert!(payload.get("preferred_username").is_none(), "{payload:?}");
+        assert!(payload.get("email").is_none(), "{payload:?}");
+        assert_eq!(info, serde_json::json!({ "sub": user.id.to_string() }));
+    }
+
+    #[tokio::test]
+    async fn id_token_and_userinfo_carry_the_profile_claims_the_user_has() {
+        use bookclerk_library::UserRole;
+
+        let (state, library) = oidc_test_state().await;
+        insert_profile_client(&library, "with-names").await;
+        let user = library
+            .create_user_with_profile(
+                UserRole::Member,
+                Some("Sam Reader"),
+                Some("sam"),
+                Some("sam@example.com"),
+                None,
+            )
+            .await
+            .unwrap();
+        let (payload, info) =
+            id_token_and_userinfo(state, &library, "with-names", user.id, "openid profile").await;
+        assert_eq!(payload["name"], "Sam Reader");
+        assert_eq!(payload["preferred_username"], "sam");
+        assert!(payload.get("email").is_none(), "{payload:?}");
+        assert_eq!(
+            info,
+            serde_json::json!({
+                "sub": user.id.to_string(),
+                "name": "Sam Reader",
+                "preferred_username": "sam",
+            })
+        );
     }
 }
