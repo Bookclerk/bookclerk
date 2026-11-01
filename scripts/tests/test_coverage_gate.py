@@ -572,6 +572,85 @@ class MutationFuzzTest(unittest.TestCase):
             )
 
 
+class RatchetTest(unittest.TestCase):
+    """Floors rise to just under a full run's coverage, in steps, and never fall."""
+
+    @staticmethod
+    def covered(percent: int, floor: float, *, partial: bool = False) -> object:
+        """An area result whose line coverage is ``percent`` of 100 lines."""
+        hits = {n: (1 if n <= percent else 0) for n in range(1, 101)}
+        return cg.AreaResult(area(floor=floor), True, {"crates/a.rs": hits}, partial=partial)
+
+    def test_rises_to_one_point_under(self) -> None:
+        self.assertEqual(cg.ratchet_floors([self.covered(80, 76)]), {"rust": (76, 79)})
+
+    def test_rises_at_most_one_step(self) -> None:
+        self.assertEqual(cg.ratchet_floors([self.covered(80, 50)]), {"rust": (50, 50 + cg.RATCHET_MAX_STEP)})
+
+    def test_caps_the_floor(self) -> None:
+        self.assertEqual(cg.ratchet_floors([self.covered(100, 98)]), {"rust": (98, cg.RATCHET_MAX_FLOOR)})
+
+    def test_never_falls_or_reads_partial_runs(self) -> None:
+        self.assertEqual(cg.ratchet_floors([self.covered(80, 79)]), {})
+        self.assertEqual(cg.ratchet_floors([self.covered(60, 75)]), {})
+        self.assertEqual(cg.ratchet_floors([self.covered(95, 50, partial=True)]), {})
+        self.assertEqual(cg.ratchet_floors([cg.AreaResult(area(floor=50), False)]), {})
+        self.assertEqual(cg.ratchet_floors([cg.AreaResult(area(floor=50), True, {})]), {})
+
+    def test_rewrite_keeps_the_rest(self) -> None:
+        text = cg.rewrite_floors(CONFIG, {"rust": (50, 55)})
+        self.assertEqual(text, CONFIG.replace("floor = 50\n", "floor = 55\n"))
+        self.assertEqual({a.name: a.floor for a in cg.parse_config(text).areas}, {"rust": 55, "site": 90})
+
+    def test_rewrite_refuses_a_missing_floor_line(self) -> None:
+        with self.assertRaises(cg.ConfigError):
+            cg.rewrite_floors(CONFIG.replace("floor = 50\n", "floor = 50 # x\n"), {"rust": (50, 55)})
+        with self.assertRaises(cg.ConfigError):
+            cg.rewrite_floors(CONFIG, {"demo": (50, 55)})
+
+    def test_repository_areas_file_rewrites(self) -> None:
+        text = (ROOT / cg.AREAS_FILE).read_text(encoding="utf-8")
+        config = cg.parse_config(text)
+        raised = {a.name: (a.floor, int(a.floor) + 1) for a in config.areas}
+        floors = {a.name: a.floor for a in cg.parse_config(cg.rewrite_floors(text, raised)).areas}
+        self.assertEqual(floors, {name: new for name, (_, new) in raised.items()})
+
+    def test_main_rewrites_the_areas_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "scripts").mkdir()
+            (base / cg.AREAS_FILE).write_text(CONFIG, encoding="utf-8")
+            (base / "reports" / "site").mkdir(parents=True)
+            lines = "".join(f"DA:{n},{1 if n <= 97 else 0}\n" for n in range(1, 101))
+            (base / "reports" / "site" / "lcov.info").write_text(f"SF:a.ts\n{lines}end_of_record\n", encoding="utf-8")
+            (base / "plan.json").write_text('{"execution": {"checks": {}}}', encoding="utf-8")
+            cwd = Path.cwd()
+            os.chdir(base)
+            try:
+                with mock.patch("sys.stdout") as stdout:
+                    status = cg.main(["--reports", str(base / "reports"), "--plan", str(base / "plan.json"), "--ratchet"])
+            finally:
+                os.chdir(cwd)
+            printed = "".join(call.args[0] for call in stdout.write.call_args_list)
+            self.assertEqual(status, 0)
+            self.assertIn("`site`: 90% → 95%", printed)
+            self.assertEqual((base / cg.AREAS_FILE).read_text(encoding="utf-8"), CONFIG.replace("floor = 90\n", "floor = 95\n"))
+
+    def test_floors_workflow_writes_only_the_areas_file(self) -> None:
+        import yaml
+
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "coverage-floors.yml").read_text(encoding="utf-8"))
+        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        job = workflow["jobs"]["ratchet"]
+        self.assertEqual(job["permissions"], {"contents": "read", "actions": "read"})
+        steps = {s.get("name"): s for s in job["steps"]}
+        self.assertIn("--ratchet", steps["Raise the floors"]["run"])
+        pr = steps["Create or update pull request"]["with"]
+        self.assertEqual(pr["add-paths"].split(), [cg.AREAS_FILE])
+        self.assertTrue(pr["sign-commits"])
+        self.assertFalse(job["steps"][0]["with"]["persist-credentials"])
+
+
 class MainTest(unittest.TestCase):
     """The script reads the reports directory and diff file end to end."""
 

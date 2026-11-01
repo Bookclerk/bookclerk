@@ -1,0 +1,167 @@
+# Weekly ratchet of the coverage floors in scripts/coverage_areas.toml
+# (docs/contributing/ci.md#coverage).
+#
+# Policy:
+# - Read the coverage of the latest successful merge group run. A merge group
+#   runs the full suite on the commit that lands on main, so every area is
+#   measured in full.
+# - `scripts/coverage_gate.py --ratchet` raises each floor to the measured
+#   line coverage rounded down, less one point, by at most five points per
+#   run. A floor never falls; lowering one stays a reviewed, hand-made change.
+# - Open one PR with the automation App token and turn on auto-merge, so the
+#   merge queue lands it once the PR's required checks pass.
+#
+# The artifacts are read with the gate's fuzzed LCOV parser, and only the
+# floors (bounded numbers) are written back. The App token is required: the
+# organization does not let GITHUB_TOKEN open pull requests, and pushes made
+# with GITHUB_TOKEN would not start CI on the PR. See
+# docs/contributing/automation.md#automation-app.
+
+name: coverage floors
+
+on:
+  schedule:
+    # Mondays 07:23 UTC, offset from the daily bump workflows.
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+
+# The branch, PR and auto-merge are written with the automation App token.
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-floors
+  cancel-in-progress: false
+
+jobs:
+  ratchet:
+    name: raise floors + PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Find the merge group run and download its artifacts.
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Find the latest merge group run
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event merge_group \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          if [[ "$id" =~ ^[0-9]{1,20}$ ]]; then
+            echo "id=$id" >> "$GITHUB_OUTPUT"
+          else
+            echo "No successful merge group run to read."
+          fi
+
+      # Coverage artifacts are kept for 7 days; a week without a merge group
+      # leaves nothing to read, and the floors stay as they are.
+      - name: Download the coverage reports
+        if: steps.run.outputs.id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/coverage
+          run-id: ${{ steps.run.outputs.id }}
+          github-token: ${{ github.token }}
+
+      - name: Download the CI plan
+        if: steps.run.outputs.id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/plan
+          run-id: ${{ steps.run.outputs.id }}
+          github-token: ${{ github.token }}
+
+      - name: Raise the floors
+        id: ratchet
+        if: steps.run.outputs.id != ''
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$RUNNER_TEMP/plan/ci-plan.json" ]]; then
+            echo "The merge group run's artifacts have expired; nothing to read."
+            echo "raise=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 scripts/coverage_gate.py --reports "$RUNNER_TEMP/coverage" \
+            --plan "$RUNNER_TEMP/plan/ci-plan.json" --ratchet | tee "$RUNNER_TEMP/raised.md"
+          if git diff --quiet -- scripts/coverage_areas.toml; then
+            echo "raise=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "raise=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check the areas file
+        if: steps.ratchet.outputs.raise == 'true'
+        env:
+          RUN_ID: ${{ steps.run.outputs.id }}
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --require-hashes -r scripts/tests/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" scripts/tests/test_coverage_gate.py
+          {
+            echo "## Summary"
+            echo
+            echo "Raise the coverage floors in \`scripts/coverage_areas.toml\` to just under the coverage of merge group run [${RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}):"
+            echo
+            cat "$RUNNER_TEMP/raised.md"
+            echo
+            echo "Each floor sits one point under the measured coverage, rises by at most five points per run and never falls."
+            echo
+            echo "Auto-merge is on: the merge queue lands this PR once its required checks pass."
+          } > "$RUNNER_TEMP/body.md"
+
+      - name: Mint automation App token
+        if: steps.ratchet.outputs.raise == 'true'
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Create or update pull request
+        if: steps.ratchet.outputs.raise == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.app.outputs.token }}
+          # Commit through the API so the commit is signed and attributed to the App.
+          sign-commits: true
+          commit-message: |
+            ci: raise the coverage floors
+
+            Each floor rises to just under the coverage of the latest merge
+            group run (scripts/coverage_gate.py --ratchet).
+          branch: ci/coverage-floors
+          delete-branch: true
+          title: "ci: raise the coverage floors"
+          body-path: ${{ runner.temp }}/body.md
+          add-paths: |
+            scripts/coverage_areas.toml
+
+      # Runs even when the branch was already up to date, so a run whose
+      # earlier `gh pr merge --auto` failed gets another try.
+      - name: Enable auto-merge
+        if: steps.ratchet.outputs.raise == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head ci/coverage-floors --state open --json number --jq '.[0].number // empty')"
+          if [[ -z "$pr" ]]; then
+            echo "No open coverage floors pull request."
+            exit 0
+          fi
+          gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --auto --squash
