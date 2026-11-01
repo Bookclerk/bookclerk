@@ -522,7 +522,6 @@ pub(crate) struct PutActiveVersion {
     request_body = PutActiveVersion,
     responses(
         (status = 200, description = "The active version after the change.", body = ActiveVersionChanged),
-        (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "version must be a semver version"})),
         (status = 404, description = "No such plugin or version.", body = ErrorMessage, example = json!({"error": "book not found: version source-libro 0.4.2"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),

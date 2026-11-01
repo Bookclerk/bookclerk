@@ -4349,7 +4349,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "invalid configuration: output.format is not a known format"
+                  "error": "invalid configuration: cover_size must be `native` or a pixel size 1..=10000"
                 }
               }
             }
@@ -5248,7 +5248,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "invalid configuration: replicas must be a number or `all`"
+                  "error": "invalid configuration: replicas must be at most 64"
                 }
               }
             }
@@ -6236,19 +6236,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActiveVersionChanged"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorMessage"
-                },
-                "example": {
-                  "error": "version must be a semver version"
                 }
               }
             }

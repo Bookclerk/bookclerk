@@ -633,7 +633,7 @@ pub async fn get_output_domain(
     request_body = PutOutputDomainRequest,
     responses(
         (status = 200, description = "The settings after the change, or a `replayed: true` note with the committed revision when another write landed between this one and its read-back.", body = OutputDomainChange),
-        (status = 400, description = "The body is invalid, or a key or value is not an output setting.", body = ErrorMessage, example = json!({"error": "invalid configuration: output.format is not a known format"})),
+        (status = 400, description = "The body is invalid, or a key or value is not an output setting.", body = ErrorMessage, example = json!({"error": "invalid configuration: cover_size must be `native` or a pixel size 1..=10000"})),
         (status = 409, description = "`expected_revision` is stale; `current_revision` is the revision to retry against.", body = RevisionConflict, example = json!({"error": "revision_conflict", "current_revision": 7})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
@@ -2205,7 +2205,7 @@ pub(crate) struct PluginPlacementDeleted {
     request_body = PutPluginPlacement,
     responses(
         (status = 200, description = "The scheduler now places the instance.", body = PluginPlacementChanged),
-        (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "invalid configuration: replicas must be a number or `all`"})),
+        (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "invalid configuration: replicas must be at most 64"})),
         (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"})),
         (status = 409, description = "`expected_revision` is not the current revision.", body = RevisionConflict, example = json!({"error": "revision_conflict", "current_revision": 7})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
