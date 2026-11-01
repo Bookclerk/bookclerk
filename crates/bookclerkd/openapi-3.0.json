@@ -28158,19 +28158,16 @@
         "properties": {
           "status": {
             "type": "string",
-            "description": "Stable outcome: `received`, `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`.",
-            "example": "received"
+            "description": "Stable outcome: `received`, `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`."
           },
           "reason": {
             "type": "string",
             "description": "Why, for `refused`.",
-            "example": "size_mismatch",
             "nullable": true
           },
           "job_completed": {
             "type": "boolean",
-            "description": "For `committed`: the job is finished.",
-            "example": false
+            "description": "For `committed`: the job is finished."
           }
         }
       },

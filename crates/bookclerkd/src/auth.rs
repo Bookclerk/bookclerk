@@ -3416,7 +3416,18 @@ pub async fn set_password(
         .await
         .map_err(|err| match err {
             LibraryError::NotFound(_) => StatusCode::NOT_FOUND,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+            LibraryError::Schema(_)
+            | LibraryError::Orm(_)
+            | LibraryError::Config(_)
+            | LibraryError::Io(_)
+            | LibraryError::LastAdministrator
+            | LibraryError::LastOwner
+            | LibraryError::InvalidEmail
+            | LibraryError::Unavailable(_)
+            | LibraryError::Conflict(_)
+            | LibraryError::Forbidden(_)
+            | LibraryError::Invalid(_)
+            | LibraryError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         })?;
     let revoked = library
         .delete_portal_sessions_for_user(target_id)

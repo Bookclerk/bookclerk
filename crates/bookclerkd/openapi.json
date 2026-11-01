@@ -27436,21 +27436,18 @@
         "properties": {
           "status": {
             "type": "string",
-            "description": "Stable outcome: `received`, `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`.",
-            "example": "received"
+            "description": "Stable outcome: `received`, `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`."
           },
           "reason": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Why, for `refused`.",
-            "example": "size_mismatch"
+            "description": "Why, for `refused`."
           },
           "job_completed": {
             "type": "boolean",
-            "description": "For `committed`: the job is finished.",
-            "example": false
+            "description": "For `committed`: the job is finished."
           }
         }
       },
