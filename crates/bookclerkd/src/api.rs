@@ -5091,7 +5091,6 @@ async fn discover_recommendations(
     responses(
         (status = 200, description = "Prices and availability.", body = bookclerk_discover::PurchaseHintsResponse),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("title, asin, isbn, or candidate_product_id is required")),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
     ),
 )]
 async fn discover_purchase_hints(
@@ -5132,7 +5131,6 @@ struct PurchaseHintsBatchResponse {
     responses(
         (status = 200, description = "One result per query, in order.", body = PurchaseHintsBatchResponse),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("at most 24 purchase-hint queries per batch")),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
     ),
 )]
 async fn discover_purchase_hints_batch(
@@ -5197,7 +5195,6 @@ fn validate_purchase_hints_query(
     responses(
         (status = 200, description = "The metadata, or null when nothing matched.", body = Option<bookclerk_discover::TitleMeta>),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("title, asin, or isbn is required")),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
     ),
 )]
 async fn discover_title_meta(
@@ -5220,7 +5217,6 @@ async fn discover_title_meta(
     responses(
         (status = 200, description = "A page of reviews.", body = bookclerk_discover::TitleReviewsPage),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("asin is required")),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
     ),
 )]
 async fn discover_title_reviews(
@@ -5258,7 +5254,6 @@ struct TitleMetaBatchResponse {
     responses(
         (status = 200, description = "One result per query, in order.", body = TitleMetaBatchResponse),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("at most 24 title-meta queries per batch")),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
     ),
 )]
 async fn discover_title_meta_batch(
@@ -5350,7 +5345,6 @@ async fn preferred_sources_for_caller(state: &AppState, headers: &HeaderMap) -> 
     responses(
         (status = 200, description = "A page of catalog results.", body = bookclerk_discover::CatalogSearchPage),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("catalog query must be 256 bytes or fewer")),
-        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out")),
         (status = 504, description = "The stores did not answer within the search budget.", body = String, content_type = "text/plain", example = json!("catalog search timed out")),
     ),
 )]

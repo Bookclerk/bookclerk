@@ -5907,7 +5907,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "version source-libro 0.4.2 is already installed with different artifacts"
+                  "error": "version source-libro 0.4.2 is already installed with different content; install a new version"
                 }
               }
             }
@@ -11575,17 +11575,6 @@
               }
             }
           },
-          "500": {
-            "description": "The lookup failed.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out"
-              }
-            }
-          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -11678,17 +11667,6 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
-              }
-            }
-          },
-          "500": {
-            "description": "The lookup failed.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out"
               }
             }
           },
@@ -11958,17 +11936,6 @@
               }
             }
           },
-          "500": {
-            "description": "The lookup failed.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out"
-              }
-            }
-          },
           "504": {
             "description": "The stores did not answer within the search budget.",
             "content": {
@@ -12186,17 +12153,6 @@
               }
             }
           },
-          "500": {
-            "description": "The lookup failed.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out"
-              }
-            }
-          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -12292,17 +12248,6 @@
               }
             }
           },
-          "500": {
-            "description": "The lookup failed.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out"
-              }
-            }
-          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -12395,17 +12340,6 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
-              }
-            }
-          },
-          "500": {
-            "description": "The lookup failed.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "catalog lookup failed: error sending request for url (https://api.audnexus.us/books/B0C1XYZ123): operation timed out"
               }
             }
           },
