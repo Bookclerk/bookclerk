@@ -531,8 +531,11 @@ Rust crates and the web UI library.
   route's access rule, parameters, body, responses, an example request
   as a `curl` command, a PowerShell `Invoke-RestMethod` call, Python
   (`requests`), JavaScript (`fetch`) and Rust (`reqwest`), and an
-  example response for each status, built from the
-  schemas or saying why there is no JSON body; the request
+  example response for each status: the example the route states for
+  that status (an error status shows the body that route really
+  returns, the message the handler writes or the one the error
+  middleware writes for the status), otherwise one built from the
+  schemas, or a sentence saying why there is no JSON body; the request
   sends only required fields, since optional ones can be alternatives
   that must not be sent together), and a page of
   schemas. Parameters, body fields and responses are lists, one item per

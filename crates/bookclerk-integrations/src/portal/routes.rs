@@ -131,7 +131,7 @@ struct RedeemBody {
     request_body = RedeemBody,
     responses(
         (status = 200, description = "Signed in; the response sets the portal session cookie.", body = serde_json::Value),
-        (status = 400, description = "The ticket is invalid, used or expired.", body = PortalErrorBody),
+        (status = 400, description = "The ticket is invalid, used or expired.", body = PortalErrorBody, example = json!({"error": "claim ticket invalid, expired, or already redeemed"})),
     ),
 )]
 async fn redeem(
@@ -253,7 +253,7 @@ struct IntegrationLoginBody {
     request_body = IntegrationLoginBody,
     responses(
         (status = 200, description = "Signed in through the integration.", body = serde_json::Value),
-        (status = 400, description = "The request is invalid, or the integration refused the login.", body = PortalErrorBody),
+        (status = 400, description = "The request is invalid, or the integration refused the login.", body = PortalErrorBody, example = json!({"error": "integration `audiobookshelf` does not support credential login"})),
     ),
 )]
 async fn login_integration(
@@ -342,7 +342,7 @@ async fn logout(State(state): State<PortalState>, headers: HeaderMap) -> Respons
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "The signed-in identity.", body = MeResponse),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
     ),
 )]
 async fn me(
@@ -490,8 +490,8 @@ struct PasswordLoginBody {
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "The account was connected.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
-        (status = 400, description = "The login failed.", body = PortalErrorBody),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
+        (status = 400, description = "The login failed.", body = PortalErrorBody, example = json!({"error": "this source uses OAuth; call /oauth/start instead"})),
     ),
 )]
 async fn source_password_login(
@@ -561,8 +561,8 @@ async fn source_password_login(
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "The browser login URL.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
-        (status = 400, description = "The source does not use OAuth.", body = PortalErrorBody),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
+        (status = 400, description = "The source does not use OAuth.", body = PortalErrorBody, example = json!({"error": "this source uses password login; call /login instead"})),
     ),
 )]
 async fn source_oauth_start(
@@ -593,7 +593,7 @@ async fn source_oauth_start(
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "The account was connected.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
     ),
 )]
 #[deprecated(note = "legacy alias; call the `/sources/{id}/...` route instead")]
@@ -613,7 +613,7 @@ async fn libro_login_legacy(
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "The browser login URL.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
     ),
 )]
 #[deprecated(note = "legacy alias; call the `/sources/{id}/...` route instead")]
@@ -690,7 +690,7 @@ async fn start_source_oauth_session(
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "Store accounts linked to the caller.", body = ConnectionsResponse),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
     ),
 )]
 async fn connections(
@@ -781,8 +781,8 @@ struct ConnectionInfo {
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "The account was unlinked.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody),
-        (status = 400, description = "The account is not linked to this identity.", body = PortalErrorBody),
+        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
+        (status = 400, description = "The account is not linked to this identity.", body = PortalErrorBody, example = json!({"error": "account not linked to this identity"})),
     ),
 )]
 async fn revoke_connection(

@@ -225,7 +225,7 @@ pub struct PutEventsDomainRequest {
     path = "/api/config/domains/core.events",
     responses(
         (status = 200, description = "The `core.events` settings.", body = EventsDomainResponse),
-        (status = 500, description = "The configuration could not be read."),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_events_domain(
@@ -243,9 +243,9 @@ pub async fn get_events_domain(
     request_body = PutEventsDomainRequest,
     responses(
         (status = 200, description = "The settings after the change, or a `replayed: true` note with the committed revision when another write landed between this one and its read-back.", body = EventsDomainChange),
-        (status = 400, description = "The body is invalid."),
-        (status = 409, description = "`expected_revision` is stale; `current_revision` is the revision to retry against.", body = RevisionConflict),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 400, description = "A value is outside its range.", body = ErrorMessage, example = json!({"error": "invalid configuration: retention_days must be 1..=3650"})),
+        (status = 409, description = "`expected_revision` is stale; `current_revision` is the revision to retry against.", body = RevisionConflict, example = json!({"error": "revision_conflict", "current_revision": 7})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn put_events_domain(
@@ -615,7 +615,7 @@ pub struct PutOutputDomainRequest {
     path = "/api/config/domains/core.output",
     responses(
         (status = 200, description = "The `core.output` settings.", body = OutputDomainResponse),
-        (status = 500, description = "The configuration could not be read."),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_output_domain(
@@ -633,9 +633,9 @@ pub async fn get_output_domain(
     request_body = PutOutputDomainRequest,
     responses(
         (status = 200, description = "The settings after the change, or a `replayed: true` note with the committed revision when another write landed between this one and its read-back.", body = OutputDomainChange),
-        (status = 400, description = "The body is invalid."),
-        (status = 409, description = "`expected_revision` is stale; `current_revision` is the revision to retry against.", body = RevisionConflict),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 400, description = "The body is invalid, or a key or value is not an output setting.", body = ErrorMessage, example = json!({"error": "invalid configuration: cover_size must be `native` or a pixel size 1..=10000"})),
+        (status = 409, description = "`expected_revision` is stale; `current_revision` is the revision to retry against.", body = RevisionConflict, example = json!({"error": "revision_conflict", "current_revision": 7})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn put_output_domain(
@@ -1052,7 +1052,7 @@ pub(crate) struct PluginInstancesResponse {
     path = "/api/config/plugin-instances",
     responses(
         (status = 200, description = "Every plugin instance with its deployments.", body = PluginInstancesResponse),
-        (status = 500, description = "The configuration could not be read.", body = ErrorMessage),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_plugin_instances(
@@ -1107,10 +1107,9 @@ pub(crate) struct PluginInstanceCreated {
     request_body = CreatePluginInstance,
     responses(
         (status = 200, description = "The new instance.", body = PluginInstanceCreated),
-        (status = 400, description = "The body is invalid.", body = ErrorMessage),
-        (status = 404, description = "No such plugin, or it has no pinned schema.", body = ErrorMessage),
-        (status = 409, description = "The instance id is taken.", body = ErrorMessage),
-        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
+        (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "invalid plugin instance: display_name must be at most 64 bytes without control characters"})),
+        (status = 404, description = "No such plugin, or it has no pinned schema.", body = ErrorMessage, example = json!({"error": "book not found: plugin `source-libro` has no pinned settings schema; install it on a node first"})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn post_plugin_instance(
@@ -1172,10 +1171,10 @@ pub(crate) struct PluginInstanceDeleted {
     params(("id" = String, Path, description = "Plugin instance id.")),
     responses(
         (status = 200, description = "The instance was removed.", body = PluginInstanceDeleted),
-        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage),
-        (status = 404, description = "No such instance.", body = ErrorMessage),
-        (status = 409, description = "The instance is a default or still deployed.", body = ErrorMessage),
-        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
+        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage, example = json!({"error": "invalid plugin instance id: expected a UUID"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"})),
+        (status = 409, description = "The instance is a default or still deployed.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b still has deployments; set them absent and remove them first"})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn delete_plugin_instance_route(
@@ -1228,9 +1227,9 @@ pub(crate) struct PluginInstanceConfigResponse {
     params(("id" = String, Path, description = "Plugin instance id.")),
     responses(
         (status = 200, description = "The instance's settings document (secrets as names only).", body = PluginInstanceConfigResponse),
-        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage),
-        (status = 404, description = "No such instance, or it has no document yet.", body = ErrorMessage),
-        (status = 500, description = "The configuration could not be read.", body = ErrorMessage),
+        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage, example = json!({"error": "invalid plugin instance id: expected a UUID"})),
+        (status = 404, description = "No such instance, or it has no document yet.", body = ErrorMessage, example = json!({"error": "book not found: configuration plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is not initialized"})),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_plugin_instance_config(
@@ -1342,10 +1341,10 @@ pub(crate) struct PluginInstanceConfigChanged {
     request_body = PutPluginInstanceConfig,
     responses(
         (status = 200, description = "The document after the change.", body = PluginInstanceConfigChanged),
-        (status = 400, description = "The body is invalid, or a value does not fit the pinned schema.", body = ErrorMessage),
-        (status = 404, description = "No such instance, or its plugin has no pinned schema.", body = ErrorMessage),
-        (status = 409, description = "`expected_revision` is not the current revision.", body = RevisionConflict),
-        (status = 500, description = "The configuration could not be read or written, or a secret was not stored.", body = ErrorMessage),
+        (status = 400, description = "The body is invalid, or a value does not fit the pinned schema.", body = ErrorMessage, example = json!({"error": "invalid configuration: secret `api_token` is empty"})),
+        (status = 404, description = "No such instance, or its plugin has no pinned schema.", body = ErrorMessage, example = json!({"error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"})),
+        (status = 409, description = "`expected_revision` is not the current revision.", body = RevisionConflict, example = json!({"error": "revision_conflict", "current_revision": 7})),
+        (status = 500, description = "The configuration could not be read or written, or a secret was not stored.", body = ErrorMessage, example = json!({"error": "document revision 8 was saved but secret `api_token` was not stored (the secret store refused the write); submit the secret again"})),
     ),
 )]
 pub async fn put_plugin_instance_config(
@@ -1531,10 +1530,10 @@ impl utoipa::ToSchema for DeploymentConflict {
     request_body = PutPluginDeployment,
     responses(
         (status = 200, description = "The deployment after the change.", body = PluginDeploymentChanged),
-        (status = 400, description = "The body is invalid.", body = ErrorMessage),
-        (status = 404, description = "No such instance or node.", body = ErrorMessage),
-        (status = 409, description = "The instance is placed by the scheduler (an `error` message), or `expected_revision` is stale (`revision_conflict` with `current_revision`).", body = DeploymentConflict),
-        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
+        (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "invalid configuration: desired must be `present`, `absent`, `placed`, or `unplaced`"})),
+        (status = 404, description = "No such instance or node.", body = ErrorMessage, example = json!({"error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"})),
+        (status = 409, description = "The instance is placed by the scheduler (an `error` message), or `expected_revision` is stale (`revision_conflict` with `current_revision`).", body = DeploymentConflict, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is placed by the scheduler (2 replica(s) on region=eu); change it with `bookclerk plugins deploy`, or drop the placement with `bookclerk plugins deploy --manual` first"})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn put_plugin_deployment(
@@ -2205,10 +2204,10 @@ pub(crate) struct PluginPlacementDeleted {
     request_body = PutPluginPlacement,
     responses(
         (status = 200, description = "The scheduler now places the instance.", body = PluginPlacementChanged),
-        (status = 400, description = "The body is invalid.", body = ErrorMessage),
-        (status = 404, description = "No such instance.", body = ErrorMessage),
-        (status = 409, description = "`expected_revision` is not the current revision.", body = RevisionConflict),
-        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
+        (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "invalid configuration: replicas must be at most 64"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"})),
+        (status = 409, description = "`expected_revision` is not the current revision.", body = RevisionConflict, example = json!({"error": "revision_conflict", "current_revision": 7})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn put_plugin_placement_route(
@@ -2252,9 +2251,9 @@ pub async fn put_plugin_placement_route(
     params(("id" = String, Path, description = "Plugin instance id.")),
     responses(
         (status = 200, description = "The instance is back to manual deployment.", body = PluginPlacementDeleted),
-        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage),
-        (status = 404, description = "No such instance.", body = ErrorMessage),
-        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
+        (status = 400, description = "The id is not a plugin instance id.", body = ErrorMessage, example = json!({"error": "invalid plugin instance id: expected a UUID"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "book not found: plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn delete_plugin_placement_route(

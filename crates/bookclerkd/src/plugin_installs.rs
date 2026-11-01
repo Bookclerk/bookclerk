@@ -317,7 +317,7 @@ pub(crate) struct PluginVersionApproved {
     path = "/api/config/plugins",
     responses(
         (status = 200, description = "Every installed plugin.", body = InstalledPluginsResponse),
-        (status = 500, description = "The configuration could not be read.", body = ErrorMessage),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_plugins(
@@ -352,8 +352,8 @@ pub async fn get_plugins(
     params(("key" = String, Path, description = "Plugin key.")),
     responses(
         (status = 200, description = "The plugin with its installed versions and pinned schema.", body = InstalledPluginDetail),
-        (status = 404, description = "No such plugin.", body = ErrorMessage),
-        (status = 500, description = "The configuration could not be read.", body = ErrorMessage),
+        (status = 404, description = "No such plugin.", body = ErrorMessage, example = json!({"error": "plugin source-libro is not installed"})),
+        (status = 500, description = "The configuration could not be read.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_plugin(
@@ -415,13 +415,13 @@ pub(crate) struct PostPluginInstall {
     request_body = PostPluginInstall,
     responses(
         (status = 200, description = "The installed version.", body = PluginInstalled),
-        (status = 400, description = "The body is invalid: neither or both of `coordinate` and `package`, a malformed coordinate or package name, or a manifest the host rejects.", body = ErrorMessage),
-        (status = 403, description = "The publisher is unverified and `allow_unverified_publisher` is off.", body = ErrorMessage),
-        (status = 404, description = "A local package is missing its `package.json` or `archive.tar.gz`.", body = ErrorMessage),
-        (status = 409, description = "The version is already installed with different artifacts.", body = ErrorMessage),
-        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
-        (status = 502, description = "The package catalog could not be reached or answered badly.", body = ErrorMessage),
-        (status = 503, description = "The install needs a helper that is unavailable.", body = ErrorMessage),
+        (status = 400, description = "The body is invalid: neither or both of `coordinate` and `package`, a malformed coordinate or package name, or a manifest the host rejects.", body = ErrorMessage, example = json!({"error": "pass exactly one of `coordinate` or `package`"})),
+        (status = 403, description = "The publisher is unverified and `allow_unverified_publisher` is off.", body = ErrorMessage, example = json!({"error": "refusing community plugin without an explicit operator override; pass --allow-unverified-publisher after verifying the digest (API: set `allow_unverified_publisher: true` in the request body)"})),
+        (status = 404, description = "A local package is missing its `package.json` or `archive.tar.gz`.", body = ErrorMessage, example = json!({"error": "archive.tar.gz is missing"})),
+        (status = 409, description = "The version is already installed with different artifacts.", body = ErrorMessage, example = json!({"error": "version source-libro 0.4.2 is already installed with different content; install a new version"})),
+        (status = 500, description = "The node identity could not be read or created, or the catalog lookup task failed.", body = ErrorMessage, example = json!({"error": "I/O error: Permission denied (os error 13)"})),
+        (status = 502, description = "The package registry could not be reached or answered badly.", body = ErrorMessage, example = json!({"error": "download failed: http status: 404"})),
+        (status = 503, description = "The database plugin is unavailable; retry.", body = ErrorMessage, example = json!({"error": "unavailable: D1 ambiguous commit"})),
     ),
 )]
 pub async fn post_plugin_install(
@@ -522,9 +522,8 @@ pub(crate) struct PutActiveVersion {
     request_body = PutActiveVersion,
     responses(
         (status = 200, description = "The active version after the change.", body = ActiveVersionChanged),
-        (status = 400, description = "The body is invalid.", body = ErrorMessage),
-        (status = 404, description = "No such plugin or version.", body = ErrorMessage),
-        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
+        (status = 404, description = "No such plugin or version.", body = ErrorMessage, example = json!({"error": "book not found: version source-libro 0.4.2"})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn put_active_version(
@@ -560,10 +559,9 @@ pub async fn put_active_version(
     path = "/api/config/plugins/{key}",
     params(("key" = String, Path, description = "Plugin key.")),
     responses(
-        (status = 200, description = "The plugin was uninstalled.", body = PluginUninstalled),
-        (status = 404, description = "No such plugin.", body = ErrorMessage),
-        (status = 409, description = "A deployment changed under the request. The install was not cleared, but deployments of earlier instances may already be stopped; retry the request.", body = ErrorMessage),
-        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
+        (status = 200, description = "The plugin was uninstalled; `uninstalled` is false when no version was active, so the request is idempotent.", body = PluginUninstalled),
+        (status = 409, description = "A deployment changed under the request. The install was not cleared, but deployments of earlier instances may already be stopped; retry the request.", body = ErrorMessage, example = json!({"error": "deployments of instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b kept changing during undeploy; retry"})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn delete_plugin_install(
@@ -600,9 +598,9 @@ pub async fn delete_plugin_install(
     params(("key" = String, Path, description = "Plugin key."), ("version" = String, Path, description = "Semver version.")),
     responses(
         (status = 200, description = "The version's grant was approved.", body = PluginVersionApproved),
-        (status = 400, description = "The version's manifest does not parse.", body = ErrorMessage),
-        (status = 404, description = "No such plugin or version.", body = ErrorMessage),
-        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage),
+        (status = 400, description = "The version's manifest does not parse.", body = ErrorMessage, example = json!({"error": "version plugin.toml: missing field `id`"})),
+        (status = 404, description = "No such plugin or version.", body = ErrorMessage, example = json!({"error": "version source-libro 0.4.2"})),
+        (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn approve_plugin_version(
