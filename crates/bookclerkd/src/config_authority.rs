@@ -1925,7 +1925,11 @@ pub(crate) struct LeaseView {
 }
 
 /// Whether the database carries exactly the schema this binary applies.
+///
+/// The object example is the successful read; a failed read has `state`
+/// null, `compatible` false and the `error` text.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(example = json!({"state": "frozen@12+a1b2c3d4", "compatible": true}))]
 pub(crate) struct SchemaStateView {
     /// The schema state (`uninitialized`, `unreleased@base<n>+<checksum>`
     /// or `frozen@<n>+<checksum>`); `null` when it could not be read.

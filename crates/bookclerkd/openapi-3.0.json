@@ -25612,7 +25612,7 @@
       },
       "SchemaStateView": {
         "type": "object",
-        "description": "Whether the database carries exactly the schema this binary applies.",
+        "description": "Whether the database carries exactly the schema this binary applies.\n\nThe object example is the successful read; a failed read has `state`\nnull, `compatible` false and the `error` text.",
         "required": [
           "compatible"
         ],
@@ -25634,6 +25634,10 @@
             "example": "database is locked",
             "nullable": true
           }
+        },
+        "example": {
+          "compatible": true,
+          "state": "frozen@12+a1b2c3d4"
         }
       },
       "SetPasswordRequest": {
