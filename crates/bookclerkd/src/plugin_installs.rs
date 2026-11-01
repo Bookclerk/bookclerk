@@ -420,7 +420,7 @@ pub(crate) struct PostPluginInstall {
         (status = 404, description = "A local package is missing its `package.json` or `archive.tar.gz`.", body = ErrorMessage, example = json!({"error": "archive.tar.gz is missing"})),
         (status = 409, description = "The version is already installed with different artifacts.", body = ErrorMessage, example = json!({"error": "version source-libro 0.4.2 is already installed with different content; install a new version"})),
         (status = 500, description = "The node identity could not be read or created, or the catalog lookup task failed.", body = ErrorMessage, example = json!({"error": "I/O error: Permission denied (os error 13)"})),
-        (status = 502, description = "The package registry could not be reached or answered badly.", body = ErrorMessage, example = json!({"error": "HTTP 404 Not Found for https://crates.io/api/v1/crates/bookclerk-plugin-source-libro/0.4.2/download"})),
+        (status = 502, description = "The package registry could not be reached or answered badly.", body = ErrorMessage, example = json!({"error": "download failed: http status: 404"})),
         (status = 503, description = "The database plugin is unavailable; retry.", body = ErrorMessage, example = json!({"error": "unavailable: D1 ambiguous commit"})),
     ),
 )]

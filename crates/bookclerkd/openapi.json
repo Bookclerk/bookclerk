@@ -5878,7 +5878,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "HTTP 404 Not Found for https://crates.io/api/v1/crates/bookclerk-plugin-source-libro/0.4.2/download"
+                  "error": "download failed: http status: 404"
                 }
               }
             }
