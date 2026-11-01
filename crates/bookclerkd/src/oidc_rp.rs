@@ -137,11 +137,7 @@ async fn list_providers(State(state): State<Arc<AppState>>) -> Json<OidcProvider
         .oidc
         .enabled_providers()
         .into_iter()
-        .map(|p| crate::auth::SigninOidcProvider {
-            id: p.id.clone(),
-            name: p.display_name().to_owned(),
-            preset: p.social_preset().map(str::to_owned),
-        })
+        .map(crate::auth::SigninOidcProvider::from_config)
         .collect();
     Json(OidcProvidersResponse {
         enabled: cfg.auth.oidc.enabled,
@@ -796,13 +792,10 @@ async fn put_oidc_config(
         .map_err(|status| {
             oidc_config_error(
                 status,
-                if status == StatusCode::UNAUTHORIZED {
-                    "recent authentication required to change sign-in providers"
-                } else if status == StatusCode::INTERNAL_SERVER_ERROR {
-                    "the current password could not be checked"
-                } else {
-                    "forbidden"
-                },
+                crate::auth::recent_owner_gate_message(
+                    status,
+                    "recent authentication required to change sign-in providers",
+                ),
             )
         })?;
 

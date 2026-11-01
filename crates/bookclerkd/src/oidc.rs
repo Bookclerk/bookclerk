@@ -568,20 +568,11 @@ async fn mint_tokens(
         "iat": now,
         "exp": now + ACCESS_TTL_SECS,
     });
-    if scope_has(scope, "profile") {
-        id_claims["name"] = serde_json::json!(user.display_name);
-        id_claims["preferred_username"] = serde_json::json!(user.login_name);
-    }
-    if scope_has(scope, "email") {
-        if let Some(email) = user
-            .email
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            id_claims["email"] = serde_json::json!(email);
-            id_claims["email_verified"] = serde_json::json!(true);
-        }
+    let profile = UserinfoResponse::for_user(user_id.to_string(), &user, scope);
+    let profile = serde_json::to_value(&profile).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let (Some(claims), serde_json::Value::Object(profile)) = (id_claims.as_object_mut(), profile)
+    {
+        claims.extend(profile);
     }
     let id_token = sign_jwt(&hmac_key, &id_claims)?;
     let refresh_token = if client.issue_refresh_token {
@@ -650,29 +641,11 @@ async fn userinfo(
         .get("scope")
         .and_then(|v| v.as_str())
         .unwrap_or("openid profile");
-    let mut body = UserinfoResponse {
-        sub: sub.to_owned(),
-        name: None,
-        preferred_username: None,
-        email: None,
-        email_verified: None,
-    };
-    if scope_has(scope, "profile") {
-        body.name = user.display_name.clone();
-        body.preferred_username = user.login_name.clone();
-    }
-    if scope_has(scope, "email") {
-        if let Some(email) = user
-            .email
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            body.email = Some(email.to_owned());
-            body.email_verified = Some(true);
-        }
-    }
-    Ok(Json(body))
+    Ok(Json(UserinfoResponse::for_user(
+        sub.to_owned(),
+        &user,
+        scope,
+    )))
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -697,6 +670,39 @@ pub struct UserinfoResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = true)]
     pub email_verified: Option<bool>,
+}
+
+impl UserinfoResponse {
+    /// Builds the claims `scope` allows for `user`, the same set for the ID token and userinfo.
+    ///
+    /// `profile` adds the display and login names when the user has them;
+    /// `email` adds a non-blank email with `email_verified: true`. Claims
+    /// the user lacks are omitted rather than sent as `null`.
+    fn for_user(sub: String, user: &bookclerk_library::UserRecord, scope: &str) -> Self {
+        let mut body = Self {
+            sub,
+            name: None,
+            preferred_username: None,
+            email: None,
+            email_verified: None,
+        };
+        if scope_has(scope, "profile") {
+            body.name = user.display_name.clone();
+            body.preferred_username = user.login_name.clone();
+        }
+        if scope_has(scope, "email") {
+            if let Some(email) = user
+                .email
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                body.email = Some(email.to_owned());
+                body.email_verified = Some(true);
+            }
+        }
+        body
+    }
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -1344,13 +1350,10 @@ async fn require_client_admin(
         .map_err(|status| {
             oidc_client_error(
                 status,
-                if status == StatusCode::UNAUTHORIZED {
-                    "recent authentication required to change OIDC clients"
-                } else if status == StatusCode::INTERNAL_SERVER_ERROR {
-                    "the current password could not be checked"
-                } else {
-                    "forbidden"
-                },
+                crate::auth::recent_owner_gate_message(
+                    status,
+                    "recent authentication required to change OIDC clients",
+                ),
             )
         })
 }
@@ -2408,5 +2411,115 @@ mod tests {
         let info_json = json_body(info).await;
         assert_eq!(info_json["email"], "abs@example.com");
         assert!(info_json.get("name").is_none());
+    }
+
+    #[tokio::test]
+    async fn id_token_and_userinfo_omit_profile_claims_the_user_lacks() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use bookclerk_library::UserRole;
+        use chrono::Duration as ChronoDuration;
+        use tower::ServiceExt;
+
+        let (state, library) = oidc_test_state().await;
+        library
+            .insert_oidc_client(
+                "no-names",
+                None,
+                &[String::from("https://player.example/callback")],
+                Some("No names"),
+                false,
+                &["openid".into(), "profile".into()],
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+        let user = library
+            .create_user_with_profile(UserRole::Member, None, None, Some("anon@example.com"), None)
+            .await
+            .unwrap();
+        let identity = library
+            .ensure_local_portal_identity(user.id, None)
+            .await
+            .unwrap();
+        let portal_raw = Uuid::new_v4().to_string();
+        library
+            .insert_portal_session(
+                &hash_token(&portal_raw),
+                identity.id,
+                Utc::now() + ChronoDuration::hours(1),
+            )
+            .await
+            .unwrap();
+        let portal_cookie = format!("{PORTAL_SESSION_COOKIE}={portal_raw}");
+        let app = crate::api::router(state, None);
+
+        let authz = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/oidc/authorize?client_id=no-names&redirect_uri=https%3A%2F%2Fplayer.example%2Fcallback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&scope=openid%20profile")
+                    .header(header::COOKIE, &portal_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authz.status(), StatusCode::TEMPORARY_REDIRECT);
+        let loc = authz
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let code = loc
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_string();
+        let tok = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oidc/token")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(format!(
+                        "grant_type=authorization_code&code={code}&redirect_uri=https%3A%2F%2Fplayer.example%2Fcallback&client_id=no-names&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tok.status(), StatusCode::OK);
+        let json = json_body(tok).await;
+        let id_token = json["id_token"].as_str().unwrap();
+        let payload = id_token.split('.').nth(1).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        assert_eq!(payload["sub"], user.id.to_string());
+        assert!(payload.get("name").is_none(), "{payload:?}");
+        assert!(payload.get("preferred_username").is_none(), "{payload:?}");
+        assert!(payload.get("email").is_none(), "{payload:?}");
+
+        let access = json["access_token"].as_str().unwrap();
+        let info = app
+            .oneshot(
+                Request::builder()
+                    .uri("/oidc/userinfo")
+                    .header(header::AUTHORIZATION, format!("Bearer {access}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(info.status(), StatusCode::OK);
+        let info_json = json_body(info).await;
+        assert_eq!(info_json, serde_json::json!({ "sub": user.id.to_string() }));
     }
 }

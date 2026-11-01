@@ -573,6 +573,17 @@ pub struct SigninOidcProvider {
     pub preset: Option<String>,
 }
 
+impl SigninOidcProvider {
+    /// Projects a configured provider onto the fields the sign-in page and the provider list expose.
+    pub(crate) fn from_config(provider: &bookclerk_config::OidcProviderConfig) -> Self {
+        Self {
+            id: provider.id.clone(),
+            name: provider.display_name().to_owned(),
+            preset: provider.social_preset().map(str::to_owned),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// One integration that signs people in with its own credentials.
 pub struct SigninIntegration {
@@ -862,11 +873,7 @@ pub async fn signin_methods(State(state): State<Arc<AppState>>) -> Result<Respon
             .oidc
             .enabled_providers()
             .into_iter()
-            .map(|p| SigninOidcProvider {
-                id: p.id.clone(),
-                name: p.display_name().to_owned(),
-                preset: p.social_preset().map(str::to_owned),
-            })
+            .map(SigninOidcProvider::from_config)
             .collect()
     } else {
         Vec::new()
@@ -4004,6 +4011,27 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 
 /// How long a portal session counts as "recent" for authenticator / IdP changes.
 pub(crate) const RECENT_AUTH_WINDOW: ChronoDuration = ChronoDuration::minutes(15);
+
+/// Message for a failed [`require_operator_or_recent_owner`] check.
+///
+/// # Arguments
+///
+/// * `status` - The status the check returned.
+/// * `reauth` - The route's own wording for a 401 (the Owner must re-authenticate).
+///
+/// # Returns
+///
+/// `reauth` for a 401, a fixed note for a 500 (the current password could
+/// not be read or verified) and `forbidden` for everything else.
+pub(crate) fn recent_owner_gate_message(status: StatusCode, reauth: &'static str) -> &'static str {
+    if status == StatusCode::UNAUTHORIZED {
+        reauth
+    } else if status == StatusCode::INTERNAL_SERVER_ERROR {
+        "the current password could not be checked"
+    } else {
+        "forbidden"
+    }
+}
 
 /// Operator bearer/session (including elevated Owner) may skip step-up.
 ///
