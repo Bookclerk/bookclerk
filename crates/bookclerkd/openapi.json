@@ -18964,19 +18964,57 @@
             "description": "Signed in; the response sets the portal session cookie.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PortalOk"
+                }
               }
             }
           },
           "400": {
-            "description": "The ticket is invalid, used or expired.",
+            "description": "The ticket or nonce is invalid, used or expired, the ticket's integration is not deployed here, a first local claim needs a password of at least 8 characters, or the library refused the claim (the body carries its message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "integration_missing": {
+                    "summary": "The ticket's integration is not deployed on this host.",
+                    "value": {
+                      "error": "integration `audiobookshelf` is not deployed on this host"
+                    }
+                  },
+                  "password_required": {
+                    "summary": "A first local claim must set a password.",
+                    "value": {
+                      "error": "password required — set a password to finish claim login"
+                    }
+                  },
+                  "password_short": {
+                    "summary": "The password is shorter than 8 characters.",
+                    "value": {
+                      "error": "password must be at least 8 characters"
+                    }
+                  },
+                  "ticket": {
+                    "summary": "The ticket does not redeem.",
+                    "value": {
+                      "error": "claim ticket invalid, expired, or already redeemed"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library database is busy; redeem again with the same ticket and nonce.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "example": {
-                  "error": "claim ticket invalid, expired, or already redeemed"
+                  "error": "database is locked"
                 }
               }
             }
@@ -19016,22 +19054,54 @@
         },
         "responses": {
           "200": {
-            "description": "Signed in through the integration.",
+            "description": "Signed in through the integration; the response sets the portal session cookie.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PortalOk"
+                }
               }
             }
           },
           "400": {
-            "description": "The request is invalid, or the integration refused the login.",
+            "description": "The integration is not deployed here, does not take a username and password, or refused them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "no_credential_login": {
+                    "summary": "The integration signs in another way.",
+                    "value": {
+                      "error": "integration `audiobookshelf` does not support credential login"
+                    }
+                  },
+                  "not_deployed": {
+                    "summary": "No such integration on this host.",
+                    "value": {
+                      "error": "integration `audiobookshelf` is not deployed on this host"
+                    }
+                  },
+                  "refused": {
+                    "summary": "The integration rejected the credentials.",
+                    "value": {
+                      "error": "integration API error (401): Invalid user or password"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library database is busy; retry.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "example": {
-                  "error": "integration `audiobookshelf` does not support credential login"
+                  "error": "database is locked"
                 }
               }
             }
@@ -19061,10 +19131,12 @@
         "operationId": "portal_logout",
         "responses": {
           "200": {
-            "description": "Signed out (`{\"ok\": true}`); the cookie is cleared.",
+            "description": "Signed out; the cookie is cleared.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PortalOk"
+                }
               }
             }
           },
@@ -19118,14 +19190,38 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, or the portal session expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "No portal session cookie.",
+                    "value": {
+                      "error": "not signed in"
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "The cookie names a session that is gone.",
+                    "value": {
+                      "error": "session expired"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library database is busy; retry.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "example": {
-                  "error": "not signed in"
+                  "error": "database is locked"
                 }
               }
             }
@@ -19217,32 +19313,62 @@
             "description": "The account was connected.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/SourceConnected"
+                }
               }
             }
           },
           "400": {
-            "description": "The login failed.",
+            "description": "No deployed source has that id, the source signs in through OAuth, or the store rejected the login (the body carries its message).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "example": {
-                  "error": "this source uses OAuth; call /oauth/start instead"
+                "examples": {
+                  "oauth_source": {
+                    "summary": "The source signs in through OAuth.",
+                    "value": {
+                      "error": "this source uses OAuth; call /oauth/start instead"
+                    }
+                  },
+                  "store_refused": {
+                    "summary": "The store rejected the email or password.",
+                    "value": {
+                      "error": "oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"
+                    }
+                  },
+                  "unknown_source": {
+                    "summary": "No deployed source has that id or alias.",
+                    "value": {
+                      "error": "unknown source"
+                    }
+                  }
                 }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, or the portal session expired.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "example": {
-                  "error": "not signed in"
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "No portal session cookie.",
+                    "value": {
+                      "error": "not signed in"
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "The cookie names a session that is gone.",
+                    "value": {
+                      "error": "session expired"
+                    }
+                  }
                 }
               }
             }
@@ -19258,6 +19384,19 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library database is busy; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "example": {
+                  "error": "database is locked"
                 }
               }
             }
@@ -19305,32 +19444,68 @@
             "description": "The browser login URL.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthStartUrl"
+                }
               }
             }
           },
           "400": {
-            "description": "The source does not use OAuth.",
+            "description": "No deployed source has that id, the source signs in with a password, the store produced no login URL in time, or the login stopped before it produced one.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "example": {
-                  "error": "this source uses password login; call /login instead"
+                "examples": {
+                  "login_stopped": {
+                    "summary": "The store login failed before it produced a URL.",
+                    "value": {
+                      "error": "OAuth login URL channel closed"
+                    }
+                  },
+                  "password_source": {
+                    "summary": "The source signs in with a password.",
+                    "value": {
+                      "error": "this source uses password login; call /login instead"
+                    }
+                  },
+                  "unknown_source": {
+                    "summary": "No deployed source has that id or alias.",
+                    "value": {
+                      "error": "unknown source"
+                    }
+                  },
+                  "url_timeout": {
+                    "summary": "The store produced no login URL within five seconds.",
+                    "value": {
+                      "error": "timed out waiting for OAuth login URL"
+                    }
+                  }
                 }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, or the portal session expired.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "example": {
-                  "error": "not signed in"
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "No portal session cookie.",
+                    "value": {
+                      "error": "not signed in"
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "The cookie names a session that is gone.",
+                    "value": {
+                      "error": "session expired"
+                    }
+                  }
                 }
               }
             }
@@ -19346,6 +19521,19 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library database is busy; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "example": {
+                  "error": "database is locked"
                 }
               }
             }
@@ -19392,19 +19580,56 @@
             "description": "The account was connected.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/SourceConnected"
+                }
               }
             }
           },
-          "401": {
-            "description": "The caller is not signed in.",
+          "400": {
+            "description": "The Libro.fm source is not deployed here, or the store rejected the login.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "example": {
-                  "error": "not signed in"
+                "examples": {
+                  "not_deployed": {
+                    "summary": "The Libro.fm source is not deployed on this host.",
+                    "value": {
+                      "error": "unknown source"
+                    }
+                  },
+                  "store_refused": {
+                    "summary": "The store rejected the email or password.",
+                    "value": {
+                      "error": "oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the portal session expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "No portal session cookie.",
+                    "value": {
+                      "error": "not signed in"
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "The cookie names a session that is gone.",
+                    "value": {
+                      "error": "session expired"
+                    }
+                  }
                 }
               }
             }
@@ -19420,6 +19645,19 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library database is busy; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "example": {
+                  "error": "database is locked"
                 }
               }
             }
@@ -19457,19 +19695,62 @@
             "description": "The browser login URL.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthStartUrl"
+                }
               }
             }
           },
-          "401": {
-            "description": "The caller is not signed in.",
+          "400": {
+            "description": "The Audible source is not deployed here, the store produced no login URL in time, or the login stopped before it produced one.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "example": {
-                  "error": "not signed in"
+                "examples": {
+                  "login_stopped": {
+                    "summary": "The store login failed before it produced a URL.",
+                    "value": {
+                      "error": "OAuth login URL channel closed"
+                    }
+                  },
+                  "not_deployed": {
+                    "summary": "The Audible source is not deployed on this host.",
+                    "value": {
+                      "error": "unknown source"
+                    }
+                  },
+                  "url_timeout": {
+                    "summary": "The store produced no login URL within five seconds.",
+                    "value": {
+                      "error": "timed out waiting for OAuth login URL"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the portal session expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "No portal session cookie.",
+                    "value": {
+                      "error": "not signed in"
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "The cookie names a session that is gone.",
+                    "value": {
+                      "error": "session expired"
+                    }
+                  }
                 }
               }
             }
@@ -19485,6 +19766,19 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library database is busy; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "example": {
+                  "error": "database is locked"
                 }
               }
             }
@@ -19529,14 +19823,38 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, or the portal session expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "No portal session cookie.",
+                    "value": {
+                      "error": "not signed in"
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "The cookie names a session that is gone.",
+                    "value": {
+                      "error": "session expired"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library database is busy; retry.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "example": {
-                  "error": "not signed in"
+                  "error": "database is locked"
                 }
               }
             }
@@ -19594,12 +19912,14 @@
             "description": "The account was unlinked.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PortalOk"
+                }
               }
             }
           },
           "400": {
-            "description": "The account is not linked to this identity.",
+            "description": "The account is not linked to this identity, or the library refused the unlink (the body carries its message).",
             "content": {
               "application/json": {
                 "schema": {
@@ -19612,14 +19932,25 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, or the portal session expired.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "example": {
-                  "error": "not signed in"
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "No portal session cookie.",
+                    "value": {
+                      "error": "not signed in"
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "The cookie names a session that is gone.",
+                    "value": {
+                      "error": "session expired"
+                    }
+                  }
                 }
               }
             }
@@ -19635,6 +19966,30 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The library database is busy, or the store sign-out that follows the last unlink failed; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "examples": {
+                  "cleanup_failed": {
+                    "summary": "The store sign-out task stopped.",
+                    "value": {
+                      "error": "revoke cleanup failed: task 12 panicked"
+                    }
+                  },
+                  "database_busy": {
+                    "summary": "The store answered with a transient error.",
+                    "value": {
+                      "error": "database is locked"
+                    }
+                  }
                 }
               }
             }
@@ -24538,6 +24893,20 @@
         },
         "additionalProperties": false
       },
+      "OAuthStartUrl": {
+        "type": "object",
+        "description": "JSON body of an OAuth start: the browser login URL to open.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The store's login page, bound to this sign-in.",
+            "example": "https://www.amazon.com/ap/signin?openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0&…"
+          }
+        }
+      },
       "OidcClientView": {
         "type": "object",
         "description": "A Bookclerk-as-IdP client as operators see it; the secret appears only when freshly minted.",
@@ -27596,7 +27965,8 @@
         "properties": {
           "error": {
             "type": "string",
-            "description": "Operator-facing error text (no structured code)."
+            "description": "Operator-facing error text (no structured code).",
+            "example": "not signed in"
           }
         }
       },
@@ -27632,6 +28002,20 @@
             ],
             "description": "Optional operator-facing label for the identity.",
             "example": "Sam"
+          }
+        }
+      },
+      "PortalOk": {
+        "type": "object",
+        "description": "JSON body of a portal route that has nothing to report beyond success.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true`.",
+            "example": true
           }
         }
       },
@@ -29667,6 +30051,38 @@
               "$ref": "#/components/schemas/ConfigOptionValueInfo"
             },
             "description": "Allowed values the SPA may offer for this option."
+          }
+        }
+      },
+      "SourceConnected": {
+        "type": "object",
+        "description": "JSON body of a connected store account.",
+        "required": [
+          "ok",
+          "account_id",
+          "source",
+          "plugin_key"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true`.",
+            "example": true
+          },
+          "account_id": {
+            "type": "string",
+            "description": "The store's id for the account.",
+            "example": "reader@example.com"
+          },
+          "source": {
+            "type": "string",
+            "description": "The source's id, as listed by `GET /api/portal/sources`.",
+            "example": "libro"
+          },
+          "plugin_key": {
+            "type": "string",
+            "description": "The plugin that owns the account.",
+            "example": "bookclerk:source-libro"
           }
         }
       },
