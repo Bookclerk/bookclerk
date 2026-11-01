@@ -1671,9 +1671,8 @@ pub(crate) struct NodeOwnerSummary {
     /// user has neither.
     #[schema(example = "Sam Reader")]
     display_name: Option<String>,
-    /// The owner's role (`owner`, `administrator` or `member`).
-    #[schema(example = "administrator")]
-    role: &'static str,
+    /// The owner's role.
+    role: bookclerk_library::UserRole,
 }
 
 /// One node with its latest heartbeat, budget and owner.
@@ -1728,11 +1727,11 @@ pub(crate) struct NodeView {
     owner_user_id: Option<i64>,
     /// A branch's sharing setting, as it last reported it; `null` for an
     /// owner node.
-    #[schema(example = json!(null))]
+    #[schema(example = true)]
     share_books: Option<bool>,
     /// A branch's include-branches setting, as it last reported it;
     /// `null` for an owner node.
-    #[schema(example = json!(null))]
+    #[schema(example = false)]
     include_branches: Option<bool>,
     /// The owner, when the node has one and the user still exists.
     owner: Option<NodeOwnerSummary>,
@@ -1770,7 +1769,7 @@ async fn node_view(
             .map(|user| NodeOwnerSummary {
                 user_id: user.id,
                 display_name: user.display_name.or(user.login_name),
-                role: user.role.as_str(),
+                role: user.role,
             }),
         None => None,
     };
@@ -1802,12 +1801,22 @@ async fn node_view(
     })
 }
 
+/// Which nodes a listing shows the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum NodeScope {
+    /// The operator sees every node.
+    All,
+    /// A node owner sees the nodes they own.
+    Owned,
+}
+
 /// What the caller may do on the nodes it sees.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct NodeCapabilities {
     /// `all` for the operator, `owned` for a node owner.
     #[schema(example = "all")]
-    scope: &'static str,
+    scope: NodeScope,
     /// True: every caller may edit the runtime settings of the nodes it
     /// sees.
     #[schema(example = true)]
@@ -1825,7 +1834,11 @@ impl NodeCapabilities {
     fn of(caller: NodeAdminCaller) -> Self {
         let operator = caller == NodeAdminCaller::Operator;
         Self {
-            scope: if operator { "all" } else { "owned" },
+            scope: if operator {
+                NodeScope::All
+            } else {
+                NodeScope::Owned
+            },
             can_edit_runtime: true,
             can_edit_labels: operator,
             can_assign_owner: operator,
@@ -1935,13 +1948,13 @@ pub(crate) struct ClusterSummary {
     nodes: usize,
     /// Nodes whose last heartbeat is recent enough.
     #[schema(example = 3)]
-    live: u64,
+    live: usize,
     /// Live nodes an operator drained.
     #[schema(example = 0)]
-    drained: u64,
+    drained: usize,
     /// Enrolled hosts (nodes with their own database).
     #[schema(example = 1)]
-    host_nodes: u64,
+    host_nodes: usize,
     /// CPU the scheduler may commit across live nodes, in millicores.
     #[schema(example = 19_200)]
     cpu_budget_millicores: i64,
@@ -2007,9 +2020,9 @@ pub async fn get_cluster_status(
         .map_err(events_error)?;
     let statuses = node_statuses(&library).await?;
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let mut live = 0u64;
-    let mut drained = 0u64;
-    let mut host_nodes = 0u64;
+    let mut live = 0usize;
+    let mut drained = 0usize;
+    let mut host_nodes = 0usize;
     let mut cpu_budget = 0i64;
     let mut cpu_reserved = 0i64;
     let mut memory_budget = 0i64;
@@ -2273,8 +2286,9 @@ pub(crate) struct PutNodeRuntime {
         (status = 200, description = "The node's runtime settings after the change.", body = NodeRuntimeChanged),
         (status = 400, description = "The body is invalid, or a budget is outside 1..=100.", body = ErrorMessage, example = json!({"error": "invalid configuration: cpu_budget_percent must be between 1 and 100"})),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this.", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is not owned by this user"})),
-        (status = 404, description = "No such node, or not one the caller administers.", body = ErrorMessage, example = json!({"error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"})),
+        (status = 403, description = "A node owner named a node they do not own (an unknown node included).", body = ErrorMessage, example = json!({"error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is not owned by this user"})),
+        (status = 404, description = "The operator named a node that does not exist.", body = ErrorMessage, example = json!({"error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"})),
+        (status = 409, description = "Concurrent edits kept changing the document; retry.", body = ErrorMessage, example = json!({"error": "node.runtime for 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e kept changing; retry"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
@@ -2399,7 +2413,7 @@ pub(crate) struct PutNodeOwner {
     request_body = PutNodeOwner,
     responses(
         (status = 200, description = "The node's owner after the change.", body = NodeOwnerChanged),
-        (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "user 42 is disabled and cannot own a node"})),
+        (status = 400, description = "The user is disabled and cannot own a node.", body = ErrorMessage, example = json!({"error": "user 42 is disabled and cannot own a node"})),
         (status = 404, description = "No such node or user.", body = ErrorMessage, example = json!({"error": "book not found: user 42"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),

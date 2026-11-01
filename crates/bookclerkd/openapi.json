@@ -5581,7 +5581,7 @@
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The user is disabled and cannot own a node.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9058,7 +9058,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A node owner named a node they do not own (an unknown node included). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9071,7 +9071,7 @@
             }
           },
           "404": {
-            "description": "No such node, or not one the caller administers.",
+            "description": "The operator named a node that does not exist.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9079,6 +9079,19 @@
                 },
                 "example": {
                   "error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Concurrent edits kept changing the document; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "node.runtime for 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e kept changing; retry"
                 }
               }
             }
@@ -18949,21 +18962,18 @@
           },
           "live": {
             "type": "integer",
-            "format": "int64",
             "description": "Nodes whose last heartbeat is recent enough.",
             "example": 3,
             "minimum": 0
           },
           "drained": {
             "type": "integer",
-            "format": "int64",
             "description": "Live nodes an operator drained.",
             "example": 0,
             "minimum": 0
           },
           "host_nodes": {
             "type": "integer",
-            "format": "int64",
             "description": "Enrolled hosts (nodes with their own database).",
             "example": 1,
             "minimum": 0
@@ -20676,9 +20686,8 @@
         ],
         "properties": {
           "scope": {
-            "type": "string",
-            "description": "`all` for the operator, `owned` for a node owner.",
-            "example": "all"
+            "$ref": "#/components/schemas/NodeScope",
+            "description": "`all` for the operator, `owned` for a node owner."
           },
           "can_edit_runtime": {
             "type": "boolean",
@@ -20752,9 +20761,8 @@
             "example": "Sam Reader"
           },
           "role": {
-            "type": "string",
-            "description": "The owner's role (`owner`, `administrator` or `member`).",
-            "example": "administrator"
+            "$ref": "#/components/schemas/UserRole",
+            "description": "The owner's role."
           }
         }
       },
@@ -20816,6 +20824,14 @@
             "example": true
           }
         }
+      },
+      "NodeScope": {
+        "type": "string",
+        "description": "Which nodes a listing shows the caller.",
+        "enum": [
+          "all",
+          "owned"
+        ]
       },
       "NodeStatus": {
         "type": "object",
@@ -21079,7 +21095,7 @@
               "null"
             ],
             "description": "A branch's sharing setting, as it last reported it; `null` for an\nowner node.",
-            "example": null
+            "example": true
           },
           "include_branches": {
             "type": [
@@ -21087,7 +21103,7 @@
               "null"
             ],
             "description": "A branch's include-branches setting, as it last reported it;\n`null` for an owner node.",
-            "example": null
+            "example": false
           },
           "owner": {
             "oneOf": [
