@@ -11091,6 +11091,19 @@
               }
             }
           },
+          "409": {
+            "description": "The setting kept changing under the write; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "core.host_enrollment kept changing; retry"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The library database could not be read or written.",
             "content": {
@@ -11791,6 +11804,19 @@
                       "error": "user 7 is not an active owner"
                     }
                   }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The setting kept changing under the write; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "core.host_enrollment kept changing; retry"
                 }
               }
             }
@@ -18291,7 +18317,7 @@
             }
           },
           "400": {
-            "description": "The body is not an enroll request, its keys are not base64url, or the code or verifier is blank.",
+            "description": "The body is not an enroll request, or its keys are not base64url.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18315,7 +18341,7 @@
             }
           },
           "403": {
-            "description": "The connection failed the transport policy (`transport_insecure`, with the check in `reason`), or the code does not redeem: unknown, used, expired, wrong verifier, or the user may no longer let a clerk join (`enrollment_refused`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The connection failed the transport policy (`transport_insecure`, with the check in `reason`), or the code does not redeem: blank, unknown, used, expired, wrong verifier, or the user may no longer let a clerk join (`enrollment_refused`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -20888,6 +20914,26 @@
           }
         }
       },
+      "BranchOnlyChoice": {
+        "type": "object",
+        "description": "The consent page's connection block when only a branch is offered.",
+        "required": [
+          "choice",
+          "default"
+        ],
+        "properties": {
+          "choice": {
+            "type": "boolean",
+            "description": "Always `false`.",
+            "example": false
+          },
+          "default": {
+            "type": "string",
+            "description": "Always `branch`.",
+            "example": "branch"
+          }
+        }
+      },
       "BranchTitleCounts": {
         "type": "object",
         "description": "Counts of one branch's shared titles.",
@@ -21743,69 +21789,22 @@
         }
       },
       "ConnectionChoice": {
-        "oneOf": [
+        "anyOf": [
           {
-            "type": "object",
-            "description": "Only a branch (the user is not an Owner).",
-            "required": [
-              "choice",
-              "default"
-            ],
-            "properties": {
-              "choice": {
-                "type": "boolean",
-                "description": "Always `false`.",
-                "example": false
-              },
-              "default": {
-                "type": "string",
-                "description": "Always `branch`.",
-                "example": "branch"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BranchOnlyChoice"
               }
-            }
+            ],
+            "description": "Only a branch (the user is not an Owner)."
           },
           {
-            "type": "object",
-            "description": "An Owner may pick clerk, when it is available.",
-            "required": [
-              "choice",
-              "default",
-              "clerk_available",
-              "step_up"
-            ],
-            "properties": {
-              "choice": {
-                "type": "boolean",
-                "description": "Always `true`.",
-                "example": true
-              },
-              "default": {
-                "type": "string",
-                "description": "Always `branch`.",
-                "example": "branch"
-              },
-              "clerk_available": {
-                "type": "boolean",
-                "description": "Whether clerk may be chosen right now.",
-                "example": false
-              },
-              "clerk_reason": {
-                "type": "string",
-                "description": "Why clerk is shown disabled, when it is.",
-                "example": "The joining server already holds library data of its own (or did not offer it), so it can only join as a branch.",
-                "nullable": true
-              },
-              "step_up": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "The second factors the Owner can step up with (`totp`, `passkey`).",
-                "example": [
-                  "passkey"
-                ]
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OwnerChoice"
               }
-            }
+            ],
+            "description": "An Owner may pick clerk, when it is available."
           }
         ],
         "description": "What the consent page may offer: branch only, or a choice between branch and clerk for an Owner."
@@ -25882,6 +25881,49 @@
           }
         }
       },
+      "OwnerChoice": {
+        "type": "object",
+        "description": "The consent page's connection block for an Owner, who may pick clerk.",
+        "required": [
+          "choice",
+          "default",
+          "clerk_available",
+          "step_up"
+        ],
+        "properties": {
+          "choice": {
+            "type": "boolean",
+            "description": "Always `true`.",
+            "example": true
+          },
+          "default": {
+            "type": "string",
+            "description": "Always `branch`.",
+            "example": "branch"
+          },
+          "clerk_available": {
+            "type": "boolean",
+            "description": "Whether clerk may be chosen right now.",
+            "example": false
+          },
+          "clerk_reason": {
+            "type": "string",
+            "description": "Why clerk is shown disabled, when it is.",
+            "example": "The joining server already holds library data of its own (or did not offer it), so it can only join as a branch.",
+            "nullable": true
+          },
+          "step_up": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The second factors the Owner can step up with (`totp`, `passkey`).",
+            "example": [
+              "passkey"
+            ]
+          }
+        }
+      },
       "OwnerInfo": {
         "type": "object",
         "description": "`GET /api/node/v1/info` answer.",
@@ -29436,19 +29478,43 @@
             "example": "1.4.2"
           },
           "requested_grant": {
-            "description": "A plugin grant: the plugin key, network domains and bindings it may use; `null` when nothing was approved.",
+            "description": "A plugin grant document (the plugin host's `PluginGrant`): the plugin key, the entrypoints, network mode and domains, and the bindings it may use; `null` when nothing was approved.",
             "example": {
+              "addressCidrs": [],
+              "allowUndeclaredPublicRedirects": false,
+              "approvedAt": "2026-10-29T10:12:00Z",
               "bindings": [
                 "config",
-                "work_fs"
+                "secrets"
               ],
-              "network": {
-                "domains": [
-                  "libro.fm",
-                  "*.libro.fm"
-                ]
-              },
-              "pluginKey": "bookclerk:source-libro"
+              "compatibilityFlags": [],
+              "consumers": [],
+              "domains": [
+                "api.libro.fm",
+                "cdn.libro.fm"
+              ],
+              "entrypoints": [
+                "storefront"
+              ],
+              "jobs": [],
+              "manifestCidrs": [],
+              "manifestDomains": [
+                "api.libro.fm",
+                "cdn.libro.fm"
+              ],
+              "manifestTcp": [],
+              "networkMode": "outbound",
+              "operatorAddedCidrs": [],
+              "operatorAddedDomains": [],
+              "operatorAddedTcp": [],
+              "operatorDeniedCidrs": [],
+              "operatorDeniedDomains": [],
+              "operatorDeniedTcp": [],
+              "pluginId": "libro",
+              "pluginKey": "bookclerk:source-libro",
+              "producers": [],
+              "schemaVersion": 2,
+              "tcp": []
             }
           },
           "requested_artifact": {
@@ -29471,19 +29537,43 @@
             "nullable": true
           },
           "grant": {
-            "description": "A plugin grant: the plugin key, network domains and bindings it may use; `null` when nothing was approved.",
+            "description": "A plugin grant document (the plugin host's `PluginGrant`): the plugin key, the entrypoints, network mode and domains, and the bindings it may use; `null` when nothing was approved.",
             "example": {
+              "addressCidrs": [],
+              "allowUndeclaredPublicRedirects": false,
+              "approvedAt": "2026-10-29T10:12:00Z",
               "bindings": [
                 "config",
-                "work_fs"
+                "secrets"
               ],
-              "network": {
-                "domains": [
-                  "libro.fm",
-                  "*.libro.fm"
-                ]
-              },
-              "pluginKey": "bookclerk:source-libro"
+              "compatibilityFlags": [],
+              "consumers": [],
+              "domains": [
+                "api.libro.fm",
+                "cdn.libro.fm"
+              ],
+              "entrypoints": [
+                "storefront"
+              ],
+              "jobs": [],
+              "manifestCidrs": [],
+              "manifestDomains": [
+                "api.libro.fm",
+                "cdn.libro.fm"
+              ],
+              "manifestTcp": [],
+              "networkMode": "outbound",
+              "operatorAddedCidrs": [],
+              "operatorAddedDomains": [],
+              "operatorAddedTcp": [],
+              "operatorDeniedCidrs": [],
+              "operatorDeniedDomains": [],
+              "operatorDeniedTcp": [],
+              "pluginId": "libro",
+              "pluginKey": "bookclerk:source-libro",
+              "producers": [],
+              "schemaVersion": 2,
+              "tcp": []
             }
           },
           "approved_at": {
@@ -29511,8 +29601,8 @@
           },
           "state": {
             "type": "string",
-            "description": "`pending`, `approved`, `narrowed`, `stale`, or `revoked`.",
-            "example": "approved"
+            "description": "How this host stands on the request: `consented`, `awaiting_host_consent` (no approval, or a revoked one), `awaiting_host_reapproval` (the owner changed the request or the archive since the approval), or `invalid_grant` (a grant that does not parse).",
+            "example": "consented"
           }
         }
       },
@@ -31401,7 +31491,7 @@
           },
           "reason": {
             "type": "string",
-            "description": "The transport check that refused the connection (`plain_http`,\n`unknown_peer`, `untrusted_forwarding`, `proxy_proto_missing`,\n`proxy_proto_ambiguous`, `proxy_proto_not_https`,\n`public_origin_not_https`, `listener_mode_mismatch`, `misconfigured`).",
+            "description": "The transport check that refused the connection (`plain_http`,\n`unknown_peer`, `untrusted_forwarding`, `proxy_proto_missing`,\n`proxy_proto_ambiguous`, `proxy_proto_not_https`,\n`public_origin_not_https`, `listener_mode_mismatch`,\n`node_api_misconfigured`).",
             "example": "plain_http"
           }
         }

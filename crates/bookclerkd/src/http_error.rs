@@ -132,7 +132,8 @@ pub(crate) struct TransportRefused {
     /// The transport check that refused the connection (`plain_http`,
     /// `unknown_peer`, `untrusted_forwarding`, `proxy_proto_missing`,
     /// `proxy_proto_ambiguous`, `proxy_proto_not_https`,
-    /// `public_origin_not_https`, `listener_mode_mismatch`, `misconfigured`).
+    /// `public_origin_not_https`, `listener_mode_mismatch`,
+    /// `node_api_misconfigured`).
     #[schema(example = "plain_http")]
     pub(crate) reason: &'static str,
 }
@@ -169,27 +170,30 @@ pub(crate) enum ErrorAnswer {
     Detail(ErrorDetail),
 }
 
+/// A `$ref` to the named error schema, described for the `anyOf` it sits in.
+fn error_shape(name: &str, description: &str) -> utoipa::openapi::schema::Ref {
+    utoipa::openapi::schema::RefBuilder::new()
+        .ref_location_from_schema_name(name)
+        .description(Some(description))
+        .build()
+}
+
+/// Description of the session middleware's [`ErrorJson`] in an `anyOf`.
+const STANDARD_SHAPE: &str =
+    "The session middleware's standard body (`error`, `message`, `status`).";
+
 impl utoipa::PartialSchema for ErrorAnswer {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        use utoipa::openapi::schema::{AnyOfBuilder, RefBuilder};
-        AnyOfBuilder::new()
-            .item(
-                RefBuilder::new()
-                    .ref_location_from_schema_name("ErrorJson")
-                    .description(Some(
-                        "The session middleware's standard body (`error`, `message`, `status`).",
-                    )),
-            )
-            .item(
-                RefBuilder::new()
-                    .ref_location_from_schema_name("ErrorMessage")
-                    .description(Some("A slug or a sentence in `error`.")),
-            )
-            .item(
-                RefBuilder::new()
-                    .ref_location_from_schema_name("ErrorDetail")
-                    .description(Some("A slug in `error` and a sentence in `detail`.")),
-            )
+        utoipa::openapi::schema::AnyOfBuilder::new()
+            .item(error_shape("ErrorJson", STANDARD_SHAPE))
+            .item(error_shape(
+                "ErrorMessage",
+                "A slug or a sentence in `error`.",
+            ))
+            .item(error_shape(
+                "ErrorDetail",
+                "A slug in `error` and a sentence in `detail`.",
+            ))
             .description(Some(concat!(
                 "An error answer in one of several shapes: the standard body, `error` alone, ",
                 "or `error` with `detail`; the route's examples name each."
@@ -237,32 +241,20 @@ pub(crate) enum NodeRefusal {
 
 impl utoipa::PartialSchema for NodeRefusal {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        use utoipa::openapi::schema::{AnyOfBuilder, RefBuilder};
-        AnyOfBuilder::new()
-            .item(
-                RefBuilder::new()
-                    .ref_location_from_schema_name("TransportRefused")
-                    .description(Some("The connection failed the transport policy.")),
-            )
-            .item(
-                RefBuilder::new()
-                    .ref_location_from_schema_name("ErrorJson")
-                    .description(Some(
-                        "The session middleware's standard body (`error`, `message`, `status`).",
-                    )),
-            )
-            .item(
-                RefBuilder::new()
-                    .ref_location_from_schema_name("ErrorMessage")
-                    .description(Some("The handler refused with a slug in `error`.")),
-            )
-            .item(
-                RefBuilder::new()
-                    .ref_location_from_schema_name("ErrorDetail")
-                    .description(Some(
-                        "The handler refused with a slug in `error` and a sentence in `detail`.",
-                    )),
-            )
+        utoipa::openapi::schema::AnyOfBuilder::new()
+            .item(error_shape(
+                "TransportRefused",
+                "The connection failed the transport policy.",
+            ))
+            .item(error_shape("ErrorJson", STANDARD_SHAPE))
+            .item(error_shape(
+                "ErrorMessage",
+                "The handler refused with a slug in `error`.",
+            ))
+            .item(error_shape(
+                "ErrorDetail",
+                "The handler refused with a slug in `error` and a sentence in `detail`.",
+            ))
             .description(Some(concat!(
                 "A `403` from a node API route: the transport policy's refusal, the standard ",
                 "body, or the handler's own error; the route's examples name each."

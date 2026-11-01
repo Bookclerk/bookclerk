@@ -204,11 +204,11 @@ const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
     request_body = bookclerk_node_proto::OAuthEnrollRequest,
     responses(
         (status = 200, description = "The branch is enrolled; its node credential.", body = super::EnrolledNodeView),
-        (status = 400, description = "The body is not an enroll request, its keys are not base64url, or the code or verifier is blank.", body = crate::http_error::ErrorMessage, examples(
+        (status = 400, description = "The body is not an enroll request, or its keys are not base64url.", body = crate::http_error::ErrorMessage, examples(
             ("malformed" = (summary = "The body does not parse as an enroll request.", value = json!({"error": "invalid enroll request"}))),
             ("bad_keys" = (summary = "A public key is not base64url.", value = json!({"error": "sign_pk and box_pk must be base64url"}))),
         )),
-        (status = 403, description = "The connection failed the transport policy (`transport_insecure`, with the check in `reason`), or the code does not redeem: unknown, used, expired, wrong verifier, or the user may no longer let a clerk join (`enrollment_refused`).", body = crate::http_error::NodeRefusal, examples(
+        (status = 403, description = "The connection failed the transport policy (`transport_insecure`, with the check in `reason`), or the code does not redeem: blank, unknown, used, expired, wrong verifier, or the user may no longer let a clerk join (`enrollment_refused`).", body = crate::http_error::NodeRefusal, examples(
             ("transport_insecure" = (summary = "Plain HTTP from another machine.", value = json!({"error": "transport_insecure", "reason": "plain_http"}))),
             ("enrollment_refused" = (summary = "The code does not redeem.", value = json!({"error": "enrollment_refused"}))),
         )),
@@ -698,39 +698,86 @@ pub struct ConsentingUser {
     pub display_name: Option<String>,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// What the consent page may offer: branch only, or a choice between
+/// branch and clerk for an Owner.
+///
+/// The schema is written by hand as an `anyOf`: an Owner's answer also
+/// satisfies [`BranchOnlyChoice`] (that schema admits extra properties),
+/// so the derived `oneOf` would reject it.
+#[derive(Debug, Serialize)]
 #[serde(untagged)]
-/// What the consent page may offer: branch only, or a choice between branch and clerk for an Owner.
 pub enum ConnectionChoice {
     /// Only a branch (the user is not an Owner).
-    BranchOnly {
-        /// Always `false`.
-        #[schema(example = false)]
-        choice: bool,
-        /// Always `branch`.
-        #[schema(example = "branch")]
-        default: &'static str,
-    },
+    BranchOnly(BranchOnlyChoice),
     /// An Owner may pick clerk, when it is available.
-    OwnerChoice {
-        /// Always `true`.
-        #[schema(example = true)]
-        choice: bool,
-        /// Always `branch`.
-        #[schema(example = "branch")]
-        default: &'static str,
-        /// Whether clerk may be chosen right now.
-        #[schema(example = false)]
-        clerk_available: bool,
-        /// Why clerk is shown disabled, when it is.
-        #[schema(
-            example = "The joining server already holds library data of its own (or did not offer it), so it can only join as a branch."
-        )]
-        clerk_reason: Option<String>,
-        /// The second factors the Owner can step up with (`totp`, `passkey`).
-        #[schema(example = json!(["passkey"]))]
-        step_up: Vec<&'static str>,
-    },
+    Owner(OwnerChoice),
+}
+
+impl utoipa::PartialSchema for ConnectionChoice {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{AnyOfBuilder, RefBuilder};
+        AnyOfBuilder::new()
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("BranchOnlyChoice")
+                    .description(Some("Only a branch (the user is not an Owner).")),
+            )
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("OwnerChoice")
+                    .description(Some("An Owner may pick clerk, when it is available.")),
+            )
+            .description(Some(
+                "What the consent page may offer: branch only, or a choice between branch and clerk for an Owner.",
+            ))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for ConnectionChoice {
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        use utoipa::PartialSchema;
+        schemas.push(("BranchOnlyChoice".to_string(), BranchOnlyChoice::schema()));
+        schemas.push(("OwnerChoice".to_string(), OwnerChoice::schema()));
+    }
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// The consent page's connection block when only a branch is offered.
+pub struct BranchOnlyChoice {
+    /// Always `false`.
+    #[schema(example = false)]
+    pub choice: bool,
+    /// Always `branch`.
+    #[schema(example = "branch")]
+    pub default: &'static str,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// The consent page's connection block for an Owner, who may pick clerk.
+pub struct OwnerChoice {
+    /// Always `true`.
+    #[schema(example = true)]
+    pub choice: bool,
+    /// Always `branch`.
+    #[schema(example = "branch")]
+    pub default: &'static str,
+    /// Whether clerk may be chosen right now.
+    #[schema(example = false)]
+    pub clerk_available: bool,
+    /// Why clerk is shown disabled, when it is.
+    #[schema(
+        example = "The joining server already holds library data of its own (or did not offer it), so it can only join as a branch."
+    )]
+    pub clerk_reason: Option<String>,
+    /// The second factors the Owner can step up with (`totp`, `passkey`).
+    #[schema(example = json!(["passkey"]))]
+    pub step_up: Vec<&'static str>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -934,10 +981,10 @@ async fn connection_view(
     let library = state.library_snapshot().await;
     let owner = verify_cluster_owner(&library, user.id).await.is_ok();
     if !owner {
-        return Ok(ConnectionChoice::BranchOnly {
+        return Ok(ConnectionChoice::BranchOnly(BranchOnlyChoice {
             choice: false,
             default: "branch",
-        });
+        }));
     }
     let methods = step_up_methods(&library, user).await?;
     let reason = if !params.clerk_offered() {
@@ -957,13 +1004,13 @@ async fn connection_view(
     } else {
         None
     };
-    Ok(ConnectionChoice::OwnerChoice {
+    Ok(ConnectionChoice::Owner(OwnerChoice {
         choice: true,
         default: "branch",
         clerk_available: reason.is_none(),
         clerk_reason: reason,
         step_up: methods,
-    })
+    }))
 }
 
 /// A fresh second factor for a clerk consent. `Debug` prints no code.
@@ -1544,6 +1591,7 @@ pub struct PutBranches {
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
+        (status = 409, description = "The setting kept changing under the write; retry.", body = crate::http_error::ErrorMessage, example = json!({"error": "core.host_enrollment kept changing; retry"})),
         (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]

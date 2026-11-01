@@ -34,7 +34,7 @@ use bookclerk_library::control_plane::{
     ClusterLink, RemoteApprover, RemotePluginConsent,
 };
 use bookclerk_plugin_host::{
-    approve_remote_request, remote_consent_view, RemoteApprovalError, RemoteNarrowing,
+    approve_remote_request, remote_row_consent_state, RemoteApprovalError, RemoteNarrowing,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -46,10 +46,34 @@ use crate::config_authority::events_error;
 /// Audit identity of approvals made through the API.
 const API_APPROVER: &str = "operator";
 
-/// JSON for one consent row ([`remote_consent_view`], the view the CLI
-/// prints too).
-pub(crate) fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
-    remote_consent_view(row)
+/// The view of one consent row: the same fields, in the same shapes, as
+/// [`bookclerk_plugin_host::remote_consent_view`], which the CLI prints
+/// (a test keeps the two equal). A stored grant that does not parse shows
+/// as `null`.
+pub(crate) fn consent_json(row: &RemotePluginConsent) -> RemoteConsentView {
+    let parse = |raw: Option<&str>| {
+        raw.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .unwrap_or(serde_json::Value::Null)
+    };
+    RemoteConsentView {
+        cluster_id: row.owner_cluster_id.clone(),
+        plugin_key: row.plugin_key.clone(),
+        requested_version: row.requested_version.clone(),
+        requested_grant: parse(Some(&row.requested_grant_json)),
+        requested_artifact: RequestedArtifact {
+            url: row.requested_artifact_url.clone(),
+            archive_sha256: row.requested_artifact_sha256.clone(),
+            payload_root_sha256: row.requested_artifact_payload_sha256.clone(),
+        },
+        request_digest: row.request_digest(),
+        approved_version: row.version.clone(),
+        grant: parse(row.grant_json.as_deref()),
+        approved_at: row.approved_at.clone(),
+        approved_by: row.approved_by.clone(),
+        revoked_at: row.revoked_at.clone(),
+        updated_at: row.updated_at.clone(),
+        state: remote_row_consent_state(row).as_str(),
+    }
 }
 
 /// JSON for one cluster link: ids, origin and state, never key material.
@@ -101,9 +125,6 @@ pub struct ClusterLinkView {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-// Documents the body `bookclerk_plugin_host::remote_consent_view` builds;
-// that crate carries no schemas.
-#[allow(dead_code)]
 /// An owner library's request to run a plugin on this install, and what the operator answered.
 pub struct RemoteConsentView {
     /// The owner library's cluster id.
@@ -141,9 +162,9 @@ pub struct RemoteConsentView {
     /// RFC 3339 time of the last write.
     #[schema(example = "2026-10-29T10:12:00Z")]
     pub updated_at: String,
-    /// `pending`, `approved`, `narrowed`, `stale`, or `revoked`.
-    #[schema(example = "approved")]
-    pub state: String,
+    /// How this host stands on the request: `consented`, `awaiting_host_consent` (no approval, or a revoked one), `awaiting_host_reapproval` (the owner changed the request or the archive since the approval), or `invalid_grant` (a grant that does not parse).
+    #[schema(example = "consented")]
+    pub state: &'static str,
 }
 
 /// Schema for the grant members of [`RemoteConsentView`].
@@ -151,19 +172,39 @@ fn grant_schema() -> utoipa::openapi::schema::Schema {
     utoipa::openapi::ObjectBuilder::new()
         .schema_type(utoipa::openapi::schema::SchemaType::AnyValue)
         .description(Some(
-            "A plugin grant: the plugin key, network domains and bindings it may use; `null` when nothing was approved.",
+            "A plugin grant document (the plugin host's `PluginGrant`): the plugin key, the entrypoints, network mode and domains, and the bindings it may use; `null` when nothing was approved.",
         ))
         .examples([json!({
+            "schemaVersion": 2,
             "pluginKey": "bookclerk:source-libro",
-            "network": { "domains": ["libro.fm", "*.libro.fm"] },
-            "bindings": ["config", "work_fs"]
+            "pluginId": "libro",
+            "entrypoints": ["storefront"],
+            "producers": [],
+            "consumers": [],
+            "jobs": [],
+            "networkMode": "outbound",
+            "domains": ["api.libro.fm", "cdn.libro.fm"],
+            "manifestDomains": ["api.libro.fm", "cdn.libro.fm"],
+            "operatorAddedDomains": [],
+            "operatorDeniedDomains": [],
+            "tcp": [],
+            "manifestTcp": [],
+            "operatorAddedTcp": [],
+            "operatorDeniedTcp": [],
+            "addressCidrs": [],
+            "manifestCidrs": [],
+            "operatorAddedCidrs": [],
+            "operatorDeniedCidrs": [],
+            "allowUndeclaredPublicRedirects": false,
+            "bindings": ["config", "secrets"],
+            "compatibilityFlags": [],
+            "approvedAt": "2026-10-29T10:12:00Z"
         })])
         .build()
         .into()
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-#[allow(dead_code)]
 /// The archive an owner library deploys to this install.
 pub struct RequestedArtifact {
     /// Where the owner fetches it from.
@@ -183,16 +224,14 @@ pub struct ClusterConsentsResponse {
     /// Every library this install is a branch of.
     pub clusters: Vec<ClusterLinkView>,
     /// Every plugin request from those libraries, pending or answered.
-    #[schema(value_type = Vec<RemoteConsentView>)]
-    pub consents: Vec<serde_json::Value>,
+    pub consents: Vec<RemoteConsentView>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// JSON body after a consent was approved or revoked.
 pub struct ConsentChanged {
     /// The consent as stored now.
-    #[schema(value_type = RemoteConsentView)]
-    pub consent: serde_json::Value,
+    pub consent: RemoteConsentView,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]

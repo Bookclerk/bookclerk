@@ -318,6 +318,73 @@ async fn deny_network_turns_network_off() {
         .is_none_or(|domains| domains.is_empty()));
 }
 
+/// The API's consent view is the one the CLI prints
+/// ([`bookclerk_plugin_host::remote_consent_view`]): field for field, for
+/// a pending request, after an approval, and after a revoke.
+#[tokio::test]
+async fn the_consent_view_matches_the_shared_view() {
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (_state, store, app) = daemon(&files).await;
+    let bearer = format!("Bearer {TOKEN}");
+    let same_view = |row: &bookclerk_library::control_plane::RemotePluginConsent| {
+        let ours = serde_json::to_value(super::consent_json(row)).unwrap();
+        let shared = bookclerk_plugin_host::remote_consent_view(row);
+        assert_eq!(ours, shared);
+        ours
+    };
+    let pending = load_remote_plugin_consent(&store, CLUSTER, PLUGIN)
+        .await
+        .unwrap()
+        .unwrap();
+    let view = same_view(&pending);
+    assert_eq!(view["state"], "awaiting_host_consent");
+    assert_eq!(view["grant"], Value::Null);
+    assert_eq!(view["requested_grant"]["pluginKey"], PLUGIN);
+    assert_eq!(view["request_digest"], pending.request_digest());
+
+    let (status, approved) = call(
+        &app,
+        "POST",
+        "/api/config/cluster-consents/approve",
+        Some(&bearer),
+        json!({
+            "cluster_id": CLUSTER,
+            "plugin_key": PLUGIN,
+            "request_digest": pending.request_digest(),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    let row = load_remote_plugin_consent(&store, CLUSTER, PLUGIN)
+        .await
+        .unwrap()
+        .unwrap();
+    let view = same_view(&row);
+    assert_eq!(approved["consent"], view);
+    assert_eq!(view["state"], "consented");
+    assert_eq!(view["approved_by"], "operator");
+    assert_eq!(view["grant"]["networkMode"], "outbound");
+
+    let (status, revoked) = call(
+        &app,
+        "POST",
+        "/api/config/cluster-consents/revoke",
+        Some(&bearer),
+        json!({ "cluster_id": CLUSTER, "plugin_key": PLUGIN }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{revoked}");
+    let row = load_remote_plugin_consent(&store, CLUSTER, PLUGIN)
+        .await
+        .unwrap()
+        .unwrap();
+    let view = same_view(&row);
+    assert_eq!(revoked["consent"], view);
+    assert_eq!(view["state"], "awaiting_host_consent");
+    assert!(view["revoked_at"].is_string(), "{view}");
+}
+
 /// Only a changed request is a conflict; a missing request, a bad
 /// narrowing and a store fault each answer their own status.
 #[test]
