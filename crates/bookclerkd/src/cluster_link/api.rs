@@ -36,7 +36,7 @@ use bookclerk_library::control_plane::{
 use bookclerk_plugin_host::{
     approve_remote_request, remote_consent_view, RemoteApprovalError, RemoteNarrowing,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::consent::notify_consent_changed;
@@ -53,17 +53,170 @@ pub(crate) fn consent_json(row: &RemotePluginConsent) -> serde_json::Value {
 }
 
 /// JSON for one cluster link: ids, origin and state, never key material.
-pub(crate) fn link_json(link: &ClusterLink) -> serde_json::Value {
-    json!({
-        "cluster_id": link.owner_cluster_id,
-        "owner_origin": link.owner_origin,
-        "node_id": link.remote_node_id,
-        "pinned": link.spki_pin.is_some(),
-        "state": link.state,
-        "enrolled_at": link.enrolled_at,
-        "share_books": link.share_books,
-        "include_branches": link.include_branches,
-    })
+pub(crate) fn link_json(link: &ClusterLink) -> ClusterLinkView {
+    ClusterLinkView {
+        cluster_id: link.owner_cluster_id.clone(),
+        owner_origin: link.owner_origin.clone(),
+        node_id: link.remote_node_id.clone(),
+        pinned: link.spki_pin.is_some(),
+        state: link.state.clone(),
+        enrolled_at: link.enrolled_at.clone(),
+        share_books: link.share_books,
+        include_branches: link.include_branches,
+        running: None,
+    }
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// A library this install is a branch of: ids, origin and state, never key material.
+pub struct ClusterLinkView {
+    /// The library's cluster id.
+    #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
+    pub cluster_id: String,
+    /// The library's canonical origin.
+    #[schema(example = "https://books.example.com")]
+    pub owner_origin: String,
+    /// The node id the library minted for this install.
+    #[schema(example = "n_4e8a1c7f")]
+    pub node_id: String,
+    /// Whether the link pins the library's self-signed certificate.
+    #[schema(example = false)]
+    pub pinned: bool,
+    /// `active`, `revoked`, or `left`.
+    #[schema(example = "active")]
+    pub state: String,
+    /// RFC 3339 enrollment time.
+    #[schema(example = "2026-10-29T09:02:41Z")]
+    pub enrolled_at: String,
+    /// "Share this branch's books with the library".
+    #[schema(example = true)]
+    pub share_books: bool,
+    /// "Include books from my own branches".
+    #[schema(example = true)]
+    pub include_branches: bool,
+    /// Whether this install's client for the link is running now; only the join routes report it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = true)]
+    pub running: Option<bool>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+// Documents the body `bookclerk_plugin_host::remote_consent_view` builds;
+// that crate carries no schemas.
+#[allow(dead_code)]
+/// An owner library's request to run a plugin on this install, and what the operator answered.
+pub struct RemoteConsentView {
+    /// The owner library's cluster id.
+    #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
+    pub cluster_id: String,
+    /// Canonical plugin key.
+    #[schema(example = "bookclerk:source-libro")]
+    pub plugin_key: String,
+    /// Version the owner deploys here now.
+    #[schema(example = "1.4.2")]
+    pub requested_version: String,
+    /// The owner's approved grant for that version.
+    #[schema(schema_with = grant_schema)]
+    pub requested_grant: serde_json::Value,
+    /// The archive the owner deploys to this install.
+    pub requested_artifact: RequestedArtifact,
+    /// Digest of the request as a whole; an approval names it so a changed request is not approved by mistake.
+    #[schema(example = "9c1e4f7a2b3d5e6f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f")]
+    pub request_digest: String,
+    /// Version this install's operator approved, when any.
+    #[schema(example = "1.4.2")]
+    pub approved_version: Option<String>,
+    /// The grant the operator consented to, when any.
+    #[schema(schema_with = grant_schema)]
+    pub grant: serde_json::Value,
+    /// RFC 3339 approval time.
+    #[schema(example = "2026-10-29T10:12:00Z")]
+    pub approved_at: Option<String>,
+    /// Who approved (`operator`, or `platform` for an automatic approval).
+    #[schema(example = "operator")]
+    pub approved_by: Option<String>,
+    /// RFC 3339 time the operator revoked the approval.
+    #[schema(example = "2026-11-01T08:00:00Z")]
+    pub revoked_at: Option<String>,
+    /// RFC 3339 time of the last write.
+    #[schema(example = "2026-10-29T10:12:00Z")]
+    pub updated_at: String,
+    /// `pending`, `approved`, `narrowed`, `stale`, or `revoked`.
+    #[schema(example = "approved")]
+    pub state: String,
+}
+
+/// Schema for the grant members of [`RemoteConsentView`].
+fn grant_schema() -> utoipa::openapi::schema::Schema {
+    utoipa::openapi::ObjectBuilder::new()
+        .schema_type(utoipa::openapi::schema::SchemaType::AnyValue)
+        .description(Some(
+            "A plugin grant: the plugin key, network domains and bindings it may use; `null` when nothing was approved.",
+        ))
+        .examples([json!({
+            "pluginKey": "bookclerk:source-libro",
+            "network": { "domains": ["libro.fm", "*.libro.fm"] },
+            "bindings": ["config", "work_fs"]
+        })])
+        .build()
+        .into()
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+/// The archive an owner library deploys to this install.
+pub struct RequestedArtifact {
+    /// Where the owner fetches it from.
+    #[schema(example = "https://books.example.com/api/plugins/artifacts/9c1e4f7a")]
+    pub url: String,
+    /// SHA-256 of the archive.
+    #[schema(example = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")]
+    pub archive_sha256: String,
+    /// Payload-root digest of the tree it unpacks to.
+    #[schema(example = "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")]
+    pub payload_root_sha256: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/config/cluster-consents`.
+pub struct ClusterConsentsResponse {
+    /// Every library this install is a branch of.
+    pub clusters: Vec<ClusterLinkView>,
+    /// Every plugin request from those libraries, pending or answered.
+    #[schema(value_type = Vec<RemoteConsentView>)]
+    pub consents: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after a consent was approved or revoked.
+pub struct ConsentChanged {
+    /// The consent as stored now.
+    #[schema(value_type = RemoteConsentView)]
+    pub consent: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after the owner library queued a scan for this install.
+pub struct ClusterScanPlanned {
+    /// The owner library's cluster id.
+    #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
+    pub cluster_id: String,
+    /// Ids of the jobs the owner created.
+    #[schema(example = json!(["scan-7f3a9c1e"]))]
+    pub created: Vec<String>,
+    /// Ids of jobs that were already pending or running.
+    #[schema(example = json!([]))]
+    pub duplicates: Vec<String>,
+    /// Planned jobs the owner's queue had no room for.
+    #[schema(example = 0)]
+    pub queue_full: u64,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body for `POST /api/config/clusters/{cluster_id}/jobs`.
+pub struct ClusterJobsResponse {
+    /// The owner's state of each job this install may see, in request order.
+    pub jobs: Vec<bookclerk_node_proto::JobStatusEntry>,
 }
 
 /// `GET /api/config/cluster-consents`.
@@ -71,23 +224,24 @@ pub(crate) fn link_json(link: &ClusterLink) -> serde_json::Value {
     get,
     path = "/api/config/cluster-consents",
     responses(
-        (status = 200, description = "Pending and granted cluster consents.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 200, description = "Pending and granted cluster consents.", body = ClusterConsentsResponse),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The session is impersonating a user."),
+        (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_cluster_consents(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<ClusterConsentsResponse>, Response> {
     let library = state.library_snapshot().await;
     let links = list_cluster_links(&library).await.map_err(events_error)?;
     let rows = list_remote_plugin_consents(&library, None)
         .await
         .map_err(events_error)?;
-    Ok(Json(json!({
-        "clusters": links.iter().map(link_json).collect::<Vec<_>>(),
-        "consents": rows.iter().map(consent_json).collect::<Vec<_>>(),
-    })))
+    Ok(Json(ClusterConsentsResponse {
+        clusters: links.iter().map(link_json).collect(),
+        consents: rows.iter().map(consent_json).collect(),
+    }))
 }
 
 /// `POST /api/config/cluster-consents/approve` body.
@@ -118,16 +272,19 @@ pub struct ApproveBody {
     path = "/api/config/cluster-consents/approve",
     request_body = ApproveBody,
     responses(
-        (status = 200, description = "The consent was granted.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such consent."),
+        (status = 200, description = "The consent was granted.", body = ConsentChanged),
+        (status = 400, description = "The narrowing or the recorded request is not valid (`invalid_approval`).", body = crate::http_error::ErrorDetail, example = json!({"error": "invalid_approval", "detail": "the recorded request does not parse"})),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The session is impersonating a user."),
+        (status = 404, description = "That cluster has not asked to run that plugin here (`not_requested`).", body = crate::http_error::ErrorDetail, example = json!({"error": "not_requested", "detail": "cluster c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f has not asked to run bookclerk:source-libro here"})),
+        (status = 409, description = "The request changed since it was reviewed; review it again (`approval_refused`).", body = crate::http_error::ErrorDetail, example = json!({"error": "approval_refused", "detail": "the request for bookclerk:source-libro changed since it was reviewed (now version 1.4.3, request 9c1e4f7a2b3d5e6f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f); review it again"})),
+        (status = 503, description = "The approval could not be stored; try again (`store_unavailable`).", body = crate::http_error::ErrorDetail, example = json!({"error": "store_unavailable", "detail": "the approval could not be stored; try again"})),
     ),
 )]
 pub async fn post_cluster_consent_approve(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ApproveBody>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<ConsentChanged>, Response> {
     let library = state.library_snapshot().await;
     let row = approve_remote_request(
         &library,
@@ -149,7 +306,9 @@ pub async fn post_cluster_consent_approve(
         "owner plugin approved by this host's operator"
     );
     notify_consent_changed();
-    Ok(Json(json!({ "consent": consent_json(&row) })))
+    Ok(Json(ConsentChanged {
+        consent: consent_json(&row),
+    }))
 }
 
 /// The status and error code an approval refusal answers with: `404`
@@ -175,7 +334,11 @@ fn approval_error_response(err: &RemoteApprovalError) -> Response {
     } else {
         err.to_string()
     };
-    (status, Json(json!({ "error": code, "detail": detail }))).into_response()
+    (
+        status,
+        Json(crate::http_error::ErrorDetail::new(code, detail)),
+    )
+        .into_response()
 }
 
 /// `POST /api/config/cluster-consents/revoke` body.
@@ -194,22 +357,27 @@ pub struct RevokeBody {
     path = "/api/config/cluster-consents/revoke",
     request_body = RevokeBody,
     responses(
-        (status = 200, description = "The consent was revoked.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such consent."),
+        (status = 200, description = "The consent was revoked.", body = ConsentChanged),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The session is impersonating a user."),
+        (status = 404, description = "No such consent (`not_found`).", body = crate::http_error::ErrorMessage, example = json!({"error": "not_found"})),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn post_cluster_consent_revoke(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RevokeBody>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<ConsentChanged>, Response> {
     let library = state.library_snapshot().await;
     let row = revoke_remote_plugin(&library, body.cluster_id.trim(), body.plugin_key.trim())
         .await
         .map_err(events_error)?
         .ok_or_else(|| {
-            (StatusCode::NOT_FOUND, Json(json!({ "error": "not_found" }))).into_response()
+            (
+                StatusCode::NOT_FOUND,
+                Json(crate::http_error::ErrorMessage::new("not_found")),
+            )
+                .into_response()
         })?;
     tracing::info!(
         cluster_id = %row.owner_cluster_id,
@@ -217,7 +385,9 @@ pub async fn post_cluster_consent_revoke(
         "owner plugin consent revoked by this host's operator"
     );
     notify_consent_changed();
-    Ok(Json(json!({ "consent": consent_json(&row) })))
+    Ok(Json(ConsentChanged {
+        consent: consent_json(&row),
+    }))
 }
 
 /// `POST /api/config/clusters/{cluster_id}/scan` body.
@@ -259,10 +429,10 @@ async fn connected_link(
         .ok_or_else(|| {
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
-                    "error": "not_connected",
-                    "detail": "this daemon has no running link to that owner cluster",
-                })),
+                Json(crate::http_error::ErrorDetail::new(
+                    "not_connected",
+                    "this daemon has no running link to that owner cluster",
+                )),
             )
                 .into_response()
         })
@@ -277,16 +447,20 @@ fn owner_refusal(answer: Option<bookclerk_node_proto::Frame>) -> Response {
                 "invalid" => StatusCode::BAD_REQUEST,
                 _ => StatusCode::BAD_GATEWAY,
             };
-            (status, Json(json!({ "error": code, "detail": message }))).into_response()
+            (
+                status,
+                Json(crate::http_error::ErrorDetail::new(code, message)),
+            )
+                .into_response()
         }
         Some(_) => (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "unexpected_answer" })),
+            Json(crate::http_error::ErrorMessage::new("unexpected_answer")),
         )
             .into_response(),
         None => (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "owner_unavailable" })),
+            Json(crate::http_error::ErrorMessage::new("owner_unavailable")),
         )
             .into_response(),
     }
@@ -301,25 +475,42 @@ fn owner_refusal(answer: Option<bookclerk_node_proto::Frame>) -> Response {
     params(("cluster_id" = String, Path, description = "Owner cluster id.")),
     request_body = Option<ClusterScanBody>,
     responses(
-        (status = 200, description = "The owner cluster accepted the scan.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 502, description = "The owner cluster could not be reached."),
-        (status = 404, description = "No such cluster."),
+        (status = 200, description = "The owner cluster accepted the scan.", body = ClusterScanPlanned),
+        (status = 400, description = "The account named is blank, or the owner refused the request as invalid (`invalid`).", body = crate::http_error::ErrorDetail, examples(
+            ("blank_account" = (summary = "The body names a blank account.", value = json!({"error": "invalid", "detail": "the account named is blank"}))),
+            ("owner_refused" = (summary = "The owner cluster refused the request as invalid.", value = json!({"error": "invalid", "detail": "account libro:reader@example.com is not on this node's owner"}))),
+        )),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The owner refused the scan (`forbidden`), or the session is impersonating a user (the standard error body).", body = crate::http_error::ErrorAnswer, examples(
+            ("owner_refused" = (summary = "The owner cluster refused the scan.", value = json!({"error": "forbidden", "detail": "this node may not queue library work"}))),
+            ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+        )),
+        (status = 502, description = "The owner cluster answered with an unexpected frame (`unexpected_answer`), or with an error code other than `forbidden` and `invalid`.", body = crate::http_error::ErrorAnswer, examples(
+            ("unexpected_answer" = (summary = "The owner answered with a frame that is not a scan plan.", value = json!({"error": "unexpected_answer"}))),
+            ("owner_error" = (summary = "The owner answered with another error code.", value = json!({"error": "unavailable", "detail": "the scan queue is full"}))),
+        )),
+        (status = 503, description = "This daemon has no running link to that cluster (`not_connected`), or the owner did not answer (`owner_unavailable`).", body = crate::http_error::ErrorAnswer, examples(
+            ("not_connected" = (summary = "No link to that cluster is running (or no such cluster).", value = json!({"error": "not_connected", "detail": "this daemon has no running link to that owner cluster"}))),
+            ("owner_unavailable" = (summary = "The link is up but the owner did not answer in time.", value = json!({"error": "owner_unavailable"}))),
+        )),
+        (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn post_cluster_scan(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(cluster_id): axum::extract::Path<String>,
     body: Option<Json<ClusterScanBody>>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<ClusterScanPlanned>, Response> {
     let body = body.map(|Json(body)| body).unwrap_or_default();
     // A blank account names nothing; dropping it would widen the scan to
     // every account of this node's owner.
     if body.account.as_deref().is_some_and(|a| a.trim().is_empty()) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid", "detail": "the account named is blank" })),
+            Json(crate::http_error::ErrorDetail::new(
+                "invalid",
+                "the account named is blank",
+            )),
         )
             .into_response());
     }
@@ -347,12 +538,12 @@ pub async fn post_cluster_scan(
                 queue_full,
                 "the owner cluster queued a scan for this host"
             );
-            Ok(Json(json!({
-                "cluster_id": handle.cluster_id(),
-                "created": created,
-                "duplicates": duplicates,
-                "queue_full": queue_full,
-            })))
+            Ok(Json(ClusterScanPlanned {
+                cluster_id: handle.cluster_id().to_owned(),
+                created,
+                duplicates,
+                queue_full,
+            }))
         }
         other => Err(owner_refusal(other)),
     }
@@ -366,22 +557,36 @@ pub async fn post_cluster_scan(
     params(("cluster_id" = String, Path, description = "Owner cluster id.")),
     request_body = ClusterJobsBody,
     responses(
-        (status = 200, description = "The owner's jobs for these accounts.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 502, description = "The owner cluster could not be reached."),
-        (status = 404, description = "No such cluster."),
+        (status = 200, description = "The owner's jobs for these accounts.", body = ClusterJobsResponse),
+        (status = 400, description = "Too many job ids (`too_many_jobs`), or the owner refused the request as invalid (`invalid`).", body = crate::http_error::ErrorAnswer, examples(
+            ("too_many_jobs" = (summary = "The body lists more job ids than one request may carry.", value = json!({"error": "too_many_jobs"}))),
+            ("owner_refused" = (summary = "The owner cluster refused the request as invalid.", value = json!({"error": "invalid", "detail": "too many job ids"}))),
+        )),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The owner refused the request (`forbidden`), or the session is impersonating a user (the standard error body).", body = crate::http_error::ErrorAnswer, examples(
+            ("owner_refused" = (summary = "The owner cluster refused the request.", value = json!({"error": "forbidden", "detail": "this node may not read library work"}))),
+            ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+        )),
+        (status = 502, description = "The owner cluster answered with an unexpected frame (`unexpected_answer`), or with an error code other than `forbidden` and `invalid`.", body = crate::http_error::ErrorAnswer, examples(
+            ("unexpected_answer" = (summary = "The owner answered with a frame that is not a job status.", value = json!({"error": "unexpected_answer"}))),
+            ("owner_error" = (summary = "The owner answered with another error code.", value = json!({"error": "unavailable", "detail": "the job store is busy"}))),
+        )),
+        (status = 503, description = "This daemon has no running link to that cluster (`not_connected`), or the owner did not answer (`owner_unavailable`).", body = crate::http_error::ErrorAnswer, examples(
+            ("not_connected" = (summary = "No link to that cluster is running (or no such cluster).", value = json!({"error": "not_connected", "detail": "this daemon has no running link to that owner cluster"}))),
+            ("owner_unavailable" = (summary = "The link is up but the owner did not answer in time.", value = json!({"error": "owner_unavailable"}))),
+        )),
+        (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn post_cluster_jobs(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(cluster_id): axum::extract::Path<String>,
     Json(body): Json<ClusterJobsBody>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<ClusterJobsResponse>, Response> {
     if body.job_ids.len() > bookclerk_node_proto::MAX_STATUS_JOBS {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "too_many_jobs" })),
+            Json(crate::http_error::ErrorMessage::new("too_many_jobs")),
         )
             .into_response());
     }
@@ -395,7 +600,7 @@ pub async fn post_cluster_jobs(
         Some(bookclerk_node_proto::Frame {
             body: bookclerk_node_proto::Body::JobStatuses { jobs },
             ..
-        }) => Ok(Json(json!({ "jobs": jobs }))),
+        }) => Ok(Json(ClusterJobsResponse { jobs })),
         other => Err(owner_refusal(other)),
     }
 }

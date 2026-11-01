@@ -539,22 +539,28 @@ pub enum Body {
 pub const MAX_STATUS_JOBS: usize = 64;
 
 /// One job's state in [`Body::JobStatuses`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct JobStatusEntry {
     /// Job id.
+    #[schema(example = "scan-7f3a9c1e")]
     pub id: String,
     /// Job kind (`scan`, `acquire`, ...).
+    #[schema(example = "scan")]
     pub kind: String,
     /// `pending`, `running`, `succeeded`, `failed`, or `cancelled`.
+    #[schema(example = "running")]
     pub state: String,
     /// Progress or result text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "12 of 40 titles")]
     pub progress: Option<String>,
     /// Structured error kind when it failed or was cancelled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "handler")]
     pub error_kind: Option<String>,
     /// Error text when it failed or was cancelled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "the store answered 503")]
     pub error_message: Option<String>,
 }
 
@@ -840,12 +846,15 @@ pub struct UploadCommitRequest {
 pub struct UploadAnswer {
     /// Stable outcome: `received`, `committed`, `lost`, `refused`,
     /// `misdirected`, `unauthorized`, `unavailable`.
+    #[schema(example = "received")]
     pub status: String,
     /// Why, for `refused`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "size_mismatch")]
     pub reason: Option<String>,
     /// For `committed`: the job is finished.
     #[serde(default)]
+    #[schema(example = false)]
     pub job_completed: bool,
 }
 

@@ -101,6 +101,192 @@ impl ErrorMessage {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON error body with a machine slug and a longer explanation (`detail`).
+pub(crate) struct ErrorDetail {
+    /// Stable machine slug clients branch on.
+    #[schema(example = "invalid_request")]
+    pub(crate) error: String,
+    /// What went wrong, for the person reading the answer.
+    #[schema(example = "the redirect URI must be loopback or https")]
+    pub(crate) detail: String,
+}
+
+impl ErrorDetail {
+    /// The body for `error` and `detail`.
+    pub(crate) fn new(error: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            detail: detail.into(),
+        }
+    }
+}
+
+/// JSON body of a `403` from the node API's transport policy: the
+/// connection is plain HTTP off loopback, or arrived through a proxy the
+/// policy does not trust, and `reason` names the check that refused it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct TransportRefused {
+    /// Always `transport_insecure`.
+    #[schema(example = "transport_insecure")]
+    pub(crate) error: &'static str,
+    /// The transport check that refused the connection (`plain_http`,
+    /// `unknown_peer`, `untrusted_forwarding`, `proxy_proto_missing`,
+    /// `proxy_proto_ambiguous`, `proxy_proto_not_https`,
+    /// `public_origin_not_https`, `listener_mode_mismatch`, `misconfigured`).
+    #[schema(example = "plain_http")]
+    pub(crate) reason: &'static str,
+}
+
+impl TransportRefused {
+    /// The body for `reason`.
+    pub(crate) fn new(reason: &'static str) -> Self {
+        Self {
+            error: "transport_insecure",
+            reason,
+        }
+    }
+}
+
+/// An error answer a route writes in more than one shape: the standard
+/// [`ErrorJson`] from the session middleware, or the handler's own
+/// [`ErrorMessage`] (`error` only) or [`ErrorDetail`] (`error` and
+/// `detail`); the route's examples name each.
+///
+/// The schema is written by hand as an `anyOf`: every shape here satisfies
+/// [`ErrorMessage`] (that schema admits extra properties), so the derived
+/// `oneOf` would reject them.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+// Schema-only: the middleware and the handlers write each shape directly,
+// so no variant is ever constructed.
+#[allow(dead_code)]
+pub(crate) enum ErrorAnswer {
+    /// The session middleware's standard body (`error`, `message`, `status`).
+    Standard(ErrorJson),
+    /// A slug or a sentence in `error`.
+    Message(ErrorMessage),
+    /// A slug in `error` and a sentence in `detail`.
+    Detail(ErrorDetail),
+}
+
+impl utoipa::PartialSchema for ErrorAnswer {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{AnyOfBuilder, RefBuilder};
+        AnyOfBuilder::new()
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("ErrorJson")
+                    .description(Some(
+                        "The session middleware's standard body (`error`, `message`, `status`).",
+                    )),
+            )
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("ErrorMessage")
+                    .description(Some("A slug or a sentence in `error`.")),
+            )
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("ErrorDetail")
+                    .description(Some("A slug in `error` and a sentence in `detail`.")),
+            )
+            .description(Some(concat!(
+                "An error answer in one of several shapes: the standard body, `error` alone, ",
+                "or `error` with `detail`; the route's examples name each."
+            )))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for ErrorAnswer {
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        use utoipa::PartialSchema;
+        schemas.push(("ErrorJson".to_string(), ErrorJson::schema()));
+        schemas.push(("ErrorMessage".to_string(), ErrorMessage::schema()));
+        schemas.push(("ErrorDetail".to_string(), ErrorDetail::schema()));
+    }
+}
+
+/// A `403` from a node API route: the transport policy's
+/// [`TransportRefused`] before the handler, the session middleware's
+/// [`ErrorJson`], or the handler's own [`ErrorMessage`] or [`ErrorDetail`],
+/// each named in the route's examples.
+///
+/// The schema is written by hand as an `anyOf` for the same reason as
+/// [`ErrorAnswer`]: every shape here satisfies [`ErrorMessage`].
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+// Schema-only: the transport layer and the handlers write each shape
+// directly, so no variant is ever constructed.
+#[allow(dead_code)]
+pub(crate) enum NodeRefusal {
+    /// The connection failed the transport policy.
+    Transport(TransportRefused),
+    /// The session middleware's standard body (`error`, `message`, `status`).
+    Standard(ErrorJson),
+    /// The handler refused with a slug in `error`.
+    Message(ErrorMessage),
+    /// The handler refused with a slug in `error` and a sentence in `detail`.
+    Detail(ErrorDetail),
+}
+
+impl utoipa::PartialSchema for NodeRefusal {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{AnyOfBuilder, RefBuilder};
+        AnyOfBuilder::new()
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("TransportRefused")
+                    .description(Some("The connection failed the transport policy.")),
+            )
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("ErrorJson")
+                    .description(Some(
+                        "The session middleware's standard body (`error`, `message`, `status`).",
+                    )),
+            )
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("ErrorMessage")
+                    .description(Some("The handler refused with a slug in `error`.")),
+            )
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("ErrorDetail")
+                    .description(Some(
+                        "The handler refused with a slug in `error` and a sentence in `detail`.",
+                    )),
+            )
+            .description(Some(concat!(
+                "A `403` from a node API route: the transport policy's refusal, the standard ",
+                "body, or the handler's own error; the route's examples name each."
+            )))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for NodeRefusal {
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        use utoipa::PartialSchema;
+        schemas.push(("TransportRefused".to_string(), TransportRefused::schema()));
+        schemas.push(("ErrorJson".to_string(), ErrorJson::schema()));
+        schemas.push(("ErrorMessage".to_string(), ErrorMessage::schema()));
+        schemas.push(("ErrorDetail".to_string(), ErrorDetail::schema()));
+    }
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// JSON error object (`error`, `message`, numeric `status`) for API clients.
 pub(crate) struct ErrorJson {
     /// Machine slug (same as [`ErrorBody::code`]).

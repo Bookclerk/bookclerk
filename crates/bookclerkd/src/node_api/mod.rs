@@ -60,8 +60,7 @@ use bookclerk_library::control_plane::{
     NodeCredential, RedeemRequest,
 };
 use bookclerk_library::LibraryError;
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 
 use self::transport::{
     classify_transport, refused_response, ConnInfo, ListenerKind, LocalAddr, TransportConfig,
@@ -83,19 +82,127 @@ fn actor(caller: UserCaller) -> EnrollmentActor {
 }
 
 /// JSON for one link; never the secret or its hash.
-fn link_json(link: &EnrollmentLink) -> serde_json::Value {
-    json!({
-        "link_id": link.link_id,
-        "for_user_id": link.for_user_id,
-        "label": link.label,
-        "created_by": link.created_by,
-        "created_at": link.created_at,
-        "expires_at": link.expires_at,
-        "redeemed_at": link.redeemed_at,
-        "redeemed_node_id": link.redeemed_node_id,
-        "revoked_at": link.revoked_at,
-        "state": link.state(chrono::Utc::now()),
-    })
+fn link_json(link: &EnrollmentLink) -> EnrollmentLinkView {
+    EnrollmentLinkView {
+        link_id: link.link_id.clone(),
+        for_user_id: link.for_user_id,
+        label: link.label.clone(),
+        created_by: link.created_by.clone(),
+        created_at: link.created_at.clone(),
+        expires_at: link.expires_at.clone(),
+        redeemed_at: link.redeemed_at.clone(),
+        redeemed_node_id: link.redeemed_node_id.clone(),
+        revoked_at: link.revoked_at.clone(),
+        state: link.state(chrono::Utc::now()),
+    }
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// An enrollment link as the invites routes list it; never its secret.
+pub struct EnrollmentLinkView {
+    /// Public link id.
+    #[schema(example = "lnk_9f2c7b1e4a")]
+    pub link_id: String,
+    /// User the enrolled node will belong to.
+    #[schema(example = 7)]
+    pub for_user_id: i64,
+    /// Label shown in listings.
+    #[schema(example = "Living-room NAS")]
+    pub label: String,
+    /// Audit id of whoever minted it (`operator` or `user:<id>`).
+    #[schema(example = "user:7")]
+    pub created_by: String,
+    /// RFC 3339 mint time.
+    #[schema(example = "2026-10-29T08:15:00Z")]
+    pub created_at: String,
+    /// RFC 3339 expiry.
+    #[schema(example = "2026-10-30T08:15:00Z")]
+    pub expires_at: String,
+    /// RFC 3339 redeem time, once a host used it.
+    #[schema(example = "2026-10-29T09:02:41Z")]
+    pub redeemed_at: Option<String>,
+    /// Node the redeem created.
+    #[schema(example = "n_4e8a1c7f")]
+    pub redeemed_node_id: Option<String>,
+    /// RFC 3339 revoke time.
+    #[schema(example = "2026-10-29T10:00:00Z")]
+    pub revoked_at: Option<String>,
+    /// `pending`, `redeemed`, `revoked`, or `expired` right now.
+    #[schema(example = "pending")]
+    pub state: &'static str,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after an enrollment link was minted.
+pub struct NodeInviteCreated {
+    /// The link's record.
+    pub link: EnrollmentLinkView,
+    /// The full enrollment URL with the secret, shown once.
+    #[schema(example = "https://books.example.com/join#lnk_9f2c7b1e4a.5Hq8…")]
+    pub url: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/config/node-invites`.
+pub struct NodeInvitesResponse {
+    /// The links the caller may see, newest first.
+    pub links: Vec<EnrollmentLinkView>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after an enrollment link was revoked.
+pub struct NodeInviteRevoked {
+    /// The link, with `revoked_at` set.
+    pub link: EnrollmentLinkView,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// A host's node credential as the credentials routes show it; never its keys.
+pub struct NodeCredentialView {
+    /// Host node.
+    #[schema(example = "n_4e8a1c7f")]
+    pub node_id: String,
+    /// Link that enrolled it.
+    #[schema(example = "lnk_9f2c7b1e4a")]
+    pub link_id: String,
+    /// RFC 3339 enrollment time.
+    #[schema(example = "2026-10-29T09:02:41Z")]
+    pub enrolled_at: String,
+    /// RFC 3339 revoke time.
+    #[schema(example = "2026-11-02T18:30:00Z")]
+    pub revoked_at: Option<String>,
+    /// RFC 3339 time of the last authenticated connection.
+    #[schema(example = "2026-11-02T18:29:12Z")]
+    pub last_connected_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after a host's credential was revoked.
+pub struct NodeCredentialRevoked {
+    /// The credential, with `revoked_at` set (revoking twice keeps the first time).
+    pub credential: NodeCredentialView,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// The host-enrollment switch.
+pub struct HostEnrollment {
+    /// Whether host nodes may enroll into this cluster.
+    #[schema(example = true)]
+    pub enabled: bool,
+    /// Stored revision; `null` while the default (enabled) applies.
+    #[schema(example = 3)]
+    pub revision: Option<i64>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after an enrollment link or branch sign-in was redeemed.
+pub struct EnrolledNodeView {
+    /// The cluster the node joined.
+    #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
+    pub cluster_id: String,
+    /// The node id minted for it.
+    #[schema(example = "n_4e8a1c7f")]
+    pub node_id: String,
 }
 
 /// `POST /api/config/node-invites` body.
@@ -137,13 +244,23 @@ pub(crate) struct PostNodeInvite {
     path = "/api/config/node-invites",
     request_body = PostNodeInvite,
     responses(
-        (status = 200, description = "The new link (shown once).", body = serde_json::Value),
+        (status = 200, description = "The new link (shown once).", body = NodeInviteCreated),
+        (status = 400, description = "The operator named no user, the ttl or label is out of range, or the user is disabled.", body = crate::http_error::ErrorMessage, examples(
+            ("no_user" = (summary = "The operator gave no `user_id`.", value = json!({"error": "user_id is required: the operator has no user account"}))),
+            ("ttl" = (summary = "The ttl is out of range.", value = json!({"error": "enrollment link ttl must be between 5 minutes and 7 days"}))),
+            ("label" = (summary = "The label is too long or has control characters.", value = json!({"error": "enrollment link label must be at most 64 bytes without control characters"}))),
+            ("user_disabled" = (summary = "The user the link is for is disabled.", value = json!({"error": "user 7 is disabled"}))),
+        )),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 409, description = "Host enrollment is off."),
-        (status = 503, description = "The node API's certificate pin is not available yet (`node_api_pin_unavailable`)."),
+        (status = 403, description = "The user may not mint a link for that user, host enrollment is off, the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("other_user" = (summary = "A member asked for another user's link.", value = json!({"error": "only the operator or an Owner may mint an enrollment link for another user"}))),
+            ("enrollment_disabled" = (summary = "Host enrollment is switched off.", value = json!({"error": "host enrollment is disabled for this cluster"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 404, description = "No such user.", body = crate::http_error::ErrorMessage, example = json!({"error": "book not found: user 7"})),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+        (status = 503, description = "The node API's certificate pin is not available yet (`node_api_pin_unavailable`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_pin_unavailable"})),
     ),
 )]
 pub async fn post_node_invite(
@@ -169,7 +286,9 @@ pub async fn post_node_invite(
                 None => {
                     return Err((
                         StatusCode::SERVICE_UNAVAILABLE,
-                        Json(json!({ "error": "node_api_pin_unavailable" })),
+                        Json(crate::http_error::ErrorMessage::new(
+                            "node_api_pin_unavailable",
+                        )),
                     )
                         .into_response())
                 }
@@ -194,10 +313,10 @@ pub async fn post_node_invite(
     let url = minted.url(&origin, spki_pin.as_deref());
     // Shown once: no cache may keep it.
     Ok(branch::no_store(
-        Json(json!({
-            "link": link_json(&minted.link),
-            "url": url.as_str(),
-        }))
+        Json(NodeInviteCreated {
+            link: link_json(&minted.link),
+            url: url.as_str().to_owned(),
+        })
         .into_response(),
     ))
 }
@@ -220,18 +339,20 @@ pub struct NodeInvitesQuery {
     path = "/api/config/node-invites",
     params(NodeInvitesQuery),
     responses(
-        (status = 200, description = "Enrollment links the caller may see.", body = serde_json::Value),
+        (status = 200, description = "Enrollment links the caller may see.", body = NodeInvitesResponse),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 403, description = "The session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_node_invites(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
     Query(query): Query<NodeInvitesQuery>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<NodeInvitesResponse>, Response> {
     let library = state.library_snapshot().await;
     let mut links = list_enrollment_links(&library, &actor(caller))
         .await
@@ -244,9 +365,9 @@ pub async fn get_node_invites(
         };
         links.retain(|link| Some(link.for_user_id) == own);
     }
-    Ok(Json(json!({
-        "links": links.iter().map(link_json).collect::<Vec<_>>(),
-    })))
+    Ok(Json(NodeInvitesResponse {
+        links: links.iter().map(link_json).collect(),
+    }))
 }
 
 /// `DELETE /api/config/node-invites/{id}`: revoke an unredeemed link.
@@ -255,24 +376,29 @@ pub async fn get_node_invites(
     path = "/api/config/node-invites/{id}",
     params(("id" = String, Path, description = "Link id.")),
     responses(
-        (status = 200, description = "The link was revoked.", body = serde_json::Value),
+        (status = 200, description = "The link was revoked.", body = NodeInviteRevoked),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such link."),
+        (status = 403, description = "The session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 404, description = "No such link, or not one the caller may see.", body = crate::http_error::ErrorMessage, example = json!({"error": "book not found: enrollment link 5f1e2d3c4b5a69788796a5b4c3d2e1f0"})),
+        (status = 409, description = "The link was already redeemed; revoke the node instead.", body = crate::http_error::ErrorMessage, example = json!({"error": "enrollment link 5f1e2d3c4b5a69788796a5b4c3d2e1f0 was already redeemed; revoke the node instead"})),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn delete_node_invite(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
     Path(link_id): Path<String>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<NodeInviteRevoked>, Response> {
     let library = state.library_snapshot().await;
     let link = revoke_enrollment_link(&library, &actor(caller), link_id.trim())
         .await
         .map_err(events_error)?;
-    Ok(Json(json!({ "link": link_json(&link) })))
+    Ok(Json(NodeInviteRevoked {
+        link: link_json(&link),
+    }))
 }
 
 /// What the server recorded about the connection a request arrived on.
@@ -362,7 +488,7 @@ async fn check_transport(
         {
             return Err((
                 StatusCode::NOT_FOUND,
-                Json(json!({ "error": "node_api_unmounted" })),
+                Json(crate::http_error::ErrorMessage::new("node_api_unmounted")),
             )
                 .into_response());
         }
@@ -383,14 +509,14 @@ async fn check_transport(
 }
 
 /// JSON for one host credential; public keys only.
-fn credential_json(credential: &NodeCredential) -> serde_json::Value {
-    json!({
-        "node_id": credential.node_id,
-        "link_id": credential.link_id,
-        "enrolled_at": credential.enrolled_at,
-        "revoked_at": credential.revoked_at,
-        "last_connected_at": credential.last_connected_at,
-    })
+fn credential_json(credential: &NodeCredential) -> NodeCredentialView {
+    NodeCredentialView {
+        node_id: credential.node_id.clone(),
+        link_id: credential.link_id.clone(),
+        enrolled_at: credential.enrolled_at.clone(),
+        revoked_at: credential.revoked_at.clone(),
+        last_connected_at: credential.last_connected_at.clone(),
+    }
 }
 
 /// `DELETE /api/config/node-credentials/{node_id}`: revoke an enrolled
@@ -417,24 +543,29 @@ fn credential_json(credential: &NodeCredential) -> serde_json::Value {
     path = "/api/config/node-credentials/{node_id}",
     params(("node_id" = String, Path, description = "Node id.")),
     responses(
-        (status = 200, description = "The host's credential was revoked.", body = serde_json::Value),
+        (status = 200, description = "The host's credential was revoked.", body = NodeCredentialRevoked),
+        (status = 400, description = "The host has no credential to revoke.", body = crate::http_error::ErrorMessage, example = json!({"error": "node n_4e8a1c7f has no host credential to revoke"})),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "No such host."),
+        (status = 403, description = "The session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 404, description = "No such host, or not one the caller may see.", body = crate::http_error::ErrorMessage, example = json!({"error": "book not found: node n_4e8a1c7f"})),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn delete_node_credential(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
     Path(node_id): Path<String>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<NodeCredentialRevoked>, Response> {
     let library = state.library_snapshot().await;
     let credential = revoke_node_credential(&library, &actor(caller), node_id.trim())
         .await
         .map_err(events_error)?;
-    Ok(Json(json!({ "credential": credential_json(&credential) })))
+    Ok(Json(NodeCredentialRevoked {
+        credential: credential_json(&credential),
+    }))
 }
 
 /// `PUT /api/config/host-enrollment` body.
@@ -459,20 +590,24 @@ pub(crate) struct PutHostEnrollment {
     get,
     path = "/api/config/host-enrollment",
     responses(
-        (status = 200, description = "Whether host nodes may enroll.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 200, description = "Whether host nodes may enroll.", body = HostEnrollment),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_host_enrollment(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<HostEnrollment>, Response> {
     let library = state.library_snapshot().await;
     let settings = load_host_enrollment(&library).await.map_err(events_error)?;
-    Ok(Json(json!({
-        "enabled": settings.body.enabled,
-        "revision": settings.revision,
-    })))
+    Ok(Json(HostEnrollment {
+        enabled: settings.body.enabled,
+        revision: settings.revision,
+    }))
 }
 
 /// `PUT /api/config/host-enrollment`: turn host enrollment on or off. The
@@ -497,18 +632,21 @@ pub async fn get_host_enrollment(
     path = "/api/config/host-enrollment",
     request_body = PutHostEnrollment,
     responses(
-        (status = 200, description = "The switch after the change.", body = serde_json::Value),
+        (status = 200, description = "The switch after the change.", body = HostEnrollment),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 403, description = "The user is not an active Owner, the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("not_owner" = (summary = "The user is not an active Owner.", value = json!({"error": "user 7 is not an active owner"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn put_host_enrollment(
     State(state): State<Arc<AppState>>,
     Extension(caller): Extension<UserCaller>,
     Json(body): Json<PutHostEnrollment>,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<HostEnrollment>, Response> {
     let library = state.library_snapshot().await;
     let config_actor = match caller {
         UserCaller::Operator => ConfigActor::Operator {
@@ -521,10 +659,10 @@ pub async fn put_host_enrollment(
     let doc = set_host_enrollment_enabled(&library, &config_actor, body.enabled)
         .await
         .map_err(events_error)?;
-    Ok(Json(json!({
-        "enabled": doc.body.enabled,
-        "revision": doc.revision,
-    })))
+    Ok(Json(HostEnrollment {
+        enabled: doc.body.enabled,
+        revision: Some(doc.revision),
+    }))
 }
 
 /// Largest enroll request body.
@@ -549,7 +687,7 @@ struct EnrollBody {
 
 /// JSON error answer for the enroll endpoint.
 fn enroll_error(status: StatusCode, error: &str) -> Response {
-    (status, Json(json!({ "error": error }))).into_response()
+    (status, Json(crate::http_error::ErrorMessage::new(error))).into_response()
 }
 
 /// Decodes a base64url public key.
@@ -569,11 +707,19 @@ fn decode_key(raw: &str) -> Option<Vec<u8>> {
     path = "/api/node/v1/enroll",
     request_body = EnrollBody,
     responses(
-        (status = 200, description = "The host is enrolled; its node credential.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 401, description = "The link is unknown, used or expired."),
-        (status = 403, description = "The transport is not allowed."),
-        (status = 404, description = "The node API is not mounted."),
+        (status = 200, description = "The host is enrolled; its node credential.", body = EnrolledNodeView),
+        (status = 400, description = "The body is not an enroll request, or its keys are not base64url.", body = crate::http_error::ErrorMessage, examples(
+            ("malformed" = (summary = "The body does not parse as an enroll request.", value = json!({"error": "invalid enroll request"}))),
+            ("bad_keys" = (summary = "A public key is not base64url.", value = json!({"error": "sign_pk and box_pk must be base64url"}))),
+        )),
+        (status = 403, description = "The connection failed the transport policy (`transport_insecure`, with the check in `reason`), or the link does not redeem: unknown, used, expired, revoked, or enrollment is off (`enrollment_refused`).", body = crate::http_error::NodeRefusal, examples(
+            ("transport_insecure" = (summary = "Plain HTTP from another machine.", value = json!({"error": "transport_insecure", "reason": "plain_http"}))),
+            ("enrollment_refused" = (summary = "The link does not redeem.", value = json!({"error": "enrollment_refused"}))),
+        )),
+        (status = 404, description = "The node API is not mounted on this listener (`node_api_unmounted`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_unmounted"})),
+        (status = 413, description = "The body is larger than 16 KiB.", body = crate::http_error::ErrorMessage, example = json!({"error": "request too large"})),
+        (status = 415, description = "The request is not `application/json`.", body = crate::http_error::ErrorMessage, example = json!({"error": "expected application/json"})),
+        (status = 503, description = "The enrollment could not be read or recorded; try again (`enrollment_unavailable`).", body = crate::http_error::ErrorMessage, example = json!({"error": "enrollment_unavailable"})),
     ),
 )]
 pub async fn post_enroll(State(state): State<Arc<AppState>>, request: Request) -> Response {
@@ -614,10 +760,10 @@ fn redeem_answer(
     result: bookclerk_library::Result<bookclerk_library::control_plane::EnrolledNode>,
 ) -> Response {
     match result {
-        Ok(enrolled) => Json(json!({
-            "cluster_id": enrolled.cluster_id,
-            "node_id": enrolled.node_id,
-        }))
+        Ok(enrolled) => Json(EnrolledNodeView {
+            cluster_id: enrolled.cluster_id,
+            node_id: enrolled.node_id,
+        })
         .into_response(),
         Err(LibraryError::Forbidden(_)) => {
             enroll_error(StatusCode::FORBIDDEN, "enrollment_refused")

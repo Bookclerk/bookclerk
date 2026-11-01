@@ -34,7 +34,6 @@ use axum::response::{IntoResponse, Response};
 use axum::serve::IncomingStream;
 use axum::{Json, Router};
 use bookclerk_config::{NodeApiConfig, NodeApiMode};
-use serde_json::json;
 use tokio::net::TcpListener;
 use tower_service::Service;
 
@@ -353,10 +352,7 @@ fn has_forwarding_headers(headers: &HeaderMap) -> bool {
 pub fn refused_response(reason: RefusalReason) -> Response {
     (
         StatusCode::FORBIDDEN,
-        Json(json!({
-            "error": "transport_insecure",
-            "reason": reason.as_str(),
-        })),
+        Json(crate::http_error::TransportRefused::new(reason.as_str())),
     )
         .into_response()
 }
