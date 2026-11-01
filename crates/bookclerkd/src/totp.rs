@@ -19,7 +19,6 @@ use chrono::{Duration as ChronoDuration, Utc};
 use qrcode::render::svg;
 use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use totp_rs::{Algorithm, Builder, Secret, Totp};
 use uuid::Uuid;
 
@@ -57,28 +56,41 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
     ]
 }
 
-/// JSON error body for TOTP / MFA-policy handlers.
-///
-/// # Arguments
-///
-/// * `status` - HTTP status for the response.
-/// * `error` - Machine-readable slug (`passkey_required`, `reauth_required`, …).
-/// * `message` - Operator-facing explanation.
-fn totp_error(status: StatusCode, error: &str, message: &str) -> Response {
-    (
-        status,
-        Json(crate::http_error::ErrorJson::new(
-            status,
-            error.to_owned(),
-            message.to_owned(),
-        )),
-    )
-        .into_response()
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/auth/totp`.
+pub struct TotpStatus {
+    /// Whether an authenticator app is confirmed for the caller.
+    #[schema(example = true)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after TOTP enrollment began: what the authenticator app needs.
+pub struct TotpEnrollment {
+    /// Pending base32 secret, for typing into an app by hand.
+    #[schema(example = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP")]
+    pub secret: String,
+    /// `otpauth://` URL the QR code encodes.
+    #[schema(
+        example = "otpauth://totp/Bookclerk:sam?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Bookclerk&algorithm=SHA1&digits=6&period=30"
+    )]
+    pub otpauth_url: String,
+    /// The QR code as an SVG document, ready to inline.
+    #[schema(example = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 37 37\">…</svg>")]
+    pub qr_svg: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// The host-wide second-factor policy.
+pub struct MfaPolicy {
+    /// Whether every password sign-in must be followed by a passkey or authenticator code.
+    #[schema(example = false)]
+    pub require_second_factor: bool,
 }
 
 /// Failed TOTP login (wrong code, expired challenge, or missing secret).
 fn invalid_authenticator_code() -> Response {
-    totp_error(
+    crate::auth::json_auth_error(
         StatusCode::UNAUTHORIZED,
         "invalid_code",
         "Invalid authenticator code.",
@@ -325,7 +337,7 @@ pub(crate) async fn after_password_verified(
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         if passkeys > 0 {
-            return Ok(Some(totp_error(
+            return Ok(Some(crate::auth::json_auth_error(
                 StatusCode::FORBIDDEN,
                 "passkey_required",
                 "This server requires a passkey or authenticator app. Sign in with a passkey.",
@@ -350,17 +362,19 @@ struct ReauthBody {
     path = "/api/auth/totp",
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "Whether TOTP is on for the caller.", body = serde_json::Value),
+        (status = 200, description = "Whether TOTP is on for the caller.", body = TotpStatus),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 500, description = "The user could not be read."),
     ),
 )]
 async fn totp_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<TotpStatus>, StatusCode> {
     let user = require_user(&state, &headers).await?;
-    Ok(Json(serde_json::json!({ "enabled": user.totp_enabled })))
+    Ok(Json(TotpStatus {
+        enabled: user.totp_enabled,
+    }))
 }
 
 /// Starts TOTP enrollment: new pending secret, otpauth URL, and QR SVG.
@@ -370,17 +384,17 @@ async fn totp_status(
     request_body = ReauthBody,
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "A pending secret, its otpauth URL and a QR code SVG.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 200, description = "A pending secret, its otpauth URL and a QR code SVG.", body = TotpEnrollment),
+        (status = 401, description = "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong."),
         (status = 409, description = "TOTP is already on."),
+        (status = 500, description = "The secret could not be sealed and stored, or the library could not be read."),
     ),
 )]
 async fn enroll_begin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<ReauthBody>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<TotpEnrollment>, StatusCode> {
     let user = require_user(&state, &headers).await?;
     if user.totp_enabled {
         return Err(StatusCode::CONFLICT);
@@ -397,11 +411,11 @@ async fn enroll_begin(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     store_totp_secret(&library, user.id, TOTP_PENDING, &encoded).await?;
     let qr_svg = qr_svg(&otpauth_url)?;
-    Ok(Json(serde_json::json!({
-        "secret": encoded,
-        "otpauth_url": otpauth_url,
-        "qr_svg": qr_svg,
-    })))
+    Ok(Json(TotpEnrollment {
+        secret: encoded,
+        otpauth_url,
+        qr_svg,
+    }))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -418,11 +432,14 @@ struct EnrollFinish {
     request_body = EnrollFinish,
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "TOTP is on.", body = serde_json::Value),
+        (status = 200, description = "TOTP is on.", body = crate::auth::OkResponse),
         (status = 400, description = "No enrollment is pending; start one first."),
-        (status = 401, description = "The caller is not signed in, or the code is wrong (`invalid_code`)."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 401, description = "The caller is not signed in (the standard error body), or the code is wrong (`invalid_code`).", body = crate::http_error::ErrorJson, examples(
+            ("invalid_code" = (summary = "The code is wrong.", value = json!({"error": "invalid_code", "message": "Invalid authenticator code.", "status": 401}))),
+            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
+        )),
         (status = 409, description = "TOTP is already on."),
+        (status = 500, description = "The pending secret could not be read, or the enrollment could not be confirmed."),
     ),
 )]
 async fn enroll_finish(
@@ -442,7 +459,7 @@ async fn enroll_finish(
     let totp = totp_from_secret(&secret, &account)?;
     let code = body.code.trim();
     if totp.check_current(code).is_none() {
-        return Ok(totp_error(
+        return Ok(crate::auth::json_auth_error(
             StatusCode::UNAUTHORIZED,
             "invalid_code",
             "Invalid authenticator code.",
@@ -455,7 +472,7 @@ async fn enroll_finish(
     let _ = library
         .insert_security_audit_event(&format!("user:{}", user.id), "totp_enroll", None)
         .await;
-    Ok(Json(serde_json::json!({ "ok": true })).into_response())
+    Ok(Json(crate::auth::OkResponse::OK).into_response())
 }
 
 /// Disables TOTP after recent reauth and deletes sealed secrets.
@@ -465,16 +482,16 @@ async fn enroll_finish(
     request_body = ReauthBody,
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "TOTP is off.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
+        (status = 200, description = "TOTP is off.", body = crate::auth::OkResponse),
+        (status = 401, description = "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong."),
+        (status = 500, description = "The library could not be read or written."),
     ),
 )]
 async fn disable_totp(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<ReauthBody>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<crate::auth::OkResponse>, StatusCode> {
     let user = require_user(&state, &headers).await?;
     require_recent_portal_reauth(&state, &headers, user.id, body.current_password.as_deref())
         .await?;
@@ -486,7 +503,7 @@ async fn disable_totp(
     let _ = library
         .insert_security_audit_event(&format!("user:{}", user.id), "totp_disable", None)
         .await;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(Json(crate::auth::OkResponse::OK))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -504,9 +521,13 @@ struct LoginVerify {
     path = "/api/auth/totp/login",
     request_body = LoginVerify,
     responses(
-        (status = 200, description = "Signed in; the response sets the portal session cookie.", body = serde_json::Value),
-        (status = 401, description = "The challenge or code is wrong."),
-        (status = 429, description = "Too many attempts; try later."),
+        (status = 200, description = "Signed in; the response sets the portal session cookie.", body = crate::auth::PortalSessionIssued),
+        (status = 401, description = "The challenge is unknown or expired, TOTP is off for the user, or the code is wrong (`invalid_code`); or the challenged user no longer exists (the standard error body).", body = crate::http_error::ErrorJson, examples(
+            ("invalid_code" = (summary = "The challenge or code is not accepted.", value = json!({"error": "invalid_code", "message": "Invalid authenticator code.", "status": 401}))),
+            ("user_gone" = (summary = "The challenged user no longer exists.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
+        )),
+        (status = 429, description = "Too many failed attempts from this client; try later."),
+        (status = 500, description = "The user or secret could not be read, or the session could not be stored."),
     ),
 )]
 async fn login_verify(
@@ -587,12 +608,19 @@ pub(crate) fn current_test_code(secret_b32: &str) -> String {
     get,
     path = "/api/auth/mfa-policy",
     responses(
-        (status = 200, description = "Whether a second factor is required.", body = serde_json::Value),
+        (status = 200, description = "Whether a second factor is required.", body = MfaPolicy),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
     ),
 )]
-async fn get_mfa_policy(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let required = require_second_factor(&state).await;
-    Json(serde_json::json!({ "require_second_factor": required }))
+async fn get_mfa_policy(State(state): State<Arc<AppState>>) -> Json<MfaPolicy> {
+    let require_second_factor = require_second_factor(&state).await;
+    Json(MfaPolicy {
+        require_second_factor,
+    })
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -611,32 +639,43 @@ struct MfaPolicyPut {
     path = "/api/auth/mfa-policy",
     request_body = MfaPolicyPut,
     responses(
-        (status = 200, description = "The policy after the change.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 200, description = "The policy after the change.", body = MfaPolicy),
+        (status = 401, description = "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`reauth_required`).", body = crate::http_error::ErrorJson, examples(
+            ("reauth_required" = (summary = "The Owner must re-authenticate.", value = json!({"error": "reauth_required", "message": "Recent authentication is required to change the MFA policy.", "status": 401}))),
+            ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
+        )),
+        (status = 403, description = "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
+            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 500, description = "The configuration path is unknown or the configuration file could not be written, or an Owner's current password could not be read or checked (`internal_error`).", body = crate::http_error::ErrorJson, examples(
+            ("config_write" = (summary = "The configuration file could not be written.", value = json!({"error": "internal_error", "message": "failed to write config.toml: Permission denied (os error 13)", "status": 500}))),
+            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "internal_error", "message": "The current password could not be checked.", "status": 500}))),
+        )),
     ),
 )]
 async fn put_mfa_policy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<MfaPolicyPut>,
-) -> Result<Json<Value>, Response> {
+) -> Result<Json<MfaPolicy>, Response> {
     require_operator_or_recent_owner(&state, &headers, body.current_password.as_deref())
         .await
         .map_err(|status| {
-            totp_error(
-                status,
-                if status == StatusCode::UNAUTHORIZED {
-                    "reauth_required"
-                } else {
-                    "forbidden"
-                },
-                if status == StatusCode::UNAUTHORIZED {
-                    "Recent authentication is required to change the MFA policy."
-                } else {
-                    "You cannot change the MFA policy."
-                },
-            )
+            let (error, message) = if status == StatusCode::UNAUTHORIZED {
+                (
+                    "reauth_required",
+                    "Recent authentication is required to change the MFA policy.",
+                )
+            } else if status == StatusCode::INTERNAL_SERVER_ERROR {
+                (
+                    "internal_error",
+                    "The current password could not be checked.",
+                )
+            } else {
+                ("forbidden", "You cannot change the MFA policy.")
+            };
+            crate::auth::json_auth_error(status, error, message)
         })?;
     let auth = state.auth_snapshot().await;
     let operator_recovery = authorize_operator_bearer_only(&auth, &headers)
@@ -648,7 +687,7 @@ async fn put_mfa_policy(
         if let Some(identity) = timed_portal_identity_from_headers(&library, &headers).await {
             if let Some(user_id) = identity.user_id {
                 if enrollment_blocks(&state, &library, user_id, "/api/auth/mfa-policy").await {
-                    return Err(totp_error(
+                    return Err(crate::auth::json_auth_error(
                         StatusCode::FORBIDDEN,
                         "mfa_enrollment_required",
                         "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
@@ -663,7 +702,7 @@ async fn put_mfa_policy(
         cfg.paths.as_ref().map(|p| p.config_file.clone())
     };
     let Some(config_path) = config_path else {
-        return Err(totp_error(
+        return Err(crate::auth::json_auth_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",
             "config path is not available",
@@ -673,10 +712,10 @@ async fn put_mfa_policy(
         let mut staged = state.config.read().await.clone();
         staged.daemon.auth.require_second_factor = body.require_second_factor;
         staged.write_toml_file(&config_path).map_err(|err| {
-            totp_error(
+            crate::auth::json_auth_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
-                &format!("failed to write config.toml: {err}"),
+                format!("failed to write config.toml: {err}"),
             )
         })?;
     }
@@ -684,9 +723,9 @@ async fn put_mfa_policy(
         let mut cfg = state.config.write().await;
         cfg.daemon.auth.require_second_factor = body.require_second_factor;
     }
-    Ok(Json(serde_json::json!({
-        "require_second_factor": body.require_second_factor
-    })))
+    Ok(Json(MfaPolicy {
+        require_second_factor: body.require_second_factor,
+    }))
 }
 
 #[cfg(test)]

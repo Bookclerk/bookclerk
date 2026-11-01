@@ -13182,21 +13182,52 @@
             "description": "The profile after the change.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileChanged"
+                }
               }
             }
           },
           "400": {
-            "description": "A value is invalid.",
+            "description": "A value is invalid (`display_name_too_long`, `invalid_email`, `invalid_avatar_source`), or the body sets none of the three fields (the standard error body).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
+                "examples": {
+                  "display_name_too_long": {
+                    "summary": "The display name is too long.",
+                    "value": {
+                      "error": "display_name_too_long",
+                      "message": "Display name must be 80 characters or fewer.",
+                      "status": 400
+                    }
+                  },
+                  "invalid_avatar_source": {
+                    "summary": "The picture source is invalid.",
+                    "value": {
+                      "error": "invalid_avatar_source",
+                      "message": "Choose a valid picture source.",
+                      "status": 400
+                    }
+                  },
+                  "invalid_email": {
+                    "summary": "The email is invalid.",
+                    "value": {
+                      "error": "invalid_email",
+                      "message": "Enter a valid email address.",
+                      "status": 400
+                    }
+                  },
+                  "nothing_to_change": {
+                    "summary": "The body changes nothing.",
+                    "value": {
+                      "error": "bad_request",
+                      "message": "The request could not be understood.",
+                      "status": 400
+                    }
+                  }
                 }
               }
             }
@@ -13217,7 +13248,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13251,12 +13282,27 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "email_in_use",
+                  "message": "That email is already used by another account.",
+                  "status": 409
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
                   "$ref": "#/components/schemas/ApiError"
                 },
                 "example": {
-                  "error": "conflict",
-                  "message": "Conflict",
-                  "status": 409
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -13309,12 +13355,14 @@
             "description": "The avatar was stored.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AvatarChanged"
+                }
               }
             }
           },
           "400": {
-            "description": "The image is not JPEG, PNG or WebP.",
+            "description": "The body is empty or not a JPEG, PNG or WebP image.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13344,7 +13392,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13359,7 +13407,7 @@
             }
           },
           "413": {
-            "description": "The image is too large.",
+            "description": "The image is larger than 1.5 MB.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13369,6 +13417,21 @@
                   "error": "payload_too_large",
                   "message": "Payload Too Large",
                   "status": 413
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The files directory is unknown, or the image could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -13409,7 +13472,13 @@
             "description": "The avatar was removed.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AvatarChanged"
+                },
+                "example": {
+                  "has_avatar": false,
+                  "ok": true
+                }
               }
             }
           },
@@ -13429,7 +13498,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is impersonating a user, is a plain operator session, or has no first-party user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13439,6 +13508,21 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The files directory is unknown.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -13510,7 +13594,7 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
+            "description": "The caller is not signed in.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13525,7 +13609,7 @@
             }
           },
           "404": {
-            "description": "The user has no avatar.",
+            "description": "No such user, or the user has no avatar.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13535,6 +13619,21 @@
                   "error": "not_found",
                   "message": "That page or resource was not found.",
                   "status": 404
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The user could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -15422,7 +15521,9 @@
             "description": "The caller's passkeys.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PasskeysResponse"
+                }
               }
             }
           },
@@ -15441,17 +15542,17 @@
               }
             }
           },
-          "403": {
-            "description": "The caller may not do this.",
+          "500": {
+            "description": "The passkeys could not be read.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
                 },
                 "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -15498,12 +15599,29 @@
             "description": "WebAuthn creation options.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PasskeyCreationOptions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The daemon's origin is not a valid WebAuthn relying party (set `integrations.public_origin`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "The request could not be understood.",
+                  "status": 400
+                }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15518,7 +15636,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15528,6 +15646,21 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read, or the challenge could not be stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -15574,12 +15707,14 @@
             "description": "The passkey was stored.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
               }
             }
           },
           "400": {
-            "description": "The attestation is invalid.",
+            "description": "The challenge is unknown or expired, the attestation is invalid, or the daemon's origin is not a valid WebAuthn relying party.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15609,7 +15744,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The challenge was issued to another user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15634,6 +15769,21 @@
                   "error": "conflict",
                   "message": "Conflict",
                   "status": 409
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -15692,12 +15842,14 @@
             "description": "The passkey was deleted.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15712,7 +15864,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15737,6 +15889,21 @@
                   "error": "not_found",
                   "message": "That page or resource was not found.",
                   "status": 404
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -15783,12 +15950,14 @@
             "description": "WebAuthn request options.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PasskeyRequestOptions"
+                }
               }
             }
           },
           "400": {
-            "description": "The request is invalid.",
+            "description": "The daemon's origin is not a valid WebAuthn relying party (set `integrations.public_origin`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -15848,7 +16017,7 @@
             }
           },
           "429": {
-            "description": "Too many attempts; try later.",
+            "description": "Too many failed attempts from this client; try later.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15858,6 +16027,21 @@
                   "error": "too_many_requests",
                   "message": "Too many requests. Try again shortly.",
                   "status": 429
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read, or the challenge could not be stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -15900,12 +16084,14 @@
             "description": "Signed in; the response sets the portal session cookie.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PortalSessionIssued"
+                }
               }
             }
           },
           "400": {
-            "description": "The challenge is unknown or expired, or the credential is malformed.",
+            "description": "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15920,7 +16106,7 @@
             }
           },
           "401": {
-            "description": "The assertion is invalid.",
+            "description": "The assertion does not verify, or the credential is not one of the challenged user's.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15945,6 +16131,21 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -15977,7 +16178,24 @@
             "description": "WebAuthn request options.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PasskeyRequestOptions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The daemon's origin is not a valid WebAuthn relying party (set `integrations.public_origin`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "The request could not be understood.",
+                  "status": 400
+                }
               }
             }
           },
@@ -15997,7 +16215,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The caller is not an Owner. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16022,6 +16240,21 @@
                   "error": "not_found",
                   "message": "That page or resource was not found.",
                   "status": 404
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read, or the challenge could not be stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -16068,12 +16301,14 @@
             "description": "Elevated; the response sets a short-lived operator cookie.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/Elevated"
+                }
               }
             }
           },
           "400": {
-            "description": "The challenge is unknown or expired, or the credential is malformed.",
+            "description": "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16088,7 +16323,7 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, the assertion does not verify or was not user-verified, or the credential is not the caller's.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16103,7 +16338,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The caller is not an Owner, or the challenge was issued to another user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16113,6 +16348,21 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -16159,27 +16409,42 @@
             "description": "Signed in; the response sets the portal session cookie.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PortalSessionIssued"
+                }
               }
             }
           },
           "401": {
-            "description": "The challenge or code is wrong.",
+            "description": "The challenge is unknown or expired, TOTP is off for the user, or the code is wrong (`invalid_code`); or the challenged user no longer exists (the standard error body).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
+                "examples": {
+                  "invalid_code": {
+                    "summary": "The challenge or code is not accepted.",
+                    "value": {
+                      "error": "invalid_code",
+                      "message": "Invalid authenticator code.",
+                      "status": 401
+                    }
+                  },
+                  "user_gone": {
+                    "summary": "The challenged user no longer exists.",
+                    "value": {
+                      "error": "unauthorized",
+                      "message": "Operator authentication is required. Sign in with your operator token.",
+                      "status": 401
+                    }
+                  }
                 }
               }
             }
           },
           "429": {
-            "description": "Too many attempts; try later.",
+            "description": "Too many failed attempts from this client; try later.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16189,6 +16454,21 @@
                   "error": "too_many_requests",
                   "message": "Too many requests. Try again shortly.",
                   "status": 429
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The user or secret could not be read, or the session could not be stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -16231,12 +16511,14 @@
             "description": "A pending secret, its otpauth URL and a QR code SVG.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/TotpEnrollment"
+                }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16251,7 +16533,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16276,6 +16558,21 @@
                   "error": "conflict",
                   "message": "Conflict",
                   "status": 409
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The secret could not be sealed and stored, or the library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -16322,7 +16619,9 @@
             "description": "TOTP is on.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
               }
             }
           },
@@ -16342,22 +16641,35 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in, or the code is wrong (`invalid_code`).",
+            "description": "The caller is not signed in (the standard error body), or the code is wrong (`invalid_code`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
+                "examples": {
+                  "invalid_code": {
+                    "summary": "The code is wrong.",
+                    "value": {
+                      "error": "invalid_code",
+                      "message": "Invalid authenticator code.",
+                      "status": 401
+                    }
+                  },
+                  "not_signed_in": {
+                    "summary": "The caller is not signed in.",
+                    "value": {
+                      "error": "unauthorized",
+                      "message": "Operator authentication is required. Sign in with your operator token.",
+                      "status": 401
+                    }
+                  }
                 }
               }
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16382,6 +16694,21 @@
                   "error": "conflict",
                   "message": "Conflict",
                   "status": 409
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The pending secret could not be read, or the enrollment could not be confirmed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -16418,7 +16745,9 @@
             "description": "Whether TOTP is on for the caller.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/TotpStatus"
+                }
               }
             }
           },
@@ -16437,17 +16766,17 @@
               }
             }
           },
-          "403": {
-            "description": "The caller may not do this.",
+          "500": {
+            "description": "The user could not be read.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
                 },
                 "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -16492,12 +16821,14 @@
             "description": "TOTP is off.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16512,7 +16843,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16522,6 +16853,21 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -16558,12 +16904,14 @@
             "description": "Whether a second factor is required.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/MfaPolicy"
+                }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
+            "description": "The caller is not signed in.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16578,16 +16926,29 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route.",
+            "description": "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller is neither the operator nor an Owner.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The Owner must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
@@ -16638,66 +16999,92 @@
             "description": "The policy after the change.",
             "content": {
               "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
-            "content": {
-              "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                },
-                "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
+                  "$ref": "#/components/schemas/MfaPolicy"
                 }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
+            "description": "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`reauth_required`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
+                "examples": {
+                  "not_signed_in": {
+                    "summary": "The caller is not signed in.",
+                    "value": {
+                      "error": "unauthorized",
+                      "message": "Operator authentication is required. Sign in with your operator token.",
+                      "status": 401
+                    }
+                  },
+                  "reauth_required": {
+                    "summary": "The Owner must re-authenticate.",
+                    "value": {
+                      "error": "reauth_required",
+                      "message": "Recent authentication is required to change the MFA policy.",
+                      "status": 401
+                    }
+                  }
                 }
               }
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "forbidden": {
+                    "summary": "The caller is neither the operator nor an Owner.",
+                    "value": {
+                      "error": "forbidden",
+                      "message": "You do not have access to this resource.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The Owner must enroll a second factor first.",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The configuration path is unknown or the configuration file could not be written, or an Owner's current password could not be read or checked (`internal_error`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                "examples": {
+                  "config_write": {
+                    "summary": "The configuration file could not be written.",
+                    "value": {
+                      "error": "internal_error",
+                      "message": "failed to write config.toml: Permission denied (os error 13)",
+                      "status": 500
+                    }
+                  },
+                  "password_check": {
+                    "summary": "The Owner's current password could not be checked.",
+                    "value": {
+                      "error": "internal_error",
+                      "message": "The current password could not be checked.",
+                      "status": 500
+                    }
+                  }
                 }
               }
             }
@@ -18790,6 +19177,32 @@
             "type": "string",
             "description": "RFC 3339 last portal-session activity for this identity, when any.",
             "example": "2026-10-29T08:15:00Z",
+            "nullable": true
+          }
+        }
+      },
+      "AvatarChanged": {
+        "type": "object",
+        "description": "JSON body after the caller's avatar was stored or removed.",
+        "required": [
+          "ok",
+          "has_avatar"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true` on this success path.",
+            "example": true
+          },
+          "has_avatar": {
+            "type": "boolean",
+            "description": "Whether an uploaded picture is stored now.",
+            "example": true
+          },
+          "avatar_source": {
+            "type": "string",
+            "description": "Present only after an upload, always `upload`; absent after a removal\n(the stored source is then unchanged unless it was `upload`).",
+            "example": "upload",
             "nullable": true
           }
         }
@@ -21441,6 +21854,20 @@
           }
         }
       },
+      "MfaPolicy": {
+        "type": "object",
+        "description": "The host-wide second-factor policy.",
+        "required": [
+          "require_second_factor"
+        ],
+        "properties": {
+          "require_second_factor": {
+            "type": "boolean",
+            "description": "Whether every password sign-in must be followed by a passkey or authenticator code.",
+            "example": false
+          }
+        }
+      },
       "MfaPolicyPut": {
         "type": "object",
         "description": "PUT body for the host-wide second-factor policy.",
@@ -23061,6 +23488,53 @@
           }
         }
       },
+      "PasskeyCreationOptions": {
+        "type": "object",
+        "description": "WebAuthn creation options for `navigator.credentials.create()`, plus the challenge id for the finish step.",
+        "required": [
+          "challenge_id",
+          "publicKey"
+        ],
+        "properties": {
+          "challenge_id": {
+            "type": "string",
+            "description": "Server-issued challenge id to send back with the attestation; consumed once, five-minute lifetime.",
+            "example": "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f"
+          },
+          "publicKey": {
+            "description": "W3C PublicKeyCredentialCreationOptions (relying party, user, challenge, algorithms, excluded credentials), binary fields base64url-encoded.",
+            "example": {
+              "attestation": "none",
+              "authenticatorSelection": {
+                "residentKey": "required",
+                "userVerification": "preferred"
+              },
+              "challenge": "k9u2Xo3cZ1Qp7mT4vW8yA2bC5dE6fG7hI8jK9lM0nO1",
+              "excludeCredentials": [],
+              "pubKeyCredParams": [
+                {
+                  "alg": -7,
+                  "type": "public-key"
+                },
+                {
+                  "alg": -257,
+                  "type": "public-key"
+                }
+              ],
+              "rp": {
+                "id": "books.example.com",
+                "name": "Bookclerk"
+              },
+              "timeout": 60000,
+              "user": {
+                "displayName": "Sam",
+                "id": "AAAAAAAAAAAAAAAAAAAABw",
+                "name": "sam"
+              }
+            }
+          }
+        }
+      },
       "PasskeyReauthBody": {
         "type": "object",
         "description": "Optional current password for step-up before register or delete.",
@@ -23069,6 +23543,85 @@
             "type": "string",
             "description": "Password used for recent-reauth when the user already has a credential.",
             "nullable": true
+          }
+        }
+      },
+      "PasskeyRequestOptions": {
+        "type": "object",
+        "description": "WebAuthn request options for `navigator.credentials.get()`, plus the challenge id for the finish step.",
+        "required": [
+          "challenge_id",
+          "publicKey"
+        ],
+        "properties": {
+          "challenge_id": {
+            "type": "string",
+            "description": "Server-issued challenge id to send back with the assertion; consumed once, five-minute lifetime.",
+            "example": "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f"
+          },
+          "publicKey": {
+            "description": "W3C PublicKeyCredentialRequestOptions (challenge, relying party id, allowed credentials), binary fields base64url-encoded.",
+            "example": {
+              "allowCredentials": [
+                {
+                  "id": "pQECAyYgASFYIE",
+                  "type": "public-key"
+                }
+              ],
+              "challenge": "k9u2Xo3cZ1Qp7mT4vW8yA2bC5dE6fG7hI8jK9lM0nO1",
+              "rpId": "books.example.com",
+              "timeout": 60000,
+              "userVerification": "preferred"
+            }
+          },
+          "mediation": {
+            "type": "string",
+            "description": "Credential mediation the daemon asks the browser for; absent unless\nconditional mediation was requested.",
+            "example": "conditional",
+            "nullable": true
+          }
+        }
+      },
+      "PasskeySummary": {
+        "type": "object",
+        "description": "One stored passkey.",
+        "required": [
+          "id",
+          "credential_id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Row id, for `DELETE /api/auth/passkeys/{id}`.",
+            "example": 4
+          },
+          "credential_id": {
+            "type": "string",
+            "description": "Base64url credential id the authenticator reports.",
+            "example": "pQECAyYgASFYIE9ZJ2kLm3nO4pQ5rS6tU7vW8xY9zA0"
+          },
+          "name": {
+            "type": "string",
+            "description": "Label chosen at registration (`Passkey` when none was given).",
+            "example": "YubiKey 5C"
+          }
+        }
+      },
+      "PasskeysResponse": {
+        "type": "object",
+        "description": "JSON body for `GET /api/auth/passkeys`.",
+        "required": [
+          "passkeys"
+        ],
+        "properties": {
+          "passkeys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PasskeySummary"
+            },
+            "description": "The caller's passkeys, oldest first."
           }
         }
       },
@@ -25447,6 +26000,29 @@
           "theme": {
             "type": "string",
             "description": "Appearance preference (`system`, `light`, or `dark`)."
+          }
+        }
+      },
+      "ProfileChanged": {
+        "type": "object",
+        "description": "JSON body after `PATCH /api/auth/profile`.",
+        "required": [
+          "ok",
+          "user"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true` on this success path.",
+            "example": true
+          },
+          "user": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AuthMeUser"
+              }
+            ],
+            "description": "The profile after the change, as `GET /api/auth/me` reports it."
           }
         }
       },
@@ -28116,6 +28692,32 @@
           }
         }
       },
+      "TotpEnrollment": {
+        "type": "object",
+        "description": "JSON body after TOTP enrollment began: what the authenticator app needs.",
+        "required": [
+          "secret",
+          "otpauth_url",
+          "qr_svg"
+        ],
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "Pending base32 secret, for typing into an app by hand.",
+            "example": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+          },
+          "otpauth_url": {
+            "type": "string",
+            "description": "`otpauth://` URL the QR code encodes.",
+            "example": "otpauth://totp/Bookclerk:sam?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Bookclerk&algorithm=SHA1&digits=6&period=30"
+          },
+          "qr_svg": {
+            "type": "string",
+            "description": "The QR code as an SVG document, ready to inline.",
+            "example": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 37 37\">…</svg>"
+          }
+        }
+      },
       "TotpReauthBody": {
         "type": "object",
         "description": "Optional current password for enroll/disable step-up.",
@@ -28124,6 +28726,20 @@
             "type": "string",
             "description": "Password used for recent-reauth when the user already has a credential.",
             "nullable": true
+          }
+        }
+      },
+      "TotpStatus": {
+        "type": "object",
+        "description": "JSON body for `GET /api/auth/totp`.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether an authenticator app is confirmed for the caller.",
+            "example": true
           }
         }
       },
