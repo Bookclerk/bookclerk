@@ -383,6 +383,17 @@ async fn the_consent_view_matches_the_shared_view() {
     assert_eq!(revoked["consent"], view);
     assert_eq!(view["state"], "awaiting_host_consent");
     assert!(view["revoked_at"].is_string(), "{view}");
+
+    // A stored grant that does not parse shows as `null` in both views.
+    let malformed = bookclerk_library::control_plane::RemotePluginConsent {
+        requested_grant_json: "{not json".into(),
+        grant_json: Some("[".into()),
+        ..row
+    };
+    let view = same_view(&malformed);
+    assert_eq!(view["requested_grant"], Value::Null);
+    assert_eq!(view["grant"], Value::Null);
+    assert_eq!(view["state"], "invalid_grant");
 }
 
 /// Only a changed request is a conflict; a missing request, a bad

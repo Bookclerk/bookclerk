@@ -128,18 +128,24 @@ impl std::fmt::Debug for OAuthEnrollRequest {
 }
 
 /// `POST /api/node/v1/enroll/oauth` answer.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct OAuthEnrollAnswer {
     /// The library's cluster id.
+    #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
     pub cluster_id: String,
     /// The node id recorded for the joining install.
+    #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
     pub node_id: String,
     /// The connection type recorded (`branch` when left out).
     #[serde(default, skip_serializing_if = "ConnectionType::is_branch")]
+    #[schema(example = "clerk")]
     pub connection: ConnectionType,
     /// For a clerk: the [`crate::ClerkBootstrap`] sealed to the node's box
-    /// key ([`crate::seal_clerk_bootstrap`]).
+    /// key ([`crate::seal_clerk_bootstrap`]), as base64url without padding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0"
+    )]
     pub bootstrap: Option<String>,
 }
 

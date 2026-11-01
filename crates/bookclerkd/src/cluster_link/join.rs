@@ -214,12 +214,12 @@ pub struct ClerkJoined {
     #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
     pub cluster_id: String,
     /// The node id the library minted for this install.
-    #[schema(example = "n_4e8a1c7f")]
+    #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
     pub node_id: String,
     /// The library's name.
     #[schema(example = "books.example.com")]
     pub library_name: String,
-    /// The database plugin this install now runs (`postgres`).
+    /// The database plugin this install now runs (`postgres` or `d1`).
     #[schema(example = "postgres")]
     pub database: String,
     /// Whether the shared master key was wrapped with this install's password.
@@ -257,14 +257,78 @@ pub struct SharingChanged {
 /// `409 origin_mismatch`: the library's canonical address is not the one
 /// the join was started with. An [`crate::http_error::ErrorDetail`] that
 /// also carries the address to use.
-#[derive(Debug, serde::Serialize)]
-struct OriginMismatch {
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct OriginMismatch {
     /// Always `origin_mismatch`.
-    error: &'static str,
+    #[schema(example = "origin_mismatch")]
+    pub error: &'static str,
     /// Why, naming the address to join with instead.
-    detail: String,
+    #[schema(
+        example = "this library's address is https://books.example.com; join with that address"
+    )]
+    pub detail: String,
     /// The library's canonical origin, to join with instead.
-    origin: String,
+    #[schema(example = "https://books.example.com")]
+    pub origin: String,
+}
+
+/// A `409` from a join step: the handler's [`crate::http_error::ErrorDetail`]
+/// (`join_cycle`, `ancestry_too_deep`, and the others the route names), or
+/// [`OriginMismatch`], which adds the address to join with; the route's
+/// examples name each.
+///
+/// The schema is written by hand as an `anyOf`: an [`OriginMismatch`] also
+/// satisfies [`crate::http_error::ErrorDetail`] (that schema admits extra
+/// properties), so the derived `oneOf` would reject it.
+#[derive(Debug, serde::Serialize)]
+#[serde(untagged)]
+// Schema-only: `join_failed` writes each shape directly, so no variant is
+// ever constructed.
+#[allow(dead_code)]
+pub(crate) enum JoinConflict {
+    /// The handler's slug and sentence.
+    Detail(crate::http_error::ErrorDetail),
+    /// The library answers under another address.
+    OriginMismatch(OriginMismatch),
+}
+
+impl utoipa::PartialSchema for JoinConflict {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{AnyOfBuilder, RefBuilder};
+        AnyOfBuilder::new()
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("ErrorDetail")
+                    .description(Some("The handler's slug in `error` and a sentence in `detail`.")),
+            )
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("OriginMismatch")
+                    .description(Some(
+                        "The library answers under another address, given in `origin`.",
+                    )),
+            )
+            .description(Some(
+                "A `409` from a join step: the handler's error, or an origin mismatch that names the address to join with; the route's examples name each.",
+            ))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for JoinConflict {
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        use utoipa::PartialSchema;
+        schemas.push((
+            "ErrorDetail".to_string(),
+            crate::http_error::ErrorDetail::schema(),
+        ));
+        schemas.push(("OriginMismatch".to_string(), OriginMismatch::schema()));
+    }
 }
 
 /// The answer for a failed join step. Never echoes a link or code.
@@ -356,6 +420,7 @@ fn default_branch_name() -> String {
         (status = 200, description = "Whether this install has joined a library, and its state.", body = JoinStatus),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The session is impersonating a user."),
+        (status = 502, description = "Whether this install may join as a clerk could not be checked: its own contents could not be read (`join_failed`).", body = crate::http_error::ErrorDetail, example = json!({"error": "join_failed", "detail": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
         (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
@@ -413,7 +478,7 @@ pub struct InspectBody {
         )),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The session is impersonating a user."),
-        (status = 409, description = "Joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`, with the address to use in `origin`).", body = crate::http_error::ErrorDetail, examples(
+        (status = 409, description = "Joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`, with the address to use in `origin`).", body = JoinConflict, examples(
             ("join_cycle" = (summary = "The library is this one or one of its branches.", value = json!({"error": "join_cycle", "detail": "that library is this library or one of its own branches; joining it would make a loop"}))),
             ("ancestry_too_deep" = (summary = "The library sits too deep in its tree of libraries.", value = json!({"error": "ancestry_too_deep", "detail": "that library sits too deep in its tree of libraries; joining it could hide a loop"}))),
             ("origin_mismatch" = (summary = "The library answers under another address.", value = json!({"error": "origin_mismatch", "detail": "this library's address is https://books.example.com; join with that address", "origin": "https://books.example.com"}))),
@@ -477,7 +542,7 @@ pub struct StartBody {
             ("enrollment_disabled" = (summary = "The library has host enrollment switched off.", value = json!({"error": "enrollment_disabled", "detail": "This library isn't accepting new branches"}))),
             ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
         )),
-        (status = 409, description = "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install holds data of its own for a clerk join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`).", body = crate::http_error::ErrorDetail, examples(
+        (status = 409, description = "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install holds data of its own for a clerk join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`).", body = JoinConflict, examples(
             ("fingerprint_unconfirmed" = (summary = "A self-signed library's fingerprint was not confirmed.", value = json!({"error": "fingerprint_unconfirmed", "detail": "confirm the library's fingerprint first; it must match the one on its Settings → Branches page"}))),
             ("not_empty" = (summary = "This install already holds library data (clerk join).", value = json!({"error": "not_empty", "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a clerk"}))),
             ("join_cycle" = (summary = "The library is this one or one of its branches.", value = json!({"error": "join_cycle", "detail": "that library is this library or one of its own branches; joining it would make a loop"}))),
@@ -659,15 +724,15 @@ const CALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
         )),
         (status = 409, description = "This install holds data of its own for a clerk join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the D1 token is not set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).", body = crate::http_error::ErrorDetail, examples(
             ("not_empty" = (summary = "This install already holds library data (clerk join).", value = json!({"error": "not_empty", "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a clerk"}))),
-            ("database_guest_missing" = (summary = "The library's database plugin is not installed on this server.", value = json!({"error": "database_guest_missing", "detail": "the library's database is postgres, and its database plugin is not installed on this server; install it, then try again within 10 minutes (the library holds this server as node n_4e8a1c7f)"}))),
-            ("d1_token_missing" = (summary = "The library's database is D1 and this server has no token.", value = json!({"error": "d1_token_missing", "detail": "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node n_4e8a1c7f)"}))),
+            ("database_guest_missing" = (summary = "The library's database plugin is not installed on this server.", value = json!({"error": "database_guest_missing", "detail": "the library's database is postgres, and its database plugin is not installed on this server; install it, then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)"}))),
+            ("d1_token_missing" = (summary = "The library's database is D1 and this server has no token.", value = json!({"error": "d1_token_missing", "detail": "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)"}))),
         )),
         (status = 410, description = "The sign-in is unknown, already used, or older than ten minutes; start again (`join_expired`).", body = crate::http_error::ErrorDetail, example = json!({"error": "join_expired", "detail": "this sign-in is unknown, already used, or took longer than 10 minutes; start again"})),
         (status = 502, description = "The redeem can be retried with the sign-in still pending (`join_retry`), the library could not be reached (`unreachable`), it answered with an error (`library_error`), or it enrolled this host but the join could not be saved (`join_unsaved`, `join_failed`).", body = crate::http_error::ErrorDetail, examples(
             ("join_retry" = (summary = "The library did not answer in time; try again.", value = json!({"error": "join_retry", "detail": "the library did not answer in time; try again"}))),
             ("unreachable" = (summary = "No connection to the library.", value = json!({"error": "unreachable", "detail": "owner unreachable: Connection refused (os error 111)"}))),
             ("library_error" = (summary = "The library answered with an error status.", value = json!({"error": "library_error", "detail": "the library answered HTTP 500 enrollment_unavailable"}))),
-            ("join_unsaved" = (summary = "The library enrolled this host but the join was not saved.", value = json!({"error": "join_unsaved", "detail": "the library enrolled this host as node n_4e8a1c7f but it could not be saved here (database is locked); ask the library's owner to remove that node, then join again"}))),
+            ("join_unsaved" = (summary = "The library enrolled this host but the join was not saved.", value = json!({"error": "join_unsaved", "detail": "the library enrolled this host as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c but it could not be saved here (database is locked); ask the library's owner to remove that node, then join again"}))),
         )),
         (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
@@ -1020,7 +1085,7 @@ pub struct InviteBody {
             ("refused" = (summary = "The invite is used, expired or revoked, or enrollment is off.", value = json!({"error": "refused", "detail": "the library refused: the sign-in or invite is used, expired, revoked, or the library isn't accepting new branches"}))),
             ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
         )),
-        (status = 409, description = "Joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one in the invite (`origin_mismatch`, with the address to use in `origin`).", body = crate::http_error::ErrorDetail, examples(
+        (status = 409, description = "Joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one in the invite (`origin_mismatch`, with the address to use in `origin`).", body = JoinConflict, examples(
             ("join_cycle" = (summary = "The library is this one or one of its branches.", value = json!({"error": "join_cycle", "detail": "that library is this library or one of its own branches; joining it would make a loop"}))),
             ("origin_mismatch" = (summary = "The library answers under another address.", value = json!({"error": "origin_mismatch", "detail": "this library's address is https://books.example.com; join with that address", "origin": "https://books.example.com"}))),
         )),
@@ -1028,7 +1093,7 @@ pub struct InviteBody {
         (status = 502, description = "The library could not be reached (`unreachable`), answered with an error (`library_error`), or enrolled this host without the join being saved here (`join_unsaved`).", body = crate::http_error::ErrorDetail, examples(
             ("unreachable" = (summary = "No connection to the library.", value = json!({"error": "unreachable", "detail": "owner unreachable: Connection refused (os error 111)"}))),
             ("library_error" = (summary = "The library answered with an error status.", value = json!({"error": "library_error", "detail": "the library answered HTTP 500 enrollment_unavailable"}))),
-            ("join_unsaved" = (summary = "The library enrolled this host but the join was not saved.", value = json!({"error": "join_unsaved", "detail": "the library enrolled this host as node n_4e8a1c7f but it could not be saved here (database is locked); ask the library's owner to remove that node, then join again"}))),
+            ("join_unsaved" = (summary = "The library enrolled this host but the join was not saved.", value = json!({"error": "join_unsaved", "detail": "the library enrolled this host as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c but it could not be saved here (database is locked); ask the library's owner to remove that node, then join again"}))),
         )),
         (status = 504, description = "The library is slow to answer; the join goes on in the background (`join_pending`). Poll the join state instead of retrying.", body = crate::http_error::ErrorDetail, example = json!({"error": "join_pending", "detail": "the library is slow to answer; this branch keeps joining and appears under Libraries once it has (if it never does, this install's log says why)"})),
     ),

@@ -101,7 +101,7 @@ pub struct ClusterLinkView {
     #[schema(example = "https://books.example.com")]
     pub owner_origin: String,
     /// The node id the library minted for this install.
-    #[schema(example = "n_4e8a1c7f")]
+    #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
     pub node_id: String,
     /// Whether the link pins the library's self-signed certificate.
     #[schema(example = false)]

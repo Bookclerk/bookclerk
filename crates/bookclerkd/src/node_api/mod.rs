@@ -101,7 +101,7 @@ fn link_json(link: &EnrollmentLink) -> EnrollmentLinkView {
 /// An enrollment link as the invites routes list it; never its secret.
 pub struct EnrollmentLinkView {
     /// Public link id.
-    #[schema(example = "lnk_9f2c7b1e4a")]
+    #[schema(example = "9f2c7b1e4a8d3c6f0b5e2a7d4c1f8e3b")]
     pub link_id: String,
     /// User the enrolled node will belong to.
     #[schema(example = 7)]
@@ -122,7 +122,7 @@ pub struct EnrollmentLinkView {
     #[schema(example = "2026-10-29T09:02:41Z")]
     pub redeemed_at: Option<String>,
     /// Node the redeem created.
-    #[schema(example = "n_4e8a1c7f")]
+    #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
     pub redeemed_node_id: Option<String>,
     /// RFC 3339 revoke time.
     #[schema(example = "2026-10-29T10:00:00Z")]
@@ -138,7 +138,9 @@ pub struct NodeInviteCreated {
     /// The link's record.
     pub link: EnrollmentLinkView,
     /// The full enrollment URL with the secret, shown once.
-    #[schema(example = "https://books.example.com/join#lnk_9f2c7b1e4a.5Hq8…")]
+    #[schema(
+        example = "https://books.example.com/enroll#bcn1.9f2c7b1e4a8d3c6f0b5e2a7d4c1f8e3b.kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o"
+    )]
     pub url: String,
 }
 
@@ -160,10 +162,10 @@ pub struct NodeInviteRevoked {
 /// A host's node credential as the credentials routes show it; never its keys.
 pub struct NodeCredentialView {
     /// Host node.
-    #[schema(example = "n_4e8a1c7f")]
+    #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
     pub node_id: String,
     /// Link that enrolled it.
-    #[schema(example = "lnk_9f2c7b1e4a")]
+    #[schema(example = "9f2c7b1e4a8d3c6f0b5e2a7d4c1f8e3b")]
     pub link_id: String,
     /// RFC 3339 enrollment time.
     #[schema(example = "2026-10-29T09:02:41Z")]
@@ -201,7 +203,7 @@ pub struct EnrolledNodeView {
     #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
     pub cluster_id: String,
     /// The node id minted for it.
-    #[schema(example = "n_4e8a1c7f")]
+    #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
     pub node_id: String,
 }
 
@@ -544,13 +546,13 @@ fn credential_json(credential: &NodeCredential) -> NodeCredentialView {
     params(("node_id" = String, Path, description = "Node id.")),
     responses(
         (status = 200, description = "The host's credential was revoked.", body = NodeCredentialRevoked),
-        (status = 400, description = "The host has no credential to revoke.", body = crate::http_error::ErrorMessage, example = json!({"error": "node n_4e8a1c7f has no host credential to revoke"})),
+        (status = 400, description = "The host has no credential to revoke.", body = crate::http_error::ErrorMessage, example = json!({"error": "node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c has no host credential to revoke"})),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
             ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
-        (status = 404, description = "No such host, or not one the caller may see.", body = crate::http_error::ErrorMessage, example = json!({"error": "book not found: node n_4e8a1c7f"})),
+        (status = 404, description = "No such host, or not one the caller may see.", body = crate::http_error::ErrorMessage, example = json!({"error": "book not found: node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"})),
         (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]

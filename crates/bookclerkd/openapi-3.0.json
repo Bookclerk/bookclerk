@@ -7371,6 +7371,20 @@
               }
             }
           },
+          "502": {
+            "description": "Whether this install may join as a clerk could not be checked: its own contents could not be read (`join_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
+                  "error": "join_failed"
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -7483,7 +7497,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorDetail"
+                  "$ref": "#/components/schemas/JoinConflict"
                 },
                 "examples": {
                   "ancestry_too_deep": {
@@ -7675,7 +7689,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorDetail"
+                  "$ref": "#/components/schemas/JoinConflict"
                 },
                 "examples": {
                   "fingerprint_unconfirmed": {
@@ -7894,14 +7908,14 @@
                   "d1_token_missing": {
                     "summary": "The library's database is D1 and this server has no token.",
                     "value": {
-                      "detail": "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node n_4e8a1c7f)",
+                      "detail": "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)",
                       "error": "d1_token_missing"
                     }
                   },
                   "database_guest_missing": {
                     "summary": "The library's database plugin is not installed on this server.",
                     "value": {
-                      "detail": "the library's database is postgres, and its database plugin is not installed on this server; install it, then try again within 10 minutes (the library holds this server as node n_4e8a1c7f)",
+                      "detail": "the library's database is postgres, and its database plugin is not installed on this server; install it, then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)",
                       "error": "database_guest_missing"
                     }
                   },
@@ -7961,7 +7975,7 @@
                   "join_unsaved": {
                     "summary": "The library enrolled this host but the join was not saved.",
                     "value": {
-                      "detail": "the library enrolled this host as node n_4e8a1c7f but it could not be saved here (database is locked); ask the library's owner to remove that node, then join again",
+                      "detail": "the library enrolled this host as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c but it could not be saved here (database is locked); ask the library's owner to remove that node, then join again",
                       "error": "join_unsaved"
                     }
                   },
@@ -8107,7 +8121,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorDetail"
+                  "$ref": "#/components/schemas/JoinConflict"
                 },
                 "examples": {
                   "join_cycle": {
@@ -8154,7 +8168,7 @@
                   "join_unsaved": {
                     "summary": "The library enrolled this host but the join was not saved.",
                     "value": {
-                      "detail": "the library enrolled this host as node n_4e8a1c7f but it could not be saved here (database is locked); ask the library's owner to remove that node, then join again",
+                      "detail": "the library enrolled this host as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c but it could not be saved here (database is locked); ask the library's owner to remove that node, then join again",
                       "error": "join_unsaved"
                     }
                   },
@@ -10654,7 +10668,7 @@
             }
           },
           "413": {
-            "description": "The body is larger than 16 KiB.",
+            "description": "The body is larger than 8 KiB.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10759,6 +10773,20 @@
               }
             }
           },
+          "400": {
+            "description": "This server's public origin is not a URL WebAuthn can use, so the passkey check could not start (`unavailable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "could not start the passkey check",
+                  "error": "unavailable"
+                }
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in.",
             "content": {
@@ -10837,28 +10865,30 @@
               }
             }
           },
-          "503": {
-            "description": "The library could not be read (`unavailable`), or the passkey check could not start.",
+          "500": {
+            "description": "The passkeys could not be read, or the challenge could not be created or stored (`unavailable`).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorDetail"
                 },
-                "examples": {
-                  "passkey_check": {
-                    "summary": "The passkey challenge could not be created.",
-                    "value": {
-                      "detail": "could not start the passkey check",
-                      "error": "unavailable"
-                    }
-                  },
-                  "unavailable": {
-                    "summary": "A read failed; try again.",
-                    "value": {
-                      "detail": "try again",
-                      "error": "unavailable"
-                    }
-                  }
+                "example": {
+                  "detail": "could not start the passkey check",
+                  "error": "unavailable"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The user record could not be read (`unavailable`); try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                },
+                "example": {
+                  "detail": "try again",
+                  "error": "unavailable"
                 }
               }
             }
@@ -11531,7 +11561,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "node n_4e8a1c7f has no host credential to revoke"
+                  "error": "node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c has no host credential to revoke"
                 }
               }
             }
@@ -11587,7 +11617,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "book not found: node n_4e8a1c7f"
+                  "error": "book not found: node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
                 }
               }
             }
@@ -18293,7 +18323,7 @@
         "tags": [
           "Node protocol"
         ],
-        "summary": "`POST /api/node/v1/enroll/oauth`: redeem an approved branch sign-in.\nAnswers `{cluster_id, node_id}`; 403 `transport_insecure` for a refused\nconnection, 403 `enrollment_refused` for a code that does not redeem\n(unknown, used, expired, another client's, a wrong verifier or\nredirect URI, enrollment off, or the user no longer active).",
+        "summary": "`POST /api/node/v1/enroll/oauth`: redeem an approved branch sign-in.\nAnswers `{cluster_id, node_id}` for a branch, plus `connection` and the\nsealed `bootstrap` for a clerk; 403 `transport_insecure` for a refused\nconnection, 403 `enrollment_refused` for a code that does not redeem\n(unknown, used, expired, another client's, a wrong verifier or\nredirect URI, enrollment off, or the user no longer active).",
         "operationId": "post_enroll_oauth",
         "requestBody": {
           "content": {
@@ -18307,11 +18337,29 @@
         },
         "responses": {
           "200": {
-            "description": "The branch is enrolled; its node credential.",
+            "description": "The install is enrolled: its cluster and node ids for a branch, and for a clerk also `connection` and the clerk bootstrap sealed to its box key.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EnrolledNodeView"
+                  "$ref": "#/components/schemas/OAuthEnrollAnswer"
+                },
+                "examples": {
+                  "branch": {
+                    "summary": "A branch joined.",
+                    "value": {
+                      "cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                      "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
+                    }
+                  },
+                  "clerk": {
+                    "summary": "A clerk joined; its bootstrap is sealed to its box key.",
+                    "value": {
+                      "bootstrap": "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0",
+                      "cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+                      "connection": "clerk",
+                      "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
+                    }
+                  }
                 }
               }
             }
@@ -18933,13 +18981,21 @@
             }
           },
           "422": {
-            "description": "The commit was refused (`refused`): the body does not parse (`invalid_body`), the destinations changed (`destinations_changed`), the upload is unknown, aborted or cancelled (`unknown_upload`, `upload_aborted`, `job_cancelled`), a file is missing (`files_missing`), a closing upload is mismatched (`not_a_closing_upload`, `closing_upload_must_finish`), or a storage key is taken (`key_taken`, `unknown_title`).",
+            "description": "The commit was refused (`refused`), with the cause in `reason`: the body does not parse (`invalid_body`); the upload is unknown, aborted, or its job was cancelled (`unknown_upload`, `upload_aborted`, `job_cancelled`); not every granted file arrived (`files_missing`); the destinations changed since the grant (`destinations_changed`); a storage key now belongs to another title or writer, or the title or book is gone (`key_taken`, `unknown_title`, `unknown_book`); or the closing upload is mismatched: an ordinary upload claims to finish the job (`not_a_closing_upload`), the closing upload does not (`closing_upload_must_finish`), or it arrives while titles are still pending (`titles_remaining`).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UploadAnswer"
                 },
                 "examples": {
+                  "closing_upload_must_finish": {
+                    "summary": "The closing upload does not claim to finish the job.",
+                    "value": {
+                      "job_completed": false,
+                      "reason": "closing_upload_must_finish",
+                      "status": "refused"
+                    }
+                  },
                   "destinations_changed": {
                     "summary": "The destinations changed since the grant.",
                     "value": {
@@ -18964,11 +19020,59 @@
                       "status": "refused"
                     }
                   },
+                  "job_cancelled": {
+                    "summary": "The job was cancelled before the commit.",
+                    "value": {
+                      "job_completed": false,
+                      "reason": "job_cancelled",
+                      "status": "refused"
+                    }
+                  },
                   "key_taken": {
                     "summary": "A storage key now belongs to another title or writer.",
                     "value": {
                       "job_completed": false,
                       "reason": "key_taken",
+                      "status": "refused"
+                    }
+                  },
+                  "not_a_closing_upload": {
+                    "summary": "An ordinary upload claims to finish the job.",
+                    "value": {
+                      "job_completed": false,
+                      "reason": "not_a_closing_upload",
+                      "status": "refused"
+                    }
+                  },
+                  "titles_remaining": {
+                    "summary": "The closing upload arrived while titles are still pending.",
+                    "value": {
+                      "job_completed": false,
+                      "reason": "titles_remaining",
+                      "status": "refused"
+                    }
+                  },
+                  "unknown_book": {
+                    "summary": "The book the upload was granted for no longer exists.",
+                    "value": {
+                      "job_completed": false,
+                      "reason": "unknown_book",
+                      "status": "refused"
+                    }
+                  },
+                  "unknown_title": {
+                    "summary": "The title the upload was granted for no longer exists.",
+                    "value": {
+                      "job_completed": false,
+                      "reason": "unknown_title",
+                      "status": "refused"
+                    }
+                  },
+                  "unknown_upload": {
+                    "summary": "No live upload has this id.",
+                    "value": {
+                      "job_completed": false,
+                      "reason": "unknown_upload",
                       "status": "refused"
                     }
                   },
@@ -20995,7 +21099,7 @@
           "node_id": {
             "type": "string",
             "description": "The branch's node id.",
-            "example": "n_4e8a1c7f"
+            "example": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
           },
           "created_at": {
             "type": "string",
@@ -21402,7 +21506,7 @@
           "node_id": {
             "type": "string",
             "description": "The node id the library minted for this install.",
-            "example": "n_4e8a1c7f"
+            "example": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
           },
           "library_name": {
             "type": "string",
@@ -21411,7 +21515,7 @@
           },
           "database": {
             "type": "string",
-            "description": "The database plugin this install now runs (`postgres`).",
+            "description": "The database plugin this install now runs (`postgres` or `d1`).",
             "example": "postgres"
           },
           "master_key_wrapped": {
@@ -21532,7 +21636,7 @@
           "node_id": {
             "type": "string",
             "description": "The node id the library minted for this install.",
-            "example": "n_4e8a1c7f"
+            "example": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
           },
           "pinned": {
             "type": "boolean",
@@ -22651,7 +22755,7 @@
           "node_id": {
             "type": "string",
             "description": "The node id minted for it.",
-            "example": "n_4e8a1c7f"
+            "example": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
           }
         }
       },
@@ -22671,7 +22775,7 @@
           "link_id": {
             "type": "string",
             "description": "Public link id.",
-            "example": "lnk_9f2c7b1e4a"
+            "example": "9f2c7b1e4a8d3c6f0b5e2a7d4c1f8e3b"
           },
           "for_user_id": {
             "type": "integer",
@@ -22708,7 +22812,7 @@
           "redeemed_node_id": {
             "type": "string",
             "description": "Node the redeem created.",
-            "example": "n_4e8a1c7f",
+            "example": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c",
             "nullable": true
           },
           "revoked_at": {
@@ -23617,6 +23721,27 @@
         ],
         "description": "JSON body once a join completed: as a branch, or as a clerk."
       },
+      "JoinConflict": {
+        "anyOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ErrorDetail"
+              }
+            ],
+            "description": "The handler's slug in `error` and a sentence in `detail`."
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OriginMismatch"
+              }
+            ],
+            "description": "The library answers under another address, given in `origin`."
+          }
+        ],
+        "description": "A `409` from a join step: the handler's error, or an origin mismatch that names the address to join with; the route's examples name each."
+      },
       "JoinStarted": {
         "type": "object",
         "description": "JSON body for `POST /api/config/join/start`.",
@@ -24116,12 +24241,12 @@
           "node_id": {
             "type": "string",
             "description": "Host node.",
-            "example": "n_4e8a1c7f"
+            "example": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
           },
           "link_id": {
             "type": "string",
             "description": "Link that enrolled it.",
-            "example": "lnk_9f2c7b1e4a"
+            "example": "9f2c7b1e4a8d3c6f0b5e2a7d4c1f8e3b"
           },
           "enrolled_at": {
             "type": "string",
@@ -24161,7 +24286,7 @@
           "url": {
             "type": "string",
             "description": "The full enrollment URL with the secret, shown once.",
-            "example": "https://books.example.com/join#lnk_9f2c7b1e4a.5Hq8…"
+            "example": "https://books.example.com/enroll#bcn1.9f2c7b1e4a8d3c6f0b5e2a7d4c1f8e3b.kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o"
           }
         }
       },
@@ -24818,6 +24943,40 @@
               }
             ],
             "description": "What the caller may do with them."
+          }
+        }
+      },
+      "OAuthEnrollAnswer": {
+        "type": "object",
+        "description": "`POST /api/node/v1/enroll/oauth` answer.",
+        "required": [
+          "cluster_id",
+          "node_id"
+        ],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "The library's cluster id.",
+            "example": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "The node id recorded for the joining install.",
+            "example": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"
+          },
+          "connection": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionType"
+              }
+            ],
+            "description": "The connection type recorded (`branch` when left out)."
+          },
+          "bootstrap": {
+            "type": "string",
+            "description": "For a clerk: the [`crate::ClerkBootstrap`] sealed to the node's box\nkey ([`crate::seal_clerk_bootstrap`]), as base64url without padding.",
+            "example": "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0",
+            "nullable": true
           }
         }
       },
@@ -25494,6 +25653,32 @@
             "description": "Raw User-Agent captured when the session was created.",
             "example": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/134.0",
             "nullable": true
+          }
+        }
+      },
+      "OriginMismatch": {
+        "type": "object",
+        "description": "`409 origin_mismatch`: the library's canonical address is not the one\nthe join was started with. An [`crate::http_error::ErrorDetail`] that\nalso carries the address to use.",
+        "required": [
+          "error",
+          "detail",
+          "origin"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Always `origin_mismatch`.",
+            "example": "origin_mismatch"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Why, naming the address to join with instead.",
+            "example": "this library's address is https://books.example.com; join with that address"
+          },
+          "origin": {
+            "type": "string",
+            "description": "The library's canonical origin, to join with instead.",
+            "example": "https://books.example.com"
           }
         }
       },

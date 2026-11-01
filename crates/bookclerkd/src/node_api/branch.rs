@@ -194,7 +194,8 @@ pub async fn get_info(State(state): State<Arc<AppState>>, request: Request) -> R
 const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
 
 /// `POST /api/node/v1/enroll/oauth`: redeem an approved branch sign-in.
-/// Answers `{cluster_id, node_id}`; 403 `transport_insecure` for a refused
+/// Answers `{cluster_id, node_id}` for a branch, plus `connection` and the
+/// sealed `bootstrap` for a clerk; 403 `transport_insecure` for a refused
 /// connection, 403 `enrollment_refused` for a code that does not redeem
 /// (unknown, used, expired, another client's, a wrong verifier or
 /// redirect URI, enrollment off, or the user no longer active).
@@ -203,7 +204,10 @@ const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
     path = "/api/node/v1/enroll/oauth",
     request_body = bookclerk_node_proto::OAuthEnrollRequest,
     responses(
-        (status = 200, description = "The branch is enrolled; its node credential.", body = super::EnrolledNodeView),
+        (status = 200, description = "The install is enrolled: its cluster and node ids for a branch, and for a clerk also `connection` and the clerk bootstrap sealed to its box key.", body = bookclerk_node_proto::OAuthEnrollAnswer, examples(
+            ("branch" = (summary = "A branch joined.", value = json!({"cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"}))),
+            ("clerk" = (summary = "A clerk joined; its bootstrap is sealed to its box key.", value = json!({"cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c", "connection": "clerk", "bootstrap": "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0"}))),
+        )),
         (status = 400, description = "The body is not an enroll request, or its keys are not base64url.", body = crate::http_error::ErrorMessage, examples(
             ("malformed" = (summary = "The body does not parse as an enroll request.", value = json!({"error": "invalid enroll request"}))),
             ("bad_keys" = (summary = "A public key is not base64url.", value = json!({"error": "sign_pk and box_pk must be base64url"}))),
@@ -814,7 +818,7 @@ pub struct BranchesResponse {
 /// One branch (host node) of this library.
 pub struct BranchView {
     /// The branch's node id.
-    #[schema(example = "n_4e8a1c7f")]
+    #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
     pub node_id: String,
     /// RFC 3339 time the node was created.
     #[schema(example = "2026-10-29T09:02:41Z")]
@@ -1095,7 +1099,7 @@ pub struct BranchConsentBody {
         )),
         (status = 404, description = "The node API is not mounted on this listener (`node_api_unmounted`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_unmounted"})),
         (status = 409, description = "This library's database cannot be shared with a clerk (`database_not_shareable`).", body = crate::http_error::ErrorDetail, example = json!({"error": "database_not_shareable", "detail": "This library keeps its database in a SQLite file that only this server can open. A clerk needs a PostgreSQL or Cloudflare D1 database."})),
-        (status = 413, description = "The body is larger than 16 KiB.", body = crate::http_error::ErrorMessage, example = json!({"error": "request too large"})),
+        (status = 413, description = "The body is larger than 8 KiB.", body = crate::http_error::ErrorMessage, example = json!({"error": "request too large"})),
         (status = 415, description = "The request is not `application/json`.", body = crate::http_error::ErrorMessage, example = json!({"error": "expected application/json"})),
         (status = 429, description = "Too many wrong step-up codes; wait a few minutes (`step_up_locked`).", body = crate::http_error::ErrorDetail, example = json!({"error": "step_up_locked", "detail": "too many wrong codes; wait a few minutes"})),
         (status = 503, description = "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`).", body = crate::http_error::ErrorAnswer, examples(
@@ -1357,6 +1361,7 @@ async fn check_clerk_consent(
     security(("portalSession" = []), ("operatorSession" = [])),
     responses(
         (status = 200, description = "Passkey request options.", body = crate::passkeys::PasskeyRequestOptions),
+        (status = 400, description = "This server's public origin is not a URL WebAuthn can use, so the passkey check could not start (`unavailable`).", body = crate::http_error::ErrorDetail, example = json!({"error": "unavailable", "detail": "could not start the passkey check"})),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The caller is not an active library user (`user_required`, `user_inactive`), not an Owner (`owner_required`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
             ("user_required" = (summary = "The session is not a library user.", value = json!({"error": "user_required", "detail": "a branch belongs to a user: sign in with your account on this library"}))),
@@ -1366,10 +1371,8 @@ async fn check_clerk_consent(
             ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
         (status = 404, description = "The account has no passkey (`no_passkey`).", body = crate::http_error::ErrorDetail, example = json!({"error": "no_passkey", "detail": "this account has no passkey"})),
-        (status = 503, description = "The library could not be read (`unavailable`), or the passkey check could not start.", body = crate::http_error::ErrorDetail, examples(
-            ("unavailable" = (summary = "A read failed; try again.", value = json!({"error": "unavailable", "detail": "try again"}))),
-            ("passkey_check" = (summary = "The passkey challenge could not be created.", value = json!({"error": "unavailable", "detail": "could not start the passkey check"}))),
-        )),
+        (status = 500, description = "The passkeys could not be read, or the challenge could not be created or stored (`unavailable`).", body = crate::http_error::ErrorDetail, example = json!({"error": "unavailable", "detail": "could not start the passkey check"})),
+        (status = 503, description = "The user record could not be read (`unavailable`); try again.", body = crate::http_error::ErrorDetail, example = json!({"error": "unavailable", "detail": "try again"})),
     ),
 )]
 pub async fn post_branch_consent_step_up(
