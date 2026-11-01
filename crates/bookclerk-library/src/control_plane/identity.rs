@@ -109,8 +109,9 @@ pub struct NodeRecord {
 }
 
 /// How a node joined the cluster.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
+#[schema(example = "owner")]
 pub enum NodeKind {
     /// Shares the library database and `master.key`. Every node is one today.
     Owner,

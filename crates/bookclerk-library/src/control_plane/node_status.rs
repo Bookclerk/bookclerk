@@ -55,11 +55,13 @@ pub const DEFAULT_GUEST_CPU_MILLICORES: i64 = 800;
 
 /// CPU and memory one guest may use at most: its grant's ceilings after the
 /// node's `[plugins.jail]` limits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, utoipa::ToSchema)]
 pub struct GuestReservation {
     /// Memory ceiling in bytes.
+    #[schema(example = 1_073_741_824)]
     pub memory_bytes: i64,
     /// CPU ceiling in millicores.
+    #[schema(example = 1600)]
     pub cpu_millicores: i64,
 }
 
@@ -114,43 +116,60 @@ pub struct NodeHeartbeat {
 }
 
 /// A node's latest heartbeat with budget, accounting, and availability.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct NodeStatus {
     /// Reporting node.
+    #[schema(example = "node-7f3a9c")]
     pub node_id: String,
     /// Daemon process incarnation.
+    #[schema(example = "01J9Q0Z5C7M8N3P4R6S8T9V0W1")]
     pub incarnation: String,
     /// RFC 3339 daemon start.
+    #[schema(example = "2026-10-28T06:00:00Z")]
     pub started_at: String,
     /// RFC 3339 heartbeat time.
+    #[schema(example = "2026-10-28T19:07:00Z")]
     pub heartbeat_at: String,
     /// Heartbeat time in Unix milliseconds.
+    #[schema(example = 1_793_214_420_000_i64)]
     pub heartbeat_ms: i64,
     /// Promised interval in milliseconds.
+    #[schema(example = 15_000)]
     pub interval_ms: i64,
     /// Detected CPU capacity in millicores.
+    #[schema(example = 8000)]
     pub cpu_millicores: i64,
-    /// Detected memory.
+    /// Detected memory in bytes.
+    #[schema(example = 16_777_216_000_i64)]
     pub memory_bytes: Option<i64>,
     /// CPU the scheduler may commit, in millicores.
+    #[schema(example = 6400)]
     pub cpu_budget_millicores: i64,
-    /// Memory the scheduler may commit.
+    /// Memory the scheduler may commit, in bytes.
+    #[schema(example = 12_582_912_000_i64)]
     pub memory_budget_bytes: Option<i64>,
     /// False when an operator drained the node.
+    #[schema(example = true)]
     pub schedulable: bool,
-    /// Measured CPU in use.
+    /// Measured CPU in use, in millicores.
+    #[schema(example = 350)]
     pub cpu_used_millicores: Option<i64>,
-    /// Measured memory available.
+    /// Measured memory available, in bytes.
+    #[schema(example = 9_663_676_416_i64)]
     pub memory_available_bytes: Option<i64>,
     /// Free bytes on the files directory's filesystem.
+    #[schema(example = 214_748_364_800_i64)]
     pub files_dir_free_bytes: Option<i64>,
     /// Ceilings of the guests running here.
     pub reserved: GuestReservation,
     /// Guests running here.
+    #[schema(example = 2)]
     pub running_guests: i64,
     /// Recent online fraction in parts per million.
+    #[schema(example = 998_500)]
     pub availability_ppm: i64,
     /// Unix milliseconds the current online stretch began.
+    #[schema(example = 1_793_167_200_000_i64)]
     pub online_since_ms: i64,
 }
 

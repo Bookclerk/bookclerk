@@ -5440,24 +5440,24 @@
         },
         "responses": {
           "200": {
-            "description": "The node's labels after the change.",
+            "description": "The node after the change.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/NodeView"
+                }
               }
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The body is invalid, or a label is malformed.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
+                  "error": "invalid configuration: label `Region=EU` must be `name` or `name=value` using lowercase letters, digits, and `._/-` (at most 63 bytes)"
                 }
               }
             }
@@ -5493,16 +5493,14 @@
             }
           },
           "404": {
-            "description": "No such node, or not one the caller administers.",
+            "description": "No such node.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "not_found",
-                  "message": "That page or resource was not found.",
-                  "status": 404
+                  "error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"
                 }
               }
             }
@@ -5512,12 +5510,10 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
                 }
               }
             }
@@ -5578,21 +5574,21 @@
             "description": "The node's owner after the change.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/NodeOwnerChanged"
+                }
               }
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The user is disabled and cannot own a node.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
+                  "error": "user 42 is disabled and cannot own a node"
                 }
               }
             }
@@ -5628,16 +5624,14 @@
             }
           },
           "404": {
-            "description": "No such node, or not one the caller administers.",
+            "description": "No such node or user.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "not_found",
-                  "message": "That page or resource was not found.",
-                  "status": 404
+                  "error": "book not found: user 42"
                 }
               }
             }
@@ -5647,12 +5641,10 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
                 }
               }
             }
@@ -8699,21 +8691,8 @@
             "description": "The nodes the caller administers.",
             "content": {
               "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
-            "content": {
-              "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                },
-                "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
+                  "$ref": "#/components/schemas/NodesResponse"
                 }
               }
             }
@@ -8749,16 +8728,14 @@
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The configuration could not be read.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
                 }
               }
             }
@@ -8812,21 +8789,21 @@
             "description": "The owner node was removed.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerNodeRemoved"
+                }
               }
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The node is this node, or a branch (revoke it instead).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
+                  "error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is a branch: revoke it instead"
                 }
               }
             }
@@ -8866,12 +8843,23 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "not_found",
-                  "message": "That page or resource was not found.",
-                  "status": 404
+                  "error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The node is still running.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is running; stop Bookclerk there first"
                 }
               }
             }
@@ -8881,12 +8869,10 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
                 }
               }
             }
@@ -8929,21 +8915,8 @@
             "description": "This node and its clerks.",
             "content": {
               "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
-            "content": {
-              "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                },
-                "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
+                  "$ref": "#/components/schemas/ClerksResponse"
                 }
               }
             }
@@ -8979,16 +8952,14 @@
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The configuration could not be read.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
                 }
               }
             }
@@ -9052,21 +9023,21 @@
             "description": "The node's runtime settings after the change.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/NodeRuntimeChanged"
+                }
               }
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The body is invalid, or a budget is outside 1..=100.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
+                  "error": "invalid configuration: cpu_budget_percent must be between 1 and 100"
                 }
               }
             }
@@ -9087,31 +9058,40 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A node owner named a node they do not own (an unknown node included). A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                  "error": "node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e is not owned by this user"
                 }
               }
             }
           },
           "404": {
-            "description": "No such node, or not one the caller administers.",
+            "description": "The operator named a node that does not exist.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "not_found",
-                  "message": "That page or resource was not found.",
-                  "status": 404
+                  "error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Concurrent edits kept changing the document; retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "node.runtime for 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e kept changing; retry"
                 }
               }
             }
@@ -9121,12 +9101,10 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
                 }
               }
             }
@@ -9169,21 +9147,8 @@
             "description": "Cluster-wide node health.",
             "content": {
               "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "400": {
-            "description": "The body is invalid.",
-            "content": {
-              "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                },
-                "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
+                  "$ref": "#/components/schemas/ClusterStatusResponse"
                 }
               }
             }
@@ -9219,16 +9184,14 @@
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The configuration could not be read.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "internal_error",
-                  "message": "Something went wrong on the Bookclerk daemon.",
-                  "status": 500
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
                 }
               }
             }
@@ -18880,6 +18843,28 @@
         ],
         "example": "off"
       },
+      "ClerksResponse": {
+        "type": "object",
+        "description": "`GET /api/config/clerks` body.",
+        "required": [
+          "node_id",
+          "nodes"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "Id of the node that answered.",
+            "example": "node-7f3a9c"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeView"
+            },
+            "description": "This node and the clerks the caller may see."
+          }
+        }
+      },
       "ClusterJobsBody": {
         "type": "object",
         "description": "`POST /api/config/clusters/{cluster_id}/jobs` body.",
@@ -18917,6 +18902,134 @@
           }
         },
         "additionalProperties": false
+      },
+      "ClusterStatusResponse": {
+        "type": "object",
+        "description": "`GET /api/cluster/status` body.",
+        "required": [
+          "cluster",
+          "node_id",
+          "nodes",
+          "capabilities"
+        ],
+        "properties": {
+          "cluster": {
+            "$ref": "#/components/schemas/ClusterSummary",
+            "description": "Cluster-wide counters."
+          },
+          "node_id": {
+            "type": "string",
+            "description": "Id of the node that answered.",
+            "example": "node-7f3a9c"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeView"
+            },
+            "description": "The nodes the caller administers."
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/NodeCapabilities",
+            "description": "What the caller may do with them."
+          }
+        }
+      },
+      "ClusterSummary": {
+        "type": "object",
+        "description": "Cluster-wide counters every node administrator may see.",
+        "required": [
+          "nodes",
+          "live",
+          "drained",
+          "host_nodes",
+          "cpu_budget_millicores",
+          "cpu_reserved_millicores",
+          "memory_budget_bytes",
+          "memory_reserved_bytes",
+          "running_guests",
+          "active_jobs",
+          "deliveries",
+          "leases",
+          "schema"
+        ],
+        "properties": {
+          "nodes": {
+            "type": "integer",
+            "description": "Nodes in the library's node list.",
+            "example": 3,
+            "minimum": 0
+          },
+          "live": {
+            "type": "integer",
+            "description": "Nodes whose last heartbeat is recent enough.",
+            "example": 3,
+            "minimum": 0
+          },
+          "drained": {
+            "type": "integer",
+            "description": "Live nodes an operator drained.",
+            "example": 0,
+            "minimum": 0
+          },
+          "host_nodes": {
+            "type": "integer",
+            "description": "Enrolled hosts (nodes with their own database).",
+            "example": 1,
+            "minimum": 0
+          },
+          "cpu_budget_millicores": {
+            "type": "integer",
+            "format": "int64",
+            "description": "CPU the scheduler may commit across live nodes, in millicores.",
+            "example": 19200
+          },
+          "cpu_reserved_millicores": {
+            "type": "integer",
+            "format": "int64",
+            "description": "CPU the running guests' ceilings add up to, in millicores.",
+            "example": 3200
+          },
+          "memory_budget_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Memory the scheduler may commit across live nodes, in bytes.",
+            "example": 37748736000
+          },
+          "memory_reserved_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Memory the running guests' ceilings add up to, in bytes.",
+            "example": 2147483648
+          },
+          "running_guests": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Guests running across live nodes.",
+            "example": 4
+          },
+          "active_jobs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Jobs queued or running.",
+            "example": 2
+          },
+          "deliveries": {
+            "$ref": "#/components/schemas/DeliveryBacklog",
+            "description": "Event delivery backlog."
+          },
+          "leases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LeaseView"
+            },
+            "description": "Every cluster lease, held or expired."
+          },
+          "schema": {
+            "$ref": "#/components/schemas/SchemaStateView",
+            "description": "The database schema against this binary."
+          }
+        }
       },
       "ConfigOptionValueInfo": {
         "type": "object",
@@ -19305,6 +19418,44 @@
           "apply": {
             "type": "boolean",
             "description": "Update `[database].plugin` in config.toml after a successful copy."
+          }
+        }
+      },
+      "DeliveryBacklog": {
+        "type": "object",
+        "description": "Event delivery backlog across the cluster.",
+        "required": [
+          "pending",
+          "running",
+          "dead_letter"
+        ],
+        "properties": {
+          "pending": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Deliveries waiting for a consumer.",
+            "example": 3
+          },
+          "running": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Deliveries a consumer is handling now.",
+            "example": 1
+          },
+          "dead_letter": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Deliveries that exhausted their retries.",
+            "example": 0
+          },
+          "oldest_pending_age_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Age of the oldest pending delivery in seconds; `null` when none is\npending.",
+            "example": 12
           }
         }
       },
@@ -19965,6 +20116,28 @@
         ],
         "example": "now"
       },
+      "GuestReservation": {
+        "type": "object",
+        "description": "CPU and memory one guest may use at most: its grant's ceilings after the\nnode's `[plugins.jail]` limits.",
+        "required": [
+          "memory_bytes",
+          "cpu_millicores"
+        ],
+        "properties": {
+          "memory_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Memory ceiling in bytes.",
+            "example": 1073741824
+          },
+          "cpu_millicores": {
+            "type": "integer",
+            "format": "int64",
+            "description": "CPU ceiling in millicores.",
+            "example": 1600
+          }
+        }
+      },
       "HealthResponse": {
         "type": "object",
         "description": "Liveness payload for unauthenticated `GET /health`.",
@@ -20340,6 +20513,46 @@
         },
         "additionalProperties": false
       },
+      "LeaseView": {
+        "type": "object",
+        "description": "A cluster lease as the status page shows it.",
+        "required": [
+          "name",
+          "holder",
+          "token",
+          "held",
+          "expires_at_ms"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Lease name.",
+            "example": "scheduler"
+          },
+          "holder": {
+            "type": "string",
+            "description": "Holder (a node id).",
+            "example": "node-7f3a9c"
+          },
+          "token": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Fencing token; a new holder always gets a larger one.",
+            "example": 42
+          },
+          "held": {
+            "type": "boolean",
+            "description": "True while the lease has not expired.",
+            "example": true
+          },
+          "expires_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Expiry in Unix milliseconds.",
+            "example": 1793214480000
+          }
+        }
+      },
       "LeaveBody": {
         "type": "object",
         "description": "`POST /api/config/join/leave` body.",
@@ -20461,6 +20674,478 @@
           "classic"
         ],
         "example": "audiobookshelf"
+      },
+      "NodeCapabilities": {
+        "type": "object",
+        "description": "What the caller may do on the nodes it sees.",
+        "required": [
+          "scope",
+          "can_edit_runtime",
+          "can_edit_labels",
+          "can_assign_owner"
+        ],
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/NodeScope",
+            "description": "`all` for the operator, `owned` for a node owner."
+          },
+          "can_edit_runtime": {
+            "type": "boolean",
+            "description": "True: every caller may edit the runtime settings of the nodes it\nsees.",
+            "example": true
+          },
+          "can_edit_labels": {
+            "type": "boolean",
+            "description": "True for the operator, who may replace placement labels.",
+            "example": true
+          },
+          "can_assign_owner": {
+            "type": "boolean",
+            "description": "True for the operator, who may assign or clear a node's owner.",
+            "example": true
+          }
+        }
+      },
+      "NodeKind": {
+        "type": "string",
+        "description": "How a node joined the cluster.",
+        "enum": [
+          "owner",
+          "host"
+        ],
+        "example": "owner"
+      },
+      "NodeOwnerChanged": {
+        "type": "object",
+        "description": "`PUT /api/config/nodes/{node_id}/owner` body: the owner after the\nchange.",
+        "required": [
+          "node_id"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "Node id.",
+            "example": "node-7f3a9c"
+          },
+          "owner_user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "User id of the owner; `null` when cleared.",
+            "example": 7
+          }
+        }
+      },
+      "NodeOwnerSummary": {
+        "type": "object",
+        "description": "The user who owns a node, as the nodes listing shows them.",
+        "required": [
+          "user_id",
+          "role"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The owner's user id.",
+            "example": 7
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name, or the login name when none is set; `null` when the\nuser has neither.",
+            "example": "Sam Reader"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole",
+            "description": "The owner's role."
+          }
+        }
+      },
+      "NodeRuntimeChanged": {
+        "type": "object",
+        "description": "`PUT /api/config/nodes/{node_id}/runtime` body: the document after the\nwrite.",
+        "required": [
+          "node_id",
+          "revision",
+          "runtime"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "Node id, trimmed.",
+            "example": "node-7f3a9c"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Compare-and-swap revision of the runtime document after the write.",
+            "example": 4
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/NodeRuntimeSettingsV1",
+            "description": "The runtime document now stored."
+          }
+        }
+      },
+      "NodeRuntimeSettingsV1": {
+        "type": "object",
+        "description": "Typed node-scoped runtime document, schema version 1.\n\nDesired state for one node, editable from any node in the cluster: an\noperator label, and the budget the scheduler may commit on this node.\nBudgets are shares of the capacity the node detects at heartbeat\n(CPU cores and memory, the tighter of the machine and its cgroup).",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Operator label shown for this node. Empty is allowed.",
+            "example": "Living-room server"
+          },
+          "cpu_budget_percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Share of detected CPU cores the scheduler may commit to plugin\nguests on this node (1..=100).",
+            "example": 80,
+            "maximum": 100,
+            "minimum": 1
+          },
+          "memory_budget_percent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Share of detected memory the scheduler may commit (1..=100).",
+            "example": 75,
+            "maximum": 100,
+            "minimum": 1
+          },
+          "schedulable": {
+            "type": "boolean",
+            "description": "False drains the node: the scheduler places nothing new here and\nmoves its replicas elsewhere. Hand-managed deployments still run.",
+            "example": true
+          }
+        }
+      },
+      "NodeScope": {
+        "type": "string",
+        "description": "Which nodes a listing shows the caller.",
+        "enum": [
+          "all",
+          "owned"
+        ]
+      },
+      "NodeStatus": {
+        "type": "object",
+        "description": "A node's latest heartbeat with budget, accounting, and availability.",
+        "required": [
+          "node_id",
+          "incarnation",
+          "started_at",
+          "heartbeat_at",
+          "heartbeat_ms",
+          "interval_ms",
+          "cpu_millicores",
+          "cpu_budget_millicores",
+          "schedulable",
+          "reserved",
+          "running_guests",
+          "availability_ppm",
+          "online_since_ms"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "Reporting node.",
+            "example": "node-7f3a9c"
+          },
+          "incarnation": {
+            "type": "string",
+            "description": "Daemon process incarnation.",
+            "example": "01J9Q0Z5C7M8N3P4R6S8T9V0W1"
+          },
+          "started_at": {
+            "type": "string",
+            "description": "RFC 3339 daemon start.",
+            "example": "2026-10-28T06:00:00Z"
+          },
+          "heartbeat_at": {
+            "type": "string",
+            "description": "RFC 3339 heartbeat time.",
+            "example": "2026-10-28T19:07:00Z"
+          },
+          "heartbeat_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Heartbeat time in Unix milliseconds.",
+            "example": 1793214420000
+          },
+          "interval_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Promised interval in milliseconds.",
+            "example": 15000
+          },
+          "cpu_millicores": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Detected CPU capacity in millicores.",
+            "example": 8000
+          },
+          "memory_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Detected memory in bytes.",
+            "example": 16777216000
+          },
+          "cpu_budget_millicores": {
+            "type": "integer",
+            "format": "int64",
+            "description": "CPU the scheduler may commit, in millicores.",
+            "example": 6400
+          },
+          "memory_budget_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Memory the scheduler may commit, in bytes.",
+            "example": 12582912000
+          },
+          "schedulable": {
+            "type": "boolean",
+            "description": "False when an operator drained the node.",
+            "example": true
+          },
+          "cpu_used_millicores": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Measured CPU in use, in millicores.",
+            "example": 350
+          },
+          "memory_available_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Measured memory available, in bytes.",
+            "example": 9663676416
+          },
+          "files_dir_free_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Free bytes on the files directory's filesystem.",
+            "example": 214748364800
+          },
+          "reserved": {
+            "$ref": "#/components/schemas/GuestReservation",
+            "description": "Ceilings of the guests running here."
+          },
+          "running_guests": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Guests running here.",
+            "example": 2
+          },
+          "availability_ppm": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Recent online fraction in parts per million.",
+            "example": 998500
+          },
+          "online_since_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix milliseconds the current online stretch began.",
+            "example": 1793167200000
+          }
+        }
+      },
+      "NodeView": {
+        "type": "object",
+        "description": "One node with its latest heartbeat, budget and owner.",
+        "required": [
+          "node_id",
+          "cluster_id",
+          "created_at",
+          "heartbeat_at",
+          "software_version",
+          "schema_state",
+          "compatible",
+          "target",
+          "labels",
+          "implicit_labels",
+          "live",
+          "runtime",
+          "this_node",
+          "kind"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "Node id.",
+            "example": "node-7f3a9c"
+          },
+          "cluster_id": {
+            "type": "string",
+            "description": "Cluster the node belongs to.",
+            "example": "c0ffee12-3456-4789-8abc-def012345678"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 time the node first enrolled.",
+            "example": "2026-10-01T08:00:00Z"
+          },
+          "heartbeat_at": {
+            "type": "string",
+            "description": "RFC 3339 time of the last heartbeat the node row recorded.",
+            "example": "2026-10-28T19:07:00Z"
+          },
+          "software_version": {
+            "type": "string",
+            "description": "Bookclerk version the node runs.",
+            "example": "0.3.1"
+          },
+          "schema_state": {
+            "type": "string",
+            "description": "Database schema the node last applied.",
+            "example": "frozen@12+a1b2c3d4"
+          },
+          "compatible": {
+            "type": "boolean",
+            "description": "True when the node's own binary accepted the schema it reported;\nnot a comparison with this daemon's schema.",
+            "example": true
+          },
+          "target": {
+            "type": "string",
+            "description": "Bookclerk target the node runs on.",
+            "example": "linux-x64-gnu"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Operator-set placement labels.",
+            "example": [
+              "rack=a"
+            ]
+          },
+          "implicit_labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Labels the scheduler adds for the node (its id and target).",
+            "example": [
+              "node=node-7f3a9c",
+              "target=linux-x64-gnu"
+            ]
+          },
+          "live": {
+            "type": "boolean",
+            "description": "True while the last heartbeat is recent enough.",
+            "example": true
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/NodeRuntimeSettingsV1",
+            "description": "The node's runtime document, or the defaults when it never wrote\none."
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NodeStatus",
+                "description": "The latest heartbeat; `null` before the first one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "this_node": {
+            "type": "boolean",
+            "description": "True for the node that answered the request.",
+            "example": true
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NodeKind",
+            "description": "`owner` for a node sharing this library, `host` for an enrolled\nhost."
+          },
+          "owner_user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "User id of the node's owner; `null` when unassigned.",
+            "example": 7
+          },
+          "share_books": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "A branch's sharing setting, as it last reported it; `null` for an\nowner node.",
+            "example": true
+          },
+          "include_branches": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "A branch's include-branches setting, as it last reported it;\n`null` for an owner node.",
+            "example": false
+          },
+          "owner": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NodeOwnerSummary",
+                "description": "The owner, when the node has one and the user still exists."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "NodesResponse": {
+        "type": "object",
+        "description": "`GET /api/config/nodes` body.",
+        "required": [
+          "node_id",
+          "nodes",
+          "capabilities"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "Id of the node that answered.",
+            "example": "node-7f3a9c"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeView"
+            },
+            "description": "The nodes the caller administers."
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/NodeCapabilities",
+            "description": "What the caller may do with them."
+          }
+        }
       },
       "OAuthEnrollRequest": {
         "type": "object",
@@ -21272,6 +21957,26 @@
           }
         },
         "additionalProperties": false
+      },
+      "OwnerNodeRemoved": {
+        "type": "object",
+        "description": "`DELETE /api/config/nodes/{node_id}` body.",
+        "required": [
+          "node_id",
+          "removed"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "description": "Id of the node that was removed, trimmed.",
+            "example": "node-2b8d4e"
+          },
+          "removed": {
+            "type": "boolean",
+            "description": "Always true: a refused removal is an error status instead.",
+            "example": true
+          }
+        }
       },
       "PasskeyReauthBody": {
         "type": "object",
@@ -24216,6 +24921,40 @@
             ],
             "description": "When set, scan only this deployed plugin instance."
           }
+        }
+      },
+      "SchemaStateView": {
+        "type": "object",
+        "description": "Whether the database carries exactly the schema this binary applies.\n\nThe object example is the successful read; a failed read has `state`\nnull, `compatible` false and the `error` text.",
+        "required": [
+          "compatible"
+        ],
+        "properties": {
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The schema state (`uninitialized`, `unreleased@base<n>+<checksum>`\nor `frozen@<n>+<checksum>`); `null` when it could not be read.",
+            "example": "frozen@12+a1b2c3d4"
+          },
+          "compatible": {
+            "type": "boolean",
+            "description": "True when this binary can run against that schema.",
+            "example": true
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the state could not be read; omitted when it was.",
+            "example": "database is locked"
+          }
+        },
+        "example": {
+          "compatible": true,
+          "state": "frozen@12+a1b2c3d4"
         }
       },
       "SetPasswordRequest": {
