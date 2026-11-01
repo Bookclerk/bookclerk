@@ -3420,20 +3420,34 @@
             }
           },
           "409": {
-            "description": "A scan is already pending or running.",
+            "description": "A scan is already pending or running, or no node can run it.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ScanPlanResponse"
+                  "$ref": "#/components/schemas/PlanConflict"
                 },
-                "example": {
-                  "error": "conflict",
-                  "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
-                  "job_ids": [
-                    "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
-                  ],
-                  "message": "scan already pending or running",
-                  "ok": false
+                "examples": {
+                  "duplicate": {
+                    "summary": "Every planned job is already pending or running",
+                    "value": {
+                      "error": "conflict",
+                      "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                      "job_ids": [
+                        "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                      ],
+                      "message": "scan already pending or running",
+                      "ok": false
+                    }
+                  },
+                  "unroutable": {
+                    "summary": "No node runs every plugin instance the job requires",
+                    "value": {
+                      "error": "unroutable",
+                      "job_id": "",
+                      "message": "no node runs all of the plugin instances this scan job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node",
+                      "ok": false
+                    }
+                  }
                 }
               }
             }
@@ -3467,6 +3481,38 @@
                   "job_id": "",
                   "job_ids": [],
                   "message": "job queue is full",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The jobs could not be queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "job_id": "",
+                  "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Job admission is paused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "error": "admission_paused",
+                  "job_id": "",
+                  "message": "job admission paused (database reload in progress)",
                   "ok": false
                 }
               }
@@ -3585,16 +3631,30 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ScanPlanResponse"
+                  "$ref": "#/components/schemas/PlanConflict"
                 },
-                "example": {
-                  "error": "conflict",
-                  "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
-                  "job_ids": [
-                    "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
-                  ],
-                  "message": "acquire already pending or running",
-                  "ok": false
+                "examples": {
+                  "duplicate": {
+                    "summary": "Every planned job is already pending or running",
+                    "value": {
+                      "error": "conflict",
+                      "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                      "job_ids": [
+                        "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                      ],
+                      "message": "acquire already pending or running",
+                      "ok": false
+                    }
+                  },
+                  "unroutable": {
+                    "summary": "No node runs every plugin instance the job requires",
+                    "value": {
+                      "error": "unroutable",
+                      "job_id": "",
+                      "message": "no node runs all of the plugin instances this acquire job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node",
+                      "ok": false
+                    }
+                  }
                 }
               }
             }
@@ -4037,16 +4097,14 @@
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "A value is outside its range.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
-                  "status": 400
+                  "error": "invalid configuration: retention_days must be 1..=3650"
                 }
               }
             }
@@ -4496,19 +4554,6 @@
                 },
                 "example": {
                   "error": "book not found: plugin `source-libro` has no pinned settings schema; install it on a node first"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The instance id is taken.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorMessage"
-                },
-                "example": {
-                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b already exists"
                 }
               }
             }
@@ -5004,7 +5049,7 @@
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "desired must be `present`, `absent`, `placed`, or `unplaced`"
+                  "error": "invalid configuration: desired must be `present`, `absent`, `placed`, or `unplaced`"
                 }
               }
             }
@@ -5813,40 +5858,40 @@
             }
           },
           "500": {
-            "description": "The configuration could not be read or written.",
+            "description": "The node identity could not be read or created, or the catalog lookup task failed.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                  "error": "I/O error: Permission denied (os error 13)"
                 }
               }
             }
           },
           "502": {
-            "description": "The package catalog could not be reached or answered badly.",
+            "description": "The package registry could not be reached or answered badly.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "all registry adapters failed: crates.io: https://crates.io/api/v1/crates/bookclerk-plugin-source-libro: 503 Service Unavailable"
+                  "error": "HTTP 404 Not Found for https://crates.io/api/v1/crates/bookclerk-plugin-source-libro/0.4.2/download"
                 }
               }
             }
           },
           "503": {
-            "description": "The install needs a helper that is unavailable.",
+            "description": "The database plugin is unavailable; retry.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorMessage"
                 },
                 "example": {
-                  "error": "unavailable: bookclerk-workerd is not installed beside the daemon"
+                  "error": "unavailable: D1 ambiguous commit"
                 }
               }
             }
@@ -6000,7 +6045,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The plugin was uninstalled.",
+            "description": "The plugin was uninstalled; `uninstalled` is false when no version was active, so the request is idempotent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6035,19 +6080,6 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No such plugin.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorMessage"
-                },
-                "example": {
-                  "error": "plugin source-libro is not installed"
                 }
               }
             }
@@ -11546,6 +11578,17 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "500": {
+            "description": "A lookup task was cancelled before it answered.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "purchase-hints batch task cancelled"
               }
             }
           },
@@ -21558,6 +21601,19 @@
             "example": "2026-10-28T19:05:00Z"
           }
         }
+      },
+      "PlanConflict": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ScanPlanResponse",
+            "description": "Every planned job is already pending or running; `error` is `conflict`."
+          },
+          {
+            "$ref": "#/components/schemas/ActionResponse",
+            "description": "No node runs every plugin instance a job requires; `error` is `unroutable` and `message` names the instances."
+          }
+        ],
+        "description": "`POST /api/library/scan` and `POST /api/library/acquire` `409` body: the two conflicts a plan can hit."
       },
       "PluginArtifactSummary": {
         "type": "object",

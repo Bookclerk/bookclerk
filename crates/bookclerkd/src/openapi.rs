@@ -1199,9 +1199,14 @@ mod tests {
                     for (key, inner) in map {
                         let here = format!("{at}/{key}");
                         // `properties` maps and examples hold names and data, not keywords.
+                        // A Media Type Object's `examples` map (Example Objects) is
+                        // 3.0 too; only a schema's `examples` list is 3.1-only.
+                        let media_examples =
+                            key == "examples" && at.rsplit('/').nth(2) == Some("content");
                         let names_or_data = at.ends_with("/properties")
                             || at.ends_with("/schemas")
-                            || key == "example";
+                            || key == "example"
+                            || media_examples;
                         if !names_or_data {
                             if ONLY_3_1.contains(&key.as_str()) {
                                 problems.push(format!("{here}: 3.1-only keyword"));
@@ -1217,7 +1222,7 @@ mod tests {
                             }
                         }
                         // Security schemes have a `type` of their own (`http`, `apiKey`).
-                        if key != "example" && key != "securitySchemes" {
+                        if key != "example" && !media_examples && key != "securitySchemes" {
                             check(inner, &here, problems);
                         }
                     }

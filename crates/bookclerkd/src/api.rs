@@ -3789,9 +3789,11 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
         (status = 200, description = "The scan jobs were accepted.", body = ScanPlanResponse),
         (status = 400, description = "The body names no valid target.", body = ActionResponse, example = json!({"ok": false, "message": "the account named is blank", "job_id": "", "error": "invalid"})),
         (status = 403, description = "The caller may not scan these accounts.", body = ActionResponse, example = json!({"ok": false, "message": "this user may not scan the library", "job_id": "", "error": "forbidden"})),
-        (status = 409, description = "A scan is already pending or running.", body = ScanPlanResponse, example = json!({"ok": false, "message": "scan already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"})),
+        (status = 409, description = "A scan is already pending or running, or no node can run it.", body = PlanConflict, examples(("duplicate" = (summary = "Every planned job is already pending or running", value = json!({"ok": false, "message": "scan already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"}))), ("unroutable" = (summary = "No node runs every plugin instance the job requires", value = json!({"ok": false, "message": "no node runs all of the plugin instances this scan job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node", "job_id": "", "error": "unroutable"}))))),
         (status = 422, description = "No account matched.", body = ScanPlanResponse, example = json!({"ok": false, "message": "no scan-enabled store account to scan", "job_id": "", "job_ids": [], "error": "nothing_to_scan"})),
         (status = 429, description = "The job queue is full.", body = ScanPlanResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "job_ids": [], "error": "queue_full"})),
+        (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
+        (status = 500, description = "The jobs could not be queued.", body = ActionResponse, example = json!({"ok": false, "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "job_id": "", "error": "internal_error"})),
     ),
 )]
 async fn trigger_scan(
@@ -3857,6 +3859,66 @@ struct ScanPlanResponse {
     /// `nothing_to_scan`, `nothing_to_acquire`).
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+/// `POST /api/library/scan` and `POST /api/library/acquire` `409` body: the
+/// two conflicts a plan can hit.
+///
+/// The schema is written by hand as an `anyOf`: a planned answer also
+/// satisfies [`ActionResponse`] (every field of that schema is present), so
+/// the derived `oneOf` would reject it.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+// Schema-only: `plan_response` and `enqueue_error_response` write the two
+// payloads directly, so no variant is ever constructed.
+#[allow(dead_code)]
+enum PlanConflict {
+    /// Every planned job is already pending or running
+    /// ([`plan_response`]; `error` is `conflict`).
+    Duplicate(ScanPlanResponse),
+    /// No node runs every plugin instance a job requires
+    /// ([`enqueue_error_response`]; `error` is `unroutable`).
+    Unroutable(ActionResponse),
+}
+
+impl utoipa::PartialSchema for PlanConflict {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{AnyOfBuilder, RefBuilder};
+        AnyOfBuilder::new()
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("ScanPlanResponse")
+                    .description(Some(
+                        "Every planned job is already pending or running; `error` is `conflict`.",
+                    )),
+            )
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("ActionResponse")
+                    .description(Some(
+                        "No node runs every plugin instance a job requires; `error` is \
+                         `unroutable` and `message` names the instances.",
+                    )),
+            )
+            .description(Some(
+                "`POST /api/library/scan` and `POST /api/library/acquire` `409` body: the \
+                 two conflicts a plan can hit.",
+            ))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for PlanConflict {
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        use utoipa::PartialSchema;
+        schemas.push(("ScanPlanResponse".to_string(), ScanPlanResponse::schema()));
+        schemas.push(("ActionResponse".to_string(), ActionResponse::schema()));
+    }
 }
 
 /// Folds the admissions of one planned scan or acquire into one response.
@@ -3970,7 +4032,7 @@ fn plan_response(kind: &str, admits: Vec<AdmitJob>) -> Response {
         (status = 200, description = "The acquire jobs were accepted.", body = ScanPlanResponse),
         (status = 400, description = "The body names no valid title.", body = ActionResponse, example = json!({"ok": false, "message": "every title id given is blank", "job_id": "", "error": "invalid"})),
         (status = 403, description = "The caller may not acquire for these accounts.", body = ActionResponse, example = json!({"ok": false, "message": "that title is not in a store account linked to this user", "job_id": "", "error": "forbidden"})),
-        (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = ScanPlanResponse, example = json!({"ok": false, "message": "acquire already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"})),
+        (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = PlanConflict, examples(("duplicate" = (summary = "Every planned job is already pending or running", value = json!({"ok": false, "message": "acquire already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"}))), ("unroutable" = (summary = "No node runs every plugin instance the job requires", value = json!({"ok": false, "message": "no node runs all of the plugin instances this acquire job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node", "job_id": "", "error": "unroutable"}))))),
         (status = 422, description = "No account of the caller's can acquire.", body = ScanPlanResponse, example = json!({"ok": false, "message": "no store account of yours to acquire from", "job_id": "", "job_ids": [], "error": "nothing_to_acquire"})),
         (status = 429, description = "The job queue is full.", body = ScanPlanResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "job_ids": [], "error": "queue_full"})),
         (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
@@ -5131,6 +5193,7 @@ struct PurchaseHintsBatchResponse {
     responses(
         (status = 200, description = "One result per query, in order.", body = PurchaseHintsBatchResponse),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("at most 24 purchase-hint queries per batch")),
+        (status = 500, description = "A lookup task was cancelled before it answered.", body = String, content_type = "text/plain", example = json!("purchase-hints batch task cancelled")),
     ),
 )]
 async fn discover_purchase_hints_batch(

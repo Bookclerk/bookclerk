@@ -243,7 +243,7 @@ pub async fn get_events_domain(
     request_body = PutEventsDomainRequest,
     responses(
         (status = 200, description = "The settings after the change, or a `replayed: true` note with the committed revision when another write landed between this one and its read-back.", body = EventsDomainChange),
-        (status = 400, description = "The body is invalid."),
+        (status = 400, description = "A value is outside its range.", body = ErrorMessage, example = json!({"error": "invalid configuration: retention_days must be 1..=3650"})),
         (status = 409, description = "`expected_revision` is stale; `current_revision` is the revision to retry against.", body = RevisionConflict, example = json!({"error": "revision_conflict", "current_revision": 7})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
@@ -1109,7 +1109,6 @@ pub(crate) struct PluginInstanceCreated {
         (status = 200, description = "The new instance.", body = PluginInstanceCreated),
         (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "invalid plugin instance: display_name must be at most 64 bytes without control characters"})),
         (status = 404, description = "No such plugin, or it has no pinned schema.", body = ErrorMessage, example = json!({"error": "book not found: plugin `source-libro` has no pinned settings schema; install it on a node first"})),
-        (status = 409, description = "The instance id is taken.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b already exists"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
@@ -1531,7 +1530,7 @@ impl utoipa::ToSchema for DeploymentConflict {
     request_body = PutPluginDeployment,
     responses(
         (status = 200, description = "The deployment after the change.", body = PluginDeploymentChanged),
-        (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "desired must be `present`, `absent`, `placed`, or `unplaced`"})),
+        (status = 400, description = "The body is invalid.", body = ErrorMessage, example = json!({"error": "invalid configuration: desired must be `present`, `absent`, `placed`, or `unplaced`"})),
         (status = 404, description = "No such instance or node.", body = ErrorMessage, example = json!({"error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"})),
         (status = 409, description = "The instance is placed by the scheduler (an `error` message), or `expected_revision` is stale (`revision_conflict` with `current_revision`).", body = DeploymentConflict, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is placed by the scheduler (2 replica(s) on region=eu); change it with `bookclerk plugins deploy`, or drop the placement with `bookclerk plugins deploy --manual` first"})),
         (status = 500, description = "The configuration could not be read or written.", body = ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
