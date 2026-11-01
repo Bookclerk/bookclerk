@@ -18,7 +18,7 @@ use bookclerk_library::{
 use chrono::{Duration as ChronoDuration, Utc};
 use qrcode::render::svg;
 use qrcode::QrCode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use totp_rs::{Algorithm, Builder, Secret, Totp};
 use uuid::Uuid;
@@ -67,11 +67,11 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
 fn totp_error(status: StatusCode, error: &str, message: &str) -> Response {
     (
         status,
-        Json(serde_json::json!({
-            "error": error,
-            "message": message,
-            "status": status.as_u16()
-        })),
+        Json(crate::http_error::ErrorJson::new(
+            status,
+            error.to_owned(),
+            message.to_owned(),
+        )),
     )
         .into_response()
 }
@@ -265,6 +265,27 @@ pub(crate) async fn enrollment_blocks(
         == 0
 }
 
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// Password accepted, but an authenticator-app code is needed before a session is issued.
+pub struct TotpChallenge {
+    /// Always `true`: the password step succeeded.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// The second step the client must complete.
+    pub mfa: TotpChallengeDetails,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// The pending second-factor step after a password login.
+pub struct TotpChallengeDetails {
+    /// Always `totp`: finish with `POST /api/auth/totp/login`.
+    #[schema(example = "totp")]
+    pub method: &'static str,
+    /// Challenge to send with the code; expires after five minutes.
+    #[schema(example = "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c")]
+    pub challenge_id: String,
+}
+
 /// After a successful password check: TOTP challenge, passkey-required 403, or `None` to issue a session.
 ///
 /// # Errors
@@ -288,13 +309,13 @@ pub(crate) async fn after_password_verified(
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         return Ok(Some(
-            Json(serde_json::json!({
-                "ok": true,
-                "mfa": {
-                    "method": "totp",
-                    "challenge_id": challenge_id,
-                }
-            }))
+            Json(TotpChallenge {
+                ok: true,
+                mfa: TotpChallengeDetails {
+                    method: "totp",
+                    challenge_id,
+                },
+            })
             .into_response(),
         ));
     }

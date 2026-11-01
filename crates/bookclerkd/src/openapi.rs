@@ -333,6 +333,21 @@ fn add_group(doc: &mut OpenApi, mut group: OpenApi, access: Access, prefix: &str
                         .collect(),
                 );
             }
+        }
+    }
+    // The one operator-only route whose layer admits an impersonating
+    // session (it ends the impersonation) and checks no role, so the
+    // group's 403 never happens there (`require_operator_auth`).
+    if let Some(op) = group
+        .paths
+        .paths
+        .get_mut("/api/auth/impersonate")
+        .and_then(|item| item.delete.as_mut())
+    {
+        op.responses.responses.remove("403");
+    }
+    for item in group.paths.paths.values_mut() {
+        for op in operations_mut(item) {
             let extensions = op.extensions.get_or_insert_with(Default::default);
             extensions.insert("x-bookclerk-access".to_string(), access.rule().into());
         }

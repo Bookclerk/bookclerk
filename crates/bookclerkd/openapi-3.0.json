@@ -54,20 +54,22 @@
             "description": "Signed in; the response sets the operator session cookie.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
               }
             }
           },
           "401": {
-            "description": "The token is wrong.",
+            "description": "The token is wrong (`unauthorized`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
                   "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "message": "Invalid operator token.",
                   "status": 401
                 }
               }
@@ -81,15 +83,15 @@
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
+                  "error": "operator_login_disabled",
+                  "message": "Operator token sign-in is unavailable after an Owner account exists. Open Bookclerk from the system tray, or elevate from an Owner session.",
                   "status": 403
                 }
               }
             }
           },
           "429": {
-            "description": "Too many attempts; retry after `Retry-After` seconds.",
+            "description": "Too many attempts from this client; retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -103,12 +105,28 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/LoginThrottled"
                 },
                 "example": {
                   "error": "too_many_requests",
-                  "message": "Too many requests. Try again shortly.",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
                   "status": 429
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -142,7 +160,24 @@
             "description": "The sign-in methods this library offers.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/SigninMethods"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
+                }
               }
             }
           },
@@ -175,7 +210,9 @@
             "description": "A single-use tray ticket.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/TrayHandoffPrepareResponse"
+                }
               }
             }
           },
@@ -227,11 +264,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/LoginThrottled"
                 },
                 "example": {
                   "error": "too_many_requests",
-                  "message": "Too many requests. Try again shortly.",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
                   "status": 429
                 }
               }
@@ -323,21 +361,24 @@
             "description": "Who the caller is (operator, portal user, or impersonation).",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AuthMeResponse"
+                }
               }
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "Nobody is signed in: the same body with `authenticated` false, so the app can show the sign-in screen.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/AuthMeResponse"
                 },
                 "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
+                  "authenticated": false,
+                  "can_acquire": false,
+                  "default_view": "discover",
+                  "elevated": false
                 }
               }
             }
@@ -457,7 +498,9 @@
             "description": "Elevated; the response sets a short-lived operator cookie.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/Elevated"
+                }
               }
             }
           },
@@ -477,7 +520,7 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "No portal session is signed in, or the password is wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -492,7 +535,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The caller is not an Owner, or the Owner has no password to check. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -517,6 +560,21 @@
                   "error": "conflict",
                   "message": "Conflict",
                   "status": 409
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The password hash could not be read, or the elevated session could not be stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -557,7 +615,9 @@
             "description": "Elevation ended.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
               }
             }
           },
@@ -592,7 +652,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is impersonating a user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -648,7 +708,9 @@
             "description": "The first Owner was created.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerBootstrapped"
+                }
               }
             }
           },
@@ -668,7 +730,7 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not the operator.",
             "content": {
               "application/json": {
                 "schema": {
@@ -682,23 +744,8 @@
               }
             }
           },
-          "403": {
-            "description": "The caller may not do this.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
-              }
-            }
-          },
           "409": {
-            "description": "An Owner already exists.",
+            "description": "An Owner or Administrator already exists.",
             "content": {
               "application/json": {
                 "schema": {
@@ -708,6 +755,21 @@
                   "error": "conflict",
                   "message": "Conflict",
                   "status": 409
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -757,12 +819,14 @@
             "description": "The password was set and other sessions revoked.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordSet"
+                }
               }
             }
           },
           "400": {
-            "description": "The password is too weak or the request is invalid.",
+            "description": "The password is empty (the standard error body).",
             "content": {
               "application/json": {
                 "schema": {
@@ -777,7 +841,7 @@
             }
           },
           "401": {
-            "description": "The caller is not signed in.",
+            "description": "The caller is not signed in, or the caller already has a password and `current_password` is missing or wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -792,7 +856,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this.",
+            "description": "The caller may not set that user's password: not a provisioner, or a role the caller cannot manage.",
             "content": {
               "application/json": {
                 "schema": {
@@ -817,6 +881,21 @@
                   "error": "not_found",
                   "message": "That page or resource was not found.",
                   "status": 404
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The password could not be hashed, or the library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -867,42 +946,57 @@
             "description": "Signed in (portal session cookie), or a TOTP challenge.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordLoginOutcome"
+                }
               }
             }
           },
           "401": {
-            "description": "The login or password is wrong.",
+            "description": "The login or password is wrong, or the user has no password (`invalid_credentials`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "error": "invalid_credentials",
+                  "message": "Invalid login or password.",
                   "status": 401
                 }
               }
             }
           },
           "403": {
-            "description": "The account is disabled (`account_disabled`).",
+            "description": "The account is disabled (`account_disabled`), or the server requires a second factor and the user has a passkey but no authenticator app (`passkey_required`).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
+                "examples": {
+                  "account_disabled": {
+                    "summary": "The account is disabled.",
+                    "value": {
+                      "error": "account_disabled",
+                      "message": "This account is disabled.",
+                      "status": 403
+                    }
+                  },
+                  "passkey_required": {
+                    "summary": "The server requires a passkey.",
+                    "value": {
+                      "error": "passkey_required",
+                      "message": "This server requires a passkey or authenticator app. Sign in with a passkey.",
+                      "status": 403
+                    }
+                  }
                 }
               }
             }
           },
           "429": {
-            "description": "Too many attempts; retry after `Retry-After` seconds.",
+            "description": "Too many attempts from this client; retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -916,12 +1010,28 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/LoginThrottled"
                 },
                 "example": {
                   "error": "too_many_requests",
-                  "message": "Too many requests. Try again shortly.",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
                   "status": 429
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The user or password hash could not be read, or the session could not be stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -8636,7 +8746,9 @@
             "description": "The session now acts as the user.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ImpersonationStarted"
+                }
               }
             }
           },
@@ -8671,7 +8783,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "The session is already impersonating a user, or the target user is disabled. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8696,6 +8808,21 @@
                   "error": "not_found",
                   "message": "That page or resource was not found.",
                   "status": 404
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The user could not be read, or the session could not be stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -8733,7 +8860,9 @@
             "description": "Impersonation ended.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
               }
             }
           },
@@ -8753,7 +8882,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8763,6 +8892,21 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The session could not be updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -12749,7 +12893,9 @@
             "description": "Signed out; both session cookies are cleared.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
               }
             }
           },
@@ -12821,7 +12967,9 @@
             "description": "The caller's sessions.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/SessionsResponse"
+                }
               }
             }
           },
@@ -12840,23 +12988,8 @@
               }
             }
           },
-          "403": {
-            "description": "The caller may not do this.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                },
-                "example": {
-                  "error": "forbidden",
-                  "message": "You do not have access to this resource.",
-                  "status": 403
-                }
-              }
-            }
-          },
           "404": {
-            "description": "The user has no sign-in identity.",
+            "description": "The impersonated user has no sign-in identity.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12866,6 +12999,21 @@
                   "error": "not_found",
                   "message": "That page or resource was not found.",
                   "status": 404
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The sessions could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -12920,7 +13068,9 @@
             "description": "The session was revoked.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
               }
             }
           },
@@ -12940,7 +13090,7 @@
             }
           },
           "403": {
-            "description": "The caller may not do this. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12955,7 +13105,7 @@
             }
           },
           "404": {
-            "description": "No such session.",
+            "description": "No such session, or it belongs to someone else.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12965,6 +13115,21 @@
                   "error": "not_found",
                   "message": "That page or resource was not found.",
                   "status": 404
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The session could not be deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
                 }
               }
             }
@@ -18283,6 +18448,352 @@
         },
         "additionalProperties": false
       },
+      "AuthMeImpersonating": {
+        "type": "object",
+        "description": "Target user shown while an operator session is impersonating.",
+        "required": [
+          "user_id"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "First-party `users.id` being impersonated.",
+            "example": 7
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Display name of the impersonated user when the row exists.",
+            "example": "Sam",
+            "nullable": true
+          }
+        }
+      },
+      "AuthMeResponse": {
+        "type": "object",
+        "description": "JSON body for `GET /api/auth/me`.",
+        "required": [
+          "authenticated",
+          "default_view",
+          "can_acquire",
+          "elevated"
+        ],
+        "properties": {
+          "authenticated": {
+            "type": "boolean",
+            "description": "Whether the request resolved to an operator, portal, or impersonated session.",
+            "example": true
+          },
+          "role": {
+            "type": "string",
+            "description": "`operator`, `owner`, `administrator`, `host`, or `member` (legacy clients may\nstill send `portal`).",
+            "example": "administrator",
+            "nullable": true
+          },
+          "default_view": {
+            "type": "string",
+            "description": "Configured post-auth landing view (`discover` / `library` / `accounts` /\n`wishlist`).\nLoaded from per-user DB preferences (not config.toml).",
+            "example": "library"
+          },
+          "can_acquire": {
+            "type": "boolean",
+            "description": "Whether this session may acquire / scan / manage jobs.\nTrue for operator and administrator.",
+            "example": true
+          },
+          "elevated": {
+            "type": "boolean",
+            "description": "True when this operator session was created via Owner elevate.",
+            "example": false
+          },
+          "impersonating": {
+            "description": "Present when the operator is impersonating a User.",
+            "type": "object",
+            "required": [
+              "user_id"
+            ],
+            "properties": {
+              "user_id": {
+                "type": "integer",
+                "format": "int64",
+                "description": "First-party `users.id` being impersonated.",
+                "example": 7
+              },
+              "display_name": {
+                "type": "string",
+                "description": "Display name of the impersonated user when the row exists.",
+                "example": "Sam",
+                "nullable": true
+              }
+            },
+            "nullable": true
+          },
+          "portal": {
+            "description": "Linked portal identity when the caller is a portal (or impersonated) user.",
+            "type": "object",
+            "required": [
+              "identity_id",
+              "provider",
+              "external_user_id"
+            ],
+            "properties": {
+              "identity_id": {
+                "type": "integer",
+                "format": "int64",
+                "description": "`portal_identities.id` for this session.",
+                "example": 3
+              },
+              "provider": {
+                "type": "string",
+                "description": "Identity-broker id (`local`, OIDC provider name, …).",
+                "example": "local"
+              },
+              "external_user_id": {
+                "type": "string",
+                "description": "Provider-stable subject / external user id.",
+                "example": "7"
+              },
+              "label": {
+                "type": "string",
+                "description": "Optional operator-facing label for the identity.",
+                "example": "Sam",
+                "nullable": true
+              }
+            },
+            "nullable": true
+          },
+          "user": {
+            "description": "First-party user when the session is linked to a `users` row.",
+            "type": "object",
+            "required": [
+              "id",
+              "role",
+              "has_password",
+              "has_avatar",
+              "avatar_source"
+            ],
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64",
+                "description": "First-party `users.id`.",
+                "example": 7
+              },
+              "role": {
+                "type": "string",
+                "description": "Role string (`owner`, `administrator`, `member`).",
+                "example": "administrator"
+              },
+              "display_name": {
+                "type": "string",
+                "description": "Optional human-readable name from the user row.",
+                "example": "Sam",
+                "nullable": true
+              },
+              "email": {
+                "type": "string",
+                "description": "Optional email; omitted from JSON when unset.",
+                "example": "sam@example.com",
+                "nullable": true
+              },
+              "has_password": {
+                "type": "boolean",
+                "description": "True when a local password hash is stored (invite users may be false).",
+                "example": true
+              },
+              "has_avatar": {
+                "type": "boolean",
+                "description": "True when a JPEG avatar is stored under `files_dir/avatars/{id}.*`.",
+                "example": false
+              },
+              "avatar_source": {
+                "type": "string",
+                "description": "Selected picture source (`auto`, `monogram`, `gravatar`, `upload`, `sso:{id}`).",
+                "example": "auto"
+              },
+              "gravatar_hash": {
+                "type": "string",
+                "description": "SHA-256 hex of the contact email for Gravatar, when an email is set.",
+                "example": "0bc83cb571cd1c50ba6f3e8a78ef1346b6b31bd4d35b8d3dc1f0c8a3b4a9f7e2",
+                "nullable": true
+              },
+              "sso_pictures": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AuthSsoPicture"
+                },
+                "description": "IdP-supplied pictures the user can pick."
+              }
+            },
+            "nullable": true
+          },
+          "second_factor": {
+            "description": "Password-login second-factor policy and this user's enrollment.",
+            "type": "object",
+            "required": [
+              "required",
+              "totp",
+              "passkey_count",
+              "enrolled"
+            ],
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "description": "`daemon.auth.require_second_factor`.",
+                "example": false
+              },
+              "totp": {
+                "type": "boolean",
+                "description": "Confirmed authenticator-app TOTP.",
+                "example": true
+              },
+              "passkey_count": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Number of registered passkeys.",
+                "example": 1,
+                "minimum": 0
+              },
+              "enrolled": {
+                "type": "boolean",
+                "description": "True when TOTP is enabled or at least one passkey exists.",
+                "example": true
+              }
+            },
+            "nullable": true
+          }
+        }
+      },
+      "AuthMeUser": {
+        "type": "object",
+        "description": "First-party user snapshot attached to `/me` when a `users` row is linked.",
+        "required": [
+          "id",
+          "role",
+          "has_password",
+          "has_avatar",
+          "avatar_source"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "First-party `users.id`.",
+            "example": 7
+          },
+          "role": {
+            "type": "string",
+            "description": "Role string (`owner`, `administrator`, `member`).",
+            "example": "administrator"
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Optional human-readable name from the user row.",
+            "example": "Sam",
+            "nullable": true
+          },
+          "email": {
+            "type": "string",
+            "description": "Optional email; omitted from JSON when unset.",
+            "example": "sam@example.com",
+            "nullable": true
+          },
+          "has_password": {
+            "type": "boolean",
+            "description": "True when a local password hash is stored (invite users may be false).",
+            "example": true
+          },
+          "has_avatar": {
+            "type": "boolean",
+            "description": "True when a JPEG avatar is stored under `files_dir/avatars/{id}.*`.",
+            "example": false
+          },
+          "avatar_source": {
+            "type": "string",
+            "description": "Selected picture source (`auto`, `monogram`, `gravatar`, `upload`, `sso:{id}`).",
+            "example": "auto"
+          },
+          "gravatar_hash": {
+            "type": "string",
+            "description": "SHA-256 hex of the contact email for Gravatar, when an email is set.",
+            "example": "0bc83cb571cd1c50ba6f3e8a78ef1346b6b31bd4d35b8d3dc1f0c8a3b4a9f7e2",
+            "nullable": true
+          },
+          "sso_pictures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuthSsoPicture"
+            },
+            "description": "IdP-supplied pictures the user can pick."
+          }
+        }
+      },
+      "AuthSecondFactor": {
+        "type": "object",
+        "description": "Host MFA policy plus whether this user has TOTP and/or passkeys.",
+        "required": [
+          "required",
+          "totp",
+          "passkey_count",
+          "enrolled"
+        ],
+        "properties": {
+          "required": {
+            "type": "boolean",
+            "description": "`daemon.auth.require_second_factor`.",
+            "example": false
+          },
+          "totp": {
+            "type": "boolean",
+            "description": "Confirmed authenticator-app TOTP.",
+            "example": true
+          },
+          "passkey_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of registered passkeys.",
+            "example": 1,
+            "minimum": 0
+          },
+          "enrolled": {
+            "type": "boolean",
+            "description": "True when TOTP is enabled or at least one passkey exists.",
+            "example": true
+          }
+        }
+      },
+      "AuthSsoPicture": {
+        "type": "object",
+        "description": "HTTPS picture from a linked identity provider.",
+        "required": [
+          "identity_id",
+          "provider",
+          "picture_url"
+        ],
+        "properties": {
+          "identity_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`portal_identities.id`.",
+            "example": 3
+          },
+          "provider": {
+            "type": "string",
+            "description": "Identity-broker id (`oidc:google`, …).",
+            "example": "oidc:google"
+          },
+          "picture_url": {
+            "type": "string",
+            "description": "HTTPS URL to display.",
+            "example": "https://lh3.googleusercontent.com/a/example=s96-c"
+          },
+          "last_used_at": {
+            "type": "string",
+            "description": "RFC 3339 last portal-session activity for this identity, when any.",
+            "example": "2026-10-29T08:15:00Z",
+            "nullable": true
+          }
+        }
+      },
       "BadBookAction": {
         "type": "string",
         "description": "How to handle acquire failures (`BadBook` setting).",
@@ -19935,6 +20446,34 @@
           }
         }
       },
+      "Elevated": {
+        "type": "object",
+        "description": "JSON body after a successful Owner elevation.",
+        "required": [
+          "ok",
+          "elevated",
+          "expires_in_secs"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true` on this success path.",
+            "example": true
+          },
+          "elevated": {
+            "type": "boolean",
+            "description": "Always `true`: the cookie the response sets is an elevated operator session.",
+            "example": true
+          },
+          "expires_in_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds until the elevated session expires.",
+            "example": 900,
+            "minimum": 0
+          }
+        }
+      },
       "EnrollBody": {
         "type": "object",
         "description": "`POST /api/node/v1/enroll` body. Keys are base64url without padding.",
@@ -20318,6 +20857,29 @@
             "type": "integer",
             "format": "int64",
             "description": "Target `users.id` to impersonate."
+          }
+        }
+      },
+      "ImpersonationStarted": {
+        "type": "object",
+        "description": "JSON body after an operator session started impersonating a user.",
+        "required": [
+          "ok",
+          "impersonating"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true` on this success path.",
+            "example": true
+          },
+          "impersonating": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AuthMeImpersonating"
+              }
+            ],
+            "description": "The user the session now acts as."
           }
         }
       },
@@ -20773,6 +21335,68 @@
           "token": {
             "type": "string",
             "description": "Operator token from the client; compared in constant time and never persisted."
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "description": "JSON body after a successful operator token login.",
+        "required": [
+          "ok",
+          "role",
+          "default_view"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true` on this success path.",
+            "example": true
+          },
+          "role": {
+            "type": "string",
+            "description": "Issued role (`operator` for token login).",
+            "example": "operator"
+          },
+          "default_view": {
+            "type": "string",
+            "description": "Post-login SPA landing view from operator preferences (`discover` on lookup failure).",
+            "example": "discover"
+          }
+        }
+      },
+      "LoginThrottled": {
+        "type": "object",
+        "description": "JSON body of a 429 after too many failed sign-in attempts from one client.",
+        "required": [
+          "error",
+          "message",
+          "status",
+          "retry_after_secs"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Always `too_many_requests`.",
+            "example": "too_many_requests"
+          },
+          "message": {
+            "type": "string",
+            "description": "Caller-facing explanation naming the wait.",
+            "example": "Too many failed login attempts. Try again in 45 seconds."
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Always 429 (duplicates the response status for clients).",
+            "example": 429,
+            "minimum": 0
+          },
+          "retry_after_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds until this client may try again; the same value as `Retry-After`.",
+            "example": 45,
+            "minimum": 0
           }
         }
       },
@@ -21904,6 +22528,20 @@
           }
         }
       },
+      "OkResponse": {
+        "type": "object",
+        "description": "Acknowledgement body (`{\"ok\": true}`) for actions with nothing else to report.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true`: a failure answers with an error status instead.",
+            "example": true
+          }
+        }
+      },
       "OpenApiDocument": {
         "type": "object",
         "description": "An OpenAPI document as this daemon serves it: the `openapi` version string, `info` about the daemon, every route under `paths` and the schemas under `components`.",
@@ -21946,6 +22584,76 @@
             "type": "string",
             "description": "What to do: the daemon log names the form that could not be restated.",
             "example": "The OpenAPI 3.0 document could not be built; see the daemon log."
+          }
+        }
+      },
+      "OperatorSessionView": {
+        "type": "object",
+        "description": "An operator session as listed by `GET /api/auth/sessions`.",
+        "required": [
+          "id",
+          "created_at",
+          "expires_at",
+          "elevated",
+          "is_current"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Session id, for `DELETE /api/auth/sessions/{id}`.",
+            "example": 12
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 time the session was created.",
+            "example": "2026-10-28T19:02:11Z"
+          },
+          "last_used_at": {
+            "type": "string",
+            "description": "RFC 3339 time of the last authenticated use, when any.",
+            "example": "2026-10-29T08:15:00Z",
+            "nullable": true
+          },
+          "expires_at": {
+            "type": "string",
+            "description": "RFC 3339 expiry.",
+            "example": "2026-11-04T19:02:11Z"
+          },
+          "elevated": {
+            "type": "boolean",
+            "description": "Whether an Owner elevated into this session (rather than the operator token).",
+            "example": false
+          },
+          "impersonating_user_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "User the session is impersonating, when it is. Never set on the\nsession making the request: while that session impersonates, the\nlist shows the target's portal sessions instead.",
+            "example": 7,
+            "nullable": true
+          },
+          "is_current": {
+            "type": "boolean",
+            "description": "Whether this is the session making the request.",
+            "example": false
+          },
+          "client_label": {
+            "type": "string",
+            "description": "Best-effort OS or client label from the User-Agent.",
+            "example": "Windows",
+            "nullable": true
+          },
+          "device_type": {
+            "type": "string",
+            "description": "Best-effort device class (`desktop`, `mobile`, `tablet`, `api`).",
+            "example": "desktop",
+            "nullable": true
+          },
+          "user_agent": {
+            "type": "string",
+            "description": "Raw User-Agent captured when the session was created.",
+            "example": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/134.0",
+            "nullable": true
           }
         }
       },
@@ -22288,6 +22996,51 @@
         },
         "additionalProperties": false
       },
+      "OwnerBootstrapped": {
+        "type": "object",
+        "description": "JSON body after the first Owner was created.",
+        "required": [
+          "ok",
+          "user_id",
+          "claim_ticket",
+          "invite_url",
+          "has_password"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true` on this success path.",
+            "example": true
+          },
+          "user_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`users.id` of the new Owner.",
+            "example": 1
+          },
+          "claim_ticket": {
+            "type": "string",
+            "description": "Single-use claim ticket that signs the Owner in once (valid for seven days).",
+            "example": "5f1c9a2e-7b3d-4e6f-8a90-1b2c3d4e5f60"
+          },
+          "invite_url": {
+            "type": "string",
+            "description": "Invite link carrying the ticket, for the browser.",
+            "example": "https://books.example.com/invite?ticket=5f1c9a2e-7b3d-4e6f-8a90-1b2c3d4e5f60"
+          },
+          "login_name": {
+            "type": "string",
+            "description": "Login name the Owner signs in with, when one was given.",
+            "example": "casey",
+            "nullable": true
+          },
+          "has_password": {
+            "type": "boolean",
+            "description": "Whether a password was set, so password sign-in works right away.",
+            "example": true
+          }
+        }
+      },
       "OwnerNodeRemoved": {
         "type": "object",
         "description": "`DELETE /api/config/nodes/{node_id}` body.",
@@ -22337,6 +23090,27 @@
           }
         }
       },
+      "PasswordLoginOutcome": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PortalSessionIssued"
+              }
+            ],
+            "description": "The password was enough; the response sets the portal session cookie."
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TotpChallenge"
+              }
+            ],
+            "description": "The user has an authenticator app, so a code is needed before a session is issued."
+          }
+        ],
+        "description": "JSON body of a successful `POST /api/auth/password`."
+      },
       "PasswordLoginRequest": {
         "type": "object",
         "description": "JSON body for local password login (login name or email plus password).",
@@ -22352,6 +23126,28 @@
           "password": {
             "type": "string",
             "description": "Password verified against the stored hash; mismatch fails closed and counts toward lockout."
+          }
+        }
+      },
+      "PasswordSet": {
+        "type": "object",
+        "description": "JSON body after a password was set.",
+        "required": [
+          "ok",
+          "revoked_sessions"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true` on this success path.",
+            "example": true
+          },
+          "revoked_sessions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Portal sessions of that user revoked by the change (the caller signs in again).",
+            "example": 2,
+            "minimum": 0
           }
         }
       },
@@ -24443,6 +25239,116 @@
           }
         }
       },
+      "PortalMeInfo": {
+        "type": "object",
+        "description": "Portal identity fields exposed on `/me` for SSO / local-portal callers.",
+        "required": [
+          "identity_id",
+          "provider",
+          "external_user_id"
+        ],
+        "properties": {
+          "identity_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`portal_identities.id` for this session.",
+            "example": 3
+          },
+          "provider": {
+            "type": "string",
+            "description": "Identity-broker id (`local`, OIDC provider name, …).",
+            "example": "local"
+          },
+          "external_user_id": {
+            "type": "string",
+            "description": "Provider-stable subject / external user id.",
+            "example": "7"
+          },
+          "label": {
+            "type": "string",
+            "description": "Optional operator-facing label for the identity.",
+            "example": "Sam",
+            "nullable": true
+          }
+        }
+      },
+      "PortalSessionIssued": {
+        "type": "object",
+        "description": "JSON body after a portal session was minted for a first-party user.",
+        "required": [
+          "ok",
+          "role"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true` on this success path.",
+            "example": true
+          },
+          "role": {
+            "type": "string",
+            "description": "The user's role (`owner`, `administrator`, `host`, or `member`).",
+            "example": "member"
+          }
+        }
+      },
+      "PortalSessionView": {
+        "type": "object",
+        "description": "A portal (user) session as listed by `GET /api/auth/sessions`.",
+        "required": [
+          "id",
+          "created_at",
+          "expires_at",
+          "is_current"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Session id, for `DELETE /api/auth/sessions/{id}`.",
+            "example": 31
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 time the session was created.",
+            "example": "2026-10-28T19:02:11Z"
+          },
+          "expires_at": {
+            "type": "string",
+            "description": "RFC 3339 expiry.",
+            "example": "2026-11-27T19:02:11Z"
+          },
+          "last_used_at": {
+            "type": "string",
+            "description": "RFC 3339 time of the last authenticated use, when any.",
+            "example": "2026-10-29T08:15:00Z",
+            "nullable": true
+          },
+          "is_current": {
+            "type": "boolean",
+            "description": "Whether this is the session making the request.",
+            "example": true
+          },
+          "client_label": {
+            "type": "string",
+            "description": "Best-effort OS or client label from the User-Agent.",
+            "example": "Android",
+            "nullable": true
+          },
+          "device_type": {
+            "type": "string",
+            "description": "Best-effort device class (`desktop`, `mobile`, `tablet`, `api`).",
+            "example": "mobile",
+            "nullable": true
+          },
+          "user_agent": {
+            "type": "string",
+            "description": "Raw User-Agent captured when the session was created.",
+            "example": "Mozilla/5.0 (Linux; Android 15) Chrome/131.0 Mobile",
+            "nullable": true
+          }
+        }
+      },
       "PostNodeInvite": {
         "type": "object",
         "description": "`POST /api/config/node-invites` body.",
@@ -25642,6 +26548,81 @@
           "state": "frozen@12+a1b2c3d4"
         }
       },
+      "SessionView": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/OperatorSessionView"
+                  }
+                ],
+                "description": "An operator session (`kind` is `operator`)."
+              },
+              {
+                "type": "object",
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "operator"
+                    ]
+                  }
+                }
+              }
+            ],
+            "description": "An operator session (`kind` is `operator`)."
+          },
+          {
+            "allOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/PortalSessionView"
+                  }
+                ],
+                "description": "A portal session (`kind` is `portal`)."
+              },
+              {
+                "type": "object",
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "portal"
+                    ]
+                  }
+                }
+              }
+            ],
+            "description": "A portal session (`kind` is `portal`)."
+          }
+        ],
+        "description": "One session in the caller's list, told apart by `kind`: an operator\nsession or a portal (user) session."
+      },
+      "SessionsResponse": {
+        "type": "object",
+        "description": "JSON body for `GET /api/auth/sessions`.",
+        "required": [
+          "sessions"
+        ],
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionView"
+            },
+            "description": "The caller's sessions, newest first; empty for a Bearer-only caller, who has no session rows."
+          }
+        }
+      },
       "SetPasswordRequest": {
         "type": "object",
         "description": "JSON body for setting a password (self or provisioner target).",
@@ -25885,6 +26866,88 @@
           "label": {
             "type": "string",
             "description": "Operator-visible label for this account or item."
+          }
+        }
+      },
+      "SigninIntegration": {
+        "type": "object",
+        "description": "One integration that signs people in with its own credentials.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Integration id, used in `/api/integrations/{id}/login`.",
+            "example": "audiobookshelf"
+          },
+          "name": {
+            "type": "string",
+            "description": "Button label.",
+            "example": "Audiobookshelf"
+          }
+        }
+      },
+      "SigninMethods": {
+        "type": "object",
+        "description": "JSON body for `GET /api/auth/signin`: the ways this library lets people sign in.",
+        "required": [
+          "operator_token",
+          "oidc",
+          "integrations",
+          "require_second_factor"
+        ],
+        "properties": {
+          "operator_token": {
+            "type": "boolean",
+            "description": "Whether the operator token may be entered in the SPA (only before an Owner exists).",
+            "example": false
+          },
+          "oidc": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SigninOidcProvider"
+            },
+            "description": "Enabled OIDC identity providers, in configuration order."
+          },
+          "integrations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SigninIntegration"
+            },
+            "description": "Integrations that accept their own credentials at sign-in."
+          },
+          "require_second_factor": {
+            "type": "boolean",
+            "description": "Whether `daemon.auth.require_second_factor` is on, so clients can explain the enrollment step.",
+            "example": false
+          }
+        }
+      },
+      "SigninOidcProvider": {
+        "type": "object",
+        "description": "One OIDC identity provider offered on the sign-in page.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Provider id from `[auth.oidc.providers]`, used in `/api/auth/oidc/{id}/start`.",
+            "example": "google"
+          },
+          "name": {
+            "type": "string",
+            "description": "Button label.",
+            "example": "Google"
+          },
+          "preset": {
+            "type": "string",
+            "description": "Known social preset the client may style (`google`, `github`, …), when the provider matches one.",
+            "example": "google",
+            "nullable": true
           }
         }
       },
@@ -27010,6 +28073,49 @@
           }
         }
       },
+      "TotpChallenge": {
+        "type": "object",
+        "description": "Password accepted, but an authenticator-app code is needed before a session is issued.",
+        "required": [
+          "ok",
+          "mfa"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true`: the password step succeeded.",
+            "example": true
+          },
+          "mfa": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TotpChallengeDetails"
+              }
+            ],
+            "description": "The second step the client must complete."
+          }
+        }
+      },
+      "TotpChallengeDetails": {
+        "type": "object",
+        "description": "The pending second-factor step after a password login.",
+        "required": [
+          "method",
+          "challenge_id"
+        ],
+        "properties": {
+          "method": {
+            "type": "string",
+            "description": "Always `totp`: finish with `POST /api/auth/totp/login`.",
+            "example": "totp"
+          },
+          "challenge_id": {
+            "type": "string",
+            "description": "Challenge to send with the code; expires after five minutes.",
+            "example": "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c"
+          }
+        }
+      },
       "TotpReauthBody": {
         "type": "object",
         "description": "Optional current password for enroll/disable step-up.",
@@ -27018,6 +28124,28 @@
             "type": "string",
             "description": "Password used for recent-reauth when the user already has a credential.",
             "nullable": true
+          }
+        }
+      },
+      "TrayHandoffPrepareResponse": {
+        "type": "object",
+        "description": "JSON returned to the tray after a successful prepare.",
+        "required": [
+          "code",
+          "expires_in_secs"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Single-use loopback handoff code for `GET /api/auth/tray-handoff?code=`.",
+            "example": "9b4f1c2e-3d5a-4b6c-8e7f-0a1b2c3d4e5f"
+          },
+          "expires_in_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds until this ticket expires (matches the in-process deadline).",
+            "example": 180,
+            "minimum": 0
           }
         }
       },
