@@ -1696,7 +1696,8 @@ pub(crate) struct NodeView {
     /// Database schema the node last applied.
     #[schema(example = "frozen@12+a1b2c3d4")]
     schema_state: String,
-    /// True when the node's schema matches the one this daemon applies.
+    /// True when the node's own binary accepted the schema it reported;
+    /// not a comparison with this daemon's schema.
     #[schema(example = true)]
     compatible: bool,
     /// Bookclerk target the node runs on.

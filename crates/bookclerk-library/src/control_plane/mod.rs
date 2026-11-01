@@ -298,11 +298,11 @@ pub struct NodeRuntimeSettingsV1 {
     /// Share of detected CPU cores the scheduler may commit to plugin
     /// guests on this node (1..=100).
     #[serde(default = "default_cpu_budget_percent")]
-    #[schema(example = 80)]
+    #[schema(minimum = 1, maximum = 100, example = 80)]
     pub cpu_budget_percent: u8,
     /// Share of detected memory the scheduler may commit (1..=100).
     #[serde(default = "default_memory_budget_percent")]
-    #[schema(example = 75)]
+    #[schema(minimum = 1, maximum = 100, example = 75)]
     pub memory_budget_percent: u8,
     /// False drains the node: the scheduler places nothing new here and
     /// moves its replicas elsewhere. Hand-managed deployments still run.

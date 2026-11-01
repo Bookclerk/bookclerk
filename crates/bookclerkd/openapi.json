@@ -20809,14 +20809,16 @@
             "format": "int32",
             "description": "Share of detected CPU cores the scheduler may commit to plugin\nguests on this node (1..=100).",
             "example": 80,
-            "minimum": 0
+            "maximum": 100,
+            "minimum": 1
           },
           "memory_budget_percent": {
             "type": "integer",
             "format": "int32",
             "description": "Share of detected memory the scheduler may commit (1..=100).",
             "example": 75,
-            "minimum": 0
+            "maximum": 100,
+            "minimum": 1
           },
           "schedulable": {
             "type": "boolean",
@@ -21022,7 +21024,7 @@
           },
           "compatible": {
             "type": "boolean",
-            "description": "True when the node's schema matches the one this daemon applies.",
+            "description": "True when the node's own binary accepted the schema it reported;\nnot a comparison with this daemon's schema.",
             "example": true
           },
           "target": {
