@@ -12966,7 +12966,7 @@
             }
           },
           "400": {
-            "description": "A value is invalid (`display_name_too_long`, `invalid_email`, `invalid_avatar_source`), or the body changes nothing (the standard error body).",
+            "description": "A value is invalid (`display_name_too_long`, `invalid_email`, `invalid_avatar_source`), or the body sets none of the three fields (the standard error body).",
             "content": {
               "application/json": {
                 "schema": {
@@ -13251,6 +13251,10 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AvatarChanged"
+                },
+                "example": {
+                  "has_avatar": false,
+                  "ok": true
                 }
               }
             }
@@ -16795,16 +16799,29 @@
             }
           },
           "500": {
-            "description": "The configuration path is unknown, or the configuration file could not be written (`internal_error`).",
+            "description": "The configuration path is unknown or the configuration file could not be written, or an Owner's current password could not be read or checked (`internal_error`).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "internal_error",
-                  "message": "failed to write config.toml: Permission denied (os error 13)",
-                  "status": 500
+                "examples": {
+                  "config_write": {
+                    "summary": "The configuration file could not be written.",
+                    "value": {
+                      "error": "internal_error",
+                      "message": "failed to write config.toml: Permission denied (os error 13)",
+                      "status": 500
+                    }
+                  },
+                  "password_check": {
+                    "summary": "The Owner's current password could not be checked.",
+                    "value": {
+                      "error": "internal_error",
+                      "message": "The current password could not be checked.",
+                      "status": 500
+                    }
+                  }
                 }
               }
             }

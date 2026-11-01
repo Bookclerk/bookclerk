@@ -648,7 +648,10 @@ struct MfaPolicyPut {
             ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
-        (status = 500, description = "The configuration path is unknown, or the configuration file could not be written (`internal_error`).", body = crate::http_error::ErrorJson, example = json!({"error": "internal_error", "message": "failed to write config.toml: Permission denied (os error 13)", "status": 500})),
+        (status = 500, description = "The configuration path is unknown or the configuration file could not be written, or an Owner's current password could not be read or checked (`internal_error`).", body = crate::http_error::ErrorJson, examples(
+            ("config_write" = (summary = "The configuration file could not be written.", value = json!({"error": "internal_error", "message": "failed to write config.toml: Permission denied (os error 13)", "status": 500}))),
+            ("password_check" = (summary = "The Owner's current password could not be checked.", value = json!({"error": "internal_error", "message": "The current password could not be checked.", "status": 500}))),
+        )),
     ),
 )]
 async fn put_mfa_policy(
@@ -659,19 +662,20 @@ async fn put_mfa_policy(
     require_operator_or_recent_owner(&state, &headers, body.current_password.as_deref())
         .await
         .map_err(|status| {
-            crate::auth::json_auth_error(
-                status,
-                if status == StatusCode::UNAUTHORIZED {
-                    "reauth_required"
-                } else {
-                    "forbidden"
-                },
-                if status == StatusCode::UNAUTHORIZED {
-                    "Recent authentication is required to change the MFA policy."
-                } else {
-                    "You cannot change the MFA policy."
-                },
-            )
+            let (error, message) = if status == StatusCode::UNAUTHORIZED {
+                (
+                    "reauth_required",
+                    "Recent authentication is required to change the MFA policy.",
+                )
+            } else if status == StatusCode::INTERNAL_SERVER_ERROR {
+                (
+                    "internal_error",
+                    "The current password could not be checked.",
+                )
+            } else {
+                ("forbidden", "You cannot change the MFA policy.")
+            };
+            crate::auth::json_auth_error(status, error, message)
         })?;
     let auth = state.auth_snapshot().await;
     let operator_recovery = authorize_operator_bearer_only(&auth, &headers)

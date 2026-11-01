@@ -325,7 +325,7 @@ pub(crate) async fn require_self_user_id(
         (status = 200, description = "The profile after the change.", body = ProfileChanged),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The session is impersonating a user, is a plain operator session, or has no first-party user."),
-        (status = 400, description = "A value is invalid (`display_name_too_long`, `invalid_email`, `invalid_avatar_source`), or the body changes nothing (the standard error body).", body = crate::http_error::ErrorJson, examples(
+        (status = 400, description = "A value is invalid (`display_name_too_long`, `invalid_email`, `invalid_avatar_source`), or the body sets none of the three fields (the standard error body).", body = crate::http_error::ErrorJson, examples(
             ("display_name_too_long" = (summary = "The display name is too long.", value = json!({"error": "display_name_too_long", "message": "Display name must be 80 characters or fewer.", "status": 400}))),
             ("invalid_email" = (summary = "The email is invalid.", value = json!({"error": "invalid_email", "message": "Enter a valid email address.", "status": 400}))),
             ("invalid_avatar_source" = (summary = "The picture source is invalid.", value = json!({"error": "invalid_avatar_source", "message": "Choose a valid picture source.", "status": 400}))),
@@ -508,7 +508,7 @@ pub async fn put_avatar(
     delete,
     path = "/api/auth/profile/avatar",
     responses(
-        (status = 200, description = "The avatar was removed.", body = AvatarChanged),
+        (status = 200, description = "The avatar was removed.", body = AvatarChanged, example = json!({"ok": true, "has_avatar": false})),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The session is impersonating a user, is a plain operator session, or has no first-party user."),
         (status = 500, description = "The files directory is unknown."),
@@ -859,6 +859,31 @@ mod tests {
         assert!(body.contains("alex@example.com"));
         assert!(body.contains("6db61e6dcbcf2390e4a46af426f26a133a3bee45021422fc7ae86e9136f14110"));
         assert!(!body.contains("User #"));
+    }
+
+    #[tokio::test]
+    async fn profile_patch_omits_email_and_gravatar_when_unset() {
+        let (_state, app, library) = phase2_harness("op-token-profile-no-email").await;
+        let cookie = portal_cookie_for(&library, "test", "member-ext").await;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/auth/profile")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(r#"{"avatar_source":"monogram"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.into_body().collect().await.unwrap().to_bytes().to_vec())
+            .unwrap();
+        // The user object matches `/me`: unset fields are omitted, not `null`.
+        assert!(!body.contains("\"email\""), "{body}");
+        assert!(!body.contains("gravatar_hash"), "{body}");
+        assert!(body.contains("\"avatar_source\":\"monogram\""));
     }
 
     #[tokio::test]
