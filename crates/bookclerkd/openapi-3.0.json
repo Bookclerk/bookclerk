@@ -13566,13 +13566,13 @@
             }
           },
           "400": {
-            "description": "The body is not valid JSON for the patch.",
+            "description": "The body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: theme: invalid type: integer `3`, expected a string at line 1 column 11"
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 10"
               }
             }
           },
@@ -13599,6 +13599,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the patch (a wrong type or an unknown shape).",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: theme: invalid type: integer `3`, expected a string at line 1 column 11"
               }
             }
           },

@@ -5972,8 +5972,10 @@ async fn get_preferences(
     request_body = PatchPreferencesBody,
     responses(
         (status = 200, description = "The preferences after the change.", body = PreferencesResponse),
-        (status = 400, description = "The body is not valid JSON for the patch.", body = String, content_type = "text/plain", example = json!("Failed to deserialize the JSON body into the target type: theme: invalid type: integer `3`, expected a string at line 1 column 11")),
+        (status = 400, description = "The body is not syntactically valid JSON.", body = String, content_type = "text/plain", example = json!("Failed to parse the request body as JSON: expected value at line 1 column 10")),
         (status = 401, description = "No signed-in caller.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
+        (status = 415, description = "The request did not declare a JSON body.", body = String, content_type = "text/plain", example = json!("Expected request with `Content-Type: application/json`")),
+        (status = 422, description = "The JSON does not fit the patch (a wrong type or an unknown shape).", body = String, content_type = "text/plain", example = json!("Failed to deserialize the JSON body into the target type: theme: invalid type: integer `3`, expected a string at line 1 column 11")),
         (status = 500, description = "The request could not be read or written.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
         (status = 504, description = "The preferences row did not load or save in time.", body = String, content_type = "text/plain", example = json!("preferences update timed out")),
     ),
