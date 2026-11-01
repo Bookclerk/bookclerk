@@ -20,8 +20,9 @@ use serde_json::Value;
 use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
-    Passkey, PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential,
-    RegisterPublicKeyCredential, Webauthn, WebauthnBuilder,
+    CreationChallengeResponse, Passkey, PasskeyAuthentication, PasskeyRegistration,
+    PublicKeyCredential, RegisterPublicKeyCredential, RequestChallengeResponse, Webauthn,
+    WebauthnBuilder,
 };
 
 use crate::api::AppState;
@@ -110,9 +111,6 @@ async fn origin_webauthn(state: &AppState, headers: &HeaderMap) -> Result<Webaut
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-// Documents the body `ceremony_json` builds from the webauthn-rs options
-// object, whose own type carries no schema.
-#[allow(dead_code)]
 /// WebAuthn creation options for `navigator.credentials.create()`, plus the challenge id for the finish step.
 pub struct PasskeyCreationOptions {
     /// Server-issued challenge id to send back with the attestation; consumed once, five-minute lifetime.
@@ -146,9 +144,6 @@ fn public_key_creation_schema() -> utoipa::openapi::schema::Schema {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-// Documents the body `ceremony_json` builds from the webauthn-rs options
-// object, whose own type carries no schema.
-#[allow(dead_code)]
 /// WebAuthn request options for `navigator.credentials.get()`, plus the challenge id for the finish step.
 pub struct PasskeyRequestOptions {
     /// Server-issued challenge id to send back with the assertion; consumed once, five-minute lifetime.
@@ -158,6 +153,11 @@ pub struct PasskeyRequestOptions {
     #[serde(rename = "publicKey")]
     #[schema(schema_with = public_key_request_schema)]
     pub public_key: Value,
+    /// Credential mediation the daemon asks the browser for; absent unless
+    /// conditional mediation was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "conditional")]
+    pub mediation: Option<String>,
 }
 
 /// Schema for the `publicKey` member of [`PasskeyRequestOptions`].
@@ -199,20 +199,59 @@ pub struct PasskeySummary {
     pub name: String,
 }
 
-/// Serializes a WebAuthn options object and injects `challenge_id` for the finish step.
-fn ceremony_json<T: serde::Serialize>(
-    challenge_id: &str,
-    inner: &T,
-) -> Result<Json<Value>, StatusCode> {
-    let mut body = serde_json::to_value(inner).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let obj = body
-        .as_object_mut()
+/// Splits a webauthn-rs challenge response into its `publicKey` member and
+/// the optional `mediation` it carries, so the typed ceremony bodies serialize
+/// exactly what the library produced.
+///
+/// # Errors
+///
+/// Returns 500 when the options do not serialize to an object with a `publicKey` member.
+fn split_ceremony<T: serde::Serialize>(inner: &T) -> Result<(Value, Option<String>), StatusCode> {
+    let Value::Object(mut obj) =
+        serde_json::to_value(inner).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    let public_key = obj
+        .remove("publicKey")
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    obj.insert(
-        "challenge_id".into(),
-        Value::String(challenge_id.to_string()),
-    );
-    Ok(Json(body))
+    let mediation = obj
+        .remove("mediation")
+        .and_then(|value| value.as_str().map(str::to_owned));
+    Ok((public_key, mediation))
+}
+
+/// Builds the creation-ceremony body with the challenge id for the finish step.
+///
+/// # Errors
+///
+/// Returns 500 when the options do not serialize (see [`split_ceremony`]).
+fn creation_options(
+    challenge_id: &str,
+    ccr: &CreationChallengeResponse,
+) -> Result<Json<PasskeyCreationOptions>, StatusCode> {
+    let (public_key, _) = split_ceremony(ccr)?;
+    Ok(Json(PasskeyCreationOptions {
+        challenge_id: challenge_id.to_owned(),
+        public_key,
+    }))
+}
+
+/// Builds the request-ceremony body with the challenge id for the finish step.
+///
+/// # Errors
+///
+/// Returns 500 when the options do not serialize (see [`split_ceremony`]).
+fn request_options(
+    challenge_id: &str,
+    rcr: &RequestChallengeResponse,
+) -> Result<Json<PasskeyRequestOptions>, StatusCode> {
+    let (public_key, mediation) = split_ceremony(rcr)?;
+    Ok(Json(PasskeyRequestOptions {
+        challenge_id: challenge_id.to_owned(),
+        public_key,
+        mediation,
+    }))
 }
 
 /// Encodes a credential id as URL-safe base64 without padding.
@@ -316,7 +355,7 @@ async fn register_begin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<ReauthBody>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<PasskeyCreationOptions>, StatusCode> {
     let user = require_user(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let existing_count = library
@@ -372,7 +411,7 @@ async fn register_begin(
         )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    ceremony_json(&challenge_id, &ccr)
+    creation_options(&challenge_id, &ccr)
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -434,7 +473,13 @@ async fn register_finish(
     library
         .insert_webauthn_credential(user.id, &cred_id, &passkey_json, Some(&name))
         .await
-        .map_err(|_| StatusCode::CONFLICT)?;
+        .map_err(|err| {
+            if crate::profile::is_unique_violation(&err) {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
     let _ = library
         .delete_elevated_operator_sessions_for_user(user.id)
         .await;
@@ -508,7 +553,7 @@ async fn login_begin(
     ClientIp(client_key): ClientIp,
     headers: HeaderMap,
     Json(body): Json<LoginBegin>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<PasskeyRequestOptions>, StatusCode> {
     let auth = state.auth_snapshot().await;
     if auth.login_throttle_check(&client_key).await.is_some() {
         return Err(StatusCode::TOO_MANY_REQUESTS);
@@ -541,7 +586,7 @@ async fn login_begin_inner(
     state: &AppState,
     headers: &HeaderMap,
     body: LoginBegin,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<PasskeyRequestOptions>, StatusCode> {
     let library = state.library_snapshot().await;
     let user = match library
         .get_user_by_login_name(&body.login)
@@ -589,7 +634,7 @@ async fn login_begin_inner(
         )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    ceremony_json(&challenge_id, &rcr)
+    request_options(&challenge_id, &rcr)
 }
 
 /// Verifies the assertion, updates the credential counter, and issues a portal session.
@@ -674,7 +719,7 @@ async fn login_finish(
 async fn elevate_begin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<PasskeyRequestOptions>, StatusCode> {
     let user = require_user(&state, &headers).await?;
     if user.role != UserRole::Owner {
         return Err(StatusCode::FORBIDDEN);
@@ -708,7 +753,7 @@ async fn elevate_begin(
         )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    ceremony_json(&challenge_id, &rcr)
+    request_options(&challenge_id, &rcr)
 }
 
 /// Completes Owner elevation only when the assertion is user-verified.
@@ -792,7 +837,7 @@ pub(crate) async fn begin_step_up(
     headers: &HeaderMap,
     user_id: i64,
     kind: &str,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<PasskeyRequestOptions>, StatusCode> {
     let library = state.library_snapshot().await;
     let rows = library
         .list_webauthn_credentials(user_id)
@@ -822,7 +867,7 @@ pub(crate) async fn begin_step_up(
         )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    ceremony_json(&challenge_id, &rcr)
+    request_options(&challenge_id, &rcr)
 }
 
 /// Completes a step-up begun with [`begin_step_up`]: the challenge is

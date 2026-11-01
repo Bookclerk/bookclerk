@@ -56,25 +56,6 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
     ]
 }
 
-/// JSON error body for TOTP / MFA-policy handlers.
-///
-/// # Arguments
-///
-/// * `status` - HTTP status for the response.
-/// * `error` - Machine-readable slug (`passkey_required`, `reauth_required`, …).
-/// * `message` - Operator-facing explanation.
-fn totp_error(
-    status: StatusCode,
-    error: &'static str,
-    message: impl Into<std::borrow::Cow<'static, str>>,
-) -> Response {
-    (
-        status,
-        Json(crate::http_error::ErrorJson::new(status, error, message)),
-    )
-        .into_response()
-}
-
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// JSON body for `GET /api/auth/totp`.
 pub struct TotpStatus {
@@ -109,7 +90,7 @@ pub struct MfaPolicy {
 
 /// Failed TOTP login (wrong code, expired challenge, or missing secret).
 fn invalid_authenticator_code() -> Response {
-    totp_error(
+    crate::auth::json_auth_error(
         StatusCode::UNAUTHORIZED,
         "invalid_code",
         "Invalid authenticator code.",
@@ -356,7 +337,7 @@ pub(crate) async fn after_password_verified(
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         if passkeys > 0 {
-            return Ok(Some(totp_error(
+            return Ok(Some(crate::auth::json_auth_error(
                 StatusCode::FORBIDDEN,
                 "passkey_required",
                 "This server requires a passkey or authenticator app. Sign in with a passkey.",
@@ -478,7 +459,7 @@ async fn enroll_finish(
     let totp = totp_from_secret(&secret, &account)?;
     let code = body.code.trim();
     if totp.check_current(code).is_none() {
-        return Ok(totp_error(
+        return Ok(crate::auth::json_auth_error(
             StatusCode::UNAUTHORIZED,
             "invalid_code",
             "Invalid authenticator code.",
@@ -541,7 +522,10 @@ struct LoginVerify {
     request_body = LoginVerify,
     responses(
         (status = 200, description = "Signed in; the response sets the portal session cookie.", body = crate::auth::PortalSessionIssued),
-        (status = 401, description = "The challenge is unknown or expired, TOTP is off for the user, or the code is wrong (`invalid_code`).", body = crate::http_error::ErrorJson, example = json!({"error": "invalid_code", "message": "Invalid authenticator code.", "status": 401})),
+        (status = 401, description = "The challenge is unknown or expired, TOTP is off for the user, or the code is wrong (`invalid_code`); or the challenged user no longer exists (the standard error body).", body = crate::http_error::ErrorJson, examples(
+            ("invalid_code" = (summary = "The challenge or code is not accepted.", value = json!({"error": "invalid_code", "message": "Invalid authenticator code.", "status": 401}))),
+            ("user_gone" = (summary = "The challenged user no longer exists.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
+        )),
         (status = 429, description = "Too many failed attempts from this client; try later."),
         (status = 500, description = "The user or secret could not be read, or the session could not be stored."),
     ),
@@ -661,10 +645,10 @@ struct MfaPolicyPut {
             ("not_signed_in" = (summary = "The caller is not signed in.", value = json!({"error": "unauthorized", "message": "Operator authentication is required. Sign in with your operator token.", "status": 401}))),
         )),
         (status = 403, description = "The caller is neither the operator nor an Owner (`forbidden`), or must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorJson, examples(
-            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "forbidden", "message": "You cannot change the MFA policy.", "status": 403}))),
+            ("forbidden" = (summary = "The caller is neither the operator nor an Owner.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
             ("mfa_enrollment_required" = (summary = "The Owner must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
         )),
-        (status = 500, description = "The configuration file could not be written (`internal_error`).", body = crate::http_error::ErrorJson, example = json!({"error": "internal_error", "message": "failed to write config.toml: Permission denied (os error 13)", "status": 500})),
+        (status = 500, description = "The configuration path is unknown, or the configuration file could not be written (`internal_error`).", body = crate::http_error::ErrorJson, example = json!({"error": "internal_error", "message": "failed to write config.toml: Permission denied (os error 13)", "status": 500})),
     ),
 )]
 async fn put_mfa_policy(
@@ -675,7 +659,7 @@ async fn put_mfa_policy(
     require_operator_or_recent_owner(&state, &headers, body.current_password.as_deref())
         .await
         .map_err(|status| {
-            totp_error(
+            crate::auth::json_auth_error(
                 status,
                 if status == StatusCode::UNAUTHORIZED {
                     "reauth_required"
@@ -699,7 +683,7 @@ async fn put_mfa_policy(
         if let Some(identity) = timed_portal_identity_from_headers(&library, &headers).await {
             if let Some(user_id) = identity.user_id {
                 if enrollment_blocks(&state, &library, user_id, "/api/auth/mfa-policy").await {
-                    return Err(totp_error(
+                    return Err(crate::auth::json_auth_error(
                         StatusCode::FORBIDDEN,
                         "mfa_enrollment_required",
                         "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
@@ -714,7 +698,7 @@ async fn put_mfa_policy(
         cfg.paths.as_ref().map(|p| p.config_file.clone())
     };
     let Some(config_path) = config_path else {
-        return Err(totp_error(
+        return Err(crate::auth::json_auth_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",
             "config path is not available",
@@ -724,7 +708,7 @@ async fn put_mfa_policy(
         let mut staged = state.config.read().await.clone();
         staged.daemon.auth.require_second_factor = body.require_second_factor;
         staged.write_toml_file(&config_path).map_err(|err| {
-            totp_error(
+            crate::auth::json_auth_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
                 format!("failed to write config.toml: {err}"),

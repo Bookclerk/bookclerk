@@ -281,7 +281,8 @@ pub struct AvatarChanged {
     /// Whether an uploaded picture is stored now.
     #[schema(example = true)]
     pub has_avatar: bool,
-    /// The picture source after the change (`upload` once a picture is stored); absent after a removal, when the source is unchanged unless it was `upload`.
+    /// Present only after an upload, always `upload`; absent after a removal
+    /// (the stored source is then unchanged unless it was `upload`).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "upload")]
     pub avatar_source: Option<&'static str>,
@@ -354,7 +355,7 @@ pub async fn patch_profile(
     if let Some(raw) = body.display_name.as_deref() {
         let trimmed = raw.trim();
         if trimmed.len() > DISPLAY_NAME_MAX {
-            return Ok(json_error(
+            return Ok(crate::auth::json_auth_error(
                 StatusCode::BAD_REQUEST,
                 "display_name_too_long",
                 "Display name must be 80 characters or fewer.",
@@ -370,14 +371,14 @@ pub async fn patch_profile(
         user = match library.set_user_email(user_id, Some(raw)).await {
             Ok(u) => u,
             Err(bookclerk_library::LibraryError::InvalidEmail) => {
-                return Ok(json_error(
+                return Ok(crate::auth::json_auth_error(
                     StatusCode::BAD_REQUEST,
                     "invalid_email",
                     "Enter a valid email address.",
                 ));
             }
             Err(err) if is_unique_violation(&err) => {
-                return Ok(json_error(
+                return Ok(crate::auth::json_auth_error(
                     StatusCode::CONFLICT,
                     "email_in_use",
                     "That email is already used by another account.",
@@ -391,7 +392,7 @@ pub async fn patch_profile(
         let parsed = match parse_avatar_source(&library, user_id, raw).await {
             Ok(value) => value,
             Err(StatusCode::BAD_REQUEST) => {
-                return Ok(json_error(
+                return Ok(crate::auth::json_auth_error(
                     StatusCode::BAD_REQUEST,
                     "invalid_avatar_source",
                     "Choose a valid picture source.",
@@ -660,18 +661,9 @@ async fn parse_avatar_source(
 }
 
 /// True when a SeaORM/SQLite unique index rejected the write (typically email).
-fn is_unique_violation(err: &bookclerk_library::LibraryError) -> bool {
+pub(crate) fn is_unique_violation(err: &bookclerk_library::LibraryError) -> bool {
     let text = err.to_string().to_ascii_lowercase();
     text.contains("unique") || text.contains("constraint")
-}
-
-/// JSON error body with a machine `error` slug and human `message`.
-fn json_error(status: StatusCode, error: &'static str, message: &'static str) -> Response {
-    (
-        status,
-        Json(crate::http_error::ErrorJson::new(status, error, message)),
-    )
-        .into_response()
 }
 
 #[cfg(test)]

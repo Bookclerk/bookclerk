@@ -16149,16 +16149,29 @@
             }
           },
           "401": {
-            "description": "The challenge is unknown or expired, TOTP is off for the user, or the code is wrong (`invalid_code`).",
+            "description": "The challenge is unknown or expired, TOTP is off for the user, or the code is wrong (`invalid_code`); or the challenged user no longer exists (the standard error body).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
-                "example": {
-                  "error": "invalid_code",
-                  "message": "Invalid authenticator code.",
-                  "status": 401
+                "examples": {
+                  "invalid_code": {
+                    "summary": "The challenge or code is not accepted.",
+                    "value": {
+                      "error": "invalid_code",
+                      "message": "Invalid authenticator code.",
+                      "status": 401
+                    }
+                  },
+                  "user_gone": {
+                    "summary": "The challenged user no longer exists.",
+                    "value": {
+                      "error": "unauthorized",
+                      "message": "Operator authentication is required. Sign in with your operator token.",
+                      "status": 401
+                    }
+                  }
                 }
               }
             }
@@ -16765,7 +16778,7 @@
                     "summary": "The caller is neither the operator nor an Owner.",
                     "value": {
                       "error": "forbidden",
-                      "message": "You cannot change the MFA policy.",
+                      "message": "You do not have access to this resource.",
                       "status": 403
                     }
                   },
@@ -16782,7 +16795,7 @@
             }
           },
           "500": {
-            "description": "The configuration file could not be written (`internal_error`).",
+            "description": "The configuration path is unknown, or the configuration file could not be written (`internal_error`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18825,7 +18838,7 @@
               "string",
               "null"
             ],
-            "description": "The picture source after the change (`upload` once a picture is stored); absent after a removal, when the source is unchanged unless it was `upload`.",
+            "description": "Present only after an upload, always `upload`; absent after a removal\n(the stored source is then unchanged unless it was `upload`).",
             "example": "upload"
           }
         }
@@ -23129,6 +23142,14 @@
                 "userVerification": "preferred"
               }
             ]
+          },
+          "mediation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Credential mediation the daemon asks the browser for; absent unless\nconditional mediation was requested.",
+            "example": "conditional"
           }
         }
       },
