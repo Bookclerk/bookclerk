@@ -130,6 +130,7 @@ GitHub App as [Dependabot auto-merge](#dependabot-auto-merge), not
 | --- | --- |
 | `workerd-pin-bump.yml` | The `deps/workerd-pin` branch, pull request and auto-merge |
 | `tool-versions-bump.yml` | The `deps/tool-versions` branch, pull request and auto-merge ([tool versions](ci.md#tool-versions)) |
+| `coverage-floors.yml` | The `ci/coverage-floors` branch, pull request and auto-merge ([coverage](ci.md#coverage)) |
 | `librofm-apk-probe.yml` | An `api-drift` issue; the `api-drift/librofm` branch and pull request |
 | `graphicaudio-api-probe.yml` | An `api-drift` issue; the `api-drift/graphicaudio` branch and pull request |
 | `chirp-api-probe.yml` | An `api-drift` issue; the `api-drift/chirp` branch and pull request |

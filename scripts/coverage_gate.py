@@ -36,7 +36,10 @@ same parser and made repository-relative, to ``OUT/<area>.lcov`` (or
 ``OUT/<area>-partial.lcov``, see :func:`export`) for the Codecov upload
 (``.github/workflows/coverage-upload.yml``); with ``--bundles DIR`` it also
 copies the built bundles' files that :func:`select_bundle_files` keeps to
-``OUT/bundles/<bundle>/`` for Bundle Analysis.
+``OUT/bundles/<bundle>/`` for Bundle Analysis. ``coverage_gate.py --reports
+DIR --plan ci-plan.json --ratchet`` raises the floors in the areas file to
+just under a full-suite run's coverage (see :func:`ratchet_floors`), for
+``.github/workflows/coverage-floors.yml``.
 """
 
 from __future__ import annotations
@@ -58,6 +61,18 @@ import tomllib
 
 #: The areas file, relative to the repository root.
 AREAS_FILE = "scripts/coverage_areas.toml"
+#: Points below the measured line coverage a ratcheted floor sits, so run to
+#: run noise does not fail a pull request.
+RATCHET_MARGIN = 1
+#: The most points one ratchet raises a floor, so one odd run cannot lock
+#: every pull request out.
+RATCHET_MAX_STEP = 5
+#: The highest floor the ratchet sets, in percent.
+RATCHET_MAX_FLOOR = 99
+#: An area's table header in the areas file.
+AREA_HEADER_RE = re.compile(r"^\[areas\.([A-Za-z0-9_-]+)\]\s*$")
+#: An area's floor line in the areas file.
+FLOOR_LINE_RE = re.compile(r"^floor\s*=\s*[0-9.]+\s*$")
 #: How many uncovered changed lines the summary lists per file.
 MAX_LISTED_LINES = 20
 #: A hunk header in ``git diff --unified=0`` output: the new side's first
@@ -422,6 +437,70 @@ def judge(config: Config, results: list[AreaResult], added: dict[str, set[int]])
             if value < result.area.floor:
                 failures.append(f"{result.area.name} line coverage is {value:.1f}%, below its {result.area.floor:g}% floor.")
     return Verdict(tuple(files), tuple(unmeasured), tuple(results), patch, tuple(failures))
+
+
+def ratchet_floors(results: list[AreaResult]) -> dict[str, tuple[float, int]]:
+    """Work out which floors rise to just under the coverage measured.
+
+    A floor rises to the measured line coverage rounded down, less
+    ``RATCHET_MARGIN`` points, by at most ``RATCHET_MAX_STEP`` points and
+    never past ``RATCHET_MAX_FLOOR``. It never falls. Unmeasured and partial
+    areas keep their floor.
+
+    Args:
+        results: Each area's measured lines, from a full-suite run.
+
+    Returns:
+        The old and new floor of each area whose floor rises, by area name.
+    """
+    raised: dict[str, tuple[float, int]] = {}
+    for result in results:
+        if not result.measured or result.partial:
+            continue
+        covered, lines = result.totals()
+        if not lines:
+            continue
+        old = result.area.floor
+        new = min(math.floor(percent(covered, lines)) - RATCHET_MARGIN, math.floor(old) + RATCHET_MAX_STEP, RATCHET_MAX_FLOOR)
+        if new > old:
+            raised[result.area.name] = (old, new)
+    return raised
+
+
+def rewrite_floors(text: str, raised: dict[str, tuple[float, int]]) -> str:
+    """Write new floors into the areas file, keeping everything else as it is.
+
+    Args:
+        text: The areas file.
+        raised: The new floor of each area that rises (see :func:`ratchet_floors`).
+
+    Returns:
+        The areas file with each raised area's ``floor`` line rewritten.
+
+    Raises:
+        ConfigError: A raised area has no single ``floor`` line in its table,
+            or the result does not read back with the new floors.
+    """
+    out: list[str] = []
+    section = None
+    written: dict[str, int] = {}
+    for line in text.splitlines(keepends=True):
+        header = AREA_HEADER_RE.match(line)
+        if header:
+            section = header.group(1)
+        elif line.startswith("["):
+            section = None
+        elif section in raised and FLOOR_LINE_RE.match(line):
+            written[section] = written.get(section, 0) + 1
+            line = f"floor = {raised[section][1]}\n"
+        out.append(line)
+    if any(written.get(name) != 1 for name in raised):
+        raise ConfigError(f"{AREAS_FILE}: every raised area needs exactly one `floor = ` line")
+    result = "".join(out)
+    floors = {a.name: a.floor for a in parse_config(result).areas}
+    if any(floors.get(name) != new for name, (_, new) in raised.items()):
+        raise ConfigError(f"{AREAS_FILE}: the rewritten floors do not read back")
+    return result
 
 
 def ranges(numbers: tuple[int, ...]) -> str:
@@ -883,9 +962,27 @@ def main(argv: list[str] | None = None) -> int:
         "--bundles", type=Path, default=None, help="with --export: the downloaded bundles, copied to <export>/bundles/<bundle>/"
     )
     parser.add_argument("--summary", type=Path, default=None, help="Markdown output (default $GITHUB_STEP_SUMMARY)")
+    parser.add_argument(
+        "--ratchet",
+        action="store_true",
+        help="raise the areas file's floors to just under a full-suite run's coverage and print what rose",
+    )
     args = parser.parse_args(argv)
 
-    config = parse_config(Path(AREAS_FILE).read_text(encoding="utf-8"))
+    text = Path(AREAS_FILE).read_text(encoding="utf-8")
+    config = parse_config(text)
+    if args.ratchet:
+        if args.plan is None or not args.plan.is_file():
+            parser.error("--ratchet needs the run's --plan, so partial areas are told apart")
+        results = read_reports(config, args.reports, full_workspace_checks(args.plan.read_text(encoding="utf-8")))
+        raised = ratchet_floors(results)
+        if raised:
+            Path(AREAS_FILE).write_text(rewrite_floors(text, raised), encoding="utf-8")
+        for name, (old, new) in raised.items():
+            print(f"- `{name}`: {old:g}% → {new}%")
+        if not raised:
+            print("No floor rises.")
+        return 0
     if args.export is not None:
         # Without a plan every workspace-gated area counts as partial.
         full: frozenset[str] = frozenset()
