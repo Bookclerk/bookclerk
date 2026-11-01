@@ -389,11 +389,13 @@ pub struct AuthMeResponse {
     /// Whether the request resolved to an operator, portal, or impersonated session.
     #[schema(example = true)]
     pub authenticated: bool,
-    /// `operator`, `administrator`, or `member` (legacy clients may still send `portal`).
+    /// `operator`, `owner`, `administrator`, `host`, or `member` (legacy clients may
+    /// still send `portal`).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "administrator")]
     pub role: Option<String>,
-    /// Configured post-auth landing view (`discover` / `library` / `accounts`).
+    /// Configured post-auth landing view (`discover` / `library` / `accounts` /
+    /// `wishlist`).
     /// Loaded from per-user DB preferences (not config.toml).
     #[schema(example = "library")]
     pub default_view: String,
@@ -453,7 +455,7 @@ pub struct AuthMeUser {
     #[schema(example = 7)]
     pub id: i64,
     /// Role string (`owner`, `administrator`, `member`).
-    #[schema(example = "member")]
+    #[schema(example = "administrator")]
     pub role: String,
     /// Optional human-readable name from the user row.
     #[schema(example = "Sam")]
@@ -602,7 +604,7 @@ pub struct PortalSessionIssued {
     /// Always `true` on this success path.
     #[schema(example = true)]
     pub ok: bool,
-    /// The user's role (`owner`, `administrator`, `member`).
+    /// The user's role (`owner`, `administrator`, `host`, or `member`).
     #[schema(example = "member")]
     pub role: String,
 }
@@ -702,11 +704,13 @@ pub struct OperatorSessionView {
     /// Whether an Owner elevated into this session (rather than the operator token).
     #[schema(example = false)]
     pub elevated: bool,
-    /// User the session is impersonating, when it is.
+    /// User the session is impersonating, when it is. Never set on the
+    /// session making the request: while that session impersonates, the
+    /// list shows the target's portal sessions instead.
     #[schema(example = 7)]
     pub impersonating_user_id: Option<i64>,
     /// Whether this is the session making the request.
-    #[schema(example = true)]
+    #[schema(example = false)]
     pub is_current: bool,
     /// Best-effort OS or client label from the User-Agent.
     #[schema(example = "Windows")]
@@ -3347,8 +3351,8 @@ pub struct SetPasswordRequest {
     responses(
         (status = 200, description = "The password was set and other sessions revoked.", body = PasswordSet),
         (status = 401, description = "The caller is not signed in, or the caller already has a password and `current_password` is missing or wrong."),
-        (status = 403, description = "The caller may not set that user's password: not a provisioner, a role they cannot manage, their own account through `user_id`, or a second factor must be enrolled first."),
-        (status = 400, description = "The password is empty."),
+        (status = 403, description = "The caller may not set that user's password: not a provisioner, or a role the caller cannot manage."),
+        (status = 400, description = "The password is empty (the standard error body)."),
         (status = 404, description = "No such user."),
         (status = 500, description = "The password could not be hashed, or the library could not be read or written."),
     ),

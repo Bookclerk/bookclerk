@@ -826,7 +826,7 @@
             }
           },
           "400": {
-            "description": "The password is empty.",
+            "description": "The password is empty (the standard error body).",
             "content": {
               "application/json": {
                 "schema": {
@@ -856,7 +856,7 @@
             }
           },
           "403": {
-            "description": "The caller may not set that user's password: not a provisioner, a role they cannot manage, their own account through `user_id`, or a second factor must be enrolled first.",
+            "description": "The caller may not set that user's password: not a provisioner, or a role the caller cannot manage.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18242,12 +18242,12 @@
               "string",
               "null"
             ],
-            "description": "`operator`, `administrator`, or `member` (legacy clients may still send `portal`).",
+            "description": "`operator`, `owner`, `administrator`, `host`, or `member` (legacy clients may\nstill send `portal`).",
             "example": "administrator"
           },
           "default_view": {
             "type": "string",
-            "description": "Configured post-auth landing view (`discover` / `library` / `accounts`).\nLoaded from per-user DB preferences (not config.toml).",
+            "description": "Configured post-auth landing view (`discover` / `library` / `accounts` /\n`wishlist`).\nLoaded from per-user DB preferences (not config.toml).",
             "example": "library"
           },
           "can_acquire": {
@@ -18326,7 +18326,7 @@
           "role": {
             "type": "string",
             "description": "Role string (`owner`, `administrator`, `member`).",
-            "example": "member"
+            "example": "administrator"
           },
           "display_name": {
             "type": [
@@ -22237,13 +22237,13 @@
               "null"
             ],
             "format": "int64",
-            "description": "User the session is impersonating, when it is.",
+            "description": "User the session is impersonating, when it is. Never set on the\nsession making the request: while that session impersonates, the\nlist shows the target's portal sessions instead.",
             "example": 7
           },
           "is_current": {
             "type": "boolean",
             "description": "Whether this is the session making the request.",
-            "example": true
+            "example": false
           },
           "client_label": {
             "type": [
@@ -24437,7 +24437,7 @@
           },
           "role": {
             "type": "string",
-            "description": "The user's role (`owner`, `administrator`, `member`).",
+            "description": "The user's role (`owner`, `administrator`, `host`, or `member`).",
             "example": "member"
           }
         }
@@ -27436,18 +27436,21 @@
         "properties": {
           "status": {
             "type": "string",
-            "description": "Stable outcome: `received`, `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`."
+            "description": "Stable outcome: `received`, `committed`, `lost`, `refused`,\n`misdirected`, `unauthorized`, `unavailable`.",
+            "example": "received"
           },
           "reason": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Why, for `refused`."
+            "description": "Why, for `refused`.",
+            "example": "size_mismatch"
           },
           "job_completed": {
             "type": "boolean",
-            "description": "For `committed`: the job is finished."
+            "description": "For `committed`: the job is finished.",
+            "example": false
           }
         }
       },
