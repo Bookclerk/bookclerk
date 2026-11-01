@@ -677,8 +677,10 @@ timeout fails the test.
 
 ## Coverage
 
-CI Gate reports how much of a change its tests run. It is **report only**
-for now: it writes a summary and warnings but never fails the gate.
+CI Gate checks how much of a change its tests run. It fails when the
+change's patch coverage is below 80% (`patch_target`) or an area falls below
+its floor, and writes a summary either way. Setting `mode = "report"` in
+`scripts/coverage_areas.toml` turns those failures back into warnings.
 
 Coverage is measured in the jobs that already run the tests, so it costs no
 extra test run:
@@ -737,8 +739,8 @@ needs a lot of disk.
 
 The same reports also go to [Codecov](https://about.codecov.io/), which
 comments on pull requests and posts `codecov/project` and `codecov/patch`
-statuses. For now both statuses are informational, so they never fail a
-commit.
+statuses. Both statuses are informational: CI Gate is the coverage check
+that blocks a merge, and it reports on every pull request.
 
 The upload runs in its own workflow,
 [`coverage-upload.yml`](../../.github/workflows/coverage-upload.yml), after

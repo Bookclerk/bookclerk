@@ -16,7 +16,7 @@
 # coverage is below `patch_target` or an area is below its floor. See
 # docs/contributing/ci.md#coverage.
 
-mode = "report"
+mode = "enforce"
 patch_target = 80
 
 # Generated files: left out of every area's coverage and of patch coverage,
