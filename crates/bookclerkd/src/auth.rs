@@ -674,8 +674,9 @@ pub struct SessionsResponse {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(untagged)]
-/// One session in the caller's list: an operator session or a portal (user) session.
+#[serde(tag = "kind", rename_all = "lowercase")]
+/// One session in the caller's list, told apart by `kind`: an operator
+/// session or a portal (user) session.
 pub enum SessionView {
     /// An operator session (`kind` is `operator`).
     Operator(OperatorSessionView),
@@ -689,9 +690,6 @@ pub struct OperatorSessionView {
     /// Session id, for `DELETE /api/auth/sessions/{id}`.
     #[schema(example = 12)]
     pub id: i64,
-    /// Always `operator`.
-    #[schema(example = "operator")]
-    pub kind: &'static str,
     /// RFC 3339 time the session was created.
     #[schema(example = "2026-10-28T19:02:11Z")]
     pub created_at: String,
@@ -727,9 +725,6 @@ pub struct PortalSessionView {
     /// Session id, for `DELETE /api/auth/sessions/{id}`.
     #[schema(example = 31)]
     pub id: i64,
-    /// Always `portal`.
-    #[schema(example = "portal")]
-    pub kind: &'static str,
     /// RFC 3339 time the session was created.
     #[schema(example = "2026-10-28T19:02:11Z")]
     pub created_at: String,
@@ -1187,8 +1182,8 @@ pub(crate) fn session_client_from_headers(headers: &HeaderMap) -> SessionClientI
 /// * `message` - Caller-facing explanation.
 pub(crate) fn json_auth_error(
     status: StatusCode,
-    error: &'static str,
-    message: &'static str,
+    error: impl Into<std::borrow::Cow<'static, str>>,
+    message: impl Into<std::borrow::Cow<'static, str>>,
 ) -> Response {
     (
         status,
@@ -3355,7 +3350,7 @@ pub struct SetPasswordRequest {
         (status = 403, description = "The caller may not set that user's password: not a provisioner, a role they cannot manage, their own account through `user_id`, or a second factor must be enrolled first."),
         (status = 400, description = "The password is empty."),
         (status = 404, description = "No such user."),
-        (status = 500, description = "The password could not be hashed, or the library could not be read."),
+        (status = 500, description = "The password could not be hashed, or the library could not be read or written."),
     ),
 )]
 pub async fn set_password(
@@ -3415,7 +3410,10 @@ pub async fn set_password(
     library
         .set_user_password_hash(target_id, Some(&hash))
         .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        .map_err(|err| match err {
+            LibraryError::NotFound(_) => StatusCode::NOT_FOUND,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        })?;
     let revoked = library
         .delete_portal_sessions_for_user(target_id)
         .await
@@ -3858,7 +3856,6 @@ pub async fn list_sessions(
             .map(|s| {
                 SessionView::Operator(OperatorSessionView {
                     id: s.id,
-                    kind: "operator",
                     created_at: s.created_at.to_rfc3339(),
                     last_used_at: s.last_used_at.map(|t| t.to_rfc3339()),
                     expires_at: s.expires_at.to_rfc3339(),
@@ -3906,7 +3903,6 @@ async fn portal_session_rows(
                 .unwrap_or(false);
             SessionView::Portal(PortalSessionView {
                 id: row.id,
-                kind: "portal",
                 created_at: row.created_at,
                 expires_at: row.expires_at,
                 last_used_at: row.last_used_at,

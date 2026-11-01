@@ -67,11 +67,11 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
 fn totp_error(status: StatusCode, error: &str, message: &str) -> Response {
     (
         status,
-        Json(serde_json::json!({
-            "error": error,
-            "message": message,
-            "status": status.as_u16()
-        })),
+        Json(crate::http_error::ErrorJson::new(
+            status,
+            error.to_owned(),
+            message.to_owned(),
+        )),
     )
         .into_response()
 }

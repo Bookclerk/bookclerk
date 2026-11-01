@@ -886,7 +886,7 @@
             }
           },
           "500": {
-            "description": "The password could not be hashed, or the library could not be read.",
+            "description": "The password could not be hashed, or the library could not be read or written.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8774,7 +8774,7 @@
             }
           },
           "403": {
-            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
             "content": {
               "application/json": {
                 "schema": {
@@ -22196,7 +22196,6 @@
         "description": "An operator session as listed by `GET /api/auth/sessions`.",
         "required": [
           "id",
-          "kind",
           "created_at",
           "expires_at",
           "elevated",
@@ -22208,11 +22207,6 @@
             "format": "int64",
             "description": "Session id, for `DELETE /api/auth/sessions/{id}`.",
             "example": 12
-          },
-          "kind": {
-            "type": "string",
-            "description": "Always `operator`.",
-            "example": "operator"
           },
           "created_at": {
             "type": "string",
@@ -24453,7 +24447,6 @@
         "description": "A portal (user) session as listed by `GET /api/auth/sessions`.",
         "required": [
           "id",
-          "kind",
           "created_at",
           "expires_at",
           "is_current"
@@ -24464,11 +24457,6 @@
             "format": "int64",
             "description": "Session id, for `DELETE /api/auth/sessions/{id}`.",
             "example": 31
-          },
-          "kind": {
-            "type": "string",
-            "description": "Always `portal`.",
-            "example": "portal"
           },
           "created_at": {
             "type": "string",
@@ -25788,15 +25776,53 @@
       "SessionView": {
         "oneOf": [
           {
-            "$ref": "#/components/schemas/OperatorSessionView",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OperatorSessionView",
+                "description": "An operator session (`kind` is `operator`)."
+              },
+              {
+                "type": "object",
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "operator"
+                    ]
+                  }
+                }
+              }
+            ],
             "description": "An operator session (`kind` is `operator`)."
           },
           {
-            "$ref": "#/components/schemas/PortalSessionView",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PortalSessionView",
+                "description": "A portal session (`kind` is `portal`)."
+              },
+              {
+                "type": "object",
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "portal"
+                    ]
+                  }
+                }
+              }
+            ],
             "description": "A portal session (`kind` is `portal`)."
           }
         ],
-        "description": "One session in the caller's list: an operator session or a portal (user) session."
+        "description": "One session in the caller's list, told apart by `kind`: an operator\nsession or a portal (user) session."
       },
       "SessionsResponse": {
         "type": "object",
