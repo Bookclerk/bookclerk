@@ -73,7 +73,7 @@ use bookclerk_node_proto::{
     OwnerInfo, SecretValue, BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE,
     CLERK_BOOTSTRAP_VERSION,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use zeroize::Zeroizing;
 
@@ -170,9 +170,13 @@ async fn owner_info(state: &Arc<AppState>) -> Result<OwnerInfo, Response> {
     get,
     path = "/api/node/v1/info",
     responses(
-        (status = 200, description = "What this library says about itself to a joining install.", body = serde_json::Value),
-        (status = 403, description = "The transport is not allowed."),
-        (status = 404, description = "The node API is not mounted."),
+        (status = 200, description = "What this library says about itself to a joining install.", body = bookclerk_node_proto::OwnerInfo),
+        (status = 403, description = "The connection failed the transport policy (`transport_insecure`, with the check in `reason`).", body = crate::http_error::TransportRefused, example = json!({"error": "transport_insecure", "reason": "plain_http"})),
+        (status = 404, description = "The node API is not mounted on this listener (`node_api_unmounted`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_unmounted"})),
+        (status = 503, description = "This library's cluster row (`cluster_unavailable`) or origin (`origin_unavailable`) is not available yet.", body = crate::http_error::ErrorMessage, examples(
+            ("cluster_unavailable" = (summary = "The cluster row could not be read.", value = json!({"error": "cluster_unavailable"}))),
+            ("origin_unavailable" = (summary = "The library's origin is not known yet.", value = json!({"error": "origin_unavailable"}))),
+        )),
     ),
 )]
 pub async fn get_info(State(state): State<Arc<AppState>>, request: Request) -> Response {
@@ -190,7 +194,8 @@ pub async fn get_info(State(state): State<Arc<AppState>>, request: Request) -> R
 const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
 
 /// `POST /api/node/v1/enroll/oauth`: redeem an approved branch sign-in.
-/// Answers `{cluster_id, node_id}`; 403 `transport_insecure` for a refused
+/// Answers `{cluster_id, node_id}` for a branch, plus `connection` and the
+/// sealed `bootstrap` for a clerk; 403 `transport_insecure` for a refused
 /// connection, 403 `enrollment_refused` for a code that does not redeem
 /// (unknown, used, expired, another client's, a wrong verifier or
 /// redirect URI, enrollment off, or the user no longer active).
@@ -199,12 +204,23 @@ const MAX_OAUTH_ENROLL_BODY_BYTES: usize = 16 * 1024;
     path = "/api/node/v1/enroll/oauth",
     request_body = bookclerk_node_proto::OAuthEnrollRequest,
     responses(
-        (status = 200, description = "The branch is enrolled; its node credential.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 401, description = "The code or verifier is wrong."),
-        (status = 403, description = "The transport is not allowed."),
-        (status = 404, description = "The node API is not mounted."),
-        (status = 503, description = "The enrollment could not be recorded; try again (`enrollment_unavailable`)."),
+        (status = 200, description = "The install is enrolled: its cluster and node ids for a branch, and for a clerk also `connection` and the clerk bootstrap sealed to its box key.", body = bookclerk_node_proto::OAuthEnrollAnswer, examples(
+            ("branch" = (summary = "A branch joined.", value = json!({"cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c"}))),
+            ("clerk" = (summary = "A clerk joined; its bootstrap is sealed to its box key.", value = json!({"cluster_id": "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "node_id": "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c", "connection": "clerk", "bootstrap": "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0"}))),
+        )),
+        (status = 400, description = "The body is not an enroll request, or its keys are not base64url.", body = crate::http_error::ErrorMessage, examples(
+            ("malformed" = (summary = "The body does not parse as an enroll request.", value = json!({"error": "invalid enroll request"}))),
+            ("bad_keys" = (summary = "A public key is not base64url.", value = json!({"error": "sign_pk and box_pk must be base64url"}))),
+        )),
+        (status = 403, description = "The connection failed the transport policy (`transport_insecure`, with the check in `reason`), or the code does not redeem: blank, unknown, used, expired, wrong verifier, or the user may no longer let a clerk join (`enrollment_refused`).", body = crate::http_error::NodeRefusal, examples(
+            ("transport_insecure" = (summary = "Plain HTTP from another machine.", value = json!({"error": "transport_insecure", "reason": "plain_http"}))),
+            ("enrollment_refused" = (summary = "The code does not redeem.", value = json!({"error": "enrollment_refused"}))),
+        )),
+        (status = 404, description = "The node API is not mounted on this listener (`node_api_unmounted`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_unmounted"})),
+        (status = 409, description = "This library's database cannot be shared with a clerk (`database_not_shareable`).", body = crate::http_error::ErrorMessage, example = json!({"error": "database_not_shareable"})),
+        (status = 413, description = "The body is larger than 16 KiB.", body = crate::http_error::ErrorMessage, example = json!({"error": "request too large"})),
+        (status = 415, description = "The request is not `application/json`.", body = crate::http_error::ErrorMessage, example = json!({"error": "expected application/json"})),
+        (status = 503, description = "The enrollment could not be read or recorded; try again (`enrollment_unavailable`).", body = crate::http_error::ErrorMessage, example = json!({"error": "enrollment_unavailable"})),
     ),
 )]
 pub async fn post_enroll_oauth(State(state): State<Arc<AppState>>, request: Request) -> Response {
@@ -647,7 +663,199 @@ fn redirect_with(redirect_uri: &str, pairs: &[(&str, &str)]) -> Option<String> {
 
 /// A JSON error with `detail`.
 fn consent_error(status: StatusCode, error: &str, detail: &str) -> Response {
-    (status, Json(json!({ "error": error, "detail": detail }))).into_response()
+    (
+        status,
+        Json(crate::http_error::ErrorDetail::new(error, detail)),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/auth/branch-consent`: what the consent page shows.
+pub struct BranchConsentPage {
+    /// This library's name.
+    #[schema(example = "books.example.com")]
+    pub library_name: String,
+    /// The name the branch asks to join as.
+    #[schema(example = "Living-room NAS")]
+    pub branch_name: String,
+    /// Origin of the branch's redirect URI, for the page to name.
+    #[schema(example = "http://127.0.0.1:8787")]
+    pub redirect_origin: String,
+    /// Whether this library lets new branches join right now.
+    #[schema(example = true)]
+    pub enrollment: bool,
+    /// The signed-in user the branch would belong to.
+    pub user: ConsentingUser,
+    /// The connection types the page may offer.
+    pub connection: ConnectionChoice,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// The user a branch consent is for.
+pub struct ConsentingUser {
+    /// `users.id`.
+    #[schema(example = 7)]
+    pub id: i64,
+    /// Display name, when set.
+    #[schema(example = "Sam")]
+    pub display_name: Option<String>,
+}
+
+/// What the consent page may offer: branch only, or a choice between
+/// branch and clerk for an Owner.
+///
+/// The schema is written by hand as an `anyOf`: an Owner's answer also
+/// satisfies [`BranchOnlyChoice`] (that schema admits extra properties),
+/// so the derived `oneOf` would reject it.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum ConnectionChoice {
+    /// Only a branch (the user is not an Owner).
+    BranchOnly(BranchOnlyChoice),
+    /// An Owner may pick clerk, when it is available.
+    Owner(OwnerChoice),
+}
+
+impl utoipa::PartialSchema for ConnectionChoice {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{AnyOfBuilder, RefBuilder};
+        AnyOfBuilder::new()
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("BranchOnlyChoice")
+                    .description(Some("Only a branch (the user is not an Owner).")),
+            )
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("OwnerChoice")
+                    .description(Some("An Owner may pick clerk, when it is available.")),
+            )
+            .description(Some(
+                "What the consent page may offer: branch only, or a choice between branch and clerk for an Owner.",
+            ))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for ConnectionChoice {
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        use utoipa::PartialSchema;
+        schemas.push(("BranchOnlyChoice".to_string(), BranchOnlyChoice::schema()));
+        schemas.push(("OwnerChoice".to_string(), OwnerChoice::schema()));
+    }
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// The consent page's connection block when only a branch is offered.
+pub struct BranchOnlyChoice {
+    /// Always `false`.
+    #[schema(example = false)]
+    pub choice: bool,
+    /// Always `branch`.
+    #[schema(example = "branch")]
+    pub default: &'static str,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// The consent page's connection block for an Owner, who may pick clerk.
+pub struct OwnerChoice {
+    /// Always `true`.
+    #[schema(example = true)]
+    pub choice: bool,
+    /// Always `branch`.
+    #[schema(example = "branch")]
+    pub default: &'static str,
+    /// Whether clerk may be chosen right now.
+    #[schema(example = false)]
+    pub clerk_available: bool,
+    /// Why clerk is shown disabled, when it is.
+    #[schema(
+        example = "The joining server already holds library data of its own (or did not offer it), so it can only join as a branch."
+    )]
+    pub clerk_reason: Option<String>,
+    /// The second factors the Owner can step up with (`totp`, `passkey`).
+    #[schema(example = json!(["passkey"]))]
+    pub step_up: Vec<&'static str>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after a branch consent was answered.
+pub struct ConsentRedirect {
+    /// Where to send the browser: the branch's callback with a code, or with `error=access_denied`.
+    #[schema(example = "http://127.0.0.1:8787/api/config/join/callback?code=8f2c…&state=xyz")]
+    pub redirect: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/config/branches`.
+pub struct BranchesResponse {
+    /// This library's name.
+    #[schema(example = "books.example.com")]
+    pub library_name: String,
+    /// The canonical origin branches connect to.
+    #[schema(example = "https://books.example.com")]
+    pub origin: String,
+    /// The node API transport mode (`acme`, `proxy`, `self_signed`, `loopback`).
+    #[schema(example = "self_signed")]
+    pub transport: String,
+    /// Whether new branches may join.
+    #[schema(example = true)]
+    pub enrollment: bool,
+    /// In `self_signed` mode, the fingerprint a joining operator confirms.
+    #[schema(example = "kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o")]
+    pub spki_fingerprint: Option<String>,
+    /// Every branch, newest first.
+    pub branches: Vec<BranchView>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// One branch (host node) of this library.
+pub struct BranchView {
+    /// The branch's node id.
+    #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
+    pub node_id: String,
+    /// RFC 3339 time the node was created.
+    #[schema(example = "2026-10-29T09:02:41Z")]
+    pub created_at: String,
+    /// The user who owns the branch.
+    #[schema(example = 7)]
+    pub owner_user_id: Option<i64>,
+    /// That user's display or login name.
+    #[schema(example = "Sam")]
+    pub owner_name: Option<String>,
+    /// Whether its credential is still valid (it has not left or been revoked).
+    #[schema(example = true)]
+    pub joined: bool,
+    /// "Share this branch's books" as it last reported it; `null` until its first catalog sync.
+    #[schema(example = true)]
+    pub share_books: Option<bool>,
+    /// "Include books from my own branches" as it last reported it; `null` until its first catalog sync.
+    #[schema(example = true)]
+    pub include_branches: Option<bool>,
+    /// Counts of the titles it shared.
+    pub titles: bookclerk_library::control_plane::BranchTitleCounts,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after detached branch titles were removed.
+pub struct BranchTitlesRemoved {
+    /// How many title entries were removed.
+    #[schema(example = 3)]
+    pub removed: u64,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// JSON body after `PUT /api/config/branches`.
+pub struct BranchJoinSetting {
+    /// "Let new branches join", as stored.
+    #[schema(example = false)]
+    pub enrollment: bool,
 }
 
 /// The signed-in user a consent is for: never the operator, who owns no
@@ -691,11 +899,24 @@ async fn consenting_user(
     params(BranchAuthorizeParams),
     security(("portalSession" = []), ("operatorSession" = [])),
     responses(
-        (status = 200, description = "What the consent page shows.", body = serde_json::Value),
+        (status = 200, description = "What the consent page shows.", body = BranchConsentPage),
+        (status = 400, description = "The authorize parameters are invalid (`invalid_request`).", body = crate::http_error::ErrorDetail, examples(
+            ("unknown_client" = (summary = "The client id is not the branch client.", value = json!({"error": "invalid_request", "detail": "unknown client"}))),
+            ("code_challenge" = (summary = "No S256 code challenge.", value = json!({"error": "invalid_request", "detail": "an S256 code challenge is required"}))),
+            ("redirect_uri" = (summary = "The redirect URI is not loopback or https.", value = json!({"error": "invalid_request", "detail": "the redirect URI must be a loopback or https URL"}))),
+            ("branch_name" = (summary = "The branch name is empty or too long.", value = json!({"error": "invalid_request", "detail": "the branch needs a name of 1 to 64 characters"}))),
+        )),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller is not a library user (`user_required`; an operator session counts only while impersonating) or the account is inactive."),
-        (status = 400, description = "The authorize parameters are invalid."),
-        (status = 503, description = "The library could not be read; try again."),
+        (status = 403, description = "The caller is not a library user (`user_required`; an operator session counts only while impersonating), the account is inactive (`user_inactive`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("user_required" = (summary = "The session is not a library user.", value = json!({"error": "user_required", "detail": "a branch belongs to a user: sign in with your account on this library"}))),
+            ("user_inactive" = (summary = "The account is not active.", value = json!({"error": "user_inactive", "detail": "this account is not active"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 503, description = "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`).", body = crate::http_error::ErrorAnswer, examples(
+            ("unavailable" = (summary = "A read failed; try again.", value = json!({"error": "unavailable", "detail": "try again"}))),
+            ("cluster_unavailable" = (summary = "This library's cluster row is not available yet.", value = json!({"error": "cluster_unavailable"}))),
+        )),
     ),
 )]
 pub async fn get_branch_consent(
@@ -719,17 +940,17 @@ pub async fn get_branch_consent(
         Ok(view) => view,
         Err(response) => return response,
     };
-    Json(json!({
-        "library_name": info.library_name,
-        "branch_name": params.branch_name.unwrap_or_default().trim(),
-        "redirect_origin": redirect_origin,
-        "enrollment": info.enrollment,
-        "user": {
-            "id": user.id,
-            "display_name": user.display_name,
+    Json(BranchConsentPage {
+        library_name: info.library_name,
+        branch_name: params.branch_name.unwrap_or_default().trim().to_owned(),
+        redirect_origin,
+        enrollment: info.enrollment,
+        user: ConsentingUser {
+            id: user.id,
+            display_name: user.display_name,
         },
-        "connection": connection,
-    }))
+        connection,
+    })
     .into_response()
 }
 
@@ -760,11 +981,14 @@ async fn connection_view(
     state: &Arc<AppState>,
     user: &bookclerk_library::UserRecord,
     params: &BranchAuthorizeParams,
-) -> Result<serde_json::Value, Response> {
+) -> Result<ConnectionChoice, Response> {
     let library = state.library_snapshot().await;
     let owner = verify_cluster_owner(&library, user.id).await.is_ok();
     if !owner {
-        return Ok(json!({ "choice": false, "default": "branch" }));
+        return Ok(ConnectionChoice::BranchOnly(BranchOnlyChoice {
+            choice: false,
+            default: "branch",
+        }));
     }
     let methods = step_up_methods(&library, user).await?;
     let reason = if !params.clerk_offered() {
@@ -784,12 +1008,12 @@ async fn connection_view(
     } else {
         None
     };
-    Ok(json!({
-        "choice": true,
-        "default": "branch",
-        "clerk_available": reason.is_none(),
-        "clerk_reason": reason,
-        "step_up": methods,
+    Ok(ConnectionChoice::Owner(OwnerChoice {
+        choice: true,
+        default: "branch",
+        clerk_available: reason.is_none(),
+        clerk_reason: reason,
+        step_up: methods,
     }))
 }
 
@@ -853,13 +1077,35 @@ pub struct BranchConsentBody {
     request_body = BranchConsentBody,
     security(("portalSession" = []), ("operatorSession" = [])),
     responses(
-        (status = 200, description = "`{redirect}` back to the branch.", body = serde_json::Value),
+        (status = 200, description = "`{redirect}` back to the branch.", body = ConsentRedirect),
+        (status = 400, description = "The body or its authorize parameters are invalid (`invalid_request`), or the joining server did not offer a clerk join (`clerk_not_offered`).", body = crate::http_error::ErrorDetail, examples(
+            ("malformed" = (summary = "The body does not parse.", value = json!({"error": "invalid_request", "detail": "malformed consent"}))),
+            ("bad_connection" = (summary = "The connection type is not branch or clerk.", value = json!({"error": "invalid_request", "detail": "connection must be branch or clerk"}))),
+            ("bad_redirect" = (summary = "The redirect URI cannot carry the answer.", value = json!({"error": "invalid_request", "detail": "bad redirect"}))),
+            ("clerk_not_offered" = (summary = "The joining server did not offer to join as a clerk.", value = json!({"error": "clerk_not_offered", "detail": "the joining server did not offer to join as a clerk; it can join as a branch"}))),
+            ("unknown_client" = (summary = "The client id is not the branch client.", value = json!({"error": "invalid_request", "detail": "unknown client"}))),
+        )),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller is not an active library user, or a clerk join lacks the Owner role or a passed step-up (`step_up_required`)."),
-        (status = 400, description = "The body is invalid."),
-        (status = 409, description = "This library's database cannot be shared with a clerk (`database_not_shareable`)."),
-        (status = 429, description = "Too many wrong step-up codes; wait a few minutes (`step_up_locked`)."),
-        (status = 503, description = "The library could not be read; try again."),
+        (status = 403, description = "The caller is not an active library user (`user_required`, `user_inactive`), this library is not accepting branches (`enrollment_disabled`), a clerk join needs an Owner (`owner_required`) with a second factor (`step_up_unavailable`) that was confirmed (`step_up_required`) and passed (`step_up_failed`), the connection failed the transport policy (`transport_insecure`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::NodeRefusal, examples(
+            ("user_required" = (summary = "The session is not a library user.", value = json!({"error": "user_required", "detail": "a branch belongs to a user: sign in with your account on this library"}))),
+            ("user_inactive" = (summary = "The account is not active.", value = json!({"error": "user_inactive", "detail": "this account is not active"}))),
+            ("enrollment_disabled" = (summary = "This library has host enrollment switched off.", value = json!({"error": "enrollment_disabled", "detail": "this library isn't accepting new branches"}))),
+            ("owner_required" = (summary = "Only an Owner can let a clerk join.", value = json!({"error": "owner_required", "detail": "only an Owner of this library can let a server join as a clerk"}))),
+            ("step_up_unavailable" = (summary = "The Owner has no second factor to confirm with.", value = json!({"error": "step_up_unavailable", "detail": "joining as a clerk needs a fresh second factor: set up an authenticator app or a passkey on your account first"}))),
+            ("step_up_required" = (summary = "The clerk join was not confirmed with a second factor.", value = json!({"error": "step_up_required", "detail": "confirm with your authenticator app or a passkey to let a clerk join"}))),
+            ("transport_insecure" = (summary = "Plain HTTP from another machine.", value = json!({"error": "transport_insecure", "reason": "plain_http"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 404, description = "The node API is not mounted on this listener (`node_api_unmounted`).", body = crate::http_error::ErrorMessage, example = json!({"error": "node_api_unmounted"})),
+        (status = 409, description = "This library's database cannot be shared with a clerk (`database_not_shareable`).", body = crate::http_error::ErrorDetail, example = json!({"error": "database_not_shareable", "detail": "This library keeps its database in a SQLite file that only this server can open. A clerk needs a PostgreSQL or Cloudflare D1 database."})),
+        (status = 413, description = "The body is larger than 8 KiB.", body = crate::http_error::ErrorMessage, example = json!({"error": "request too large"})),
+        (status = 415, description = "The request is not `application/json`.", body = crate::http_error::ErrorMessage, example = json!({"error": "expected application/json"})),
+        (status = 429, description = "Too many wrong step-up codes; wait a few minutes (`step_up_locked`).", body = crate::http_error::ErrorDetail, example = json!({"error": "step_up_locked", "detail": "too many wrong codes; wait a few minutes"})),
+        (status = 503, description = "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`).", body = crate::http_error::ErrorAnswer, examples(
+            ("unavailable" = (summary = "A read failed; try again.", value = json!({"error": "unavailable", "detail": "try again"}))),
+            ("cluster_unavailable" = (summary = "This library's cluster row is not available yet.", value = json!({"error": "cluster_unavailable"}))),
+        )),
     ),
 )]
 pub async fn post_branch_consent(
@@ -906,7 +1152,7 @@ pub async fn post_branch_consent(
             pairs.push(("state", &state_param));
         }
         return match redirect_with(&params.redirect_uri, &pairs) {
-            Some(redirect) => no_store(Json(json!({ "redirect": redirect })).into_response()),
+            Some(redirect) => no_store(Json(ConsentRedirect { redirect }).into_response()),
             None => consent_error(StatusCode::BAD_REQUEST, "invalid_request", "bad redirect"),
         };
     }
@@ -992,7 +1238,7 @@ pub async fn post_branch_consent(
         pairs.push(("connection", ConnectionType::Clerk.as_str()));
     }
     match redirect_with(&params.redirect_uri, &pairs) {
-        Some(redirect) => no_store(Json(json!({ "redirect": redirect })).into_response()),
+        Some(redirect) => no_store(Json(ConsentRedirect { redirect }).into_response()),
         None => consent_error(StatusCode::BAD_REQUEST, "invalid_request", "bad redirect"),
     }
 }
@@ -1114,11 +1360,19 @@ async fn check_clerk_consent(
     path = "/api/auth/branch-consent/step-up",
     security(("portalSession" = []), ("operatorSession" = [])),
     responses(
-        (status = 200, description = "Passkey request options.", body = serde_json::Value),
+        (status = 200, description = "Passkey request options.", body = crate::passkeys::PasskeyRequestOptions),
+        (status = 400, description = "This server's public origin is not a URL WebAuthn can use, so the passkey check could not start (`unavailable`).", body = crate::http_error::ErrorDetail, example = json!({"error": "unavailable", "detail": "could not start the passkey check"})),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller is not an active library user, or not an Owner (`owner_required`)."),
-        (status = 404, description = "The account has no passkey (`no_passkey`)."),
-        (status = 503, description = "The library could not be read, or the passkey check could not start."),
+        (status = 403, description = "The caller is not an active library user (`user_required`, `user_inactive`), not an Owner (`owner_required`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("user_required" = (summary = "The session is not a library user.", value = json!({"error": "user_required", "detail": "a branch belongs to a user: sign in with your account on this library"}))),
+            ("user_inactive" = (summary = "The account is not active.", value = json!({"error": "user_inactive", "detail": "this account is not active"}))),
+            ("owner_required" = (summary = "Only an Owner can let a clerk join.", value = json!({"error": "owner_required", "detail": "only an Owner of this library can let a server join as a clerk"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 404, description = "The account has no passkey (`no_passkey`).", body = crate::http_error::ErrorDetail, example = json!({"error": "no_passkey", "detail": "this account has no passkey"})),
+        (status = 500, description = "The passkeys could not be read, or the challenge could not be created or stored (`unavailable`).", body = crate::http_error::ErrorDetail, example = json!({"error": "unavailable", "detail": "could not start the passkey check"})),
+        (status = 503, description = "The user record could not be read (`unavailable`); try again.", body = crate::http_error::ErrorDetail, example = json!({"error": "unavailable", "detail": "try again"})),
     ),
 )]
 pub async fn post_branch_consent_step_up(
@@ -1171,7 +1425,11 @@ pub(crate) async fn require_branch_admin(
         UserCaller::User { user_id } => {
             let library = state.library_snapshot().await;
             verify_cluster_owner(&library, user_id).await.map_err(|_| {
-                (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
+                (
+                    StatusCode::FORBIDDEN,
+                    Json(crate::http_error::ErrorMessage::new("forbidden")),
+                )
+                    .into_response()
             })
         }
     }
@@ -1184,11 +1442,18 @@ pub(crate) async fn require_branch_admin(
     get,
     path = "/api/config/branches",
     responses(
-        (status = 200, description = "The library's join settings and branches.", body = serde_json::Value),
+        (status = 200, description = "The library's join settings and branches.", body = BranchesResponse),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+        (status = 503, description = "This library's cluster row (`cluster_unavailable`) or origin (`origin_unavailable`) is not available yet.", body = crate::http_error::ErrorMessage, examples(
+            ("cluster_unavailable" = (summary = "The cluster row could not be read.", value = json!({"error": "cluster_unavailable"}))),
+            ("origin_unavailable" = (summary = "The library's origin is not known yet.", value = json!({"error": "origin_unavailable"}))),
+        )),
     ),
 )]
 pub async fn get_branches(
@@ -1207,14 +1472,14 @@ pub async fn get_branches(
         Ok(branches) => branches,
         Err(err) => return crate::config_authority::events_error(err),
     };
-    Json(json!({
-        "library_name": info.library_name,
-        "origin": info.origin,
-        "transport": info.transport,
-        "enrollment": info.enrollment,
-        "spki_fingerprint": info.spki_fingerprint,
-        "branches": branches,
-    }))
+    Json(BranchesResponse {
+        library_name: info.library_name,
+        origin: info.origin,
+        transport: info.transport,
+        enrollment: info.enrollment,
+        spki_fingerprint: info.spki_fingerprint,
+        branches,
+    })
     .into_response()
 }
 
@@ -1224,7 +1489,7 @@ pub async fn get_branches(
 /// titles it shared.
 async fn branches_json(
     library: &bookclerk_library::LibraryStore,
-) -> bookclerk_library::Result<Vec<serde_json::Value>> {
+) -> bookclerk_library::Result<Vec<BranchView>> {
     let mut nodes: Vec<_> = list_nodes(library)
         .await?
         .into_iter()
@@ -1241,16 +1506,16 @@ async fn branches_json(
             .await?
             .is_some_and(|credential| credential.revoked_at.is_none());
         let titles = branch_title_counts(library, &node.node_id).await?;
-        out.push(json!({
-            "node_id": node.node_id,
-            "created_at": node.created_at,
-            "owner_user_id": node.owner_user_id,
-            "owner_name": owner.and_then(|user| user.display_name.or(user.login_name)),
-            "joined": joined,
-            "share_books": node.share_books,
-            "include_branches": node.include_branches,
-            "titles": titles,
-        }));
+        out.push(BranchView {
+            node_id: node.node_id,
+            created_at: node.created_at,
+            owner_user_id: node.owner_user_id,
+            owner_name: owner.and_then(|user| user.display_name.or(user.login_name)),
+            joined,
+            share_books: node.share_books,
+            include_branches: node.include_branches,
+            titles,
+        });
     }
     Ok(out)
 }
@@ -1271,11 +1536,14 @@ pub struct RemoveBranchTitles {
     path = "/api/config/branches/titles/remove",
     request_body = RemoveBranchTitles,
     responses(
-        (status = 200, description = "The branch's titles were removed.", body = serde_json::Value),
+        (status = 200, description = "The branch's titles were removed.", body = BranchTitlesRemoved),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn post_remove_branch_titles(
@@ -1299,7 +1567,7 @@ pub async fn post_remove_branch_titles(
                 removed,
                 "removed titles from branches that stopped sharing or left"
             );
-            Json(json!({ "removed": removed })).into_response()
+            Json(BranchTitlesRemoved { removed }).into_response()
         }
         Err(err) => crate::config_authority::events_error(err),
     }
@@ -1319,11 +1587,15 @@ pub struct PutBranches {
     path = "/api/config/branches",
     request_body = PutBranches,
     responses(
-        (status = 200, description = "The settings after the change.", body = serde_json::Value),
+        (status = 200, description = "The settings after the change.", body = BranchJoinSetting),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 409, description = "The setting kept changing under the write; retry.", body = crate::http_error::ErrorMessage, example = json!({"error": "core.host_enrollment kept changing; retry"})),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn put_branches(
@@ -1337,7 +1609,10 @@ pub async fn put_branches(
     };
     let library = state.library_snapshot().await;
     match set_host_enrollment_enabled(&library, &actor, body.enrollment).await {
-        Ok(doc) => Json(json!({ "enrollment": doc.body.enabled })).into_response(),
+        Ok(doc) => Json(BranchJoinSetting {
+            enrollment: doc.body.enabled,
+        })
+        .into_response(),
         Err(err) => crate::config_authority::events_error(err),
     }
 }

@@ -97,7 +97,238 @@ fn callback_origin(cfg: &bookclerk_config::Config, headers: &HeaderMap) -> Strin
 
 /// A JSON error answer.
 fn join_error(status: StatusCode, error: &str, detail: &str) -> Response {
-    (status, Json(json!({ "error": error, "detail": detail }))).into_response()
+    (
+        status,
+        Json(crate::http_error::ErrorDetail::new(error, detail)),
+    )
+        .into_response()
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/config/join`.
+pub struct JoinStatus {
+    /// Whether this install has no users and no libraries yet.
+    #[schema(example = false)]
+    pub fresh: bool,
+    /// Whether an Owner (or legacy administrator) exists here.
+    #[schema(example = true)]
+    pub has_owner: bool,
+    /// Whether this install could still join a library as a clerk.
+    #[schema(example = false)]
+    pub clerk_eligible: bool,
+    /// Why it cannot join as a clerk, when it cannot.
+    #[schema(example = "this install already holds library data of its own")]
+    pub clerk_problem: Option<String>,
+    /// The name a join is offered under by default (this machine's name).
+    #[schema(example = "living-room")]
+    pub default_branch_name: String,
+    /// Every library this install is a branch of, with whether its client runs.
+    pub links: Vec<super::api::ClusterLinkView>,
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+/// A library as `POST /api/config/join/inspect` saw it.
+pub struct InspectedLibraryView {
+    /// The library's cluster id.
+    #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
+    pub cluster_id: String,
+    /// A name to show for the library.
+    #[schema(example = "books.example.com")]
+    pub library_name: String,
+    /// Its canonical origin.
+    #[schema(example = "https://books.example.com")]
+    pub origin: String,
+    /// The node API transport mode (`acme`, `proxy`, `self_signed`, `loopback`).
+    #[schema(example = "self_signed")]
+    pub transport: String,
+    /// Whether it lets new branches join.
+    #[schema(example = true)]
+    pub enrollment: bool,
+    /// The SPKI fingerprint to confirm (self-signed libraries only).
+    #[schema(example = "kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o")]
+    pub fingerprint: Option<String>,
+    /// Whether the operator must confirm `fingerprint` before joining.
+    #[schema(example = true)]
+    pub needs_fingerprint: bool,
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+/// JSON body for `POST /api/config/join/inspect`.
+pub struct InspectedLibraryResponse {
+    /// What the library said about itself.
+    pub library: InspectedLibraryView,
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+/// JSON body for `POST /api/config/join/start`.
+pub struct JoinStarted {
+    /// The library's sign-in URL to open in the browser.
+    #[schema(
+        example = "https://books.example.com/join/approve?client_id=bookclerk-branch&redirect_uri=…"
+    )]
+    pub authorize_url: String,
+    /// What the library said about itself.
+    pub library: InspectedLibraryView,
+    /// The name this install asked to join as.
+    #[schema(example = "living-room")]
+    pub branch_name: String,
+    /// Whether joining as a clerk was offered.
+    #[schema(example = false)]
+    pub clerk_offered: bool,
+    /// Seconds the pending sign-in stays valid.
+    #[schema(example = 600)]
+    pub expires_in_secs: u64,
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+#[serde(untagged)]
+/// JSON body once a join completed: as a branch, or as a clerk.
+pub enum JoinCompleted {
+    /// Joined as a branch; the link's client starts at once.
+    Branch(BranchJoined),
+    /// Joined as a clerk: this install restarts as an owner node of the library.
+    Clerk(ClerkJoined),
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+/// JSON body once this install joined a library as a branch.
+pub struct BranchJoined {
+    /// The new link.
+    pub cluster: super::api::ClusterLinkView,
+    /// The library's name, when the join came from a sign-in (not an invite link).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "books.example.com")]
+    pub library_name: Option<String>,
+    /// Whether the link's client is running now.
+    #[schema(example = true)]
+    pub running: bool,
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+/// JSON body once this install joined a library as a clerk.
+pub struct ClerkJoined {
+    /// Always `clerk`.
+    #[schema(example = "clerk")]
+    pub connection: &'static str,
+    /// The library's cluster id.
+    #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
+    pub cluster_id: String,
+    /// The node id the library minted for this install.
+    #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
+    pub node_id: String,
+    /// The library's name.
+    #[schema(example = "books.example.com")]
+    pub library_name: String,
+    /// The database plugin this install now runs (`postgres` or `d1`).
+    #[schema(example = "postgres")]
+    pub database: String,
+    /// Whether the shared master key was wrapped with this install's password.
+    #[schema(example = true)]
+    pub master_key_wrapped: bool,
+    /// Always `true`: the daemon restarts as an owner node right after answering.
+    #[schema(example = true)]
+    pub restarting: bool,
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+/// JSON body once leaving a library started.
+pub struct LeaveStarted {
+    /// The link, now `left`.
+    pub cluster: super::api::ClusterLinkView,
+    /// Whether the library was told (otherwise it notices the missed heartbeats).
+    #[schema(example = true)]
+    pub owner_notified: bool,
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+/// JSON body for `GET /api/config/join/sharing`.
+pub struct SharingSettings {
+    /// Every library this install is a branch of, with its two sharing settings.
+    pub clusters: Vec<super::api::ClusterLinkView>,
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+/// JSON body after `POST /api/config/join/sharing`.
+pub struct SharingChanged {
+    /// The link with its settings as stored now.
+    pub cluster: super::api::ClusterLinkView,
+}
+
+/// `409 origin_mismatch`: the library's canonical address is not the one
+/// the join was started with. An [`crate::http_error::ErrorDetail`] that
+/// also carries the address to use.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct OriginMismatch {
+    /// Always `origin_mismatch`.
+    #[schema(example = "origin_mismatch")]
+    pub error: &'static str,
+    /// Why, naming the address to join with instead.
+    #[schema(
+        example = "this library's address is https://books.example.com; join with that address"
+    )]
+    pub detail: String,
+    /// The library's canonical origin, to join with instead.
+    #[schema(example = "https://books.example.com")]
+    pub origin: String,
+}
+
+/// A `409` from a join step: the handler's [`crate::http_error::ErrorDetail`]
+/// (`join_cycle`, `ancestry_too_deep`, and the others the route names), or
+/// [`OriginMismatch`], which adds the address to join with; the route's
+/// examples name each.
+///
+/// The schema is written by hand as an `anyOf`: an [`OriginMismatch`] also
+/// satisfies [`crate::http_error::ErrorDetail`] (that schema admits extra
+/// properties), so the derived `oneOf` would reject it.
+#[derive(Debug, serde::Serialize)]
+#[serde(untagged)]
+// Schema-only: `join_failed` writes each shape directly, so no variant is
+// ever constructed.
+#[allow(dead_code)]
+pub(crate) enum JoinConflict {
+    /// The handler's slug and sentence.
+    Detail(crate::http_error::ErrorDetail),
+    /// The library answers under another address.
+    OriginMismatch(OriginMismatch),
+}
+
+impl utoipa::PartialSchema for JoinConflict {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{AnyOfBuilder, RefBuilder};
+        AnyOfBuilder::new()
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("ErrorDetail")
+                    .description(Some("The handler's slug in `error` and a sentence in `detail`.")),
+            )
+            .item(
+                RefBuilder::new()
+                    .ref_location_from_schema_name("OriginMismatch")
+                    .description(Some(
+                        "The library answers under another address, given in `origin`.",
+                    )),
+            )
+            .description(Some(
+                "A `409` from a join step: the handler's error, or an origin mismatch that names the address to join with; the route's examples name each.",
+            ))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for JoinConflict {
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        use utoipa::PartialSchema;
+        schemas.push((
+            "ErrorDetail".to_string(),
+            crate::http_error::ErrorDetail::schema(),
+        ));
+        schemas.push(("OriginMismatch".to_string(), OriginMismatch::schema()));
+    }
 }
 
 /// The answer for a failed join step. Never echoes a link or code.
@@ -106,11 +337,11 @@ fn join_failed(err: &JoinError) -> Response {
         JoinError::Link(detail) => join_error(StatusCode::BAD_REQUEST, "invalid_address", detail),
         JoinError::OriginMismatch { origin } => (
             StatusCode::CONFLICT,
-            Json(json!({
-                "error": "origin_mismatch",
-                "detail": err.to_string(),
-                "origin": origin,
-            })),
+            Json(OriginMismatch {
+                error: "origin_mismatch",
+                detail: err.to_string(),
+                origin: origin.clone(),
+            }),
         )
             .into_response(),
         JoinError::Dial(bookclerk_node_client::DialError::Insecure(reason)) => join_error(
@@ -156,16 +387,16 @@ fn join_failed(err: &JoinError) -> Response {
 }
 
 /// JSON for what a library said about itself.
-fn library_json(library: &InspectedLibrary) -> serde_json::Value {
-    json!({
-        "cluster_id": library.info.cluster_id,
-        "library_name": library.info.library_name,
-        "origin": library.origin,
-        "transport": library.info.transport,
-        "enrollment": library.info.enrollment,
-        "fingerprint": library.spki_pin,
-        "needs_fingerprint": library.spki_pin.is_some(),
-    })
+fn library_json(library: &InspectedLibrary) -> InspectedLibraryView {
+    InspectedLibraryView {
+        cluster_id: library.info.cluster_id.clone(),
+        library_name: library.info.library_name.clone(),
+        origin: library.origin.clone(),
+        transport: library.info.transport.clone(),
+        enrollment: library.info.enrollment,
+        fingerprint: library.spki_pin.clone(),
+        needs_fingerprint: library.spki_pin.is_some(),
+    }
 }
 
 /// This machine's name, as a default branch name.
@@ -186,9 +417,11 @@ fn default_branch_name() -> String {
     get,
     path = "/api/config/join",
     responses(
-        (status = 200, description = "Whether this install has joined a library, and its state.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 200, description = "Whether this install has joined a library, and its state.", body = JoinStatus),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The session is impersonating a user."),
+        (status = 502, description = "Whether this install may join as a clerk could not be checked: its own contents could not be read (`join_failed`).", body = crate::http_error::ErrorDetail, example = json!({"error": "join_failed", "detail": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
+        (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_join_status(State(state): State<Arc<AppState>>) -> Response {
@@ -203,24 +436,24 @@ pub async fn get_join_status(State(state): State<Arc<AppState>>) -> Response {
         Ok(problem) => problem,
         Err(err) => return join_failed(&err),
     };
-    Json(json!({
-        "fresh": owners == 0 && admins == 0 && links.is_empty(),
-        "has_owner": owners > 0 || admins > 0,
-        "clerk_eligible": clerk_problem.is_none(),
-        "clerk_problem": clerk_problem,
-        "default_branch_name": default_branch_name(),
-        "links": links
+    Json(JoinStatus {
+        fresh: owners == 0 && admins == 0 && links.is_empty(),
+        has_owner: owners > 0 || admins > 0,
+        clerk_eligible: clerk_problem.is_none(),
+        clerk_problem,
+        default_branch_name: default_branch_name(),
+        links: links
             .iter()
             .map(|link| {
-                let mut value = link_json(link);
-                value["running"] = json!(super::is_node_running(
+                let mut view = link_json(link);
+                view.running = Some(super::is_node_running(
                     &link.owner_cluster_id,
-                    &link.remote_node_id
+                    &link.remote_node_id,
                 ));
-                value
+                view
             })
-            .collect::<Vec<_>>(),
-    }))
+            .collect(),
+    })
     .into_response()
 }
 
@@ -238,10 +471,23 @@ pub struct InspectBody {
     path = "/api/config/join/inspect",
     request_body = InspectBody,
     responses(
-        (status = 200, description = "What the library says about itself.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 502, description = "The library could not be reached."),
+        (status = 200, description = "What the library says about itself.", body = InspectedLibraryResponse),
+        (status = 400, description = "The address is not a library (`invalid_address`), or is plain HTTP off this machine (`transport_insecure`).", body = crate::http_error::ErrorDetail, examples(
+            ("invalid_address" = (summary = "The address does not name a library.", value = json!({"error": "invalid_address", "detail": "not an enrollment link: no host"}))),
+            ("transport_insecure" = (summary = "The address is plain HTTP to another machine.", value = json!({"error": "transport_insecure", "detail": "plain HTTP is allowed only on this machine (insecure transport refused: http:// to a host that is not loopback)"}))),
+        )),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The session is impersonating a user."),
+        (status = 409, description = "Joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`, with the address to use in `origin`).", body = JoinConflict, examples(
+            ("join_cycle" = (summary = "The library is this one or one of its branches.", value = json!({"error": "join_cycle", "detail": "that library is this library or one of its own branches; joining it would make a loop"}))),
+            ("ancestry_too_deep" = (summary = "The library sits too deep in its tree of libraries.", value = json!({"error": "ancestry_too_deep", "detail": "that library sits too deep in its tree of libraries; joining it could hide a loop"}))),
+            ("origin_mismatch" = (summary = "The library answers under another address.", value = json!({"error": "origin_mismatch", "detail": "this library's address is https://books.example.com; join with that address", "origin": "https://books.example.com"}))),
+        )),
+        (status = 502, description = "The library could not be reached (`unreachable`), or answered with an error (`library_error`).", body = crate::http_error::ErrorDetail, examples(
+            ("unreachable" = (summary = "No connection to the library.", value = json!({"error": "unreachable", "detail": "owner unreachable: Connection refused (os error 111)"}))),
+            ("library_error" = (summary = "The library answered with an error status.", value = json!({"error": "library_error", "detail": "the library answered HTTP 500 enrollment_unavailable"}))),
+        )),
+        (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn post_join_inspect(
@@ -256,7 +502,10 @@ pub async fn post_join_inspect(
     if let Err(err) = refuse_cycle(&store, &library.info.ancestry).await {
         return join_failed(&err);
     }
-    Json(json!({ "library": library_json(&library) })).into_response()
+    Json(InspectedLibraryResponse {
+        library: library_json(&library),
+    })
+    .into_response()
 }
 
 /// `POST /api/config/join/start` body.
@@ -283,11 +532,27 @@ pub struct StartBody {
     path = "/api/config/join/start",
     request_body = StartBody,
     responses(
-        (status = 200, description = "The library's sign-in URL to open.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 502, description = "The library could not be reached."),
-        (status = 409, description = "A join is already in progress or done."),
+        (status = 200, description = "The library's sign-in URL to open.", body = JoinStarted),
+        (status = 400, description = "The address is not a library (`invalid_address`), or is plain HTTP off this machine (`transport_insecure`).", body = crate::http_error::ErrorDetail, examples(
+            ("invalid_address" = (summary = "The address does not name a library.", value = json!({"error": "invalid_address", "detail": "not an enrollment link: no host"}))),
+            ("transport_insecure" = (summary = "The address is plain HTTP to another machine.", value = json!({"error": "transport_insecure", "detail": "plain HTTP is allowed only on this machine (insecure transport refused: http:// to a host that is not loopback)"}))),
+        )),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The library is not accepting new branches (`enrollment_disabled`), or the session is impersonating a user (the standard error body).", body = crate::http_error::ErrorAnswer, examples(
+            ("enrollment_disabled" = (summary = "The library has host enrollment switched off.", value = json!({"error": "enrollment_disabled", "detail": "This library isn't accepting new branches"}))),
+            ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+        )),
+        (status = 409, description = "The library's fingerprint is not confirmed (`fingerprint_unconfirmed`), this install holds data of its own for a clerk join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`).", body = JoinConflict, examples(
+            ("fingerprint_unconfirmed" = (summary = "A self-signed library's fingerprint was not confirmed.", value = json!({"error": "fingerprint_unconfirmed", "detail": "confirm the library's fingerprint first; it must match the one on its Settings → Branches page"}))),
+            ("not_empty" = (summary = "This install already holds library data (clerk join).", value = json!({"error": "not_empty", "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a clerk"}))),
+            ("join_cycle" = (summary = "The library is this one or one of its branches.", value = json!({"error": "join_cycle", "detail": "that library is this library or one of its own branches; joining it would make a loop"}))),
+            ("origin_mismatch" = (summary = "The library answers under another address.", value = json!({"error": "origin_mismatch", "detail": "this library's address is https://books.example.com; join with that address", "origin": "https://books.example.com"}))),
+        )),
+        (status = 502, description = "The library could not be reached (`unreachable`), or answered with an error (`library_error`).", body = crate::http_error::ErrorDetail, examples(
+            ("unreachable" = (summary = "No connection to the library.", value = json!({"error": "unreachable", "detail": "owner unreachable: Connection refused (os error 111)"}))),
+            ("library_error" = (summary = "The library answered with an error status.", value = json!({"error": "library_error", "detail": "the library answered HTTP 500 enrollment_unavailable"}))),
+        )),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn post_join_start(
@@ -374,13 +639,13 @@ pub async fn post_join_start(
         "branch sign-in started"
     );
     no_store(
-        Json(json!({
-            "authorize_url": authorization.authorize_url,
-            "library": library_json(&library),
-            "branch_name": branch_name,
-            "clerk_offered": body.clerk,
-            "expires_in_secs": bookclerk_library::control_plane::PENDING_JOIN_TTL.as_secs(),
-        }))
+        Json(JoinStarted {
+            authorize_url: authorization.authorize_url,
+            library: library_json(&library),
+            branch_name,
+            clerk_offered: body.clerk,
+            expires_in_secs: bookclerk_library::control_plane::PENDING_JOIN_TTL.as_secs(),
+        })
         .into_response(),
     )
 }
@@ -445,12 +710,31 @@ const CALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
     path = "/api/config/join/callback",
     request_body = CallbackBody,
     responses(
-        (status = 200, description = "The join completed.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 502, description = "The library could not be reached."),
-        (status = 410, description = "The sign-in is unknown, already used, or older than ten minutes; start again (`join_expired`)."),
-        (status = 403, description = "The caller's role does not allow this route, or the library refused the sign-in (`denied`)."),
+        (status = 200, description = "The join completed.", body = JoinCompleted),
+        (status = 400, description = "The callback carries no code or an unknown connection type (`invalid_request`), or the sign-in did not offer a clerk join (`clerk_not_offered`).", body = crate::http_error::ErrorDetail, examples(
+            ("no_code" = (summary = "The callback has no authorization code.", value = json!({"error": "invalid_request", "detail": "no code"}))),
+            ("bad_connection" = (summary = "The connection type is not branch or clerk.", value = json!({"error": "invalid_request", "detail": "connection must be branch or clerk"}))),
+            ("clerk_not_offered" = (summary = "The sign-in did not offer to join as a clerk.", value = json!({"error": "clerk_not_offered", "detail": "this sign-in did not offer to join as a clerk; start again and choose to join as a clerk"}))),
+        )),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The library's user did not approve (`denied`), the library refused the sign-in (`refused`), or the session is impersonating a user (the standard error body).", body = crate::http_error::ErrorAnswer, examples(
+            ("denied" = (summary = "The library's user did not let this branch join.", value = json!({"error": "denied", "detail": "the library's user did not let this branch join"}))),
+            ("refused" = (summary = "The library refused the sign-in.", value = json!({"error": "refused", "detail": "the library refused: the sign-in or invite is used, expired, revoked, or the library isn't accepting new branches"}))),
+            ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+        )),
+        (status = 409, description = "This install holds data of its own for a clerk join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the D1 token is not set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).", body = crate::http_error::ErrorDetail, examples(
+            ("not_empty" = (summary = "This install already holds library data (clerk join).", value = json!({"error": "not_empty", "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a clerk"}))),
+            ("database_guest_missing" = (summary = "The library's database plugin is not installed on this server.", value = json!({"error": "database_guest_missing", "detail": "the library's database is postgres, and its database plugin is not installed on this server; install it, then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)"}))),
+            ("d1_token_missing" = (summary = "The library's database is D1 and this server has no token.", value = json!({"error": "d1_token_missing", "detail": "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)"}))),
+        )),
+        (status = 410, description = "The sign-in is unknown, already used, or older than ten minutes; start again (`join_expired`).", body = crate::http_error::ErrorDetail, example = json!({"error": "join_expired", "detail": "this sign-in is unknown, already used, or took longer than 10 minutes; start again"})),
+        (status = 502, description = "The redeem can be retried with the sign-in still pending (`join_retry`), the library could not be reached (`unreachable`), it answered with an error (`library_error`), or it enrolled this host but the join could not be saved (`join_unsaved`, `join_failed`).", body = crate::http_error::ErrorDetail, examples(
+            ("join_retry" = (summary = "The library did not answer in time; try again.", value = json!({"error": "join_retry", "detail": "the library did not answer in time; try again"}))),
+            ("unreachable" = (summary = "No connection to the library.", value = json!({"error": "unreachable", "detail": "owner unreachable: Connection refused (os error 111)"}))),
+            ("library_error" = (summary = "The library answered with an error status.", value = json!({"error": "library_error", "detail": "the library answered HTTP 500 enrollment_unavailable"}))),
+            ("join_unsaved" = (summary = "The library enrolled this host but the join was not saved.", value = json!({"error": "join_unsaved", "detail": "the library enrolled this host as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c but it could not be saved here (database is locked); ask the library's owner to remove that node, then join again"}))),
+        )),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn post_join_callback(
@@ -574,10 +858,10 @@ pub async fn post_join_callback(
     finish().await;
     drop(one_at_a_time);
     let running = super::start_link_now(&state, &link.owner_cluster_id).await;
-    Json(json!({
-        "cluster": link_json(&link),
-        "library_name": taken.join.library_name,
-        "running": running,
+    Json(JoinCompleted::Branch(BranchJoined {
+        cluster: link_json(&link),
+        library_name: Some(taken.join.library_name),
+        running,
     }))
     .into_response()
 }
@@ -762,14 +1046,14 @@ async fn join_as_clerk(
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         crate::restart::request("clerk_join");
     });
-    Json(json!({
-        "connection": "clerk",
-        "cluster_id": joined.cluster_id,
-        "node_id": joined.node_id,
-        "library_name": taken.join.library_name,
-        "database": applied.database.as_str(),
-        "master_key_wrapped": applied.wrapped,
-        "restarting": true,
+    Json(JoinCompleted::Clerk(ClerkJoined {
+        connection: "clerk",
+        cluster_id: joined.cluster_id,
+        node_id: joined.node_id,
+        library_name: taken.join.library_name,
+        database: applied.database.as_str().to_owned(),
+        master_key_wrapped: applied.wrapped,
+        restarting: true,
     }))
     .into_response()
 }
@@ -791,11 +1075,27 @@ pub struct InviteBody {
     path = "/api/config/join/invite",
     request_body = InviteBody,
     responses(
-        (status = 200, description = "The join completed.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 502, description = "The library could not be reached."),
-        (status = 504, description = "The library is slow to answer; the join goes on in the background (`join_pending`). Poll the join state instead of retrying."),
+        (status = 200, description = "The join completed.", body = BranchJoined),
+        (status = 400, description = "The link is not a branch invite (`invalid_invite`), or is plain HTTP off this machine (`transport_insecure`).", body = crate::http_error::ErrorDetail, examples(
+            ("invalid_invite" = (summary = "The link is not a branch invite.", value = json!({"error": "invalid_invite", "detail": "that is not a branch invite (https://<library>/enroll#bcn1...)"}))),
+            ("transport_insecure" = (summary = "The link is plain HTTP to another machine.", value = json!({"error": "transport_insecure", "detail": "plain HTTP is allowed only on this machine (insecure transport refused: http:// to a host that is not loopback)"}))),
+        )),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The library refused the invite (`refused`), or the session is impersonating a user (the standard error body).", body = crate::http_error::ErrorAnswer, examples(
+            ("refused" = (summary = "The invite is used, expired or revoked, or enrollment is off.", value = json!({"error": "refused", "detail": "the library refused: the sign-in or invite is used, expired, revoked, or the library isn't accepting new branches"}))),
+            ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+        )),
+        (status = 409, description = "Joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one in the invite (`origin_mismatch`, with the address to use in `origin`).", body = JoinConflict, examples(
+            ("join_cycle" = (summary = "The library is this one or one of its branches.", value = json!({"error": "join_cycle", "detail": "that library is this library or one of its own branches; joining it would make a loop"}))),
+            ("origin_mismatch" = (summary = "The library answers under another address.", value = json!({"error": "origin_mismatch", "detail": "this library's address is https://books.example.com; join with that address", "origin": "https://books.example.com"}))),
+        )),
+        (status = 500, description = "The join stopped unexpectedly (`join_failed`).", body = crate::http_error::ErrorDetail, example = json!({"error": "join_failed", "detail": "the join stopped unexpectedly"})),
+        (status = 502, description = "The library could not be reached (`unreachable`), answered with an error (`library_error`), or enrolled this host without the join being saved here (`join_unsaved`).", body = crate::http_error::ErrorDetail, examples(
+            ("unreachable" = (summary = "No connection to the library.", value = json!({"error": "unreachable", "detail": "owner unreachable: Connection refused (os error 111)"}))),
+            ("library_error" = (summary = "The library answered with an error status.", value = json!({"error": "library_error", "detail": "the library answered HTTP 500 enrollment_unavailable"}))),
+            ("join_unsaved" = (summary = "The library enrolled this host but the join was not saved.", value = json!({"error": "join_unsaved", "detail": "the library enrolled this host as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c but it could not be saved here (database is locked); ask the library's owner to remove that node, then join again"}))),
+        )),
+        (status = 504, description = "The library is slow to answer; the join goes on in the background (`join_pending`). Poll the join state instead of retrying.", body = crate::http_error::ErrorDetail, example = json!({"error": "join_pending", "detail": "the library is slow to answer; this branch keeps joining and appears under Libraries once it has (if it never does, this install's log says why)"})),
     ),
 )]
 pub async fn post_join_invite(
@@ -857,7 +1157,12 @@ pub async fn post_join_invite(
         Err(err) => return join_failed(&err),
     };
     let running = super::start_link_now(&state, &link.owner_cluster_id).await;
-    Json(json!({ "cluster": link_json(&link), "running": running })).into_response()
+    Json(BranchJoined {
+        cluster: link_json(&link),
+        library_name: None,
+        running,
+    })
+    .into_response()
 }
 
 /// `POST /api/config/join/leave` body.
@@ -876,11 +1181,14 @@ pub struct LeaveBody {
     path = "/api/config/join/leave",
     request_body = LeaveBody,
     responses(
-        (status = 200, description = "Leaving started.", body = serde_json::Value),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 409, description = "This install has not joined a library."),
-        (status = 404, description = "This install is not a branch of that library (`not_found`)."),
+        (status = 200, description = "Leaving started.", body = LeaveStarted),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The session is impersonating a user."),
+        (status = 404, description = "This install is not a branch of that library (`not_found`).", body = crate::http_error::ErrorDetail, example = json!({"error": "not_found", "detail": "this install is not a branch of that library"})),
+        (status = 500, description = "The leave stopped before it finished (`leave_failed`), or the library database could not be read or written.", body = crate::http_error::ErrorAnswer, examples(
+            ("leave_failed" = (summary = "The leave task stopped before it finished.", value = json!({"error": "leave_failed", "detail": "the leave stopped before it finished; check the library list"}))),
+            ("database" = (summary = "The library database could not be read or written.", value = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"}))),
+        )),
     ),
 )]
 pub async fn post_join_leave(
@@ -903,7 +1211,11 @@ pub async fn post_join_leave(
                 notified,
                 "left the library"
             );
-            Json(json!({ "cluster": link_json(&link), "owner_notified": notified })).into_response()
+            Json(LeaveStarted {
+                cluster: link_json(&link),
+                owner_notified: notified,
+            })
+            .into_response()
         }
         Ok(None) => join_error(
             StatusCode::NOT_FOUND,
@@ -933,11 +1245,14 @@ pub struct SharingBody {
     get,
     path = "/api/config/join/sharing",
     responses(
-        (status = 200, description = "The branch's sharing settings.", body = serde_json::Value),
+        (status = 200, description = "The branch's sharing settings.", body = SharingSettings),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
+        (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 500, description = "The library database could not be read.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn get_join_sharing(
@@ -949,8 +1264,10 @@ pub async fn get_join_sharing(
     }
     let store = state.library_snapshot().await;
     match list_cluster_links(&store).await {
-        Ok(links) => Json(json!({ "clusters": links.iter().map(link_json).collect::<Vec<_>>() }))
-            .into_response(),
+        Ok(links) => Json(SharingSettings {
+            clusters: links.iter().map(link_json).collect(),
+        })
+        .into_response(),
         Err(err) => crate::config_authority::events_error(err),
     }
 }
@@ -963,12 +1280,15 @@ pub async fn get_join_sharing(
     path = "/api/config/join/sharing",
     request_body = SharingBody,
     responses(
-        (status = 200, description = "The sharing settings after the change.", body = serde_json::Value),
+        (status = 200, description = "The sharing settings after the change.", body = SharingChanged),
         (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller may not do this."),
-        (status = 400, description = "The body is invalid."),
-        (status = 500, description = "The configuration could not be read or written."),
-        (status = 404, description = "This install is not a branch of that library (`not_found`)."),
+        (status = 403, description = "The user is not an active Owner (`forbidden`), the session has no user account (the standard error body), or the user must enroll a second factor first (`mfa_enrollment_required`).", body = crate::http_error::ErrorAnswer, examples(
+            ("forbidden" = (summary = "The user is not an active Owner.", value = json!({"error": "forbidden"}))),
+            ("no_user" = (summary = "The session has no user account.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
+            ("mfa_enrollment_required" = (summary = "The user must enroll a second factor first.", value = json!({"error": "mfa_enrollment_required", "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.", "status": 403}))),
+        )),
+        (status = 404, description = "This install is not a branch of that library (`not_found`).", body = crate::http_error::ErrorDetail, example = json!({"error": "not_found", "detail": "this install is not a branch of that library"})),
+        (status = 500, description = "The library database could not be read or written.", body = crate::http_error::ErrorMessage, example = json!({"error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"})),
     ),
 )]
 pub async fn post_join_sharing(
@@ -1032,7 +1352,10 @@ pub async fn post_join_sharing(
     }
     super::catalog_sync::notify_sharing_changed();
     match bookclerk_library::control_plane::load_cluster_link(&store, cluster_id).await {
-        Ok(Some(link)) => Json(json!({ "cluster": link_json(&link) })).into_response(),
+        Ok(Some(link)) => Json(SharingChanged {
+            cluster: link_json(&link),
+        })
+        .into_response(),
         Ok(None) => join_error(StatusCode::NOT_FOUND, "not_found", "no such library"),
         Err(err) => crate::config_authority::events_error(err),
     }

@@ -52,33 +52,41 @@ pub const MAX_BRANCH_NAME_BYTES: usize = 64;
 pub const MAX_LIBRARY_NAME_BYTES: usize = 253;
 
 /// `GET /api/node/v1/info` answer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct OwnerInfo {
     /// The library's cluster id.
+    #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
     pub cluster_id: String,
     /// A name to show for the library.
+    #[schema(example = "books.example.com")]
     pub library_name: String,
     /// The library's canonical origin: the one the node handshake signs and
     /// the authorize endpoint lives under.
+    #[schema(example = "https://books.example.com")]
     pub origin: String,
     /// The node API transport mode (`acme`, `proxy`, `self_signed`,
     /// `loopback`).
+    #[schema(example = "acme")]
     pub transport: String,
     /// Whether the library lets new branches join (`core.host_enrollment`).
+    #[schema(example = true)]
     pub enrollment: bool,
     /// In `self_signed` mode: base64url SHA-256 of the certificate's
     /// SubjectPublicKeyInfo, which the joining operator confirms against
     /// the owner's Settings → Branches page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o")]
     pub spki_fingerprint: Option<String>,
     /// The library's Bookclerk version.
     #[serde(default)]
+    #[schema(example = "0.4.0")]
     pub software_version: String,
     /// The library's ancestry: its own cluster id first, then the cluster
     /// id of every library above it up to the root. A joining library
     /// refuses a parent whose ancestry names its own cluster id, so a
     /// tree of libraries never becomes a cycle.
     #[serde(default)]
+    #[schema(example = json!(["c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"]))]
     pub ancestry: Vec<String>,
 }
 
@@ -120,18 +128,24 @@ impl std::fmt::Debug for OAuthEnrollRequest {
 }
 
 /// `POST /api/node/v1/enroll/oauth` answer.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct OAuthEnrollAnswer {
     /// The library's cluster id.
+    #[schema(example = "c1f2e3d4-5a6b-4c7d-8e9f-0a1b2c3d4e5f")]
     pub cluster_id: String,
     /// The node id recorded for the joining install.
+    #[schema(example = "7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c")]
     pub node_id: String,
     /// The connection type recorded (`branch` when left out).
     #[serde(default, skip_serializing_if = "ConnectionType::is_branch")]
+    #[schema(example = "clerk")]
     pub connection: ConnectionType,
     /// For a clerk: the [`crate::ClerkBootstrap`] sealed to the node's box
-    /// key ([`crate::seal_clerk_bootstrap`]).
+    /// key ([`crate::seal_clerk_bootstrap`]), as base64url without padding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "Qm9va2NsZXJrIHNlYWxlZCBjbGVyayBib290c3RyYXA6IGVwaGVtZXJhbCBrZXkgKyBjaXBoZXJ0ZXh0"
+    )]
     pub bootstrap: Option<String>,
 }
 

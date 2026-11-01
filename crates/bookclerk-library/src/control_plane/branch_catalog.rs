@@ -1181,13 +1181,16 @@ pub async fn list_branch_titles(
 }
 
 /// Counts of one branch's shared titles.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct BranchTitleCounts {
     /// Titles it shares now.
+    #[schema(example = 128)]
     pub shared: u64,
     /// Of those, titles whose files arrived.
+    #[schema(example = 120)]
     pub delivered: u64,
     /// Titles marked detached (it stopped sharing, left, or withdrew them).
+    #[schema(example = 3)]
     pub detached: u64,
 }
 
