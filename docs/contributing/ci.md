@@ -715,10 +715,10 @@ The summary has two figures:
   selective Rust run tests only the affected packages, so the `rust` floor
   is checked only when `rust_test` ran the whole workspace.
 
-Floors ratchet. Every Monday,
+Floors ratchet. After every successful merge group run, which measures
+every area in full,
 [`coverage-floors.yml`](../../.github/workflows/coverage-floors.yml) reads
-the coverage of the latest successful merge group run, which measures every
-area in full, and runs `scripts/coverage_gate.py --ratchet`:
+that run's coverage and runs `scripts/coverage_gate.py --ratchet`:
 
 1. Each floor rises to the area's measured coverage rounded down, less one
    point, so noise does not fail a run.
@@ -728,9 +728,12 @@ area in full, and runs `scripts/coverage_gate.py --ratchet`:
 
 When a floor rises, the workflow opens a `ci/coverage-floors` pull request
 with the automation App and turns on auto-merge, so the merge queue lands
-it once its checks pass. Coverage artifacts are kept for seven days, so a
-week without a merge group leaves the floors as they are. Run it by hand
-from the Actions tab with **Run workflow**.
+it once its checks pass. While that pull request is open, later rises
+update it rather than opening another. Floors move in whole points, so most
+merges change nothing and the run ends after a few seconds. To run it by
+hand, use **Run workflow** on the Actions tab; it then reads the latest
+successful merge group run, whose coverage artifacts are kept for seven
+days.
 
 Generated files are left out of both figures. They are listed under
 `generated` in the areas file, because tests exercise the generator rather
