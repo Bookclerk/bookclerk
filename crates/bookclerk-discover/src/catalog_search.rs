@@ -61,61 +61,84 @@ fn cursor_cache() -> &'static TtlCache<SearchCursorV1> {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct CatalogSearchHit {
     /// Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author).
+    #[schema(example = "isbn:9780441478125")]
     pub work_key: String,
     /// Display title as shown on the storefront or library card.
+    #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
     /// Comma-separated author names when the storefront provides them.
+    #[schema(example = "Ursula K. Le Guin")]
     pub authors: Option<String>,
     /// Comma-separated narrator names when known.
+    #[schema(example = "George Guidall")]
     pub narrators: Option<String>,
     /// Series name when the title belongs to a named series.
+    #[schema(example = "Hainish Cycle")]
     pub series: Option<String>,
     /// Position within the series (e.g. `1`, `1.5`) when known.
     #[serde(default)]
+    #[schema(example = "4")]
     pub series_index: Option<String>,
     /// Audible / Amazon ASIN when this edition is sold on Audible.
+    #[schema(example = "B002V0QK4C")]
     pub asin: Option<String>,
     /// Canonical ISBN-13 (or ISBN-10 normalized) when published.
+    #[schema(example = "9780441478125")]
     pub isbn: Option<String>,
     /// HTTPS URL for cover art when the catalog exposes one.
     #[serde(default)]
+    #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
     /// Per-storefront edition ids that collapsed into this work card.
     pub store_editions: Vec<StoreEdition>,
     /// Storefronts that matched (deduped source ids).
+    #[schema(example = json!(["libro", "chirp"]))]
     pub sources: Vec<String>,
     /// Optional subtitle when the catalog distinguishes it from the title.
     #[serde(default)]
+    #[schema(example = "A Hainish Novel")]
     pub subtitle: Option<String>,
     /// Publisher or storefront synopsis; may be truncated for embeddings.
     #[serde(default)]
+    #[schema(
+        example = "An envoy to the planet Gethen must win the trust of a people who have no fixed gender."
+    )]
     pub description: Option<String>,
     /// Publisher imprint as reported by the catalog.
     #[serde(default)]
+    #[schema(example = "Blackstone Publishing")]
     pub publisher: Option<String>,
     /// Audiobook runtime in whole minutes when known.
     #[serde(default)]
+    #[schema(example = 560)]
     pub length_minutes: Option<i64>,
     /// Publication date string from the catalog (ISO or storefront format).
     #[serde(default)]
+    #[schema(example = "2005-06-21")]
     pub published_at: Option<String>,
     /// Genre labels from the catalog (comma-separated when multiple).
     #[serde(default)]
+    #[schema(example = "Science Fiction, Classics")]
     pub genres: Option<String>,
     /// BCP-47 / storefront language code (`en`, `de`, …) when known.
     #[serde(default)]
+    #[schema(example = "en")]
     pub language: Option<String>,
     /// When `Some(true)`, the edition is marked abridged by the storefront.
     #[serde(default)]
+    #[schema(example = false)]
     pub is_abridged: Option<bool>,
     /// Aggregate listener rating on the storefront's scale when known.
     #[serde(default)]
+    #[schema(example = 4.5)]
     pub rating_overall: Option<f64>,
     /// Number of ratings backing [`Self::rating_overall`] when known.
     #[serde(default)]
+    #[schema(example = 12840)]
     pub rating_count: Option<i64>,
     /// Catalog list/deal price in cents when the storefront provided it.
     #[serde(default)]
+    #[schema(example = 2499)]
     pub price_cents: Option<i64>,
     /// Buy / open-in-store links with optional member vs list pricing.
     #[serde(default)]
@@ -128,16 +151,21 @@ pub struct CatalogSearchPage {
     /// Ordered collection of child entries for this response.
     pub items: Vec<CatalogSearchHit>,
     /// Maximum number of items returned in this page.
+    #[schema(example = 20)]
     pub page_size: usize,
     /// When true, another page is available via [`Self::next_cursor`].
+    #[schema(example = true)]
     pub has_more: bool,
     /// Opaque cursor for the next page; omit or `None` when exhausted.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "s1:4f1c9e2a-7b3d-4c8e-9a6f-0d2b1e3c5a7f")]
     pub next_cursor: Option<String>,
     /// Sort field applied to the merged result set.
+    #[schema(example = "relevance")]
     pub sort: String,
     /// Ascending or descending order for [`Self::sort`].
     #[serde(default)]
+    #[schema(example = "desc")]
     pub sort_dir: String,
 }
 

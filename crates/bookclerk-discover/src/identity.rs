@@ -17,8 +17,10 @@ use crate::recommend::Recommendation;
 )]
 pub struct StoreEdition {
     /// Canonical storefront / plugin id (`audible`, `libro`, `chirp`, …).
+    #[schema(example = "libro")]
     pub source: String,
     /// Storefront-native product id (ASIN, ISBN, UUID, …).
+    #[schema(example = "9780441478125")]
     pub product_id: String,
 }
 

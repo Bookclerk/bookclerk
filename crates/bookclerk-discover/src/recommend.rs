@@ -95,76 +95,104 @@ impl Default for RecommendOptions {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct Recommendation {
     /// Library `works.id` UUID when the recommendation is tied to an owned work.
+    #[schema(example = "5b7e2c1d-8a4f-4e3b-9c6d-2f1a0b9e8d7c")]
     pub work_id: Option<String>,
     /// Display title as shown on the storefront or library card.
+    #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
     /// Comma-separated author names when the storefront provides them.
+    #[schema(example = "Ursula K. Le Guin")]
     pub authors: Option<String>,
     /// Comma-separated narrator names when known.
+    #[schema(example = "George Guidall")]
     pub narrators: Option<String>,
     /// Series name when the title belongs to a named series.
+    #[schema(example = "Hainish Cycle")]
     pub series: Option<String>,
     /// Position within the series (e.g. `1`, `1.5`) when known.
+    #[schema(example = "4")]
     pub series_index: Option<String>,
     /// Audible / Amazon ASIN when this edition is sold on Audible.
+    #[schema(example = "B002V0QK4C")]
     pub asin: Option<String>,
     /// Canonical ISBN-13 (or ISBN-10 normalized) when published.
+    #[schema(example = "9780441478125")]
     pub isbn: Option<String>,
     /// Ranking score (higher is better); units are algorithm-specific.
+    #[schema(example = 0.87)]
     pub score: f64,
     /// Short human-readable explanations for why this item was ranked here.
+    #[schema(example = json!(["wishlisted by 3 people", "matches liked author (Ursula K. Le Guin)"]))]
     pub reasons: Vec<String>,
     /// Buy / open-in-store links with optional member vs list pricing.
     pub purchase_hints: Vec<PurchaseHint>,
     /// True when sourced from an open title request rather than storefront discovery.
+    #[schema(example = false)]
     pub from_request: bool,
     /// Wishlist / title-request UUID when this card came from a request.
+    #[schema(example = "7c1e5a2b-3d4f-4e6a-9b8c-0d1e2f3a4b5c")]
     pub request_uuid: Option<String>,
     /// Storefront that proposed this title (`audible`, `libro`, …).
+    #[schema(example = "libro")]
     pub candidate_source: Option<String>,
     /// Storefront product id of the edition that produced this card.
+    #[schema(example = "9780441478125")]
     pub candidate_product_id: Option<String>,
     /// All known storefront editions (for multi-store purchase links).
     #[serde(default)]
     pub store_editions: Vec<StoreEdition>,
     /// Categories/subjects copied from the taste seed that produced this hit.
+    #[schema(example = "Science Fiction & Fantasy > Science Fiction")]
     pub seed_categories: Option<String>,
     /// Stable shelf-kind tags for prefs (`finish_series`, `author`, `chirp_deals`, …).
     /// Dynamic shelf titles stay in `build_discover_feed`; membership uses these.
     #[serde(default)]
+    #[schema(example = json!(["finish_series", "author"]))]
     pub categories: Vec<String>,
     /// Stable bibliographic key for wishlist / merge (`isbn:` / `asin:` / `soft:`…).
     #[serde(default)]
+    #[schema(example = "isbn:9780441478125")]
     pub work_key: String,
     /// Cover art URL when known from a storefront catalog hit or wishlist row.
     #[serde(default)]
+    #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
     /// Optional bibliographic extras from storefront catalog / Audnexus.
     #[serde(default)]
+    #[schema(example = "A Hainish Novel")]
     pub subtitle: Option<String>,
     /// Publisher or storefront synopsis; may be truncated for embeddings.
     #[serde(default)]
+    #[schema(
+        example = "An envoy to the planet Gethen must win the trust of a people who have no fixed gender."
+    )]
     pub description: Option<String>,
     /// Publisher imprint as reported by the catalog.
     #[serde(default)]
+    #[schema(example = "Blackstone Publishing")]
     pub publisher: Option<String>,
     /// Audiobook runtime in whole minutes when known.
     #[serde(default)]
+    #[schema(example = 560)]
     pub length_minutes: Option<i64>,
     /// Publication date string from the catalog (ISO or storefront format).
     #[serde(default)]
+    #[schema(example = "2005-06-21")]
     pub published_at: Option<String>,
     /// Candidate genres (not taste-seed `seed_categories`).
     #[serde(default)]
+    #[schema(example = "Science Fiction, Classics")]
     pub genres: Option<String>,
     /// BCP-47 / storefront language code (`en`, `de`, …) when known.
     #[serde(default)]
+    #[schema(example = "en")]
     pub language: Option<String>,
     /// Distinct people who have this title on an open wishlist.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wishers: Vec<bookclerk_library::QueueWisher>,
     /// Number of distinct users who wishlisted this title (may exceed `wishers.len()`).
     #[serde(default, skip_serializing_if = "wish_count_is_zero")]
+    #[schema(example = 3)]
     pub wish_count: i64,
 }
 
@@ -178,33 +206,46 @@ fn wish_count_is_zero(n: &i64) -> bool {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct RankedQueueEntry {
     /// Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author).
+    #[schema(example = "isbn:9780441478125")]
     pub work_key: String,
     /// Display title as shown on the storefront or library card.
+    #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
     /// Comma-separated author names when the storefront provides them.
+    #[schema(example = "Ursula K. Le Guin")]
     pub authors: Option<String>,
     /// Audible / Amazon ASIN when this edition is sold on Audible.
+    #[schema(example = "B002V0QK4C")]
     pub asin: Option<String>,
     /// Canonical ISBN-13 (or ISBN-10 normalized) when published.
+    #[schema(example = "9780441478125")]
     pub isbn: Option<String>,
     /// HTTPS URL for cover art when the catalog exposes one.
+    #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
     /// Number of distinct users who wishlisted this title.
+    #[schema(example = 3)]
     pub wish_count: i64,
     /// Distinct people who have this title on an open wishlist.
     #[serde(default)]
     pub wishers: Vec<bookclerk_library::QueueWisher>,
     /// Sample Bookclerk user UUIDs who requested this title (privacy-capped).
+    #[schema(example = json!(["0b7e2c1d-5f3a-4e6b-9c8d-1a2b3c4d5e6f"]))]
     pub sample_uuids: Vec<String>,
     /// UTC timestamp of the earliest wishlist request for this work.
+    #[schema(example = "2026-09-02T08:15:00Z")]
     pub first_requested_at: chrono::DateTime<chrono::Utc>,
     /// UTC timestamp of the latest wishlist request for this work.
+    #[schema(example = "2026-10-29T10:12:00Z")]
     pub last_requested_at: chrono::DateTime<chrono::Utc>,
     /// Final rank score (`taste_score + wish_count * `[`WISH_COUNT_WEIGHT`]).
+    #[schema(example = 3.61)]
     pub score: f64,
     /// Local taste / embedding component before the wish-count boost.
+    #[schema(example = 0.61)]
     pub taste_score: f64,
     /// Short human-readable explanations for why this item was ranked here.
+    #[schema(example = json!(["wishlisted by 3 people", "matches liked author (Ursula K. Le Guin)"]))]
     pub reasons: Vec<String>,
 }
 

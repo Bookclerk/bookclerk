@@ -9,10 +9,13 @@ use crate::recommend::Recommendation;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct DiscoverShelf {
     /// Stable identifier for this item.
+    #[schema(example = "author:ursula-k-le-guin")]
     pub id: String,
     /// Display title as shown on the storefront or library card.
+    #[schema(example = "More from Ursula K. Le Guin")]
     pub title: String,
     /// Optional subtitle when the catalog distinguishes it from the title.
+    #[schema(example = "Because you’ve liked their work")]
     pub subtitle: Option<String>,
     /// Ordered collection of child entries for this response.
     pub items: Vec<Recommendation>,
@@ -22,8 +25,10 @@ pub struct DiscoverShelf {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct ShelfKindInfo {
     /// Stable kind id (`finish_series`, `author`, `genre`, `from_store`, …).
+    #[schema(example = "finish_series")]
     pub id: String,
     /// Operator-visible label for this account or item.
+    #[schema(example = "Finish these series")]
     pub label: String,
 }
 
