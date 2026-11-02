@@ -136,6 +136,197 @@ class LinesTest(unittest.TestCase):
             self.assertEqual([line for start, end in ranges for line in range(start, end + 1)], expected)
 
 
+    def test_deletions_mark_the_line_before(self) -> None:
+        diff = (
+            "diff --git a/tools/site/src/page.ts b/tools/site/src/page.ts\n"
+            "--- a/tools/site/src/page.ts\n+++ b/tools/site/src/page.ts\n"
+            "@@ -4,4 +4,2 @@\n keep();\n-if (x) {\n-  throw e;\n next();\n"
+            "@@ -1,2 +1,1 @@\n-import a from 'a';\n first();\n"
+            "@@ -20,2 +18,2 @@\n-old();\n+new();\n same();\n"
+        )
+        # A replaced line is covered by its new text; a pure deletion marks
+        # the line before it, or the first line at the top of the file.
+        self.assertEqual(sr.changed_lines(diff, "tools/site"), {"src/page.ts": [(1, 1), (4, 4), (18, 18)]})
+
+    def test_fuzz_deletions_match_git(self) -> None:
+        """Oracle: deleting unique lines marks the kept line before each deleted run."""
+        rng = random.Random(1582)
+        for _ in range(40):
+            before = [f"base {i}" for i in range(rng.randrange(1, 30))]
+            deleted = {i for i in range(len(before)) if rng.random() < 0.2}
+            after = [text for i, text in enumerate(before) if i not in deleted]
+            expected: set[int] = set()
+            kept = 0
+            for i in range(len(before)):
+                if i in deleted:
+                    if i == 0 or i - 1 not in deleted:
+                        expected.add(max(kept, 1))
+                else:
+                    kept += 1
+            with tempfile.TemporaryDirectory() as tmp:
+                old, new = Path(tmp, "old.ts"), Path(tmp, "new.ts")
+                old.write_text("".join(t + "\n" for t in before), encoding="utf-8")
+                new.write_text("".join(t + "\n" for t in after), encoding="utf-8")
+                result = subprocess.run(
+                    ["git", "diff", "--no-index", f"-U{rng.randrange(0, 4)}", "--", str(old), str(new)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            diff = result.stdout.replace(f"+++ b{new}", "+++ b/tools/site/w.ts").replace(f"+++ {new}", "+++ b/tools/site/w.ts")
+            ranges = sr.changed_lines(diff, "tools/site").get("w.ts", [])
+            self.assertEqual({line for start, end in ranges for line in range(start, end + 1)}, expected)
+
+
+class WidenTest(unittest.TestCase):
+    """A file whose changed lines gave no mutant is sampled in a second pass."""
+
+    SOURCE = "".join(f"const v{i} = {i};\n" if i % 5 else "\n" for i in range(1, 101)) + "import x from 'x';\n// note\n"
+
+    def test_parse_mutate_round_trips(self) -> None:
+        ranges = {"src/a.ts": [(1, 3), (9, 9)], "b.ts": [(2, 2)]}
+        self.assertEqual(sr.parse_mutate(sr.mutate_patterns(ranges)), ranges)
+        self.assertEqual(sr.parse_mutate("a b.ts:1-2,x.ts:3-1,y.ts:0-1,z.ts,ok.ts:4-5\n"), {"ok.ts": [(4, 5)]})
+
+    def test_mutant_lines(self) -> None:
+        self.assertEqual(sr.mutant_lines(report(mutant("Killed", 3), mutant("CompileError", 7), {"location": None})), {"src/page.ts": {3, 7}})
+        self.assertIsNone(sr.mutant_lines("not json"))
+        self.assertIsNone(sr.mutant_lines("[]"))
+
+    def test_only_files_without_mutants_are_widened(self) -> None:
+        ranges = {"a.ts": [(2, 2)], "b.ts": [(3, 3)]}
+        sources = {"a.ts": self.SOURCE, "b.ts": self.SOURCE}
+        chosen = sr.widen(ranges, {"a.ts": {2}, "b.ts": {50}}, sources, seed=7)
+        self.assertEqual(list(chosen), ["b.ts"])
+        self.assertEqual(len(chosen["b.ts"]), sr.WIDEN_BUDGET)
+        lines = self.SOURCE.splitlines()
+        for line in chosen["b.ts"]:
+            self.assertNotEqual(line, 3)
+            self.assertIsNone(sr.SKIP_LINE.match(lines[line - 1]), lines[line - 1])
+        self.assertEqual(sr.widen(ranges, {"a.ts": {2}, "b.ts": {3}}, sources, seed=7), {})
+        # A file that cannot be read is not widened.
+        self.assertEqual(sr.widen({"c.ts": [(1, 1)]}, {}, {}, seed=1), {})
+
+    def test_every_file_gets_a_line_and_the_budget_holds(self) -> None:
+        for seed in range(60):
+            ranges = {f"f{i}.ts": [(1, 1)] for i in range(5)}
+            sources = {path: self.SOURCE for path in ranges}
+            chosen = sr.widen(ranges, {}, sources, seed=seed, budget=12)
+            self.assertEqual(sorted(chosen), sorted(ranges))
+            self.assertEqual(sum(len(v) for v in chosen.values()), 12)
+            for lines in chosen.values():
+                self.assertEqual(len(lines), len(set(lines)))
+        # A budget smaller than the file count reaches as many files as it can.
+        chosen = sr.widen({f"f{i}.ts": [(1, 1)] for i in range(5)}, {}, {f"f{i}.ts": self.SOURCE for i in range(5)}, seed=3, budget=2)
+        self.assertEqual(sum(len(v) for v in chosen.values()), 2)
+
+    def test_small_files_are_taken_whole(self) -> None:
+        source = "const a = 1;\n\nconst b = 2;\n"
+        self.assertEqual(sr.widen({"s.ts": [(2, 2)]}, {}, {"s.ts": source}, seed=5), {"s.ts": [1, 3]})
+
+    def test_the_sample_moves_with_the_seed(self) -> None:
+        ranges, sources = {"b.ts": [(3, 3)]}, {"b.ts": self.SOURCE}
+        samples = {tuple(sr.widen(ranges, {}, sources, seed=seed, budget=5)["b.ts"]) for seed in range(20)}
+        self.assertGreater(len(samples), 10)
+
+    def test_widen_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "page.ts").write_text(self.SOURCE, encoding="utf-8")
+            data = root / "mutation.json"
+            data.write_text(report(mutant("Killed", 50)), encoding="utf-8")
+            listing = root / "widened.txt"
+            argv = ["widen", "--report", str(data), "--mutate", "src/page.ts:3-3", "--root", str(root), "--seed", "582", "--list", str(listing)]
+            with mock.patch("sys.stdout") as stdout:
+                self.assertEqual(sr.main(argv), 0)
+            printed = "".join(c.args[0] for c in stdout.write.call_args_list)
+            ranges = sr.parse_mutate(printed)
+            # The first pass's lines come along, so their results carry over.
+            self.assertEqual(ranges["src/page.ts"][0], (3, 3))
+            self.assertEqual(len(ranges["src/page.ts"]), 1 + sr.WIDEN_BUDGET)
+            self.assertEqual(sr.parse_widened(listing.read_text(encoding="utf-8")), {"src/page.ts": sr.WIDEN_BUDGET})
+            # A mutant on the changed line: no second pass.
+            data.write_text(report(mutant("Survived", 3)), encoding="utf-8")
+            with mock.patch("sys.stdout") as stdout:
+                self.assertEqual(sr.main(argv), 0)
+            self.assertEqual("".join(c.args[0] for c in stdout.write.call_args_list), "")
+            # No report: no second pass.
+            data.unlink()
+            with mock.patch("sys.stdout") as stdout:
+                self.assertEqual(sr.main(argv), 0)
+            self.assertEqual("".join(c.args[0] for c in stdout.write.call_args_list), "")
+
+    def test_sample_lines_skip_what_stryker_never_mutates(self) -> None:
+        source = "\n".join(
+            [
+                "import {",  # 1
+                "  a,",  # 2
+                "  b,",  # 3
+                "} from './x';",  # 4
+                "export interface Thing {",  # 5
+                "  id: string;",  # 6
+                "  nested: { deep: number };",  # 7
+                "}",  # 8
+                "export type Pair = [number, number];",  # 9
+                "const limit = 3;",  # 10
+                "function f(x: number) {",  # 11
+                "  if (x > limit) {",  # 12
+                "    return 'big';",  # 13
+                "  }",  # 14
+                "  // note",  # 15
+                "  return g(x);",  # 16
+                "}",  # 17
+                "export { f };",  # 18
+                "",  # 19
+            ]
+        )
+        self.assertEqual(sr.sample_lines(source), [10, 11, 12, 13, 16])
+
+    def test_sample_lines_skip_multiline_types(self) -> None:
+        source = "\n".join(
+            [
+                "type TokenKind =",  # 1
+                '  | "keyword"',  # 2
+                '  | "string";',  # 3
+                "interface Big",  # 4
+                "  extends Base {",  # 5
+                "  id: string;",  # 6
+                "}",  # 7
+                "type Obj = {",  # 8
+                "  a: number;",  # 9
+                "};",  # 10
+                "const limit = 3;",  # 11
+                "type One = 'a' | 'b';",  # 12
+                "const other = limit + 1;",  # 13
+                "const theme = {",  # 14
+                '  type: "light",',  # 15: a property named type, not a declaration
+                '  fg: "#000",',  # 16
+                "};",  # 17
+            ]
+        )
+        self.assertEqual(sr.sample_lines(source), [11, 13, 14, 15, 16])
+
+    def test_ignored_mutants_do_not_cover_a_change(self) -> None:
+        """Stryker lists mutants outside --mutate as Ignored; an ignored block around a type change tests nothing."""
+        block = mutant("Ignored", 2)
+        block["location"] = {"start": {"line": 2, "column": 1}, "end": {"line": 9, "column": 2}}
+        self.assertEqual(sr.mutant_lines(report(block, mutant("Survived", 12))), {"src/page.ts": {12}})
+        self.assertEqual(list(sr.widen({"a.ts": [(5, 5)]}, {"a.ts": {12}}, {"a.ts": self.SOURCE}, seed=1)), ["a.ts"])
+
+    def test_a_mutant_spanning_a_changed_line_counts(self) -> None:
+        spanning = mutant("Killed", 3)
+        spanning["location"] = {"start": {"line": 3, "column": 1}, "end": {"line": 6, "column": 2}}
+        self.assertEqual(sr.mutant_lines(report(spanning)), {"src/page.ts": {3, 4, 5, 6}})
+        self.assertEqual(sr.widen({"a.ts": [(5, 5)]}, {"a.ts": {3, 4, 5, 6}}, {"a.ts": self.SOURCE}, seed=1), {})
+        backwards = mutant("Killed", 9)
+        backwards["location"] = {"start": {"line": 9, "column": 1}, "end": {"line": 2, "column": 1}}
+        self.assertEqual(sr.mutant_lines(report(backwards)), {"src/page.ts": {9}})
+
+    def test_parse_widened(self) -> None:
+        self.assertEqual(sr.parse_widened("a.ts\t4\nbad path.ts\t1\nb.ts\tx\nc.ts\t9999999\n"), {"a.ts": 4})
+
+
 class ReportTest(unittest.TestCase):
     """Stryker's statuses map onto the Rust job's outcomes."""
 
@@ -202,6 +393,15 @@ class RenderTest(unittest.TestCase):
         self.assertIn("| 3 | 1 | 0 | 0 |", text)
         self.assertIn("- `tools/site/src/page.ts:7:5: ConditionalExpression → true`", text)
         self.assertIn("Report only", text)
+
+    def test_widened_files_are_named(self) -> None:
+        results = sr.Results()
+        results.mutants[Outcome.CAUGHT] = ["c"]
+        summary = sr.render("site", (results, []), mutated=True, widened={"tools/site/src/types.ts": 12})
+        self.assertIn("in those files was mutated too, chosen afresh for each pull request: `tools/site/src/types.ts` (12 lines).", summary)
+        self.assertIn("of the 1 mutants tested", summary)
+        skipped = sr.render("site", (results, []), mutated=True, unwidened=["tools/site/src/types.ts"])
+        self.assertIn("`tools/site/src/types.ts`, and the sample of their other lines was not tested", skipped)
 
     def test_long_lists_are_cut(self) -> None:
         parsed = sr.parse_report(report(*(mutant("Survived", i + 1) for i in range(sr.MAX_LISTED + 3))), "tools/site")
@@ -271,12 +471,17 @@ class WiringTest(unittest.TestCase):
         self.assertIn("git diff HEAD^1 HEAD", steps["Find the changed lines"]["run"])
         self.assertIn("npm install --no-save", steps["Install dependencies and Stryker"]["run"])
         run = steps["Test the mutants"]["run"]
-        self.assertIn('--mutate "$MUTATE"', run)
+        self.assertIn('stryker "${limit}s" "$MUTATE"', run)
+        self.assertIn("python3 ../../scripts/stryker_report.py widen", run)
+        self.assertIn('--seed "$PR"', run)
+        self.assertIn('stryker "${left}s" "$widened"', run)
+        self.assertEqual(steps["Test the mutants"]["env"]["PR"], "${{ github.event.pull_request.number }}")
+        self.assertIn('--widened "$RUNNER_TEMP/widened.txt" --unwidened "$RUNNER_TEMP/unwidened.txt"', steps["Report"]["run"])
+        self.assertIn('mv "$RUNNER_TEMP/widened.txt" "$RUNNER_TEMP/unwidened.txt"', run)
         # SIGINT to Stryker alone: the whole process group would stop its
         # test runners before it saves the partial report.
         self.assertIn("timeout --foreground --signal=INT", run)
-        self.assertIn("node_modules/.bin/stryker run", run)
-        self.assertIn("../../scripts/stryker.config.json", run)
+        self.assertIn('node_modules/.bin/stryker run ../../scripts/stryker.config.json --mutate "$2"', run)
         self.assertRegex(workflow["env"]["STRYKER_VERSION"], r"^\d+\.\d+\.\d+$")
         self.assertIn("python3 scripts/stryker_report.py report", steps["Report"]["run"])
         self.assertIn("--stopped", steps["Report"]["run"])

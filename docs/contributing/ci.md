@@ -1019,21 +1019,35 @@ workflow does the same for the Cloudflare Workers (`tools/site`,
 `tools/demo` and `tools/diagnostics-collector`) with
 [Stryker](https://stryker-mutator.io/), one job per Worker:
 
-1. It finds the lines the pull request adds to the Worker's TypeScript
-   sources, from the merge commit's diff against the base. Tests, test
-   support, type declarations and configuration files are left out. A
-   Worker with no changed source line skips Stryker, and its summary says
-   so.
+1. It finds the lines the pull request changes in the Worker's TypeScript
+   sources, from the merge commit's diff against the base: the lines it
+   adds, and the line before each run of lines it deletes, so removing a
+   guard counts as changing the code around it. That line can be a blank
+   line or a closing brace with no mutant; when none of a file's changed
+   lines has one, step 3 samples the file. Tests, test support, type
+   declarations and configuration files are left out. A Worker with no
+   changed source line skips Stryker, and its summary says so.
 2. It passes those lines to Stryker as `--mutate path:start-end`. Stryker
    also mutates literals (strings, arrays, objects), so a change to data
    gets mutants too.
-3. Each mutant runs the Vitest tests that cover it, including the ones
+3. Some changes give no mutant at all: a type, an interface, an import or
+   an export list. When a changed file's lines give none, a second pass
+   mutates a sample of the file's other lines, so the tests of the code
+   beside the change are still checked, as the Rust job does for data
+   changes. The sample skips lines Stryker never mutates (types, imports,
+   bare punctuation). At most 30 lines are sampled across those files,
+   one per file first while the budget lasts, and the choice changes with
+   each pull request. Stryker takes about five seconds a mutant here, so a
+   whole file would not fit the time limit. The summary names the files
+   and how many lines it sampled in each, or says when too little time was
+   left for the second pass.
+4. Each mutant runs the Vitest tests that cover it, including the ones
    that run inside the Workers runtime.
-4. The run stops after 20 minutes. The summary then counts the mutants
-   tested before the limit and says the run was stopped.
+5. Both passes together stop after 20 minutes. The summary then counts the
+   mutants tested before the limit and says the run was stopped.
 
 The job summary and the `mutants-<worker>` artifact have the same shape as
-the Rust job's, and each missed mutant is annotated on the diff. Stryker
+the Rust job's. Up to 50 missed mutants are annotated on the diff. Stryker
 is installed for the run only, at the version pinned in the workflow, so
 the Workers' lockfiles do not change. Settings live in
 [`scripts/stryker.config.json`](../../scripts/stryker.config.json):
@@ -1046,7 +1060,9 @@ the Workers' lockfiles do not change. Settings live in
   Vitest's module graph, so Vitest cannot tell which tests import a file.
 - `incremental`, writing to `reports/mutation/mutation.json`, because only
   incremental mode saves the mutants tested so far when the run is
-  stopped. The report step reads that file.
+  stopped. The second pass also mutates the first pass's lines, so their
+  results carry over from that file without being tested again. The report
+  step reads it.
 
 To reproduce a Worker's run locally, from its directory:
 
