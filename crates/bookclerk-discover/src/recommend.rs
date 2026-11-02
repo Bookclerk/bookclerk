@@ -119,7 +119,7 @@ pub struct Recommendation {
     #[schema(example = "9780441478125")]
     pub isbn: Option<String>,
     /// Ranking score (higher is better); units are algorithm-specific.
-    #[schema(example = 0.87)]
+    #[schema(example = 120.87)]
     pub score: f64,
     /// Short human-readable explanations for why this item was ranked here.
     #[schema(example = json!(["wishlisted by 3 people", "matches liked author (Ursula K. Le Guin)"]))]
@@ -127,7 +127,7 @@ pub struct Recommendation {
     /// Buy / open-in-store links with optional member vs list pricing.
     pub purchase_hints: Vec<PurchaseHint>,
     /// True when sourced from an open title request rather than storefront discovery.
-    #[schema(example = false)]
+    #[schema(example = true)]
     pub from_request: bool,
     /// Wishlist / title-request UUID when this card came from a request.
     #[schema(example = "7c1e5a2b-3d4f-4e6a-9b8c-0d1e2f3a4b5c")]
@@ -239,7 +239,7 @@ pub struct RankedQueueEntry {
     #[schema(example = "2026-10-29T10:12:00Z")]
     pub last_requested_at: chrono::DateTime<chrono::Utc>,
     /// Final rank score (`taste_score + wish_count * `[`WISH_COUNT_WEIGHT`]).
-    #[schema(example = 3.61)]
+    #[schema(example = 120.61)]
     pub score: f64,
     /// Local taste / embedding component before the wish-count boost.
     #[schema(example = 0.61)]

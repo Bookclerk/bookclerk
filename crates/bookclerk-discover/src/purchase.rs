@@ -28,7 +28,7 @@ pub struct PurchaseHint {
     /// Primary / best known sell price in minor units (prefer member when dual).
     /// `0` = free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(example = 2499)]
+    #[schema(example = 1499)]
     pub price_cents: Option<i64>,
     /// ISO 4217 currency code for price fields (`USD`, `EUR`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,7 +36,7 @@ pub struct PurchaseHint {
     pub currency: Option<String>,
     /// Display string from the store (`$2.99`, `FREE`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(example = "$24.99")]
+    #[schema(example = "$14.99")]
     pub price_label: Option<String>,
     /// Non-member / list price in integer cents when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]

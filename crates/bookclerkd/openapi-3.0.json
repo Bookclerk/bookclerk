@@ -29640,7 +29640,7 @@
             "type": "integer",
             "format": "int64",
             "description": "Primary / best known sell price in minor units (prefer member when dual).\n`0` = free.",
-            "example": 2499,
+            "example": 1499,
             "nullable": true
           },
           "currency": {
@@ -29652,7 +29652,7 @@
           "price_label": {
             "type": "string",
             "description": "Display string from the store (`$2.99`, `FREE`, …).",
-            "example": "$24.99",
+            "example": "$14.99",
             "nullable": true
           },
           "list_price_cents": {
@@ -29827,7 +29827,7 @@
                 "type": "integer",
                 "format": "int64",
                 "description": "Primary / best known sell price in minor units (prefer member when dual).\n`0` = free.",
-                "example": 2499,
+                "example": 1499,
                 "nullable": true
               },
               "currency": {
@@ -29839,7 +29839,7 @@
               "price_label": {
                 "type": "string",
                 "description": "Display string from the store (`$2.99`, `FREE`, …).",
-                "example": "$24.99",
+                "example": "$14.99",
                 "nullable": true
               },
               "list_price_cents": {
@@ -30370,7 +30370,7 @@
             "type": "number",
             "format": "double",
             "description": "Final rank score (`taste_score + wish_count * `[`WISH_COUNT_WEIGHT`]).",
-            "example": 3.61
+            "example": 120.61
           },
           "taste_score": {
             "type": "number",
@@ -30453,7 +30453,7 @@
             "type": "number",
             "format": "double",
             "description": "Ranking score (higher is better); units are algorithm-specific.",
-            "example": 0.87
+            "example": 120.87
           },
           "reasons": {
             "type": "array",
@@ -30476,7 +30476,7 @@
           "from_request": {
             "type": "boolean",
             "description": "True when sourced from an open title request rather than storefront discovery.",
-            "example": false
+            "example": true
           },
           "request_uuid": {
             "type": "string",
