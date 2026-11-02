@@ -15566,11 +15566,13 @@
                   "client_id": {
                     "type": "string",
                     "description": "Public client_id (create only; path wins on update).",
+                    "example": "audiobookshelf",
                     "nullable": true
                   },
                   "name": {
                     "type": "string",
                     "description": "Operator-facing display name.",
+                    "example": "Audiobookshelf",
                     "nullable": true
                   },
                   "redirect_uris": {
@@ -15578,30 +15580,42 @@
                     "items": {
                       "type": "string"
                     },
-                    "description": "Allowed OAuth redirect URIs."
+                    "description": "Allowed OAuth redirect URIs.",
+                    "example": [
+                      "https://abs.example.com/auth/openid/callback"
+                    ]
                   },
                   "confidential": {
                     "type": "boolean",
-                    "description": "When true, mint a client secret (confidential). When false, public PKCE."
+                    "description": "When true, mint a client secret (confidential). When false, public PKCE.",
+                    "example": true
                   },
                   "issue_refresh_token": {
                     "type": "boolean",
-                    "description": "When true, token responses include a refresh token."
+                    "description": "When true, token responses include a refresh token.",
+                    "example": true
                   },
                   "allowed_scopes": {
                     "type": "array",
                     "items": {
                       "type": "string"
                     },
-                    "description": "Scopes this client may request (`openid`, `profile`, `email`)."
+                    "description": "Scopes this client may request (`openid`, `profile`, `email`).",
+                    "example": [
+                      "openid",
+                      "profile",
+                      "email"
+                    ]
                   },
                   "enabled": {
                     "type": "boolean",
-                    "description": "When true, authorize and token endpoints accept this client."
+                    "description": "When true, authorize and token endpoints accept this client.",
+                    "example": true
                   },
                   "current_password": {
                     "type": "string",
                     "description": "Required for a non-elevated Owner whose portal session is older than 15 minutes.",
+                    "example": "correct horse battery staple",
                     "nullable": true
                   }
                 },
@@ -15790,6 +15804,7 @@
                   "current_password": {
                     "type": "string",
                     "description": "Required for a non-elevated Owner whose portal session is older than 15 minutes.",
+                    "example": "correct horse battery staple",
                     "nullable": true
                   }
                 },
@@ -21758,21 +21773,25 @@
           "code": {
             "type": "string",
             "description": "Authorization code to exchange; required unless `error` is set.",
+            "example": "4/0AX4XfWh3Q2x9kQ8y7Z6v5U4t3S2r1Q0p",
             "nullable": true
           },
           "state": {
             "type": "string",
             "description": "CSRF `state` that must match the `bookclerk_oidc_tx` cookie.",
+            "example": "c3RhdGUtOGY2ZTJkMWE",
             "nullable": true
           },
           "error": {
             "type": "string",
             "description": "IdP-reported deny/error; redirects the browser to `/?sso_error=denied`.",
+            "example": "access_denied",
             "nullable": true
           },
           "user": {
             "type": "string",
             "description": "Apple first-login name/email JSON (form_post only).",
+            "example": "{\"name\":{\"firstName\":\"Dana\",\"lastName\":\"Reader\"},\"email\":\"dana@example.com\"}",
             "nullable": true
           }
         }
@@ -22551,38 +22570,46 @@
         "properties": {
           "client_id": {
             "type": "string",
-            "description": "Registered OIDC client id (must exist in the library store)."
+            "description": "Registered OIDC client id (must exist in the library store).",
+            "example": "audiobookshelf"
           },
           "redirect_uri": {
             "type": "string",
-            "description": "Redirect URI; must match a URI registered for the client."
+            "description": "Redirect URI; must match a URI registered for the client.",
+            "example": "https://abs.example.com/auth/openid/callback"
           },
           "response_type": {
             "type": "string",
-            "description": "OAuth `response_type`; only `code` is accepted."
+            "description": "OAuth `response_type`; only `code` is accepted.",
+            "example": "code"
           },
           "scope": {
             "type": "string",
             "description": "Space-separated scopes; defaults to `openid profile` when omitted.",
+            "example": "openid profile email",
             "nullable": true
           },
           "state": {
             "type": "string",
             "description": "Opaque CSRF value echoed back on the redirect.",
+            "example": "c3RhdGUtOGY2ZTJkMWE",
             "nullable": true
           },
           "code_challenge": {
             "type": "string",
-            "description": "PKCE S256 challenge (base64url SHA-256 of the verifier)."
+            "description": "PKCE S256 challenge (base64url SHA-256 of the verifier).",
+            "example": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
           },
           "code_challenge_method": {
             "type": "string",
             "description": "PKCE method; omitted is treated as `plain` and then rejected.",
+            "example": "S256",
             "nullable": true
           },
           "consent": {
             "type": "string",
             "description": "`deny` aborts with `access_denied`; any other value proceeds to issue a code.",
+            "example": "allow",
             "nullable": true
           }
         }
@@ -23000,72 +23027,102 @@
         "properties": {
           "issuer": {
             "type": "string",
-            "description": "Issuer origin used as `iss` in minted JWTs (`public_origin` or loopback)."
+            "description": "Issuer origin used as `iss` in minted JWTs (`public_origin` or loopback).",
+            "example": "https://books.example.com"
           },
           "authorization_endpoint": {
             "type": "string",
-            "description": "Absolute URL of the authorization endpoint (`/oidc/authorize`)."
+            "description": "Absolute URL of the authorization endpoint (`/oidc/authorize`).",
+            "example": "https://books.example.com/oidc/authorize"
           },
           "token_endpoint": {
             "type": "string",
-            "description": "Absolute URL of the token endpoint (`/oidc/token`)."
+            "description": "Absolute URL of the token endpoint (`/oidc/token`).",
+            "example": "https://books.example.com/oidc/token"
           },
           "userinfo_endpoint": {
             "type": "string",
-            "description": "Absolute URL of the userinfo endpoint (`/oidc/userinfo`)."
+            "description": "Absolute URL of the userinfo endpoint (`/oidc/userinfo`).",
+            "example": "https://books.example.com/oidc/userinfo"
           },
           "revocation_endpoint": {
             "type": "string",
-            "description": "Absolute URL of the refresh-token revocation endpoint (`/oidc/revoke`)."
+            "description": "Absolute URL of the refresh-token revocation endpoint (`/oidc/revoke`).",
+            "example": "https://books.example.com/oidc/revoke"
           },
           "response_types_supported": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Supported `response_type` values; this server only issues `code`."
+            "description": "Supported `response_type` values; this server only issues `code`.",
+            "example": [
+              "code"
+            ]
           },
           "grant_types_supported": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Supported token grants: `authorization_code` and `refresh_token`."
+            "description": "Supported token grants: `authorization_code` and `refresh_token`.",
+            "example": [
+              "authorization_code",
+              "refresh_token"
+            ]
           },
           "code_challenge_methods_supported": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "PKCE methods; only S256 is accepted (`plain` is rejected)."
+            "description": "PKCE methods; only S256 is accepted (`plain` is rejected).",
+            "example": [
+              "S256"
+            ]
           },
           "scopes_supported": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Scopes advertised to clients (`openid`, `profile`, and `email`)."
+            "description": "Scopes advertised to clients (`openid`, `profile`, and `email`).",
+            "example": [
+              "openid",
+              "profile",
+              "email"
+            ]
           },
           "subject_types_supported": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Subject identifier types; only public (stable user id) is used."
+            "description": "Subject identifier types; only public (stable user id) is used.",
+            "example": [
+              "public"
+            ]
           },
           "id_token_signing_alg_values_supported": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "ID-token signing algorithms; tokens are HS256 with a derived key."
+            "description": "ID-token signing algorithms; tokens are HS256 with a derived key.",
+            "example": [
+              "HS256"
+            ]
           },
           "token_endpoint_auth_methods_supported": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Client auth methods: public PKCE (`none`) or `client_secret_post`."
+            "description": "Client auth methods: public PKCE (`none`) or `client_secret_post`.",
+            "example": [
+              "none",
+              "client_secret_post"
+            ]
           }
         }
       },
@@ -25727,7 +25784,7 @@
           "client_secret": {
             "type": "string",
             "description": "The new secret, shown once after create, rotate-secret, or a PUT that makes a public client confidential; never stored in clear.",
-            "example": "Qm9va2NsZXJrLXNlY3JldC1leGFtcGxlLXZhbHVl",
+            "example": "K3mP9qT2vX8bN5cR7wZ1yA4dF6hJ0lS2uE9gI3oV5kM",
             "nullable": true
           }
         }
@@ -25739,11 +25796,13 @@
           "client_id": {
             "type": "string",
             "description": "Public client_id (create only; path wins on update).",
+            "example": "audiobookshelf",
             "nullable": true
           },
           "name": {
             "type": "string",
             "description": "Operator-facing display name.",
+            "example": "Audiobookshelf",
             "nullable": true
           },
           "redirect_uris": {
@@ -25751,30 +25810,42 @@
             "items": {
               "type": "string"
             },
-            "description": "Allowed OAuth redirect URIs."
+            "description": "Allowed OAuth redirect URIs.",
+            "example": [
+              "https://abs.example.com/auth/openid/callback"
+            ]
           },
           "confidential": {
             "type": "boolean",
-            "description": "When true, mint a client secret (confidential). When false, public PKCE."
+            "description": "When true, mint a client secret (confidential). When false, public PKCE.",
+            "example": true
           },
           "issue_refresh_token": {
             "type": "boolean",
-            "description": "When true, token responses include a refresh token."
+            "description": "When true, token responses include a refresh token.",
+            "example": true
           },
           "allowed_scopes": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Scopes this client may request (`openid`, `profile`, `email`)."
+            "description": "Scopes this client may request (`openid`, `profile`, `email`).",
+            "example": [
+              "openid",
+              "profile",
+              "email"
+            ]
           },
           "enabled": {
             "type": "boolean",
-            "description": "When true, authorize and token endpoints accept this client."
+            "description": "When true, authorize and token endpoints accept this client.",
+            "example": true
           },
           "current_password": {
             "type": "string",
             "description": "Required for a non-elevated Owner whose portal session is older than 15 minutes.",
+            "example": "correct horse battery staple",
             "nullable": true
           }
         }
@@ -25804,14 +25875,18 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Whether the broker should accept authorize starts after this write."
+            "description": "Whether the broker should accept authorize starts after this write.",
+            "example": true
           },
           "allowed_email_domains": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Replacement broker-wide email domain allowlist."
+            "description": "Replacement broker-wide email domain allowlist.",
+            "example": [
+              "example.com"
+            ]
           },
           "providers": {
             "type": "array",
@@ -25823,11 +25898,13 @@
           "public_origin": {
             "type": "string",
             "description": "`integrations.public_origin`. Omit to leave unchanged; empty string clears.",
+            "example": "https://books.example.com",
             "nullable": true
           },
           "current_password": {
             "type": "string",
             "description": "Required for a non-elevated Owner whose portal session is older than 15 minutes.",
+            "example": "correct horse battery staple",
             "nullable": true
           }
         }
@@ -25851,51 +25928,64 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Whether the broker accepts new authorize starts."
+            "description": "Whether the broker accepts new authorize starts.",
+            "example": true
           },
           "allowed_email_domains": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Broker-wide email domain allowlist applied before per-provider rules."
+            "description": "Broker-wide email domain allowlist applied before per-provider rules.",
+            "example": [
+              "example.com"
+            ]
           },
           "public_origin": {
             "type": "string",
             "description": "Configured `integrations.public_origin` (issuer / callback / invite base).",
+            "example": "https://books.example.com",
             "nullable": true
           },
           "issuer_url": {
             "type": "string",
-            "description": "Effective issuer origin (`public_origin`, else this request, else localhost)."
+            "description": "Effective issuer origin (`public_origin`, else this request, else localhost).",
+            "example": "https://books.example.com"
           },
           "detected_origin": {
             "type": "string",
-            "description": "Origin detected from this request (loopback IPs rewritten to `localhost`)."
+            "description": "Origin detected from this request (loopback IPs rewritten to `localhost`).",
+            "example": "http://localhost:8787"
           },
           "discovery_url": {
             "type": "string",
-            "description": "Absolute OpenID discovery URL (`/.well-known/openid-configuration`)."
+            "description": "Absolute OpenID discovery URL (`/.well-known/openid-configuration`).",
+            "example": "https://books.example.com/.well-known/openid-configuration"
           },
           "authorization_endpoint": {
             "type": "string",
-            "description": "Absolute authorization endpoint (`/oidc/authorize`) for Bookclerk-as-IdP."
+            "description": "Absolute authorization endpoint (`/oidc/authorize`) for Bookclerk-as-IdP.",
+            "example": "https://books.example.com/oidc/authorize"
           },
           "token_endpoint": {
             "type": "string",
-            "description": "Absolute token endpoint (`/oidc/token`) for Bookclerk-as-IdP."
+            "description": "Absolute token endpoint (`/oidc/token`) for Bookclerk-as-IdP.",
+            "example": "https://books.example.com/oidc/token"
           },
           "userinfo_endpoint": {
             "type": "string",
-            "description": "Absolute userinfo endpoint (`/oidc/userinfo`) for Bookclerk-as-IdP."
+            "description": "Absolute userinfo endpoint (`/oidc/userinfo`) for Bookclerk-as-IdP.",
+            "example": "https://books.example.com/oidc/userinfo"
           },
           "revocation_endpoint": {
             "type": "string",
-            "description": "Absolute revocation endpoint (`/oidc/revoke`) for Bookclerk-as-IdP."
+            "description": "Absolute revocation endpoint (`/oidc/revoke`) for Bookclerk-as-IdP.",
+            "example": "https://books.example.com/oidc/revoke"
           },
           "callback_url": {
             "type": "string",
-            "description": "Absolute `/api/auth/oidc/callback` derived from the effective issuer origin."
+            "description": "Absolute `/api/auth/oidc/callback` derived from the effective issuer origin.",
+            "example": "https://books.example.com/api/auth/oidc/callback"
           },
           "providers": {
             "type": "array",
@@ -25916,29 +26006,35 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Stable provider id; also the logical name of the sealed client-secret row."
+            "description": "Stable provider id; also the logical name of the sealed client-secret row.",
+            "example": "google"
           },
           "name": {
             "type": "string",
-            "description": "Operator-facing display name stored in config.toml."
+            "description": "Operator-facing display name stored in config.toml.",
+            "example": "Google"
           },
           "preset": {
             "type": "string",
             "description": "Built-in social preset; empty or omitted means a generic OpenID issuer.",
+            "example": "google",
             "nullable": true
           },
           "issuer": {
             "type": "string",
             "description": "OpenID issuer URL required when `preset` is unset.",
+            "example": "https://accounts.google.com",
             "nullable": true
           },
           "client_id": {
             "type": "string",
-            "description": "OAuth client id registered at the IdP."
+            "description": "OAuth client id registered at the IdP.",
+            "example": "123456789012-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6.apps.googleusercontent.com"
           },
           "client_secret": {
             "type": "string",
             "description": "Omit to keep; empty string to clear; non-empty to store.",
+            "example": "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4b5c",
             "nullable": true
           },
           "scopes": {
@@ -25946,65 +26042,87 @@
             "items": {
               "type": "string"
             },
-            "description": "OAuth scopes; empty is replaced with the provider default set."
+            "description": "OAuth scopes; empty is replaced with the provider default set.",
+            "example": [
+              "openid",
+              "profile",
+              "email"
+            ]
           },
           "provision": {
             "type": "string",
-            "description": "JIT, mapped-role, allowlist, or invite-only policy for first login."
+            "description": "JIT, mapped-role, allowlist, or invite-only policy for first login.",
+            "example": "allowlist"
           },
           "default_role": {
             "type": "string",
-            "description": "Fallback portal role when no mapped claim matches."
+            "description": "Fallback portal role when no mapped claim matches.",
+            "example": "member"
           },
           "role_claim": {
             "type": "string",
-            "description": "Claim name used for role mapping (defaults to `groups`)."
+            "description": "Claim name used for role mapping (defaults to `groups`).",
+            "example": "groups"
           },
           "role_map": {
             "type": "object",
             "description": "Claim value to portal role mapping applied at provision time.",
             "additionalProperties": {
               "type": "string"
-            }
+            },
+            "example": {}
           },
           "link_by_email": {
             "type": "boolean",
-            "description": "When true, verified email may attach this IdP to an existing user."
+            "description": "When true, verified email may attach this IdP to an existing user.",
+            "example": true
           },
           "allowed_email_domains": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Per-provider email domain allowlist."
+            "description": "Per-provider email domain allowlist.",
+            "example": [
+              "example.com"
+            ]
           },
           "allowed_emails": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Exact emails permitted under allowlist provision."
+            "description": "Exact emails permitted under allowlist provision.",
+            "example": [
+              "dana@example.com"
+            ]
           },
           "allowed_subjects": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Exact IdP subject ids permitted under allowlist provision."
+            "description": "Exact IdP subject ids permitted under allowlist provision.",
+            "example": [
+              "248289761001"
+            ]
           },
           "apple_team_id": {
             "type": "string",
             "description": "Apple Developer team id for client-secret JWT minting.",
+            "example": "A1B2C3D4E5",
             "nullable": true
           },
           "apple_key_id": {
             "type": "string",
             "description": "Apple Sign In key id paired with the sealed private key.",
+            "example": "K9L8M7N6P5",
             "nullable": true
           },
           "apple_private_key": {
             "type": "string",
             "description": "Omit to keep; empty string to clear; non-empty to store.",
+            "example": "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEG…\n-----END PRIVATE KEY-----",
             "nullable": true
           }
         }
@@ -26032,98 +26150,127 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Stable provider id used in authorize URLs and sealed-row names."
+            "description": "Stable provider id used in authorize URLs and sealed-row names.",
+            "example": "google"
           },
           "name": {
             "type": "string",
-            "description": "Operator-facing display name."
+            "description": "Operator-facing display name.",
+            "example": "Google"
           },
           "preset": {
             "type": "string",
             "description": "Built-in social preset (`google`, `github`, `apple`, `discord`) when not a generic issuer.",
+            "example": "google",
             "nullable": true
           },
           "issuer": {
             "type": "string",
             "description": "OpenID issuer URL for discovery when no social preset applies.",
+            "example": "https://accounts.google.com",
             "nullable": true
           },
           "client_id": {
             "type": "string",
-            "description": "OAuth client id registered at the IdP."
+            "description": "OAuth client id registered at the IdP.",
+            "example": "123456789012-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6.apps.googleusercontent.com"
           },
           "scopes": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "OAuth scopes requested at authorize."
+            "description": "OAuth scopes requested at authorize.",
+            "example": [
+              "openid",
+              "profile",
+              "email"
+            ]
           },
           "provision": {
             "type": "string",
-            "description": "How a first login becomes a portal user (JIT, mapped role, allowlist, invite-only)."
+            "description": "How a first login becomes a portal user (JIT, mapped role, allowlist, invite-only).",
+            "example": "allowlist"
           },
           "default_role": {
             "type": "string",
-            "description": "Portal role used when no mapped claim matches (`member` by default)."
+            "description": "Portal role used when no mapped claim matches (`member` by default).",
+            "example": "member"
           },
           "role_claim": {
             "type": "string",
-            "description": "Claim name read from id_token/userinfo for role mapping (`groups` by default)."
+            "description": "Claim name read from id_token/userinfo for role mapping (`groups` by default).",
+            "example": "groups"
           },
           "role_map": {
             "type": "object",
             "description": "IdP group/role claim values mapped onto Bookclerk portal roles.",
             "additionalProperties": {
               "type": "string"
-            }
+            },
+            "example": {}
           },
           "link_by_email": {
             "type": "boolean",
-            "description": "When true, a verified email may attach this IdP to an existing user."
+            "description": "When true, a verified email may attach this IdP to an existing user.",
+            "example": true
           },
           "allowed_email_domains": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Per-provider email domain allowlist (in addition to the broker-wide list)."
+            "description": "Per-provider email domain allowlist (in addition to the broker-wide list).",
+            "example": [
+              "example.com"
+            ]
           },
           "allowed_emails": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Exact emails permitted under allowlist provision."
+            "description": "Exact emails permitted under allowlist provision.",
+            "example": [
+              "dana@example.com"
+            ]
           },
           "allowed_subjects": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Exact IdP subject ids permitted under allowlist provision."
+            "description": "Exact IdP subject ids permitted under allowlist provision.",
+            "example": [
+              "248289761001"
+            ]
           },
           "apple_team_id": {
             "type": "string",
             "description": "Apple Developer team id used to mint the client-secret JWT.",
+            "example": "A1B2C3D4E5",
             "nullable": true
           },
           "apple_key_id": {
             "type": "string",
             "description": "Apple Sign In key id paired with the sealed private key.",
+            "example": "K9L8M7N6P5",
             "nullable": true
           },
           "has_client_secret": {
             "type": "boolean",
-            "description": "Whether a client secret exists in env, TOML, or the sealed store (value never returned)."
+            "description": "Whether a client secret exists in env, TOML, or the sealed store (value never returned).",
+            "example": true
           },
           "has_apple_private_key": {
             "type": "boolean",
-            "description": "Whether an Apple PEM exists in env, TOML, or the sealed store (PEM never returned)."
+            "description": "Whether an Apple PEM exists in env, TOML, or the sealed store (PEM never returned).",
+            "example": false
           },
           "secret_source": {
             "type": "string",
-            "description": "Where the client secret was found: `env`, `config`, `store`, or `none`."
+            "description": "Where the client secret was found: `env`, `config`, `store`, or `none`.",
+            "example": "store"
           }
         }
       },
@@ -30887,11 +31034,13 @@
         "properties": {
           "token": {
             "type": "string",
-            "description": "Token to revoke; treated as a refresh token (hashed before lookup)."
+            "description": "Token to revoke; treated as a refresh token (hashed before lookup).",
+            "example": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
           },
           "token_type_hint": {
             "type": "string",
             "description": "Optional hint ignored; this server only stores refresh tokens.",
+            "example": "refresh_token",
             "nullable": true
           }
         }
@@ -30903,6 +31052,7 @@
           "current_password": {
             "type": "string",
             "description": "Required for a non-elevated Owner whose portal session is older than 15 minutes.",
+            "example": "correct horse battery staple",
             "nullable": true
           }
         }
@@ -32669,36 +32819,43 @@
         "properties": {
           "grant_type": {
             "type": "string",
-            "description": "Grant: `authorization_code` or `refresh_token`; anything else is 400."
+            "description": "Grant: `authorization_code` or `refresh_token`; anything else is 400.",
+            "example": "authorization_code"
           },
           "code": {
             "type": "string",
             "description": "Authorization code from the redirect (`authorization_code` grant).",
+            "example": "0e5d3f8a-6b2c-4d1e-9f7a-3c4b5d6e7f80",
             "nullable": true
           },
           "redirect_uri": {
             "type": "string",
             "description": "Must match the URI bound to the consumed authorization code.",
+            "example": "https://abs.example.com/auth/openid/callback",
             "nullable": true
           },
           "client_id": {
             "type": "string",
             "description": "Client id; required for code exchange, optional (but checked) on refresh.",
+            "example": "audiobookshelf",
             "nullable": true
           },
           "client_secret": {
             "type": "string",
             "description": "Client secret for confidential clients (`client_secret_post`).",
+            "example": "u7Vb2xK9qR4sT1wY6zA3cD8eF0gH5jL2mN7pQ1rS4tU",
             "nullable": true
           },
           "code_verifier": {
             "type": "string",
             "description": "PKCE verifier; SHA-256 must match the stored challenge.",
+            "example": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
             "nullable": true
           },
           "refresh_token": {
             "type": "string",
             "description": "Refresh token to rotate (`refresh_token` grant).",
+            "example": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
             "nullable": true
           }
         }
@@ -32716,29 +32873,35 @@
         "properties": {
           "access_token": {
             "type": "string",
-            "description": "HS256 JWT access token bound to the User (`token_use=access`)."
+            "description": "HS256 JWT access token bound to the User (`token_use=access`).",
+            "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3IiwidG9rZW5fdXNlIjoiYWNjZXNzIn0.3x9Y…"
           },
           "token_type": {
             "type": "string",
-            "description": "Always `Bearer` for this server."
+            "description": "Always `Bearer` for this server.",
+            "example": "Bearer"
           },
           "expires_in": {
             "type": "integer",
             "format": "int64",
-            "description": "Access-token lifetime in seconds (same as [`ACCESS_TTL_SECS`])."
+            "description": "Access-token lifetime in seconds (same as [`ACCESS_TTL_SECS`]).",
+            "example": 3600
           },
           "refresh_token": {
             "type": "string",
             "description": "Opaque refresh token when the client is allowed to receive one.",
+            "example": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
             "nullable": true
           },
           "id_token": {
             "type": "string",
-            "description": "HS256 ID token; profile/email claims follow the granted scope."
+            "description": "HS256 ID token; profile/email claims follow the granted scope.",
+            "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3IiwibmFtZSI6IkRhbmEgUmVhZGVyIn0.Q2r8…"
           },
           "scope": {
             "type": "string",
-            "description": "Space-separated scopes granted to this token pair."
+            "description": "Space-separated scopes granted to this token pair.",
+            "example": "openid profile email"
           }
         }
       },
