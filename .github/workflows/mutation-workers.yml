@@ -10,7 +10,12 @@
 #   string, a table) gets mutants too.
 # - Only the changed lines of each Worker's sources are mutated (Stryker's
 #   `--mutate path:start-end`, from the merge commit's diff against the
-#   base); tests, test support and configuration are not.
+#   base; a deletion counts as a change to the line before it); tests, test
+#   support and configuration are not.
+# - A changed file whose changed lines give no mutant (a type, an import, an
+#   export) gets a second pass on a sample of its other lines, so the tests
+#   of the code beside the change are still checked, as mutation.yml does
+#   for Rust data changes.
 # - Trial: report-only and not a required check. Settings live in
 #   scripts/stryker.config.json.
 #
@@ -93,23 +98,46 @@ jobs:
           npm install --no-save "@stryker-mutator/core@$STRYKER_VERSION" "@stryker-mutator/vitest-runner@$STRYKER_VERSION"
 
       # `inPlace` mutates this checkout, which the runner throws away;
-      # Stryker restores each file afterwards. The time limit leaves room to
-      # report inside the job's: on SIGINT, incremental mode writes the
-      # mutants tested so far to the report. The signal goes to Stryker
-      # alone (`--foreground`, and its binary rather than npx), so its test
-      # runners are still alive while it saves.
+      # Stryker restores each file afterwards. The time limit (20 minutes
+      # for both passes) leaves room to report inside the job's: on SIGINT,
+      # incremental mode writes the mutants tested so far to the report.
+      # The signal goes to Stryker alone (`--foreground`, and its binary
+      # rather than npx), so its test runners are still alive while it
+      # saves. The second pass mutates the first pass's lines too, so
+      # incremental mode carries their results over instead of dropping
+      # them, without testing them again.
       - name: Test the mutants
         id: mutants
         if: steps.lines.outputs.mutate != ''
         working-directory: ${{ matrix.root }}
         env:
           MUTATE: ${{ steps.lines.outputs.mutate }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           set +e
-          timeout --foreground --signal=INT --kill-after=2m 20m node_modules/.bin/stryker run ../../scripts/stryker.config.json --mutate "$MUTATE"
-          code=$?
-          if [ "$code" -eq 124 ] || [ "$code" -eq 130 ] || [ "$code" -eq 137 ]; then
-            echo "stopped=true" >> "$GITHUB_OUTPUT"
+          limit=1200
+          # 0: finished; 1: stopped at the time limit; 2: failed.
+          stryker() {
+            timeout --foreground --signal=INT --kill-after=2m "$1" node_modules/.bin/stryker run ../../scripts/stryker.config.json --mutate "$2"
+            code=$?
+            if [ "$code" -eq 124 ] || [ "$code" -eq 130 ] || [ "$code" -eq 137 ]; then
+              echo "stopped=true" >> "$GITHUB_OUTPUT"
+              return 1
+            fi
+            [ "$code" -eq 0 ] || return 2
+          }
+          SECONDS=0
+          stryker "${limit}s" "$MUTATE" || exit 0
+          widened=$(python3 ../../scripts/stryker_report.py widen --report reports/mutation/mutation.json --mutate "$MUTATE" --root . --seed "$PR" --list "$RUNNER_TEMP/widened.txt")
+          [ -n "$widened" ] || exit 0
+          left=$((limit - SECONDS))
+          # Too little time for a second start-up, or a second pass that
+          # failed: the report names the files it did not sample.
+          if [ "$left" -le 120 ]; then
+            mv "$RUNNER_TEMP/widened.txt" "$RUNNER_TEMP/unwidened.txt"
+          else
+            stryker "${left}s" "$widened"
+            if [ $? -eq 2 ]; then mv "$RUNNER_TEMP/widened.txt" "$RUNNER_TEMP/unwidened.txt"; fi
           fi
           exit 0
 
@@ -122,7 +150,7 @@ jobs:
           STOPPED: ${{ steps.mutants.outputs.stopped }}
         run: |
           set -euo pipefail
-          args=(--report "$ROOT/reports/mutation/mutation.json" --root "$ROOT" --name "$NAME")
+          args=(--report "$ROOT/reports/mutation/mutation.json" --root "$ROOT" --name "$NAME" --widened "$RUNNER_TEMP/widened.txt" --unwidened "$RUNNER_TEMP/unwidened.txt")
           if [ -z "$MUTATE" ]; then args+=(--not-mutated); fi
           if [ "${STOPPED:-}" = "true" ]; then args+=(--stopped); fi
           python3 scripts/stryker_report.py report "${args[@]}"
