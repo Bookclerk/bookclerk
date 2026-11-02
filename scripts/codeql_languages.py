@@ -4,11 +4,11 @@
 ``.github/workflows/codeql.yml`` analyzes GitHub Actions workflows,
 JavaScript/TypeScript, Python and Rust. Rust is the slow one (about 20
 minutes on a hosted runner, and CodeQL has no incremental analysis for it
-yet), so a pull request that changes no Rust input skips it: such a change
-cannot add or fix a Rust alert. Pushes to ``main``, the weekly schedule and
-manual runs analyze every language, so ``main`` always has a full analysis
-to compare pull requests against. See
-``docs/contributing/ci.md#codeql``.
+yet). A pull request that changes no Rust input cannot add or fix a Rust
+alert, so this script can skip Rust there (``PULL_REQUESTS_SKIP_RUST``),
+but that is off: code scanning's merge rule blocks a pull request that lacks
+a configuration ``main`` has. Pushes to ``main``, the weekly schedule and
+manual runs analyze every language. See ``docs/contributing/ci.md#codeql``.
 
 The changed paths come from ``git diff -z --no-renames --name-only`` of the
 pull request's merge commit against its base parent, run in the same job.
@@ -64,6 +64,13 @@ CARGO_DIR = ".cargo"
 
 # Events that always analyze every language.
 FULL_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
+
+# Whether a pull request that changes no Rust input skips the Rust analysis.
+# Off: code scanning's merge rule ("CodeQL results") reports a pull request
+# that lacks a configuration main has (`/language:rust`) as neutral, "1
+# configuration not found", and a neutral result blocks the merge (#583). The
+# classification still runs and names the reason in the job summary.
+PULL_REQUESTS_SKIP_RUST = False
 
 
 @dataclass(frozen=True)
@@ -137,19 +144,41 @@ def choose(event: str, paths: Iterable[str | None]) -> Choice:
         Every language for pushes, schedules and manual runs, and for any
         event this script does not know (fail toward analyzing). A pull
         request gets Rust when at least one path is a Rust input or is not
-        UTF-8.
+        UTF-8, and always while `PULL_REQUESTS_SKIP_RUST` is off.
     """
     if event != "pull_request":
         why = "full analysis" if event in FULL_EVENTS else f"unknown event {event!r}: full analysis"
         return Choice((*ALWAYS, RUST), why)
+    why = rust_reason(paths)
+    if why is not None:
+        return Choice((*ALWAYS, RUST), f"Rust analyzed: {why}")
+    if not PULL_REQUESTS_SKIP_RUST:
+        return Choice(
+            (*ALWAYS, RUST),
+            "Rust analyzed: the pull request changes no Rust input, but the merge rule needs every configuration main has",
+        )
+    return Choice(ALWAYS, "Rust skipped: the pull request changes no Rust input")
+
+
+def rust_reason(paths: Iterable[str | None]) -> str | None:
+    """Says why a pull request's changed paths need the Rust analysis.
+
+    Args:
+        paths: The paths the pull request changes, None for a path that is
+            not UTF-8.
+
+    Returns:
+        A clause naming the first Rust input, or a path that is not UTF-8,
+        or None when no path can change the Rust analysis.
+    """
     listed = list(paths)
     if any(p is None for p in listed):
-        return Choice((*ALWAYS, RUST), "Rust analyzed: the pull request changes a path that is not UTF-8")
+        return "the pull request changes a path that is not UTF-8"
     hits = sorted({p for p in listed if p and is_rust_input(p)})
-    if hits:
-        more = f" and {len(hits) - 1} more" if len(hits) > 1 else ""
-        return Choice((*ALWAYS, RUST), f"Rust analyzed: the pull request changes {hits[0]}{more}")
-    return Choice(ALWAYS, "Rust skipped: the pull request changes no Rust input")
+    if not hits:
+        return None
+    more = f" and {len(hits) - 1} more" if len(hits) > 1 else ""
+    return f"the pull request changes {hits[0]}{more}"
 
 
 def matrix_json(choice: Choice) -> str:
