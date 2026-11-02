@@ -166,6 +166,37 @@ class MainTest(unittest.TestCase):
             self.assertEqual(mb.main(["--workflow", "mutation.yml", "--base", first]), 0)
         self.assertEqual("".join(c.args[0] for c in stdout.write.call_args_list), first + "\n")
 
+    def test_old_commit_fallback(self) -> None:
+        """With no successful run, the last commit older than --hours wins over HEAD^1."""
+        repo = Path(self.tmp.name)
+        git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", "init", "-q", "-b", "old", str(repo / "old")], check=True)
+        git[2] = str(repo / "old")
+        dates = ["2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z", None, None]
+        shas = []
+        for n, date in enumerate(dates):
+            (repo / "old" / "f.txt").write_text(str(n), encoding="utf-8")
+            env = dict(os.environ, **({"GIT_COMMITTER_DATE": date, "GIT_AUTHOR_DATE": date} if date else {}))
+            subprocess.run([*git, "add", "."], check=True, env=env)
+            subprocess.run([*git, "commit", "-qm", str(n)], check=True, env=env)
+            shas.append(subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip())
+        os.chdir(repo / "old")
+        self.assertEqual(self.run_main(["--workflow", "mutation.yml"], api=""), (0, shas[1] + "\n"))
+
+    def test_last_success_asks_for_scheduled_runs(self) -> None:
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        done = subprocess.CompletedProcess([], 0, stdout=sha + "\n", stderr="")
+        env = {"GITHUB_REPOSITORY": "Bookclerk/bookclerk", "GITHUB_REF_NAME": "main"}
+        with mock.patch.dict(os.environ, env), mock.patch.object(mb.subprocess, "run", return_value=done) as run:
+            self.assertEqual(mb._last_success("mutation.yml"), sha)
+        url = run.call_args.args[0][2]
+        self.assertEqual(url, "repos/Bookclerk/bookclerk/actions/workflows/mutation.yml/runs?branch=main&event=schedule&status=success&per_page=1")
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="")
+        with mock.patch.dict(os.environ, env), mock.patch.object(mb.subprocess, "run", return_value=failed):
+            self.assertIsNone(mb._last_success("mutation.yml"))
+        with mock.patch.dict(os.environ, env), mock.patch.object(mb.subprocess, "run", side_effect=OSError):
+            self.assertIsNone(mb._last_success("mutation.yml"))
+
     def test_last_success_rejects_odd_environments(self) -> None:
         with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "not a repo"}):
             self.assertIsNone(mb._last_success("mutation.yml"))

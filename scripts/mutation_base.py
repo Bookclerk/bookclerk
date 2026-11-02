@@ -3,10 +3,10 @@
 
 The mutation testing workflows (``docs/contributing/ci.md#mutation-testing``)
 run once a day on the default branch and mutate the code merged since their
-last successful run, so a day the schedule skipped or a run that failed is
-covered by the next one. This prints that run's commit, or, when there is
-none to use (the first run, history rewritten, a token without access), the
-last commit on the branch's first-parent line from before ``--hours`` ago,
+last successful scheduled run, so a day the schedule skipped or a run that
+failed is covered by the next one; a manual run, which may start anywhere,
+never counts. This prints that run's commit, or, when there is none to use
+(the first run, or history rewritten), the last commit on the branch's first-parent line from before ``--hours`` ago,
 or the parent of ``HEAD``.
 
 The previous run's commit comes from the GitHub API through ``gh``, so it is
@@ -79,7 +79,7 @@ def _is_ancestor(sha: str) -> bool:
 
 
 def _last_success(workflow: str) -> str | None:
-    """Return the commit of the workflow's last successful run on this branch.
+    """Return the commit of the workflow's last successful scheduled run on this branch.
 
     Returns:
         The API's answer (validated later by ``choose``), ``""`` when the
@@ -91,7 +91,9 @@ def _last_success(workflow: str) -> str | None:
     branch = os.environ.get("GITHUB_REF_NAME", "main")
     if not re.match(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$", repository) or not REVISION.match(branch):
         return None
-    url = f"repos/{repository}/actions/workflows/{workflow}/runs?branch={branch}&status=success&per_page=1"
+    # Scheduled runs only: a manual run may start from any commit, so its
+    # success says nothing about what came before its base.
+    url = f"repos/{repository}/actions/workflows/{workflow}/runs?branch={branch}&event=schedule&status=success&per_page=1"
     try:
         result = subprocess.run(
             ["gh", "api", url, "--jq", ".workflow_runs[0].head_sha // empty"],

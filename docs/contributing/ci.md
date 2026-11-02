@@ -962,7 +962,7 @@ since its own last successful run:
 Each run works like this:
 
 1. [`scripts/mutation_base.py`](../../scripts/mutation_base.py) finds the
-   commit the workflow's last successful run tested, through the GitHub
+   commit the workflow's last successful scheduled run tested, through the GitHub
    API. A day with nothing merged, or a run that failed, is covered by the
    next run. If the API cannot be reached, the run fails rather than
    guess. With no earlier successful run, it falls back to the last commit
@@ -993,7 +993,8 @@ mutants jobs uploaded.
 To test a range by hand, run the workflow from the **Actions** tab and set
 `base` to the commit to start from. Running it from a branch tests that
 branch against `base`, which is how to try a change to the workflows
-themselves. Only runs on `main` file issues.
+themselves. Only runs on `main` file issues, and a manual run never moves
+the starting point of the next scheduled one.
 
 ### Rust
 
