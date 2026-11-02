@@ -115,9 +115,10 @@ jobs:
       # them (an attribute, a constant, a struct the code reads) gives none
       # from the diff. Such files are mutated whole instead, so the tests of
       # the code beside the changed data are checked too: the diff is
-      # rewritten to mark the lines of their mutants. Past the budget, a
-      # sample is marked (1 in k, from an offset that follows the pull
-      # request number). Each mutant runs its package's whole test suite
+      # rewritten to mark the lines of their mutants. Past the budget, lines
+      # spread across the files are marked until they admit the budget's
+      # worth, starting at a point that follows the pull request number.
+      # Each mutant runs its package's whole test suite
       # (about 2 minutes for bookclerk-library), so a file with 230 mutants
       # would otherwise hold a runner for the whole time limit.
       - name: Widen to files changed outside functions
@@ -132,9 +133,9 @@ jobs:
             mapfile -t files < "$RUNNER_TEMP/widened.txt"
             filters=()
             for f in "${files[@]}"; do filters+=(--file "$f"); done
-            cargo mutants --workspace --list "${filters[@]}" > "$RUNNER_TEMP/widened-listed.txt"
+            cargo mutants --workspace --list --json "${filters[@]}" > "$RUNNER_TEMP/widened-listed.json"
             python3 scripts/mutation_report.py sample --diff "$RUNNER_TEMP/pr.diff" \
-              --listed "$RUNNER_TEMP/widened-listed.txt" --budget "$WIDEN_BUDGET" --seed "$PR" \
+              --listed "$RUNNER_TEMP/widened-listed.json" --budget "$WIDEN_BUDGET" --seed "$PR" \
               --record "$RUNNER_TEMP/sample.json"
           fi
 

@@ -880,11 +880,13 @@ Rust code:
    from the diff. When a changed Rust file gets none, the job mutates the
    functions in that file instead, so the tests of the code beside the
    changed data are still checked. The summary names those files. Up to 15
-   of their mutants are all tested; past that, an even sample of about 15
-   is, from an offset that changes with each pull request. Each mutant runs
-   its package's whole test suite, two minutes for some crates, so a large
-   file would otherwise hold a runner for the whole time limit. Code in other files
-   that reads the data is not covered.
+   of their mutants are all tested; past that, at most 15 spread across
+   the files are (counting every mutant a chosen line brings in, such as
+   its function's body replacements), and the choice changes with each
+   pull request. Each
+   mutant runs its package's whole test suite, two minutes for some
+   crates, so a large file would otherwise hold a runner for the whole
+   time limit. Code in other files that reads the data is not covered.
 3. Before the first mutant, the job builds what CI's `rust_test` check
    builds first (the jail, the workerd front door, the pinned workerd and
    the platform guests) with `ci-exec.py prereqs rust_test`, and turns on

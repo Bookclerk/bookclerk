@@ -187,55 +187,96 @@ class Sample:
 
     #: Mutants cargo-mutants lists in the widened files.
     total: int
-    #: About 1 in ``every`` of them is tested; 1 tests them all.
-    every: int
+    #: Mutants the marked lines admit: all of them within the budget.
+    tested: int
 
 
-def mutant_line(mutant: str) -> int | None:
-    """Return the line a mutant description starts on.
+@dataclass(frozen=True)
+class Span:
+    """The lines one listed mutant covers; marking any of them admits it."""
+
+    #: The file, relative to the repository root.
+    path: str
+    #: First line, 1-based.
+    start: int
+    #: Last line, at least ``start``.
+    end: int
+
+
+def parse_spans(listed: str) -> list[Span]:
+    """Parse ``cargo mutants --list --json`` into the mutants' line spans.
 
     Args:
-        mutant: A list line, ``path:line:col: replace …``.
+        listed: The JSON listing, written in the same job.
 
     Returns:
-        The line number, or ``None`` when the description has none.
+        One span per well-formed entry, in listing order; malformed entries
+        and a malformed listing yield nothing.
     """
-    parts = mutant.split(":", 3)
-    if len(parts) < 3 or not parts[1].isdigit() or not 0 < int(parts[1]) < 10**7:
-        return None
-    return int(parts[1])
+    try:
+        entries = json.loads(listed)
+    except ValueError:
+        return []
+    spans = []
+    for entry in entries if isinstance(entries, list) else []:
+        try:
+            path, start, end = entry["file"], entry["span"]["start"]["line"], entry["span"]["end"]["line"]
+        except (TypeError, KeyError):
+            continue
+        if isinstance(path, str) and path and type(start) is int and type(end) is int and 0 < start <= end < 10**7:
+            spans.append(Span(path, start, end))
+    return spans
 
 
 def sample_lines(listed: str, budget: int, seed: int) -> tuple[dict[str, list[int]], Sample]:
     """Pick the lines of the widened files whose mutants a run tests.
 
-    A widened file can hold hundreds of mutants, and each runs its package's
-    tests. Within ``budget`` every mutant is tested; past it, every ``k``-th
-    one in listing order (``k`` the smallest step that fits the budget),
-    starting at ``seed % k``, so successive pull requests test different
-    mutants of the same file.
+    cargo-mutants tests every mutant whose span covers a marked line, so a
+    line inside a function also admits its whole-body replacements. Within
+    ``budget`` every mutant's first line is marked. Past it, candidate lines
+    (each mutant's first line) are tried in an evenly spread order starting
+    at ``seed``, and a line is kept only while the mutants admitted stay
+    within ``budget``, so successive pull requests test different mutants of
+    the same file and no run tests more than ``budget`` (unless every line
+    alone admits more, when the line admitting the fewest is marked).
 
     Args:
-        listed: ``cargo mutants --list`` over the widened files.
-        budget: The most mutants to select (at least 1).
-        seed: Picks the sample's offset; the workflow passes the pull
+        listed: ``cargo mutants --list --json`` over the widened files.
+        budget: The most mutants to admit (at least 1).
+        seed: Picks where the order starts; the workflow passes the pull
             request number.
 
     Returns:
-        The selected lines per file, sorted, and what was selected. A
-        selected line also brings in the other mutants whose span covers
-        it, such as its function's whole-body replacements, so a run tests
-        somewhat more than ``budget``.
+        The marked lines per file, sorted, and what they admit.
     """
-    mutants = [(mutant_file(m), mutant_line(m)) for m in parse_list(listed)]
-    mutants = [(path, line) for path, line in mutants if line is not None]
+    spans = parse_spans(listed)
     budget = max(budget, 1)
-    every = max(1, -(-len(mutants) // budget))
-    lines: dict[str, set[int]] = {}
-    for index, (path, line) in enumerate(mutants):
-        if index % every == seed % every:
-            lines.setdefault(path, set()).add(line)
-    return {path: sorted(found) for path, found in lines.items()}, Sample(len(mutants), every)
+    candidates = list(dict.fromkeys((span.path, span.start) for span in spans))
+    if len(spans) <= budget:
+        order = candidates
+    else:
+        count = len(candidates)
+        stride = max(1, -(-count // budget))
+        order = list(
+            dict.fromkeys(candidates[(seed + j * stride + r) % count] for r in range(stride) for j in range(-(-count // stride)))
+        )
+    def covering(path: str, line: int) -> set[int]:
+        return {i for i, span in enumerate(spans) if span.path == path and span.start <= line <= span.end}
+
+    admitted: set[int] = set()
+    marked: dict[str, set[int]] = {}
+    for path, line in order:
+        new = covering(path, line) - admitted
+        if len(admitted) + len(new) > budget:
+            continue
+        admitted |= new
+        marked.setdefault(path, set()).add(line)
+    if not admitted and order:
+        # Every line alone admits more than the budget: test the smallest.
+        path, line = min(order, key=lambda candidate: len(covering(*candidate)))
+        admitted = covering(path, line)
+        marked = {path: {line}}
+    return {path: sorted(lines) for path, lines in marked.items()}, Sample(len(spans), len(admitted))
 
 
 def drop_files(diff: str, paths: set[str]) -> str:
@@ -364,10 +405,10 @@ def render(
         lines += [intro, ""]
         lines += [f"- {_code(path)}" for path in named[:MAX_LISTED]]
         lines.append("")
-        if sample is not None and sample.every > 1:
+        if sample is not None and sample.tested < sample.total:
             note = (
-                f"They hold {sample.total} mutants, more than one run tests, so about 1 in {sample.every} was "
-                "tested, from an offset that changes with each pull request."
+                f"They hold {sample.total} mutants, more than one run tests, so {sample.tested} spread across "
+                "them were tested; the choice changes with each pull request."
             )
             lines += [note, ""]
     if run is Run.BASELINE_FAILED:
@@ -441,7 +482,7 @@ def sample_main(argv: list[str]) -> int:
     """
     parser = argparse.ArgumentParser(prog="mutation_report.py sample", description=sample_lines.__doc__.split("\n", 1)[0])
     parser.add_argument("--diff", type=Path, required=True, help="the pull request's diff, rewritten in place")
-    parser.add_argument("--listed", type=Path, required=True, help="cargo mutants --list over the widened files")
+    parser.add_argument("--listed", type=Path, required=True, help="cargo mutants --list --json over the widened files")
     parser.add_argument("--budget", type=int, required=True, help="the most widened mutants to select")
     parser.add_argument("--seed", type=int, required=True, help="picks the sample (the pull request number)")
     parser.add_argument("--record", type=Path, required=True, help="where to write the sample for the report (JSON)")
@@ -466,10 +507,10 @@ def read_sample(text: str) -> Sample | None:
     """
     try:
         data = json.loads(text)
-        sample = Sample(int(data["total"]), int(data["every"]))
+        sample = Sample(int(data["total"]), int(data["tested"]))
     except (ValueError, KeyError, TypeError):
         return None
-    return sample if sample.total >= 0 and sample.every >= 1 else None
+    return sample if 0 <= sample.tested <= sample.total else None
 
 
 def main(argv: list[str] | None = None) -> int:

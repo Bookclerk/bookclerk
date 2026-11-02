@@ -9,6 +9,7 @@ bounded, and a seeded fuzz test checks that against an independent reading.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import random
 import subprocess
@@ -125,14 +126,16 @@ class WidenTest(unittest.TestCase):
         out.mutants[Outcome.CAUGHT] = ["crates/a/src/lib.rs:9:1: replace g -> u32 with 0"]
         text = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs", "crates/a/tests/t.rs"])
         self.assertIn("the functions in them were mutated instead", text)
-        self.assertNotIn("about 1 in", text)
+        self.assertNotIn("They hold", text)
         self.assertIn("- `crates/a/src/lib.rs`", text)
         # A widened file that yielded no mutant (a test file) is not named.
         self.assertNotIn("tests/t.rs", text)
         self.assertNotIn("functions in them", mr.render(out, mr.Run.CLEAN, stopped=False))
-        sampled = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs"], sample=mr.Sample(300, 8))
+        sampled = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs"], sample=mr.Sample(300, 15))
         self.assertIn("They hold 300 mutants", sampled)
-        self.assertIn("about 1 in 8 was tested", sampled)
+        self.assertIn("so 15 spread across them were tested", sampled)
+        everything = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs"], sample=mr.Sample(9, 9))
+        self.assertNotIn("They hold", everything)
 
 
 class ScoreTest(unittest.TestCase):
@@ -222,34 +225,69 @@ def names_of(job: dict) -> list[str | None]:
     return [s.get("name") for s in job["steps"]]
 
 
-class SampleTest(unittest.TestCase):
-    """Widened files' mutants are marked line by line, sampled past the budget."""
+def listing(*spans: tuple[str, int, int]) -> str:
+    """A ``cargo mutants --list --json`` listing of mutants with these spans."""
+    return json.dumps(
+        [{"file": path, "name": f"{path}:{start}:1: m", "span": {"start": {"line": start, "column": 1}, "end": {"line": end, "column": 9}}} for path, start, end in spans]
+    )
 
-    LISTED = "".join(f"crates/a/src/lib.rs:{line}:5: replace f{line} -> bool with true\n" for line in range(1, 11))
+
+class SampleTest(unittest.TestCase):
+    """Widened files' mutants are marked line by line, within the budget."""
+
+    LISTED = listing(*(("crates/a/src/lib.rs", line, line) for line in range(1, 11)))
 
     def test_within_budget_every_line_is_marked(self) -> None:
         lines, sample = mr.sample_lines(self.LISTED, budget=10, seed=7)
         self.assertEqual(lines, {"crates/a/src/lib.rs": list(range(1, 11))})
-        self.assertEqual(sample, mr.Sample(10, 1))
+        self.assertEqual(sample, mr.Sample(10, 10))
 
-    def test_past_the_budget_a_rotating_sample_is_marked(self) -> None:
+    def test_past_the_budget_a_rotating_spread_is_marked(self) -> None:
         picks = []
         for seed in range(3):
             lines, sample = mr.sample_lines(self.LISTED, budget=4, seed=seed)
-            self.assertEqual(sample, mr.Sample(10, 3))
-            self.assertLessEqual(len(lines["crates/a/src/lib.rs"]), 4)
+            self.assertEqual(sample, mr.Sample(10, 4))
             picks.append(lines["crates/a/src/lib.rs"])
-        self.assertEqual(picks, [[1, 4, 7, 10], [2, 5, 8], [3, 6, 9]])
-        # Every mutant is in exactly one sample.
-        self.assertEqual(sorted(line for pick in picks for line in pick), list(range(1, 11)))
+        self.assertEqual(picks[0], [1, 4, 7, 10])
+        self.assertNotEqual(picks[0], picks[1])
 
-    def test_lines_and_files(self) -> None:
-        self.assertEqual(mr.mutant_line("a.rs:12:5: replace x"), 12)
-        self.assertIsNone(mr.mutant_line("a.rs: replace x"))
-        self.assertIsNone(mr.mutant_line("a.rs:0:1: replace x"))
-        lines, sample = mr.sample_lines("a.rs:3:1: x\nb.rs:1:1: y\nnoise\n", budget=0, seed=0)
-        self.assertEqual(sample.total, 2)
-        self.assertEqual(sum(len(v) for v in lines.values()), 1)
+    def test_shared_spans_count_against_the_budget(self) -> None:
+        """Regression: body replacements span their function, so one line admits all of them."""
+        functions = [("f.rs", 10 * i + 1, 10 * i + 9) for i in range(15)]
+        spans = [s for f in functions for s in (f, f)] + [("f.rs", start + 3, start + 3) for _, start, _ in functions]
+        for budget in (1, 5, 15, 29):
+            for seed in range(4):
+                lines, sample = mr.sample_lines(listing(*spans), budget=budget, seed=seed)
+                admitted = sum(1 for path, start, end in spans if any(start <= line <= end for line in lines.get(path, [])))
+                self.assertEqual(sample.tested, admitted)
+                self.assertEqual(sample.total, 45)
+                # A function's line admits at least its two body replacements
+                # and the operator on it; below that, the smallest line still runs.
+                self.assertLessEqual(admitted, max(budget, 3))
+                self.assertGreater(admitted, 0)
+
+    def test_fuzz_admitted_matches_an_independent_count(self) -> None:
+        rng = random.Random(575)
+        for _ in range(300):
+            spans = []
+            for _ in range(rng.randrange(0, 30)):
+                start = rng.randrange(1, 40)
+                spans.append((rng.choice(["a.rs", "b.rs"]), start, start + rng.choice([0, 0, 1, 5, 20])))
+            budget, seed = rng.randrange(0, 35), rng.randrange(0, 1000)
+            lines, sample = mr.sample_lines(listing(*spans), budget=budget, seed=seed)
+            admitted = sum(1 for path, start, end in spans if any(start <= line <= end for line in lines.get(path, [])))
+            self.assertEqual(sample, mr.Sample(len(spans), admitted))
+            smallest = min((sum(1 for p, s, e in spans if p == path and s <= start <= e) for path, start, _ in spans), default=0)
+            self.assertLessEqual(admitted, max(budget, 1, smallest))
+            self.assertEqual(admitted > 0, bool(spans))
+            if len(spans) <= max(budget, 1):
+                self.assertEqual(admitted, len(spans))
+
+    def test_malformed_listings(self) -> None:
+        for bad in ("", "{", "{}", "[1]", '[{"file": "a.rs"}]', '[{"file": "a.rs", "span": {"start": {"line": 0}, "end": {"line": 1}}}]',
+                    '[{"file": "a.rs", "span": {"start": {"line": 3}, "end": {"line": 2}}}]', '[{"file": 1, "span": {"start": {"line": 1}, "end": {"line": 1}}}]'):
+            self.assertEqual(mr.parse_spans(bad), [], bad)
+            self.assertEqual(mr.sample_lines(bad, 5, 0), ({}, mr.Sample(0, 0)))
 
     def test_drop_files(self) -> None:
         self.assertEqual(mr.changed_rust_files(mr.drop_files(DIFF, {"crates/a/src/lib.rs"})), ["crates/b/src/api.rs"])
@@ -296,16 +334,15 @@ class SampleTest(unittest.TestCase):
                 record = mr.read_sample(Path("s.json").read_text(encoding="utf-8"))
             finally:
                 os.chdir(cwd)
-        self.assertEqual(record, mr.Sample(10, 2))
+        self.assertEqual(record, mr.Sample(10, 5))
         # The original section of the widened file is replaced by its marked lines.
         self.assertNotIn("const X", diff)
-        self.assertIn("+fn f2() {}\n", diff)
-        self.assertNotIn("+fn f1() {}", diff)
+        self.assertEqual(diff.count("+fn f"), 5)
         self.assertIn("crates/b/src/api.rs", diff)
 
     def test_read_sample(self) -> None:
-        self.assertEqual(mr.read_sample('{"total": 3, "every": 1}'), mr.Sample(3, 1))
-        for bad in ("", "[]", "{}", '{"total": -1, "every": 1}', '{"total": 3, "every": 0}', '{"total": "x", "every": 1}'):
+        self.assertEqual(mr.read_sample('{"total": 3, "tested": 1}'), mr.Sample(3, 1))
+        for bad in ("", "[]", "{}", '{"total": -1, "tested": 0}', '{"total": 3, "tested": 4}', '{"total": "x", "tested": 1}'):
             self.assertIsNone(mr.read_sample(bad), bad)
 
 
