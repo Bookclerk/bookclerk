@@ -9,7 +9,10 @@ bounded, and a seeded fuzz test checks that against an independent reading.
 from __future__ import annotations
 
 import importlib.util
+import os
 import random
+import re
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -68,6 +71,67 @@ class ParseTest(unittest.TestCase):
             self.assertEqual([len(p) for p in parsed], [min(len(e), mr.MAX_LINE) for e in expected])
 
 
+DIFF = """\
+diff --git a/crates/a/src/lib.rs b/crates/a/src/lib.rs
+--- a/crates/a/src/lib.rs
++++ b/crates/a/src/lib.rs
+@@ -1 +1 @@
+-const X: u32 = 1;
++const X: u32 = 2;
+diff --git a/crates/b/src/api.rs b/crates/b/src/api.rs
+--- a/crates/b/src/api.rs
++++ b/crates/b/src/api.rs
+@@ -3 +3 @@
+-    a < b
++    a <= b
+diff --git a/crates/c/src/gone.rs b/crates/c/src/gone.rs
+--- a/crates/c/src/gone.rs
++++ /dev/null
+@@ -1 +0,0 @@
+-fn f() {}
+diff --git a/docs/x.md b/docs/x.md
+--- a/docs/x.md
++++ b/docs/x.md
+@@ -1 +1 @@
+-a
++b
+"""
+
+
+class WidenTest(unittest.TestCase):
+    """Changed Rust files the diff gave no mutant are mutated whole."""
+
+    def test_changed_rust_files(self) -> None:
+        self.assertEqual(mr.changed_rust_files(DIFF), ["crates/a/src/lib.rs", "crates/b/src/api.rs"])
+        self.assertEqual(mr.changed_rust_files(DIFF + DIFF), ["crates/a/src/lib.rs", "crates/b/src/api.rs"])
+
+    def test_files_without_a_mutant_are_widened(self) -> None:
+        listed = "crates/b/src/api.rs:3:7: replace <= with > in f\n"
+        self.assertEqual(mr.files_to_widen(DIFF, listed), ["crates/a/src/lib.rs"])
+        self.assertEqual(mr.files_to_widen(DIFF, ""), ["crates/a/src/lib.rs", "crates/b/src/api.rs"])
+        both = listed + "crates/a/src/lib.rs:9:1: replace g -> u32 with 0\n"
+        self.assertEqual(mr.files_to_widen(DIFF, both), [])
+
+    def test_widen_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            diff, listed = Path(tmp) / "pr.diff", Path(tmp) / "listed.txt"
+            diff.write_text(DIFF, encoding="utf-8")
+            listed.write_text("crates/b/src/api.rs:3:7: replace <= with > in f\n", encoding="utf-8")
+            with mock.patch("sys.stdout") as stdout:
+                self.assertEqual(mr.main(["widen", "--diff", str(diff), "--listed", str(listed)]), 0)
+        self.assertEqual("".join(c.args[0] for c in stdout.write.call_args_list), "crates/a/src/lib.rs\n")
+
+    def test_widened_files_are_named_when_mutated(self) -> None:
+        out = mr.Results()
+        out.mutants[Outcome.CAUGHT] = ["crates/a/src/lib.rs:9:1: replace g -> u32 with 0"]
+        text = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs", "crates/a/tests/t.rs"])
+        self.assertIn("every function in them was mutated", text)
+        self.assertIn("- `crates/a/src/lib.rs`", text)
+        # A widened file that yielded no mutant (a test file) is not named.
+        self.assertNotIn("tests/t.rs", text)
+        self.assertNotIn("every function", mr.render(out, mr.Run.CLEAN, stopped=False))
+
+
 class ScoreTest(unittest.TestCase):
     """The score counts timeouts as caught and leaves out unviable mutants."""
 
@@ -107,7 +171,7 @@ class RenderTest(unittest.TestCase):
     def test_other_states(self) -> None:
         self.assertIn("failed to build or its tests failed", mr.render(mr.Results(), mr.Run.BASELINE_FAILED, stopped=False))
         self.assertIn("did not finish", mr.render(mr.Results(), mr.Run.ERROR, stopped=False))
-        self.assertIn("touches no Rust code", mr.render(mr.Results(), mr.Run.CLEAN, stopped=False))
+        self.assertIn("No mutants to test", mr.render(mr.Results(), mr.Run.CLEAN, stopped=False))
         only_unviable = mr.render(results(unviable=2), mr.Run.CLEAN, stopped=False)
         self.assertIn("| 0 | 0 | 0 | 2 |", only_unviable)
         self.assertNotIn("%**", only_unviable)
@@ -150,6 +214,46 @@ class MainTest(unittest.TestCase):
         self.assertIn("did not finish", "".join(c.args[0] for c in stdout.write.call_args_list))
 
 
+def names_of(job: dict) -> list[str | None]:
+    """The job's step names, in order."""
+    return [s.get("name") for s in job["steps"]]
+
+
+class WidenDiffTest(unittest.TestCase):
+    """The workflow's git commands put a widened file in the diff whole."""
+
+    def test_git_rebuilds_the_diff(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8")
+        script = re.search(r"- name: Widen to files changed outside functions\n\s+run: \|\n((?:\s{10}.*\n)+)", workflow)
+        assert script
+        body = "\n".join(line[10:] for line in script.group(1).splitlines())
+        # Everything after the cargo-mutants listing, which is stubbed.
+        body = body.replace('cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --list', 'cat "$RUNNER_TEMP/stub-list.txt"')
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, temp = Path(tmp) / "repo", Path(tmp) / "temp"
+            repo.mkdir()
+            temp.mkdir()
+            git = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(repo)]
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "data.rs").write_text("fn a() -> u32 { X }\nconst X: u32 = 1;\n", encoding="utf-8")
+            (repo / "code.rs").write_text("fn b() -> bool { true }\n", encoding="utf-8")
+            subprocess.run([*git, "add", "."], check=True)
+            subprocess.run([*git, "commit", "-qm", "base"], check=True)
+            (repo / "data.rs").write_text("fn a() -> u32 { X }\nconst X: u32 = 2;\n", encoding="utf-8")
+            (repo / "code.rs").write_text("fn b() -> bool { false }\n", encoding="utf-8")
+            subprocess.run([*git, "commit", "-qam", "change"], check=True)
+            diff = subprocess.run([*git, "diff", "HEAD^1", "HEAD"], check=True, capture_output=True, text=True).stdout
+            (temp / "pr.diff").write_text(diff, encoding="utf-8")
+            (temp / "stub-list.txt").write_text("code.rs:1:18: replace b -> bool with true\n", encoding="utf-8")
+            env = {"RUNNER_TEMP": str(temp), "PATH": os.environ["PATH"]}
+            body = body.replace("scripts/mutation_report.py", str(ROOT / "scripts" / "mutation_report.py"))
+            subprocess.run(["bash", "-c", body], cwd=repo, env=env, check=True)
+            scoped = (temp / "pr.diff").read_text(encoding="utf-8")
+        self.assertEqual(scoped.count("+++ b/"), 2, scoped)
+        self.assertIn("--- /dev/null\n+++ b/data.rs\n@@ -0,0 +1,2 @@\n+fn a() -> u32 { X }\n+const X: u32 = 2;\n", scoped)
+        self.assertIn("-fn b() -> bool { true }\n+fn b() -> bool { false }\n", scoped)
+
+
 class WiringTest(unittest.TestCase):
     """The workflow and cargo-mutants settings stay consistent with the repository."""
 
@@ -187,10 +291,15 @@ class WiringTest(unittest.TestCase):
         self.assertEqual(list(triggers), ["pull_request"])
         self.assertEqual(workflow["permissions"], {"contents": "read"})
         job = workflow["jobs"]["rust"]
-        self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "read"})
+        self.assertEqual(job["permissions"], {"contents": "read"})
         steps = {s.get("name"): s for s in job["steps"]}
         self.assertFalse(job["steps"][0]["with"]["persist-credentials"])
-        self.assertEqual(job["steps"][0]["with"]["ref"], "${{ github.event.pull_request.head.sha }}")
+        # The merge commit (the default ref), so the workflow's scripts are
+        # there even on a branch cut before they were added; its diff against
+        # the base is what gets mutated.
+        self.assertNotIn("ref", job["steps"][0]["with"])
+        self.assertEqual(job["steps"][0]["with"]["fetch-depth"], 2)
+        self.assertEqual(steps["Diff the pull request"]["run"], 'git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"')
         run = steps["Test the mutants"]["run"]
         self.assertIn('--in-diff "$RUNNER_TEMP/pr.diff"', run)
         # Every workspace member, not only the default members.
@@ -200,6 +309,11 @@ class WiringTest(unittest.TestCase):
         # rust-cache exports CARGO_INCREMENTAL=0; only a step value wins.
         self.assertEqual(steps["Test the mutants"]["env"]["CARGO_INCREMENTAL"], "1")
         self.assertIn("python3 scripts/mutation_report.py", steps["Report"]["run"])
+        self.assertIn('--widened "$RUNNER_TEMP/widened.txt"', steps["Report"]["run"])
+        widen = steps["Widen to files changed outside functions"]["run"]
+        self.assertIn("--list", widen)
+        self.assertIn("mutation_report.py widen", widen)
+        self.assertLess(names_of(job).index("Widen to files changed outside functions"), names_of(job).index("Test the mutants"))
         prereqs = steps["Build the test prerequisites"]["run"]
         self.assertIn("ci-exec.py resolve --force-full", prereqs)
         self.assertIn("ci-exec.py prereqs rust_test --github-env", prereqs)

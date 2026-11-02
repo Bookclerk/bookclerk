@@ -18,8 +18,16 @@ The lists are cargo-mutants' own ``caught.txt``, ``missed.txt``,
 same job. Parsing is sans-IO so ``scripts/tests/test_mutation_report.py``
 drives the same code.
 
-Usage: ``mutation_report.py --out DIR --exit-code N [--stopped]`` from the
-repository root (``--summary FILE`` defaults to ``$GITHUB_STEP_SUMMARY``).
+Mutation testing only changes code inside function bodies, so a change to
+data a function reads (an attribute, a constant, a struct definition) yields
+no mutants from the diff. ``mutation_report.py widen`` finds the changed Rust
+files the diff gave no mutant, and the workflow then mutates every function
+in them, so the tests of the code beside the data are still checked.
+
+Usage: ``mutation_report.py --out DIR --exit-code N [--stopped] [--widened
+FILE]`` from the repository root (``--summary FILE`` defaults to
+``$GITHUB_STEP_SUMMARY``); ``mutation_report.py widen --diff FILE --listed
+FILE`` prints the files to widen, one per line.
 """
 
 from __future__ import annotations
@@ -120,6 +128,54 @@ def parse_list(text: str) -> list[str]:
     return mutants
 
 
+def changed_rust_files(diff: str) -> list[str]:
+    """List the Rust files a unified diff leaves in the new tree.
+
+    Args:
+        diff: The diff, as ``git diff`` writes it.
+
+    Returns:
+        The ``+++ b/<path>`` paths that end in ``.rs``, in diff order and
+        without repeats; a deleted file (``+++ /dev/null``) is left out.
+    """
+    files: list[str] = []
+    for line in diff.splitlines():
+        if line.startswith("+++ b/") and line.endswith(".rs"):
+            path = line[len("+++ b/") :]
+            if path not in files:
+                files.append(path)
+    return files
+
+
+def mutant_file(mutant: str) -> str:
+    """Return the file a mutant description names.
+
+    Args:
+        mutant: A list line, ``path:line:col: replace …``.
+
+    Returns:
+        The path before the first ``:``, or the whole line when it has none.
+    """
+    return mutant.split(":", 1)[0]
+
+
+def files_to_widen(diff: str, listed: str) -> list[str]:
+    """List the changed Rust files the diff gave no mutant.
+
+    Args:
+        diff: The pull request's diff.
+        listed: The output of ``cargo mutants --list --in-diff`` on that
+            diff: one mutant per line.
+
+    Returns:
+        Each changed Rust file no listed mutant is in, in diff order. Its
+        changes are all outside function bodies (or in tests), so the
+        workflow mutates every function in it instead.
+    """
+    covered = {mutant_file(m) for m in parse_list(listed)}
+    return [path for path in changed_rust_files(diff) if path not in covered]
+
+
 def run_state(exit_code: int) -> Run:
     """Map cargo-mutants' exit code to how the run ended."""
     return EXIT_CODES.get(exit_code, Run.ERROR)
@@ -158,7 +214,7 @@ def _code(text: str) -> str:
     return f"{fence} {text} {fence}" if longest else f"`{text}`"
 
 
-def render(results: Results, run: Run, *, stopped: bool) -> str:
+def render(results: Results, run: Run, *, stopped: bool, widened: list[str] | None = None) -> str:
     """Write the Markdown summary of a run.
 
     Args:
@@ -166,17 +222,33 @@ def render(results: Results, run: Run, *, stopped: bool) -> str:
         run: How the cargo-mutants process ended.
         stopped: Whether the workflow stopped cargo-mutants at its time
             limit, so later mutants were not tested.
+        widened: The files whose every function was mutated because the
+            diff changed them outside any function; only those that yielded
+            a mutant are named.
 
     Returns:
         The summary, ending with a newline.
     """
     lines = ["## Mutation testing (Rust)", ""]
+    mutated = {mutant_file(m) for outcome in Outcome for m in results.mutants[outcome]}
+    named = [path for path in widened or [] if path in mutated]
+    if named:
+        intro = (
+            "These files changed only outside function bodies (attributes, types, constants or tests), "
+            "so every function in them was mutated:"
+        )
+        lines += [intro, ""]
+        lines += [f"- {_code(path)}" for path in named[:MAX_LISTED]]
+        lines.append("")
     if run is Run.BASELINE_FAILED:
         lines.append("The unmutated code failed to build or its tests failed, so no mutant was tested. Check the job log.")
     elif run is Run.ERROR and not results.tested:
         lines.append("cargo-mutants did not finish; check the job log.")
     elif not results.tested and not results.count(Outcome.UNVIABLE):
-        lines.append("The change touches no Rust code cargo-mutants can mutate.")
+        lines.append(
+            "No mutants to test: the change holds no Rust function body cargo-mutants mutates. "
+            "Attributes, type definitions, comments, tests and excluded files are not mutated."
+        )
     else:
         score = results.score()
         if score is not None:
@@ -208,8 +280,28 @@ def render(results: Results, run: Run, *, stopped: bool) -> str:
     return "\n".join(lines) + "\n"
 
 
+def widen_main(argv: list[str]) -> int:
+    """Print the changed Rust files to mutate whole, one per line.
+
+    Args:
+        argv: The arguments after ``widen``.
+
+    Returns:
+        0.
+    """
+    parser = argparse.ArgumentParser(prog="mutation_report.py widen", description=files_to_widen.__doc__.split("\n", 1)[0])
+    parser.add_argument("--diff", type=Path, required=True, help="the pull request's diff")
+    parser.add_argument("--listed", type=Path, required=True, help="output of cargo mutants --list --in-diff")
+    args = parser.parse_args(argv)
+    diff = args.diff.read_text(encoding="utf-8", errors="replace")
+    listed = args.listed.read_text(encoding="utf-8", errors="replace")
+    for path in files_to_widen(diff, listed):
+        sys.stdout.write(path + "\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Write the summary of a cargo-mutants run.
+    """Write the summary of a cargo-mutants run, or run ``widen``.
 
     Args:
         argv: Command-line arguments; ``sys.argv`` when ``None``.
@@ -217,13 +309,18 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         0: the trial never fails the workflow.
     """
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["widen"]:
+        return widen_main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--out", type=Path, required=True, help="the run's mutants.out directory")
     parser.add_argument("--exit-code", type=int, required=True, help="cargo-mutants' exit code")
     parser.add_argument("--stopped", action="store_true", help="the run was stopped at its time limit")
+    parser.add_argument("--widened", type=Path, help="files mutated whole, one per line (from widen)")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""), help="file to append the summary to (none when empty)")
     args = parser.parse_args(argv)
-    markdown = render(read_results(args.out), run_state(args.exit_code), stopped=args.stopped)
+    widened = parse_list(args.widened.read_text(encoding="utf-8", errors="replace")) if args.widened and args.widened.is_file() else []
+    markdown = render(read_results(args.out), run_state(args.exit_code), stopped=args.stopped, widened=widened)
     sys.stdout.write(markdown)
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
