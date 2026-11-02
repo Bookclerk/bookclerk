@@ -19991,42 +19991,48 @@
               "string",
               "null"
             ],
-            "description": "Audible ASIN filter; first of uuid/asin/isbn/product_id wins."
+            "description": "Audible ASIN filter; first of uuid/asin/isbn/product_id wins.",
+            "example": "B0C8HVKW7X"
           },
           "uuid": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Library title UUID filter."
+            "description": "Library title UUID filter.",
+            "example": "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31"
           },
           "isbn": {
             "type": [
               "string",
               "null"
             ],
-            "description": "ISBN filter for non-Audible stores."
+            "description": "ISBN filter for non-Audible stores.",
+            "example": "9781797176802"
           },
           "product_id": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Store product id filter."
+            "description": "Store product id filter.",
+            "example": "1797176803"
           },
           "account": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Restrict acquire to this store account."
+            "description": "Restrict acquire to this store account.",
+            "example": "reader@example.com"
           },
           "plugin_instance_id": {
             "type": [
               "string",
               "null"
             ],
-            "description": "When set, fetch through this deployed plugin instance."
+            "description": "When set, fetch through this deployed plugin instance.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
           },
           "titles": {
             "type": "array",
@@ -20037,11 +20043,13 @@
           },
           "force": {
             "type": "boolean",
-            "description": "Re-download titles already acquired."
+            "description": "Re-download titles already acquired.",
+            "example": false
           },
           "pdf_only": {
             "type": "boolean",
-            "description": "Fetch only each title's companion PDF."
+            "description": "Fetch only each title's companion PDF.",
+            "example": false
           }
         }
       },
@@ -20067,22 +20075,26 @@
         "properties": {
           "ok": {
             "type": "boolean",
-            "description": "True when the action was accepted or completed."
+            "description": "True when the action was accepted or completed.",
+            "example": true
           },
           "message": {
             "type": "string",
-            "description": "Operator-facing status text."
+            "description": "Operator-facing status text.",
+            "example": "scan queued"
           },
           "job_id": {
             "type": "string",
-            "description": "Queued job id, or empty when the action is synchronous."
+            "description": "Queued job id, or empty when the action is synchronous.",
+            "example": "job_01jbq9x4e8c7k2m5n6p7r8s9t0"
           },
           "error": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Machine slug when admission failed (`conflict`, `queue_full`)."
+            "description": "Machine slug when admission failed (`conflict`, `queue_full`).",
+            "example": "queue_full"
           }
         }
       },
@@ -20771,16 +20783,19 @@
           "total": {
             "type": "integer",
             "description": "Match count before pagination.",
+            "example": 412,
             "minimum": 0
           },
           "limit": {
             "type": "integer",
             "description": "Applied page size.",
+            "example": 50,
             "minimum": 0
           },
           "offset": {
             "type": "integer",
             "description": "Applied skip count.",
+            "example": 0,
             "minimum": 0
           }
         }
@@ -22153,35 +22168,40 @@
         "properties": {
           "title": {
             "type": "string",
-            "description": "Required title text; empty values are rejected with 400."
+            "description": "Required title text; empty values are rejected with 400.",
+            "example": "The Left Hand of Darkness"
           },
           "authors": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional author list as a single display string."
+            "description": "Optional author list as a single display string.",
+            "example": "Ursula K. Le Guin"
           },
           "asin": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional Audible ASIN used for work-key identity."
+            "description": "Optional Audible ASIN used for work-key identity.",
+            "example": "B002V0QK4C"
           },
           "isbn": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional ISBN used for work-key identity."
+            "description": "Optional ISBN used for work-key identity.",
+            "example": "9780441478125"
           },
           "notes": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional operator or member note stored on the request."
+            "description": "Optional operator or member note stored on the request.",
+            "example": "Book club pick for March"
           },
           "store_editions": {
             "type": "array",
@@ -22202,56 +22222,64 @@
               "string",
               "null"
             ],
-            "description": "Optional stable work key; when omitted one is derived from bib fields."
+            "description": "Optional stable work key; when omitted one is derived from bib fields.",
+            "example": "work:9780441478125"
           },
           "cover_url": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional cover image URL snapshotted onto the request."
+            "description": "Optional cover image URL snapshotted onto the request.",
+            "example": "https://images.example.com/covers/9780441478125.jpg"
           },
           "description": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional plot/summary text persisted with the request."
+            "description": "Optional plot/summary text persisted with the request.",
+            "example": "An envoy to the planet Gethen must win the trust of a people who have no fixed gender."
           },
           "subtitle": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional subtitle stored on the request and source rows."
+            "description": "Optional subtitle stored on the request and source rows.",
+            "example": "A Hainish Novel"
           },
           "narrators": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional narrator list as a single display string."
+            "description": "Optional narrator list as a single display string.",
+            "example": "George Guidall"
           },
           "series": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional series name."
+            "description": "Optional series name.",
+            "example": "Hainish Cycle"
           },
           "series_index": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional series position as a display string."
+            "description": "Optional series position as a display string.",
+            "example": "4"
           },
           "publisher": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional publisher name."
+            "description": "Optional publisher name.",
+            "example": "Blackstone Publishing"
           },
           "length_minutes": {
             "type": [
@@ -22259,28 +22287,32 @@
               "null"
             ],
             "format": "int64",
-            "description": "Optional runtime in minutes."
+            "description": "Optional runtime in minutes.",
+            "example": 560
           },
           "published_at": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional publication date as a display string."
+            "description": "Optional publication date as a display string.",
+            "example": "2005-06-21"
           },
           "genres": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional genre list as a single display string."
+            "description": "Optional genre list as a single display string.",
+            "example": "Science Fiction, Classics"
           },
           "language": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional content language code."
+            "description": "Optional content language code.",
+            "example": "en"
           }
         }
       },
@@ -22341,23 +22373,28 @@
               "string",
               "null"
             ],
-            "description": "Source plugin id. Defaults to the active `[database].plugin` before reload."
+            "description": "Source plugin id. Defaults to the active `[database].plugin` before reload.",
+            "example": "sqlite"
           },
           "to": {
             "type": "string",
-            "description": "Destination database plugin id to copy into."
+            "description": "Destination database plugin id to copy into.",
+            "example": "postgres"
           },
           "dry_run": {
             "type": "boolean",
-            "description": "When true, count rows without writing."
+            "description": "When true, count rows without writing.",
+            "example": true
           },
           "force": {
             "type": "boolean",
-            "description": "When true, overwrite a destination that is not empty."
+            "description": "When true, overwrite a destination that is not empty.",
+            "example": false
           },
           "apply": {
             "type": "boolean",
-            "description": "Update `[database].plugin` in config.toml after a successful copy."
+            "description": "Update `[database].plugin` in config.toml after a successful copy.",
+            "example": false
           }
         }
       },
@@ -22585,51 +22622,62 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Event id."
+            "description": "Event id.",
+            "example": "evt_01jbq9x4e8c7k2m5n6p7r8s9t0"
           },
           "eventType": {
             "type": "string",
-            "description": "Event type (`book_acquired`)."
+            "description": "Event type (`book_acquired`).",
+            "example": "book_acquired"
           },
           "schemaVersion": {
             "type": "integer",
             "format": "int64",
-            "description": "Payload schema version."
+            "description": "Payload schema version.",
+            "example": 1
           },
           "dispatchState": {
             "type": "string",
-            "description": "`pending` or `dispatched`."
+            "description": "`pending` or `dispatched`.",
+            "example": "dispatched"
           },
           "accountId": {
             "type": "string",
-            "description": "Tenant / account id."
+            "description": "Tenant / account id.",
+            "example": "reader@example.com"
           },
           "dedupKey": {
             "type": "string",
-            "description": "Producer idempotency key."
+            "description": "Producer idempotency key.",
+            "example": "book_acquired:3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31"
           },
           "createdAt": {
             "type": "string",
-            "description": "RFC 3339 insert time."
+            "description": "RFC 3339 insert time.",
+            "example": "2026-10-29T10:12:00Z"
           },
           "queueName": {
             "type": "string",
-            "description": "Queue the row belongs to (`core.events` for domain events)."
+            "description": "Queue the row belongs to (`core.events` for domain events).",
+            "example": "core.events"
           },
           "contentType": {
             "type": "string",
-            "description": "Body encoding (`json`, `text`, `bytes`)."
+            "description": "Body encoding (`json`, `text`, `bytes`).",
+            "example": "json"
           },
           "source": {
             "type": "string",
-            "description": "Producer plugin id; empty when the host published it."
+            "description": "Producer plugin id; empty when the host published it.",
+            "example": ""
           },
           "deliverAfter": {
             "type": [
               "string",
               "null"
             ],
-            "description": "RFC 3339 earliest delivery time for delayed queue messages."
+            "description": "RFC 3339 earliest delivery time for delayed queue messages.",
+            "example": "2026-10-29T10:15:00Z"
           }
         }
       },
@@ -22995,76 +23043,92 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Delivery id (`{event_id}:{plugin_id}`)."
+            "description": "Delivery id (`{event_id}:{plugin_id}`).",
+            "example": "evt_01jbq9x4e8c7k2m5n6p7r8s9t0:audiobookshelf"
           },
           "eventId": {
             "type": "string",
-            "description": "Parent event id."
+            "description": "Parent event id.",
+            "example": "evt_01jbq9x4e8c7k2m5n6p7r8s9t0"
           },
           "pluginId": {
             "type": "string",
-            "description": "Subscriber plugin id."
+            "description": "Subscriber plugin id.",
+            "example": "audiobookshelf"
           },
           "state": {
             "type": "string",
-            "description": "Lifecycle state."
+            "description": "Lifecycle state.",
+            "example": "pending"
           },
           "attemptCount": {
             "type": "integer",
             "format": "int64",
-            "description": "Claim count (not incremented on resume)."
+            "description": "Claim count (not incremented on resume).",
+            "example": 1
           },
           "leaseGeneration": {
             "type": "integer",
             "format": "int64",
-            "description": "Fence generation."
+            "description": "Fence generation.",
+            "example": 2
           },
           "invocationSequence": {
             "type": "integer",
             "format": "int64",
-            "description": "Resume ordinal."
+            "description": "Resume ordinal.",
+            "example": 0
           },
           "outcome": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Terminal outcome when set."
+            "description": "Terminal outcome when set.",
+            "example": "acked"
           },
           "errorMessage": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Operator-facing error."
+            "description": "Operator-facing error.",
+            "example": "integration API error (503): library scan in progress"
           },
           "runAfter": {
             "type": "string",
-            "description": "RFC 3339 earliest claim time."
+            "description": "RFC 3339 earliest claim time.",
+            "example": "2026-10-29T10:12:00Z"
           },
           "updatedAt": {
             "type": "string",
-            "description": "RFC 3339 last update."
+            "description": "RFC 3339 last update.",
+            "example": "2026-10-29T10:12:30Z"
           },
           "cancelRequested": {
             "type": "boolean",
-            "description": "Cooperative cancel flag."
+            "description": "Cooperative cancel flag.",
+            "example": false
           },
           "resourceClass": {
             "type": "string",
-            "description": "Concurrency class (`network` today)."
+            "description": "Concurrency class (`network` today).",
+            "example": "network"
           },
           "resumePending": {
             "type": "boolean",
-            "description": "Next claim should resume rather than increment attempt."
+            "description": "Next claim should resume rather than increment attempt.",
+            "example": false
           },
           "hasCheckpoint": {
             "type": "boolean",
-            "description": "True when a suspend checkpoint is stored."
+            "description": "True when a suspend checkpoint is stored.",
+            "example": false
           },
           "queueName": {
             "type": "string",
-            "description": "Queue of the parent event."
+            "description": "Queue of the parent event.",
+            "example": "core.events"
           }
         }
       },
@@ -23085,27 +23149,32 @@
           "pending": {
             "type": "integer",
             "format": "int64",
-            "description": "Pending deliveries without a suspend checkpoint."
+            "description": "Pending deliveries without a suspend checkpoint.",
+            "example": 3
           },
           "running": {
             "type": "integer",
             "format": "int64",
-            "description": "Currently claimed deliveries."
+            "description": "Currently claimed deliveries.",
+            "example": 1
           },
           "suspended": {
             "type": "integer",
             "format": "int64",
-            "description": "Pending deliveries parked with a checkpoint."
+            "description": "Pending deliveries parked with a checkpoint.",
+            "example": 0
           },
           "dead_letter": {
             "type": "integer",
             "format": "int64",
-            "description": "Dead-lettered deliveries."
+            "description": "Dead-lettered deliveries.",
+            "example": 0
           },
           "acked": {
             "type": "integer",
             "format": "int64",
-            "description": "Successfully acked deliveries."
+            "description": "Successfully acked deliveries.",
+            "example": 1284
           },
           "oldest_pending_age_secs": {
             "type": [
@@ -23113,22 +23182,26 @@
               "null"
             ],
             "format": "int64",
-            "description": "Age in seconds of the oldest pending delivery, when any exist."
+            "description": "Age in seconds of the oldest pending delivery, when any exist.",
+            "example": 12
           },
           "retries_total": {
             "type": "integer",
             "format": "int64",
-            "description": "Durable retry outcomes (including reclaim-as-retry)."
+            "description": "Durable retry outcomes (including reclaim-as-retry).",
+            "example": 7
           },
           "suspensions_total": {
             "type": "integer",
             "format": "int64",
-            "description": "Durable suspend outcomes."
+            "description": "Durable suspend outcomes.",
+            "example": 2
           },
           "dead_letters_total": {
             "type": "integer",
             "format": "int64",
-            "description": "Durable transitions into `dead_letter`."
+            "description": "Durable transitions into `dead_letter`.",
+            "example": 0
           },
           "dispatch_latency_ms_avg": {
             "type": [
@@ -23136,7 +23209,8 @@
               "null"
             ],
             "format": "int64",
-            "description": "Average first-dispatch latency in milliseconds, when sampled."
+            "description": "Average first-dispatch latency in milliseconds, when sampled.",
+            "example": 140
           },
           "handler_latency_ms_avg": {
             "type": [
@@ -23144,7 +23218,8 @@
               "null"
             ],
             "format": "int64",
-            "description": "Average `onEvent` handler duration in milliseconds, when sampled."
+            "description": "Average `onEvent` handler duration in milliseconds, when sampled.",
+            "example": 860
           }
         }
       },
@@ -23247,7 +23322,8 @@
         "properties": {
           "status": {
             "type": "string",
-            "description": "Always `ok` when the process can serve HTTP."
+            "description": "Always `ok` when the process can serve HTTP.",
+            "example": "ok"
           }
         }
       },
@@ -23564,7 +23640,8 @@
               "boolean",
               "null"
             ],
-            "description": "When true, the integration rescans even if it considers itself current."
+            "description": "When true, the integration rescans even if it considers itself current.",
+            "example": true
           }
         }
       },
@@ -23593,7 +23670,8 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Opaque job id returned to the client when the job is accepted."
+            "description": "Opaque job id returned to the client when the job is accepted.",
+            "example": "job_01jbq9x4e8c7k2m5n6p7r8s9t0"
           },
           "kind": {
             "$ref": "#/components/schemas/JobKind",
@@ -23608,45 +23686,52 @@
               "string",
               "null"
             ],
-            "description": "Optional operator-facing progress or error text."
+            "description": "Optional operator-facing progress or error text.",
+            "example": "scanning reader@example.com (libro)"
           },
           "progress": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Human-readable progress string while the job is running."
+            "description": "Human-readable progress string while the job is running.",
+            "example": "12 of 40 titles"
           },
           "attempt_count": {
             "type": "integer",
             "format": "int64",
-            "description": "Number of times a worker has claimed this row."
+            "description": "Number of times a worker has claimed this row.",
+            "example": 1
           },
           "max_attempts": {
             "type": "integer",
             "format": "int64",
-            "description": "Maximum claims before a failure is terminal."
+            "description": "Maximum claims before a failure is terminal.",
+            "example": 3
           },
           "error_kind": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Structured error kind when failed or cancelled."
+            "description": "Structured error kind when failed or cancelled.",
+            "example": "cancelled"
           },
           "created_at": {
             "type": [
               "string",
               "null"
             ],
-            "description": "RFC 3339 timestamp when the row was inserted."
+            "description": "RFC 3339 timestamp when the row was inserted.",
+            "example": "2026-10-29T10:12:00Z"
           },
           "finished_at": {
             "type": [
               "string",
               "null"
             ],
-            "description": "RFC 3339 timestamp when the row reached a terminal state."
+            "description": "RFC 3339 timestamp when the row reached a terminal state.",
+            "example": "2026-10-29T10:14:22Z"
           }
         }
       },
@@ -26279,7 +26364,8 @@
               "string",
               "null"
             ],
-            "description": "Replacement landing view when set."
+            "description": "Replacement landing view when set.",
+            "example": "discover"
           },
           "disabled_shelves": {
             "type": [
@@ -26296,21 +26382,24 @@
               "string",
               "null"
             ],
-            "description": "Replacement Discover sort key when set."
+            "description": "Replacement Discover sort key when set.",
+            "example": "popularity"
           },
           "discover_sort_dir": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Replacement Discover sort direction when set."
+            "description": "Replacement Discover sort direction when set.",
+            "example": "desc"
           },
           "discover_language": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Present + value sets language; present + `null` clears to browser default;\nomitted leaves unchanged."
+            "description": "Present + value sets language; present + `null` clears to browser default;\nomitted leaves unchanged.",
+            "example": "de"
           },
           "discover_excluded_sources": {
             "type": [
@@ -26327,7 +26416,8 @@
               "string",
               "null"
             ],
-            "description": "Replacement appearance preference when set (`system`, `light`, `dark`)."
+            "description": "Replacement appearance preference when set (`system`, `light`, `dark`).",
+            "example": "dark"
           }
         }
       },
@@ -26378,7 +26468,8 @@
               "null"
             ],
             "format": "int64",
-            "description": "`core.output` document revision the client read (`output_revision` in\n`GET /api/settings`). When set and stale, an `output.*` update is\nrejected with 409."
+            "description": "`core.output` document revision the client read (`output_revision` in\n`GET /api/settings`). When set and stale, an `output.*` update is\nrejected with 409.",
+            "example": 7
           }
         }
       },
@@ -26604,7 +26695,8 @@
         "properties": {
           "approve": {
             "type": "boolean",
-            "description": "Must be true; a false value is rejected with 400."
+            "description": "Must be true; a false value is rejected with 400.",
+            "example": true
           },
           "grant": {
             "oneOf": [
@@ -26628,35 +26720,40 @@
         "properties": {
           "name": {
             "type": "string",
-            "description": "Display name from the portal brand or plugin manifest."
+            "description": "Display name from the portal brand or plugin manifest.",
+            "example": "Libro.fm"
           },
           "bg": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Background CSS color from the portal brand, when known."
+            "description": "Background CSS color from the portal brand, when known.",
+            "example": "#0f2a3f"
           },
           "fg": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Foreground CSS color from the portal brand, when known."
+            "description": "Foreground CSS color from the portal brand, when known.",
+            "example": "#ffffff"
           },
           "accent": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Accent CSS color from the portal brand, when known."
+            "description": "Accent CSS color from the portal brand, when known.",
+            "example": "#f4b400"
           },
           "logo": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Logo URL or host-served embed path."
+            "description": "Logo URL or host-served embed path.",
+            "example": "/api/plugins/libro/logo"
           }
         }
       },
@@ -26683,59 +26780,69 @@
             "type": "integer",
             "format": "int32",
             "description": "Requested workerd CPU budget in milliseconds.",
+            "example": 50,
             "minimum": 0
           },
           "subrequests": {
             "type": "integer",
             "format": "int32",
             "description": "Requested workerd subrequest budget.",
+            "example": 50,
             "minimum": 0
           },
           "max_cpu_ms": {
             "type": "integer",
             "format": "int32",
             "description": "Host hard cap for workerd CPU milliseconds.",
+            "example": 30000,
             "minimum": 0
           },
           "max_subrequests": {
             "type": "integer",
             "format": "int32",
             "description": "Host hard cap for workerd subrequests.",
+            "example": 1000,
             "minimum": 0
           },
           "disk_mib": {
             "type": "integer",
             "format": "int32",
             "description": "Default plugin state disk budget in mebibytes.",
+            "example": 256,
             "minimum": 0
           },
           "max_disk_mib": {
             "type": "integer",
             "format": "int32",
             "description": "Host hard cap for plugin state disk in mebibytes.",
+            "example": 4096,
             "minimum": 0
           },
           "memory_mib": {
             "type": "integer",
             "format": "int32",
             "description": "Default jail memory in mebibytes.",
+            "example": 512,
             "minimum": 0
           },
           "max_memory_mib": {
             "type": "integer",
             "format": "int32",
             "description": "Host hard cap for jail memory in mebibytes.",
+            "example": 4096,
             "minimum": 0
           },
           "cpu_cores": {
             "type": "number",
             "format": "double",
-            "description": "Manifest / default jail CPU in cores (2 d.p.)."
+            "description": "Manifest / default jail CPU in cores (2 d.p.).",
+            "example": 1.0
           },
           "max_cpu_cores": {
             "type": "number",
             "format": "double",
-            "description": "Host max jail CPU in cores (2 d.p.)."
+            "description": "Host max jail CPU in cores (2 d.p.).",
+            "example": 8.0
           },
           "jail_cpu_cores": {
             "type": [
@@ -26743,18 +26850,21 @@
               "null"
             ],
             "format": "double",
-            "description": "Optional `[plugins.jail]` ceiling in cores."
+            "description": "Optional `[plugins.jail]` ceiling in cores.",
+            "example": 2.0
           },
           "extra_processes": {
             "type": "integer",
             "format": "int32",
             "description": "Default extra process/thread budget (native consent).",
+            "example": 4,
             "minimum": 0
           },
           "max_extra_processes": {
             "type": "integer",
             "format": "int32",
             "description": "Host hard cap for extra process budget.",
+            "example": 32,
             "minimum": 0
           },
           "known_bindings": {
@@ -26782,19 +26892,23 @@
         "properties": {
           "plugin_id": {
             "type": "string",
-            "description": "Plugin id whose grant is being reviewed."
+            "description": "Plugin id whose grant is being reviewed.",
+            "example": "libro"
           },
           "plugin_key": {
             "type": "string",
-            "description": "Canonical PluginKey for this install (empty when unknown)."
+            "description": "Canonical PluginKey for this install (empty when unknown).",
+            "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
           },
           "provenance": {
             "type": "string",
-            "description": "Host-evaluated provenance label."
+            "description": "Host-evaluated provenance label.",
+            "example": "platform_bundled"
           },
           "runtime": {
             "type": "string",
-            "description": "Guest runtime (`native` or `workerd`) — drives which controls are enforceable."
+            "description": "Guest runtime (`native` or `workerd`) — drives which controls are enforceable.",
+            "example": "native"
           },
           "request": {
             "$ref": "#/components/schemas/PluginGrantView",
@@ -26802,7 +26916,8 @@
           },
           "covered": {
             "type": "boolean",
-            "description": "True when an existing on-disk grant already satisfies the request."
+            "description": "True when an existing on-disk grant already satisfies the request.",
+            "example": false
           },
           "summary": {
             "type": "array",
@@ -26951,7 +27066,8 @@
               "string",
               "null"
             ],
-            "description": "Override egress mode when set."
+            "description": "Override egress mode when set.",
+            "example": "allowlist"
           },
           "domains": {
             "type": [
@@ -26988,7 +27104,8 @@
               "boolean",
               "null"
             ],
-            "description": "Override undeclared-public-redirect permission when set."
+            "description": "Override undeclared-public-redirect permission when set.",
+            "example": false
           },
           "bindings": {
             "type": [
@@ -27017,6 +27134,7 @@
             ],
             "format": "int32",
             "description": "Override workerd CPU milliseconds when set.",
+            "example": 100,
             "minimum": 0
           },
           "subrequests": {
@@ -27026,6 +27144,7 @@
             ],
             "format": "int32",
             "description": "Override workerd subrequest budget when set.",
+            "example": 100,
             "minimum": 0
           },
           "diskMib": {
@@ -27035,6 +27154,7 @@
             ],
             "format": "int32",
             "description": "Override disk budget in mebibytes when set.",
+            "example": 512,
             "minimum": 0
           },
           "memoryMib": {
@@ -27044,6 +27164,7 @@
             ],
             "format": "int32",
             "description": "Override jail memory in mebibytes when set.",
+            "example": 1024,
             "minimum": 0
           },
           "cpuCores": {
@@ -27052,7 +27173,8 @@
               "null"
             ],
             "format": "double",
-            "description": "Jail CPU in cores (2 d.p.); converted to Spec percent server-side."
+            "description": "Jail CPU in cores (2 d.p.); converted to Spec percent server-side.",
+            "example": 1.5
           },
           "extraProcesses": {
             "type": [
@@ -27061,6 +27183,7 @@
             ],
             "format": "int32",
             "description": "Extra process/thread budget (native); ignored for workerd.",
+            "example": 8,
             "minimum": 0
           }
         }
@@ -27096,11 +27219,13 @@
         "properties": {
           "pluginKey": {
             "type": "string",
-            "description": "Canonical provenance-qualified PluginKey."
+            "description": "Canonical provenance-qualified PluginKey.",
+            "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
           },
           "pluginId": {
             "type": "string",
-            "description": "Plugin id this grant applies to."
+            "description": "Plugin id this grant applies to.",
+            "example": "libro"
           },
           "entrypoints": {
             "type": "array",
@@ -27132,7 +27257,8 @@
           },
           "networkMode": {
             "type": "string",
-            "description": "Approved egress mode (`deny`, `allowlist`, and similar)."
+            "description": "Approved egress mode (`deny`, `allowlist`, and similar).",
+            "example": "allowlist"
           },
           "domains": {
             "type": "array",
@@ -27206,15 +27332,18 @@
           },
           "allowUndeclaredPublicRedirects": {
             "type": "boolean",
-            "description": "Undeclared public redirect permission."
+            "description": "Undeclared public redirect permission.",
+            "example": false
           },
           "grantRevision": {
             "type": "string",
-            "description": "SHA-256 of persisted operator consent (no host overlays)."
+            "description": "SHA-256 of persisted operator consent (no host overlays).",
+            "example": "9b74c9897bac770ffc029102a200c5de3a9c4a1d6c2f1e0b5a7d8c9e0f1a2b3c"
           },
           "authorityRevision": {
             "type": "string",
-            "description": "SHA-256 of the canonical effective authority."
+            "description": "SHA-256 of the canonical effective authority.",
+            "example": "1f3870be274f6c49b3e31a0c6728957f4e1d5b2c7a8d9e0f1a2b3c4d5e6f7a8b"
           },
           "bindings": {
             "type": "array",
@@ -27232,7 +27361,8 @@
           },
           "approvedAt": {
             "type": "string",
-            "description": "RFC 3339 timestamp when the grant was last approved."
+            "description": "RFC 3339 timestamp when the grant was last approved.",
+            "example": "2026-10-29T10:12:00Z"
           },
           "cpuMs": {
             "type": [
@@ -27241,6 +27371,7 @@
             ],
             "format": "int32",
             "description": "Optional workerd CPU budget in milliseconds.",
+            "example": 50,
             "minimum": 0
           },
           "subrequests": {
@@ -27250,6 +27381,7 @@
             ],
             "format": "int32",
             "description": "Optional workerd subrequest budget.",
+            "example": 50,
             "minimum": 0
           },
           "diskMib": {
@@ -27259,6 +27391,7 @@
             ],
             "format": "int32",
             "description": "Optional plugin state disk budget in mebibytes.",
+            "example": 256,
             "minimum": 0
           },
           "memoryMib": {
@@ -27268,6 +27401,7 @@
             ],
             "format": "int32",
             "description": "Optional jail memory in mebibytes.",
+            "example": 512,
             "minimum": 0
           },
           "cpuCores": {
@@ -27276,7 +27410,8 @@
               "null"
             ],
             "format": "double",
-            "description": "Jail CPU in cores (2 d.p.); absent for workerd."
+            "description": "Jail CPU in cores (2 d.p.); absent for workerd.",
+            "example": 1.0
           },
           "extraProcesses": {
             "type": [
@@ -27285,6 +27420,7 @@
             ],
             "format": "int32",
             "description": "Extra process/thread budget beyond launcher overhead; native only.",
+            "example": 4,
             "minimum": 0
           }
         }
@@ -27626,11 +27762,13 @@
         "properties": {
           "value": {
             "type": "string",
-            "description": "Stored config value; empty string means use the plugin default."
+            "description": "Stored config value; empty string means use the plugin default.",
+            "example": "us"
           },
           "label": {
             "type": "string",
-            "description": "Operator-facing choice caption."
+            "description": "Operator-facing choice caption.",
+            "example": "United States"
           }
         }
       },
@@ -27646,19 +27784,23 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "Dotted `config.toml` key for this option."
+            "description": "Dotted `config.toml` key for this option.",
+            "example": "sources.libro.marketplace"
           },
           "label": {
             "type": "string",
-            "description": "Operator-facing field caption."
+            "description": "Operator-facing field caption.",
+            "example": "Marketplace"
           },
           "value": {
             "type": "string",
-            "description": "Current string form of the setting."
+            "description": "Current string form of the setting.",
+            "example": "us"
           },
           "value_type": {
             "type": "string",
-            "description": "UI widget hint (`boolean`, `string`, or `number`)."
+            "description": "UI widget hint (`boolean`, `string`, or `number`).",
+            "example": "string"
           },
           "choices": {
             "type": [
@@ -27672,14 +27814,16 @@
           },
           "secret": {
             "type": "boolean",
-            "description": "True for a `secret` setting: `value` is never the stored value."
+            "description": "True for a `secret` setting: `value` is never the stored value.",
+            "example": false
           },
           "secret_set": {
             "type": [
               "boolean",
               "null"
             ],
-            "description": "For a secret setting, whether the instance document names a sealed value."
+            "description": "For a secret setting, whether the instance document names a sealed value.",
+            "example": true
           }
         }
       },
@@ -27694,32 +27838,37 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Plugin id (`audible`, `sqlite`, and similar)."
+            "description": "Plugin id (`audible`, `sqlite`, and similar).",
+            "example": "libro"
           },
           "family": {
             "type": "string",
-            "description": "Handler family wire label (`source`, `integration`, `output`, `database`)."
+            "description": "Handler family wire label (`source`, `integration`, `output`, `database`).",
+            "example": "source"
           },
           "plugin_key": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Provenance-qualified PluginKey when this row came from a discovered install."
+            "description": "Provenance-qualified PluginKey when this row came from a discovered install.",
+            "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
           },
           "provenance": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Host-evaluated provenance (`platform_bundled`, `verified_staged`, `installed`, …)."
+            "description": "Host-evaluated provenance (`platform_bundled`, `verified_staged`, `installed`, …).",
+            "example": "platform_bundled"
           },
           "logo": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Google favicon (or portal brand) URL for Settings list rows."
+            "description": "Google favicon (or portal brand) URL for Settings list rows.",
+            "example": "https://www.google.com/s2/favicons?domain=libro.fm&sz=64"
           },
           "settings": {
             "type": "array",
@@ -27733,18 +27882,21 @@
               "string",
               "null"
             ],
-            "description": "Plugin instance this group edits; absent for a bootstrap database adapter."
+            "description": "Plugin instance this group edits; absent for a bootstrap database adapter.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
           },
           "display_name": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Operator-facing instance name, when the operator set one."
+            "description": "Operator-facing instance name, when the operator set one.",
+            "example": "Libro.fm (household)"
           },
           "is_default": {
             "type": "boolean",
-            "description": "True when a bare plugin key or alias routes to this instance."
+            "description": "True when a bare plugin key or alias routes to this instance.",
+            "example": true
           },
           "config_revision": {
             "type": [
@@ -27752,7 +27904,8 @@
               "null"
             ],
             "format": "int64",
-            "description": "Instance document revision for compare-and-swap writes."
+            "description": "Instance document revision for compare-and-swap writes.",
+            "example": 4
           },
           "deployment": {
             "oneOf": [
@@ -28143,7 +28296,8 @@
         "properties": {
           "default_view": {
             "type": "string",
-            "description": "Landing view id (`library`, `discover`, …) after normalization."
+            "description": "Landing view id (`library`, `discover`, …) after normalization.",
+            "example": "library"
           },
           "disabled_shelves": {
             "type": "array",
@@ -28154,18 +28308,21 @@
           },
           "discover_sort": {
             "type": "string",
-            "description": "Discover sort key (`relevance`, `popularity`, …)."
+            "description": "Discover sort key (`relevance`, `popularity`, …).",
+            "example": "relevance"
           },
           "discover_sort_dir": {
             "type": "string",
-            "description": "Discover sort direction (`asc` or `desc`)."
+            "description": "Discover sort direction (`asc` or `desc`).",
+            "example": "desc"
           },
           "discover_language": {
             "type": [
               "string",
               "null"
             ],
-            "description": "`null` = use browser language on the client."
+            "description": "`null` = use browser language on the client.",
+            "example": "en"
           },
           "discover_excluded_sources": {
             "type": "array",
@@ -28176,7 +28333,8 @@
           },
           "theme": {
             "type": "string",
-            "description": "Appearance preference (`system`, `light`, or `dark`)."
+            "description": "Appearance preference (`system`, `light`, or `dark`).",
+            "example": "system"
           }
         }
       },
@@ -28718,31 +28876,37 @@
         "properties": {
           "name": {
             "type": "string",
-            "description": "Queue name."
+            "description": "Queue name.",
+            "example": "core.events"
           },
           "core": {
             "type": "boolean",
-            "description": "True for the domain-event bus (`core.events`)."
+            "description": "True for the domain-event bus (`core.events`).",
+            "example": true
           },
           "pending": {
             "type": "integer",
             "format": "int64",
-            "description": "Deliveries waiting to be claimed (including suspended rows)."
+            "description": "Deliveries waiting to be claimed (including suspended rows).",
+            "example": 3
           },
           "running": {
             "type": "integer",
             "format": "int64",
-            "description": "Deliveries currently claimed by a worker."
+            "description": "Deliveries currently claimed by a worker.",
+            "example": 1
           },
           "acked": {
             "type": "integer",
             "format": "int64",
-            "description": "Deliveries acked."
+            "description": "Deliveries acked.",
+            "example": 1284
           },
           "deadLetter": {
             "type": "integer",
             "format": "int64",
-            "description": "Deliveries parked for operator review."
+            "description": "Deliveries parked for operator review.",
+            "example": 0
           },
           "consumers": {
             "type": "array",
@@ -29467,15 +29631,18 @@
         "properties": {
           "ok": {
             "type": "boolean",
-            "description": "True when at least one job was accepted."
+            "description": "True when at least one job was accepted.",
+            "example": true
           },
           "message": {
             "type": "string",
-            "description": "Operator-facing status text."
+            "description": "Operator-facing status text.",
+            "example": "2 scan jobs queued"
           },
           "job_id": {
             "type": "string",
-            "description": "First accepted (or, when none was, already queued) job id."
+            "description": "First accepted (or, when none was, already queued) job id.",
+            "example": "job_01jbq9x4e8c7k2m5n6p7r8s9t0"
           },
           "job_ids": {
             "type": "array",
@@ -29489,7 +29656,8 @@
               "string",
               "null"
             ],
-            "description": "Machine slug when nothing was accepted (`conflict`, `queue_full`,\n`nothing_to_scan`, `nothing_to_acquire`)."
+            "description": "Machine slug when nothing was accepted (`conflict`, `queue_full`,\n`nothing_to_scan`, `nothing_to_acquire`).",
+            "example": "nothing_to_scan"
           }
         }
       },
@@ -29502,14 +29670,16 @@
               "string",
               "null"
             ],
-            "description": "When set, scan this account even if `scan_enabled` is false."
+            "description": "When set, scan this account even if `scan_enabled` is false.",
+            "example": "reader@example.com"
           },
           "plugin_instance_id": {
             "type": [
               "string",
               "null"
             ],
-            "description": "When set, scan only this deployed plugin instance."
+            "description": "When set, scan only this deployed plugin instance.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
           }
         }
       },
@@ -29800,7 +29970,8 @@
           "host_cpu_cores_max": {
             "type": "number",
             "format": "double",
-            "description": "Host max jail CPU in cores (2 d.p.; equals logical CPU count)."
+            "description": "Host max jail CPU in cores (2 d.p.; equals logical CPU count).",
+            "example": 8.0
           },
           "jail_cpu_cores": {
             "type": [
@@ -29808,7 +29979,8 @@
               "null"
             ],
             "format": "double",
-            "description": "Optional global per-jail CPU ceiling in cores (from `[plugins.jail]`)."
+            "description": "Optional global per-jail CPU ceiling in cores (from `[plugins.jail]`).",
+            "example": 2.0
           },
           "output_revision": {
             "type": [
@@ -29816,7 +29988,8 @@
               "null"
             ],
             "format": "int64",
-            "description": "Revision of the `core.output` document the `output.*` values in\n`settings` were read from; send it back as `expected_output_revision`.\n`effective[\"output.revision\"]` is the revision this host has applied,\nwhich lags the document until the host's next wakeup."
+            "description": "Revision of the `core.output` document the `output.*` values in\n`settings` were read from; send it back as `expected_output_revision`.\n`effective[\"output.revision\"]` is the revision this host has applied,\nwhich lags the document until the host's next wakeup.",
+            "example": 7
           }
         }
       },
@@ -29830,11 +30003,13 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "Dotted config key; rejected unless it passes the settings allowlist."
+            "description": "Dotted config key; rejected unless it passes the settings allowlist.",
+            "example": "library.auto_acquire"
           },
           "value": {
             "type": "string",
-            "description": "Raw string value, normalized before it is written."
+            "description": "Raw string value, normalized before it is written.",
+            "example": "false"
           }
         }
       },
@@ -30153,44 +30328,53 @@
           "accounts": {
             "type": "integer",
             "description": "Count of configured store accounts.",
+            "example": 2,
             "minimum": 0
           },
           "books": {
             "type": "integer",
             "description": "Total title rows in the library.",
+            "example": 412,
             "minimum": 0
           },
           "acquired": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles whose `acquire_status` is `acquired`."
+            "description": "Titles whose `acquire_status` is `acquired`.",
+            "example": 380
           },
           "pending": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles still needing acquire (`not_acquired`)."
+            "description": "Titles still needing acquire (`not_acquired`).",
+            "example": 27
           },
           "error": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles stuck in `error` after a failed acquire."
+            "description": "Titles stuck in `error` after a failed acquire.",
+            "example": 1
           },
           "in_progress": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles currently `queued` or `downloading`."
+            "description": "Titles currently `queued` or `downloading`.",
+            "example": 4
           },
           "listen": {
             "type": "string",
-            "description": "Comma-joined `daemon.listen` addresses from live config."
+            "description": "Comma-joined `daemon.listen` addresses from live config.",
+            "example": "127.0.0.1:8787,[::1]:8787"
           },
           "storage_backend": {
             "type": "string",
-            "description": "Comma-joined enabled destination plugin ids, or `none`."
+            "description": "Comma-joined enabled destination plugin ids, or `none`.",
+            "example": "local"
           },
           "auth_enabled": {
             "type": "boolean",
-            "description": "Whether the live auth middleware requires operator credentials."
+            "description": "Whether the live auth middleware requires operator credentials.",
+            "example": true
           },
           "events": {
             "$ref": "#/components/schemas/EventQueueStatus",
@@ -30275,7 +30459,8 @@
         "properties": {
           "host": {
             "type": "string",
-            "description": "Hostname or `*.` wildcard."
+            "description": "Hostname or `*.` wildcard.",
+            "example": "*.libro.fm"
           },
           "ports": {
             "type": "array",

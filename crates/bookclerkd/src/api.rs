@@ -287,30 +287,38 @@ async fn serve_invite_spa(index: &Path) -> Response {
 /// Snapshot of one queued or running control-plane job.
 pub struct JobInfo {
     /// Opaque job id returned to the client when the job is accepted.
+    #[schema(example = "job_01jbq9x4e8c7k2m5n6p7r8s9t0")]
     pub id: String,
     /// What the job does.
     pub kind: bookclerk_library::JobKind,
     /// Where the job is in its lifecycle.
     pub status: bookclerk_library::JobState,
     /// Optional operator-facing progress or error text.
+    #[schema(example = "scanning reader@example.com (libro)")]
     pub detail: Option<String>,
     /// Human-readable progress string while the job is running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "12 of 40 titles")]
     pub progress: Option<String>,
     /// Number of times a worker has claimed this row.
     #[serde(default)]
+    #[schema(example = 1)]
     pub attempt_count: i64,
     /// Maximum claims before a failure is terminal.
     #[serde(default)]
+    #[schema(example = 3)]
     pub max_attempts: i64,
     /// Structured error kind when failed or cancelled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "cancelled")]
     pub error_kind: Option<String>,
     /// RFC 3339 timestamp when the row was inserted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2026-10-29T10:12:00Z")]
     pub created_at: Option<String>,
     /// RFC 3339 timestamp when the row reached a terminal state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2026-10-29T10:14:22Z")]
     pub finished_at: Option<String>,
 }
 
@@ -318,6 +326,7 @@ pub struct JobInfo {
 /// Liveness payload for unauthenticated `GET /health`.
 struct HealthResponse {
     /// Always `ok` when the process can serve HTTP.
+    #[schema(example = "ok")]
     status: &'static str,
 }
 
@@ -325,22 +334,31 @@ struct HealthResponse {
 /// Library and daemon snapshot for `GET /api/status`.
 struct StatusResponse {
     /// Count of configured store accounts.
+    #[schema(example = 2)]
     accounts: usize,
     /// Total title rows in the library.
+    #[schema(example = 412)]
     books: usize,
     /// Titles whose `acquire_status` is `acquired`.
+    #[schema(example = 380)]
     acquired: i64,
     /// Titles still needing acquire (`not_acquired`).
+    #[schema(example = 27)]
     pending: i64,
     /// Titles stuck in `error` after a failed acquire.
+    #[schema(example = 1)]
     error: i64,
     /// Titles currently `queued` or `downloading`.
+    #[schema(example = 4)]
     in_progress: i64,
     /// Comma-joined `daemon.listen` addresses from live config.
+    #[schema(example = "127.0.0.1:8787,[::1]:8787")]
     listen: String,
     /// Comma-joined enabled destination plugin ids, or `none`.
+    #[schema(example = "local")]
     storage_backend: String,
     /// Whether the live auth middleware requires operator credentials.
+    #[schema(example = true)]
     auth_enabled: bool,
     /// Durable domain-event delivery-queue counters.
     events: EventQueueStatus,
@@ -350,26 +368,37 @@ struct StatusResponse {
 /// Outbox delivery counts for `GET /api/status`.
 struct EventQueueStatus {
     /// Pending deliveries without a suspend checkpoint.
+    #[schema(example = 3)]
     pending: i64,
     /// Currently claimed deliveries.
+    #[schema(example = 1)]
     running: i64,
     /// Pending deliveries parked with a checkpoint.
+    #[schema(example = 0)]
     suspended: i64,
     /// Dead-lettered deliveries.
+    #[schema(example = 0)]
     dead_letter: i64,
     /// Successfully acked deliveries.
+    #[schema(example = 1284)]
     acked: i64,
     /// Age in seconds of the oldest pending delivery, when any exist.
+    #[schema(example = 12)]
     oldest_pending_age_secs: Option<i64>,
     /// Durable retry outcomes (including reclaim-as-retry).
+    #[schema(example = 7)]
     retries_total: i64,
     /// Durable suspend outcomes.
+    #[schema(example = 2)]
     suspensions_total: i64,
     /// Durable transitions into `dead_letter`.
+    #[schema(example = 0)]
     dead_letters_total: i64,
     /// Average first-dispatch latency in milliseconds, when sampled.
+    #[schema(example = 140)]
     dispatch_latency_ms_avg: Option<i64>,
     /// Average `onEvent` handler duration in milliseconds, when sampled.
+    #[schema(example = 860)]
     handler_latency_ms_avg: Option<i64>,
 }
 
@@ -377,8 +406,10 @@ struct EventQueueStatus {
 /// One `config.toml` key/value pair from a settings PATCH.
 struct SettingsUpdate {
     /// Dotted config key; rejected unless it passes the settings allowlist.
+    #[schema(example = "library.auto_acquire")]
     key: String,
     /// Raw string value, normalized before it is written.
+    #[schema(example = "false")]
     value: String,
 }
 
@@ -391,6 +422,7 @@ struct PatchSettingsRequest {
     /// `GET /api/settings`). When set and stale, an `output.*` update is
     /// rejected with 409.
     #[serde(default)]
+    #[schema(example = 7)]
     expected_output_revision: Option<i64>,
 }
 
@@ -398,8 +430,10 @@ struct PatchSettingsRequest {
 /// One selectable value for a Settings dropdown.
 struct PluginSettingChoice {
     /// Stored config value; empty string means use the plugin default.
+    #[schema(example = "us")]
     value: String,
     /// Operator-facing choice caption.
+    #[schema(example = "United States")]
     label: String,
 }
 
@@ -407,21 +441,27 @@ struct PluginSettingChoice {
 /// One editable setting shown in the Settings UI.
 struct PluginSettingOption {
     /// Dotted `config.toml` key for this option.
+    #[schema(example = "sources.libro.marketplace")]
     key: String,
     /// Operator-facing field caption.
+    #[schema(example = "Marketplace")]
     label: String,
     /// Current string form of the setting.
+    #[schema(example = "us")]
     value: String,
     /// UI widget hint (`boolean`, `string`, or `number`).
+    #[schema(example = "string")]
     value_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional dropdown values; omitted for free-form fields.
     choices: Option<Vec<PluginSettingChoice>>,
     /// True for a `secret` setting: `value` is never the stored value.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[schema(example = false)]
     secret: bool,
     /// For a secret setting, whether the instance document names a sealed value.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = true)]
     secret_set: Option<bool>,
 }
 
@@ -429,31 +469,40 @@ struct PluginSettingOption {
 /// Settings UI group for one discovered or loaded plugin.
 struct PluginSettingsGroup {
     /// Plugin id (`audible`, `sqlite`, and similar).
+    #[schema(example = "libro")]
     id: String,
     /// Handler family wire label (`source`, `integration`, `output`, `database`).
+    #[schema(example = "source")]
     family: String,
     /// Provenance-qualified PluginKey when this row came from a discovered install.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "platform:bookclerk/bookclerk-plugin-source-libro#libro")]
     plugin_key: Option<String>,
     /// Host-evaluated provenance (`platform_bundled`, `verified_staged`, `installed`, …).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "platform_bundled")]
     provenance: Option<String>,
     /// Google favicon (or portal brand) URL for Settings list rows.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "https://www.google.com/s2/favicons?domain=libro.fm&sz=64")]
     logo: Option<String>,
     /// Editable options for this plugin, including `.enabled`.
     settings: Vec<PluginSettingOption>,
     /// Plugin instance this group edits; absent for a bootstrap database adapter.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
     plugin_instance_id: Option<String>,
     /// Operator-facing instance name, when the operator set one.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Libro.fm (household)")]
     display_name: Option<String>,
     /// True when a bare plugin key or alias routes to this instance.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[schema(example = true)]
     is_default: bool,
     /// Instance document revision for compare-and-swap writes.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 4)]
     config_revision: Option<i64>,
     /// This node's deployment of the instance, when one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -478,15 +527,18 @@ struct SettingsResponse {
     /// Per-plugin setting groups rendered by the Settings UI.
     plugins: Vec<PluginSettingsGroup>,
     /// Host max jail CPU in cores (2 d.p.; equals logical CPU count).
+    #[schema(example = 8.0)]
     host_cpu_cores_max: f64,
     /// Optional global per-jail CPU ceiling in cores (from `[plugins.jail]`).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 2.0)]
     jail_cpu_cores: Option<f64>,
     /// Revision of the `core.output` document the `output.*` values in
     /// `settings` were read from; send it back as `expected_output_revision`.
     /// `effective["output.revision"]` is the revision this host has applied,
     /// which lags the document until the host's next wakeup.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 7)]
     output_revision: Option<i64>,
 }
 
@@ -494,14 +546,19 @@ struct SettingsResponse {
 /// Optional branding shown on the plugin consent dialog.
 struct PluginConsentBrand {
     /// Display name from the portal brand or plugin manifest.
+    #[schema(example = "Libro.fm")]
     name: String,
     /// Background CSS color from the portal brand, when known.
+    #[schema(example = "#0f2a3f")]
     bg: Option<String>,
     /// Foreground CSS color from the portal brand, when known.
+    #[schema(example = "#ffffff")]
     fg: Option<String>,
     /// Accent CSS color from the portal brand, when known.
+    #[schema(example = "#f4b400")]
     accent: Option<String>,
     /// Logo URL or host-served embed path.
+    #[schema(example = "/api/plugins/libro/logo")]
     logo: Option<String>,
 }
 
@@ -509,31 +566,44 @@ struct PluginConsentBrand {
 /// Host-capped resource defaults shown on the consent dialog.
 struct PluginConsentLimits {
     /// Requested workerd CPU budget in milliseconds.
+    #[schema(example = 50)]
     cpu_ms: u32,
     /// Requested workerd subrequest budget.
+    #[schema(example = 50)]
     subrequests: u32,
     /// Host hard cap for workerd CPU milliseconds.
+    #[schema(example = 30000)]
     max_cpu_ms: u32,
     /// Host hard cap for workerd subrequests.
+    #[schema(example = 1000)]
     max_subrequests: u32,
     /// Default plugin state disk budget in mebibytes.
+    #[schema(example = 256)]
     disk_mib: u32,
     /// Host hard cap for plugin state disk in mebibytes.
+    #[schema(example = 4096)]
     max_disk_mib: u32,
     /// Default jail memory in mebibytes.
+    #[schema(example = 512)]
     memory_mib: u32,
     /// Host hard cap for jail memory in mebibytes.
+    #[schema(example = 4096)]
     max_memory_mib: u32,
     /// Manifest / default jail CPU in cores (2 d.p.).
+    #[schema(example = 1.0)]
     cpu_cores: f64,
     /// Host max jail CPU in cores (2 d.p.).
+    #[schema(example = 8.0)]
     max_cpu_cores: f64,
     /// Optional `[plugins.jail]` ceiling in cores.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 2.0)]
     jail_cpu_cores: Option<f64>,
     /// Default extra process/thread budget (native consent).
+    #[schema(example = 4)]
     extra_processes: u32,
     /// Host hard cap for extra process budget.
+    #[schema(example = 32)]
     max_extra_processes: u32,
     /// Suggested / default host bindings operators may grant.
     known_bindings: Vec<&'static str>,
@@ -544,8 +614,10 @@ struct PluginConsentLimits {
 #[serde(rename_all = "camelCase")]
 struct PluginGrantView {
     /// Canonical provenance-qualified PluginKey.
+    #[schema(example = "platform:bookclerk/bookclerk-plugin-source-libro#libro")]
     plugin_key: String,
     /// Plugin id this grant applies to.
+    #[schema(example = "libro")]
     plugin_id: String,
     /// Exported entrypoints the operator approved (`storefront`, `cli`, …).
     entrypoints: Vec<String>,
@@ -557,6 +629,7 @@ struct PluginGrantView {
     /// Approved job trigger types.
     jobs: Vec<String>,
     /// Approved egress mode (`deny`, `allowlist`, and similar).
+    #[schema(example = "allowlist")]
     network_mode: String,
     /// Hostnames the operator approved for egress.
     domains: Vec<String>,
@@ -579,34 +652,44 @@ struct PluginGrantView {
     /// Operator-denied CIDRs still listed by the manifest.
     operator_denied_cidrs: Vec<String>,
     /// Undeclared public redirect permission.
+    #[schema(example = false)]
     allow_undeclared_public_redirects: bool,
     /// SHA-256 of persisted operator consent (no host overlays).
+    #[schema(example = "9b74c9897bac770ffc029102a200c5de3a9c4a1d6c2f1e0b5a7d8c9e0f1a2b3c")]
     grant_revision: String,
     /// SHA-256 of the canonical effective authority.
+    #[schema(example = "1f3870be274f6c49b3e31a0c6728957f4e1d5b2c7a8d9e0f1a2b3c4d5e6f7a8b")]
     authority_revision: String,
     /// Host bindings the operator approved.
     bindings: Vec<String>,
     /// Extra compatibility flags stored on the grant.
     compatibility_flags: Vec<String>,
     /// RFC 3339 timestamp when the grant was last approved.
+    #[schema(example = "2026-10-29T10:12:00Z")]
     approved_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional workerd CPU budget in milliseconds.
+    #[schema(example = 50)]
     cpu_ms: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional workerd subrequest budget.
+    #[schema(example = 50)]
     subrequests: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional plugin state disk budget in mebibytes.
+    #[schema(example = 256)]
     disk_mib: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Optional jail memory in mebibytes.
+    #[schema(example = 512)]
     memory_mib: Option<u32>,
     /// Jail CPU in cores (2 d.p.); absent for workerd.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 1.0)]
     cpu_cores: Option<f64>,
     /// Extra process/thread budget beyond launcher overhead; native only.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 4)]
     extra_processes: Option<u32>,
 }
 
@@ -615,6 +698,7 @@ struct PluginGrantView {
 #[serde(rename_all = "camelCase")]
 struct TcpGrantView {
     /// Hostname or `*.` wildcard.
+    #[schema(example = "*.libro.fm")]
     host: String,
     /// Destination ports.
     ports: Vec<u16>,
@@ -678,16 +762,21 @@ impl PluginGrantView {
 /// Consent dialog payload for one plugin.
 struct PluginConsentResponse {
     /// Plugin id whose grant is being reviewed.
+    #[schema(example = "libro")]
     plugin_id: String,
     /// Canonical PluginKey for this install (empty when unknown).
+    #[schema(example = "platform:bookclerk/bookclerk-plugin-source-libro#libro")]
     plugin_key: String,
     /// Host-evaluated provenance label.
+    #[schema(example = "platform_bundled")]
     provenance: String,
     /// Guest runtime (`native` or `workerd`) — drives which controls are enforceable.
+    #[schema(example = "native")]
     runtime: String,
     /// Manifest-derived grant the plugin is asking for.
     request: PluginGrantView,
     /// True when an existing on-disk grant already satisfies the request.
+    #[schema(example = false)]
     covered: bool,
     /// Operator-facing bullet list of requested capabilities.
     summary: Vec<String>,
@@ -705,6 +794,7 @@ struct PluginConsentResponse {
 /// Body for `POST /api/plugins/{id}/consent`.
 struct PluginConsentApproveRequest {
     /// Must be true; a false value is rejected with 400.
+    #[schema(example = true)]
     approve: bool,
     #[serde(default)]
     /// Optional operator overrides applied on top of the manifest request.
@@ -716,6 +806,7 @@ struct PluginConsentApproveRequest {
 /// Operator-supplied grant fields that replace matching request values.
 struct PluginGrantOverride {
     /// Override egress mode when set.
+    #[schema(example = "allowlist")]
     network_mode: Option<String>,
     /// Override approved hostnames when set.
     domains: Option<Vec<String>>,
@@ -724,22 +815,29 @@ struct PluginGrantOverride {
     /// Override address-space CIDRs when set.
     address_cidrs: Option<Vec<String>>,
     /// Override undeclared-public-redirect permission when set.
+    #[schema(example = false)]
     allow_undeclared_public_redirects: Option<bool>,
     /// Override approved host bindings when set.
     bindings: Option<Vec<String>>,
     /// Override compatibility flags when set.
     compatibility_flags: Option<Vec<String>>,
     /// Override workerd CPU milliseconds when set.
+    #[schema(example = 100)]
     cpu_ms: Option<u32>,
     /// Override workerd subrequest budget when set.
+    #[schema(example = 100)]
     subrequests: Option<u32>,
     /// Override disk budget in mebibytes when set.
+    #[schema(example = 512)]
     disk_mib: Option<u32>,
     /// Override jail memory in mebibytes when set.
+    #[schema(example = 1024)]
     memory_mib: Option<u32>,
     /// Jail CPU in cores (2 d.p.); converted to Spec percent server-side.
+    #[schema(example = 1.5)]
     cpu_cores: Option<f64>,
     /// Extra process/thread budget (native); ignored for workerd.
+    #[schema(example = 8)]
     extra_processes: Option<u32>,
 }
 
@@ -747,13 +845,17 @@ struct PluginGrantOverride {
 /// Generic mutation result with success flag, message, and optional job id.
 struct ActionResponse {
     /// True when the action was accepted or completed.
+    #[schema(example = true)]
     ok: bool,
     /// Operator-facing status text.
+    #[schema(example = "scan queued")]
     message: String,
     /// Queued job id, or empty when the action is synchronous.
+    #[schema(example = "job_01jbq9x4e8c7k2m5n6p7r8s9t0")]
     job_id: String,
     /// Machine slug when admission failed (`conflict`, `queue_full`).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "queue_full")]
     error: Option<String>,
 }
 
@@ -761,8 +863,10 @@ struct ActionResponse {
 /// Optional body for `POST /api/library/scan`.
 pub struct ScanRequest {
     /// When set, scan this account even if `scan_enabled` is false.
+    #[schema(example = "reader@example.com")]
     pub account: Option<String>,
     /// When set, scan only this deployed plugin instance.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
     pub plugin_instance_id: Option<String>,
 }
 
@@ -770,16 +874,22 @@ pub struct ScanRequest {
 /// Optional body for `POST /api/library/acquire`.
 pub struct AcquireRequestBody {
     /// Audible ASIN filter; first of uuid/asin/isbn/product_id wins.
+    #[schema(example = "B0C8HVKW7X")]
     pub asin: Option<String>,
     /// Library title UUID filter.
+    #[schema(example = "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31")]
     pub uuid: Option<String>,
     /// ISBN filter for non-Audible stores.
+    #[schema(example = "9781797176802")]
     pub isbn: Option<String>,
     /// Store product id filter.
+    #[schema(example = "1797176803")]
     pub product_id: Option<String>,
     /// Restrict acquire to this store account.
+    #[schema(example = "reader@example.com")]
     pub account: Option<String>,
     /// When set, fetch through this deployed plugin instance.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
     pub plugin_instance_id: Option<String>,
     /// More title ids; each (with the single filter above) becomes its own
     /// job.
@@ -787,9 +897,11 @@ pub struct AcquireRequestBody {
     pub titles: Vec<String>,
     /// Re-download titles already acquired.
     #[serde(default)]
+    #[schema(example = false)]
     pub force: bool,
     /// Fetch only each title's companion PDF.
     #[serde(default)]
+    #[schema(example = false)]
     pub pdf_only: bool,
 }
 
@@ -797,6 +909,7 @@ pub struct AcquireRequestBody {
 /// Optional body for `POST /integrations/{id}/scan`.
 pub struct IntegrationScanRequest {
     /// When true, the integration rescans even if it considers itself current.
+    #[schema(example = true)]
     pub force: Option<bool>,
 }
 
@@ -804,17 +917,22 @@ pub struct IntegrationScanRequest {
 /// Body for copying library rows between database plugins.
 struct DatabaseMigrateRequest {
     /// Source plugin id. Defaults to the active `[database].plugin` before reload.
+    #[schema(example = "sqlite")]
     from: Option<String>,
     /// Destination database plugin id to copy into.
+    #[schema(example = "postgres")]
     to: String,
     #[serde(default)]
     /// When true, count rows without writing.
+    #[schema(example = true)]
     dry_run: bool,
     #[serde(default)]
     /// When true, overwrite a destination that is not empty.
+    #[schema(example = false)]
     force: bool,
     /// Update `[database].plugin` in config.toml after a successful copy.
     #[serde(default)]
+    #[schema(example = false)]
     apply: bool,
 }
 
@@ -840,10 +958,13 @@ struct BooksResponse {
     /// Current page of title records.
     books: Vec<BookRecord>,
     /// Match count before pagination.
+    #[schema(example = 412)]
     total: usize,
     /// Applied page size.
+    #[schema(example = 50)]
     limit: usize,
     /// Applied skip count.
+    #[schema(example = 0)]
     offset: usize,
 }
 
@@ -3848,16 +3969,20 @@ async fn trigger_scan(
 /// Result of a planned scan or acquire: [`ActionResponse`] plus every job id.
 struct ScanPlanResponse {
     /// True when at least one job was accepted.
+    #[schema(example = true)]
     ok: bool,
     /// Operator-facing status text.
+    #[schema(example = "2 scan jobs queued")]
     message: String,
     /// First accepted (or, when none was, already queued) job id.
+    #[schema(example = "job_01jbq9x4e8c7k2m5n6p7r8s9t0")]
     job_id: String,
     /// Every accepted or already-queued job id, in plan order.
     job_ids: Vec<String>,
     /// Machine slug when nothing was accepted (`conflict`, `queue_full`,
     /// `nothing_to_scan`, `nothing_to_acquire`).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "nothing_to_scan")]
     error: Option<String>,
 }
 
@@ -4197,26 +4322,37 @@ async fn list_jobs(State(state): State<Arc<AppState>>) -> Result<Json<Vec<JobInf
 #[serde(rename_all = "camelCase")]
 struct DomainEventInfo {
     /// Event id.
+    #[schema(example = "evt_01jbq9x4e8c7k2m5n6p7r8s9t0")]
     id: String,
     /// Event type (`book_acquired`).
+    #[schema(example = "book_acquired")]
     event_type: String,
     /// Payload schema version.
+    #[schema(example = 1)]
     schema_version: i64,
     /// `pending` or `dispatched`.
+    #[schema(example = "dispatched")]
     dispatch_state: String,
     /// Tenant / account id.
+    #[schema(example = "reader@example.com")]
     account_id: String,
     /// Producer idempotency key.
+    #[schema(example = "book_acquired:3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31")]
     dedup_key: String,
     /// RFC 3339 insert time.
+    #[schema(example = "2026-10-29T10:12:00Z")]
     created_at: String,
     /// Queue the row belongs to (`core.events` for domain events).
+    #[schema(example = "core.events")]
     queue_name: String,
     /// Body encoding (`json`, `text`, `bytes`).
+    #[schema(example = "json")]
     content_type: String,
     /// Producer plugin id; empty when the host published it.
+    #[schema(example = "")]
     source: String,
     /// RFC 3339 earliest delivery time for delayed queue messages.
+    #[schema(example = "2026-10-29T10:15:00Z")]
     deliver_after: Option<String>,
 }
 
@@ -4225,16 +4361,22 @@ struct DomainEventInfo {
 #[serde(rename_all = "camelCase")]
 struct QueueInfo {
     /// Queue name.
+    #[schema(example = "core.events")]
     name: String,
     /// True for the domain-event bus (`core.events`).
+    #[schema(example = true)]
     core: bool,
     /// Deliveries waiting to be claimed (including suspended rows).
+    #[schema(example = 3)]
     pending: i64,
     /// Deliveries currently claimed by a worker.
+    #[schema(example = 1)]
     running: i64,
     /// Deliveries acked.
+    #[schema(example = 1284)]
     acked: i64,
     /// Deliveries parked for operator review.
+    #[schema(example = 0)]
     dead_letter: i64,
     /// Live catalog consumers (plugin keys or instance ids) of this queue.
     consumers: Vec<String>,
@@ -4258,36 +4400,52 @@ struct QueueDetail {
 #[serde(rename_all = "camelCase")]
 struct EventDeliveryInfo {
     /// Delivery id (`{event_id}:{plugin_id}`).
+    #[schema(example = "evt_01jbq9x4e8c7k2m5n6p7r8s9t0:audiobookshelf")]
     id: String,
     /// Parent event id.
+    #[schema(example = "evt_01jbq9x4e8c7k2m5n6p7r8s9t0")]
     event_id: String,
     /// Subscriber plugin id.
+    #[schema(example = "audiobookshelf")]
     plugin_id: String,
     /// Lifecycle state.
+    #[schema(example = "pending")]
     state: String,
     /// Claim count (not incremented on resume).
+    #[schema(example = 1)]
     attempt_count: i64,
     /// Fence generation.
+    #[schema(example = 2)]
     lease_generation: i64,
     /// Resume ordinal.
+    #[schema(example = 0)]
     invocation_sequence: i64,
     /// Terminal outcome when set.
+    #[schema(example = "acked")]
     outcome: Option<String>,
     /// Operator-facing error.
+    #[schema(example = "integration API error (503): library scan in progress")]
     error_message: Option<String>,
     /// RFC 3339 earliest claim time.
+    #[schema(example = "2026-10-29T10:12:00Z")]
     run_after: String,
     /// RFC 3339 last update.
+    #[schema(example = "2026-10-29T10:12:30Z")]
     updated_at: String,
     /// Cooperative cancel flag.
+    #[schema(example = false)]
     cancel_requested: bool,
     /// Concurrency class (`network` today).
+    #[schema(example = "network")]
     resource_class: String,
     /// Next claim should resume rather than increment attempt.
+    #[schema(example = false)]
     resume_pending: bool,
     /// True when a suspend checkpoint is stored.
+    #[schema(example = false)]
     has_checkpoint: bool,
     /// Queue of the parent event.
+    #[schema(example = "core.events")]
     queue_name: String,
 }
 
@@ -4923,14 +5081,19 @@ struct RecommendQuery {
 /// Wishlist / title-request create body from Discover or the portal.
 struct CreateRequestBody {
     /// Required title text; empty values are rejected with 400.
+    #[schema(example = "The Left Hand of Darkness")]
     title: String,
     /// Optional author list as a single display string.
+    #[schema(example = "Ursula K. Le Guin")]
     authors: Option<String>,
     /// Optional Audible ASIN used for work-key identity.
+    #[schema(example = "B002V0QK4C")]
     asin: Option<String>,
     /// Optional ISBN used for work-key identity.
+    #[schema(example = "9780441478125")]
     isbn: Option<String>,
     /// Optional operator or member note stored on the request.
+    #[schema(example = "Book club pick for March")]
     notes: Option<String>,
     /// Known storefront editions to persist as `title_request_sources`.
     #[serde(default)]
@@ -4939,28 +5102,42 @@ struct CreateRequestBody {
     #[serde(default)]
     purchase_hints: Vec<bookclerk_discover::PurchaseHint>,
     /// Optional stable work key; when omitted one is derived from bib fields.
+    #[schema(example = "work:9780441478125")]
     work_key: Option<String>,
     /// Optional cover image URL snapshotted onto the request.
+    #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     cover_url: Option<String>,
     /// Optional plot/summary text persisted with the request.
+    #[schema(
+        example = "An envoy to the planet Gethen must win the trust of a people who have no fixed gender."
+    )]
     description: Option<String>,
     /// Optional subtitle stored on the request and source rows.
+    #[schema(example = "A Hainish Novel")]
     subtitle: Option<String>,
     /// Optional narrator list as a single display string.
+    #[schema(example = "George Guidall")]
     narrators: Option<String>,
     /// Optional series name.
+    #[schema(example = "Hainish Cycle")]
     series: Option<String>,
     /// Optional series position as a display string.
+    #[schema(example = "4")]
     series_index: Option<String>,
     /// Optional publisher name.
+    #[schema(example = "Blackstone Publishing")]
     publisher: Option<String>,
     /// Optional runtime in minutes.
+    #[schema(example = 560)]
     length_minutes: Option<i64>,
     /// Optional publication date as a display string.
+    #[schema(example = "2005-06-21")]
     published_at: Option<String>,
     /// Optional genre list as a single display string.
+    #[schema(example = "Science Fiction, Classics")]
     genres: Option<String>,
     /// Optional content language code.
+    #[schema(example = "en")]
     language: Option<String>,
 }
 
@@ -5943,18 +6120,23 @@ async fn sync_listening(State(state): State<Arc<AppState>>) -> Response {
 /// Normalized Discover/library preferences for the authenticated subject.
 struct PreferencesResponse {
     /// Landing view id (`library`, `discover`, …) after normalization.
+    #[schema(example = "library")]
     default_view: String,
     /// Lowercased Discover shelf ids the user has hidden.
     disabled_shelves: Vec<String>,
     /// Discover sort key (`relevance`, `popularity`, …).
+    #[schema(example = "relevance")]
     discover_sort: String,
     /// Discover sort direction (`asc` or `desc`).
+    #[schema(example = "desc")]
     discover_sort_dir: String,
     /// `null` = use browser language on the client.
+    #[schema(example = "en")]
     discover_language: Option<String>,
     /// Lowercased store ids hidden from Discover results.
     discover_excluded_sources: Vec<String>,
     /// Appearance preference (`system`, `light`, or `dark`).
+    #[schema(example = "system")]
     theme: String,
 }
 
@@ -5962,20 +6144,25 @@ struct PreferencesResponse {
 /// Partial preferences update; omitted fields keep their stored values.
 struct PatchPreferencesBody {
     /// Replacement landing view when set.
+    #[schema(example = "discover")]
     default_view: Option<String>,
     /// Replacement hidden-shelf list when set.
     disabled_shelves: Option<Vec<String>>,
     /// Replacement Discover sort key when set.
+    #[schema(example = "popularity")]
     discover_sort: Option<String>,
     /// Replacement Discover sort direction when set.
+    #[schema(example = "desc")]
     discover_sort_dir: Option<String>,
     /// Present + value sets language; present + `null` clears to browser default;
     /// omitted leaves unchanged.
     #[serde(default, deserialize_with = "deserialize_patch_opt_string")]
+    #[schema(example = "de")]
     discover_language: Option<Option<String>>,
     /// Replacement excluded-store list when set.
     discover_excluded_sources: Option<Vec<String>>,
     /// Replacement appearance preference when set (`system`, `light`, `dark`).
+    #[schema(example = "dark")]
     theme: Option<String>,
 }
 
