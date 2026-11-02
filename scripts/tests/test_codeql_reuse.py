@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import random
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from pathlib import Path
 from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[2]
+CORPUS = Path(__file__).resolve().parent / "codeql_reuse_corpus"
 BASE = "a" * 40
 OTHER = "b" * 40
 
@@ -90,6 +92,8 @@ class CandidateRunTests(unittest.TestCase):
             "still running": {"status": "in_progress"},
             "string id": {"id": "1"},
             "bool id": {"id": True},
+            "event list": {"event": []},
+            "event object": {"event": {"push": 1}},
         }
         for name, over in cases.items():
             with self.subTest(case=name):
@@ -108,9 +112,10 @@ class RustJobTests(unittest.TestCase):
         self.assertTrue(cr.rust_job_succeeded(jobs_body("success")))
 
     def test_not_success(self) -> None:
-        for conclusion in ("failure", "cancelled", "skipped", None):
+        for conclusion in ("failure", "cancelled", "skipped", "", None):
             with self.subTest(conclusion=conclusion):
-                self.assertFalse(cr.rust_job_succeeded(jobs_body(conclusion or "")))
+                body = json.dumps({"jobs": [{"name": "Analyze (rust)", "conclusion": conclusion}]}).encode()
+                self.assertFalse(cr.rust_job_succeeded(body))
 
     def test_missing_or_duplicated(self) -> None:
         self.assertFalse(cr.rust_job_succeeded(jobs_body(None)))
@@ -212,6 +217,16 @@ class FindTests(unittest.TestCase):
         self.assertIn("run 1", reason)
         self.assertIn(["run", "download", "1", "-R", "Bookclerk/bookclerk", "-n", "codeql-rust-sarif"], [c[:7] for c in gh.calls])
 
+    def test_invalid_sarif_tries_an_older_run(self) -> None:
+        gh = FakeGh(
+            runs_body(run(1), run(2)),
+            {1: jobs_body(), 2: jobs_body()},
+            {2: {"rust.sarif": b"{}"}, 1: {"rust.sarif": sarif()}},
+        )
+        path, reason = self.find(gh)
+        self.assertIsNotNone(path)
+        self.assertIn("run 1", reason)
+
     def test_bad_base_never_calls_github(self) -> None:
         gh = FakeGh(runs_body(), {}, {})
         for base in ("", "HEAD", BASE[:12], BASE.upper(), BASE + "\n"):
@@ -243,6 +258,161 @@ class FindTests(unittest.TestCase):
         path, reason = self.find(broken)  # type: ignore[arg-type]
         self.assertIsNone(path)
         self.assertIn("failed", reason)
+
+
+class RunGhTests(unittest.TestCase):
+    """A stalled `gh` call falls back instead of holding the job."""
+
+    def test_timeout_becomes_a_handled_failure(self) -> None:
+        old = cr.subprocess.run
+
+        def stall(*args: object, **kwargs: object) -> object:
+            self.assertEqual(kwargs.get("timeout"), cr.GH_TIMEOUT_SECONDS)
+            raise subprocess.TimeoutExpired(cmd=["gh"], timeout=1)
+
+        cr.subprocess.run = stall  # type: ignore[assignment]
+        try:
+            with self.assertRaises(subprocess.CalledProcessError):
+                cr.run_gh(["api", "x"])
+        finally:
+            cr.subprocess.run = old
+
+
+# Independent oracles, written with explicit walks instead of the script's
+# helpers, for the corpus replay and the mutation fuzzing below.
+def oracle_runs(raw: bytes) -> list[int]:
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return []
+    if type(doc) is not dict or type(doc.get("workflow_runs")) is not list:
+        return []
+    keep = []
+    for r in doc["workflow_runs"]:
+        if type(r) is not dict or type(r.get("id")) is not int:
+            continue
+        ok = (
+            r.get("head_sha") == BASE
+            and r.get("head_branch") == "main"
+            and r.get("event") in ("push", "schedule", "workflow_dispatch")
+            and r.get("status") == "completed"
+        )
+        if ok:
+            keep.append((str(r.get("created_at") or ""), r["id"]))
+    return [i for _, i in sorted(keep, reverse=True)]
+
+
+def oracle_jobs(raw: bytes) -> bool:
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return False
+    if type(doc) is not dict or type(doc.get("jobs")) is not list:
+        return False
+    rust = [j for j in doc["jobs"] if type(j) is dict and j.get("name") == "Analyze (rust)"]
+    return len(rust) == 1 and rust[0].get("conclusion") == "success"
+
+
+def oracle_sarif_ok(raw: bytes) -> bool:
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return False
+    if type(doc) is not dict or doc.get("version") != "2.1.0" or type(doc.get("runs")) is not list:
+        return False
+    if not doc["runs"]:
+        return False
+    for r in doc["runs"]:
+        if type(r) is not dict:
+            return False
+        tool = r.get("tool")
+        driver = tool.get("driver") if type(tool) is dict else None
+        if type(driver) is not dict or driver.get("name") != "CodeQL":
+            return False
+        details = r.get("automationDetails")
+        if type(details) is not dict or details.get("id") not in ("/language:rust", "/language:rust/"):
+            return False
+    return True
+
+
+def check_against_oracles(case: unittest.TestCase, raw: bytes, label: str) -> None:
+    case.assertEqual(cr.candidate_runs(raw, BASE), oracle_runs(raw), label)
+    case.assertEqual(cr.rust_job_succeeded(raw), oracle_jobs(raw), label)
+    case.assertEqual(cr.sarif_problem(raw) is None, oracle_sarif_ok(raw), label)
+
+
+class CorpusTests(unittest.TestCase):
+    """Replays the seed corpus: ``runs__``, ``jobs__`` and ``sarif__`` files."""
+
+    def test_corpus_matches_oracles(self) -> None:
+        seeds = sorted(CORPUS.iterdir())
+        self.assertGreaterEqual(len(seeds), 10)
+        for seed in seeds:
+            with self.subTest(seed=seed.name):
+                self.assertIn(seed.name.split("__")[0], ("runs", "jobs", "sarif"))
+                check_against_oracles(self, seed.read_bytes(), seed.name)
+
+    def test_corpus_has_accepted_and_rejected_cases(self) -> None:
+        raw = {p.name: p.read_bytes() for p in CORPUS.iterdir()}
+        self.assertEqual(cr.candidate_runs(raw["runs__two_push.json"], BASE), [2, 1])
+        self.assertEqual(cr.candidate_runs(raw["runs__mixed.json"], BASE), [5])
+        self.assertEqual(cr.candidate_runs(raw["runs__odd_types.json"], BASE), [])
+        self.assertTrue(cr.rust_job_succeeded(raw["jobs__ok.json"]))
+        self.assertFalse(cr.rust_job_succeeded(raw["jobs__null.json"]))
+        self.assertIsNone(cr.sarif_problem(raw["sarif__rust.sarif"]))
+        self.assertIsNotNone(cr.sarif_problem(raw["sarif__no_details.sarif"]))
+
+
+class FuzzTests(unittest.TestCase):
+    """Seeded mutation fuzzing: never raises, always agrees with the oracles."""
+
+    VALUES: list[object] = [None, True, 0, 1, -1, 1.5, "", "x", "push", "main", BASE, [], {}, [1], {"a": 1}]
+
+    def mutate_json(self, rng: random.Random, node: object) -> object:
+        if isinstance(node, dict) and node and rng.random() < 0.7:
+            key = rng.choice(list(node))
+            out = dict(node)
+            if rng.random() < 0.2:
+                del out[key]
+            else:
+                out[key] = self.mutate_json(rng, node[key])
+            return out
+        if isinstance(node, list) and node and rng.random() < 0.7:
+            out = list(node)
+            i = rng.randrange(len(out))
+            out[i] = self.mutate_json(rng, out[i])
+            return out
+        return rng.choice(self.VALUES)
+
+    def mutate_bytes(self, rng: random.Random, raw: bytes) -> bytes:
+        data = bytearray(raw)
+        for _ in range(rng.randint(1, 4)):
+            pos = rng.randint(0, len(data))
+            op = rng.random()
+            if op < 0.4:
+                data[pos:pos] = bytes([rng.choice(b'{}[]",:0aA \\\xff')])
+            elif op < 0.7 and data:
+                del data[min(pos, len(data) - 1)]
+            elif data:
+                data[min(pos, len(data) - 1)] = rng.randrange(256)
+        return bytes(data)
+
+    def test_structural_mutations(self) -> None:
+        rng = random.Random(20261102)
+        seeds = [json.loads(p.read_bytes()) for p in sorted(CORPUS.iterdir())]
+        for i in range(3000):
+            node = rng.choice(seeds)
+            for _ in range(rng.randint(1, 3)):
+                node = self.mutate_json(rng, node)
+            raw = json.dumps(node).encode()
+            check_against_oracles(self, raw, f"iteration {i}: {raw!r}")
+
+    def test_byte_mutations(self) -> None:
+        rng = random.Random(586)
+        seeds = [p.read_bytes() for p in sorted(CORPUS.iterdir())]
+        for i in range(3000):
+            raw = self.mutate_bytes(rng, rng.choice(seeds))
+            check_against_oracles(self, raw, f"iteration {i}: {raw!r}")
 
 
 class CliTests(unittest.TestCase):

@@ -56,6 +56,9 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 RUST_CATEGORY = "/language:rust"
 RUST_AUTOMATION_IDS = frozenset({RUST_CATEGORY, RUST_CATEGORY + "/"})
 
+# How long one `gh` call may take before the job gives up and analyzes.
+GH_TIMEOUT_SECONDS = 120
+
 # Runs `gh` with the given arguments and returns its stdout; raises
 # `subprocess.CalledProcessError` when it fails.
 Gh = Callable[[Sequence[str]], bytes]
@@ -90,6 +93,7 @@ def candidate_runs(raw: bytes, base: str) -> list[int]:
             and not isinstance(run_id, bool)
             and run.get("head_sha") == base
             and run.get("head_branch") == "main"
+            and isinstance(run.get("event"), str)
             and run.get("event") in SOURCE_EVENTS
             and run.get("status") == "completed"
         ):
@@ -148,7 +152,7 @@ def sarif_problem(raw: bytes) -> str | None:
             return "a SARIF run is not from CodeQL"
         details = run.get("automationDetails")
         ident = details.get("id") if isinstance(details, dict) else None
-        if ident not in RUST_AUTOMATION_IDS:
+        if not isinstance(ident, str) or ident not in RUST_AUTOMATION_IDS:
             return "a SARIF run does not carry the Rust category"
     return None
 
@@ -187,6 +191,7 @@ def find(repo: str, base: str, dest: Path, gh: Gh) -> tuple[Path | None, str]:
     ids = candidate_runs(runs, base)
     if not ids:
         return None, f"main has no finished CodeQL run for {base[:12]}"
+    last = f"no CodeQL run on main kept Rust results for {base[:12]}"
     for run_id in ids:
         try:
             jobs = gh(["api", "-X", "GET", f"repos/{repo}/actions/runs/{run_id}/jobs", "-f", "per_page=100"])
@@ -204,9 +209,10 @@ def find(repo: str, base: str, dest: Path, gh: Gh) -> tuple[Path | None, str]:
             continue
         problem = sarif_problem(files[0].read_bytes())
         if problem is not None:
-            return None, f"run {run_id}: {problem}"
+            last = f"run {run_id}: {problem}"
+            continue
         return files[0], f"reused the Rust results of main's run {run_id} for {base[:12]}"
-    return None, f"no CodeQL run on main kept Rust results for {base[:12]}"
+    return None, last
 
 
 def run_gh(args: Sequence[str]) -> bytes:
@@ -219,9 +225,14 @@ def run_gh(args: Sequence[str]) -> bytes:
         The command's standard output.
 
     Raises:
-        subprocess.CalledProcessError: When ``gh`` exits non-zero.
+        subprocess.CalledProcessError: When ``gh`` exits non-zero or takes
+            longer than ``GH_TIMEOUT_SECONDS``, so a stalled call falls back
+            to analyzing instead of holding the job.
     """
-    return subprocess.run(["gh", *args], check=True, capture_output=True).stdout
+    try:
+        return subprocess.run(["gh", *args], check=True, capture_output=True, timeout=GH_TIMEOUT_SECONDS).stdout
+    except subprocess.TimeoutExpired as err:
+        raise subprocess.CalledProcessError(124, err.cmd) from err
 
 
 def main(argv: Sequence[str] | None = None, gh: Gh = run_gh) -> int:

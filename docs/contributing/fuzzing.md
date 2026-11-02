@@ -197,14 +197,10 @@ The tests live in `scripts/tests/`, and each corpus beside them.
   `scripts/codeql_languages.py`). `codeql.yml` reads the pull request's
   changed file names, which its author chose, and decides whether any is a
   Rust input. A pull request with none reuses `main`'s Rust results (see
-  [CodeQL](ci.md#codeql)). The runs and SARIF that
-  `scripts/codeql_reuse.py` reads come from GitHub and from `main`'s own
-  runs, not from the pull request, so that reader is not a boundary. It is
-  tested in `scripts/tests/test_codeql_reuse.py`. The scan for embedded
-  files (`scan_repo`) runs only when no changed path is a Rust input, so
-  every `.rs` file it reads is `main`'s code, not the author's; it is unit-tested in
-  `scripts/tests/test_codeql_languages.py` against the repository's own
-  includes.
+  [CodeQL](ci.md#codeql)). The scan for embedded files (`scan_repo`)
+  runs only when no changed path is a Rust input, so every `.rs` file it
+  reads is `main`'s code, not the author's; it is unit-tested against the
+  repository's own includes.
   - Test and corpus: `scripts/tests/test_codeql_languages.py`,
     `scripts/tests/codeql_languages_corpus/` (files named `rust__<case>`
     or `norust__<case>`).
@@ -213,6 +209,22 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     or `rust-toolchain.toml`, sits under a `.cargo/` directory, or is the
     workflow or one of the two scripts, checked with string operations
     rather than glob patterns.
+
+- **Rust result reuse** (`candidate_runs`, `rust_job_succeeded` and
+  `sarif_problem` in `scripts/codeql_reuse.py`). It reads GitHub API
+  responses and SARIF that `main`'s own runs kept, not pull request
+  content, so it isn't an untrusted boundary. Its output decides what a
+  pull request uploads, though, so it is fuzzed the same way.
+  - Test and corpus: `scripts/tests/test_codeql_reuse.py`,
+    `scripts/tests/codeql_reuse_corpus/` (files named `runs__<case>`,
+    `jobs__<case>` or `sarif__<case>`), replayed and mutated both as
+    bytes and as JSON values.
+  - Oracle: explicit walks with exact type checks. A run qualifies only
+    when its id is an integer and it is a completed run on `main` for the
+    base commit from a push, the schedule or a manual run. A run is
+    reused only when it has exactly one successful `Analyze (rust)` job.
+    A SARIF file is accepted only when it is version 2.1.0, every run is
+    from CodeQL, and every run carries the id `/language:rust`.
 
 ### CLA check (Python)
 
