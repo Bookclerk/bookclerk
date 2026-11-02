@@ -590,10 +590,13 @@ Rust alert:
 1. The `Choose languages` job diffs the merge commit against its base
    (`git diff -z --no-renames --name-only`).
 2. [`scripts/codeql_languages.py`](../../scripts/codeql_languages.py)
-   adds Rust when a path is a `.rs` or `.capnp` file, a `Cargo.toml`,
-   `Cargo.lock`, `rust-toolchain.toml`, anything under a `.cargo/`
-   directory at any depth, the workflow, or the script itself. A name
-   that isn't UTF-8 also counts.
+   adds Rust when a path is a `.rs` file, a `.capnp` or `.proto` schema
+   that a build script compiles into Rust, a `Cargo.toml`, `Cargo.lock`,
+   `rust-toolchain.toml`, anything under a `.cargo/` directory at any
+   depth, the workflow, or the script itself. A name that isn't UTF-8
+   also counts. A test fails when a `build.rs` reads a file the chooser
+   doesn't count, because CodeQL runs build scripts even in build mode
+   `none`.
 3. `Analyze (<language>)` runs once per chosen language.
 
 Pushes to `main`, the Monday schedule and manual runs analyze every

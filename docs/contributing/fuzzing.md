@@ -201,7 +201,7 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     `scripts/tests/codeql_languages_corpus/` (files named `rust__<case>`
     or `norust__<case>`).
   - Oracle: Rust is analyzed exactly when some NUL-separated name is not
-    UTF-8, ends in `.rs` or `.capnp`, is named `Cargo.toml`, `Cargo.lock`
+    UTF-8, ends in `.rs`, `.capnp` or `.proto`, is named `Cargo.toml`, `Cargo.lock`
     or `rust-toolchain.toml`, sits under a `.cargo/` directory, or is the
     workflow or
     the script, checked with string operations rather than glob patterns.

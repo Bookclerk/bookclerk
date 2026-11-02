@@ -42,8 +42,9 @@ ALWAYS: tuple[str, ...] = ("actions", "javascript-typescript", "python")
 # The slow language and the inputs that change what its analysis sees: Rust
 # sources, the manifests and lockfile that pick the crates and features, the
 # toolchain pin, Cargo's configuration (a `.cargo/` directory at any depth,
-# see `CARGO_DIR`), and the Cap'n Proto schemas that
-# generate Rust. This workflow and this script are inputs too, so a change to
+# see `CARGO_DIR`), and the schemas build scripts compile into Rust (Cap'n
+# Proto for the plugin ABI, protobuf for audible-rs); CodeQL's `none` mode
+# still runs build scripts. This workflow and this script are inputs too, so a change to
 # how Rust is analyzed is analyzed.
 RUST = "rust"
 RUST_INPUTS: tuple[str, ...] = (
@@ -52,6 +53,7 @@ RUST_INPUTS: tuple[str, ...] = (
     "Cargo.lock",
     "rust-toolchain.toml",
     "*.capnp",
+    "*.proto",
     ".github/workflows/codeql.yml",
     "scripts/codeql_languages.py",
 )

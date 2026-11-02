@@ -14,6 +14,8 @@ import importlib.util
 import json
 import os
 import random
+import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -40,7 +42,7 @@ cl = _load()
 
 # The oracle's own reading of a Rust input, written without fnmatch.
 ORACLE_NAMES = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"}
-ORACLE_SUFFIXES = (".rs", ".capnp")
+ORACLE_SUFFIXES = (".rs", ".capnp", ".proto")
 ORACLE_EXACT = {".github/workflows/codeql.yml", "scripts/codeql_languages.py"}
 
 
@@ -85,6 +87,29 @@ class CorpusTests(unittest.TestCase):
             with self.subTest(event=event):
                 choice = cl.choose(event, [])
                 self.assertEqual(choice.languages, (*cl.ALWAYS, cl.RUST))
+
+    def test_build_script_inputs_are_rust_inputs(self) -> None:
+        # CodeQL's `none` mode runs build scripts, so a file a build script
+        # reads (a schema it compiles into Rust) changes the Rust analysis.
+        # Every existing file a tracked build.rs names by path must count.
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*build.rs"], cwd=ROOT, capture_output=True, check=True
+        ).stdout
+        scripts = [p for p in listed.decode("utf-8").split("\0") if p.endswith("build.rs")]
+        self.assertTrue(scripts)
+        named = 0
+        for script in scripts:
+            crate = (ROOT / script).parent
+            for literal in re.findall(r'"([^"\s{}]+\.[A-Za-z0-9]+)"', (ROOT / script).read_text(encoding="utf-8")):
+                target = crate / literal
+                if not target.is_file():
+                    continue
+                rel = target.resolve().relative_to(ROOT).as_posix()
+                named += 1
+                with self.subTest(script=script, path=rel):
+                    self.assertTrue(cl.is_rust_input(rel))
+        # The plugin ABI's Cap'n Proto schemas and audible-rs's protobuf.
+        self.assertGreaterEqual(named, 3)
 
     def test_matrix_is_build_mode_none_for_every_language(self) -> None:
         doc = json.loads(cl.matrix_json(cl.choose("pull_request", ["docs/a.md"])))
