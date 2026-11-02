@@ -189,6 +189,7 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
         "tools/codecov/package.json",
         "tools/codecov/package-lock.json",
         "scripts/mutation_report.py",
+        "scripts/codeql_languages.py",
         ".cargo/mutants.toml",
     }
 )
