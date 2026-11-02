@@ -193,10 +193,11 @@ The tests live in `scripts/tests/`, and each corpus beside them.
 
 ### CodeQL language chooser (Python)
 
-- **Changed-path reader** (`parse_paths` and `choose` in
+- **Changed-path reader** (`parse_paths` and `rust_reason` in
   `scripts/codeql_languages.py`). `codeql.yml` reads the pull request's
-  changed file names, which its author chose, and skips the Rust analysis
-  when none is a Rust input.
+  changed file names, which its author chose, and decides whether any is a
+  Rust input (skipping Rust on the others is turned off; see
+  [CodeQL](ci.md#codeql)).
   - Test and corpus: `scripts/tests/test_codeql_languages.py`,
     `scripts/tests/codeql_languages_corpus/` (files named `rust__<case>`
     or `norust__<case>`).

@@ -4,11 +4,10 @@
 #   with CodeQL's default query suite, in build mode `none`, as GitHub's
 #   default setup did. The repository's "CodeQL results" merge rule reads
 #   these analyses.
-# - Rust takes about 20 minutes and CodeQL has no incremental analysis for
-#   it yet, so a pull request that changes no Rust input skips it
-#   (scripts/codeql_languages.py): such a change cannot add or fix a Rust
-#   alert. Pushes to main, the weekly schedule and manual runs analyze every
-#   language, so main always has a full analysis to compare against.
+# - Every run analyzes all four languages. scripts/codeql_languages.py can
+#   skip Rust (about 20 minutes) on a pull request that changes no Rust
+#   input, but that is off: the merge rule blocks a pull request missing a
+#   configuration main has (`/language:rust`).
 # - The Rust extractor's own cargo output (build scripts and proc macros) is
 #   cached between runs; main saves it and pull requests only restore it.
 #

@@ -63,8 +63,9 @@ def oracle_needs_rust(raw: bytes) -> bool:
     return False
 
 
-def analyzes_rust(raw: bytes, event: str = "pull_request") -> bool:
-    return cl.RUST in cl.choose(event, cl.parse_paths(raw)).languages
+def analyzes_rust(raw: bytes) -> bool:
+    """Whether the chooser classifies this listing as changing a Rust input."""
+    return cl.rust_reason(cl.parse_paths(raw)) is not None
 
 
 class CorpusTests(unittest.TestCase):
@@ -113,7 +114,7 @@ class CorpusTests(unittest.TestCase):
 
     def test_matrix_is_build_mode_none_for_every_language(self) -> None:
         doc = json.loads(cl.matrix_json(cl.choose("pull_request", ["docs/a.md"])))
-        self.assertEqual([e["language"] for e in doc["include"]], list(cl.ALWAYS))
+        self.assertEqual([e["language"] for e in doc["include"]], [*cl.ALWAYS, cl.RUST])
         self.assertTrue(all(e["build-mode"] == "none" for e in doc["include"]))
 
 
@@ -179,9 +180,20 @@ class CliTests(unittest.TestCase):
             self.assertIn("CodeQL languages:", summary.read_text(encoding="utf-8"))
             return json.loads(line[len("matrix=") :])
 
-    def test_pull_request_without_rust(self) -> None:
+    def test_pull_request_without_rust_still_analyzes_it(self) -> None:
+        # The merge rule blocks a pull request missing `/language:rust`.
+        self.assertIs(cl.PULL_REQUESTS_SKIP_RUST, False)
         langs = [e["language"] for e in self.run_main("pull_request", b"docs/a.md\x00")["include"]]
-        self.assertNotIn("rust", langs)
+        self.assertIn("rust", langs)
+
+    def test_skipping_rust_is_still_possible(self) -> None:
+        old = cl.PULL_REQUESTS_SKIP_RUST
+        cl.PULL_REQUESTS_SKIP_RUST = True
+        try:
+            self.assertEqual(cl.choose("pull_request", ["docs/a.md"]).languages, cl.ALWAYS)
+            self.assertIn(cl.RUST, cl.choose("pull_request", ["src/a.rs"]).languages)
+        finally:
+            cl.PULL_REQUESTS_SKIP_RUST = old
 
     def test_pull_request_with_rust(self) -> None:
         langs = [e["language"] for e in self.run_main("pull_request", b"crates/a/src/lib.rs\x00")["include"]]

@@ -583,9 +583,12 @@ repository's "CodeQL results" merge rule reads its analyses. GitHub's
 default setup for code scanning must be off, or the uploads are refused.
 
 Rust takes about 20 minutes on a hosted runner, and CodeQL has no
-incremental analysis for Rust yet. So a pull request that changes no Rust
-input skips the Rust analysis, because such a change can't add or fix a
-Rust alert:
+incremental analysis for Rust yet. A pull request that changes no Rust
+input can't add or fix a Rust alert, so the workflow can skip Rust there.
+That is turned off (`PULL_REQUESTS_SKIP_RUST`): the "CodeQL results" merge
+rule reports a pull request without `/language:rust` as neutral, "1
+configuration not found", and that blocks the merge. Every pull request
+analyzes Rust, and the chooser still records why in the job summary:
 
 1. The `Choose languages` job diffs the merge commit against its base
    (`git diff -z --no-renames --name-only`).
@@ -600,8 +603,7 @@ Rust alert:
 3. `Analyze (<language>)` runs once per chosen language.
 
 Pushes to `main`, the Monday schedule and manual runs analyze every
-language, so `main` always has a full analysis to compare pull requests
-against. The Rust extractor's own cargo output (build scripts and proc
+language. The Rust extractor's own cargo output (build scripts and proc
 macros) is cached under
 `codeql-rust-target-<rustc version>-<Cargo.lock hash>`: `main` saves it
 and pull requests only restore it.

@@ -83,7 +83,9 @@ The knobs live in the workflow's `with:` block:
 
 1. In **Settings → General → Pull Requests**, enable **Allow auto-merge**.
 2. Create a GitHub App with repository permissions **Contents: read and
-   write** and **Pull requests: read and write**, and no webhook. Install
+   write**, **Pull requests: read and write** and **Workflows: read and
+   write** (GitHub refuses to let an App turn on auto-merge for a pull
+   request that edits `.github/workflows/`), and no webhook. Install
    it on this repository only. Transferring the repository doesn't
    transfer the App: if the organization should own it, transfer the App
    separately.
@@ -162,6 +164,11 @@ signed and attributed to the App.
    - **Contents: read and write**, to push branches.
    - **Pull requests: read and write**, to open, update and auto-merge
      pull requests.
+   - **Workflows: read and write**, only for
+     `dependabot-auto-merge.yml`. GitHub refuses to let an App turn on
+     auto-merge for a pull request that edits `.github/workflows/`, and
+     Dependabot's GitHub Actions updates bump the action pins there. No
+     other workflow requests it.
    - **Checks: read and write**, for the `Bookclerk CLA` check run
      (`cla.yml`), which GitHub lists under the App's name and the logo
      set in the App's **Display information**.
@@ -190,8 +197,7 @@ signed and attributed to the App.
    > fails to mint its token, so `cla.yml`, for one, would report no
    > **Bookclerk CLA** check at all and block every pull request.
 
-   **Workflows** isn't needed, because none of these pull requests touch
-   `.github/workflows/`. Install the App on `bookclerk-docs` as well, with
+   Install the App on `bookclerk-docs` as well, with
    the same Contents permission, for `docs-publish.yml`.
 2. Add two **Actions** secrets (**Settings → Secrets and variables →
    Actions**). Scheduled runs don't receive the Dependabot copies.
