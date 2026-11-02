@@ -599,17 +599,23 @@ input reuses `main`'s Rust results instead:
    directory at any depth, the workflow, or the scripts that choose and
    reuse. A name that isn't UTF-8 also counts. A test fails when a
    `build.rs` reads a file the chooser doesn't count, because CodeQL runs
-   build scripts even in build mode `none`. With no Rust input, it sets
-   the `reuse-rust` output.
-3. `Analyze (<language>)` runs once per language, always all four.
-4. With `reuse-rust` set, `Analyze (rust)` runs
+   build scripts even in build mode `none`.
+3. Before allowing reuse, it scans the merge commit's tracked `.rs` files.
+   A path also counts when a Rust source embeds it with `include_str!`,
+   `include_bytes!` or `include!` (a `plugin.toml`, the brand logo, the
+   SDK files `bookclerk-workerd` injects, even `ci.yml`), or when it sits
+   in a crate with a `build.rs`. An include whose path it can't resolve
+   turns reuse off for every pull request until the scanner learns that
+   form. With no Rust input, it sets the `reuse-rust` output.
+4. `Analyze (<language>)` runs once per language, always all four.
+5. With `reuse-rust` set, `Analyze (rust)` runs
    [`scripts/codeql_reuse.py`](../../scripts/codeql_reuse.py). It looks
    for a `codeql.yml` run on `main` for exactly the merge commit's base
    parent, started by a push, the schedule or a manual run, whose
    `Analyze (rust)` job succeeded. It downloads that run's
    `codeql-rust-sarif` artifact and checks that it is CodeQL Rust SARIF.
    The job then uploads it with category `/language:rust`.
-5. If any of that fails, the job analyzes Rust as usual. That happens, for
+6. If any of that fails, the job analyzes Rust as usual. That happens, for
    example, when `main`'s run for the base commit is still going.
 
 The reused results match `main`'s analysis of the base commit, so code

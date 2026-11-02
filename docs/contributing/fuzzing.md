@@ -200,7 +200,11 @@ The tests live in `scripts/tests/`, and each corpus beside them.
   [CodeQL](ci.md#codeql)). The runs and SARIF that
   `scripts/codeql_reuse.py` reads come from GitHub and from `main`'s own
   runs, not from the pull request, so that reader is not a boundary. It is
-  tested in `scripts/tests/test_codeql_reuse.py`.
+  tested in `scripts/tests/test_codeql_reuse.py`. The scan for embedded
+  files (`scan_repo`) reads `.rs` files only when the pull request changes
+  none, so what it reads is `main`'s code; it is unit-tested in
+  `scripts/tests/test_codeql_languages.py` against the repository's own
+  includes.
   - Test and corpus: `scripts/tests/test_codeql_languages.py`,
     `scripts/tests/codeql_languages_corpus/` (files named `rust__<case>`
     or `norust__<case>`).

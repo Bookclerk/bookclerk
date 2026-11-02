@@ -163,6 +163,9 @@ class FuzzTests(unittest.TestCase):
 class CliTests(unittest.TestCase):
     """The command line writes the matrix the workflow reads."""
 
+    # The checkout the command line scans, as the workflow runs it.
+    root: Path = ROOT
+
     def run_main(self, event: str, raw: bytes | None) -> tuple[dict, str]:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "out"
@@ -175,9 +178,12 @@ class CliTests(unittest.TestCase):
             old = {k: os.environ.get(k) for k in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY")}
             os.environ["GITHUB_OUTPUT"] = str(out)
             os.environ["GITHUB_STEP_SUMMARY"] = str(summary)
+            cwd = os.getcwd()
+            os.chdir(self.root)
             try:
                 self.assertEqual(cl.main(args), 0)
             finally:
+                os.chdir(cwd)
                 for k, v in old.items():
                     if v is None:
                         os.environ.pop(k, None)
@@ -233,8 +239,105 @@ class CliTests(unittest.TestCase):
         self.assertIn("rust", [e["language"] for e in matrix["include"]])
         self.assertEqual(reuse, "false")
 
+    def test_unscannable_tree_analyzes_rust(self) -> None:
+        # Outside a git checkout `git ls-files` fails, so reuse is off.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.root = Path(tmp)
+            try:
+                _, reuse = self.run_main("pull_request", b"docs/a.md\x00")
+            finally:
+                del self.root
+        self.assertEqual(reuse, "false")
+
     def test_unreadable_paths_file_fails(self) -> None:
         self.assertEqual(cl.main(["--event", "pull_request", "--paths-file", "/nonexistent/paths"]), 2)
+
+
+class RepoScanTests(unittest.TestCase):
+    """Files a Rust source embeds, and build-script crates, rule reuse out."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.repo = cl.read_repo(ROOT)
+
+    def reuses(self, path: str, repo: object | None = None) -> bool:
+        return cl.choose("pull_request", [path], repo or self.repo).reuse_rust
+
+    def test_every_embedded_file_in_the_tree_analyzes_rust(self) -> None:
+        self.assertEqual(self.repo.unresolved, ())
+        existing = sorted(f for f in self.repo.files if (ROOT / f).is_file())
+        # plugin.toml manifests, the brand logo, the SDK embeds, ci.yml...
+        self.assertGreaterEqual(len(existing), 20)
+        for path in existing:
+            with self.subTest(path=path):
+                self.assertFalse(self.reuses(path))
+
+    def test_review_examples(self) -> None:
+        for path in (
+            "crates/bookclerk-plugins/platform/database-sqlite/plugin.toml",
+            "assets/brand/svg/bookclerk-logo.svg",
+            "packages/plugin-sdk/embed/bookclerk_plugin.js",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(self.reuses(path))
+
+    def test_files_in_build_script_crates_analyze_rust(self) -> None:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*build.rs"], cwd=ROOT, capture_output=True, check=True
+        ).stdout
+        for script in [p for p in listed.decode("utf-8").split("\0") if p]:
+            crate = script.rsplit("/", 1)[0]
+            with self.subTest(crate=crate):
+                self.assertFalse(self.reuses(f"{crate}/README.md"))
+
+    def test_unrelated_paths_still_reuse(self) -> None:
+        for path in ("docs/contributing/ci.md", "ui/src/App.tsx", "tools/site/render.ts"):
+            with self.subTest(path=path):
+                self.assertTrue(self.reuses(path))
+
+    def test_without_a_scan_rust_is_analyzed(self) -> None:
+        self.assertFalse(cl.choose("pull_request", ["docs/a.md"], None).reuse_rust)
+
+    def test_include_forms(self) -> None:
+        src = """
+            const A: &str = include_str!("../assets/a.txt");
+            const B: &[u8] = include_bytes!( "b.bin" );
+            const C: &str = include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../shared/c.json"
+            ));
+            include!(concat!(env!("OUT_DIR"), "/gen.rs"));
+            /// Docs may say include_str!("../d.toml").
+            my_include!("not/a/real/include.txt");
+        """
+        repo = cl.scan_repo([("crates/x/src/lib.rs", src)], ["Cargo.toml", "crates/x/Cargo.toml"], ["crates/x/build.rs"])
+        self.assertEqual(
+            repo.files,
+            {"crates/x/assets/a.txt", "crates/x/src/b.bin", "crates/shared/c.json", "crates/x/d.toml"},
+        )
+        self.assertEqual(repo.dirs, ("crates/x",))
+        self.assertEqual(repo.unresolved, ())
+
+    def test_includes_it_cannot_resolve_turn_reuse_off(self) -> None:
+        for arg in (
+            "$path",
+            'r"raw.txt"',
+            '"esc\\aped.txt"',
+            'concat!(env!("HOME"), "/x")',
+            'concat!(env!("OUT_DIR"), "/gen.rs")',  # no build script
+            'concat!("a", "b")',
+            '"unbalanced.txt"; fn f() {}',
+        ):
+            # The last one never closes, so the rest of the file is the argument.
+            src = f"include_str!({arg})" if "unbalanced" not in arg else f"include_str!({arg}"
+            with self.subTest(arg=arg):
+                repo = cl.scan_repo([("crates/y/src/lib.rs", src)], ["crates/y/Cargo.toml"], [])
+                self.assertEqual(len(repo.unresolved), 1)
+                self.assertFalse(self.reuses("docs/a.md", repo))
+
+    def test_root_build_script_covers_everything(self) -> None:
+        repo = cl.scan_repo([], ["Cargo.toml"], ["build.rs"])
+        self.assertFalse(self.reuses("docs/a.md", repo))
 
 
 class WorkflowTests(unittest.TestCase):
