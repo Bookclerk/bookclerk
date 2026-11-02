@@ -19007,14 +19007,14 @@
             }
           },
           "503": {
-            "description": "The library database is busy; redeem again with the same ticket and nonce.",
+            "description": "The library's atomic redeem did not answer in time or its reply was lost; redeem again with the same ticket and nonce.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "example": {
-                  "error": "database is locked"
+                  "error": "deadline_exceeded: host RPC deadline elapsed"
                 }
               }
             }
@@ -19064,13 +19064,19 @@
             }
           },
           "400": {
-            "description": "The integration is not deployed here, does not take a username and password, or refused them.",
+            "description": "The integration is not deployed here, does not take a username and password, or refused them, or the library database refused the step.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "examples": {
+                  "library_failed": {
+                    "summary": "The library database refused the step.",
+                    "value": {
+                      "error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"
+                    }
+                  },
                   "no_credential_login": {
                     "summary": "The integration signs in another way.",
                     "value": {
@@ -19086,22 +19092,9 @@
                   "refused": {
                     "summary": "The integration rejected the credentials.",
                     "value": {
-                      "error": "integration API error (401): Invalid user or password"
+                      "error": "internal: integration API error (401): Invalid user or password"
                     }
                   }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "The library database is busy; retry.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PortalErrorBody"
-                },
-                "example": {
-                  "error": "database is locked"
                 }
               }
             }
@@ -19189,6 +19182,19 @@
               }
             }
           },
+          "400": {
+            "description": "The library database refused the lookup.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"
+                }
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in, or the portal session expired.",
             "content": {
@@ -19209,19 +19215,6 @@
                       "error": "session expired"
                     }
                   }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "The library database is busy; retry.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PortalErrorBody"
-                },
-                "example": {
-                  "error": "database is locked"
                 }
               }
             }
@@ -19320,13 +19313,19 @@
             }
           },
           "400": {
-            "description": "No deployed source has that id, the source signs in through OAuth, or the store rejected the login (the body carries its message).",
+            "description": "No deployed source has that id, the source signs in through OAuth, or the store or the library database refused the step (the body carries its message).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "examples": {
+                  "library_failed": {
+                    "summary": "The library database refused the step.",
+                    "value": {
+                      "error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"
+                    }
+                  },
                   "oauth_source": {
                     "summary": "The source signs in through OAuth.",
                     "value": {
@@ -19336,7 +19335,7 @@
                   "store_refused": {
                     "summary": "The store rejected the email or password.",
                     "value": {
-                      "error": "oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"
+                      "error": "internal: authentication error: oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"
                     }
                   },
                   "unknown_source": {
@@ -19384,19 +19383,6 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "The library database is busy; retry.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PortalErrorBody"
-                },
-                "example": {
-                  "error": "database is locked"
                 }
               }
             }
@@ -19451,13 +19437,19 @@
             }
           },
           "400": {
-            "description": "No deployed source has that id, the source signs in with a password, the store produced no login URL in time, or the login stopped before it produced one.",
+            "description": "No deployed source has that id, the source signs in with a password, the store produced no login URL in time, the login stopped before it produced one, or the library database refused the step.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "examples": {
+                  "library_failed": {
+                    "summary": "The library database refused the step.",
+                    "value": {
+                      "error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"
+                    }
+                  },
                   "login_stopped": {
                     "summary": "The store login failed before it produced a URL.",
                     "value": {
@@ -19525,19 +19517,6 @@
               }
             }
           },
-          "503": {
-            "description": "The library database is busy; retry.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PortalErrorBody"
-                },
-                "example": {
-                  "error": "database is locked"
-                }
-              }
-            }
-          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -19587,13 +19566,19 @@
             }
           },
           "400": {
-            "description": "The Libro.fm source is not deployed here, or the store rejected the login.",
+            "description": "The Libro.fm source is not deployed here, or the store or the library database refused the step (the body carries its message).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "examples": {
+                  "library_failed": {
+                    "summary": "The library database refused the step.",
+                    "value": {
+                      "error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"
+                    }
+                  },
                   "not_deployed": {
                     "summary": "The Libro.fm source is not deployed on this host.",
                     "value": {
@@ -19603,7 +19588,7 @@
                   "store_refused": {
                     "summary": "The store rejected the email or password.",
                     "value": {
-                      "error": "oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"
+                      "error": "internal: authentication error: oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"
                     }
                   }
                 }
@@ -19649,19 +19634,6 @@
               }
             }
           },
-          "503": {
-            "description": "The library database is busy; retry.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PortalErrorBody"
-                },
-                "example": {
-                  "error": "database is locked"
-                }
-              }
-            }
-          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -19702,13 +19674,19 @@
             }
           },
           "400": {
-            "description": "The Audible source is not deployed here, the store produced no login URL in time, or the login stopped before it produced one.",
+            "description": "The Audible source is not deployed here, the store produced no login URL in time, the login stopped before it produced one, or the library database refused the step.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
                 "examples": {
+                  "library_failed": {
+                    "summary": "The library database refused the step.",
+                    "value": {
+                      "error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"
+                    }
+                  },
                   "login_stopped": {
                     "summary": "The store login failed before it produced a URL.",
                     "value": {
@@ -19770,19 +19748,6 @@
               }
             }
           },
-          "503": {
-            "description": "The library database is busy; retry.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PortalErrorBody"
-                },
-                "example": {
-                  "error": "database is locked"
-                }
-              }
-            }
-          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -19822,6 +19787,19 @@
               }
             }
           },
+          "400": {
+            "description": "The library database refused the lookup.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalErrorBody"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"
+                }
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in, or the portal session expired.",
             "content": {
@@ -19842,19 +19820,6 @@
                       "error": "session expired"
                     }
                   }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "The library database is busy; retry.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PortalErrorBody"
-                },
-                "example": {
-                  "error": "database is locked"
                 }
               }
             }
@@ -19919,14 +19884,25 @@
             }
           },
           "400": {
-            "description": "The account is not linked to this identity, or the library refused the unlink (the body carries its message).",
+            "description": "The account is not linked to this identity, or the library database refused the unlink or the credential revoke (the body carries its message).",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "example": {
-                  "error": "account not linked to this identity"
+                "examples": {
+                  "library_failed": {
+                    "summary": "The library database refused the step.",
+                    "value": {
+                      "error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"
+                    }
+                  },
+                  "not_linked": {
+                    "summary": "No link between this identity and the account.",
+                    "value": {
+                      "error": "account not linked to this identity"
+                    }
+                  }
                 }
               }
             }
@@ -19971,25 +19947,14 @@
             }
           },
           "503": {
-            "description": "The library database is busy, or the store sign-out that follows the last unlink failed; retry.",
+            "description": "The store sign-out task that follows the last unlink stopped. The link is already gone (a retry answers 400 `account not linked to this identity`) and the account's stored credentials may remain; the daemon log names the task.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PortalErrorBody"
                 },
-                "examples": {
-                  "cleanup_failed": {
-                    "summary": "The store sign-out task stopped.",
-                    "value": {
-                      "error": "revoke cleanup failed: task 12 panicked"
-                    }
-                  },
-                  "database_busy": {
-                    "summary": "The store answered with a transient error.",
-                    "value": {
-                      "error": "database is locked"
-                    }
-                  }
+                "example": {
+                  "error": "revoke cleanup failed: task 12 panicked"
                 }
               }
             }

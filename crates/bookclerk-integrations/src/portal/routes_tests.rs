@@ -318,7 +318,7 @@ async fn password_login_refusals_name_their_cause() {
         id: "chirp",
         key: "test:source-chirp",
         mode: PortalAuthMode::Password,
-        refusal: Some("oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"),
+        refusal: Some("internal: authentication error: oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"),
     }));
     let (app, _library, cookie) = harness(sources).await;
 
@@ -369,7 +369,7 @@ async fn password_login_refusals_name_their_cause() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(
         body,
-        json!({"error": "oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"})
+        json!({"error": "internal: authentication error: oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"})
     );
 }
 
