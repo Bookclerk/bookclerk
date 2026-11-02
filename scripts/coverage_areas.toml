@@ -37,7 +37,7 @@ test_results = "rust/junit.xml"
 root = "."
 paths = ["crates/", "fuzz/", "examples/"]
 suffixes = [".rs"]
-floor = 73
+floor = 74
 workspace_check = "rust_test"
 
 [areas.site]
@@ -70,4 +70,4 @@ test_results = "python-sdk/junit.xml"
 root = "."
 paths = ["packages/plugin-sdk-python/src/"]
 suffixes = [".py"]
-floor = 60
+floor = 65
