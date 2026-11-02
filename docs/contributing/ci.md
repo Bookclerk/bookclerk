@@ -170,6 +170,11 @@ python3 scripts/ci-exec.py run rust_test --run-id local    # run them
   the same temporary directory with the same commit and run id.
 - Checks that share one artifact still run each prerequisite only once.
 - `show` prints commands and doesn't record completion.
+- `prereqs <check>` runs only the check's prerequisites. With
+  `--github-env` it also exports the environment the check's commands run
+  with (`PATH` with the built helpers first, `BOOKCLERK_WORKERD_BIN`), for
+  a job that runs the tests its own way, such as
+  [mutation testing](#mutation-testing).
 
 `scripts/tests/test_ci_contract.py` (PyYAML, hash-pinned in
 `scripts/tests/requirements.txt`) fails when the workflow and the planner
@@ -849,6 +854,62 @@ script size limit.
 
 The bundle status is informational, like the coverage statuses; its
 settings are under `bundle_analysis` in `.github/codecov.yml`.
+
+## Mutation testing
+
+Coverage shows which lines the tests run, not whether a test would notice
+them doing the wrong thing. Mutation testing checks that: it makes a small
+change to the code, such as flipping a comparison or making a function
+return a default value, and runs the tests. If a test fails, the mutant is
+**caught**. If every test still passes, the mutant is **missed**: nothing
+checks that behavior, so a real bug there would slip through too.
+
+The [`mutation.yml`](../../.github/workflows/mutation.yml) workflow runs
+[cargo-mutants](https://mutants.rs/) on every pull request that changes
+Rust code:
+
+1. It mutates only the functions the pull request changes (`--in-diff`,
+   from the pull request's diff) in any workspace member (`--workspace`;
+   without it cargo-mutants looks only at the default members), so the cost
+   follows the size of the change. Test code, the generated files and the
+   staged-plugin harness (`bookclerk-plugin-e2e`, whose tests need the
+   plugins CI's `e2e` check stages) are never mutated.
+2. Before the first mutant, the job builds what CI's `rust_test` check
+   builds first (the jail, the workerd front door, the pinned workerd and
+   the platform guests) with `ci-exec.py prereqs rust_test`, and turns on
+   the same confinement enforcement as the test job. Tests that launch a
+   helper then run instead of skipping.
+3. Each mutant runs the tests of its own package under cargo-nextest.
+4. The run stops after 50 minutes and reports what it tested so far.
+
+The job summary shows the share of mutants the tests caught and lists the
+missed ones. cargo-mutants also annotates each missed mutant on the pull
+request's diff. The full results, with a log per mutant, are in the
+`mutants-rust` artifact. A mutant that does not build (**unviable**) says
+nothing about the tests and is left out of the score; one whose tests time
+out counts as caught.
+
+To fix a missed mutant, add a test that fails with the change it names, or
+tighten an assertion that should already have caught it. To reproduce one
+locally:
+
+```sh
+cargo install cargo-mutants --locked
+git diff origin/main... > /tmp/change.diff
+RUSTFLAGS=--cap-lints=warn cargo mutants --workspace --in-diff /tmp/change.diff
+```
+
+Capping lints keeps a mutant that only leaves a parameter unused from
+failing to build under the crates' `deny` lints; the workflow caps them for
+every build in the job. Settings live in
+[`.cargo/mutants.toml`](../../.cargo/mutants.toml): nextest as the test
+runner, the custom-harness test binaries CI runs with `cargo test` left
+out of nextest, and the excluded files, whose generated entries must match
+`generated` in `scripts/coverage_areas.toml`. Tests check both lists.
+
+> [!NOTE]
+> The workflow is a report-only trial and not a required check. The
+> TypeScript Workers and the Python SDK are not covered yet.
 
 ## Worker startup time
 
