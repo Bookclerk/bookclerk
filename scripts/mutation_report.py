@@ -233,9 +233,11 @@ def sample_lines(listed: str, budget: int, seed: int) -> tuple[dict[str, list[in
 
     cargo-mutants tests every mutant whose span covers a marked line, so a
     line inside a function also admits its whole-body replacements. Within
-    ``budget`` every mutant's first line is marked. Past it, candidate lines
-    (each mutant's first line) are tried in an evenly spread order starting
-    at ``seed``, and a line is kept only while the mutants admitted stay
+    ``budget`` every mutant's first line is marked. Past it, each file first
+    gets the line admitting the fewest mutants, while they fit; then
+    candidate lines (each mutant's first line) are tried in an evenly spread
+    order starting at ``seed``, and a line is kept only while the mutants
+    admitted stay
     within ``budget``, so successive pull requests test different mutants of
     the same file and no run tests more than ``budget`` (unless every line
     alone admits more, when the line admitting the fewest is marked).
@@ -265,12 +267,21 @@ def sample_lines(listed: str, budget: int, seed: int) -> tuple[dict[str, list[in
 
     admitted: set[int] = set()
     marked: dict[str, set[int]] = {}
-    for path, line in order:
+
+    def admit(path: str, line: int) -> None:
         new = covering(path, line) - admitted
-        if len(admitted) + len(new) > budget:
-            continue
-        admitted |= new
-        marked.setdefault(path, set()).add(line)
+        if len(admitted) + len(new) <= budget:
+            admitted.update(new)
+            marked.setdefault(path, set()).add(line)
+
+    # Each file first gets the line that admits the fewest, while they fit,
+    # so a file with few mutants is not crowded out by one with many.
+    files = list(dict.fromkeys(path for path, _ in order))
+    for index in range(len(files)):
+        path = files[(seed + index) % len(files)]
+        admit(*min((c for c in order if c[0] == path), key=lambda candidate: len(covering(*candidate))))
+    for path, line in order:
+        admit(path, line)
     if not admitted and order:
         # Every line alone admits more than the budget: test the smallest.
         path, line = min(order, key=lambda candidate: len(covering(*candidate)))
@@ -406,9 +417,12 @@ def render(
         lines += [f"- {_code(path)}" for path in named[:MAX_LISTED]]
         lines.append("")
         if sample is not None and sample.tested < sample.total:
+            ran = sum(
+                mutant_file(m) in named for outcome in (Outcome.CAUGHT, Outcome.MISSED, Outcome.TIMEOUT) for m in results.mutants[outcome]
+            )
             note = (
-                f"They hold {sample.total} mutants, more than one run tests, so {sample.tested} spread across "
-                "them were tested; the choice changes with each pull request."
+                f"The widened files, including any not listed, hold {sample.total} mutants, more than one run tests, "
+                f"so {ran} spread across them were tested; the choice changes with each pull request."
             )
             lines += [note, ""]
     if run is Run.BASELINE_FAILED:

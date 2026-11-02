@@ -126,16 +126,20 @@ class WidenTest(unittest.TestCase):
         out.mutants[Outcome.CAUGHT] = ["crates/a/src/lib.rs:9:1: replace g -> u32 with 0"]
         text = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs", "crates/a/tests/t.rs"])
         self.assertIn("the functions in them were mutated instead", text)
-        self.assertNotIn("They hold", text)
+        self.assertNotIn("mutants, more than one run tests", text)
         self.assertIn("- `crates/a/src/lib.rs`", text)
         # A widened file that yielded no mutant (a test file) is not named.
         self.assertNotIn("tests/t.rs", text)
         self.assertNotIn("functions in them", mr.render(out, mr.Run.CLEAN, stopped=False))
+        # The note counts the widened mutants that ran, not those admitted
+        # (an unviable one, or one a stopped run never reached, did not run).
+        out.mutants[Outcome.UNVIABLE] = ["crates/a/src/lib.rs:12:1: replace h with ()"]
+        out.mutants[Outcome.MISSED] = ["crates/b/src/api.rs:3:7: replace <= with > in f"]
         sampled = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs"], sample=mr.Sample(300, 15))
-        self.assertIn("They hold 300 mutants", sampled)
-        self.assertIn("so 15 spread across them were tested", sampled)
+        self.assertIn("including any not listed, hold 300 mutants", sampled)
+        self.assertIn("so 1 spread across them were tested", sampled)
         everything = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs"], sample=mr.Sample(9, 9))
-        self.assertNotIn("They hold", everything)
+        self.assertNotIn("hold 9 mutants", everything)
 
 
 class ScoreTest(unittest.TestCase):
@@ -250,6 +254,14 @@ class SampleTest(unittest.TestCase):
             picks.append(lines["crates/a/src/lib.rs"])
         self.assertEqual(picks[0], [1, 4, 7, 10])
         self.assertNotEqual(picks[0], picks[1])
+
+    def test_a_small_file_is_not_crowded_out(self) -> None:
+        """Each widened file gets a line, however many mutants the others hold."""
+        spans = [("big.rs", line, line) for line in range(1, 101)] + [("small.rs", 5, 5)]
+        for seed in range(150):
+            lines, sample = mr.sample_lines(listing(*spans), budget=15, seed=seed)
+            self.assertEqual(lines.get("small.rs"), [5], seed)
+            self.assertEqual(sample, mr.Sample(101, 15))
 
     def test_shared_spans_count_against_the_budget(self) -> None:
         """Regression: body replacements span their function, so one line admits all of them."""

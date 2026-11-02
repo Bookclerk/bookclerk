@@ -883,8 +883,9 @@ Rust code:
    of their mutants are all tested; past that, at most 15 spread across
    the files are (counting every mutant a chosen line brings in, such as
    its function's body replacements), and the choice changes with each
-   pull request. Each
-   mutant runs its package's whole test suite, two minutes for some
+   pull request. Each file gets at least its smallest line while that fits.
+   If every line alone brings in more than 15, the one that brings in the
+   fewest is tested, so such a run can exceed 15. Each mutant runs its package's whole test suite, two minutes for some
    crates, so a large file would otherwise hold a runner for the whole
    time limit. Code in other files that reads the data is not covered.
 3. Before the first mutant, the job builds what CI's `rust_test` check
