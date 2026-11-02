@@ -226,6 +226,20 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     A SARIF file is accepted only when it is version 2.1.0, every run is
     from CodeQL, and every run carries the id `/language:rust`.
 
+- **Mutation testing start commit** (`choose` in
+  `scripts/mutation_base.py`). The nightly mutation workflows read the
+  commit of their last successful run from the GitHub API and diff `main`
+  against it (see [Mutation testing](ci.md#mutation-testing)). The answer
+  is checked before git sees it.
+  - Test and corpus: `scripts/tests/test_mutation_base.py`,
+    `scripts/tests/mutation_base_corpus/` (files named `sha__<case>`),
+    replayed and mutated as bytes.
+  - Oracle: a candidate is accepted only when, with surrounding whitespace
+    removed, it is exactly 40 characters, each a lowercase hex digit,
+    checked character by character rather than with a pattern. git is
+    asked about nothing else, and the first such candidate git confirms
+    wins.
+
 ### CLA check (Python)
 
 - **CLA checker** (`scripts/cla_check.py`). It reads the workflow event

@@ -3,7 +3,8 @@
 
 The previous run's commit comes from the GitHub API, so ``choose`` only
 accepts a full SHA that git confirms is an ancestor of ``HEAD``; the tests
-drive it with fake answers and with a real repository.
+drive it with fake answers, seeded mutations of ``mutation_base_corpus/``
+checked against an independent oracle, and a real repository.
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ def _load() -> ModuleType:
 
 
 mb = _load()
+#: Seed answers for the API's ``head_sha``, valid and malformed.
+CORPUS = Path(__file__).resolve().parent / "mutation_base_corpus"
 A, B = "a" * 40, "b" * 40
 
 
@@ -49,22 +52,73 @@ class ChooseTest(unittest.TestCase):
         self.assertIsNone(mb.choose([], lambda _: True))
 
     def test_fuzz_only_full_shas_reach_git(self) -> None:
-        """Oracle: git is only asked about 40 lowercase hex characters."""
+        """Seeded mutations of the corpus, checked against an independent oracle.
+
+        The API's answer is untrusted text: ``choose`` must ask git only about
+        40 lowercase hex characters and pick exactly the first candidate the
+        oracle accepts that git confirms.
+        """
         rng = random.Random(589)
-        alphabet = "0123456789abcdefABCDEF-./ \n\x00g"
-        for _ in range(500):
-            candidates = ["".join(rng.choice(alphabet) for _ in range(rng.choice([0, 7, 39, 40, 41]))) for _ in range(rng.randrange(0, 4))]
+        seeds = [path.read_bytes() for path in sorted(CORPUS.iterdir())]
+        self.assertGreaterEqual(len(seeds), 8)
+        accepted_any = False
+        for case in range(3000):
+            candidates = [_mutate(rng, rng.choice(seeds)).decode("utf-8", errors="replace") for _ in range(rng.randrange(1, 4))]
+            known = {c.strip() for c in candidates if rng.random() < 0.7}
             asked: list[str] = []
 
-            def is_ancestor(sha: str, asked: list[str] = asked) -> bool:
+            def is_ancestor(sha: str, asked: list[str] = asked, known: set[str] = known) -> bool:
                 asked.append(sha)
-                return rng.random() < 0.5
+                return sha in known
 
             chosen = mb.choose(candidates, is_ancestor)
-            for sha in asked:
-                self.assertRegex(sha, r"^[0-9a-f]{40}$")
-            if chosen is not None:
-                self.assertEqual(chosen, asked[-1])
+            with self.subTest(case=case):
+                for sha in asked:
+                    self.assertTrue(_oracle_sha(sha), sha)
+                expected = next((c.strip() for c in candidates if _oracle_sha(c.strip()) and c.strip() in known), None)
+                self.assertEqual(chosen, expected)
+            accepted_any = accepted_any or chosen is not None
+        # The mutations keep enough valid SHAs that acceptance is exercised.
+        self.assertTrue(accepted_any)
+
+    def test_replay_corpus(self) -> None:
+        """Each seed alone, against the oracle, with git confirming everything."""
+        for path in sorted(CORPUS.iterdir()):
+            text = path.read_bytes().decode("utf-8", errors="replace")
+            with self.subTest(seed=path.name):
+                expected = text.strip() if _oracle_sha(text.strip()) else None
+                self.assertEqual(mb.choose([text], lambda _: True), expected)
+        self.assertEqual(mb.choose([(CORPUS / "sha__full.txt").read_text(encoding="utf-8")], lambda _: True), "0123456789abcdef0123456789abcdef01234567")
+        self.assertEqual(mb.choose([(CORPUS / "sha__padded.txt").read_text(encoding="utf-8")], lambda _: True), "0123456789abcdef0123456789abcdef01234567")
+        for name in ("sha__upper.txt", "sha__short.txt", "sha__long.txt", "sha__option.txt", "sha__two_lines.txt", "sha__ref.txt"):
+            self.assertIsNone(mb.choose([(CORPUS / name).read_text(encoding="utf-8")], lambda _: True), name)
+
+
+def _oracle_sha(text: str) -> bool:
+    """Independent check: exactly 40 characters, each a lowercase hex digit."""
+    return len(text) == 40 and all(c in "0123456789abcdef" for c in text)
+
+
+def _mutate(rng: random.Random, data: bytes) -> bytes:
+    """Apply one to three seeded byte-level mutations to a corpus seed."""
+    out = bytearray(data)
+    for _ in range(rng.randrange(0, 4)):
+        op = rng.randrange(6)
+        if op == 0 and out:
+            del out[rng.randrange(len(out))]
+        elif op == 1:
+            out.insert(rng.randrange(len(out) + 1), rng.choice(b"0123456789abcdefABCDEFg-/ \n\x00\xff"))
+        elif op == 2 and out:
+            i = rng.randrange(len(out))
+            out[i] = rng.choice(b"0123456789abcdef")
+        elif op == 3 and out:
+            i = rng.randrange(len(out))
+            out[i] ^= 1 << rng.randrange(8)
+        elif op == 4:
+            out = bytearray(bytes(out).swapcase()) if rng.random() < 0.5 else out
+        elif op == 5 and out:
+            out = out[: rng.randrange(len(out) + 1)]
+    return bytes(out)
 
 
 class MainTest(unittest.TestCase):
