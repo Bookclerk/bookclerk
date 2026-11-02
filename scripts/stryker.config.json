@@ -7,10 +7,9 @@
     "configFile": "vitest.config.ts",
     "related": false
   },
-  "reporters": ["json", "clear-text"],
-  "jsonReporter": {
-    "fileName": "reports/mutation/mutation.json"
-  },
+  "reporters": ["clear-text"],
+  "incremental": true,
+  "incrementalFile": "reports/mutation/mutation.json",
   "clearTextReporter": {
     "allowColor": false,
     "logTests": false

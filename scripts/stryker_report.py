@@ -213,7 +213,7 @@ def parse_report(text: str, root: str) -> tuple[Results, list[tuple[str, int, st
     return results, survivors
 
 
-def render(name: str, parsed: tuple[Results, list[tuple[str, int, str]]] | None, *, mutated: bool) -> str:
+def render(name: str, parsed: tuple[Results, list[tuple[str, int, str]]] | None, *, mutated: bool, stopped: bool = False) -> str:
     """Write the Markdown summary of one Worker's run.
 
     Args:
@@ -221,6 +221,8 @@ def render(name: str, parsed: tuple[Results, list[tuple[str, int, str]]] | None,
         parsed: The parsed report, or ``None`` when Stryker left none.
         mutated: Whether the pull request changed any of the Worker's
             source lines, so Stryker ran.
+        stopped: Whether the workflow stopped Stryker at its time limit, so
+            the report holds only the mutants tested before then.
 
     Returns:
         The summary, ending with a newline.
@@ -232,6 +234,8 @@ def render(name: str, parsed: tuple[Results, list[tuple[str, int, str]]] | None,
         lines.append("Stryker did not finish; check the job log.")
     else:
         results = parsed[0]
+        if stopped:
+            lines += ["Stryker reached the time limit, so only the mutants tested before it are counted.", ""]
         score = results.score()
         if score is None:
             lines.append("Stryker found no mutant on the changed lines.")
@@ -299,12 +303,13 @@ def report_main(argv: list[str]) -> int:
     parser.add_argument("--root", required=True, help="the Worker's directory, relative to the repository root")
     parser.add_argument("--name", required=True, help="the Worker's name, for the heading and artifact")
     parser.add_argument("--not-mutated", action="store_true", help="the change touched no source line, so Stryker did not run")
+    parser.add_argument("--stopped", action="store_true", help="the workflow stopped Stryker at its time limit")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""), help="file to append the summary to (none when empty)")
     args = parser.parse_args(argv)
     parsed = None
     if not args.not_mutated and args.report.is_file() and args.report.stat().st_size <= MAX_REPORT_BYTES:
         parsed = parse_report(args.report.read_text(encoding="utf-8", errors="replace"), args.root)
-    markdown = render(_clean(args.name), parsed, mutated=not args.not_mutated)
+    markdown = render(_clean(args.name), parsed, mutated=not args.not_mutated, stopped=args.stopped)
     sys.stdout.write(markdown)
     if parsed is not None:
         sys.stdout.write(annotations(parsed[1]))

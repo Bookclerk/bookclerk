@@ -944,7 +944,8 @@ workflow does the same for the Cloudflare Workers (`tools/site`,
    gets mutants too.
 3. Each mutant runs the Vitest tests that cover it, including the ones
    that run inside the Workers runtime.
-4. The run stops after 20 minutes.
+4. The run stops after 20 minutes. The summary then counts the mutants
+   tested before the limit and says the run was stopped.
 
 The job summary and the `mutants-<worker>` artifact have the same shape as
 the Rust job's, and each missed mutant is annotated on the diff. Stryker
@@ -958,6 +959,9 @@ the Workers' lockfiles do not change. Settings live in
   with each Worker's `npm run typecheck`.
 - `vitest.related` off, because the Workers runtime loads modules outside
   Vitest's module graph, so Vitest cannot tell which tests import a file.
+- `incremental`, writing to `reports/mutation/mutation.json`, because only
+  incremental mode saves the mutants tested so far when the run is
+  stopped. The report step reads that file.
 
 To reproduce a Worker's run locally, from its directory:
 
@@ -966,8 +970,8 @@ npm install --no-save @stryker-mutator/core@10.1.1 @stryker-mutator/vitest-runne
 npx stryker run ../../scripts/stryker.config.json --mutate "src/page.ts:10-20"
 ```
 
-The report lands in `reports/mutation/mutation.json`; delete that folder
-afterwards.
+The report lands in `reports/mutation/mutation.json`. Delete that folder
+afterwards: incremental mode reuses the results in it on the next run.
 
 > [!NOTE]
 > Both workflows are report-only trials and not required checks. The

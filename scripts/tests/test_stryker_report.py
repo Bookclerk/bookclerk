@@ -191,7 +191,9 @@ class RenderTest(unittest.TestCase):
         empty = sr.parse_report(report(), "tools/site")
         self.assertIn("found no mutant", sr.render("site", empty, mutated=True))
         parsed = sr.parse_report(report(mutant("Killed"), mutant("Killed"), mutant("Killed"), mutant("Survived", 7)), "tools/site")
+        self.assertIn("reached the time limit", sr.render("site", parsed, mutated=True, stopped=True))
         text = sr.render("site", parsed, mutated=True)
+        self.assertNotIn("time limit", text)
         self.assertTrue(text.startswith("## Mutation testing (site Worker)\n"))
         self.assertIn("**75%** of the 4 mutants", text)
         self.assertIn("| 3 | 1 | 0 | 0 |", text)
@@ -267,9 +269,16 @@ class WiringTest(unittest.TestCase):
         self.assertIn("npm install --no-save", steps["Install dependencies and Stryker"]["run"])
         run = steps["Test the mutants"]["run"]
         self.assertIn('--mutate "$MUTATE"', run)
+        # SIGINT to Stryker alone: the whole process group would stop its
+        # test runners before it saves the partial report.
+        self.assertIn("timeout --foreground --signal=INT", run)
+        self.assertIn("node_modules/.bin/stryker run", run)
         self.assertIn("../../scripts/stryker.config.json", run)
         self.assertRegex(workflow["env"]["STRYKER_VERSION"], r"^\d+\.\d+\.\d+$")
         self.assertIn("python3 scripts/stryker_report.py report", steps["Report"]["run"])
+        self.assertIn("--stopped", steps["Report"]["run"])
+        self.assertEqual(steps["Report"]["env"]["STOPPED"], "${{ steps.mutants.outputs.stopped }}")
+        self.assertEqual(steps["Test the mutants"]["id"], "mutants")
 
     def test_settings(self) -> None:
         config = json.loads((ROOT / "scripts" / "stryker.config.json").read_text(encoding="utf-8"))
@@ -280,7 +289,11 @@ class WiringTest(unittest.TestCase):
         self.assertFalse((ROOT / "tools" / "site" / config["tsconfigFile"]).exists())
         # The Workers pool loads modules inside workerd, out of Vitest's module graph.
         self.assertFalse(config["vitest"]["related"])
-        self.assertEqual(config["jsonReporter"]["fileName"], "reports/mutation/mutation.json")
+        # Incremental mode is what writes a partial report when the workflow
+        # stops Stryker; the report step reads that file.
+        self.assertTrue(config["incremental"])
+        self.assertEqual(config["incrementalFile"], "reports/mutation/mutation.json")
+        self.assertNotIn("json", config["reporters"])
 
 
 if __name__ == "__main__":

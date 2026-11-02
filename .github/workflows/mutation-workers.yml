@@ -93,15 +93,23 @@ jobs:
 
       # `inPlace` mutates this checkout, which the runner throws away;
       # Stryker restores each file afterwards. The time limit leaves room to
-      # report inside the job's.
+      # report inside the job's: on SIGINT, incremental mode writes the
+      # mutants tested so far to the report. The signal goes to Stryker
+      # alone (`--foreground`, and its binary rather than npx), so its test
+      # runners are still alive while it saves.
       - name: Test the mutants
+        id: mutants
         if: steps.lines.outputs.mutate != ''
         working-directory: ${{ matrix.root }}
         env:
           MUTATE: ${{ steps.lines.outputs.mutate }}
         run: |
           set +e
-          timeout --signal=INT --kill-after=2m 20m npx stryker run ../../scripts/stryker.config.json --mutate "$MUTATE"
+          timeout --foreground --signal=INT --kill-after=2m 20m node_modules/.bin/stryker run ../../scripts/stryker.config.json --mutate "$MUTATE"
+          code=$?
+          if [ "$code" -eq 124 ] || [ "$code" -eq 130 ] || [ "$code" -eq 137 ]; then
+            echo "stopped=true" >> "$GITHUB_OUTPUT"
+          fi
           exit 0
 
       - name: Report
@@ -110,10 +118,12 @@ jobs:
           ROOT: ${{ matrix.root }}
           NAME: ${{ matrix.name }}
           MUTATE: ${{ steps.lines.outputs.mutate }}
+          STOPPED: ${{ steps.mutants.outputs.stopped }}
         run: |
           set -euo pipefail
           args=(--report "$ROOT/reports/mutation/mutation.json" --root "$ROOT" --name "$NAME")
           if [ -z "$MUTATE" ]; then args+=(--not-mutated); fi
+          if [ "${STOPPED:-}" = "true" ]; then args+=(--stopped); fi
           python3 scripts/stryker_report.py report "${args[@]}"
 
       - name: Upload the results
