@@ -1,0 +1,12 @@
+{
+ "jobs": [
+  {
+   "name": "Analyze (rust)",
+   "conclusion": "success"
+  },
+  {
+   "name": "Analyze (rust)",
+   "conclusion": "success"
+  }
+ ]
+}

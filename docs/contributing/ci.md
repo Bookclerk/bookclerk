@@ -583,28 +583,51 @@ repository's "CodeQL results" merge rule reads its analyses. GitHub's
 default setup for code scanning must be off, or the uploads are refused.
 
 Rust takes about 20 minutes on a hosted runner, and CodeQL has no
-incremental analysis for Rust yet. A pull request that changes no Rust
-input can't add or fix a Rust alert, so the workflow can skip Rust there.
-That is turned off (`PULL_REQUESTS_SKIP_RUST`): the "CodeQL results" merge
-rule reports a pull request without `/language:rust` as neutral, "1
-configuration not found", and that blocks the merge. Every pull request
-analyzes Rust, and the chooser still records why in the job summary:
+incremental analysis for Rust yet (tracked in
+[#585](https://github.com/Bookclerk/bookclerk/issues/585)). Rust can't be
+left out of a pull request either: the "CodeQL results" merge rule reports
+a pull request without `/language:rust` as neutral, "1 configuration not
+found", and that blocks the merge. So a pull request that changes no Rust
+input reuses `main`'s Rust results instead:
 
 1. The `Choose languages` job diffs the merge commit against its base
    (`git diff -z --no-renames --name-only`).
 2. [`scripts/codeql_languages.py`](../../scripts/codeql_languages.py)
-   adds Rust when a path is a `.rs` file, a `.capnp` or `.proto` schema
-   that a build script compiles into Rust, a `Cargo.toml`, `Cargo.lock`,
-   `rust-toolchain.toml`, anything under a `.cargo/` directory at any
-   depth, the workflow, or the script itself. A name that isn't UTF-8
-   also counts. A test fails when a `build.rs` reads a file the chooser
-   doesn't count, because CodeQL runs build scripts even in build mode
-   `none`.
-3. `Analyze (<language>)` runs once per chosen language.
+   treats a path as a Rust input when it is a `.rs` file, a `.capnp` or
+   `.proto` schema that a build script compiles into Rust, a `Cargo.toml`,
+   `Cargo.lock`, `rust-toolchain.toml`, anything under a `.cargo/`
+   directory at any depth, the workflow, or the scripts that choose and
+   reuse. A name that isn't UTF-8 also counts. A test fails when a
+   `build.rs` reads a file the chooser doesn't count, because CodeQL runs
+   build scripts even in build mode `none`.
+3. Before allowing reuse, it scans the merge commit's tracked `.rs` files.
+   A path also counts when a Rust source embeds it with `include_str!`,
+   `include_bytes!` or `include!` (a `plugin.toml`, the brand logo, the
+   SDK files `bookclerk-workerd` injects, even `ci.yml`), or when it sits
+   in a crate with a `build.rs`. An include whose path it can't resolve
+   turns reuse off for every pull request until the scanner learns that
+   form. With no Rust input, it sets the `reuse-rust` output.
+4. `Analyze (<language>)` runs once per language, always all four.
+5. With `reuse-rust` set, `Analyze (rust)` runs
+   [`scripts/codeql_reuse.py`](../../scripts/codeql_reuse.py). It looks
+   for a `codeql.yml` run on `main` for exactly the merge commit's base
+   parent, started by a push, the schedule or a manual run, whose
+   `Analyze (rust)` job succeeded. It downloads that run's
+   `codeql-rust-sarif` artifact and checks that it is CodeQL Rust SARIF.
+   The job then uploads it with category `/language:rust`.
+6. If any of that fails, the job analyzes Rust as usual. That happens, for
+   example, when `main`'s run for the base commit is still going.
+
+The reused results match `main`'s analysis of the base commit, so code
+scanning reports no new and no fixed Rust alerts. A real analysis would
+report the same, because nothing it reads changed. The job matrix stays
+the same either way, because code scanning records the matrix values with
+each analysis and a pull request has to match `main`'s configuration.
 
 Pushes to `main`, the Monday schedule and manual runs analyze every
-language. The Rust extractor's own cargo output (build scripts and proc
-macros) is cached under
+language, and the Rust job keeps its SARIF as the `codeql-rust-sarif`
+artifact for 30 days. The Rust extractor's own cargo output (build
+scripts and proc macros) is cached under
 `codeql-rust-target-<rustc version>-<Cargo.lock hash>`: `main` saves it
 and pull requests only restore it.
 

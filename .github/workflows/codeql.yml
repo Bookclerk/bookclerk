@@ -4,10 +4,12 @@
 #   with CodeQL's default query suite, in build mode `none`, as GitHub's
 #   default setup did. The repository's "CodeQL results" merge rule reads
 #   these analyses.
-# - Every run analyzes all four languages. scripts/codeql_languages.py can
-#   skip Rust (about 20 minutes) on a pull request that changes no Rust
-#   input, but that is off: the merge rule blocks a pull request missing a
-#   configuration main has (`/language:rust`).
+# - Every run uploads all four languages: the merge rule blocks a pull
+#   request missing a configuration main has. On a pull request that
+#   changes no Rust input (scripts/codeql_languages.py), the Rust job
+#   uploads main's Rust results for the base commit again instead of a
+#   20-minute analysis (scripts/codeql_reuse.py), and analyzes when it
+#   can't find them. Main keeps those results as an artifact.
 # - The Rust extractor's own cargo output (build scripts and proc macros) is
 #   cached between runs; main saves it and pull requests only restore it.
 #
@@ -39,6 +41,7 @@ jobs:
       contents: read
     outputs:
       matrix: ${{ steps.choose.outputs.matrix }}
+      reuse-rust: ${{ steps.choose.outputs.reuse-rust }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -79,7 +82,30 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The merge commit and its base parent, whose main analysis the
+          # Rust job may reuse.
+          fetch-depth: 2
           persist-credentials: false
+
+      # The Rust analysis of a pull request that changes no Rust input would
+      # equal main's at the base parent, so that run's SARIF is uploaded
+      # again under the same job and category. No output means analyze.
+      - name: Find main's Rust results for the base commit
+        id: reuse
+        if: matrix.language == 'rust' && github.event_name == 'pull_request' && needs.languages.outputs.reuse-rust == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          base="$(git rev-parse HEAD^1)"
+          python3 scripts/codeql_reuse.py --repo "$REPO" --base "$base" --dest "$RUNNER_TEMP/reused-sarif"
+
+      - name: Upload main's Rust results
+        if: steps.reuse.outputs.sarif != ''
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: ${{ steps.reuse.outputs.sarif }}
+          category: /language:rust
 
       # rust-toolchain.toml follows `stable`, so the key names the compiler
       # itself: a new release would otherwise restore outputs it rebuilds.
@@ -87,13 +113,13 @@ jobs:
       # `env` cannot read the `runner` context.
       - name: Read the Rust version
         id: rustc
-        if: matrix.language == 'rust'
+        if: matrix.language == 'rust' && steps.reuse.outputs.sarif == ''
         run: |
           echo "version=$(rustc -V | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_OUTPUT"
           echo "CODEQL_EXTRACTOR_RUST_OPTION_CARGO_TARGET_DIR=$RUNNER_TEMP/codeql-rust-target" >> "$GITHUB_ENV"
 
       - name: Restore the Rust extractor's cargo output
-        if: matrix.language == 'rust'
+        if: matrix.language == 'rust' && steps.reuse.outputs.sarif == ''
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/codeql-rust-target
@@ -101,15 +127,28 @@ jobs:
           restore-keys: codeql-rust-target-${{ steps.rustc.outputs.version }}-
 
       - name: Initialize CodeQL
+        if: steps.reuse.outputs.sarif == ''
         uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
 
       - name: Perform CodeQL analysis
+        if: steps.reuse.outputs.sarif == ''
         uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: /language:${{ matrix.language }}
+          output: ${{ runner.temp }}/sarif
+
+      # What pull requests that change no Rust input reuse (see above).
+      - name: Keep the Rust results for pull requests
+        if: matrix.language == 'rust' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codeql-rust-sarif
+          path: ${{ runner.temp }}/sarif/*.sarif
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Save the Rust extractor's cargo output
         if: matrix.language == 'rust' && github.ref == 'refs/heads/main'

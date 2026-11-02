@@ -40,10 +40,18 @@ def _load() -> ModuleType:
 
 cl = _load()
 
+
+def _load_reuse() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("codeql_reuse", ROOT / "scripts" / "codeql_reuse.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 # The oracle's own reading of a Rust input, written without fnmatch.
 ORACLE_NAMES = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"}
 ORACLE_SUFFIXES = (".rs", ".capnp", ".proto")
-ORACLE_EXACT = {".github/workflows/codeql.yml", "scripts/codeql_languages.py"}
+ORACLE_EXACT = {".github/workflows/codeql.yml", "scripts/codeql_languages.py", "scripts/codeql_reuse.py"}
 
 
 def oracle_needs_rust(raw: bytes) -> bool:
@@ -155,7 +163,10 @@ class FuzzTests(unittest.TestCase):
 class CliTests(unittest.TestCase):
     """The command line writes the matrix the workflow reads."""
 
-    def run_main(self, event: str, raw: bytes | None) -> dict:
+    # The checkout the command line scans, as the workflow runs it.
+    root: Path = ROOT
+
+    def run_main(self, event: str, raw: bytes | None) -> tuple[dict, str]:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "out"
             summary = Path(tmp) / "summary"
@@ -167,44 +178,177 @@ class CliTests(unittest.TestCase):
             old = {k: os.environ.get(k) for k in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY")}
             os.environ["GITHUB_OUTPUT"] = str(out)
             os.environ["GITHUB_STEP_SUMMARY"] = str(summary)
+            cwd = os.getcwd()
+            os.chdir(self.root)
             try:
                 self.assertEqual(cl.main(args), 0)
             finally:
+                os.chdir(cwd)
                 for k, v in old.items():
                     if v is None:
                         os.environ.pop(k, None)
                     else:
                         os.environ[k] = v
-            line = out.read_text(encoding="utf-8")
-            self.assertTrue(line.startswith("matrix=") and line.endswith("\n"))
+            lines = out.read_text(encoding="utf-8").splitlines(keepends=True)
+            self.assertEqual(len(lines), 2)
+            self.assertTrue(lines[0].startswith("matrix=") and lines[0].endswith("\n"))
+            self.assertIn(lines[1], ("reuse-rust=true\n", "reuse-rust=false\n"))
             self.assertIn("CodeQL languages:", summary.read_text(encoding="utf-8"))
-            return json.loads(line[len("matrix=") :])
+            return json.loads(lines[0][len("matrix=") :]), lines[1].strip().split("=", 1)[1]
 
-    def test_pull_request_without_rust_still_analyzes_it(self) -> None:
-        # The merge rule blocks a pull request missing `/language:rust`.
-        self.assertIs(cl.PULL_REQUESTS_SKIP_RUST, False)
-        langs = [e["language"] for e in self.run_main("pull_request", b"docs/a.md\x00")["include"]]
-        self.assertIn("rust", langs)
+    def test_pull_request_without_rust_reuses_main(self) -> None:
+        # The merge rule blocks a pull request missing `/language:rust`, so
+        # Rust stays in the matrix; the job reuses main's results instead.
+        self.assertIs(cl.PULL_REQUESTS_REUSE_RUST, True)
+        matrix, reuse = self.run_main("pull_request", b"docs/a.md\x00")
+        self.assertEqual([e["language"] for e in matrix["include"]], [*cl.ALWAYS, cl.RUST])
+        self.assertEqual(reuse, "true")
 
-    def test_skipping_rust_is_still_possible(self) -> None:
-        old = cl.PULL_REQUESTS_SKIP_RUST
-        cl.PULL_REQUESTS_SKIP_RUST = True
+    def test_reuse_can_be_turned_off(self) -> None:
+        old = cl.PULL_REQUESTS_REUSE_RUST
+        cl.PULL_REQUESTS_REUSE_RUST = False
         try:
-            self.assertEqual(cl.choose("pull_request", ["docs/a.md"]).languages, cl.ALWAYS)
-            self.assertIn(cl.RUST, cl.choose("pull_request", ["src/a.rs"]).languages)
+            choice = cl.choose("pull_request", ["docs/a.md"])
+            self.assertEqual(choice.languages, (*cl.ALWAYS, cl.RUST))
+            self.assertIs(choice.reuse_rust, False)
         finally:
-            cl.PULL_REQUESTS_SKIP_RUST = old
+            cl.PULL_REQUESTS_REUSE_RUST = old
 
-    def test_pull_request_with_rust(self) -> None:
-        langs = [e["language"] for e in self.run_main("pull_request", b"crates/a/src/lib.rs\x00")["include"]]
-        self.assertIn("rust", langs)
+    def test_pull_request_with_rust_analyzes_it(self) -> None:
+        matrix, reuse = self.run_main("pull_request", b"crates/a/src/lib.rs\x00")
+        self.assertIn("rust", [e["language"] for e in matrix["include"]])
+        self.assertEqual(reuse, "false")
+
+    def test_unreadable_name_analyzes_rust(self) -> None:
+        self.assertIs(cl.choose("pull_request", ["docs/a.md", None]).reuse_rust, False)
+
+    def test_other_events_never_reuse(self) -> None:
+        for event in ("push", "schedule", "workflow_dispatch", "merge_group", "something_new"):
+            with self.subTest(event=event):
+                self.assertIs(cl.choose(event, ["docs/a.md"]).reuse_rust, False)
+
+    def test_matrix_is_the_same_whether_or_not_rust_is_reused(self) -> None:
+        # Code scanning records the matrix values with each analysis; a
+        # pull request's must equal main's to match its configuration.
+        self.assertEqual(
+            cl.matrix_json(cl.choose("pull_request", ["docs/a.md"])), cl.matrix_json(cl.choose("push", []))
+        )
 
     def test_push_needs_no_paths(self) -> None:
-        langs = [e["language"] for e in self.run_main("push", None)["include"]]
-        self.assertIn("rust", langs)
+        matrix, reuse = self.run_main("push", None)
+        self.assertIn("rust", [e["language"] for e in matrix["include"]])
+        self.assertEqual(reuse, "false")
+
+    def test_unscannable_tree_analyzes_rust(self) -> None:
+        # Outside a git checkout `git ls-files` fails, so reuse is off.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.root = Path(tmp)
+            try:
+                _, reuse = self.run_main("pull_request", b"docs/a.md\x00")
+            finally:
+                del self.root
+        self.assertEqual(reuse, "false")
+
+    def test_rust_changes_are_never_scanned(self) -> None:
+        # A changed `.rs` file is the pull request author's; the scan must
+        # not parse it (the choice is already "analyze").
+        old = cl.read_repo
+        cl.read_repo = lambda root: self.fail("scanned a tree with Rust changes")  # type: ignore[assignment]
+        try:
+            _, reuse = self.run_main("pull_request", b"crates/a/src/lib.rs\x00")
+        finally:
+            cl.read_repo = old
+        self.assertEqual(reuse, "false")
 
     def test_unreadable_paths_file_fails(self) -> None:
         self.assertEqual(cl.main(["--event", "pull_request", "--paths-file", "/nonexistent/paths"]), 2)
+
+
+class RepoScanTests(unittest.TestCase):
+    """Files a Rust source embeds, and build-script crates, rule reuse out."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.repo = cl.read_repo(ROOT)
+
+    def reuses(self, path: str, repo: object | None = None) -> bool:
+        return cl.choose("pull_request", [path], repo or self.repo).reuse_rust
+
+    def test_every_embedded_file_in_the_tree_analyzes_rust(self) -> None:
+        self.assertEqual(self.repo.unresolved, ())
+        existing = sorted(f for f in self.repo.files if (ROOT / f).is_file())
+        # plugin.toml manifests, the brand logo, the SDK embeds, ci.yml...
+        self.assertGreaterEqual(len(existing), 20)
+        for path in existing:
+            with self.subTest(path=path):
+                self.assertFalse(self.reuses(path))
+
+    def test_review_examples(self) -> None:
+        for path in (
+            "crates/bookclerk-plugins/platform/database-sqlite/plugin.toml",
+            "assets/brand/svg/bookclerk-logo.svg",
+            "packages/plugin-sdk/embed/bookclerk_plugin.js",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(self.reuses(path))
+
+    def test_files_in_build_script_crates_analyze_rust(self) -> None:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*build.rs"], cwd=ROOT, capture_output=True, check=True
+        ).stdout
+        for script in [p for p in listed.decode("utf-8").split("\0") if p]:
+            crate = script.rsplit("/", 1)[0]
+            with self.subTest(crate=crate):
+                self.assertFalse(self.reuses(f"{crate}/README.md"))
+
+    def test_unrelated_paths_still_reuse(self) -> None:
+        for path in ("docs/contributing/ci.md", "ui/src/App.tsx", "tools/site/render.ts"):
+            with self.subTest(path=path):
+                self.assertTrue(self.reuses(path))
+
+    def test_without_a_scan_rust_is_analyzed(self) -> None:
+        self.assertFalse(cl.choose("pull_request", ["docs/a.md"], None).reuse_rust)
+
+    def test_include_forms(self) -> None:
+        src = """
+            const A: &str = include_str!("../assets/a.txt");
+            const B: &[u8] = include_bytes!( "b.bin" );
+            const C: &str = include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../shared/c.json"
+            ));
+            include!(concat!(env!("OUT_DIR"), "/gen.rs"));
+            /// Docs may say include_str!("../d.toml").
+            my_include!("not/a/real/include.txt");
+        """
+        repo = cl.scan_repo([("crates/x/src/lib.rs", src)], ["Cargo.toml", "crates/x/Cargo.toml"], ["crates/x/build.rs"])
+        self.assertEqual(
+            repo.files,
+            {"crates/x/assets/a.txt", "crates/x/src/b.bin", "crates/shared/c.json", "crates/x/d.toml"},
+        )
+        self.assertEqual(repo.dirs, ("crates/x",))
+        self.assertEqual(repo.unresolved, ())
+
+    def test_includes_it_cannot_resolve_turn_reuse_off(self) -> None:
+        for arg in (
+            "$path",
+            'r"raw.txt"',
+            '"esc\\aped.txt"',
+            'concat!(env!("HOME"), "/x")',
+            'concat!(env!("OUT_DIR"), "/gen.rs")',  # no build script
+            'concat!("a", "b")',
+            '"unbalanced.txt"; fn f() {}',
+        ):
+            # The last one never closes, so the rest of the file is the argument.
+            src = f"include_str!({arg})" if "unbalanced" not in arg else f"include_str!({arg}"
+            with self.subTest(arg=arg):
+                repo = cl.scan_repo([("crates/y/src/lib.rs", src)], ["crates/y/Cargo.toml"], [])
+                self.assertEqual(len(repo.unresolved), 1)
+                self.assertFalse(self.reuses("docs/a.md", repo))
+
+    def test_root_build_script_covers_everything(self) -> None:
+        repo = cl.scan_repo([], ["Cargo.toml"], ["build.rs"])
+        self.assertFalse(self.reuses("docs/a.md", repo))
 
 
 class WorkflowTests(unittest.TestCase):
@@ -264,7 +408,52 @@ class WorkflowTests(unittest.TestCase):
         sets_dir = [s for s in steps if "CODEQL_EXTRACTOR_RUST_OPTION_CARGO_TARGET_DIR=" in str(s.get("run", ""))]
         self.assertEqual(len(sets_dir), 1)
         self.assertIn("GITHUB_ENV", sets_dir[0]["run"])
-        self.assertEqual(sets_dir[0]["if"], "matrix.language == 'rust'")
+        self.assertEqual(sets_dir[0]["if"], "matrix.language == 'rust' && steps.reuse.outputs.sarif == ''")
+
+    def test_rust_reuses_main_results_only_when_chosen(self) -> None:
+        self.assertEqual(
+            self.wf["jobs"]["languages"]["outputs"]["reuse-rust"], "${{ steps.choose.outputs.reuse-rust }}"
+        )
+        job = self.wf["jobs"]["analyze"]
+        steps = job["steps"]
+        self.assertEqual(steps[0]["with"]["fetch-depth"], 2)
+        self.assertEqual(job["permissions"]["actions"], "read")
+        find = next(s for s in steps if s.get("id") == "reuse")
+        self.assertIn("matrix.language == 'rust'", find["if"])
+        self.assertIn("github.event_name == 'pull_request'", find["if"])
+        self.assertIn("needs.languages.outputs.reuse-rust == 'true'", find["if"])
+        self.assertIn("scripts/codeql_reuse.py", find["run"])
+        self.assertIn("git rev-parse HEAD^1", find["run"])
+        self.assertNotIn("${{", find["run"])
+        upload = next(s for s in steps if str(s.get("uses", "")).startswith("github/codeql-action/upload-sarif@"))
+        self.assertEqual(upload["if"], "steps.reuse.outputs.sarif != ''")
+        self.assertEqual(upload["with"]["category"], "/language:rust")
+        self.assertEqual(upload["with"]["sarif_file"], "${{ steps.reuse.outputs.sarif }}")
+        init = next(s for s in steps if str(s.get("uses", "")).startswith("github/codeql-action/init@"))
+        self.assertEqual(init["uses"].split("@")[1], upload["uses"].split("@")[1])
+        # Reuse comes first, and every analysis step stands down for it.
+        self.assertLess(steps.index(upload), steps.index(init))
+        for step in steps[steps.index(upload) + 1 :]:
+            if step.get("name") in ("Keep the Rust results for pull requests", "Save the Rust extractor's cargo output"):
+                continue
+            with self.subTest(step=step.get("name")):
+                self.assertIn("steps.reuse.outputs.sarif == ''", step.get("if", ""))
+
+    def test_main_keeps_the_rust_results(self) -> None:
+        steps = self.wf["jobs"]["analyze"]["steps"]
+        analyze = next(s for s in steps if str(s.get("uses", "")).startswith("github/codeql-action/analyze@"))
+        self.assertEqual(analyze["with"]["output"], "${{ runner.temp }}/sarif")
+        keep = next(s for s in steps if s.get("name") == "Keep the Rust results for pull requests")
+        self.assertTrue(keep["uses"].startswith("actions/upload-artifact@"))
+        self.assertIn("matrix.language == 'rust'", keep["if"])
+        self.assertIn("github.ref == 'refs/heads/main'", keep["if"])
+        self.assertIn("github.event_name != 'pull_request'", keep["if"])
+        reuse = _load_reuse()
+        self.assertEqual(keep["with"]["name"], reuse.ARTIFACT)
+        self.assertEqual(keep["with"]["if-no-files-found"], "error")
+        self.assertEqual(keep["with"]["path"], "${{ runner.temp }}/sarif/*.sarif")
+        self.assertEqual(self.wf["jobs"]["analyze"]["name"].replace("${{ matrix.language }}", "rust"), reuse.RUST_JOB)
+        self.assertEqual(WORKFLOW.name, reuse.WORKFLOW_FILE)
 
     def test_actions_are_pinned_and_permissions_are_narrow(self) -> None:
         self.assertEqual(self.wf["permissions"], {})
