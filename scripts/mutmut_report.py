@@ -9,14 +9,16 @@ is report-only and the script always exits 0.
 
 Two subcommands:
 
-- ``select --diff FILE --root DIR [--skipped FILE]`` prints the mutmut
+- ``select --diff FILE --root DIR [--base REV] [--skipped FILE]`` prints the mutmut
   mutant-name patterns for the SDK at ``DIR``, one per line, or nothing
   when no source line changed. mutmut names each mutant after its function
   (``<module>.x_<function>__mutmut_<n>``, or
   ``<module>.xǁ<Class>ǁ<method>__mutmut_<n>`` for a method), so a changed
-  function becomes ``<module>.x_<function>__mutmut_*``. A line counts as
-  changed when the diff adds it, or when the diff deletes lines right after
-  it, so removing a guard selects its function. mutmut only mutates
+  function becomes ``<module>.x_<function>__mutmut_*``. Added lines are
+  placed in the new file; deleted lines are placed in the file at
+  ``--base`` (read with ``git show``), so removing a guard, even a
+  function's last lines, selects its function when the new file still
+  has it. mutmut only mutates
   function bodies, so a changed line outside every function (a constant, an
   import, a class attribute) widens to the whole module (``<module>.x_*``
   and ``<module>.xǁ*``): the tests of the code beside the changed data are
@@ -48,6 +50,7 @@ import fnmatch
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 from collections.abc import Callable
@@ -94,9 +97,8 @@ IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,199}$")
 #: (two patterns, one for functions and one for methods).
 PATTERN = re.compile(r"^(?P<module>[A-Za-z0-9_.]{1,2100})\.(?:(?P<base>x(?:_|ǁ)[A-Za-z0-9_ǁ]{1,400})__mutmut_\*|x_\*|xǁ\*)$")
 
-#: Hunk header of a unified diff: the old side's length, the new side's
-#: first line and length.
-OLD_HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+#: Hunk header of a unified diff: each side's first line and length.
+HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 #: Enum base classes whose methods mutmut 3 never mutates
 #: (``ENUM_BASE_NAMES`` in ``mutmut/mutation/file_mutation.py``).
@@ -146,7 +148,20 @@ def is_source(path: str, generated: frozenset[str]) -> bool:
     return not any(part in {"tests", "test", "__pycache__"} for part in parts[1:-1])
 
 
-def changed_points(diff: str, root: str, generated: frozenset[str]) -> dict[str, set[int]]:
+@dataclass
+class Change:
+    """How a pull request changes one SDK source file."""
+
+    #: The lines the diff adds, on the new side, 1-based.
+    added: set[int]
+    #: The lines the diff deletes, on the old side, 1-based.
+    deleted: set[int]
+    #: The file's path relative to the SDK before the change (it differs
+    #: from the new one for a rename).
+    old_path: str
+
+
+def changed_points(diff: str, root: str, generated: frozenset[str]) -> dict[str, Change]:
     """Collect the changed lines of the SDK's sources from a unified diff.
 
     Args:
@@ -155,69 +170,68 @@ def changed_points(diff: str, root: str, generated: frozenset[str]) -> dict[str,
         generated: The generated modules, from ``generated_modules``.
 
     Returns:
-        For each source file under ``root`` (relative to it, matching
-        ``SAFE_PATH`` and kept by ``is_source``), the new-side lines the
-        diff adds, plus, for each run of deleted lines that no added line
-        replaces, the line just before it (the first line when the run
-        starts the file).
+        For each source file under ``root`` (by its new path relative to
+        it, matching ``SAFE_PATH`` and kept by ``is_source``), the lines the
+        diff adds (new side) and deletes (old side). Deleted lines are
+        placed against the old file, since the new one no longer holds
+        them.
     """
     prefix = root.rstrip("/") + "/"
-    changed: dict[str, set[int]] = {}
-    current: str | None = None
-    line = 0
+    changes: dict[str, Change] = {}
+    current: Change | None = None
+    old_path: str | None = None
+    old_line = new_line = 0
     old_remaining = new_remaining = 0
-    # The line before a run of deletions, kept unless an addition follows.
-    pending: int | None = None
 
-    def settle() -> None:
-        nonlocal pending
-        if pending is not None and current is not None:
-            changed.setdefault(current, set()).add(pending)
-        pending = None
+    def relative(path: str, side: str) -> str | None:
+        if not path.startswith(side + "/" + prefix):
+            return None
+        rest = path[len(side) + 1 + len(prefix) :]
+        if SAFE_PATH.match(rest) and is_source(rest, generated) and ".." not in PurePosixPath(rest).parts:
+            return rest
+        return None
 
     for text in diff.splitlines():
         if text.startswith("diff --git "):
-            settle()
-            current, old_remaining, new_remaining = None, 0, 0
+            current, old_path, old_remaining, new_remaining = None, None, 0, 0
+            continue
+        if old_remaining == 0 and new_remaining == 0 and text.startswith("--- "):
+            old_path = relative(text[4:], "a")
             continue
         if old_remaining == 0 and new_remaining == 0 and text.startswith("+++ "):
-            path = text[4:]
+            new_path = relative(text[4:], "b")
             current = None
-            if path.startswith("b/" + prefix):
-                relative = path[2 + len(prefix) :]
-                if SAFE_PATH.match(relative) and is_source(relative, generated) and ".." not in PurePosixPath(relative).parts:
-                    current = relative
+            if new_path is not None:
+                current = changes.setdefault(new_path, Change(set(), set(), old_path or new_path))
             continue
-        match = OLD_HUNK.match(text)
+        match = HUNK_HEADER.match(text)
         if match:
-            settle()
-            old_remaining = int(match.group(1)) if match.group(1) is not None else 1
-            line = int(match.group(2))
-            new_remaining = int(match.group(3)) if match.group(3) is not None else 1
-            if new_remaining == 0:
-                # A hunk that only deletes names the new-side line before
-                # it (0 at the top of the file), not the line after.
-                line += 1
+            old_line = int(match.group(1))
+            old_remaining = int(match.group(2)) if match.group(2) is not None else 1
+            new_line = int(match.group(3))
+            new_remaining = int(match.group(4)) if match.group(4) is not None else 1
+            # A side of length 0 names the line before the hunk.
+            old_line += old_remaining == 0
+            new_line += new_remaining == 0
             continue
         if (old_remaining <= 0 and new_remaining <= 0) or not text:
             continue
         if text[0] == "+" and new_remaining > 0:
-            pending = None
             if current is not None:
-                changed.setdefault(current, set()).add(line)
-            line += 1
+                current.added.add(new_line)
+            new_line += 1
             new_remaining -= 1
         elif text[0] == "-" and old_remaining > 0:
-            if pending is None:
-                pending = max(line - 1, 1)
+            if current is not None:
+                current.deleted.add(old_line)
+            old_line += 1
             old_remaining -= 1
         elif text[0] == " ":
-            settle()
-            line += 1
+            old_line += 1
+            new_line += 1
             old_remaining -= 1
             new_remaining -= 1
-    settle()
-    return changed
+    return changes
 
 
 def module_name(path: str) -> str | None:
@@ -375,8 +389,38 @@ def patterns_for(module: str, found: Targets) -> list[str]:
     return [f"{module}.{name}__mutmut_*" for name in found.names]
 
 
-def select(diff: str, root: str, read: dict[str, str], generated: frozenset[str]) -> tuple[list[str], list[str]]:
+def _defined(source: str) -> set[str]:
+    """Return the mangled names of a module's top-level functions and methods."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return set()
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add("x_" + node.name)
+        elif isinstance(node, ast.ClassDef):
+            names |= {f"xǁ{node.name}ǁ{item.name}" for item in node.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    return names
+
+
+def _mangled(display: str) -> str:
+    """Turn ``name`` or ``Class.name`` into mutmut's mangled function name."""
+    return "xǁ" + display.replace(".", "ǁ") if "." in display else "x_" + display
+
+
+def select(
+    diff: str,
+    root: str,
+    read: dict[str, str],
+    generated: frozenset[str],
+    read_old: dict[str, str] | None = None,
+) -> tuple[list[str], list[str]]:
     """Build the mutmut patterns for a pull request's changes to the SDK.
+
+    Added lines are placed in the new file. Deleted lines are placed in the
+    old one: the function they were in is selected when the new file still
+    has it, and deleted code outside every function widens the module.
 
     Args:
         diff: The pull request's unified diff.
@@ -384,21 +428,31 @@ def select(diff: str, root: str, read: dict[str, str], generated: frozenset[str]
         read: Each changed source file's new text, keyed by its path
             relative to ``root``; a file missing here (deleted) is skipped.
         generated: The generated modules, from ``generated_modules``.
+        read_old: Each changed file's text before the change, keyed by its
+            new path; deleted lines of a file missing here select nothing.
 
     Returns:
         The patterns, one module after another in path order, and the
         changed functions mutmut never mutates, as ``<module>.<name>``.
     """
+    read_old = read_old or {}
     patterns: list[str] = []
     skipped: list[str] = []
-    for path, lines in sorted(changed_points(diff, root, generated).items()):
+    for path, change in sorted(changed_points(diff, root, generated).items()):
         module = module_name(path)
         if module is None or path not in read:
             continue
-        found = targets(read[path], lines)
+        found = targets(read[path], change.added)
+        if change.deleted and path in read_old:
+            before = targets(read_old[path], change.deleted)
+            still = _defined(read[path])
+            found = Targets(
+                sorted(set(found.names) | (set(before.names) & still)),
+                found.widen or before.widen,
+                sorted(set(found.skipped) | {name for name in before.skipped if _mangled(name) in still}),
+            )
         patterns += patterns_for(module, found)
-        if not found.widen:
-            skipped += [f"{module}.{name}" for name in found.skipped]
+        skipped += [f"{module}.{name}" for name in found.skipped]
     return patterns, skipped
 
 
@@ -435,7 +489,9 @@ def selected(key: str, patterns: list[tuple[str, str | None]]) -> bool:
 
 #: One mutant's line in a ``.meta`` file, which mutmut writes with
 #: ``json.dump(indent=4)``.
-META_LINE = re.compile(r'^\s*"(?P<key>[^"\\]{1,2600})": (?P<code>-?[0-9]{1,9}|null),?$')
+#: ``json.dump`` escapes every non-ASCII character, so a method's key
+#: (``xǁClassǁname``) holds ``\u01c1`` escapes.
+META_LINE = re.compile(r'^\s*(?P<key>"(?:[^"\\]|\\.){1,2600}"): (?P<code>-?[0-9]{1,9}|null),?$')
 
 
 def parse_meta(text: str) -> dict[str, int | None]:
@@ -474,8 +530,12 @@ def _salvage_meta(text: str) -> dict[str, int | None]:
         match = META_LINE.match(line)
         if not match:
             break
+        try:
+            key = json.loads(match.group("key"))
+        except ValueError:
+            break
         code = match.group("code")
-        codes[match.group("key")] = None if code == "null" else int(code)
+        codes[key] = None if code == "null" else int(code)
     return codes
 
 
@@ -590,7 +650,7 @@ def collect(
     load: Callable[[str], tuple[str, str] | None],
     patterns: list[tuple[str, str | None]],
     root: str,
-) -> tuple[Results, list[tuple[str, int, str]]]:
+) -> tuple[Results, list[tuple[str, int, str]], int]:
     """Gather the selected mutants' outcomes from mutmut's results.
 
     Args:
@@ -606,10 +666,13 @@ def collect(
 
     Returns:
         The mutants by outcome, each described as
-        ``path:line: old → new (name)``, and ``(path, line, description)``
-        for each missed one with a line.
+        ``path:line: old → new (name)``, ``(path, line, description)``
+        for each missed one with a line, and how many mutants mutmut ran
+        that ended with a code ``EXIT_CODES`` does not count (a crash, a
+        skip, a suspicious result).
     """
     results = Results()
+    other = 0
     survivors: list[tuple[str, int, str]] = []
     prefix = root.rstrip("/") + "/"
     for source_path in sorted(codes_by_path):
@@ -620,8 +683,11 @@ def collect(
         loaded = False
         for key in keys:
             code = codes[key]
-            outcome = EXIT_CODES.get(code) if code is not None else None
+            if code is None:
+                continue
+            outcome = EXIT_CODES.get(code)
             if outcome is None:
+                other += 1
                 continue
             line, change = 0, ""
             if outcome is Outcome.MISSED:
@@ -636,7 +702,7 @@ def collect(
             results.mutants[outcome].append(description)
             if outcome is Outcome.MISSED and line:
                 survivors.append((path, line, description))
-    return results, survivors
+    return results, survivors, other
 
 
 def progress(codes_by_path: dict[str, dict[str, int | None]], patterns: list[tuple[str, str | None]]) -> tuple[int, int]:
@@ -662,7 +728,7 @@ def _natural(key: str) -> tuple[str, int]:
 
 
 def render(
-    parsed: tuple[Results, list[tuple[str, int, str]]] | None,
+    parsed: tuple[Results, list[tuple[str, int, str]], int] | None,
     *,
     patterns: list[tuple[str, str | None]],
     skipped: list[str] | None = None,
@@ -694,18 +760,22 @@ def render(
         reason = "it reached the time limit first" if stopped else "check the job log"
         lines.append(f"mutmut did not test any mutant of the changed functions; {reason}.")
     else:
-        results = parsed[0]
+        results, other = parsed[0], parsed[2]
         if widened:
             names = ", ".join(_code(m) for m in widened)
-            lines += [f"Changed lines outside any function in {names}, so all of their functions were mutated.", ""]
+            lines += [f"Changed lines outside any function in {names}, so all of their mutable functions were mutated.", ""]
         if stopped:
             lines += ["mutmut reached the time limit, so only the mutants tested before it are counted.", ""]
         score = results.score()
-        if score is None:
+        if score is None and other:
+            lines.append(f"None of the {other} mutants mutmut ran ended with a result it counts (a crash, a skip or a suspicious result); check the job log.")
+        elif score is None:
             lines.append("mutmut found no mutant in the changed functions.")
         else:
             missed = results.count(Outcome.MISSED)
             lines.append(f"The tests caught **{score:.0f}%** of the {results.tested} mutants of the changed functions ({missed} missed).")
+            if other:
+                lines += ["", f"{other} more ended without a result mutmut counts (a crash, a skip or a suspicious result) and are left out."]
         counts = (results.count(o) for o in (Outcome.CAUGHT, Outcome.MISSED, Outcome.TIMEOUT))
         lines += [
             "",
@@ -738,22 +808,41 @@ def _read(path: Path) -> str | None:
         return None
 
 
+def _git_show(revision: str, path: str) -> str | None:
+    """Return a file's text at a git revision, or ``None`` when git cannot show it."""
+    if not re.match(r"^[A-Za-z0-9_^~./-]{1,100}$", revision) or revision.startswith("-") or not SAFE_PATH.match(path) or ".." in PurePosixPath(path).parts:
+        return None
+    try:
+        result = subprocess.run(["git", "show", f"{revision}:{path}"], capture_output=True, check=False, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or len(result.stdout) > MAX_FILE_BYTES:
+        return None
+    return result.stdout.decode("utf-8", errors="replace")
+
+
 def select_main(argv: list[str]) -> int:
     """Print the mutmut patterns for the SDK's changed functions."""
     parser = argparse.ArgumentParser(prog="mutmut_report.py select")
     parser.add_argument("--diff", type=Path, required=True, help="the pull request's diff")
     parser.add_argument("--root", required=True, help="the SDK's directory, relative to the repository root")
     parser.add_argument("--skipped", type=Path, help="file to write the changed functions mutmut never mutates to")
+    parser.add_argument("--base", help="the git revision the diff starts from, to place deleted lines (HEAD^1 in CI)")
     args = parser.parse_args(argv)
     root = Path(args.root)
     generated = generated_modules(_read(root / "pyproject.toml") or "")
     diff = args.diff.read_text(encoding="utf-8", errors="replace")
-    read = {}
-    for path in changed_points(diff, args.root, generated):
+    read: dict[str, str] = {}
+    read_old: dict[str, str] = {}
+    for path, change in changed_points(diff, args.root, generated).items():
         text = _read(root / path)
         if text is not None:
             read[path] = text
-    patterns, skipped = select(diff, args.root, read, generated)
+        if args.base and change.deleted:
+            old = _git_show(args.base, f"{args.root.rstrip('/')}/{change.old_path}")
+            if old is not None:
+                read_old[path] = old
+    patterns, skipped = select(diff, args.root, read, generated, read_old)
     sys.stdout.write("".join(p + "\n" for p in patterns))
     if args.skipped is not None:
         args.skipped.write_text("".join(name + "\n" for name in skipped), encoding="utf-8")

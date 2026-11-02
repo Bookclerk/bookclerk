@@ -1040,9 +1040,12 @@ workflow does the same for the Python plugin SDK
 (`packages/plugin-sdk-python`) with [mutmut](https://mutmut.readthedocs.io/):
 
 1. It finds the lines the pull request changes under the SDK's `src/`, from
-   the merge commit's diff against the base: the lines it adds, and the
-   line before each run of lines it deletes, so removing a guard counts as
-   changing its function. Tests and the generated ABI modules are left
+   the merge commit's diff against the base: the lines it adds, placed in
+   the new file, and the lines it deletes, placed in the base's copy of the
+   file. Removing a guard, even a function's last lines, counts as
+   changing that function, and removing a constant counts as a change
+   outside every function. Removing a whole function selects nothing in
+   that function. Tests and the generated ABI modules are left
    out. With no changed source line, mutmut does not run and the summary
    says so.
 2. mutmut names each mutant after its function, so
@@ -1053,7 +1056,8 @@ workflow does the same for the Python plugin SDK
 3. mutmut only mutates function bodies. A changed line outside every
    function, such as a constant, an import or a class attribute, selects
    the whole module instead, so the tests of the code beside the changed
-   data are checked. The summary names those modules. Blank lines,
+   data are checked, apart from the functions mutmut never mutates (step
+   4). The summary names those modules. Blank lines,
    comments and docstrings outside functions select nothing. The SDK's
    tests run in about a second, so most modules fit in the time limit.
 4. mutmut never mutates a decorated function (other than one with a single
@@ -1068,8 +1072,10 @@ workflow does the same for the Python plugin SDK
    mutants.
 
 The job summary has the same shape as the other jobs', with each missed
-mutant's line and change, and each missed mutant is annotated on the
-diff. The `mutants-python-sdk` artifact lists every mutant, one file per
+mutant's line and change. Up to 50 missed mutants whose line could be
+placed are annotated on the diff. Mutants mutmut ran that ended with a
+result it does not count (a crash, a skip or a suspicious result) are
+left out of the score, and the summary says how many there were. The `mutants-python-sdk` artifact lists every mutant, one file per
 outcome. mutmut is installed for the run only, at the version pinned in
 the workflow, so the SDK's `uv.lock` does not change. Settings live in the
 SDK's `pyproject.toml`, under `[tool.mutmut]`: the package to mutate, the

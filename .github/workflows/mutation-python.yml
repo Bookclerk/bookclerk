@@ -9,9 +9,10 @@
 #   on the diff.
 # - mutmut names each mutant after its function, so
 #   `scripts/mutmut_report.py select` turns the changed lines into name
-#   patterns, one per changed function (deleting lines counts as changing
-#   the function they were in). A changed line outside every function (a
-#   constant, an import) selects the whole module instead. Tests and the
+#   patterns, one per changed function (deleted lines are placed in the
+#   base branch's copy of the file, and count as changing the function they
+#   were in). A changed line outside every function (a constant, an
+#   import) selects the whole module instead. Tests and the
 #   generated ABI modules are never mutated.
 # - Trial: report-only and not a required check. Settings live in the
 #   SDK's pyproject.toml ([tool.mutmut]).
@@ -64,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
-          python3 scripts/mutmut_report.py select --diff "$RUNNER_TEMP/pr.diff" --root "$SDK" --skipped "$RUNNER_TEMP/skipped.txt" > "$RUNNER_TEMP/patterns.txt"
+          python3 scripts/mutmut_report.py select --diff "$RUNNER_TEMP/pr.diff" --root "$SDK" --base HEAD^1 --skipped "$RUNNER_TEMP/skipped.txt" > "$RUNNER_TEMP/patterns.txt"
           if [ -s "$RUNNER_TEMP/patterns.txt" ]; then
             echo "mutate=true" >> "$GITHUB_OUTPUT"
           fi

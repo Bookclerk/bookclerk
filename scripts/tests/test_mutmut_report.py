@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
 import random
 import subprocess
 import sys
@@ -188,15 +189,43 @@ class SelectTest(unittest.TestCase):
         self.assertTrue(mr.targets("def café():\n    return 1\n", {2}).widen)
         self.assertFalse(mr.targets("import enum\nclass E(enum.IntEnum):\n    def f(self):\n        return 1\n", {4}).names)
 
-    def test_deleted_lines_select_their_function(self) -> None:
+    def test_deleted_lines_are_placed_in_the_old_file(self) -> None:
         diff = (
-            f"diff --git a/{SDK}/src/pkg/mod.py b/{SDK}/src/pkg/mod.py\n--- a/{SDK}/src/pkg/mod.py\n+++ b/{SDK}/src/pkg/mod.py\n"
+            f"diff --git a/{SDK}/src/pkg/old.py b/{SDK}/src/pkg/mod.py\n--- a/{SDK}/src/pkg/old.py\n+++ b/{SDK}/src/pkg/mod.py\n"
             f"@@ -{L['return self.size + n']},3 +{L['return self.size + n']},2 @@\n"
             "         return self.size + n\n-        if n:\n-            raise ValueError\n \n"
             "@@ -1,2 +1,1 @@\n-import sys\n \"\"\"Module docstring.\"\"\"\n"
+            "@@ -0,0 +3,1 @@\n+import os\n"
         )
         points = mr.changed_points(diff, SDK, GENERATED)
-        self.assertEqual(points, {"src/pkg/mod.py": {L["return self.size + n"], 1}})
+        grow = L["return self.size + n"]
+        self.assertEqual(points, {"src/pkg/mod.py": mr.Change({3}, {grow + 1, grow + 2, 1}, "src/pkg/old.py")})
+
+    def test_deletions_select_what_held_them(self) -> None:
+        """A deletion selects the function it was in, even when it ends that function."""
+        source = SOURCE.splitlines()
+
+        def removed(after: str, *extra: str) -> list[str]:
+            index = source.index(after) + 1
+            return [*source[:index], *extra, *source[index:]]
+
+        cases = {
+            # The function's last lines: a blank line follows in the new file.
+            "end of a method": (removed("        return self.size + n", "        if n:", "            raise ValueError"), ["pkg.mod.xǁBoxǁgrow__mutmut_*"], []),
+            "a module constant": (removed("LIMIT = 3", "MAX = 9"), ["pkg.mod.x_*", "pkg.mod.xǁ*"], []),
+            "a class attribute": (removed("    size = 4", "    colour = 1"), ["pkg.mod.x_*", "pkg.mod.xǁ*"], []),
+            "a decorated function's line": (removed("    return b * 2", "    b += 1"), [], ["pkg.mod.second"]),
+            "a whole function": (removed("    return a + LIMIT", "", "", "def gone():", "    return 1"), [], []),
+            "blank lines": (removed("    return a + LIMIT", ""), [], []),
+        }
+        for name, (before, patterns, skipped) in cases.items():
+            with self.subTest(name):
+                old = "".join(t + "\n" for t in before)
+                diff = self._diff(before, source, 3, "mod.py")
+                self.assertEqual(mr.select(diff, SDK, {"src/pkg/mod.py": SOURCE}, GENERATED, {"src/pkg/mod.py": old}), (patterns, skipped))
+        # Without the old file, a deletion selects nothing.
+        diff = self._diff(cases["end of a method"][0], source, 3, "mod.py")
+        self.assertEqual(mr.select(diff, SDK, {"src/pkg/mod.py": SOURCE}, GENERATED), ([], []))
 
     def test_sources_and_modules(self) -> None:
         self.assertTrue(mr.is_source("src/pkg/mod.py", GENERATED))
@@ -260,8 +289,8 @@ class SelectTest(unittest.TestCase):
                 self.assertRegex(name, r"^x(_|ǁ)[A-Za-z0-9_ǁ]+$")
 
 
-    def _diff(self, before: list[str], after: list[str], context: int) -> str:
-        """Diff two versions of ``src/pkg/w.py`` with git."""
+    def _diff(self, before: list[str], after: list[str], context: int, name: str = "w.py") -> str:
+        """Diff two versions of ``src/pkg/<name>`` with git."""
         with tempfile.TemporaryDirectory() as tmp:
             old, new = Path(tmp, "old.py"), Path(tmp, "new.py")
             old.write_text("".join(t + "\n" for t in before), encoding="utf-8")
@@ -272,7 +301,7 @@ class SelectTest(unittest.TestCase):
                 text=True,
                 check=False,
             )
-        return result.stdout.replace(f"+++ b{new}", f"+++ b/{SDK}/src/pkg/w.py").replace(f"+++ {new}", f"+++ b/{SDK}/src/pkg/w.py")
+        return result.stdout.replace(f"+++ b{new}", f"+++ b/{SDK}/src/pkg/{name}").replace(f"+++ {new}", f"+++ b/{SDK}/src/pkg/{name}")
 
     def test_fuzz_insertions_match_git(self) -> None:
         """Oracle: unique lines inserted at known places are what git's diff adds."""
@@ -283,26 +312,18 @@ class SelectTest(unittest.TestCase):
             for marker in range(rng.randrange(1, 8)):
                 after.insert(rng.randrange(0, len(after) + 1), f"inserted {marker}")
             expected = {i + 1 for i, text in enumerate(after) if text.startswith("inserted")}
-            got = mr.changed_points(self._diff(before, after, rng.randrange(0, 4)), SDK, GENERATED).get("src/pkg/w.py", set())
-            self.assertEqual(got, expected)
+            got = mr.changed_points(self._diff(before, after, rng.randrange(0, 4)), SDK, GENERATED)["src/pkg/w.py"]
+            self.assertEqual((got.added, got.deleted), (expected, set()))
 
     def test_fuzz_deletions_match_git(self) -> None:
-        """Oracle: deleting unique lines marks the kept line before each deleted run."""
+        """Oracle: deleting unique lines marks exactly those old lines."""
         rng = random.Random(4579)
         for _ in range(40):
             before = [f"base {i}" for i in range(rng.randrange(1, 30))]
-            deleted = {i for i in range(len(before)) if rng.random() < 0.2}
+            deleted = {i for i in range(len(before)) if rng.random() < 0.2} or {0}
             after = [text for i, text in enumerate(before) if i not in deleted]
-            expected: set[int] = set()
-            kept = 0
-            for i in range(len(before)):
-                if i in deleted:
-                    if i == 0 or i - 1 not in deleted:
-                        expected.add(max(kept, 1))
-                else:
-                    kept += 1
-            got = mr.changed_points(self._diff(before, after, rng.randrange(0, 4)), SDK, GENERATED).get("src/pkg/w.py", set())
-            self.assertEqual(got, expected)
+            got = mr.changed_points(self._diff(before, after, rng.randrange(0, 4)), SDK, GENERATED)["src/pkg/w.py"]
+            self.assertEqual((got.added, got.deleted), (set(), {i + 1 for i in deleted}))
 
 
 class ResultsTest(unittest.TestCase):
@@ -334,6 +355,11 @@ class ResultsTest(unittest.TestCase):
         self.assertEqual(mr.parse_meta(cut), codes)
         partial = text[: text.index("a.x_f__mutmut_5")]
         self.assertEqual(mr.parse_meta(partial), {k: v for k, v in codes.items() if int(k.rsplit("_", 1)[1]) < 5})
+        # json.dump escapes a method key's separators; the salvage decodes them.
+        methods = {f"a.xǁBoxǁgrow__mutmut_{n}": n for n in range(1, 4)}
+        text = json.dumps({"exit_code_by_key": methods, "durations_by_key": {}}, indent=4)
+        self.assertIn("\\u01c1", text)
+        self.assertEqual(mr.parse_meta(text[: text.index("durations_by_key")]), methods)
 
     def test_change_places_the_mutant(self) -> None:
         mutated = mutated_module(SOURCE, "x_first", "first", {1: ("a + LIMIT", "a - LIMIT"), 2: ('"""Docstring."""\n', "")})
@@ -365,7 +391,9 @@ class ResultsTest(unittest.TestCase):
             loads.append(path)
             return SOURCE, mutated
 
-        results, survivors = mr.collect({"src/pkg/mod.py": codes, "src/pkg/other.py": {"pkg.other.x_g__mutmut_1": 0}}, load, patterns, SDK)
+        results, survivors, other = mr.collect({"src/pkg/mod.py": codes, "src/pkg/other.py": {"pkg.other.x_g__mutmut_1": 0}}, load, patterns, SDK)
+        # Exit code 34 is not one the outcomes count.
+        self.assertEqual(other, 1)
         # Only a module with a selected missed mutant is read.
         self.assertEqual(loads, ["src/pkg/mod.py"])
         self.assertEqual(mr.progress({"src/pkg/mod.py": codes}, patterns), (6, 5))
@@ -396,7 +424,7 @@ class ResultsTest(unittest.TestCase):
             codes = {f"pkg.mod.x_f__mutmut_{n}": rng.choice([0, 1, 33, 36, None, -9, 999]) for n in range(rng.randrange(0, 6))}
             codes[rng.choice(values)] = 0
             parsed_codes = mr.parse_meta(json.dumps({"exit_code_by_key": codes}))
-            results, survivors = mr.collect({"src/pkg/mod.py": parsed_codes}, lambda _: (original, mutated), [("pkg.mod", None)], SDK)
+            results, survivors, _ = mr.collect({"src/pkg/mod.py": parsed_codes}, lambda _: (original, mutated), [("pkg.mod", None)], SDK)
             for descriptions in results.mutants.values():
                 for description in descriptions:
                     self.assertLessEqual(len(description), sys.modules["mutation_report"].MAX_LINE)
@@ -408,11 +436,11 @@ class ResultsTest(unittest.TestCase):
 class RenderTest(unittest.TestCase):
     """The summary says what happened in every state."""
 
-    def results(self, caught: int, missed: int) -> tuple[mr.Results, list[tuple[str, int, str]]]:
+    def results(self, caught: int, missed: int, other: int = 0) -> tuple[mr.Results, list[tuple[str, int, str]], int]:
         results = mr.Results()
         results.mutants[Outcome.CAUGHT] = [f"c{i}" for i in range(caught)]
         results.mutants[Outcome.MISSED] = [f"m{i}" for i in range(missed)]
-        return results, []
+        return results, [], other
 
     def test_states(self) -> None:
         patterns = [("pkg.mod", "x_first")]
@@ -429,7 +457,10 @@ class RenderTest(unittest.TestCase):
         self.assertIn("Report only", summary)
         self.assertIn("time limit", mr.render(self.results(1, 0), patterns=patterns, stopped=True))
         widened = mr.render(self.results(1, 0), patterns=[("pkg.mod", None)])
-        self.assertIn("outside any function in `pkg.mod`", widened)
+        self.assertIn("outside any function in `pkg.mod`, so all of their mutable functions", widened)
+        # Mutants that ended with a code the outcomes do not count are not "no mutant".
+        self.assertIn("None of the 2 mutants mutmut ran", mr.render(self.results(0, 0, 2), patterns=patterns))
+        self.assertIn("1 more ended without a result", mr.render(self.results(1, 0, 1), patterns=patterns))
 
     def test_long_lists_are_cut(self) -> None:
         summary = mr.render(self.results(0, mr.MAX_LISTED + 5), patterns=[("pkg", None)])
@@ -438,6 +469,38 @@ class RenderTest(unittest.TestCase):
 
 class MainTest(unittest.TestCase):
     """The subcommands read files and append to the summary file."""
+
+    def test_select_places_deletions_at_the_base(self) -> None:
+        """``--base`` reads the old file from git, so deleting a method's last lines selects it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            module = repo / "sdk" / "src" / "pkg" / "mod.py"
+            module.parent.mkdir(parents=True)
+            old = SOURCE.replace("        return self.size + n\n", "        return self.size + n\n        if n:\n            raise ValueError\n")
+            module.write_text(old, encoding="utf-8")
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run([*git, "-C", str(repo), "add", "."], check=True)
+            subprocess.run([*git, "-C", str(repo), "commit", "-qm", "base"], check=True)
+            module.write_text(SOURCE, encoding="utf-8")
+            diff = Path(tmp, "pr.diff")
+            diff.write_text(subprocess.run(["git", "-C", str(repo), "diff"], capture_output=True, text=True, check=True).stdout, encoding="utf-8")
+            cwd = Path.cwd()
+            os.chdir(repo)
+            try:
+                with mock.patch("sys.stdout") as stdout:
+                    self.assertEqual(mr.main(["select", "--diff", str(diff), "--root", "sdk", "--base", "HEAD"]), 0)
+                printed = "".join(c.args[0] for c in stdout.write.call_args_list)
+                with mock.patch("sys.stdout") as stdout:
+                    self.assertEqual(mr.main(["select", "--diff", str(diff), "--root", "sdk"]), 0)
+                without = "".join(c.args[0] for c in stdout.write.call_args_list)
+                self.assertIsNone(mr._git_show("-p", "sdk/src/pkg/mod.py"))
+                self.assertIsNone(mr._git_show("HEAD", "../outside.py"))
+                self.assertIsNone(mr._git_show("HEAD", "sdk/missing.py"))
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(printed, "pkg.mod.xǁBoxǁgrow__mutmut_*\n")
+            self.assertEqual(without, "")
 
     def test_select_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
