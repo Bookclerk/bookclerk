@@ -184,10 +184,15 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           RUST: ${{ steps.diff.outputs.rust }}
+          DIFF: ${{ steps.diff.outcome }}
           CODE: ${{ steps.mutants.outputs.code }}
           STOPPED: ${{ steps.mutants.outputs.stopped }}
         run: |
           set -euo pipefail
+          if [ "$DIFF" != "success" ]; then
+            echo "Could not choose the range to mutate; check the job log." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           if [ "${RUST:-}" != "true" ]; then
             echo "No Rust file changed since the last run, so nothing was mutated." >> "$GITHUB_STEP_SUMMARY"
             exit 0

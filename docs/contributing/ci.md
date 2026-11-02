@@ -964,7 +964,8 @@ Each run works like this:
 1. [`scripts/mutation_base.py`](../../scripts/mutation_base.py) finds the
    commit the workflow's last successful run tested, through the GitHub
    API. A day with nothing merged, or a run that failed, is covered by the
-   next run. With no earlier run to use, it falls back to the last commit
+   next run. If the API cannot be reached, the run fails rather than
+   guess. With no earlier successful run, it falls back to the last commit
    from more than 25 hours ago, then to the parent of `HEAD`. Whatever it
    picks must be a full SHA and `HEAD` or one of its ancestors. When
    nothing merged since the last run, the range is empty and nothing is
@@ -992,7 +993,7 @@ mutants jobs uploaded.
 To test a range by hand, run the workflow from the **Actions** tab and set
 `base` to the commit to start from. Running it from a branch tests that
 branch against `base`, which is how to try a change to the workflows
-themselves.
+themselves. Only runs on `main` file issues.
 
 ### Rust
 

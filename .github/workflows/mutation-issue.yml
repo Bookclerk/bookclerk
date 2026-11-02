@@ -26,6 +26,9 @@ jobs:
     name: File missed mutants
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Only the default branch's runs file issues; a manual run from another
+    # branch still tests it and keeps its summaries as artifacts.
+    if: ${{ github.ref == 'refs/heads/main' }}
     permissions:
       issues: write
     steps:
@@ -63,7 +66,7 @@ jobs:
               echo
               head -c 60000 "$file"
             } > "$body"
-            number=$(gh issue list --repo "$GITHUB_REPOSITORY" --label mutation-testing --state open --limit 100 \
+            number=$(gh issue list --repo "$GITHUB_REPOSITORY" --label mutation-testing --state open --limit 1000 \
               --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
             if [ -n "$number" ]; then
               gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file "$body"

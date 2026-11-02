@@ -158,9 +158,17 @@ class MainTest(unittest.TestCase):
         self.assertEqual(self.run_main(["--workflow", "../x.yml"])[0], 1)
         self.assertEqual(self.run_main(["--workflow", "mutation.yml", "--base=--all"], api=first), (0, first + "\n"))
 
+    def test_failed_lookup_fails_unless_a_manual_base_applies(self) -> None:
+        first, _, _ = self.commits
+        with mock.patch.object(mb, "_last_success", return_value=None), mock.patch("sys.stdout") as stdout, mock.patch("sys.stderr"):
+            self.assertEqual(mb.main(["--workflow", "mutation.yml"]), 1)
+            self.assertEqual(mb.main(["--workflow", "mutation.yml", "--base", "nope"]), 1)
+            self.assertEqual(mb.main(["--workflow", "mutation.yml", "--base", first]), 0)
+        self.assertEqual("".join(c.args[0] for c in stdout.write.call_args_list), first + "\n")
+
     def test_last_success_rejects_odd_environments(self) -> None:
         with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "not a repo"}):
-            self.assertEqual(mb._last_success("mutation.yml"), "")
+            self.assertIsNone(mb._last_success("mutation.yml"))
 
 
 if __name__ == "__main__":

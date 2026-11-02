@@ -469,6 +469,9 @@ class WiringTest(unittest.TestCase):
         job = workflow["jobs"]["issue"]
         # The only write token: no checkout, so no repository code runs with it.
         self.assertEqual(job["permissions"], {"issues": "write"})
+        # Branch runs never write to the shared issues.
+        self.assertEqual(job["if"], "${{ github.ref == 'refs/heads/main' }}")
+        self.assertIn("--limit 1000", job["steps"][1]["run"])
         self.assertFalse(any("actions/checkout" in s.get("uses", "") for s in job["steps"]))
         self.assertEqual(job["steps"][0]["with"]["pattern"], "mutation-issue-*")
         run = job["steps"][1]["run"]

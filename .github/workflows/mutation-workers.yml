@@ -164,8 +164,13 @@ jobs:
           MUTATE: ${{ steps.lines.outputs.mutate }}
           STOPPED: ${{ steps.mutants.outputs.stopped }}
           FAILED: ${{ steps.mutants.outputs.failed }}
+          LINES: ${{ steps.lines.outcome }}
         run: |
           set -euo pipefail
+          if [ "$LINES" != "success" ]; then
+            echo "Could not choose the lines to mutate; check the job log." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           mkdir -p "$RUNNER_TEMP/issue"
           args=(--report "$ROOT/reports/mutation/mutation.json" --root "$ROOT" --name "$NAME" --widened "$RUNNER_TEMP/widened.txt" --unwidened "$RUNNER_TEMP/unwidened.txt" --issue "$RUNNER_TEMP/issue/$NAME.md")
           if [ -z "$MUTATE" ]; then args+=(--not-mutated); fi

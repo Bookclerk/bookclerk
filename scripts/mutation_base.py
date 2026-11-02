@@ -78,12 +78,19 @@ def _is_ancestor(sha: str) -> bool:
     return result.returncode == 0
 
 
-def _last_success(workflow: str) -> str:
-    """Return the commit of the workflow's last successful run on this branch, or ``""``."""
+def _last_success(workflow: str) -> str | None:
+    """Return the commit of the workflow's last successful run on this branch.
+
+    Returns:
+        The API's answer (validated later by ``choose``), ``""`` when the
+        workflow has no successful run, or ``None`` when the lookup failed.
+        A failed lookup must not fall back to a recent commit, or the
+        changes between the last run and that commit would never be tested.
+    """
     repository = os.environ.get("GITHUB_REPOSITORY", "")
     branch = os.environ.get("GITHUB_REF_NAME", "main")
     if not re.match(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$", repository) or not REVISION.match(branch):
-        return ""
+        return None
     url = f"repos/{repository}/actions/workflows/{workflow}/runs?branch={branch}&status=success&per_page=1"
     try:
         result = subprocess.run(
@@ -94,8 +101,8 @@ def _last_success(workflow: str) -> str:
             timeout=60,
         )
     except (OSError, subprocess.SubprocessError):
-        return ""
-    return result.stdout.strip()[:100] if result.returncode == 0 else ""
+        return None
+    return result.stdout.strip()[:100] if result.returncode == 0 else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -105,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         argv: Command-line arguments; ``sys.argv`` when ``None``.
 
     Returns:
-        0 with the commit printed, or 1 when no commit could be found.
+        0 with the commit printed, or 1 when no commit could be found or
+        the last run could not be looked up (and no manual base applies).
     """
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--workflow", required=True, help="this workflow's file name, such as mutation.yml")
@@ -118,7 +126,15 @@ def main(argv: list[str] | None = None) -> int:
     candidates = []
     if args.base and REVISION.match(args.base):
         candidates.append(_git("rev-parse", "--verify", "--end-of-options", f"{args.base}^{{commit}}") or "")
-    candidates.append(_last_success(args.workflow))
+        manual = choose(candidates, _is_ancestor)
+        if manual is not None:
+            sys.stdout.write(manual + "\n")
+            return 0
+    last = _last_success(args.workflow)
+    if last is None:
+        sys.stderr.write("mutation_base.py: could not look up the last successful run\n")
+        return 1
+    candidates.append(last)
     hours = min(max(args.hours, 1), 24 * 30)
     candidates.append(_git("rev-list", "-1", "--first-parent", f"--before={hours} hours ago", "HEAD") or "")
     candidates.append(_git("rev-parse", "HEAD^1") or "")
