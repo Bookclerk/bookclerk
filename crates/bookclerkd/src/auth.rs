@@ -380,6 +380,7 @@ impl OperatorAuthState {
 /// JSON body for `POST /api/auth/login` (operator token).
 pub struct LoginRequest {
     /// Operator token from the client; compared in constant time and never persisted.
+    #[schema(example = "9b1e4f6a2c8d3e5f7a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f")]
     pub token: String,
 }
 
@@ -2195,6 +2196,7 @@ async fn impersonation_caller_identity(
 /// JSON body for Owner password re-auth before issuing an elevated operator cookie.
 pub struct ElevateRequest {
     /// Owner account password (re-authentication).
+    #[schema(example = "correct horse battery staple")]
     pub password: String,
 }
 
@@ -2202,6 +2204,7 @@ pub struct ElevateRequest {
 /// JSON body naming the first-party user to impersonate.
 pub struct ImpersonateRequest {
     /// Target `users.id` to impersonate.
+    #[schema(example = 7)]
     pub user_id: i64,
 }
 
@@ -2650,18 +2653,23 @@ pub async fn list_users(
 pub struct PatchUserRequest {
     #[serde(default)]
     /// Replacement role (`owner` / `administrator` / `member`) when present.
+    #[schema(example = "administrator")]
     pub role: Option<String>,
     #[serde(default)]
     /// Replacement status (`active` / `disabled`) when present.
+    #[schema(example = "active")]
     pub status: Option<String>,
     #[serde(default)]
     /// Replacement display name when present.
+    #[schema(example = "Sam Reader")]
     pub display_name: Option<String>,
     #[serde(default)]
     /// Replacement local login name when present.
+    #[schema(example = "sam")]
     pub login_name: Option<String>,
     #[serde(default)]
     /// Replacement email when present.
+    #[schema(example = "sam@example.com")]
     pub email: Option<String>,
 }
 
@@ -3018,15 +3026,19 @@ pub async fn delete_user(
 pub struct BootstrapRequest {
     #[serde(default)]
     /// Optional display name; falls back to login or email.
+    #[schema(example = "Dana Reader")]
     pub display_name: Option<String>,
     #[serde(default)]
     /// Optional local login name.
+    #[schema(example = "dana")]
     pub login_name: Option<String>,
     #[serde(default)]
     /// Optional email.
+    #[schema(example = "dana@example.com")]
     pub email: Option<String>,
     #[serde(default)]
     /// Optional password; hashed before persist and never stored in plaintext.
+    #[schema(example = "correct horse battery staple")]
     pub password: Option<String>,
 }
 
@@ -3134,21 +3146,27 @@ pub async fn bootstrap(
 pub struct CreateUserRequest {
     #[serde(default)]
     /// Role to assign when permitted (`member` when omitted).
+    #[schema(example = "member")]
     pub role: Option<String>,
     #[serde(default)]
     /// Optional display name for the new user.
+    #[schema(example = "Sam Reader")]
     pub display_name: Option<String>,
     #[serde(default)]
     /// Optional local login name for the new user.
+    #[schema(example = "sam")]
     pub login_name: Option<String>,
     #[serde(default)]
     /// Optional email for the new user.
+    #[schema(example = "sam@example.com")]
     pub email: Option<String>,
     #[serde(default)]
     /// Optional password; hashed before persist. Empty or omitted leaves the user passwordless.
+    #[schema(example = "correct horse battery staple")]
     pub password: Option<String>,
     /// When true (default), also mint an invite/claim ticket.
     #[serde(default = "default_true")]
+    #[schema(example = true)]
     pub mint_invite: bool,
 }
 
@@ -3255,8 +3273,10 @@ pub async fn create_user(
 /// JSON body for local password login (login name or email plus password).
 pub struct PasswordLoginRequest {
     /// Login name or email.
+    #[schema(example = "dana")]
     pub login: String,
     /// Password verified against the stored hash; mismatch fails closed and counts toward lockout.
+    #[schema(example = "correct horse battery staple")]
     pub password: String,
 }
 
@@ -3340,12 +3360,15 @@ pub async fn password_login(
 /// JSON body for setting a password (self or provisioner target).
 pub struct SetPasswordRequest {
     /// New password; hashed before persist. Empty is rejected.
+    #[schema(example = "new horse battery staple")]
     pub password: String,
     /// Required when the caller already has a password (not first-time invite setup).
     #[serde(default)]
+    #[schema(example = "correct horse battery staple")]
     pub current_password: Option<String>,
     #[serde(default)]
     /// Target `users.id` when a provisioner sets another user's password.
+    #[schema(example = 7)]
     pub user_id: Option<i64>,
 }
 

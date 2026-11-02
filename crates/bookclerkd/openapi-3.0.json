@@ -21294,21 +21294,25 @@
           "display_name": {
             "type": "string",
             "description": "Optional display name; falls back to login or email.",
+            "example": "Dana Reader",
             "nullable": true
           },
           "login_name": {
             "type": "string",
             "description": "Optional local login name.",
+            "example": "dana",
             "nullable": true
           },
           "email": {
             "type": "string",
             "description": "Optional email.",
+            "example": "dana@example.com",
             "nullable": true
           },
           "password": {
             "type": "string",
             "description": "Optional password; hashed before persist and never stored in plaintext.",
+            "example": "correct horse battery staple",
             "nullable": true
           }
         }
@@ -22015,14 +22019,26 @@
         "properties": {
           "challenge_id": {
             "type": "string",
-            "description": "Server-issued challenge id (consumed once; 5-minute TTL)."
+            "description": "Server-issued challenge id (consumed once; 5-minute TTL).",
+            "example": "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f"
           },
           "credential": {
-            "description": "Browser `PublicKeyCredential` JSON for `finish_*`."
+            "description": "W3C PublicKeyCredential as the browser serializes it: a registration attestation (`response.attestationObject`) or an authentication assertion (`response.authenticatorData`, `signature`, `userHandle`), binary fields base64url-encoded.",
+            "example": {
+              "extensions": {},
+              "id": "pQECAyYgASFYIE",
+              "rawId": "pQECAyYgASFYIE",
+              "response": {
+                "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViU",
+                "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ"
+              },
+              "type": "public-key"
+            }
           },
           "name": {
             "type": "string",
             "description": "Label stored with the credential (`Passkey` when empty).",
+            "example": "YubiKey 5C",
             "nullable": true
           }
         }
@@ -22836,31 +22852,37 @@
           "role": {
             "type": "string",
             "description": "Role to assign when permitted (`member` when omitted).",
+            "example": "member",
             "nullable": true
           },
           "display_name": {
             "type": "string",
             "description": "Optional display name for the new user.",
+            "example": "Sam Reader",
             "nullable": true
           },
           "login_name": {
             "type": "string",
             "description": "Optional local login name for the new user.",
+            "example": "sam",
             "nullable": true
           },
           "email": {
             "type": "string",
             "description": "Optional email for the new user.",
+            "example": "sam@example.com",
             "nullable": true
           },
           "password": {
             "type": "string",
             "description": "Optional password; hashed before persist. Empty or omitted leaves the user passwordless.",
+            "example": "correct horse battery staple",
             "nullable": true
           },
           "mint_invite": {
             "type": "boolean",
-            "description": "When true (default), also mint an invite/claim ticket."
+            "description": "When true (default), also mint an invite/claim ticket.",
+            "example": true
           }
         }
       },
@@ -23305,7 +23327,8 @@
         "properties": {
           "password": {
             "type": "string",
-            "description": "Owner account password (re-authentication)."
+            "description": "Owner account password (re-authentication).",
+            "example": "correct horse battery staple"
           }
         }
       },
@@ -23379,7 +23402,8 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Six-digit code from the authenticator app."
+            "description": "Six-digit code from the authenticator app.",
+            "example": "492817"
           }
         }
       },
@@ -23906,7 +23930,8 @@
           "user_id": {
             "type": "integer",
             "format": "int64",
-            "description": "Target `users.id` to impersonate."
+            "description": "Target `users.id` to impersonate.",
+            "example": 7
           }
         }
       },
@@ -24690,7 +24715,8 @@
         "properties": {
           "login": {
             "type": "string",
-            "description": "Login name or email looked up before issuing an authentication challenge."
+            "description": "Login name or email looked up before issuing an authentication challenge.",
+            "example": "dana"
           }
         }
       },
@@ -24703,7 +24729,8 @@
         "properties": {
           "token": {
             "type": "string",
-            "description": "Operator token from the client; compared in constant time and never persisted."
+            "description": "Operator token from the client; compared in constant time and never persisted.",
+            "example": "9b1e4f6a2c8d3e5f7a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f"
           }
         }
       },
@@ -24779,11 +24806,13 @@
         "properties": {
           "challenge_id": {
             "type": "string",
-            "description": "Server-issued challenge id (5-minute TTL, single use)."
+            "description": "Server-issued challenge id (5-minute TTL, single use).",
+            "example": "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c"
           },
           "code": {
             "type": "string",
-            "description": "Six-digit authenticator code."
+            "description": "Six-digit authenticator code.",
+            "example": "492817"
           }
         }
       },
@@ -24836,11 +24865,13 @@
         "properties": {
           "require_second_factor": {
             "type": "boolean",
-            "description": "When true, password login requires TOTP or the user must use a passkey."
+            "description": "When true, password login requires TOTP or the user must use a passkey.",
+            "example": true
           },
           "current_password": {
             "type": "string",
             "description": "Current password for Owner step-up (operators omit this).",
+            "example": "correct horse battery staple",
             "nullable": true
           }
         }
@@ -27033,6 +27064,7 @@
           "current_password": {
             "type": "string",
             "description": "Password used for recent-reauth when the user already has a credential.",
+            "example": "correct horse battery staple",
             "nullable": true
           }
         }
@@ -27167,11 +27199,13 @@
         "properties": {
           "login": {
             "type": "string",
-            "description": "Login name or email."
+            "description": "Login name or email.",
+            "example": "dana"
           },
           "password": {
             "type": "string",
-            "description": "Password verified against the stored hash; mismatch fails closed and counts toward lockout."
+            "description": "Password verified against the stored hash; mismatch fails closed and counts toward lockout.",
+            "example": "correct horse battery staple"
           }
         }
       },
@@ -27263,16 +27297,19 @@
           "display_name": {
             "type": "string",
             "description": "Replacement display name; empty or whitespace clears the field.",
+            "example": "Dana Reader",
             "nullable": true
           },
           "email": {
             "type": "string",
             "description": "Replacement email; empty or whitespace clears the field.",
+            "example": "dana@example.com",
             "nullable": true
           },
           "avatar_source": {
             "type": "string",
             "description": "Picture choice (`auto`, `monogram`, `gravatar`, `upload`, or `sso:{id}`).",
+            "example": "gravatar",
             "nullable": true
           }
         }
@@ -27307,26 +27344,31 @@
           "role": {
             "type": "string",
             "description": "Replacement role (`owner` / `administrator` / `member`) when present.",
+            "example": "administrator",
             "nullable": true
           },
           "status": {
             "type": "string",
             "description": "Replacement status (`active` / `disabled`) when present.",
+            "example": "active",
             "nullable": true
           },
           "display_name": {
             "type": "string",
             "description": "Replacement display name when present.",
+            "example": "Sam Reader",
             "nullable": true
           },
           "login_name": {
             "type": "string",
             "description": "Replacement local login name when present.",
+            "example": "sam",
             "nullable": true
           },
           "email": {
             "type": "string",
             "description": "Replacement email when present.",
+            "example": "sam@example.com",
             "nullable": true
           }
         }
@@ -31260,17 +31302,20 @@
         "properties": {
           "password": {
             "type": "string",
-            "description": "New password; hashed before persist. Empty is rejected."
+            "description": "New password; hashed before persist. Empty is rejected.",
+            "example": "new horse battery staple"
           },
           "current_password": {
             "type": "string",
             "description": "Required when the caller already has a password (not first-time invite setup).",
+            "example": "correct horse battery staple",
             "nullable": true
           },
           "user_id": {
             "type": "integer",
             "format": "int64",
             "description": "Target `users.id` when a provisioner sets another user's password.",
+            "example": 7,
             "nullable": true
           }
         }
@@ -33013,6 +33058,7 @@
           "current_password": {
             "type": "string",
             "description": "Password used for recent-reauth when the user already has a credential.",
+            "example": "correct horse battery staple",
             "nullable": true
           }
         }

@@ -353,6 +353,7 @@ pub(crate) async fn after_password_verified(
 struct ReauthBody {
     #[serde(default)]
     /// Password used for recent-reauth when the user already has a credential.
+    #[schema(example = "correct horse battery staple")]
     current_password: Option<String>,
 }
 
@@ -422,6 +423,7 @@ async fn enroll_begin(
 /// First TOTP code that confirms the pending secret.
 struct EnrollFinish {
     /// Six-digit code from the authenticator app.
+    #[schema(example = "492817")]
     code: String,
 }
 
@@ -510,8 +512,10 @@ async fn disable_totp(
 /// TOTP code plus the challenge id from password login.
 struct LoginVerify {
     /// Server-issued challenge id (5-minute TTL, single use).
+    #[schema(example = "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c")]
     challenge_id: String,
     /// Six-digit authenticator code.
+    #[schema(example = "492817")]
     code: String,
 }
 
@@ -627,9 +631,11 @@ async fn get_mfa_policy(State(state): State<Arc<AppState>>) -> Json<MfaPolicy> {
 /// PUT body for the host-wide second-factor policy.
 struct MfaPolicyPut {
     /// When true, password login requires TOTP or the user must use a passkey.
+    #[schema(example = true)]
     require_second_factor: bool,
     #[serde(default)]
     /// Current password for Owner step-up (operators omit this).
+    #[schema(example = "correct horse battery staple")]
     current_password: Option<String>,
 }
 
