@@ -528,88 +528,134 @@ pub struct AccountLinkRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct BookRecord {
     /// Surrogate primary key assigned by the database.
+    #[schema(example = 412)]
     pub id: i64,
     /// Stable UUID for this row (API / foreign-key identity).
+    #[schema(example = "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31")]
     pub uuid: String,
     /// Provenance-qualified PluginKey that owns the account.
+    #[schema(example = "platform:bookclerk/bookclerk-plugin-source-libro#libro")]
     pub plugin_key: String,
     /// Display alias of the owning plugin (`audible`, `libro`, …).
+    #[schema(example = "libro")]
     pub source: String,
     /// Store or operator account id this row belongs to.
+    #[schema(example = "reader@example.com")]
     pub account_id: String,
     /// Storefront product id (ASIN, ISBN, UUID, …).
+    #[schema(example = "9780441478125")]
     pub product_id: String,
     /// Audible ASIN when known (`None` for Libro-only rows without enrichment).
+    #[schema(example = "B002V0QK4C")]
     pub asin: Option<String>,
     /// ISBN-13 when known (Libro always; Audible when the API provides it).
+    #[schema(example = "9780441478125")]
     pub isbn: Option<String>,
     /// Store marketplace / locale code (for example `us`, `uk`).
+    #[schema(example = "us")]
     pub marketplace: String,
     /// Display title of the work or edition.
+    #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
     /// Comma-separated or JSON author list from the storefront.
+    #[schema(example = "Ursula K. Le Guin")]
     pub authors: Option<String>,
     /// Comma-separated or JSON narrator list when present.
+    #[schema(example = "George Guidall")]
     pub narrators: Option<String>,
     /// Series name when the title belongs to a series.
+    #[schema(example = "Hainish Cycle")]
     pub series: Option<String>,
     /// Position within the series (storefront string form).
+    #[schema(example = "4")]
     pub series_index: Option<String>,
     /// Audible series / podcast-parent ASIN (`Series.AudibleSeriesId`).
+    #[schema(example = "B07ZRJZ4PW")]
     pub series_asin: Option<String>,
     /// Download/acquire pipeline state (`not_acquired`, `queued`, …).
     pub acquire_status: AcquireStatus,
     /// Object-storage key for the primary audio artifact, if acquired.
+    #[schema(
+        example = "Ursula K. Le Guin/The Left Hand of Darkness/The Left Hand of Darkness.m4b"
+    )]
     pub storage_key: Option<String>,
     /// Last acquire/convert failure message for operators.
+    #[schema(example = "download failed: HTTP 403 from the store")]
     pub error_message: Option<String>,
     /// RFC 3339 purchase time from the storefront, when known.
+    #[schema(example = "2026-03-14T18:02:11Z")]
     pub purchased_at: Option<DateTime<Utc>>,
     /// Operator or storefront tags (serialized string).
+    #[schema(example = "book club, sci-fi")]
     pub tags: Option<String>,
     /// Overall user rating from the storefront, if any.
+    #[schema(example = 4.5)]
     pub rating_overall: Option<f32>,
     /// Narration/performance rating from the storefront, if any.
+    #[schema(example = 4.7)]
     pub rating_performance: Option<f32>,
     /// Story rating from the storefront, if any.
+    #[schema(example = 4.3)]
     pub rating_story: Option<f32>,
     /// Whether the listener marked the title finished (0/1 or bool).
+    #[schema(example = false)]
     pub is_finished: bool,
     /// Companion PDF acquire state (`not_acquired`, `acquired`, …).
     pub pdf_status: AcquireStatus,
     /// Object-storage key for the companion PDF, if present.
+    #[schema(
+        example = "Ursula K. Le Guin/The Left Hand of Darkness/The Left Hand of Darkness.pdf"
+    )]
     pub pdf_storage_key: Option<String>,
     /// Publisher name from metadata enrichment or the storefront.
+    #[schema(example = "Blackstone Publishing")]
     pub publisher: Option<String>,
     /// Runtime in whole minutes when the storefront reports it.
+    #[schema(example = 560)]
     pub length_minutes: Option<i64>,
     /// Whether the edition is abridged (0/1 or bool).
+    #[schema(example = false)]
     pub is_abridged: bool,
     /// Title kind: `book`, `episode`, `podcast`, ….
+    #[schema(example = "book")]
     pub content_kind: String,
     /// Storefront category / genre path list (serialized).
+    #[schema(example = "Science Fiction & Fantasy > Science Fiction")]
     pub categories: Option<String>,
     /// Optional subtitle from bibliographic metadata.
+    #[schema(example = "A Hainish Novel")]
     pub subtitle: Option<String>,
     /// Publication date string from the storefront or enrichment.
+    #[schema(example = "2005-06-21T00:00:00Z")]
     pub published_at: Option<DateTime<Utc>>,
     /// Blurb / synopsis text (may contain HTML).
+    #[schema(
+        example = "An envoy to the planet Gethen must win the trust of a people who have no fixed gender."
+    )]
     pub description: Option<String>,
     /// BCP-47 or storefront language code when known.
+    #[schema(example = "en")]
     pub language: Option<String>,
     /// HTTPS URL for cover art when known.
+    #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
     /// Subject / topic tags (often from Open Library; `;`- or `,`-separated).
+    #[schema(example = "Androgyny; Interplanetary voyages; Fiction")]
     pub subjects: Option<String>,
     /// Plugin or catalog that last enriched bibliographic fields.
+    #[schema(example = "openlibrary")]
     pub enrich_source: Option<String>,
     /// 0–1 confidence score for the last enrichment pass.
+    #[schema(example = 0.92)]
     pub enrich_confidence: Option<f64>,
     /// RFC 3339 time of the last enrichment write.
+    #[schema(example = "2026-10-29T10:13:05Z")]
     pub enrich_updated_at: Option<DateTime<Utc>>,
     /// RFC 3339 timestamp when the row was inserted.
+    #[schema(example = "2026-10-29T10:12:00Z")]
     pub created_at: DateTime<Utc>,
     /// RFC 3339 timestamp when the row was last modified.
+    #[schema(example = "2026-10-29T10:14:22Z")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -726,88 +772,120 @@ impl RequestStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct TitleRequestSourceRecord {
     /// Surrogate primary key assigned by the database.
+    #[schema(example = 88)]
     pub id: i64,
     /// Foreign key to `title_requests.id`.
+    #[schema(example = 31)]
     pub title_request_id: i64,
     /// Content-source plugin id (`audible`, `libro`, …).
+    #[schema(example = "libro")]
     pub source: String,
     /// Storefront product id (ASIN, ISBN, UUID, …).
+    #[schema(example = "9780441478125")]
     pub product_id: String,
     /// Display title of the work or edition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "The Left Hand of Darkness")]
     pub title: Option<String>,
     /// Optional subtitle from bibliographic metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "A Hainish Novel")]
     pub subtitle: Option<String>,
     /// Comma-separated or JSON author list from the storefront.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Ursula K. Le Guin")]
     pub authors: Option<String>,
     /// Comma-separated or JSON narrator list when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "George Guidall")]
     pub narrators: Option<String>,
     /// Series name when the title belongs to a series.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Hainish Cycle")]
     pub series: Option<String>,
     /// Position within the series (storefront string form).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "4")]
     pub series_index: Option<String>,
     /// Amazon ASIN when known; otherwise null.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "B002V0QK4C")]
     pub asin: Option<String>,
     /// ISBN-10/13 when known; otherwise null.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "9780441478125")]
     pub isbn: Option<String>,
     /// Blurb / synopsis text (may contain HTML).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "An envoy to the planet Gethen must win the trust of a people who have no fixed gender."
+    )]
     pub description: Option<String>,
     /// Publisher name from metadata enrichment or the storefront.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Blackstone Publishing")]
     pub publisher: Option<String>,
     /// Runtime in whole minutes when the storefront reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 560)]
     pub length_minutes: Option<i64>,
     /// Publication date string from the storefront or enrichment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2005-06-21")]
     pub published_at: Option<String>,
     /// Storefront category / genre path list (serialized).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Science Fiction & Fantasy > Science Fiction")]
     pub categories: Option<String>,
     /// BCP-47 or storefront language code when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "en")]
     pub language: Option<String>,
     /// HTTPS URL for cover art when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
     /// Storefront product or purchase URL when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "https://libro.fm/audiobooks/9780441478125")]
     pub url: Option<String>,
     /// Observed price in minor currency units, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 2499)]
     pub price_cents: Option<i64>,
     /// ISO 4217 currency code for price fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "USD")]
     pub currency: Option<String>,
     /// Storefront-formatted price string for display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "$24.99")]
     pub price_label: Option<String>,
     /// List/MSRP price in minor units, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 2999)]
     pub list_price_cents: Option<i64>,
     /// Storefront-formatted list price for display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "$29.99")]
     pub list_price_label: Option<String>,
     /// Member/subscriber price in minor units, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 1499)]
     pub member_price_cents: Option<i64>,
     /// Storefront-formatted member price for display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "$14.99")]
     pub member_price_label: Option<String>,
     /// RFC 3339 time when this storefront snapshot was observed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2026-10-29T10:12:00Z")]
     pub observed_at: Option<DateTime<Utc>>,
     /// RFC 3339 timestamp when the row was inserted.
+    #[schema(example = "2026-10-29T10:12:00Z")]
     pub created_at: DateTime<Utc>,
     /// RFC 3339 timestamp when the row was last modified.
+    #[schema(example = "2026-10-29T10:14:22Z")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -815,8 +893,10 @@ pub struct TitleRequestSourceRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct WishlistStoreEdition {
     /// Content-source plugin id (`audible`, `libro`, …).
+    #[schema(example = "libro")]
     pub source: String,
     /// Storefront product id (ASIN, ISBN, UUID, …).
+    #[schema(example = "9780441478125")]
     pub product_id: String,
 }
 
@@ -824,35 +904,46 @@ pub struct WishlistStoreEdition {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct WishlistPurchaseHint {
     /// Content-source plugin id (`audible`, `libro`, …).
+    #[schema(example = "libro")]
     pub source: String,
     /// Storefront product id (ASIN, ISBN, UUID, …).
+    #[schema(example = "9780441478125")]
     pub product_id: String,
     /// Display title of the work or edition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "The Left Hand of Darkness")]
     pub title: Option<String>,
     /// Storefront product or purchase URL when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "https://libro.fm/audiobooks/9780441478125")]
     pub url: Option<String>,
     /// Observed price in minor currency units, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 2499)]
     pub price_cents: Option<i64>,
     /// ISO 4217 currency code for price fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "USD")]
     pub currency: Option<String>,
     /// Storefront-formatted price string for display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "$24.99")]
     pub price_label: Option<String>,
     /// List/MSRP price in minor units, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 2999)]
     pub list_price_cents: Option<i64>,
     /// Storefront-formatted list price for display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "$29.99")]
     pub list_price_label: Option<String>,
     /// Member/subscriber price in minor units, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 1499)]
     pub member_price_cents: Option<i64>,
     /// Storefront-formatted member price for display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "$14.99")]
     pub member_price_label: Option<String>,
 }
 
@@ -860,64 +951,88 @@ pub struct WishlistPurchaseHint {
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TitleRequestRecord {
     /// Surrogate primary key assigned by the database.
+    #[schema(example = 31)]
     pub id: i64,
     /// Stable UUID for this row (API / foreign-key identity).
+    #[schema(example = "7c1e5a2b-3d4f-4e6a-9b8c-0d1e2f3a4b5c")]
     pub uuid: String,
     /// Foreign key to `portal_identities.id`.
+    #[schema(example = 7)]
     pub identity_id: Option<i64>,
     /// Display title of the work or edition.
+    #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
     /// Comma-separated or JSON author list from the storefront.
+    #[schema(example = "Ursula K. Le Guin")]
     pub authors: Option<String>,
     /// Amazon ASIN when known; otherwise null.
+    #[schema(example = "B002V0QK4C")]
     pub asin: Option<String>,
     /// ISBN-10/13 when known; otherwise null.
+    #[schema(example = "9780441478125")]
     pub isbn: Option<String>,
     /// Free-form operator or requester notes.
+    #[schema(example = "Book club pick for March")]
     pub notes: Option<String>,
     /// Lifecycle status for the row (user, request, …).
     pub status: RequestStatus,
     /// Stable bibliographic key (`isbn:…` / `asin:…` / `soft:…`) for aggregation.
     #[serde(default)]
+    #[schema(example = "isbn:9780441478125")]
     pub work_key: String,
     /// Canonical work id this edition or request resolves to.
+    #[schema(example = "OL59947W")]
     pub work_id: Option<String>,
     /// Library `books.uuid` once the wishlist item is fulfilled.
+    #[schema(example = "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31")]
     pub resolved_book_uuid: Option<String>,
     /// HTTPS URL for cover art when known.
+    #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
     /// Per-storefront snapshots (empty for legacy rows).
     #[serde(default)]
     pub sources: Vec<TitleRequestSourceRecord>,
     /// Blurb / synopsis text (may contain HTML).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "An envoy to the planet Gethen must win the trust of a people who have no fixed gender."
+    )]
     pub description: Option<String>,
     /// Optional subtitle from bibliographic metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "A Hainish Novel")]
     pub subtitle: Option<String>,
     /// Comma-separated or JSON narrator list when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "George Guidall")]
     pub narrators: Option<String>,
     /// Series name when the title belongs to a series.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Hainish Cycle")]
     pub series: Option<String>,
     /// Position within the series (storefront string form).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "4")]
     pub series_index: Option<String>,
     /// Publisher name from metadata enrichment or the storefront.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Blackstone Publishing")]
     pub publisher: Option<String>,
     /// Runtime in whole minutes when the storefront reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 560)]
     pub length_minutes: Option<i64>,
     /// Publication date string from the storefront or enrichment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2005-06-21")]
     pub published_at: Option<String>,
     /// Merged genre / category list for display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Science Fiction, Classics")]
     pub genres: Option<String>,
     /// BCP-47 or storefront language code when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "en")]
     pub language: Option<String>,
     /// Distinct storefront editions contributing to this wishlist item.
     #[serde(default)]
@@ -926,8 +1041,10 @@ pub struct TitleRequestRecord {
     #[serde(default)]
     pub purchase_hints: Vec<WishlistPurchaseHint>,
     /// RFC 3339 timestamp when the row was inserted.
+    #[schema(example = "2026-10-29T10:12:00Z")]
     pub created_at: DateTime<Utc>,
     /// RFC 3339 timestamp when the row was last modified.
+    #[schema(example = "2026-10-29T10:14:22Z")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -936,30 +1053,39 @@ pub struct TitleRequestRecord {
 pub struct QueueWisher {
     /// First-party `users.id` when the portal identity is linked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 7)]
     pub user_id: Option<i64>,
     /// Portal identity that created the wish (dedupe for unlinked identities).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 7)]
     pub identity_id: Option<i64>,
     /// Display name, identity label, or `"Operator"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Dana Reader")]
     pub display_name: Option<String>,
     /// Local login name when the first-party user has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "dana")]
     pub login_name: Option<String>,
     /// True when the wish came from the operator token (no portal user).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schema(example = false)]
     pub operator: bool,
     /// True when an uploaded avatar file exists (filled by the daemon).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schema(example = true)]
     pub has_avatar: bool,
     /// Explicit picture choice when the user has set one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "upload")]
     pub avatar_source: Option<String>,
     /// SHA-256 hex of the contact email for Gravatar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "84d2a1a1d9ba6a4c2f4b9d0e7a7c6b5f3e2d1c0b9a8f7e6d5c4b3a2918f7e6d5")]
     pub gravatar_hash: Option<String>,
     /// HTTPS picture from the wishing identity, when any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "https://accounts.example.com/u/dana/picture.png")]
     pub picture_url: Option<String>,
 }
 
