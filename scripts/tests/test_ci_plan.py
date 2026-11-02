@@ -1667,6 +1667,24 @@ class EnvelopeTests(unittest.TestCase):
         self.assertEqual(out["check_release"], "true")
         self.assertEqual(out["check_envelope"], "false")
 
+    def test_build_only_push_of_an_envelope_input_runs_no_release_job(self) -> None:
+        art = resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="push",
+            build_only=True,
+            paths=["scripts/bench/small-vps.sh"],
+            metadata=META,
+            workspace=REPO,
+        )
+        self.assertTrue(plan_from_dict(art["predicted"]).selected("envelope"))
+        out = job_outputs(art)
+        self.assertEqual(out["job_release"], "false")
+        self.assertEqual(out["check_envelope"], "false")
+
 
 class RunnerLayoutTests(unittest.TestCase):
     """Test runner, retries, build-only main pushes and docs-only paths."""

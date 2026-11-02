@@ -301,7 +301,9 @@ def resolve(
             for c, v in execution.checks.items()
             if CHECK_JOB[c] in BUILD_ONLY_JOBS and c not in BUILD_ONLY_SKIPPED_CHECKS
         }
-        execution.jobs = {job: on and job in BUILD_ONLY_JOBS for job, on in execution.jobs.items()}
+        # A job whose only checks were dropped has nothing to build.
+        kept = {CHECK_JOB[c] for c in execution.checks}
+        execution.jobs = {job: on and job in BUILD_ONLY_JOBS and job in kept for job, on in execution.jobs.items()}
     return {
         "schema_version": SCHEMA_VERSION,
         "execution_id": uuid.uuid4().hex,

@@ -27,8 +27,9 @@ on:
 
 permissions: {}
 
+# A new push supersedes a pull request's run; every main commit keeps its own.
 concurrency:
-  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  group: codeql-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -84,13 +85,20 @@ jobs:
         with:
           persist-credentials: false
 
+      # rust-toolchain.toml follows `stable`, so the key names the compiler
+      # itself: a new release would otherwise restore outputs it rebuilds.
+      - name: Read the Rust version
+        id: rustc
+        if: matrix.language == 'rust'
+        run: echo "version=$(rustc -V | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_OUTPUT"
+
       - name: Restore the Rust extractor's cargo output
         if: matrix.language == 'rust'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/codeql-rust-target
-          key: codeql-rust-target-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: codeql-rust-target-
+          key: codeql-rust-target-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: codeql-rust-target-${{ steps.rustc.outputs.version }}-
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
@@ -108,4 +116,4 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/codeql-rust-target
-          key: codeql-rust-target-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          key: codeql-rust-target-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock') }}

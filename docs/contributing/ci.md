@@ -582,15 +582,17 @@ Rust alert:
    (`git diff -z --no-renames --name-only`).
 2. [`scripts/codeql_languages.py`](../../scripts/codeql_languages.py)
    adds Rust when a path is a `.rs` or `.capnp` file, a `Cargo.toml`,
-   `Cargo.lock`, `rust-toolchain.toml`, anything under `.cargo/`, the
-   workflow, or the script itself. A name that isn't UTF-8 also counts.
+   `Cargo.lock`, `rust-toolchain.toml`, anything under a `.cargo/`
+   directory at any depth, the workflow, or the script itself. A name
+   that isn't UTF-8 also counts.
 3. `Analyze (<language>)` runs once per chosen language.
 
 Pushes to `main`, the Monday schedule and manual runs analyze every
 language, so `main` always has a full analysis to compare pull requests
 against. The Rust extractor's own cargo output (build scripts and proc
-macros) is cached under `codeql-rust-target-<Cargo.lock hash>`: `main`
-saves it and pull requests only restore it.
+macros) is cached under
+`codeql-rust-target-<rustc version>-<Cargo.lock hash>`: `main` saves it
+and pull requests only restore it.
 
 The file names are the pull request author's, so the chooser is an
 untrusted-input boundary, fuzzed in

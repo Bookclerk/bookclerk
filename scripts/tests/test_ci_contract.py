@@ -207,7 +207,8 @@ class WorkflowContractTests(unittest.TestCase):
     def test_envelope_builds_on_the_runner(self) -> None:
         job = self.jobs["release"]
         self.assertEqual(job["runs-on"], "ubuntu-latest")
-        self.assertEqual(job["timeout-minutes"], 180)
+        # A cold fat-LTO build and the envelope together.
+        self.assertEqual(job["timeout-minutes"], 240)
         self.assertNotIn("container", job)
         self.assertNotIn("CARGO_BUILD_JOBS", job.get("env") or {})
         for step in job["steps"]:

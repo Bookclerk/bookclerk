@@ -41,7 +41,8 @@ ALWAYS: tuple[str, ...] = ("actions", "javascript-typescript", "python")
 
 # The slow language and the inputs that change what its analysis sees: Rust
 # sources, the manifests and lockfile that pick the crates and features, the
-# toolchain pin, Cargo's configuration, and the Cap'n Proto schemas that
+# toolchain pin, Cargo's configuration (a `.cargo/` directory at any depth,
+# see `CARGO_DIR`), and the Cap'n Proto schemas that
 # generate Rust. This workflow and this script are inputs too, so a change to
 # how Rust is analyzed is analyzed.
 RUST = "rust"
@@ -50,11 +51,14 @@ RUST_INPUTS: tuple[str, ...] = (
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    ".cargo/*",
     "*.capnp",
     ".github/workflows/codeql.yml",
     "scripts/codeql_languages.py",
 )
+
+# A directory holding Cargo configuration; any file under one, at any depth,
+# is a Rust input (`fuzz/.cargo/config.toml` sets cfgs for that crate).
+CARGO_DIR = ".cargo"
 
 # Events that always analyze every language.
 FULL_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
@@ -81,11 +85,15 @@ def is_rust_input(path: str) -> bool:
             ``git diff --name-only`` prints it.
 
     Returns:
-        True when the path's file name or full path matches one of
-        ``RUST_INPUTS``. A pattern without ``/`` matches the file name in any
-        directory; a pattern with ``/`` matches the whole path.
+        True when the path is under a ``.cargo`` directory at any depth, or
+        its file name or full path matches one of ``RUST_INPUTS``. A pattern
+        without ``/`` matches the file name in any directory; a pattern with
+        ``/`` matches the whole path.
     """
-    name = path.rsplit("/", 1)[-1]
+    parts = path.split("/")
+    if CARGO_DIR in parts[:-1]:
+        return True
+    name = parts[-1]
     for pattern in RUST_INPUTS:
         subject = path if "/" in pattern else name
         if fnmatch.fnmatchcase(subject, pattern):

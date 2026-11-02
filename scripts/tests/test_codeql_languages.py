@@ -56,7 +56,7 @@ def oracle_needs_rust(raw: bytes) -> bool:
         base = path[path.rfind("/") + 1 :]
         if base in ORACLE_NAMES or base.endswith(ORACLE_SUFFIXES):
             return True
-        if path.startswith(".cargo/") or path in ORACLE_EXACT:
+        if path.startswith(".cargo/") or "/.cargo/" in path or path in ORACLE_EXACT:
             return True
     return False
 
@@ -107,7 +107,7 @@ class FuzzTests(unittest.TestCase):
             elif op < 0.6 and data:
                 del data[min(pos, len(data) - 1)]
             elif op < 0.8:
-                data[pos:pos] = rng.choice([b".rs", b"\x00", b"Cargo.toml", b".cargo/", b".capnp", b"/"])
+                data[pos:pos] = rng.choice([b".rs", b"\x00", b"Cargo.toml", b".cargo/", b"/.cargo/", b".capnp", b"/"])
             elif data:
                 data[min(pos, len(data) - 1)] = rng.randrange(256)
         return bytes(data)
