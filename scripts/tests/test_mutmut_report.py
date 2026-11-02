@@ -209,6 +209,10 @@ class SelectTest(unittest.TestCase):
             index = source.index(after) + 1
             return [*source[:index], *extra, *source[index:]]
 
+        def decorated(before: str) -> list[str]:
+            index = source.index(before)
+            return [*source[:index], "@cache", *source[index:]]
+
         cases = {
             # The function's last lines: a blank line follows in the new file.
             "end of a method": (removed("        return self.size + n", "        if n:", "            raise ValueError"), ["pkg.mod.xǁBoxǁgrow__mutmut_*"], []),
@@ -217,6 +221,10 @@ class SelectTest(unittest.TestCase):
             "a decorated function's line": (removed("    return b * 2", "    b += 1"), [], ["pkg.mod.second"]),
             "a whole function": (removed("    return a + LIMIT", "", "", "def gone():", "    return 1"), [], []),
             "blank lines": (removed("    return a + LIMIT", ""), [], []),
+            # Removing the decorator that kept mutmut away makes it mutable;
+            # removing one of two keeps it skipped.
+            "the only decorator": (decorated("def first(a):"), ["pkg.mod.x_first__mutmut_*"], []),
+            "one of two decorators": (decorated("@decorator"), [], ["pkg.mod.second"]),
         }
         for name, (before, patterns, skipped) in cases.items():
             with self.subTest(name):

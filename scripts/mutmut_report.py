@@ -389,19 +389,32 @@ def patterns_for(module: str, found: Targets) -> list[str]:
     return [f"{module}.{name}__mutmut_*" for name in found.names]
 
 
-def _defined(source: str) -> set[str]:
-    """Return the mangled names of a module's top-level functions and methods."""
+def _defined(source: str) -> dict[str, bool]:
+    """Index a module's top-level functions and methods by mangled name.
+
+    Returns:
+        Whether mutmut mutates each one (``False`` for decorated functions
+        and enum methods); the first definition of a name wins.
+    """
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return set()
-    names = set()
+        return {}
+    names: dict[str, bool] = {}
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            names.add("x_" + node.name)
+            names.setdefault("x_" + node.name, not _mutmut_skips(node))
         elif isinstance(node, ast.ClassDef):
-            names |= {f"xǁ{node.name}ǁ{item.name}" for item in node.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            enum = _is_enum(node)
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    names.setdefault(f"xǁ{node.name}ǁ{item.name}", not enum and not _mutmut_skips(item))
     return names
+
+
+def _display(mangled: str) -> str:
+    """Turn mutmut's mangled ``x_name`` or ``xǁClassǁname`` into ``name`` or ``Class.name``."""
+    return mangled[2:] if mangled.startswith("x_") else mangled[2:].replace("ǁ", ".")
 
 
 def _mangled(display: str) -> str:
@@ -444,13 +457,19 @@ def select(
             continue
         found = targets(read[path], change.added)
         if change.deleted and path in read_old:
+            # The old file says which function held the deleted lines; the
+            # new one says whether it still exists and whether mutmut
+            # mutates it now (removing a decorator makes it mutable).
             before = targets(read_old[path], change.deleted)
-            still = _defined(read[path])
-            found = Targets(
-                sorted(set(found.names) | (set(before.names) & still)),
-                found.widen or before.widen,
-                sorted(set(found.skipped) | {name for name in before.skipped if _mangled(name) in still}),
-            )
+            now = _defined(read[path])
+            held = set(before.names) | {_mangled(name) for name in before.skipped}
+            names, unmutable = set(found.names), set(found.skipped)
+            for mangled in sorted(held):
+                if now.get(mangled) is True:
+                    names.add(mangled)
+                elif now.get(mangled) is False:
+                    unmutable.add(_display(mangled))
+            found = Targets(sorted(names), found.widen or before.widen, sorted(unmutable))
         patterns += patterns_for(module, found)
         skipped += [f"{module}.{name}" for name in found.skipped]
     return patterns, skipped
