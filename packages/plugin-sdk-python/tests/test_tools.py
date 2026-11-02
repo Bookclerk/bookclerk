@@ -15,7 +15,12 @@ from bookclerk_plugin_sdk.tools import (
     validate_plugin_id,
 )
 
-ROOT = Path(__file__).resolve().parents[3]
+# The repository root: the nearest folder above holding the ABI crate. A
+# fixed depth would break when mutation testing runs these tests from a copy
+# under `mutants/` (docs/contributing/ci.md#python-sdk).
+ROOT = next(
+    p for p in Path(__file__).resolve().parents if (p / "crates" / "bookclerk-plugin-abi").is_dir()
+)
 FIXTURES = ROOT / "crates" / "bookclerk-plugin-abi" / "fixtures" / "tools"
 ECHO_PY = ROOT / "examples" / "plugins-echo-workerd-python"
 

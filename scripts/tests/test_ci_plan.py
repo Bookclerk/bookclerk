@@ -604,9 +604,9 @@ class FullSuiteTests(unittest.TestCase):
 
     def test_mutation_testing_files_select_nothing(self) -> None:
         # Only the mutation testing workflow reads them; the plan job's
-        # test_mutation_report.py and test_stryker_report.py cover them, even
-        # under the .cargo/ prefix.
-        for path in (".cargo/mutants.toml", "scripts/mutation_report.py", "scripts/stryker_report.py", "scripts/stryker.config.json"):
+        # test_mutation_report.py, test_stryker_report.py and
+        # test_mutmut_report.py cover them, even under the .cargo/ prefix.
+        for path in (".cargo/mutants.toml", "scripts/mutation_report.py", "scripts/stryker_report.py", "scripts/stryker.config.json", "scripts/mutmut_report.py"):
             with self.subTest(path=path):
                 p = plan(path)
                 self.assertFalse(p.full_suite, p.reasons)

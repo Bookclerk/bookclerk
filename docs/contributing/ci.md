@@ -1035,9 +1035,68 @@ npx stryker run ../../scripts/stryker.config.json --mutate "src/page.ts:10-20"
 The report lands in `reports/mutation/mutation.json`. Delete that folder
 afterwards: incremental mode reuses the results in it on the next run.
 
+### Python SDK
+
+The [`mutation-python.yml`](../../.github/workflows/mutation-python.yml)
+workflow does the same for the Python plugin SDK
+(`packages/plugin-sdk-python`) with [mutmut](https://mutmut.readthedocs.io/):
+
+1. It finds the lines the pull request changes under the SDK's `src/`, from
+   the merge commit's diff against the base: the lines it adds, placed in
+   the new file, and the lines it deletes, placed in the base's copy of the
+   file. Removing a guard, even a function's last lines, counts as
+   changing that function, and removing a constant counts as a change
+   outside every function. Removing a whole function selects nothing in
+   that function. Tests and the generated ABI modules are left
+   out. With no changed source line, mutmut does not run and the summary
+   says so.
+2. mutmut names each mutant after its function, so
+   [`scripts/mutmut_report.py`](../../scripts/mutmut_report.py) turns each
+   function holding a changed line into a name pattern, such as
+   `bookclerk_plugin_sdk.tools.x_check_plugin__mutmut_*`. A method's name
+   is `xǁ<Class>ǁ<method>`, with mutmut's `ǁ` separator.
+3. mutmut only mutates function bodies. A changed line outside every
+   function, such as a constant, an import or a class attribute, selects
+   the whole module instead, so the tests of the code beside the changed
+   data are checked, apart from the functions mutmut never mutates (step
+   4). The summary names those modules. Blank lines,
+   comments and docstrings outside functions select nothing. The SDK's
+   tests run in about a second, so most modules fit in the time limit.
+4. mutmut never mutates a decorated function (other than one with a single
+   `@staticmethod` or `@classmethod`) or an enum's methods. The summary
+   names the changed functions it skipped for that reason.
+5. Each mutant runs the tests that cover its function. A mutant no test
+   runs counts as missed.
+6. The run stops after 20 minutes. mutmut records each result as it lands,
+   so the summary then counts the mutants tested before the limit and says
+   the run was stopped. If mutmut fails or stops before testing any
+   selected mutant, the summary says that instead of reporting no
+   mutants.
+
+The job summary has the same shape as the other jobs', with each missed
+mutant's line and change. Up to 50 missed mutants whose line could be
+placed are annotated on the diff. Mutants mutmut ran that ended with a
+result it does not count (a crash, a skip or a suspicious result) are
+left out of the score, and the summary says how many there were. The `mutants-python-sdk` artifact lists every mutant, one file per
+outcome. mutmut is installed for the run only, at the version pinned in
+the workflow, so the SDK's `uv.lock` does not change. Settings live in the
+SDK's `pyproject.toml`, under `[tool.mutmut]`: the package to mutate, the
+generated modules to leave alone (the same list ruff excludes, which a
+test checks) and the test folder.
+
+To reproduce the run locally, from `packages/plugin-sdk-python`:
+
+```sh
+python3 -m venv /tmp/mutmut && /tmp/mutmut/bin/pip install pytest "mutmut==3.8.1"
+/tmp/mutmut/bin/mutmut run "bookclerk_plugin_sdk.tools.x_check_plugin__mutmut_*"
+/tmp/mutmut/bin/mutmut show bookclerk_plugin_sdk.tools.x_check_plugin__mutmut_3
+```
+
+mutmut works in a `mutants/` copy of the SDK and reuses the results in it
+on the next run. Delete that folder afterwards.
+
 > [!NOTE]
-> Both workflows are report-only trials and not required checks. The
-> Python SDK is not covered yet.
+> All three workflows are report-only trials and not required checks.
 
 ## Worker startup time
 
