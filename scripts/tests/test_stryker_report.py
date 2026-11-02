@@ -283,6 +283,37 @@ class WidenTest(unittest.TestCase):
         )
         self.assertEqual(sr.sample_lines(source), [10, 11, 12, 13, 16])
 
+    def test_sample_lines_skip_multiline_types(self) -> None:
+        source = "\n".join(
+            [
+                "type TokenKind =",  # 1
+                '  | "keyword"',  # 2
+                '  | "string";',  # 3
+                "interface Big",  # 4
+                "  extends Base {",  # 5
+                "  id: string;",  # 6
+                "}",  # 7
+                "type Obj = {",  # 8
+                "  a: number;",  # 9
+                "};",  # 10
+                "const limit = 3;",  # 11
+                "type One = 'a' | 'b';",  # 12
+                "const other = limit + 1;",  # 13
+                "const theme = {",  # 14
+                '  type: "light",',  # 15: a property named type, not a declaration
+                '  fg: "#000",',  # 16
+                "};",  # 17
+            ]
+        )
+        self.assertEqual(sr.sample_lines(source), [11, 13, 14, 15, 16])
+
+    def test_ignored_mutants_do_not_cover_a_change(self) -> None:
+        """Stryker lists mutants outside --mutate as Ignored; an ignored block around a type change tests nothing."""
+        block = mutant("Ignored", 2)
+        block["location"] = {"start": {"line": 2, "column": 1}, "end": {"line": 9, "column": 2}}
+        self.assertEqual(sr.mutant_lines(report(block, mutant("Survived", 12))), {"src/page.ts": {12}})
+        self.assertEqual(list(sr.widen({"a.ts": [(5, 5)]}, {"a.ts": {12}}, {"a.ts": self.SOURCE}, seed=1)), ["a.ts"])
+
     def test_a_mutant_spanning_a_changed_line_counts(self) -> None:
         spanning = mutant("Killed", 3)
         spanning["location"] = {"start": {"line": 3, "column": 1}, "end": {"line": 6, "column": 2}}

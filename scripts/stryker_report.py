@@ -74,7 +74,7 @@ WIDEN_BUDGET = 30
 SKIP_LINE = re.compile(r"^\s*(?:$|//|/\*|\*|import\b|export\s+(?:type\s+)?\{|export\s+\*)")
 
 #: The start of a type-only declaration, whose body Stryker does not mutate.
-TYPE_START = re.compile(r"^\s*(?:export\s+)?(?:declare\s+)?(?:interface|type)\b")
+TYPE_START = re.compile(r"^\s*(?:export\s+)?(?:declare\s+)?(?:interface|type)\s+[A-Za-z_$]")
 
 #: Something Stryker can mutate on a line: a literal, an operator, a call, a
 #: condition or a statement keyword. A line of punctuation or bare names
@@ -303,8 +303,9 @@ def mutant_lines(text: str) -> dict[str, set[int]] | None:
 
     Returns:
         The lines per Worker-relative file, from each mutant's start to its
-        end, whatever its status, or ``None`` when the text is not a Stryker
-        report.
+        end, or ``None`` when the text is not a Stryker report. ``Ignored``
+        mutants are left out: Stryker lists the mutants outside ``--mutate``
+        that way, and an ignored block around a changed line tests nothing.
     """
     try:
         report = json.loads(text)
@@ -317,7 +318,7 @@ def mutant_lines(text: str) -> dict[str, set[int]] | None:
     for name, entry in files.items():
         mutants = entry.get("mutants") if isinstance(entry, dict) else None
         if isinstance(name, str) and isinstance(mutants, list):
-            lines[name] = {line for m in mutants if isinstance(m, dict) for line in _span(m)}
+            lines[name] = {line for m in mutants if isinstance(m, dict) and m.get("status") != "Ignored" for line in _span(m)}
     return lines
 
 
@@ -326,8 +327,10 @@ def sample_lines(source: str) -> list[int]:
 
     Stryker mutates expressions, statements and literals. This leaves out
     what it never mutates: blank lines, comments, import and export lists
-    (to their ``from`` line), interface and type declarations (to their
-    closing brace or semicolon), and lines with nothing mutable on them.
+    (to their ``from`` line), interface and type declarations (to the
+    closing brace or semicolon that ends them, so a multiline union or an
+    ``extends`` list before the brace is skipped too), and lines with
+    nothing mutable on them.
 
     Args:
         source: The file's text.
@@ -336,19 +339,23 @@ def sample_lines(source: str) -> list[int]:
         The 1-based lines worth sampling, in order.
     """
     out: list[int] = []
+    # Inside a type declaration: its brace depth and whether a brace opened.
+    in_type = False
     depth = 0
+    braced = False
     in_list = False
     for number, text in enumerate(source.splitlines(), start=1):
-        if depth > 0:
-            depth += text.count("{") - text.count("}")
-            depth = max(depth, 0)
+        if not in_type and not in_list and TYPE_START.match(text):
+            in_type, depth, braced = True, 0, False
+        if in_type:
+            depth = max(depth + text.count("{") - text.count("}"), 0)
+            braced = braced or "{" in text
+            # It ends where its braces close, or at its semicolon outside them.
+            if depth == 0 and ((braced and "}" in text) or text.rstrip().endswith(";")):
+                in_type = False
             continue
         if in_list:
             in_list = not re.search(r"\bfrom\b|^\s*\}\s*;?\s*$", text)
-            continue
-        if TYPE_START.match(text):
-            opened = text.count("{") - text.count("}")
-            depth = opened if opened > 0 else 0
             continue
         if SKIP_LINE.match(text):
             in_list = bool(re.match(r"^\s*(?:import|export)\b", text)) and "{" in text and "}" not in text
