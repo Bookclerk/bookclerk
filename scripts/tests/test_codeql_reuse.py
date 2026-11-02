@@ -128,7 +128,7 @@ class SarifTests(unittest.TestCase):
 
     def test_valid(self) -> None:
         self.assertIsNone(cr.sarif_problem(sarif()))
-        self.assertIsNone(cr.sarif_problem(sarif(automationDetails=None)))
+        self.assertIsNone(cr.sarif_problem(sarif(automationDetails={"id": "/language:rust"})))
 
     def test_problems(self) -> None:
         cases = {
@@ -141,6 +141,13 @@ class SarifTests(unittest.TestCase):
             "other tool": sarif(tool={"driver": {"name": "Semgrep"}}),
             "no driver": sarif(tool={}),
             "python category": sarif(automationDetails={"id": "/language:python/"}),
+            "longer category": sarif(automationDetails={"id": "/language:rust-other/"}),
+            "nested category": sarif(automationDetails={"id": "/language:rust/other/"}),
+            "no details": json.dumps(
+                {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "CodeQL"}}, "results": []}]}
+            ).encode(),
+            "null details": sarif(automationDetails=None),
+            "details without id": sarif(automationDetails={}),
             "bad details": sarif(automationDetails="rust"),
         }
         for name, raw in cases.items():

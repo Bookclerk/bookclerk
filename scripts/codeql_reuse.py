@@ -50,8 +50,11 @@ SOURCE_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 # A full commit id, as `git rev-parse` prints it.
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 
-# The category prefix a Rust analysis carries in `automationDetails.id`.
+# The `automationDetails.id` a Rust analysis carries: the category, which
+# CodeQL writes with a trailing slash. `upload-sarif` keeps an id that is
+# already there, so any other id would upload a different configuration.
 RUST_CATEGORY = "/language:rust"
+RUST_AUTOMATION_IDS = frozenset({RUST_CATEGORY, RUST_CATEGORY + "/"})
 
 # Runs `gh` with the given arguments and returns its stdout; raises
 # `subprocess.CalledProcessError` when it fails.
@@ -124,8 +127,8 @@ def sarif_problem(raw: bytes) -> str | None:
 
     Returns:
         None when it is SARIF 2.1.0 with at least one run, every run's tool
-        is CodeQL and every run's ``automationDetails.id`` (when present)
-        is the Rust category; otherwise a clause saying what is wrong.
+        is CodeQL and every run's ``automationDetails.id`` is exactly the
+        Rust category; otherwise a clause saying what is wrong.
     """
     try:
         doc = json.loads(raw)
@@ -144,10 +147,9 @@ def sarif_problem(raw: bytes) -> str | None:
         if not isinstance(driver, dict) or driver.get("name") != "CodeQL":
             return "a SARIF run is not from CodeQL"
         details = run.get("automationDetails")
-        if details is not None:
-            ident = details.get("id") if isinstance(details, dict) else None
-            if not isinstance(ident, str) or not ident.startswith(RUST_CATEGORY):
-                return "a SARIF run is not a Rust analysis"
+        ident = details.get("id") if isinstance(details, dict) else None
+        if ident not in RUST_AUTOMATION_IDS:
+            return "a SARIF run does not carry the Rust category"
     return None
 
 
