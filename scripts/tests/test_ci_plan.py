@@ -602,6 +602,17 @@ class FullSuiteTests(unittest.TestCase):
                 self.assertEqual(p.test_packages(), [])
                 self.assertFalse(p.selected("rust_test"))
 
+    def test_mutation_testing_files_select_nothing(self) -> None:
+        # Only the mutation testing workflow reads them; the plan job's
+        # test_mutation_report.py covers them, even under the .cargo/ prefix.
+        for path in (".cargo/mutants.toml", "scripts/mutation_report.py"):
+            with self.subTest(path=path):
+                p = plan(path)
+                self.assertFalse(p.full_suite, p.reasons)
+                self.assertEqual(p.test_packages(), [])
+                self.assertFalse(p.selected("rust_test"))
+        self.assert_full(plan(".cargo/config.toml"))
+
     def test_fuzz_targets_and_dictionaries_select_nothing(self) -> None:
         for path in ("fuzz/fuzz_targets/sql_parse.rs", "fuzz/dictionaries/sql_parse.dict", "fuzz/fuzz_targets/granted_http.options"):
             with self.subTest(path=path):

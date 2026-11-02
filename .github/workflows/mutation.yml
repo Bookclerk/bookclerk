@@ -20,8 +20,9 @@ name: Mutation testing
 on:
   pull_request:
     paths:
-      - "crates/**/*.rs"
-      - "examples/**/*.rs"
+      # Any Rust file: workspace members live under crates/, examples/ and
+      # tools/; a file outside the workspace yields no mutants.
+      - "**/*.rs"
       - ".cargo/mutants.toml"
       - ".github/workflows/mutation.yml"
       - "scripts/mutation_report.py"
@@ -139,7 +140,7 @@ jobs:
         run: |
           set +e
           timeout --signal=INT --kill-after=5m 50m \
-            cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --in-place --no-shuffle --output "$RUNNER_TEMP"
+            cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --in-place --no-shuffle --output "$RUNNER_TEMP"
           code=$?
           echo "code=$code" >> "$GITHUB_OUTPUT"
           if [ "$code" -eq 124 ] || [ "$code" -eq 130 ] || [ "$code" -eq 137 ]; then

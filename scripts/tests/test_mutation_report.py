@@ -112,6 +112,15 @@ class RenderTest(unittest.TestCase):
         self.assertIn("| 0 | 0 | 0 | 2 |", only_unviable)
         self.assertNotIn("%**", only_unviable)
 
+    def test_an_error_after_partial_results_is_flagged(self) -> None:
+        partial = mr.render(results(caught=1), mr.Run.ERROR, stopped=False)
+        self.assertIn("**100%**", partial)
+        self.assertIn("results are incomplete", partial)
+        # The time-limit note already explains a stopped run.
+        stopped = mr.render(results(caught=1), mr.Run.ERROR, stopped=True)
+        self.assertNotIn("results are incomplete", stopped)
+        self.assertNotIn("results are incomplete", mr.render(results(caught=1), mr.Run.CLEAN, stopped=False))
+
     def test_backticks_stay_in_code(self) -> None:
         self.assertEqual(mr._code("a"), "`a`")
         self.assertEqual(mr._code("a `b` c"), "`` a `b` c ``")
@@ -184,6 +193,9 @@ class WiringTest(unittest.TestCase):
         self.assertEqual(job["steps"][0]["with"]["ref"], "${{ github.event.pull_request.head.sha }}")
         run = steps["Test the mutants"]["run"]
         self.assertIn('--in-diff "$RUNNER_TEMP/pr.diff"', run)
+        # Every workspace member, not only the default members.
+        self.assertIn("--workspace", run)
+        self.assertEqual(triggers["pull_request"]["paths"][0], "**/*.rs")
         self.assertIn("timeout --signal=INT", run)
         # rust-cache exports CARGO_INCREMENTAL=0; only a step value wins.
         self.assertEqual(steps["Test the mutants"]["env"]["CARGO_INCREMENTAL"], "1")

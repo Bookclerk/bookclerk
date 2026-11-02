@@ -780,7 +780,9 @@ def build_plan(
             or path.startswith(FUZZ_ORACLE_PREFIX)
             or path.startswith(FUZZ_SELF_SELECTING_PREFIXES)
         )
-        if not fuzz_input and (
+        # Plan-job-only files under a full-suite prefix (.cargo/mutants.toml)
+        # are read by no build or test the planner selects.
+        if not fuzz_input and path not in PLAN_JOB_SCRIPT_FILES and (
             path in FULL_SUITE_PATHS or any(path.startswith(p) for p in FULL_SUITE_PATH_PREFIXES)
         ):
             plan.mark_full(f"global path {path}")

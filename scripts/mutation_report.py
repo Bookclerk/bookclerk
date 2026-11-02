@@ -198,6 +198,12 @@ def render(results: Results, run: Run, *, stopped: bool) -> str:
                 lines.append(f"- … and {len(missed) - MAX_LISTED} more (see the `mutants-rust` artifact).")
     if stopped:
         lines += ["", "> [!NOTE]", "> The run reached its time limit, so some mutants were not tested."]
+    elif run is Run.ERROR and (results.tested or results.count(Outcome.UNVIABLE)):
+        lines += [
+            "",
+            "> [!WARNING]",
+            "> cargo-mutants exited with an error before it finished, so these results are incomplete. Check the job log.",
+        ]
     lines += ["", "Report only: missed mutants do not fail the pull request yet."]
     return "\n".join(lines) + "\n"
 

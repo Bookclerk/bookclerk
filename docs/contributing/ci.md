@@ -869,10 +869,11 @@ The [`mutation.yml`](../../.github/workflows/mutation.yml) workflow runs
 Rust code:
 
 1. It mutates only the functions the pull request changes (`--in-diff`,
-   from the pull request's diff), so the cost follows the size of the
-   change. Test code, the generated files and the staged-plugin harness
-   (`bookclerk-plugin-e2e`, whose tests need the helpers CI's `e2e` check
-   stages) are never mutated.
+   from the pull request's diff) in any workspace member (`--workspace`;
+   without it cargo-mutants looks only at the default members), so the cost
+   follows the size of the change. Test code, the generated files and the
+   staged-plugin harness (`bookclerk-plugin-e2e`, whose tests need the
+   plugins CI's `e2e` check stages) are never mutated.
 2. Before the first mutant, the job builds what CI's `rust_test` check
    builds first (the jail, the workerd front door, the pinned workerd and
    the platform guests) with `ci-exec.py prereqs rust_test`, and turns on
@@ -895,7 +896,7 @@ locally:
 ```sh
 cargo install cargo-mutants --locked
 git diff origin/main... > /tmp/change.diff
-RUSTFLAGS=--cap-lints=warn cargo mutants --in-diff /tmp/change.diff
+RUSTFLAGS=--cap-lints=warn cargo mutants --workspace --in-diff /tmp/change.diff
 ```
 
 Capping lints keeps a mutant that only leaves a parameter unused from
