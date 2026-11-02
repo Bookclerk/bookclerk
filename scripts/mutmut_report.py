@@ -157,16 +157,27 @@ def changed_points(diff: str, root: str, generated: frozenset[str]) -> dict[str,
     Returns:
         For each source file under ``root`` (relative to it, matching
         ``SAFE_PATH`` and kept by ``is_source``), the new-side lines the
-        diff adds, plus, for each run of deleted lines, the line just
-        before it (the first line when the run starts the file).
+        diff adds, plus, for each run of deleted lines that no added line
+        replaces, the line just before it (the first line when the run
+        starts the file).
     """
     prefix = root.rstrip("/") + "/"
     changed: dict[str, set[int]] = {}
     current: str | None = None
     line = 0
     old_remaining = new_remaining = 0
+    # The line before a run of deletions, kept unless an addition follows.
+    pending: int | None = None
+
+    def settle() -> None:
+        nonlocal pending
+        if pending is not None and current is not None:
+            changed.setdefault(current, set()).add(pending)
+        pending = None
+
     for text in diff.splitlines():
         if text.startswith("diff --git "):
+            settle()
             current, old_remaining, new_remaining = None, 0, 0
             continue
         if old_remaining == 0 and new_remaining == 0 and text.startswith("+++ "):
@@ -179,25 +190,33 @@ def changed_points(diff: str, root: str, generated: frozenset[str]) -> dict[str,
             continue
         match = OLD_HUNK.match(text)
         if match:
+            settle()
             old_remaining = int(match.group(1)) if match.group(1) is not None else 1
             line = int(match.group(2))
             new_remaining = int(match.group(3)) if match.group(3) is not None else 1
+            if new_remaining == 0:
+                # A hunk that only deletes names the new-side line before
+                # it (0 at the top of the file), not the line after.
+                line += 1
             continue
         if (old_remaining <= 0 and new_remaining <= 0) or not text:
             continue
         if text[0] == "+" and new_remaining > 0:
+            pending = None
             if current is not None:
                 changed.setdefault(current, set()).add(line)
             line += 1
             new_remaining -= 1
         elif text[0] == "-" and old_remaining > 0:
-            if current is not None:
-                changed.setdefault(current, set()).add(max(line - 1, 1))
+            if pending is None:
+                pending = max(line - 1, 1)
             old_remaining -= 1
         elif text[0] == " ":
+            settle()
             line += 1
             old_remaining -= 1
             new_remaining -= 1
+    settle()
     return changed
 
 

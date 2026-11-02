@@ -260,15 +260,40 @@ class SelectTest(unittest.TestCase):
                 self.assertRegex(name, r"^x(_|ǁ)[A-Za-z0-9_ǁ]+$")
 
 
-    def test_fuzz_matches_git(self) -> None:
-        """Oracle: inserted lines, and the line before each deleted run, are what git's diff reports."""
+    def _diff(self, before: list[str], after: list[str], context: int) -> str:
+        """Diff two versions of ``src/pkg/w.py`` with git."""
+        with tempfile.TemporaryDirectory() as tmp:
+            old, new = Path(tmp, "old.py"), Path(tmp, "new.py")
+            old.write_text("".join(t + "\n" for t in before), encoding="utf-8")
+            new.write_text("".join(t + "\n" for t in after), encoding="utf-8")
+            result = subprocess.run(
+                ["git", "diff", "--no-index", f"-U{context}", "--", str(old), str(new)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        return result.stdout.replace(f"+++ b{new}", f"+++ b/{SDK}/src/pkg/w.py").replace(f"+++ {new}", f"+++ b/{SDK}/src/pkg/w.py")
+
+    def test_fuzz_insertions_match_git(self) -> None:
+        """Oracle: unique lines inserted at known places are what git's diff adds."""
         rng = random.Random(3579)
         for _ in range(40):
+            before = [f"base {i}" for i in range(rng.randrange(0, 30))]
+            after = list(before)
+            for marker in range(rng.randrange(1, 8)):
+                after.insert(rng.randrange(0, len(after) + 1), f"inserted {marker}")
+            expected = {i + 1 for i, text in enumerate(after) if text.startswith("inserted")}
+            got = mr.changed_points(self._diff(before, after, rng.randrange(0, 4)), SDK, GENERATED).get("src/pkg/w.py", set())
+            self.assertEqual(got, expected)
+
+    def test_fuzz_deletions_match_git(self) -> None:
+        """Oracle: deleting unique lines marks the kept line before each deleted run."""
+        rng = random.Random(4579)
+        for _ in range(40):
             before = [f"base {i}" for i in range(rng.randrange(1, 30))]
-            deleted = {i for i in range(len(before)) if rng.random() < 0.15}
+            deleted = {i for i in range(len(before)) if rng.random() < 0.2}
             after = [text for i, text in enumerate(before) if i not in deleted]
             expected: set[int] = set()
-            # Where each deleted run lands on the new side: the line before it.
             kept = 0
             for i in range(len(before)):
                 if i in deleted:
@@ -276,32 +301,8 @@ class SelectTest(unittest.TestCase):
                         expected.add(max(kept, 1))
                 else:
                     kept += 1
-            inserts = sorted(rng.randrange(0, len(after) + 1) for _ in range(rng.randrange(0, 5)))
-            for offset, position in enumerate(inserts):
-                after.insert(position + offset, f"inserted {offset}")
-            # Shift the deletion points past the inserted lines before them.
-            shifted = set()
-            for point in expected:
-                shifted.add(point + sum(1 for o, p in enumerate(inserts) if p + o < point))
-            expected = shifted | {i + 1 for i, text in enumerate(after) if text.startswith("inserted")}
-            with tempfile.TemporaryDirectory() as tmp:
-                old, new = Path(tmp, "old.py"), Path(tmp, "new.py")
-                old.write_text("".join(t + "\n" for t in before), encoding="utf-8")
-                new.write_text("".join(t + "\n" for t in after), encoding="utf-8")
-                result = subprocess.run(
-                    ["git", "diff", "--no-index", f"-U{rng.randrange(0, 4)}", "--", str(old), str(new)],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            diff = result.stdout.replace(f"+++ b{new}", f"+++ b/{SDK}/src/pkg/w.py").replace(f"+++ {new}", f"+++ b/{SDK}/src/pkg/w.py")
-            got = mr.changed_points(diff, SDK, GENERATED).get("src/pkg/w.py", set())
-            # git may pair a deletion with a neighbouring insertion as one
-            # change; every inserted line is always reported, and every
-            # reported line is an inserted line or a deletion point.
-            inserted = {i + 1 for i, text in enumerate(after) if text.startswith("inserted")}
-            self.assertLessEqual(inserted, got)
-            self.assertLessEqual(got, expected | {p + 1 for p in expected} | {p - 1 for p in expected})
+            got = mr.changed_points(self._diff(before, after, rng.randrange(0, 4)), SDK, GENERATED).get("src/pkg/w.py", set())
+            self.assertEqual(got, expected)
 
 
 class ResultsTest(unittest.TestCase):
