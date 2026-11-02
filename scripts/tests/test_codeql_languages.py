@@ -217,6 +217,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("github.ref == 'refs/heads/main'", saves[0]["if"])
         self.assertFalse([s for s in steps if str(s.get("uses", "")).startswith("actions/cache@")])
 
+    def test_job_env_reads_only_contexts_github_allows_there(self) -> None:
+        # GitHub rejects the whole workflow when a job-level `env` reads the
+        # `runner` context, so every run fails before any job starts.
+        for name, job in self.wf["jobs"].items():
+            for key, value in (job.get("env") or {}).items():
+                self.assertNotIn("runner.", str(value), f"{name}: {key}")
+        steps = self.wf["jobs"]["analyze"]["steps"]
+        sets_dir = [s for s in steps if "CODEQL_EXTRACTOR_RUST_OPTION_CARGO_TARGET_DIR=" in str(s.get("run", ""))]
+        self.assertEqual(len(sets_dir), 1)
+        self.assertIn("GITHUB_ENV", sets_dir[0]["run"])
+        self.assertEqual(sets_dir[0]["if"], "matrix.language == 'rust'")
+
     def test_actions_are_pinned_and_permissions_are_narrow(self) -> None:
         self.assertEqual(self.wf["permissions"], {})
         for name, job in self.wf["jobs"].items():

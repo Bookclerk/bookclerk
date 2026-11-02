@@ -77,9 +77,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
-    env:
-      # Only read by the Rust extractor.
-      CODEQL_EXTRACTOR_RUST_OPTION_CARGO_TARGET_DIR: ${{ runner.temp }}/codeql-rust-target
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -87,10 +84,14 @@ jobs:
 
       # rust-toolchain.toml follows `stable`, so the key names the compiler
       # itself: a new release would otherwise restore outputs it rebuilds.
+      # The extractor's target directory is set here because a job-level
+      # `env` cannot read the `runner` context.
       - name: Read the Rust version
         id: rustc
         if: matrix.language == 'rust'
-        run: echo "version=$(rustc -V | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "version=$(rustc -V | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_OUTPUT"
+          echo "CODEQL_EXTRACTOR_RUST_OPTION_CARGO_TARGET_DIR=$RUNNER_TEMP/codeql-rust-target" >> "$GITHUB_ENV"
 
       - name: Restore the Rust extractor's cargo output
         if: matrix.language == 'rust'
