@@ -1790,11 +1790,13 @@
                   "account": {
                     "type": "string",
                     "description": "When set, scan this account even if `scan_enabled` is false.",
+                    "example": "reader@example.com",
                     "nullable": true
                   },
                   "plugin_instance_id": {
                     "type": "string",
                     "description": "When set, scan only this deployed plugin instance.",
+                    "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
                     "nullable": true
                   }
                 },
@@ -1810,6 +1812,14 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "job_ids": [
+                    "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                  ],
+                  "message": "scan job scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f accepted",
+                  "ok": true
                 }
               }
             }
@@ -1877,31 +1887,37 @@
                   "asin": {
                     "type": "string",
                     "description": "Audible ASIN filter; first of uuid/asin/isbn/product_id wins.",
+                    "example": "B0C8HVKW7X",
                     "nullable": true
                   },
                   "uuid": {
                     "type": "string",
                     "description": "Library title UUID filter.",
+                    "example": "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31",
                     "nullable": true
                   },
                   "isbn": {
                     "type": "string",
                     "description": "ISBN filter for non-Audible stores.",
+                    "example": "9781797176802",
                     "nullable": true
                   },
                   "product_id": {
                     "type": "string",
                     "description": "Store product id filter.",
+                    "example": "1797176803",
                     "nullable": true
                   },
                   "account": {
                     "type": "string",
                     "description": "Restrict acquire to this store account.",
+                    "example": "reader@example.com",
                     "nullable": true
                   },
                   "plugin_instance_id": {
                     "type": "string",
                     "description": "When set, fetch through this deployed plugin instance.",
+                    "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
                     "nullable": true
                   },
                   "titles": {
@@ -1909,15 +1925,20 @@
                     "items": {
                       "type": "string"
                     },
-                    "description": "More title ids; each (with the single filter above) becomes its own\njob."
+                    "description": "More title ids; each (with the single filter above) becomes its own\njob.",
+                    "example": [
+                      "8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+                    ]
                   },
                   "force": {
                     "type": "boolean",
-                    "description": "Re-download titles already acquired."
+                    "description": "Re-download titles already acquired.",
+                    "example": false
                   },
                   "pdf_only": {
                     "type": "boolean",
-                    "description": "Fetch only each title's companion PDF."
+                    "description": "Fetch only each title's companion PDF.",
+                    "example": false
                   }
                 },
                 "nullable": true
@@ -1932,6 +1953,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+                  "message": "acquire job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted",
+                  "ok": true
                 }
               }
             }
@@ -2089,6 +2115,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "message": "job scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f cancelled",
+                  "ok": true
                 }
               }
             }
@@ -2182,6 +2213,7 @@
                   "force": {
                     "type": "boolean",
                     "description": "When true, the integration rescans even if it considers itself current.",
+                    "example": true,
                     "nullable": true
                   }
                 },
@@ -2197,6 +2229,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "integration_scan-9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b",
+                  "message": "integration_scan job integration_scan-9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b accepted",
+                  "ok": true
                 }
               }
             }
@@ -2270,7 +2307,7 @@
                 },
                 "example": {
                   "error": "conflict",
-                  "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "job_id": "integration_scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
                   "message": "integration_scan already pending or running",
                   "ok": false
                 }
@@ -2546,6 +2583,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "message": "job scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f cancelled",
+                  "ok": true
                 }
               }
             }
@@ -3063,6 +3105,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf",
+                  "message": "delivery b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf re-queued",
+                  "ok": true
                 }
               }
             }
@@ -3178,6 +3225,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf",
+                  "message": "delivery b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf acknowledged",
+                  "ok": true
                 }
               }
             }
@@ -3293,6 +3345,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf",
+                  "message": "delivery b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf rejected",
+                  "ok": true
                 }
               }
             }
@@ -3408,6 +3465,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf",
+                  "message": "delivery b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf resumed",
+                  "ok": true
                 }
               }
             }
@@ -3516,11 +3578,13 @@
                   "account": {
                     "type": "string",
                     "description": "When set, scan this account even if `scan_enabled` is false.",
+                    "example": "reader@example.com",
                     "nullable": true
                   },
                   "plugin_instance_id": {
                     "type": "string",
                     "description": "When set, scan only this deployed plugin instance.",
+                    "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
                     "nullable": true
                   }
                 },
@@ -3536,6 +3600,15 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "job_ids": [
+                    "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                    "scan-8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+                  ],
+                  "message": "scan planned: 2 accepted, 0 already pending or running, 0 not admitted (queue full)",
+                  "ok": true
                 }
               }
             }
@@ -3599,9 +3672,9 @@
                     "summary": "Every planned job is already pending or running",
                     "value": {
                       "error": "conflict",
-                      "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                      "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
                       "job_ids": [
-                        "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                        "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
                       ],
                       "message": "scan already pending or running",
                       "ok": false
@@ -3730,31 +3803,37 @@
                   "asin": {
                     "type": "string",
                     "description": "Audible ASIN filter; first of uuid/asin/isbn/product_id wins.",
+                    "example": "B0C8HVKW7X",
                     "nullable": true
                   },
                   "uuid": {
                     "type": "string",
                     "description": "Library title UUID filter.",
+                    "example": "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31",
                     "nullable": true
                   },
                   "isbn": {
                     "type": "string",
                     "description": "ISBN filter for non-Audible stores.",
+                    "example": "9781797176802",
                     "nullable": true
                   },
                   "product_id": {
                     "type": "string",
                     "description": "Store product id filter.",
+                    "example": "1797176803",
                     "nullable": true
                   },
                   "account": {
                     "type": "string",
                     "description": "Restrict acquire to this store account.",
+                    "example": "reader@example.com",
                     "nullable": true
                   },
                   "plugin_instance_id": {
                     "type": "string",
                     "description": "When set, fetch through this deployed plugin instance.",
+                    "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
                     "nullable": true
                   },
                   "titles": {
@@ -3762,15 +3841,20 @@
                     "items": {
                       "type": "string"
                     },
-                    "description": "More title ids; each (with the single filter above) becomes its own\njob."
+                    "description": "More title ids; each (with the single filter above) becomes its own\njob.",
+                    "example": [
+                      "8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+                    ]
                   },
                   "force": {
                     "type": "boolean",
-                    "description": "Re-download titles already acquired."
+                    "description": "Re-download titles already acquired.",
+                    "example": false
                   },
                   "pdf_only": {
                     "type": "boolean",
-                    "description": "Fetch only each title's companion PDF."
+                    "description": "Fetch only each title's companion PDF.",
+                    "example": false
                   }
                 },
                 "nullable": true
@@ -3785,6 +3869,14 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+                  "job_ids": [
+                    "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+                  ],
+                  "message": "acquire job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted",
+                  "ok": true
                 }
               }
             }
@@ -3848,9 +3940,9 @@
                     "summary": "Every planned job is already pending or running",
                     "value": {
                       "error": "conflict",
-                      "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                      "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
                       "job_ids": [
-                        "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                        "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
                       ],
                       "message": "acquire already pending or running",
                       "ok": false
@@ -3975,6 +4067,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "listen_sync-2b1a0f9e-8d7c-4b6a-9f5e-4d3c2b1a0f9e",
+                  "message": "listen_sync job listen_sync-2b1a0f9e-8d7c-4b6a-9f5e-4d3c2b1a0f9e accepted",
+                  "ok": true
                 }
               }
             }
@@ -4029,7 +4126,7 @@
                 },
                 "example": {
                   "error": "conflict",
-                  "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "job_id": "listen_sync-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
                   "message": "listen_sync already pending or running",
                   "ok": false
                 }
@@ -4124,6 +4221,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "",
+                  "message": "reloaded /home/bookclerk/BookclerkFiles/config.toml (master.key wrap=true)",
+                  "ok": true
                 }
               }
             }
@@ -8946,6 +9048,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "",
+                  "message": "copied 1284 row(s) from `sqlite` to `postgres`; updated [database].plugin, wrote /home/bookclerk/BookclerkFiles/config.toml, and reloaded library connection",
+                  "ok": true
                 }
               }
             }
@@ -20252,31 +20359,37 @@
           "asin": {
             "type": "string",
             "description": "Audible ASIN filter; first of uuid/asin/isbn/product_id wins.",
+            "example": "B0C8HVKW7X",
             "nullable": true
           },
           "uuid": {
             "type": "string",
             "description": "Library title UUID filter.",
+            "example": "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31",
             "nullable": true
           },
           "isbn": {
             "type": "string",
             "description": "ISBN filter for non-Audible stores.",
+            "example": "9781797176802",
             "nullable": true
           },
           "product_id": {
             "type": "string",
             "description": "Store product id filter.",
+            "example": "1797176803",
             "nullable": true
           },
           "account": {
             "type": "string",
             "description": "Restrict acquire to this store account.",
+            "example": "reader@example.com",
             "nullable": true
           },
           "plugin_instance_id": {
             "type": "string",
             "description": "When set, fetch through this deployed plugin instance.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
             "nullable": true
           },
           "titles": {
@@ -20284,15 +20397,20 @@
             "items": {
               "type": "string"
             },
-            "description": "More title ids; each (with the single filter above) becomes its own\njob."
+            "description": "More title ids; each (with the single filter above) becomes its own\njob.",
+            "example": [
+              "8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+            ]
           },
           "force": {
             "type": "boolean",
-            "description": "Re-download titles already acquired."
+            "description": "Re-download titles already acquired.",
+            "example": false
           },
           "pdf_only": {
             "type": "boolean",
-            "description": "Fetch only each title's companion PDF."
+            "description": "Fetch only each title's companion PDF.",
+            "example": false
           }
         }
       },
@@ -20318,19 +20436,23 @@
         "properties": {
           "ok": {
             "type": "boolean",
-            "description": "True when the action was accepted or completed."
+            "description": "True when the action was accepted or completed.",
+            "example": true
           },
           "message": {
             "type": "string",
-            "description": "Operator-facing status text."
+            "description": "Operator-facing status text.",
+            "example": "scan queued"
           },
           "job_id": {
             "type": "string",
-            "description": "Queued job id, or empty when the action is synchronous."
+            "description": "Queued job id, or empty when the action is synchronous.",
+            "example": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
           },
           "error": {
             "type": "string",
             "description": "Machine slug when admission failed (`conflict`, `queue_full`).",
+            "example": "queue_full",
             "nullable": true
           }
         }
@@ -21072,16 +21194,19 @@
           "total": {
             "type": "integer",
             "description": "Match count before pagination.",
+            "example": 412,
             "minimum": 0
           },
           "limit": {
             "type": "integer",
             "description": "Applied page size.",
+            "example": 50,
             "minimum": 0
           },
           "offset": {
             "type": "integer",
             "description": "Applied skip count.",
+            "example": 0,
             "minimum": 0
           }
         }
@@ -22455,26 +22580,31 @@
         "properties": {
           "title": {
             "type": "string",
-            "description": "Required title text; empty values are rejected with 400."
+            "description": "Required title text; empty values are rejected with 400.",
+            "example": "The Left Hand of Darkness"
           },
           "authors": {
             "type": "string",
             "description": "Optional author list as a single display string.",
+            "example": "Ursula K. Le Guin",
             "nullable": true
           },
           "asin": {
             "type": "string",
             "description": "Optional Audible ASIN used for work-key identity.",
+            "example": "B002V0QK4C",
             "nullable": true
           },
           "isbn": {
             "type": "string",
             "description": "Optional ISBN used for work-key identity.",
+            "example": "9780441478125",
             "nullable": true
           },
           "notes": {
             "type": "string",
             "description": "Optional operator or member note stored on the request.",
+            "example": "Book club pick for March",
             "nullable": true
           },
           "store_editions": {
@@ -22494,62 +22624,74 @@
           "work_key": {
             "type": "string",
             "description": "Optional stable work key; when omitted one is derived from bib fields.",
+            "example": "work:9780441478125",
             "nullable": true
           },
           "cover_url": {
             "type": "string",
             "description": "Optional cover image URL snapshotted onto the request.",
+            "example": "https://images.example.com/covers/9780441478125.jpg",
             "nullable": true
           },
           "description": {
             "type": "string",
             "description": "Optional plot/summary text persisted with the request.",
+            "example": "An envoy to the planet Gethen must win the trust of a people who have no fixed gender.",
             "nullable": true
           },
           "subtitle": {
             "type": "string",
             "description": "Optional subtitle stored on the request and source rows.",
+            "example": "A Hainish Novel",
             "nullable": true
           },
           "narrators": {
             "type": "string",
             "description": "Optional narrator list as a single display string.",
+            "example": "George Guidall",
             "nullable": true
           },
           "series": {
             "type": "string",
             "description": "Optional series name.",
+            "example": "Hainish Cycle",
             "nullable": true
           },
           "series_index": {
             "type": "string",
             "description": "Optional series position as a display string.",
+            "example": "4",
             "nullable": true
           },
           "publisher": {
             "type": "string",
             "description": "Optional publisher name.",
+            "example": "Blackstone Publishing",
             "nullable": true
           },
           "length_minutes": {
             "type": "integer",
             "format": "int64",
             "description": "Optional runtime in minutes.",
+            "example": 560,
             "nullable": true
           },
           "published_at": {
             "type": "string",
             "description": "Optional publication date as a display string.",
+            "example": "2005-06-21",
             "nullable": true
           },
           "genres": {
             "type": "string",
             "description": "Optional genre list as a single display string.",
+            "example": "Science Fiction, Classics",
             "nullable": true
           },
           "language": {
             "type": "string",
             "description": "Optional content language code.",
+            "example": "en",
             "nullable": true
           }
         }
@@ -22599,23 +22741,28 @@
           "from": {
             "type": "string",
             "description": "Source plugin id. Defaults to the active `[database].plugin` before reload.",
+            "example": "sqlite",
             "nullable": true
           },
           "to": {
             "type": "string",
-            "description": "Destination database plugin id to copy into."
+            "description": "Destination database plugin id to copy into.",
+            "example": "postgres"
           },
           "dry_run": {
             "type": "boolean",
-            "description": "When true, count rows without writing."
+            "description": "When true, count rows without writing.",
+            "example": true
           },
           "force": {
             "type": "boolean",
-            "description": "When true, overwrite a destination that is not empty."
+            "description": "When true, overwrite a destination that is not empty.",
+            "example": false
           },
           "apply": {
             "type": "boolean",
-            "description": "Update `[database].plugin` in config.toml after a successful copy."
+            "description": "Update `[database].plugin` in config.toml after a successful copy.",
+            "example": false
           }
         }
       },
@@ -22847,48 +22994,59 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Event id."
+            "description": "Event id.",
+            "example": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
           },
           "eventType": {
             "type": "string",
-            "description": "Event type (`book_acquired`)."
+            "description": "Event type (`book_acquired`).",
+            "example": "book_acquired"
           },
           "schemaVersion": {
             "type": "integer",
             "format": "int64",
-            "description": "Payload schema version."
+            "description": "Payload schema version.",
+            "example": 1
           },
           "dispatchState": {
             "type": "string",
-            "description": "`pending` or `dispatched`."
+            "description": "`pending` or `dispatched`.",
+            "example": "dispatched"
           },
           "accountId": {
             "type": "string",
-            "description": "Tenant / account id."
+            "description": "Tenant / account id.",
+            "example": "reader@example.com"
           },
           "dedupKey": {
             "type": "string",
-            "description": "Producer idempotency key."
+            "description": "Producer idempotency key.",
+            "example": "book_acquired:3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31"
           },
           "createdAt": {
             "type": "string",
-            "description": "RFC 3339 insert time."
+            "description": "RFC 3339 insert time.",
+            "example": "2026-10-29T10:12:00Z"
           },
           "queueName": {
             "type": "string",
-            "description": "Queue the row belongs to (`core.events` for domain events)."
+            "description": "Queue the row belongs to (`core.events` for domain events).",
+            "example": "core.events"
           },
           "contentType": {
             "type": "string",
-            "description": "Body encoding (`json`, `text`, `bytes`)."
+            "description": "Body encoding (`json`, `text`, `bytes`).",
+            "example": "json"
           },
           "source": {
             "type": "string",
-            "description": "Producer plugin id; empty when the host published it."
+            "description": "Producer plugin id; empty when the host published it.",
+            "example": ""
           },
           "deliverAfter": {
             "type": "string",
             "description": "RFC 3339 earliest delivery time for delayed queue messages.",
+            "example": "2026-10-29T10:15:00Z",
             "nullable": true
           }
         }
@@ -23261,72 +23419,88 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Delivery id (`{event_id}:{plugin_id}`)."
+            "description": "Delivery id (`{event_id}:{plugin_id}`).",
+            "example": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf"
           },
           "eventId": {
             "type": "string",
-            "description": "Parent event id."
+            "description": "Parent event id.",
+            "example": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
           },
           "pluginId": {
             "type": "string",
-            "description": "Subscriber plugin id."
+            "description": "Subscriber plugin id.",
+            "example": "audiobookshelf"
           },
           "state": {
             "type": "string",
-            "description": "Lifecycle state."
+            "description": "Lifecycle state.",
+            "example": "pending"
           },
           "attemptCount": {
             "type": "integer",
             "format": "int64",
-            "description": "Claim count (not incremented on resume)."
+            "description": "Claim count (not incremented on resume).",
+            "example": 1
           },
           "leaseGeneration": {
             "type": "integer",
             "format": "int64",
-            "description": "Fence generation."
+            "description": "Fence generation.",
+            "example": 2
           },
           "invocationSequence": {
             "type": "integer",
             "format": "int64",
-            "description": "Resume ordinal."
+            "description": "Resume ordinal.",
+            "example": 0
           },
           "outcome": {
             "type": "string",
             "description": "Terminal outcome when set.",
+            "example": "ack",
             "nullable": true
           },
           "errorMessage": {
             "type": "string",
             "description": "Operator-facing error.",
+            "example": "integration API error (503): library scan in progress",
             "nullable": true
           },
           "runAfter": {
             "type": "string",
-            "description": "RFC 3339 earliest claim time."
+            "description": "RFC 3339 earliest claim time.",
+            "example": "2026-10-29T10:12:00Z"
           },
           "updatedAt": {
             "type": "string",
-            "description": "RFC 3339 last update."
+            "description": "RFC 3339 last update.",
+            "example": "2026-10-29T10:12:30Z"
           },
           "cancelRequested": {
             "type": "boolean",
-            "description": "Cooperative cancel flag."
+            "description": "Cooperative cancel flag.",
+            "example": false
           },
           "resourceClass": {
             "type": "string",
-            "description": "Concurrency class (`network` today)."
+            "description": "Concurrency class (`network` today).",
+            "example": "network"
           },
           "resumePending": {
             "type": "boolean",
-            "description": "Next claim should resume rather than increment attempt."
+            "description": "Next claim should resume rather than increment attempt.",
+            "example": false
           },
           "hasCheckpoint": {
             "type": "boolean",
-            "description": "True when a suspend checkpoint is stored."
+            "description": "True when a suspend checkpoint is stored.",
+            "example": false
           },
           "queueName": {
             "type": "string",
-            "description": "Queue of the parent event."
+            "description": "Queue of the parent event.",
+            "example": "core.events"
           }
         }
       },
@@ -23347,59 +23521,70 @@
           "pending": {
             "type": "integer",
             "format": "int64",
-            "description": "Pending deliveries without a suspend checkpoint."
+            "description": "Pending deliveries without a suspend checkpoint.",
+            "example": 3
           },
           "running": {
             "type": "integer",
             "format": "int64",
-            "description": "Currently claimed deliveries."
+            "description": "Currently claimed deliveries.",
+            "example": 1
           },
           "suspended": {
             "type": "integer",
             "format": "int64",
-            "description": "Pending deliveries parked with a checkpoint."
+            "description": "Pending deliveries parked with a checkpoint.",
+            "example": 0
           },
           "dead_letter": {
             "type": "integer",
             "format": "int64",
-            "description": "Dead-lettered deliveries."
+            "description": "Dead-lettered deliveries.",
+            "example": 0
           },
           "acked": {
             "type": "integer",
             "format": "int64",
-            "description": "Successfully acked deliveries."
+            "description": "Successfully acked deliveries.",
+            "example": 1284
           },
           "oldest_pending_age_secs": {
             "type": "integer",
             "format": "int64",
             "description": "Age in seconds of the oldest pending delivery, when any exist.",
+            "example": 12,
             "nullable": true
           },
           "retries_total": {
             "type": "integer",
             "format": "int64",
-            "description": "Durable retry outcomes (including reclaim-as-retry)."
+            "description": "Durable retry outcomes (including reclaim-as-retry).",
+            "example": 7
           },
           "suspensions_total": {
             "type": "integer",
             "format": "int64",
-            "description": "Durable suspend outcomes."
+            "description": "Durable suspend outcomes.",
+            "example": 2
           },
           "dead_letters_total": {
             "type": "integer",
             "format": "int64",
-            "description": "Durable transitions into `dead_letter`."
+            "description": "Durable transitions into `dead_letter`.",
+            "example": 0
           },
           "dispatch_latency_ms_avg": {
             "type": "integer",
             "format": "int64",
             "description": "Average first-dispatch latency in milliseconds, when sampled.",
+            "example": 140,
             "nullable": true
           },
           "handler_latency_ms_avg": {
             "type": "integer",
             "format": "int64",
             "description": "Average `onEvent` handler duration in milliseconds, when sampled.",
+            "example": 860,
             "nullable": true
           }
         }
@@ -23519,7 +23704,8 @@
         "properties": {
           "status": {
             "type": "string",
-            "description": "Always `ok` when the process can serve HTTP."
+            "description": "Always `ok` when the process can serve HTTP.",
+            "example": "ok"
           }
         }
       },
@@ -23869,6 +24055,7 @@
           "force": {
             "type": "boolean",
             "description": "When true, the integration rescans even if it considers itself current.",
+            "example": true,
             "nullable": true
           }
         }
@@ -23898,7 +24085,8 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Opaque job id returned to the client when the job is accepted."
+            "description": "Opaque job id returned to the client when the job is accepted.",
+            "example": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
           },
           "kind": {
             "allOf": [
@@ -23919,36 +24107,43 @@
           "detail": {
             "type": "string",
             "description": "Optional operator-facing progress or error text.",
+            "example": "scanning reader@example.com (libro)",
             "nullable": true
           },
           "progress": {
             "type": "string",
             "description": "Human-readable progress string while the job is running.",
+            "example": "12 of 40 titles",
             "nullable": true
           },
           "attempt_count": {
             "type": "integer",
             "format": "int64",
-            "description": "Number of times a worker has claimed this row."
+            "description": "Number of times a worker has claimed this row.",
+            "example": 1
           },
           "max_attempts": {
             "type": "integer",
             "format": "int64",
-            "description": "Maximum claims before a failure is terminal."
+            "description": "Maximum claims before a failure is terminal.",
+            "example": 3
           },
           "error_kind": {
             "type": "string",
             "description": "Structured error kind when failed or cancelled.",
+            "example": "cancelled",
             "nullable": true
           },
           "created_at": {
             "type": "string",
             "description": "RFC 3339 timestamp when the row was inserted.",
+            "example": "2026-10-29T10:12:00Z",
             "nullable": true
           },
           "finished_at": {
             "type": "string",
             "description": "RFC 3339 timestamp when the row reached a terminal state.",
+            "example": "2026-10-29T10:14:22Z",
             "nullable": true
           }
         }
@@ -26745,6 +26940,7 @@
           "default_view": {
             "type": "string",
             "description": "Replacement landing view when set.",
+            "example": "discover",
             "nullable": true
           },
           "disabled_shelves": {
@@ -26753,21 +26949,28 @@
               "type": "string"
             },
             "description": "Replacement hidden-shelf list when set.",
+            "example": [
+              "chirp_deals",
+              "from_store"
+            ],
             "nullable": true
           },
           "discover_sort": {
             "type": "string",
             "description": "Replacement Discover sort key when set.",
+            "example": "popularity",
             "nullable": true
           },
           "discover_sort_dir": {
             "type": "string",
             "description": "Replacement Discover sort direction when set.",
+            "example": "desc",
             "nullable": true
           },
           "discover_language": {
             "type": "string",
             "description": "Present + value sets language; present + `null` clears to browser default;\nomitted leaves unchanged.",
+            "example": "de",
             "nullable": true
           },
           "discover_excluded_sources": {
@@ -26776,11 +26979,15 @@
               "type": "string"
             },
             "description": "Replacement excluded-store list when set.",
+            "example": [
+              "chirp"
+            ],
             "nullable": true
           },
           "theme": {
             "type": "string",
             "description": "Replacement appearance preference when set (`system`, `light`, `dark`).",
+            "example": "dark",
             "nullable": true
           }
         }
@@ -26824,6 +27031,7 @@
             "type": "integer",
             "format": "int64",
             "description": "`core.output` document revision the client read (`output_revision` in\n`GET /api/settings`). When set and stale, an `output.*` update is\nrejected with 409.",
+            "example": 7,
             "nullable": true
           }
         }
@@ -27048,7 +27256,8 @@
         "properties": {
           "approve": {
             "type": "boolean",
-            "description": "Must be true; a false value is rejected with 400."
+            "description": "Must be true; a false value is rejected with 400.",
+            "example": true
           },
           "grant": {
             "description": "Optional operator overrides applied on top of the manifest request.",
@@ -27056,7 +27265,8 @@
             "properties": {
               "networkMode": {
                 "type": "string",
-                "description": "Override egress mode when set.",
+                "description": "Override egress mode (`deny` or `outbound`) when set.",
+                "example": "outbound",
                 "nullable": true
               },
               "domains": {
@@ -27065,6 +27275,10 @@
                   "type": "string"
                 },
                 "description": "Override approved hostnames when set.",
+                "example": [
+                  "*.libro.fm",
+                  "api.libro.fm"
+                ],
                 "nullable": true
               },
               "tcp": {
@@ -27081,11 +27295,15 @@
                   "type": "string"
                 },
                 "description": "Override address-space CIDRs when set.",
+                "example": [
+                  "203.0.113.0/24"
+                ],
                 "nullable": true
               },
               "allowUndeclaredPublicRedirects": {
                 "type": "boolean",
                 "description": "Override undeclared-public-redirect permission when set.",
+                "example": false,
                 "nullable": true
               },
               "bindings": {
@@ -27094,6 +27312,10 @@
                   "type": "string"
                 },
                 "description": "Override approved host bindings when set.",
+                "example": [
+                  "config",
+                  "secrets"
+                ],
                 "nullable": true
               },
               "compatibilityFlags": {
@@ -27102,12 +27324,16 @@
                   "type": "string"
                 },
                 "description": "Override compatibility flags when set.",
+                "example": [
+                  "nodejs_compat"
+                ],
                 "nullable": true
               },
               "cpuMs": {
                 "type": "integer",
                 "format": "int32",
                 "description": "Override workerd CPU milliseconds when set.",
+                "example": 100,
                 "minimum": 0,
                 "nullable": true
               },
@@ -27115,6 +27341,7 @@
                 "type": "integer",
                 "format": "int32",
                 "description": "Override workerd subrequest budget when set.",
+                "example": 100,
                 "minimum": 0,
                 "nullable": true
               },
@@ -27122,6 +27349,7 @@
                 "type": "integer",
                 "format": "int32",
                 "description": "Override disk budget in mebibytes when set.",
+                "example": 512,
                 "minimum": 0,
                 "nullable": true
               },
@@ -27129,6 +27357,7 @@
                 "type": "integer",
                 "format": "int32",
                 "description": "Override jail memory in mebibytes when set.",
+                "example": 1024,
                 "minimum": 0,
                 "nullable": true
               },
@@ -27136,12 +27365,14 @@
                 "type": "number",
                 "format": "double",
                 "description": "Jail CPU in cores (2 d.p.); converted to Spec percent server-side.",
+                "example": 1.5,
                 "nullable": true
               },
               "extraProcesses": {
                 "type": "integer",
                 "format": "int32",
                 "description": "Extra process/thread budget (native); ignored for workerd.",
+                "example": 8,
                 "minimum": 0,
                 "nullable": true
               }
@@ -27159,26 +27390,31 @@
         "properties": {
           "name": {
             "type": "string",
-            "description": "Display name from the portal brand or plugin manifest."
+            "description": "Display name from the portal brand or plugin manifest.",
+            "example": "Libro.fm"
           },
           "bg": {
             "type": "string",
             "description": "Background CSS color from the portal brand, when known.",
+            "example": "#0f2a3f",
             "nullable": true
           },
           "fg": {
             "type": "string",
             "description": "Foreground CSS color from the portal brand, when known.",
+            "example": "#ffffff",
             "nullable": true
           },
           "accent": {
             "type": "string",
             "description": "Accent CSS color from the portal brand, when known.",
+            "example": "#f4b400",
             "nullable": true
           },
           "logo": {
             "type": "string",
             "description": "Logo URL or host-served embed path.",
+            "example": "/api/plugins/libro/logo",
             "nullable": true
           }
         }
@@ -27206,76 +27442,89 @@
             "type": "integer",
             "format": "int32",
             "description": "Requested workerd CPU budget in milliseconds.",
+            "example": 30000,
             "minimum": 0
           },
           "subrequests": {
             "type": "integer",
             "format": "int32",
             "description": "Requested workerd subrequest budget.",
+            "example": 50,
             "minimum": 0
           },
           "max_cpu_ms": {
             "type": "integer",
             "format": "int32",
             "description": "Host hard cap for workerd CPU milliseconds.",
+            "example": 120000,
             "minimum": 0
           },
           "max_subrequests": {
             "type": "integer",
             "format": "int32",
             "description": "Host hard cap for workerd subrequests.",
+            "example": 1000,
             "minimum": 0
           },
           "disk_mib": {
             "type": "integer",
             "format": "int32",
             "description": "Default plugin state disk budget in mebibytes.",
+            "example": 512,
             "minimum": 0
           },
           "max_disk_mib": {
             "type": "integer",
             "format": "int32",
             "description": "Host hard cap for plugin state disk in mebibytes.",
+            "example": 4096,
             "minimum": 0
           },
           "memory_mib": {
             "type": "integer",
             "format": "int32",
             "description": "Default jail memory in mebibytes.",
+            "example": 512,
             "minimum": 0
           },
           "max_memory_mib": {
             "type": "integer",
             "format": "int32",
             "description": "Host hard cap for jail memory in mebibytes.",
+            "example": 4096,
             "minimum": 0
           },
           "cpu_cores": {
             "type": "number",
             "format": "double",
-            "description": "Manifest / default jail CPU in cores (2 d.p.)."
+            "description": "Manifest / default jail CPU in cores (2 d.p.).",
+            "example": 0.8
           },
           "max_cpu_cores": {
             "type": "number",
             "format": "double",
-            "description": "Host max jail CPU in cores (2 d.p.)."
+            "description": "Host max jail CPU in cores (2 d.p.).",
+            "example": 8.0
           },
           "jail_cpu_cores": {
             "type": "number",
             "format": "double",
             "description": "Optional `[plugins.jail]` ceiling in cores.",
+            "example": 2.0,
             "nullable": true
           },
           "extra_processes": {
             "type": "integer",
             "format": "int32",
             "description": "Default extra process/thread budget (native consent).",
+            "example": 2,
             "minimum": 0
           },
           "max_extra_processes": {
             "type": "integer",
             "format": "int32",
             "description": "Host hard cap for extra process budget.",
+            "example": 62,
             "minimum": 0
           },
           "known_bindings": {
@@ -27283,7 +27532,14 @@
             "items": {
               "type": "string"
             },
-            "description": "Suggested / default host bindings operators may grant."
+            "description": "Suggested / default host bindings operators may grant.",
+            "example": [
+              "config",
+              "secrets",
+              "plugin_kv",
+              "work_fs",
+              "oauth"
+            ]
           }
         }
       },
@@ -27303,19 +27559,23 @@
         "properties": {
           "plugin_id": {
             "type": "string",
-            "description": "Plugin id whose grant is being reviewed."
+            "description": "Plugin id whose grant is being reviewed.",
+            "example": "libro"
           },
           "plugin_key": {
             "type": "string",
-            "description": "Canonical PluginKey for this install (empty when unknown)."
+            "description": "Canonical PluginKey for this install (empty when unknown).",
+            "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
           },
           "provenance": {
             "type": "string",
-            "description": "Host-evaluated provenance label."
+            "description": "Host-evaluated provenance label.",
+            "example": "platform_bundled"
           },
           "runtime": {
             "type": "string",
-            "description": "Guest runtime (`native` or `workerd`) — drives which controls are enforceable."
+            "description": "Guest runtime (`native` or `workerd`) — drives which controls are enforceable.",
+            "example": "native"
           },
           "request": {
             "allOf": [
@@ -27327,14 +27587,21 @@
           },
           "covered": {
             "type": "boolean",
-            "description": "True when an existing on-disk grant already satisfies the request."
+            "description": "True when an existing on-disk grant already satisfies the request.",
+            "example": false
           },
           "summary": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Operator-facing bullet list of requested capabilities."
+            "description": "Operator-facing bullet list of requested capabilities.",
+            "example": [
+              "Plugin: libro (entrypoints: storefront)",
+              "Network: outbound",
+              "Raw TCP connect: *.libro.fm:[443]",
+              "Host bindings: config, secrets"
+            ]
           },
           "existing": {
             "description": "Previously approved grant, when one is stored.",
@@ -27367,71 +27634,103 @@
             "properties": {
               "pluginKey": {
                 "type": "string",
-                "description": "Canonical provenance-qualified PluginKey."
+                "description": "Canonical provenance-qualified PluginKey.",
+                "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
               },
               "pluginId": {
                 "type": "string",
-                "description": "Plugin id this grant applies to."
+                "description": "Plugin id this grant applies to.",
+                "example": "libro"
               },
               "entrypoints": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Exported entrypoints the operator approved (`storefront`, `cli`, …)."
+                "description": "Exported entrypoints the operator approved (`storefront`, `cli`, …).",
+                "example": [
+                  "storefront"
+                ]
               },
               "producers": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Event types the operator approved the plugin to publish."
+                "description": "Event types the operator approved the plugin to publish.",
+                "example": [
+                  "book_acquired"
+                ]
               },
               "consumers": {
                 "type": "array",
                 "items": {
                   "type": "object"
                 },
-                "description": "Approved event-consumer subscriptions."
+                "description": "Approved event-consumer subscriptions.",
+                "example": [
+                  {
+                    "eventType": "book_acquired",
+                    "schemaVersions": [
+                      1
+                    ],
+                    "supportsSuspend": false
+                  }
+                ]
               },
               "jobs": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Approved job trigger types."
+                "description": "Approved job trigger types.",
+                "example": [
+                  "stream_copy"
+                ]
               },
               "networkMode": {
                 "type": "string",
-                "description": "Approved egress mode (`deny`, `allowlist`, and similar)."
+                "description": "Approved egress mode (`deny` or `outbound`).",
+                "example": "outbound"
               },
               "domains": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Hostnames the operator approved for egress."
+                "description": "Hostnames the operator approved for egress.",
+                "example": [
+                  "*.libro.fm",
+                  "api.libro.fm"
+                ]
               },
               "manifestDomains": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Destinations requested by the current manifest."
+                "description": "Destinations requested by the current manifest.",
+                "example": [
+                  "*.libro.fm"
+                ]
               },
               "operatorAddedDomains": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Operator-added destinations beyond the manifest."
+                "description": "Operator-added destinations beyond the manifest.",
+                "example": [
+                  "api.libro.fm"
+                ]
               },
               "operatorDeniedDomains": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Operator-denied destinations still listed by the manifest."
+                "description": "Operator-denied destinations still listed by the manifest.",
+                "example": []
               },
               "tcp": {
                 "type": "array",
@@ -27459,56 +27758,75 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Effective address-space CIDRs."
+                "description": "Effective address-space CIDRs.",
+                "example": [
+                  "203.0.113.0/24"
+                ]
               },
               "operatorAddedCidrs": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Operator-added CIDRs."
+                "description": "Operator-added CIDRs.",
+                "example": [
+                  "203.0.113.0/24"
+                ]
               },
               "operatorDeniedCidrs": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Operator-denied CIDRs still listed by the manifest."
+                "description": "Operator-denied CIDRs still listed by the manifest.",
+                "example": []
               },
               "allowUndeclaredPublicRedirects": {
                 "type": "boolean",
-                "description": "Undeclared public redirect permission."
+                "description": "Undeclared public redirect permission.",
+                "example": false
               },
               "grantRevision": {
                 "type": "string",
-                "description": "SHA-256 of persisted operator consent (no host overlays)."
+                "description": "SHA-256 of persisted operator consent (no host overlays).",
+                "example": "9b74c9897bac770ffc029102a200c5de3a9c4a1d6c2f1e0b5a7d8c9e0f1a2b3c"
               },
               "authorityRevision": {
                 "type": "string",
-                "description": "SHA-256 of the canonical effective authority."
+                "description": "SHA-256 of the canonical effective authority.",
+                "example": "1f3870be274f6c49b3e31a0c6728957f4e1d5b2c7a8d9e0f1a2b3c4d5e6f7a8b"
               },
               "bindings": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Host bindings the operator approved."
+                "description": "Host bindings the operator approved.",
+                "example": [
+                  "config",
+                  "secrets"
+                ]
               },
               "compatibilityFlags": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Extra compatibility flags stored on the grant."
+                "description": "Extra compatibility flags stored on the grant.",
+                "example": [
+                  "nodejs_compat"
+                ]
               },
               "approvedAt": {
                 "type": "string",
-                "description": "RFC 3339 timestamp when the grant was last approved."
+                "description": "RFC 3339 timestamp when the grant was last approved.",
+                "example": "2026-10-29T10:12:00Z"
               },
               "cpuMs": {
                 "type": "integer",
                 "format": "int32",
                 "description": "Optional workerd CPU budget in milliseconds.",
+                "example": 50,
                 "minimum": 0,
                 "nullable": true
               },
@@ -27516,6 +27834,7 @@
                 "type": "integer",
                 "format": "int32",
                 "description": "Optional workerd subrequest budget.",
+                "example": 50,
                 "minimum": 0,
                 "nullable": true
               },
@@ -27523,6 +27842,7 @@
                 "type": "integer",
                 "format": "int32",
                 "description": "Optional plugin state disk budget in mebibytes.",
+                "example": 256,
                 "minimum": 0,
                 "nullable": true
               },
@@ -27530,6 +27850,7 @@
                 "type": "integer",
                 "format": "int32",
                 "description": "Optional jail memory in mebibytes.",
+                "example": 512,
                 "minimum": 0,
                 "nullable": true
               },
@@ -27537,12 +27858,14 @@
                 "type": "number",
                 "format": "double",
                 "description": "Jail CPU in cores (2 d.p.); absent for workerd.",
+                "example": 1.0,
                 "nullable": true
               },
               "extraProcesses": {
                 "type": "integer",
                 "format": "int32",
                 "description": "Extra process/thread budget beyond launcher overhead; native only.",
+                "example": 4,
                 "minimum": 0,
                 "nullable": true
               }
@@ -27558,26 +27881,31 @@
             "properties": {
               "name": {
                 "type": "string",
-                "description": "Display name from the portal brand or plugin manifest."
+                "description": "Display name from the portal brand or plugin manifest.",
+                "example": "Libro.fm"
               },
               "bg": {
                 "type": "string",
                 "description": "Background CSS color from the portal brand, when known.",
+                "example": "#0f2a3f",
                 "nullable": true
               },
               "fg": {
                 "type": "string",
                 "description": "Foreground CSS color from the portal brand, when known.",
+                "example": "#ffffff",
                 "nullable": true
               },
               "accent": {
                 "type": "string",
                 "description": "Accent CSS color from the portal brand, when known.",
+                "example": "#f4b400",
                 "nullable": true
               },
               "logo": {
                 "type": "string",
                 "description": "Logo URL or host-served embed path.",
+                "example": "/api/plugins/libro/logo",
                 "nullable": true
               }
             },
@@ -27702,7 +28030,8 @@
         "properties": {
           "networkMode": {
             "type": "string",
-            "description": "Override egress mode when set.",
+            "description": "Override egress mode (`deny` or `outbound`) when set.",
+            "example": "outbound",
             "nullable": true
           },
           "domains": {
@@ -27711,6 +28040,10 @@
               "type": "string"
             },
             "description": "Override approved hostnames when set.",
+            "example": [
+              "*.libro.fm",
+              "api.libro.fm"
+            ],
             "nullable": true
           },
           "tcp": {
@@ -27727,11 +28060,15 @@
               "type": "string"
             },
             "description": "Override address-space CIDRs when set.",
+            "example": [
+              "203.0.113.0/24"
+            ],
             "nullable": true
           },
           "allowUndeclaredPublicRedirects": {
             "type": "boolean",
             "description": "Override undeclared-public-redirect permission when set.",
+            "example": false,
             "nullable": true
           },
           "bindings": {
@@ -27740,6 +28077,10 @@
               "type": "string"
             },
             "description": "Override approved host bindings when set.",
+            "example": [
+              "config",
+              "secrets"
+            ],
             "nullable": true
           },
           "compatibilityFlags": {
@@ -27748,12 +28089,16 @@
               "type": "string"
             },
             "description": "Override compatibility flags when set.",
+            "example": [
+              "nodejs_compat"
+            ],
             "nullable": true
           },
           "cpuMs": {
             "type": "integer",
             "format": "int32",
             "description": "Override workerd CPU milliseconds when set.",
+            "example": 100,
             "minimum": 0,
             "nullable": true
           },
@@ -27761,6 +28106,7 @@
             "type": "integer",
             "format": "int32",
             "description": "Override workerd subrequest budget when set.",
+            "example": 100,
             "minimum": 0,
             "nullable": true
           },
@@ -27768,6 +28114,7 @@
             "type": "integer",
             "format": "int32",
             "description": "Override disk budget in mebibytes when set.",
+            "example": 512,
             "minimum": 0,
             "nullable": true
           },
@@ -27775,6 +28122,7 @@
             "type": "integer",
             "format": "int32",
             "description": "Override jail memory in mebibytes when set.",
+            "example": 1024,
             "minimum": 0,
             "nullable": true
           },
@@ -27782,12 +28130,14 @@
             "type": "number",
             "format": "double",
             "description": "Jail CPU in cores (2 d.p.); converted to Spec percent server-side.",
+            "example": 1.5,
             "nullable": true
           },
           "extraProcesses": {
             "type": "integer",
             "format": "int32",
             "description": "Extra process/thread budget (native); ignored for workerd.",
+            "example": 8,
             "minimum": 0,
             "nullable": true
           }
@@ -27824,71 +28174,103 @@
         "properties": {
           "pluginKey": {
             "type": "string",
-            "description": "Canonical provenance-qualified PluginKey."
+            "description": "Canonical provenance-qualified PluginKey.",
+            "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
           },
           "pluginId": {
             "type": "string",
-            "description": "Plugin id this grant applies to."
+            "description": "Plugin id this grant applies to.",
+            "example": "libro"
           },
           "entrypoints": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Exported entrypoints the operator approved (`storefront`, `cli`, …)."
+            "description": "Exported entrypoints the operator approved (`storefront`, `cli`, …).",
+            "example": [
+              "storefront"
+            ]
           },
           "producers": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Event types the operator approved the plugin to publish."
+            "description": "Event types the operator approved the plugin to publish.",
+            "example": [
+              "book_acquired"
+            ]
           },
           "consumers": {
             "type": "array",
             "items": {
               "type": "object"
             },
-            "description": "Approved event-consumer subscriptions."
+            "description": "Approved event-consumer subscriptions.",
+            "example": [
+              {
+                "eventType": "book_acquired",
+                "schemaVersions": [
+                  1
+                ],
+                "supportsSuspend": false
+              }
+            ]
           },
           "jobs": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Approved job trigger types."
+            "description": "Approved job trigger types.",
+            "example": [
+              "stream_copy"
+            ]
           },
           "networkMode": {
             "type": "string",
-            "description": "Approved egress mode (`deny`, `allowlist`, and similar)."
+            "description": "Approved egress mode (`deny` or `outbound`).",
+            "example": "outbound"
           },
           "domains": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Hostnames the operator approved for egress."
+            "description": "Hostnames the operator approved for egress.",
+            "example": [
+              "*.libro.fm",
+              "api.libro.fm"
+            ]
           },
           "manifestDomains": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Destinations requested by the current manifest."
+            "description": "Destinations requested by the current manifest.",
+            "example": [
+              "*.libro.fm"
+            ]
           },
           "operatorAddedDomains": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Operator-added destinations beyond the manifest."
+            "description": "Operator-added destinations beyond the manifest.",
+            "example": [
+              "api.libro.fm"
+            ]
           },
           "operatorDeniedDomains": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Operator-denied destinations still listed by the manifest."
+            "description": "Operator-denied destinations still listed by the manifest.",
+            "example": []
           },
           "tcp": {
             "type": "array",
@@ -27916,56 +28298,75 @@
             "items": {
               "type": "string"
             },
-            "description": "Effective address-space CIDRs."
+            "description": "Effective address-space CIDRs.",
+            "example": [
+              "203.0.113.0/24"
+            ]
           },
           "operatorAddedCidrs": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Operator-added CIDRs."
+            "description": "Operator-added CIDRs.",
+            "example": [
+              "203.0.113.0/24"
+            ]
           },
           "operatorDeniedCidrs": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Operator-denied CIDRs still listed by the manifest."
+            "description": "Operator-denied CIDRs still listed by the manifest.",
+            "example": []
           },
           "allowUndeclaredPublicRedirects": {
             "type": "boolean",
-            "description": "Undeclared public redirect permission."
+            "description": "Undeclared public redirect permission.",
+            "example": false
           },
           "grantRevision": {
             "type": "string",
-            "description": "SHA-256 of persisted operator consent (no host overlays)."
+            "description": "SHA-256 of persisted operator consent (no host overlays).",
+            "example": "9b74c9897bac770ffc029102a200c5de3a9c4a1d6c2f1e0b5a7d8c9e0f1a2b3c"
           },
           "authorityRevision": {
             "type": "string",
-            "description": "SHA-256 of the canonical effective authority."
+            "description": "SHA-256 of the canonical effective authority.",
+            "example": "1f3870be274f6c49b3e31a0c6728957f4e1d5b2c7a8d9e0f1a2b3c4d5e6f7a8b"
           },
           "bindings": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Host bindings the operator approved."
+            "description": "Host bindings the operator approved.",
+            "example": [
+              "config",
+              "secrets"
+            ]
           },
           "compatibilityFlags": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Extra compatibility flags stored on the grant."
+            "description": "Extra compatibility flags stored on the grant.",
+            "example": [
+              "nodejs_compat"
+            ]
           },
           "approvedAt": {
             "type": "string",
-            "description": "RFC 3339 timestamp when the grant was last approved."
+            "description": "RFC 3339 timestamp when the grant was last approved.",
+            "example": "2026-10-29T10:12:00Z"
           },
           "cpuMs": {
             "type": "integer",
             "format": "int32",
             "description": "Optional workerd CPU budget in milliseconds.",
+            "example": 50,
             "minimum": 0,
             "nullable": true
           },
@@ -27973,6 +28374,7 @@
             "type": "integer",
             "format": "int32",
             "description": "Optional workerd subrequest budget.",
+            "example": 50,
             "minimum": 0,
             "nullable": true
           },
@@ -27980,6 +28382,7 @@
             "type": "integer",
             "format": "int32",
             "description": "Optional plugin state disk budget in mebibytes.",
+            "example": 256,
             "minimum": 0,
             "nullable": true
           },
@@ -27987,6 +28390,7 @@
             "type": "integer",
             "format": "int32",
             "description": "Optional jail memory in mebibytes.",
+            "example": 512,
             "minimum": 0,
             "nullable": true
           },
@@ -27994,12 +28398,14 @@
             "type": "number",
             "format": "double",
             "description": "Jail CPU in cores (2 d.p.); absent for workerd.",
+            "example": 1.0,
             "nullable": true
           },
           "extraProcesses": {
             "type": "integer",
             "format": "int32",
             "description": "Extra process/thread budget beyond launcher overhead; native only.",
+            "example": 4,
             "minimum": 0,
             "nullable": true
           }
@@ -28426,11 +28832,13 @@
         "properties": {
           "value": {
             "type": "string",
-            "description": "Stored config value; empty string means use the plugin default."
+            "description": "Stored config value; empty string means use the plugin default.",
+            "example": "m4b"
           },
           "label": {
             "type": "string",
-            "description": "Operator-facing choice caption."
+            "description": "Operator-facing choice caption.",
+            "example": "M4B"
           }
         }
       },
@@ -28446,19 +28854,23 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "Dotted `config.toml` key for this option."
+            "description": "Dotted `config.toml` key for this option.",
+            "example": "container"
           },
           "label": {
             "type": "string",
-            "description": "Operator-facing field caption."
+            "description": "Operator-facing field caption.",
+            "example": "Container"
           },
           "value": {
             "type": "string",
-            "description": "Current string form of the setting."
+            "description": "Current string form of the setting.",
+            "example": "m4b"
           },
           "value_type": {
             "type": "string",
-            "description": "UI widget hint (`boolean`, `string`, or `number`)."
+            "description": "UI widget hint (`boolean`, `string`, or `number`).",
+            "example": "string"
           },
           "choices": {
             "type": "array",
@@ -28470,11 +28882,13 @@
           },
           "secret": {
             "type": "boolean",
-            "description": "True for a `secret` setting: `value` is never the stored value."
+            "description": "True for a `secret` setting: `value` is never the stored value.",
+            "example": false
           },
           "secret_set": {
             "type": "boolean",
             "description": "For a secret setting, whether the instance document names a sealed value.",
+            "example": true,
             "nullable": true
           }
         }
@@ -28490,25 +28904,30 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Plugin id (`audible`, `sqlite`, and similar)."
+            "description": "Plugin id (`audible`, `sqlite`, and similar).",
+            "example": "libro"
           },
           "family": {
             "type": "string",
-            "description": "Handler family wire label (`source`, `integration`, `output`, `database`)."
+            "description": "Handler family wire label (`source`, `integration`, `output`, `database`).",
+            "example": "source"
           },
           "plugin_key": {
             "type": "string",
             "description": "Provenance-qualified PluginKey when this row came from a discovered install.",
+            "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro",
             "nullable": true
           },
           "provenance": {
             "type": "string",
             "description": "Host-evaluated provenance (`platform_bundled`, `verified_staged`, `installed`, …).",
+            "example": "platform_bundled",
             "nullable": true
           },
           "logo": {
             "type": "string",
             "description": "Google favicon (or portal brand) URL for Settings list rows.",
+            "example": "https://www.google.com/s2/favicons?domain=libro.fm&sz=64",
             "nullable": true
           },
           "settings": {
@@ -28521,21 +28940,25 @@
           "plugin_instance_id": {
             "type": "string",
             "description": "Plugin instance this group edits; absent for a bootstrap database adapter.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
             "nullable": true
           },
           "display_name": {
             "type": "string",
             "description": "Operator-facing instance name, when the operator set one.",
+            "example": "Libro.fm (household)",
             "nullable": true
           },
           "is_default": {
             "type": "boolean",
-            "description": "True when a bare plugin key or alias routes to this instance."
+            "description": "True when a bare plugin key or alias routes to this instance.",
+            "example": true
           },
           "config_revision": {
             "type": "integer",
             "format": "int64",
             "description": "Instance document revision for compare-and-swap writes.",
+            "example": 4,
             "nullable": true
           },
           "deployment": {
@@ -28675,7 +29098,10 @@
             "items": {
               "type": "string"
             },
-            "description": "Nodes whose deployment of the instance is `present`."
+            "description": "Nodes whose deployment of the instance is `present`.",
+            "example": [
+              "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
+            ]
           }
         }
       },
@@ -29017,26 +29443,34 @@
         "properties": {
           "default_view": {
             "type": "string",
-            "description": "Landing view id (`library`, `discover`, …) after normalization."
+            "description": "Landing view id (`library`, `discover`, …) after normalization.",
+            "example": "library"
           },
           "disabled_shelves": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Lowercased Discover shelf ids the user has hidden."
+            "description": "Lowercased Discover shelf ids the user has hidden.",
+            "example": [
+              "chirp_deals",
+              "from_store"
+            ]
           },
           "discover_sort": {
             "type": "string",
-            "description": "Discover sort key (`relevance`, `popularity`, …)."
+            "description": "Discover sort key (`relevance`, `popularity`, …).",
+            "example": "relevance"
           },
           "discover_sort_dir": {
             "type": "string",
-            "description": "Discover sort direction (`asc` or `desc`)."
+            "description": "Discover sort direction (`asc` or `desc`).",
+            "example": "desc"
           },
           "discover_language": {
             "type": "string",
             "description": "`null` = use browser language on the client.",
+            "example": "en",
             "nullable": true
           },
           "discover_excluded_sources": {
@@ -29044,11 +29478,15 @@
             "items": {
               "type": "string"
             },
-            "description": "Lowercased store ids hidden from Discover results."
+            "description": "Lowercased store ids hidden from Discover results.",
+            "example": [
+              "chirp"
+            ]
           },
           "theme": {
             "type": "string",
-            "description": "Appearance preference (`system`, `light`, or `dark`)."
+            "description": "Appearance preference (`system`, `light`, or `dark`).",
+            "example": "system"
           }
         }
       },
@@ -29615,38 +30053,47 @@
         "properties": {
           "name": {
             "type": "string",
-            "description": "Queue name."
+            "description": "Queue name.",
+            "example": "core.events"
           },
           "core": {
             "type": "boolean",
-            "description": "True for the domain-event bus (`core.events`)."
+            "description": "True for the domain-event bus (`core.events`).",
+            "example": true
           },
           "pending": {
             "type": "integer",
             "format": "int64",
-            "description": "Deliveries waiting to be claimed (including suspended rows)."
+            "description": "Deliveries waiting to be claimed (including suspended rows).",
+            "example": 3
           },
           "running": {
             "type": "integer",
             "format": "int64",
-            "description": "Deliveries currently claimed by a worker."
+            "description": "Deliveries currently claimed by a worker.",
+            "example": 1
           },
           "acked": {
             "type": "integer",
             "format": "int64",
-            "description": "Deliveries acked."
+            "description": "Deliveries acked.",
+            "example": 1284
           },
           "deadLetter": {
             "type": "integer",
             "format": "int64",
-            "description": "Deliveries parked for operator review."
+            "description": "Deliveries parked for operator review.",
+            "example": 0
           },
           "consumers": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Live catalog consumers (plugin keys or instance ids) of this queue."
+            "description": "Live catalog consumers (plugin keys or instance ids) of this queue.",
+            "example": [
+              "platform:bookclerk/bookclerk-plugin-integration-audiobookshelf#audiobookshelf"
+            ]
           }
         }
       },
@@ -30288,26 +30735,34 @@
         "properties": {
           "ok": {
             "type": "boolean",
-            "description": "True when at least one job was accepted."
+            "description": "True when at least one job was accepted.",
+            "example": true
           },
           "message": {
             "type": "string",
-            "description": "Operator-facing status text."
+            "description": "Operator-facing status text.",
+            "example": "scan planned: 2 accepted, 0 already pending or running, 0 not admitted (queue full)"
           },
           "job_id": {
             "type": "string",
-            "description": "First accepted (or, when none was, already queued) job id."
+            "description": "First accepted (or, when none was, already queued) job id.",
+            "example": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
           },
           "job_ids": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Every accepted or already-queued job id, in plan order."
+            "description": "Every accepted or already-queued job id, in plan order.",
+            "example": [
+              "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+              "scan-8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+            ]
           },
           "error": {
             "type": "string",
             "description": "Machine slug when nothing was accepted (`conflict`, `queue_full`,\n`nothing_to_scan`, `nothing_to_acquire`).",
+            "example": "nothing_to_scan",
             "nullable": true
           }
         }
@@ -30319,11 +30774,13 @@
           "account": {
             "type": "string",
             "description": "When set, scan this account even if `scan_enabled` is false.",
+            "example": "reader@example.com",
             "nullable": true
           },
           "plugin_instance_id": {
             "type": "string",
             "description": "When set, scan only this deployed plugin instance.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
             "nullable": true
           }
         }
@@ -30584,6 +31041,11 @@
             "description": "Values as written in config.toml (and env overlays), plus `output.*`\nfrom the `core.output` database document.",
             "additionalProperties": {
               "type": "string"
+            },
+            "example": {
+              "daemon.auth.enabled": "true",
+              "daemon.listen": "127.0.0.1:8787,[::1]:8787",
+              "library.auto_acquire": "false"
             }
           },
           "effective": {
@@ -30591,6 +31053,11 @@
             "description": "Runtime-effective values after the last successful reload (auth, plugins).",
             "additionalProperties": {
               "type": "string"
+            },
+            "example": {
+              "daemon.auth.enabled": "true",
+              "daemon.listen": "127.0.0.1:8787,[::1]:8787",
+              "library.auto_acquire": "false"
             }
           },
           "plugins": {
@@ -30603,18 +31070,21 @@
           "host_cpu_cores_max": {
             "type": "number",
             "format": "double",
-            "description": "Host max jail CPU in cores (2 d.p.; equals logical CPU count)."
+            "description": "Host max jail CPU in cores (2 d.p.; equals logical CPU count).",
+            "example": 8.0
           },
           "jail_cpu_cores": {
             "type": "number",
             "format": "double",
             "description": "Optional global per-jail CPU ceiling in cores (from `[plugins.jail]`).",
+            "example": 2.0,
             "nullable": true
           },
           "output_revision": {
             "type": "integer",
             "format": "int64",
             "description": "Revision of the `core.output` document the `output.*` values in\n`settings` were read from; send it back as `expected_output_revision`.\n`effective[\"output.revision\"]` is the revision this host has applied,\nwhich lags the document until the host's next wakeup.",
+            "example": 7,
             "nullable": true
           }
         }
@@ -30629,11 +31099,13 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "Dotted config key; rejected unless it passes the settings allowlist."
+            "description": "Dotted config key; rejected unless it passes the settings allowlist.",
+            "example": "library.auto_acquire"
           },
           "value": {
             "type": "string",
-            "description": "Raw string value, normalized before it is written."
+            "description": "Raw string value, normalized before it is written.",
+            "example": "false"
           }
         }
       },
@@ -30954,44 +31426,53 @@
           "accounts": {
             "type": "integer",
             "description": "Count of configured store accounts.",
+            "example": 2,
             "minimum": 0
           },
           "books": {
             "type": "integer",
             "description": "Total title rows in the library.",
+            "example": 412,
             "minimum": 0
           },
           "acquired": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles whose `acquire_status` is `acquired`."
+            "description": "Titles whose `acquire_status` is `acquired`.",
+            "example": 380
           },
           "pending": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles still needing acquire (`not_acquired`)."
+            "description": "Titles still needing acquire (`not_acquired`).",
+            "example": 27
           },
           "error": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles stuck in `error` after a failed acquire."
+            "description": "Titles stuck in `error` after a failed acquire.",
+            "example": 1
           },
           "in_progress": {
             "type": "integer",
             "format": "int64",
-            "description": "Titles currently `queued` or `downloading`."
+            "description": "Titles currently `queued` or `downloading`.",
+            "example": 4
           },
           "listen": {
             "type": "string",
-            "description": "Comma-joined `daemon.listen` addresses from live config."
+            "description": "Comma-joined `daemon.listen` addresses from live config.",
+            "example": "127.0.0.1:8787,[::1]:8787"
           },
           "storage_backend": {
             "type": "string",
-            "description": "Comma-joined enabled destination plugin ids, or `none`."
+            "description": "Comma-joined enabled destination plugin ids, or `none`.",
+            "example": "local"
           },
           "auth_enabled": {
             "type": "boolean",
-            "description": "Whether the live auth middleware requires operator credentials."
+            "description": "Whether the live auth middleware requires operator credentials.",
+            "example": true
           },
           "events": {
             "allOf": [
@@ -31080,7 +31561,8 @@
         "properties": {
           "host": {
             "type": "string",
-            "description": "Hostname or `*.` wildcard."
+            "description": "Hostname or `*.` wildcard.",
+            "example": "*.libro.fm"
           },
           "ports": {
             "type": "array",
@@ -31089,7 +31571,10 @@
               "format": "int32",
               "minimum": 0
             },
-            "description": "Destination ports."
+            "description": "Destination ports.",
+            "example": [
+              443
+            ]
           }
         }
       },
