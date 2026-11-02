@@ -12,7 +12,10 @@ the package's tests against each one. A mutant the tests still pass on is
 which reads the run's ``mutants.out`` directory and writes a Markdown summary
 to ``$GITHUB_STEP_SUMMARY``, and with ``--issue`` the issue body
 ``.github/workflows/mutation-issue.yml`` files when a mutant was missed. It
-never blocks a merge: the script always exits 0.
+never blocks a merge. It exits 1 only when the run did not test its range
+(the baseline failed or cargo-mutants errored), so the workflow fails and
+the next daily run, which starts from the last successful one, covers the
+same changes.
 
 The lists are cargo-mutants' own ``caught.txt``, ``missed.txt``,
 ``timeout.txt`` and ``unviable.txt``, one mutant per line, written in the
@@ -354,6 +357,26 @@ def run_state(exit_code: int) -> Run:
     return EXIT_CODES.get(exit_code, Run.ERROR)
 
 
+def usable(run: Run, stopped: bool) -> bool:
+    """Say whether a run tested the range it was given.
+
+    The next daily run starts from the commit of the last successful one,
+    so a run that failed before testing its mutants must fail the workflow,
+    or the changes it should have tested would never be tested. A run the
+    time limit stopped counts: what it tested stands, and retrying the same
+    range would stop at the same place.
+
+    Args:
+        run: How cargo-mutants ended.
+        stopped: Whether the workflow stopped it at its time limit.
+
+    Returns:
+        ``False`` when the baseline failed or cargo-mutants exited with an
+        error on its own.
+    """
+    return stopped or run not in (Run.BASELINE_FAILED, Run.ERROR)
+
+
 def read_results(out: Path) -> Results:
     """Read the list files of a ``mutants.out`` directory.
 
@@ -550,7 +573,9 @@ def main(argv: list[str] | None = None) -> int:
         argv: Command-line arguments; ``sys.argv`` when ``None``.
 
     Returns:
-        0: a missed mutant becomes an issue, never a failed workflow.
+        0, including when mutants were missed (they become an issue); 1 when
+        the run did not test its range (``usable``), so the workflow fails
+        and the next run covers the same changes.
     """
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["widen"]:
@@ -569,13 +594,14 @@ def main(argv: list[str] | None = None) -> int:
     widened = parse_list(args.widened.read_text(encoding="utf-8", errors="replace")) if args.widened and args.widened.is_file() else []
     sample = read_sample(args.sample.read_text(encoding="utf-8")) if args.sample and args.sample.is_file() else None
     results = read_results(args.out)
-    markdown = render(results, run_state(args.exit_code), stopped=args.stopped, widened=widened, sample=sample)
+    run = run_state(args.exit_code)
+    markdown = render(results, run, stopped=args.stopped, widened=widened, sample=sample)
     sys.stdout.write(markdown)
     write_issue(args.issue, markdown, results)
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
             handle.write(markdown)
-    return 0
+    return 0 if usable(run, args.stopped) else 1
 
 
 if __name__ == "__main__":

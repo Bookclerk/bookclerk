@@ -444,6 +444,20 @@ class MainTest(unittest.TestCase):
                 argv = ["report", "--report", str(Path(tmp, "none.json")), "--root", "tools/site", "--name", "site", "--not-mutated", "--summary", ""]
                 self.assertEqual(sr.main(argv), 0)
             self.assertIn("touches no source line", "".join(c.args[0] for c in stdout.write.call_args_list))
+            # Lines to mutate but no report, or a first pass that failed: the
+            # range was not tested, so the run fails and the next one retries.
+            with mock.patch("sys.stdout") as stdout:
+                argv = ["report", "--report", str(Path(tmp, "none.json")), "--root", "tools/site", "--name", "site", "--summary", ""]
+                self.assertEqual(sr.main(argv), 1)
+            self.assertIn("did not finish", "".join(c.args[0] for c in stdout.write.call_args_list))
+            with mock.patch("sys.stdout") as stdout:
+                argv = ["report", "--report", str(data), "--root", "tools/site", "--name", "site", "--failed", "--summary", ""]
+                self.assertEqual(sr.main(argv), 1)
+            self.assertIn("exited with an error", "".join(c.args[0] for c in stdout.write.call_args_list))
+            # A stopped run that saved results stands.
+            with mock.patch("sys.stdout"):
+                argv = ["report", "--report", str(data), "--root", "tools/site", "--name", "site", "--stopped", "--summary", ""]
+                self.assertEqual(sr.main(argv), 0)
 
     def test_usage(self) -> None:
         with mock.patch("sys.stderr"):

@@ -10,8 +10,9 @@ last commit on the branch's first-parent line from before ``--hours`` ago,
 or the parent of ``HEAD``.
 
 The previous run's commit comes from the GitHub API through ``gh``, so it is
-validated before git sees it: a full lowercase SHA that names a commit which
-is an ancestor of ``HEAD``. ``choose`` is sans-IO so
+validated before git sees it: a full lowercase SHA that names ``HEAD`` or
+one of its ancestors. ``HEAD`` itself is the answer when nothing merged since
+the last run: the range is empty and the run mutates nothing. ``choose`` is sans-IO so
 ``scripts/tests/test_mutation_base.py`` drives the same code.
 
 Usage: ``mutation_base.py --workflow FILE [--base REV] [--hours N]`` from the
@@ -46,8 +47,8 @@ def choose(candidates: list[str], is_ancestor: Callable[[str], bool]) -> str | N
     Args:
         candidates: Possible starting commits, best first: a manual base, the
             last successful run's commit, the fallback.
-        is_ancestor: Says whether a full SHA is a commit ``HEAD`` descends
-            from (and not ``HEAD`` itself, which would give an empty range).
+        is_ancestor: Says whether a full SHA is ``HEAD`` or a commit ``HEAD``
+            descends from.
 
     Returns:
         The first candidate that is a full SHA and an ancestor, or ``None``.
@@ -69,10 +70,7 @@ def _git(*args: str) -> str | None:
 
 
 def _is_ancestor(sha: str) -> bool:
-    """Say whether ``sha`` is a strict ancestor of ``HEAD``."""
-    head = _git("rev-parse", "HEAD")
-    if head is None or head == sha:
-        return False
+    """Say whether ``sha`` is ``HEAD`` or one of its ancestors."""
     try:
         result = subprocess.run(["git", "merge-base", "--is-ancestor", sha, "HEAD"], capture_output=True, check=False, timeout=60)
     except (OSError, subprocess.SubprocessError):

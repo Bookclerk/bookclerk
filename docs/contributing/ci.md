@@ -966,11 +966,17 @@ Each run works like this:
    API. A day with nothing merged, or a run that failed, is covered by the
    next run. With no earlier run to use, it falls back to the last commit
    from more than 25 hours ago, then to the parent of `HEAD`. Whatever it
-   picks must be a full SHA and an ancestor of `HEAD`.
+   picks must be a full SHA and `HEAD` or one of its ancestors. When
+   nothing merged since the last run, the range is empty and nothing is
+   mutated.
 2. The run diffs `main` against that commit and mutates only what changed,
    as described below for each language. The run number seeds every
    sample, so the choice changes from run to run.
-3. The job summary lists what was tested and what was missed.
+3. The job summary lists what was tested and what was missed. A run that
+   did not test its range fails, so the next run covers the same changes:
+   the baseline failed, the tool exited with an error, or it left no
+   results. A run stopped at its time limit still succeeds with what it
+   tested.
 4. When a mutant was missed, the reusable
    [`mutation-issue.yml`](../../.github/workflows/mutation-issue.yml)
    workflow files the summary as an issue titled `Missed mutants: <area>`

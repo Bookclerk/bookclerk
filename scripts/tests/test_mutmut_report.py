@@ -552,12 +552,12 @@ class MainTest(unittest.TestCase):
             self.assertIn("touches no source line", "".join(c.args[0] for c in stdout.write.call_args_list))
             # Patterns but no results: mutmut did not get as far as writing them.
             with mock.patch("sys.stdout") as stdout:
-                self.assertEqual(mr.main(["report", "--mutants", str(Path(tmp, "none")), "--patterns", str(patterns), "--root", root.as_posix(), "--summary", ""]), 0)
+                self.assertEqual(mr.main(["report", "--mutants", str(Path(tmp, "none")), "--patterns", str(patterns), "--root", root.as_posix(), "--summary", ""]), 1)
             self.assertIn("did not test any mutant", "".join(c.args[0] for c in stdout.write.call_args_list))
             # Results written but none tested: mutmut failed before testing.
             (mutants / "src" / "pkg" / "mod.py.meta").write_text(json.dumps({"exit_code_by_key": {"pkg.mod.x_first__mutmut_1": None}}), encoding="utf-8")
             with mock.patch("sys.stdout") as stdout:
-                self.assertEqual(mr.main(["report", "--mutants", str(mutants), "--patterns", str(patterns), "--root", root.as_posix(), "--summary", ""]), 0)
+                self.assertEqual(mr.main(["report", "--mutants", str(mutants), "--patterns", str(patterns), "--root", root.as_posix(), "--summary", ""]), 1)
             self.assertIn("did not test any mutant", "".join(c.args[0] for c in stdout.write.call_args_list))
             # No selected mutant at all: the changed functions had none.
             other = Path(tmp, "other.txt")

@@ -6,7 +6,8 @@ The Python side of mutation testing (``docs/contributing/ci.md#python-sdk``):
 functions merged since its last run in ``packages/plugin-sdk-python/src`` and then this script,
 which writes the Markdown summary and, with ``--issue``, the issue body for
 missed mutants. Like the Rust and Worker jobs, it never blocks a merge and
-the script always exits 0.
+the script exits 0 unless mutmut tested none of the selected mutants: then
+it exits 1, so the next daily run covers the same changes.
 
 Two subcommands:
 
@@ -914,7 +915,10 @@ def report_main(argv: list[str]) -> int:
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
             handle.write(markdown)
-    return 0
+    # The next daily run starts from the last successful one's commit, so a
+    # run that selected mutants but tested none fails the workflow to keep
+    # the changes in the next run's range.
+    return 1 if patterns and parsed is None else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -924,7 +928,9 @@ def main(argv: list[str] | None = None) -> int:
         argv: Command-line arguments; ``sys.argv`` when ``None``.
 
     Returns:
-        0: a missed mutant becomes an issue, never a failed workflow.
+        0, including when mutants were missed (they become an issue); 1 when
+        ``report`` finds mutmut tested none of the selected mutants, so the
+        workflow fails and the next run covers the same changes.
     """
     argv = sys.argv[1:] if argv is None else argv
     commands = {"select": select_main, "report": report_main}

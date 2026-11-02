@@ -234,8 +234,18 @@ class MainTest(unittest.TestCase):
 
     def test_missing_directory_reports_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch("sys.stdout") as stdout:
-            self.assertEqual(mr.main(["--out", str(Path(tmp) / "none"), "--exit-code", "1", "--summary", ""]), 0)
+            # The range was not tested: the run fails so the next one retries it.
+            self.assertEqual(mr.main(["--out", str(Path(tmp) / "none"), "--exit-code", "1", "--summary", ""]), 1)
         self.assertIn("did not finish", "".join(c.args[0] for c in stdout.write.call_args_list))
+
+    def test_usable(self) -> None:
+        self.assertTrue(mr.usable(mr.Run.CLEAN, False))
+        self.assertTrue(mr.usable(mr.Run.MISSED, False))
+        self.assertTrue(mr.usable(mr.Run.TIMEOUTS, False))
+        self.assertFalse(mr.usable(mr.Run.BASELINE_FAILED, False))
+        self.assertFalse(mr.usable(mr.Run.ERROR, False))
+        # Stopped at the time limit (SIGINT reads as an error): what it tested stands.
+        self.assertTrue(mr.usable(mr.Run.ERROR, True))
 
 
 def names_of(job: dict) -> list[str | None]:

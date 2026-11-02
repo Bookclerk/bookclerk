@@ -95,8 +95,10 @@ class MainTest(unittest.TestCase):
         first, second, head = self.commits
         self.assertEqual(self.run_main(["--workflow", "mutation.yml", "--base", first[:10]], api=second), (0, first + "\n"))
         self.assertEqual(self.run_main(["--workflow", "mutation.yml"], api=first), (0, first + "\n"))
-        # HEAD itself, a commit git does not have, or junk: the fallbacks.
-        for api in (head, "f" * 40, "not a sha"):
+        # Nothing merged since the last run: an empty range, not a retest.
+        self.assertEqual(self.run_main(["--workflow", "mutation.yml"], api=head), (0, head + "\n"))
+        # A commit git does not have, or junk: the fallbacks.
+        for api in ("f" * 40, "not a sha"):
             with self.subTest(api=api):
                 self.assertEqual(self.run_main(["--workflow", "mutation.yml"], api=api), (0, second + "\n"))
         self.assertEqual(self.run_main(["--workflow", "../x.yml"])[0], 1)

@@ -6,7 +6,9 @@ The TypeScript side of mutation testing (``docs/contributing/ci.md#mutation-test
 lines merged since its last run in each Worker (``tools/site``, ``tools/demo``,
 ``tools/diagnostics-collector``) and then this script, which writes the
 Markdown summary and, with ``--issue``, the issue body for missed mutants.
-Like the Rust job, it never blocks a merge and the script always exits 0.
+Like the Rust job, it never blocks a merge; the script exits 1 only when
+Stryker left no report or failed, so the next daily run covers the same
+changes.
 
 Two subcommands:
 
@@ -606,6 +608,7 @@ def report_main(argv: list[str]) -> int:
     parser.add_argument("--name", required=True, help="the Worker's name, for the heading and artifact")
     parser.add_argument("--not-mutated", action="store_true", help="the change touched no source line, so Stryker did not run")
     parser.add_argument("--stopped", action="store_true", help="the workflow stopped Stryker at its time limit")
+    parser.add_argument("--failed", action="store_true", help="Stryker's first pass exited with an error")
     parser.add_argument("--widened", type=Path, help="the list `widen --list` wrote")
     parser.add_argument("--unwidened", type=Path, help="the same list, when its sample was not tested")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""), help="file to append the summary to (none when empty)")
@@ -620,6 +623,12 @@ def report_main(argv: list[str]) -> int:
     unwidened_text = args.unwidened.read_text(encoding="utf-8", errors="replace") if args.unwidened is not None and args.unwidened.is_file() else ""
     unwidened = [prefix + path for path in parse_widened(unwidened_text)]
     markdown = render(_clean(args.name), parsed, mutated=not args.not_mutated, stopped=args.stopped, widened=widened, unwidened=unwidened)
+    # The next daily run starts from the last successful one's commit, so a
+    # run that did not test its changes fails the workflow to keep them in
+    # the next run's range.
+    unusable = not args.not_mutated and (parsed is None or args.failed)
+    if unusable and parsed is not None:
+        markdown += "\n> [!WARNING]\n> Stryker exited with an error, so these results may be incomplete. Check the job log.\n"
     sys.stdout.write(markdown)
     write_issue(args.issue, markdown, parsed[0] if parsed is not None else None)
     if parsed is not None:
@@ -627,17 +636,19 @@ def report_main(argv: list[str]) -> int:
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
             handle.write(markdown)
-    return 0
+    return 1 if unusable else 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run ``lines`` or ``report``.
+    """Run ``lines``, ``widen`` or ``report``.
 
     Args:
         argv: Command-line arguments; ``sys.argv`` when ``None``.
 
     Returns:
-        0: a missed mutant becomes an issue, never a failed workflow.
+        0, including when mutants were missed (they become an issue); 1 when
+        ``report`` finds Stryker left no report or failed, so the workflow
+        fails and the next run covers the same changes.
     """
     argv = sys.argv[1:] if argv is None else argv
     commands = {"lines": lines_main, "widen": widen_main, "report": report_main}
