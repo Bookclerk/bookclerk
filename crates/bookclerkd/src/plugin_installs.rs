@@ -393,18 +393,23 @@ pub async fn get_plugin(
 pub(crate) struct PostPluginInstall {
     /// Registry coordinate (`cargo:…@v`, `registry:…#name@v`).
     #[serde(default)]
+    #[schema(example = "cargo:bookclerk-plugin-source-chirp@0.4.1")]
     coordinate: Option<String>,
     /// Operator-placed package directory under `plugin-packages/`.
     #[serde(default)]
+    #[schema(example = "bookclerk-plugin-source-chirp-0.4.1")]
     package: Option<String>,
     /// Make the new version active even when another is.
     #[serde(default)]
+    #[schema(example = true)]
     activate: bool,
     /// Record the requested consent as approved.
     #[serde(default)]
+    #[schema(example = false)]
     approve: bool,
     /// Accept a publisher without independent authenticity.
     #[serde(default)]
+    #[schema(example = false)]
     allow_unverified_publisher: bool,
 }
 
@@ -511,6 +516,7 @@ pub async fn post_plugin_install(
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutActiveVersion {
     /// Installed version to activate.
+    #[schema(example = "0.4.1")]
     version: String,
 }
 

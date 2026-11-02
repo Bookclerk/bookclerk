@@ -835,9 +835,11 @@ impl UploadFile {
 pub struct UploadCommitRequest {
     /// Complete the job with this commit (the job's closing upload).
     #[serde(default)]
+    #[schema(example = true)]
     pub finish: bool,
     /// Outcome text recorded as the job's progress when `finish` is set.
     #[serde(default)]
+    #[schema(example = "acquired 3 titles")]
     pub detail: Option<String>,
 }
 

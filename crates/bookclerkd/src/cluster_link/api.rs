@@ -288,20 +288,26 @@ pub async fn get_cluster_consents(
 #[serde(deny_unknown_fields)]
 pub struct ApproveBody {
     /// Owner cluster id.
+    #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
     cluster_id: String,
     /// Canonical plugin key.
+    #[schema(example = "platform:bookclerk/bookclerk-plugin-source-libro#libro")]
     plugin_key: String,
     /// The `request_digest` of the request the operator reviewed, as the
     /// listing shows it (refused when the recorded request is another one).
+    #[schema(example = "9b74c9897bac770ffc029102a200c5de3a9c4a1d6c2f1e0b5a7d8c9e0f1a2b3c")]
     request_digest: String,
     /// Domains to take out of the request.
     #[serde(default)]
+    #[schema(example = json!(["telemetry.example.com"]))]
     deny_domains: BTreeSet<String>,
     /// Bindings to take out of the request.
     #[serde(default)]
+    #[schema(example = json!(["oauth"]))]
     deny_bindings: BTreeSet<String>,
     /// Deny all network access.
     #[serde(default)]
+    #[schema(example = false)]
     deny_network: bool,
 }
 
@@ -385,8 +391,10 @@ fn approval_error_response(err: &RemoteApprovalError) -> Response {
 #[serde(deny_unknown_fields)]
 pub struct RevokeBody {
     /// Owner cluster id.
+    #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
     cluster_id: String,
     /// Canonical plugin key.
+    #[schema(example = "platform:bookclerk/bookclerk-plugin-source-libro#libro")]
     plugin_key: String,
 }
 
@@ -435,9 +443,11 @@ pub async fn post_cluster_consent_revoke(
 pub struct ClusterScanBody {
     /// Scan only this store account of the owner cluster.
     #[serde(default)]
+    #[schema(example = "reader@example.com")]
     account: Option<String>,
     /// Pin every planned job to this owner plugin instance.
     #[serde(default)]
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
     plugin_instance_id: Option<String>,
 }
 
@@ -446,6 +456,7 @@ pub struct ClusterScanBody {
 #[serde(deny_unknown_fields)]
 pub struct ClusterJobsBody {
     /// Job ids on the owner cluster.
+    #[schema(example = json!(["acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"]))]
     job_ids: Vec<String>,
 }
 

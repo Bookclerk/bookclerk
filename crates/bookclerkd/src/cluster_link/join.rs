@@ -462,6 +462,7 @@ pub async fn get_join_status(State(state): State<Arc<AppState>>) -> Response {
 #[serde(deny_unknown_fields)]
 pub struct InspectBody {
     /// The library's address (`https://owner.example`, `owner.lan:8443`).
+    #[schema(example = "https://books.example.com")]
     address: String,
 }
 
@@ -513,16 +514,20 @@ pub async fn post_join_inspect(
 #[serde(deny_unknown_fields)]
 pub struct StartBody {
     /// The library's address.
+    #[schema(example = "https://books.example.com")]
     address: String,
     /// The fingerprint the operator confirmed (self-signed libraries).
     #[serde(default)]
+    #[schema(example = "kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o")]
     fingerprint: Option<String>,
     /// The name to join as (default: this machine's name).
     #[serde(default)]
+    #[schema(example = "study-mini")]
     branch_name: Option<String>,
     /// Offer to join as a clerk (an owner node that shares the library's
     /// database): only an empty install may, and its data is replaced.
     #[serde(default)]
+    #[schema(example = false)]
     clerk: bool,
 }
 
@@ -656,17 +661,21 @@ pub async fn post_join_start(
 pub struct CallbackBody {
     /// The code from the library.
     #[serde(default)]
+    #[schema(example = "BhD5jGe21A8WEIm7SrdBZ-KXhs5B9HkeUSEc58grX94")]
     code: String,
     /// The `state` it came back with.
     #[serde(default)]
+    #[schema(example = "c3RhdGUtOGY2ZTJkMWE")]
     state: String,
     /// The library's `error` (`access_denied`), when it sent one.
     #[serde(default)]
+    #[schema(example = "access_denied")]
     error: Option<String>,
     /// The connection type the library's user chose (`clerk`; a branch
     /// when left out). The code is bound to it, so a changed value only
     /// fails the redeem.
     #[serde(default)]
+    #[schema(example = "clerk")]
     connection: Option<String>,
 }
 
@@ -1063,6 +1072,9 @@ async fn join_as_clerk(
 #[serde(deny_unknown_fields)]
 pub struct InviteBody {
     /// The whole branch invite (`https://<library>/enroll#bcn1...`).
+    #[schema(
+        example = "https://books.example.com/enroll#bcn1.9f2c7b1e4a8d3c6f0b5e2a7d4c1f8e3b.kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o"
+    )]
     link: String,
 }
 
@@ -1170,6 +1182,7 @@ pub async fn post_join_invite(
 #[serde(deny_unknown_fields)]
 pub struct LeaveBody {
     /// The library (owner cluster id) to leave.
+    #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
     cluster_id: String,
 }
 
@@ -1231,10 +1244,13 @@ pub async fn post_join_leave(
 #[serde(deny_unknown_fields)]
 pub struct SharingBody {
     /// The library (owner cluster id).
+    #[schema(example = "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a")]
     cluster_id: String,
     /// "Share this branch's books with *library*".
+    #[schema(example = true)]
     share_books: bool,
     /// "Include books from my own branches".
+    #[schema(example = false)]
     include_branches: bool,
 }
 

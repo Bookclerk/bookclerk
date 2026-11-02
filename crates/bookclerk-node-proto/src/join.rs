@@ -96,20 +96,27 @@ pub struct OwnerInfo {
 #[serde(deny_unknown_fields)]
 pub struct OAuthEnrollRequest {
     /// The authorization code from the callback.
+    #[schema(example = "BhD5jGe21A8WEIm7SrdBZ-KXhs5B9HkeUSEc58grX94")]
     pub code: String,
     /// The PKCE verifier.
+    #[schema(example = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")]
     pub code_verifier: String,
     /// The redirect URI the authorization was requested with.
+    #[schema(example = "http://127.0.0.1:41923/enroll/callback")]
     pub redirect_uri: String,
     /// Ed25519 public signing key.
+    #[schema(example = "Nflg3bNZ7h6Q7aePwVccVzry1BxzaqtguKtJlkfPE0M")]
     pub sign_pk: String,
     /// X25519 public box key.
+    #[schema(example = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo")]
     pub box_pk: String,
     /// The name this branch joins as (the node's label).
     #[serde(default)]
+    #[schema(example = "study-mini")]
     pub branch_name: String,
     /// The joining install's Bookclerk version.
     #[serde(default)]
+    #[schema(example = "0.4.0")]
     pub software_version: String,
     /// The connection type the code was approved for. It must match the
     /// one bound to the code at consent; left out for a branch.
