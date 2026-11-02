@@ -575,17 +575,23 @@ jobs:
         run: python3 scripts/ci-exec.py run e2e
 
   release:
-    name: release build + small-VPS envelope
+    name: release build + small-VPS envelope (${{ matrix.lto }} LTO)
     needs: plan
     if: needs.plan.outputs.job_release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    # Pull requests link the release binaries with thin LTO, which uses every
+    # core; the merge queue and OSV remediation runs keep the shipping fat
+    # LTO, so the build and envelope that gate main measure the binaries we
+    # ship. The cache key covers every CARGO* variable, so each mode has its
+    # own `release` cache, and the build-only main push seeds both
+    # (docs/contributing/ci.md#release-build).
+    strategy:
+      fail-fast: false
+      matrix:
+        lto: ${{ fromJSON(github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.private-head && '["fat","thin"]' || github.event_name == 'pull_request' && !inputs.private-head && '["thin"]' || '["fat"]') }}
     env:
-      # Pull requests link the release binaries with thin LTO, which uses
-      # every core; the merge queue, main and OSV remediation runs keep the
-      # shipping fat LTO, so the build and envelope that gate main measure
-      # the binaries we ship (docs/contributing/ci.md#release-build).
-      CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'pull_request' && !inputs.private-head && 'thin' || 'fat' }}
+      CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto }}
       # The collector lives on diagnostics.<DOMAIN>, or on the workers.dev URL
       # the deploy stores when DOMAIN is unset
       # (.github/workflows/diagnostics-collector-deploy.yml). Job-wide, so the

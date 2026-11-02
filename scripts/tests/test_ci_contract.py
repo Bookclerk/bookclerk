@@ -225,11 +225,25 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_only_pull_requests_relax_release_lto(self) -> None:
         """The merge queue, main and OSV remediation keep the shipping profile."""
-        lto = self.jobs["release"]["env"]["CARGO_PROFILE_RELEASE_LTO"]
+        job = self.jobs["release"]
+        self.assertEqual(job["env"]["CARGO_PROFILE_RELEASE_LTO"], "${{ matrix.lto }}")
+        self.assertIs(job["strategy"]["fail-fast"], False)
+        # Pull requests build thin, a build-only main push seeds both caches,
+        # everything else (merge queue, OSV remediation) builds fat.
         self.assertEqual(
-            lto,
-            "${{ github.event_name == 'pull_request' && !inputs.private-head && 'thin' || 'fat' }}",
+            job["strategy"]["matrix"]["lto"],
+            "${{ fromJSON(github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.private-head"
+            " && '[\"fat\",\"thin\"]' || github.event_name == 'pull_request' && !inputs.private-head"
+            " && '[\"thin\"]' || '[\"fat\"]') }}",
         )
+        self.assertIn("${{ matrix.lto }}", job["name"])
+        # The LTO mode reaches the cache key through rust-cache's built-in
+        # CARGO* prefix, so each mode keeps its own `release` cache.
+        caches = [s for s in job["steps"] if str(s.get("uses", "")).startswith("Swatinem/rust-cache@")]
+        self.assertEqual(len(caches), 2)
+        for step in caches:
+            self.assertEqual(step["with"]["shared-key"], "release")
+            self.assertNotIn("prefix-key", step["with"])
         cargo = tomllib.loads((REPO / "Cargo.toml").read_text(encoding="utf-8"))
         self.assertIs(cargo["profile"]["release"]["lto"], True)
         self.assertEqual(cargo["profile"]["release"]["codegen-units"], 1)

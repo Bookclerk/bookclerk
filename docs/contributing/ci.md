@@ -36,7 +36,8 @@ tested that exact commit. So the push run resolves with `--build-only`
 - Only the jobs that save caches run: `check`, `test`, `native-gateway`
   and `release` (`BUILD_ONLY_JOBS` in `scripts/ci_plan/execute.py`). The
   gate expects every other job to be skipped. The release job drops its
-  envelope check (`BUILD_ONLY_SKIPPED_CHECKS`), which only measures.
+  envelope check (`BUILD_ONLY_SKIPPED_CHECKS`), which only measures, and
+  runs a fat and a thin leg so both of its caches stay warm.
 - Builds, Clippy and installs run as usual. `cargo test` and the nextest
   run become `cargo test … --no-run`. Doctests, formatting, scripts,
   staging and runtime assertions are dropped.
@@ -110,7 +111,7 @@ Rust dependency caches use three shared keys. Each is saved by one job on
   and Windows. Restored by `e2e`, `confinement`, `tray`, `postgres` and
   `windows-cluster`.
 - **`release`**: saved by `release` (the job that also runs the
-  envelope).
+  envelope), once per LTO mode (see [Release build](#release-build)).
 
 Fewer entries keep the repository under the Actions cache limit, so jobs
 stop missing their cache.
@@ -349,7 +350,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | `fmt / clippy / docs` | Any of its checks is selected | `lint`, `ui`, `plugin_sdk_abi`, `python_sdk`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
 | `unit + integration tests` | `rust_test` is selected | nextest over the affected packages (the workspace on the full suite), custom-harness targets, feature test runs, bench and example builds |
 | `staged plugin installation (e2e)` | `e2e` is selected | Builds, installs and stages the guests in scope, then the `bookclerk-plugin-e2e` staged targets |
-| `release build + small-VPS envelope` | A shipped binary (hosts, helpers, platform guests) is compiled-affected (`release`), or an `[envelope].paths` input changed, an `[envelope].packages` member is compiled-affected, or the full suite (`envelope`) | Each selected check as its own step; see [Release build](#release-build) and [Small-VPS envelope](#small-vps-envelope) |
+| `release build + small-VPS envelope (<lto> LTO)` | A shipped binary (hosts, helpers, platform guests) is compiled-affected (`release`), or an `[envelope].paths` input changed, an `[envelope].packages` member is compiled-affected, or the full suite (`envelope`) | Each selected check as its own step; see [Release build](#release-build) and [Small-VPS envelope](#small-vps-envelope) |
 | `sandbox + jailed tiers` (3 OS) | sandbox, jail, media or media-worker is affected | Clippy and enforcement tests (Windows `--test-threads=1`) |
 | `native-behind-workerd gateway` (3 OS) | See [the gateway job](#native-behind-workerd-gateway-job) | The four `native_gateway` targets, plus per-OS extras |
 | `tray` (3 OS) | `bookclerk-tray` is affected | Clippy and tests |
@@ -435,10 +436,18 @@ The release job runs at one of two scopes:
 The release profile ships fat LTO with one codegen unit, which links on a
 single core. On pull requests the job sets
 `CARGO_PROFILE_RELEASE_LTO=thin`, which links in parallel and still checks
-that the release build compiles. The merge queue, `main` and OSV
-remediation runs keep fat LTO, so the build and the envelope that gate
-`main` use the binaries we ship. Dependencies compile the same way under
-both settings, so the `release` cache serves both.
+that the release build compiles. The merge queue and OSV remediation runs
+keep fat LTO, so the build and the envelope that gate `main` use the
+binaries we ship.
+
+Cargo recompiles dependencies when the LTO mode changes, and the cache key
+covers every `CARGO*` variable, so each mode has its own `release` cache.
+The job is a matrix over the mode: one `thin` leg on a pull request, one
+`fat` leg in the merge queue, and both on the build-only `main` push, which
+seeds the two caches. Each leg skips its build there when its cache is
+already current. On a 4-core machine a warm thin build of `bookclerkd` took
+about 10 minutes against 17 for fat; a thin build without its own cache
+gains nothing.
 
 ### Native-behind-workerd gateway job
 
