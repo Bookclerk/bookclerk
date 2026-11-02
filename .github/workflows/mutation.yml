@@ -1,0 +1,143 @@
+# Mutation testing of the Rust code a pull request changes
+# (docs/contributing/ci.md#mutation-testing).
+#
+# - Coverage shows which lines the tests run, not whether a test would
+#   notice them doing the wrong thing. cargo-mutants makes small changes to
+#   the changed functions (a flipped comparison, a body that returns a
+#   default) and runs the package's tests against each; a change every test
+#   still passes on is a "missed" mutant, reported in the job summary and as
+#   an annotation on the diff.
+# - Only the functions the pull request touches are mutated (`--in-diff`,
+#   from the pull request's diff), so the cost follows the change. The run
+#   stops at a time limit and reports what it tested.
+# - Trial: report-only and not a required check. Settings live in
+#   .cargo/mutants.toml.
+#
+# It runs the pull request's code with a read-only token, like CI.
+
+name: Mutation testing
+
+on:
+  pull_request:
+    paths:
+      - "crates/**/*.rs"
+      - "examples/**/*.rs"
+      - ".cargo/mutants.toml"
+      - ".github/workflows/mutation.yml"
+      - "scripts/mutation_report.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Each mutant rebuilds only what it changed.
+  CARGO_INCREMENTAL: "1"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  RUST_BACKTRACE: "0"
+
+jobs:
+  rust:
+    name: Rust mutants (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      # Read the pull request's diff.
+      pull-requests: read
+    steps:
+      # The pull request's head, so the diff's line numbers match the files.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      # The diff against the merge base, as GitHub shows it. A diff GitHub
+      # will not serve (too large) skips the run.
+      - name: Fetch the pull request's diff
+        id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" -H "Accept: application/vnd.github.diff" > "$RUNNER_TEMP/pr.diff"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Mutation testing::Skipped: GitHub did not serve the pull request's diff."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.diff.outputs.ok == 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      # Tool versions shared with the Dev Container (docs/contributing/ci.md#tool-versions).
+      - name: Read tool pins
+        if: steps.diff.outputs.ok == 'true'
+        id: pins
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
+      - name: Install cargo-nextest and cargo-mutants
+        if: steps.diff.outputs.ok == 'true'
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-nextest@${{ steps.pins.outputs.cargo-nextest }},cargo-mutants@27.1.0
+
+      - name: Install capnproto
+        if: steps.diff.outputs.ok == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
+
+      # Its own cache: mutant builds cap lints and build incrementally, so
+      # CI's `debug` cache would not match.
+      - name: Cache cargo
+        if: steps.diff.outputs.ok == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: mutants
+          cache-on-failure: true
+
+      # `--in-place` mutates this checkout, which the runner throws away;
+      # cargo-mutants restores each file after its mutant. The time limit
+      # stops it with SIGINT, which still writes the lists of what it tested.
+      - name: Test the mutants
+        id: mutants
+        if: steps.diff.outputs.ok == 'true'
+        run: |
+          set +e
+          timeout --signal=INT --kill-after=5m 50m \
+            cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --in-place --no-shuffle --output "$RUNNER_TEMP"
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -eq 124 ] || [ "$code" -eq 130 ] || [ "$code" -eq 137 ]; then
+            echo "stopped=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Report
+        if: ${{ !cancelled() && steps.diff.outputs.ok == 'true' }}
+        env:
+          CODE: ${{ steps.mutants.outputs.code }}
+          STOPPED: ${{ steps.mutants.outputs.stopped }}
+        run: |
+          set -euo pipefail
+          args=(--out "$RUNNER_TEMP/mutants.out" --exit-code "${CODE:-1}")
+          if [ "${STOPPED:-}" = "true" ]; then args+=(--stopped); fi
+          python3 scripts/mutation_report.py "${args[@]}"
+
+      - name: Upload the results
+        if: ${{ !cancelled() && steps.diff.outputs.ok == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutants-rust
+          path: ${{ runner.temp }}/mutants.out
+          if-no-files-found: ignore
+          retention-days: 7

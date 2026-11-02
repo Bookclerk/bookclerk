@@ -850,6 +850,53 @@ script size limit.
 The bundle status is informational, like the coverage statuses; its
 settings are under `bundle_analysis` in `.github/codecov.yml`.
 
+## Mutation testing
+
+Coverage shows which lines the tests run, not whether a test would notice
+them doing the wrong thing. Mutation testing checks that: it makes a small
+change to the code, such as flipping a comparison or making a function
+return a default value, and runs the tests. If a test fails, the mutant is
+**caught**. If every test still passes, the mutant is **missed**: nothing
+checks that behavior, so a real bug there would slip through too.
+
+The [`mutation.yml`](../../.github/workflows/mutation.yml) workflow runs
+[cargo-mutants](https://mutants.rs/) on every pull request that changes
+Rust code:
+
+1. It mutates only the functions the pull request changes (`--in-diff`,
+   from the pull request's diff), so the cost follows the size of the
+   change. Test code and the generated files are never mutated.
+2. Each mutant runs the tests of its own package under cargo-nextest.
+3. The run stops after 50 minutes and reports what it tested so far.
+
+The job summary shows the share of mutants the tests caught and lists the
+missed ones. cargo-mutants also annotates each missed mutant on the pull
+request's diff. The full results, with a log per mutant, are in the
+`mutants-rust` artifact. A mutant that does not build (**unviable**) says
+nothing about the tests and is left out of the score; one whose tests time
+out counts as caught.
+
+To fix a missed mutant, add a test that fails with the change it names, or
+tighten an assertion that should already have caught it. To reproduce one
+locally:
+
+```sh
+cargo install cargo-mutants --locked
+git diff origin/main... > /tmp/change.diff
+cargo mutants --in-diff /tmp/change.diff
+```
+
+Settings live in [`.cargo/mutants.toml`](../../.cargo/mutants.toml). It
+caps lints for mutant builds, so a mutant that only leaves a parameter
+unused is still tested, and its excluded files must match `generated` in
+`scripts/coverage_areas.toml` (a test checks this).
+
+> [!NOTE]
+> The workflow is a report-only trial and not a required check. Tests that
+> skip when a helper is missing, such as plugin-host tests without the
+> guests built, can report mutants as missed that the full CI suite would
+> catch. The TypeScript Workers and the Python SDK are not covered yet.
+
 ## Worker startup time
 
 Cloudflare rejects a deploy whose Worker takes more than one second to run

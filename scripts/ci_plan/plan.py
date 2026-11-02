@@ -176,7 +176,8 @@ PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 # Scripts that only plan-job tests exercise (the CLA checker runs in its own
 # workflow, from the default branch, and builds nothing; the coverage gate
 # runs in CI Gate on every run, Codecov reads its settings itself, and the
-# bundle uploader in tools/codecov only runs in coverage-upload.yml).
+# bundle uploader in tools/codecov only runs in coverage-upload.yml; the
+# mutation testing report and settings only run in mutation.yml).
 PLAN_JOB_SCRIPT_FILES = frozenset(
     {
         "scripts/cla_check.py",
@@ -187,6 +188,8 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
         ".github/codecov.yml",
         "tools/codecov/package.json",
         "tools/codecov/package-lock.json",
+        "scripts/mutation_report.py",
+        ".cargo/mutants.toml",
     }
 )
 

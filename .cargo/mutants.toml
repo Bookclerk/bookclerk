@@ -1,0 +1,20 @@
+# cargo-mutants settings for the mutation testing workflow
+# (.github/workflows/mutation.yml, docs/contributing/ci.md#mutation-testing).
+
+# The same runner as CI's `rust_test` check.
+test_tool = "nextest"
+
+# CI denies warnings, and a mutant that leaves a parameter unused would then
+# fail to build and be reported as unviable instead of tested. Lints are
+# capped at warnings for mutant builds only.
+cap_lints = true
+
+# Generated files: tests exercise their generator, not each line it writes.
+# The same list as `generated` in scripts/coverage_areas.toml (a test checks
+# that the two agree).
+exclude_globs = ["crates/bookclerk-plugin-abi/src/generated.rs", "crates/bookclerk-workerd/src/pin.rs"]
+
+# Some test binaries spawn helpers and take a while to start; give each
+# mutant's test run at least this long, in seconds, before calling it a
+# timeout.
+minimum_test_timeout = 120
