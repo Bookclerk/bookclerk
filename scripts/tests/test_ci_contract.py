@@ -205,9 +205,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(text.count("ci-exec.py run windows_cluster"), 1)
 
     def test_envelope_builds_on_the_runner(self) -> None:
-        job = self.jobs["envelope"]
+        job = self.jobs["release"]
         self.assertEqual(job["runs-on"], "ubuntu-latest")
-        self.assertEqual(job["timeout-minutes"], 180)
+        # A cold fat-LTO build and the envelope together.
+        self.assertEqual(job["timeout-minutes"], 240)
         self.assertNotIn("container", job)
         self.assertNotIn("CARGO_BUILD_JOBS", job.get("env") or {})
         for step in job["steps"]:
@@ -215,7 +216,43 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertNotIn("pipefail", script, step.get("name"))
         runs = [s for s in job["steps"] if "ci-exec.py run envelope" in s.get("run", "")]
         self.assertEqual(len(runs), 1)
-        self.assertNotIn("if", runs[0])
+        # The envelope measures the binaries the release step built: it runs
+        # after that step, in the same job, with the same environment.
+        build = next(i for i, s in enumerate(job["steps"]) if "ci-exec.py run release" in s.get("run", ""))
+        self.assertLess(build, job["steps"].index(runs[0]))
+        for step in (job["steps"][build], runs[0]):
+            self.assertNotIn("env", step, step.get("name"))
+
+    def test_only_pull_requests_relax_release_lto(self) -> None:
+        """The merge queue, main and OSV remediation keep the shipping profile."""
+        job = self.jobs["release"]
+        self.assertEqual(job["env"]["CARGO_PROFILE_RELEASE_LTO"], "${{ matrix.lto }}")
+        self.assertIs(job["strategy"]["fail-fast"], False)
+        # Pull requests build thin, a build-only main push seeds both caches,
+        # everything else (merge queue, OSV remediation) builds fat.
+        self.assertEqual(
+            job["strategy"]["matrix"]["lto"],
+            "${{ fromJSON(github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.private-head"
+            " && '[\"fat\",\"thin\"]' || github.event_name == 'pull_request' && !inputs.private-head"
+            " && '[\"thin\"]' || '[\"fat\"]') }}",
+        )
+        self.assertIn("${{ matrix.lto }}", job["name"])
+        # The LTO mode reaches the cache key through rust-cache's built-in
+        # CARGO* prefix, so each mode keeps its own `release` cache.
+        caches = [s for s in job["steps"] if str(s.get("uses", "")).startswith("Swatinem/rust-cache@")]
+        self.assertEqual(len(caches), 2)
+        for step in caches:
+            self.assertEqual(step["with"]["shared-key"], "release")
+            self.assertNotIn("prefix-key", step["with"])
+        cargo = tomllib.loads((REPO / "Cargo.toml").read_text(encoding="utf-8"))
+        self.assertIs(cargo["profile"]["release"]["lto"], True)
+        self.assertEqual(cargo["profile"]["release"]["codegen-units"], 1)
+        # No other job may override the release profile.
+        for name, job in self.jobs.items():
+            if name == "release":
+                continue
+            keys = set(job.get("env") or {}) | {k for s in job.get("steps", []) for k in (s.get("env") or {})}
+            self.assertFalse({k for k in keys if k.startswith("CARGO_PROFILE_RELEASE")}, name)
 
     def test_native_gateway_smoke_inputs_exist(self) -> None:
         from ci_plan.plan import load_relations

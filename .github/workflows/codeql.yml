@@ -1,0 +1,120 @@
+# CodeQL code scanning (docs/contributing/ci.md#codeql).
+#
+# - Analyzes GitHub Actions workflows, JavaScript/TypeScript, Python and Rust
+#   with CodeQL's default query suite, in build mode `none`, as GitHub's
+#   default setup did. The repository's "CodeQL results" merge rule reads
+#   these analyses.
+# - Rust takes about 20 minutes and CodeQL has no incremental analysis for
+#   it yet, so a pull request that changes no Rust input skips it
+#   (scripts/codeql_languages.py): such a change cannot add or fix a Rust
+#   alert. Pushes to main, the weekly schedule and manual runs analyze every
+#   language, so main always has a full analysis to compare against.
+# - The Rust extractor's own cargo output (build scripts and proc macros) is
+#   cached between runs; main saves it and pull requests only restore it.
+#
+# Default setup must be off for these uploads to be accepted.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "41 3 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+# A new push supersedes a pull request's run; every main commit keeps its own.
+concurrency:
+  group: codeql-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  languages:
+    name: Choose languages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.choose.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The merge commit and its base parent, for the diff below.
+          fetch-depth: 2
+          persist-credentials: false
+
+      # A failed diff fails the job rather than reading as "no Rust changed".
+      # NUL-separated so no quoting hides a name, and without rename
+      # detection so a moved file lists both names.
+      - name: Diff the pull request
+        if: github.event_name == 'pull_request'
+        run: git diff -z --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed.txt"
+
+      - name: Choose the languages
+        id: choose
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          args=(--event "$EVENT")
+          if [ "$EVENT" = "pull_request" ]; then
+            args+=(--paths-file "$RUNNER_TEMP/changed.txt")
+          fi
+          python3 scripts/codeql_languages.py "${args[@]}"
+
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    needs: languages
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml follows `stable`, so the key names the compiler
+      # itself: a new release would otherwise restore outputs it rebuilds.
+      # The extractor's target directory is set here because a job-level
+      # `env` cannot read the `runner` context.
+      - name: Read the Rust version
+        id: rustc
+        if: matrix.language == 'rust'
+        run: |
+          echo "version=$(rustc -V | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_OUTPUT"
+          echo "CODEQL_EXTRACTOR_RUST_OPTION_CARGO_TARGET_DIR=$RUNNER_TEMP/codeql-rust-target" >> "$GITHUB_ENV"
+
+      - name: Restore the Rust extractor's cargo output
+        if: matrix.language == 'rust'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/codeql-rust-target
+          key: codeql-rust-target-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: codeql-rust-target-${{ steps.rustc.outputs.version }}-
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
+
+      - name: Save the Rust extractor's cargo output
+        if: matrix.language == 'rust' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/codeql-rust-target
+          key: codeql-rust-target-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock') }}

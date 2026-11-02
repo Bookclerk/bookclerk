@@ -180,6 +180,9 @@ BUILD_SUBCOMMANDS = frozenset({"build", "build-app", "check", "clippy", "install
 # Jobs that save the dependency caches other runs restore (see ci.yml
 # `save-if`). Build-only runs skip every other job.
 BUILD_ONLY_JOBS = frozenset({"check", "test", "native-gateway", "release"})
+# Checks in a build-only job that only measure or test, so a build-only run
+# drops them (the small-VPS envelope shares the release job).
+BUILD_ONLY_SKIPPED_CHECKS = frozenset({"envelope"})
 # Prerequisites kept in build-only runs (staging and installs only feed tests).
 BUILD_PREREQS = frozenset({"build", "ensure_workerd"})
 # Set to "true" by a build-only job whose dependency cache key is already
@@ -293,8 +296,14 @@ def resolve(
         execution = predicted
     if build_only:
         execution = plan_from_dict(plan_to_dict(execution))
-        execution.checks = {c: v for c, v in execution.checks.items() if CHECK_JOB[c] in BUILD_ONLY_JOBS}
-        execution.jobs = {job: on and job in BUILD_ONLY_JOBS for job, on in execution.jobs.items()}
+        execution.checks = {
+            c: v
+            for c, v in execution.checks.items()
+            if CHECK_JOB[c] in BUILD_ONLY_JOBS and c not in BUILD_ONLY_SKIPPED_CHECKS
+        }
+        # A job whose only checks were dropped has nothing to build.
+        kept = {CHECK_JOB[c] for c in execution.checks}
+        execution.jobs = {job: on and job in BUILD_ONLY_JOBS and job in kept for job, on in execution.jobs.items()}
     return {
         "schema_version": SCHEMA_VERSION,
         "execution_id": uuid.uuid4().hex,

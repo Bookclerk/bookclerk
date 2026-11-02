@@ -190,6 +190,7 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
         "tools/codecov/package.json",
         "tools/codecov/package-lock.json",
         "scripts/mutation_report.py",
+        "scripts/codeql_languages.py",
         ".cargo/mutants.toml",
         "scripts/stryker_report.py",
         "scripts/stryker.config.json",
@@ -267,7 +268,10 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
     # runner, so the slowest check no longer waits behind lints and docs.
     "test": ("rust_test",),
     "e2e": ("e2e",),
-    "release": ("release",),
+    # The release build, then the small-VPS envelope on the binaries it just
+    # built: the envelope's own `install-platform --release` finds them
+    # current, so the hosts are compiled once per run, not twice.
+    "release": ("release", "envelope"),
     "confinement": ("confinement",),
     "native-gateway": ("native_gateway",),
     "tray": ("tray",),
@@ -276,8 +280,6 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
     # Windows execution of the enrolled CLI startup target and the identity
     # file tests. It is not a substitute for confinement or native-gateway.
     "windows-cluster": ("windows_cluster",),
-    # ubuntu-latest VM build, then docker run --memory=1g --memory-swap=1g --cpus=1.
-    "envelope": ("envelope",),
     # The Workers outside the Cargo workspace: the website's generator and
     # Worker tests, its Lighthouse and axe-core audit, and the diagnostics
     # collector's tests and the hosted demo Worker's tests. No Rust toolchain.
@@ -288,7 +290,7 @@ ALL_CHECKS = tuple(CHECK_JOB)
 
 # Jobs that run each selected check as its own step, gated by a
 # ``check_<name>`` plan output.
-STEP_GATED_JOBS = ("check", "site")
+STEP_GATED_JOBS = ("check", "release", "site")
 
 # Checks in the ``check`` (lint and docs) job that need no Cargo toolchain.
 NON_CARGO_CHECKS = frozenset({"lint", "ui", "python_sdk"})
