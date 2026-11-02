@@ -238,11 +238,11 @@ struct OidcProviderView {
     #[schema(example = "123456789012-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6.apps.googleusercontent.com")]
     client_id: String,
     /// OAuth scopes requested at authorize.
-    #[schema(example = json!(["openid", "profile", "email", "groups"]))]
+    #[schema(example = json!(["openid", "profile", "email"]))]
     scopes: Vec<String>,
     /// How a first login becomes a portal user (JIT, mapped role, allowlist, invite-only).
     #[schema(value_type = String)]
-    #[schema(example = "mapped_role")]
+    #[schema(example = "allowlist")]
     provision: OidcProvisionMode,
     /// Portal role used when no mapped claim matches (`member` by default).
     #[schema(example = "member")]
@@ -251,7 +251,7 @@ struct OidcProviderView {
     #[schema(example = "groups")]
     role_claim: String,
     /// IdP group/role claim values mapped onto Bookclerk portal roles.
-    #[schema(example = json!({"bookclerk-admins": "administrator", "household": "member"}))]
+    #[schema(example = json!({}))]
     role_map: BTreeMap<String, String>,
     /// When true, a verified email may attach this IdP to an existing user.
     #[schema(example = true)]
@@ -334,12 +334,12 @@ struct OidcProviderPut {
     client_secret: Option<String>,
     #[serde(default)]
     /// OAuth scopes; empty is replaced with the provider default set.
-    #[schema(example = json!(["openid", "profile", "email", "groups"]))]
+    #[schema(example = json!(["openid", "profile", "email"]))]
     scopes: Vec<String>,
     #[serde(default)]
     /// JIT, mapped-role, allowlist, or invite-only policy for first login.
     #[schema(value_type = String)]
-    #[schema(example = "mapped_role")]
+    #[schema(example = "allowlist")]
     provision: OidcProvisionMode,
     #[serde(default = "default_member_role")]
     /// Fallback portal role when no mapped claim matches.
@@ -351,7 +351,7 @@ struct OidcProviderPut {
     role_claim: String,
     #[serde(default)]
     /// Claim value to portal role mapping applied at provision time.
-    #[schema(example = json!({"bookclerk-admins": "administrator", "household": "member"}))]
+    #[schema(example = json!({}))]
     role_map: BTreeMap<String, String>,
     #[serde(default)]
     /// When true, verified email may attach this IdP to an existing user.
@@ -380,7 +380,7 @@ struct OidcProviderPut {
     /// Omit to keep; empty string to clear; non-empty to store.
     #[serde(default)]
     #[schema(
-        example = "-----BEGIN PRIVATE KEY-----\\nMIGTAgEAMBMGByqGSM49AgEG…\\n-----END PRIVATE KEY-----"
+        example = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEG…\n-----END PRIVATE KEY-----"
     )]
     apple_private_key: Option<String>,
 }

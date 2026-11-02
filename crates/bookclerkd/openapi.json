@@ -25515,14 +25515,13 @@
             "example": [
               "openid",
               "profile",
-              "email",
-              "groups"
+              "email"
             ]
           },
           "provision": {
             "type": "string",
             "description": "JIT, mapped-role, allowlist, or invite-only policy for first login.",
-            "example": "mapped_role"
+            "example": "allowlist"
           },
           "default_role": {
             "type": "string",
@@ -25543,10 +25542,7 @@
             "propertyNames": {
               "type": "string"
             },
-            "example": {
-              "bookclerk-admins": "administrator",
-              "household": "member"
-            }
+            "example": {}
           },
           "link_by_email": {
             "type": "boolean",
@@ -25605,7 +25601,7 @@
               "null"
             ],
             "description": "Omit to keep; empty string to clear; non-empty to store.",
-            "example": "-----BEGIN PRIVATE KEY-----\\nMIGTAgEAMBMGByqGSM49AgEG…\\n-----END PRIVATE KEY-----"
+            "example": "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEG…\n-----END PRIVATE KEY-----"
           }
         }
       },
@@ -25670,14 +25666,13 @@
             "example": [
               "openid",
               "profile",
-              "email",
-              "groups"
+              "email"
             ]
           },
           "provision": {
             "type": "string",
             "description": "How a first login becomes a portal user (JIT, mapped role, allowlist, invite-only).",
-            "example": "mapped_role"
+            "example": "allowlist"
           },
           "default_role": {
             "type": "string",
@@ -25698,10 +25693,7 @@
             "propertyNames": {
               "type": "string"
             },
-            "example": {
-              "bookclerk-admins": "administrator",
-              "household": "member"
-            }
+            "example": {}
           },
           "link_by_email": {
             "type": "boolean",
