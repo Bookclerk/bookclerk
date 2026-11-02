@@ -1,0 +1,18 @@
+{
+  "testRunner": "vitest",
+  "coverageAnalysis": "perTest",
+  "inPlace": true,
+  "tsconfigFile": "stryker-has-no-tsconfig.json",
+  "vitest": {
+    "configFile": "vitest.config.ts",
+    "related": false
+  },
+  "reporters": ["clear-text"],
+  "incremental": true,
+  "incrementalFile": "reports/mutation/mutation.json",
+  "clearTextReporter": {
+    "allowColor": false,
+    "logTests": false
+  },
+  "concurrency": 2
+}
