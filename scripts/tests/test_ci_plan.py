@@ -1583,7 +1583,7 @@ class EnvelopeTests(unittest.TestCase):
                 p = plan(path)
                 self.assertFalse(p.full_suite, p.reasons)
                 self.assertTrue(p.selected("envelope"), p.checks.keys())
-                self.assertTrue(p.jobs["envelope"])
+                self.assertTrue(p.jobs["release"])
 
     def test_script_only_does_not_select_rust_tests(self) -> None:
         p = plan("scripts/bench/small-vps.sh")
@@ -1629,13 +1629,43 @@ class EnvelopeTests(unittest.TestCase):
     def test_docs_do_not_select_it(self) -> None:
         p = plan("docs/plugins/README.md")
         self.assertFalse(p.selected("envelope"))
-        self.assertFalse(p.jobs["envelope"])
+        self.assertFalse(p.jobs["release"])
 
     def test_workflow_edit_is_a_full_suite_including_envelope(self) -> None:
         p = plan(".github/workflows/ci.yml")
         self.assertTrue(p.full_suite)
         self.assertTrue(p.selected("envelope"))
-        self.assertTrue(p.jobs["envelope"])
+        self.assertTrue(p.jobs["release"])
+
+    def test_envelope_shares_the_release_job_and_its_step_gates(self) -> None:
+        p = plan("scripts/bench/small-vps.sh")
+        self.assertTrue(p.selected("envelope"))
+        self.assertFalse(p.selected("release"))
+        out = job_outputs(artifact(p))
+        self.assertEqual(out["job_release"], "true")
+        self.assertEqual(out["check_envelope"], "true")
+        self.assertEqual(out["check_release"], "false")
+        self.assertEqual(out["release_mode"], "none")
+
+    def test_build_only_main_push_builds_release_but_skips_the_envelope(self) -> None:
+        art = resolve(
+            base=None,
+            head=None,
+            selective_ci="1",
+            run_id="9",
+            checkout_sha="abc",
+            event="push",
+            force_full=True,
+            build_only=True,
+            paths=["Cargo.lock"],
+            metadata=META,
+            workspace=REPO,
+        )
+        self.assertTrue(plan_from_dict(art["predicted"]).selected("envelope"))
+        out = job_outputs(art)
+        self.assertEqual(out["job_release"], "true")
+        self.assertEqual(out["check_release"], "true")
+        self.assertEqual(out["check_envelope"], "false")
 
 
 class RunnerLayoutTests(unittest.TestCase):

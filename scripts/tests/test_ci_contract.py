@@ -205,7 +205,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(text.count("ci-exec.py run windows_cluster"), 1)
 
     def test_envelope_builds_on_the_runner(self) -> None:
-        job = self.jobs["envelope"]
+        job = self.jobs["release"]
         self.assertEqual(job["runs-on"], "ubuntu-latest")
         self.assertEqual(job["timeout-minutes"], 180)
         self.assertNotIn("container", job)
@@ -215,7 +215,29 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertNotIn("pipefail", script, step.get("name"))
         runs = [s for s in job["steps"] if "ci-exec.py run envelope" in s.get("run", "")]
         self.assertEqual(len(runs), 1)
-        self.assertNotIn("if", runs[0])
+        # The envelope measures the binaries the release step built: it runs
+        # after that step, in the same job, with the same environment.
+        build = next(i for i, s in enumerate(job["steps"]) if "ci-exec.py run release" in s.get("run", ""))
+        self.assertLess(build, job["steps"].index(runs[0]))
+        for step in (job["steps"][build], runs[0]):
+            self.assertNotIn("env", step, step.get("name"))
+
+    def test_only_pull_requests_relax_release_lto(self) -> None:
+        """The merge queue, main and OSV remediation keep the shipping profile."""
+        lto = self.jobs["release"]["env"]["CARGO_PROFILE_RELEASE_LTO"]
+        self.assertEqual(
+            lto,
+            "${{ github.event_name == 'pull_request' && !inputs.private-head && 'thin' || 'fat' }}",
+        )
+        cargo = tomllib.loads((REPO / "Cargo.toml").read_text(encoding="utf-8"))
+        self.assertIs(cargo["profile"]["release"]["lto"], True)
+        self.assertEqual(cargo["profile"]["release"]["codegen-units"], 1)
+        # No other job may override the release profile.
+        for name, job in self.jobs.items():
+            if name == "release":
+                continue
+            keys = set(job.get("env") or {}) | {k for s in job.get("steps", []) for k in (s.get("env") or {})}
+            self.assertFalse({k for k in keys if k.startswith("CARGO_PROFILE_RELEASE")}, name)
 
     def test_native_gateway_smoke_inputs_exist(self) -> None:
         from ci_plan.plan import load_relations
