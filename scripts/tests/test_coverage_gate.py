@@ -650,6 +650,25 @@ class RatchetTest(unittest.TestCase):
         self.assertTrue(pr["sign-commits"])
         self.assertFalse(job["steps"][0]["with"]["persist-credentials"])
 
+    def test_floors_workflow_runs_after_each_merge_group(self) -> None:
+        import yaml
+
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "coverage-floors.yml").read_text(encoding="utf-8"))
+        triggers = workflow.get("on", workflow.get(True))
+        self.assertEqual(triggers["workflow_run"], {"workflows": ["CI"], "types": ["completed"]})
+        self.assertIn("workflow_dispatch", triggers)
+        self.assertNotIn("concurrency", workflow)
+        job = workflow["jobs"]["ratchet"]
+        for clause in (
+            "github.event.workflow_run.event == 'merge_group'",
+            "github.event.workflow_run.conclusion == 'success'",
+            "github.event.workflow_run.head_repository.full_name == github.repository",
+        ):
+            self.assertIn(clause, job["if"])
+        self.assertEqual(job["concurrency"]["group"], "coverage-floors")
+        steps = {s.get("name"): s for s in job["steps"]}
+        self.assertEqual(steps["Find the merge group run"]["env"]["TRIGGER_RUN"], "${{ github.event.workflow_run.id }}")
+
 
 class MainTest(unittest.TestCase):
     """The script reads the reports directory and diff file end to end."""

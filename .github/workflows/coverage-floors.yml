@@ -1,10 +1,11 @@
-# Weekly ratchet of the coverage floors in scripts/coverage_areas.toml
-# (docs/contributing/ci.md#coverage).
+# Ratchet of the coverage floors in scripts/coverage_areas.toml
+# (docs/contributing/ci.md#coverage), after every merge.
 #
 # Policy:
-# - Read the coverage of the latest successful merge group run. A merge group
-#   runs the full suite on the commit that lands on main, so every area is
-#   measured in full.
+# - Run when a merge group's CI run succeeds, and read that run's coverage.
+#   A merge group runs the full suite on the commit that lands on main, so
+#   every area is measured in full. A manual run reads the latest successful
+#   merge group run instead.
 # - `scripts/coverage_gate.py --ratchet` raises each floor to the measured
 #   line coverage rounded down, less one point, by at most five points per
 #   run. A floor never falls; lowering one stays a reviewed, hand-made change.
@@ -20,23 +21,34 @@
 name: coverage floors
 
 on:
-  schedule:
-    # Mondays 07:23 UTC, offset from the daily bump workflows.
-    - cron: "23 7 * * 1"
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
   workflow_dispatch:
 
 # The branch, PR and auto-merge are written with the automation App token.
 permissions:
   contents: read
 
-concurrency:
-  group: coverage-floors
-  cancel-in-progress: false
-
 jobs:
   ratchet:
     name: raise floors + PR
+    # Only a successful merge group run of this repository: pull request runs
+    # are selective and measure code that has not been reviewed yet.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'merge_group' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # On the job, not the workflow: every CI run starts this workflow, and a
+    # skipped run in a workflow-level group could replace a pending real one.
+    # A newer pending run replaces an older one, which is what we want: it
+    # reads more recent coverage.
+    concurrency:
+      group: coverage-floors
+      cancel-in-progress: false
     permissions:
       contents: read
       # Find the merge group run and download its artifacts.
@@ -46,13 +58,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Find the latest merge group run
+      - name: Find the merge group run
         id: run
         env:
           GH_TOKEN: ${{ github.token }}
+          TRIGGER_RUN: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
-          id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event merge_group \
+          id="${TRIGGER_RUN:-}"
+          [[ -n "$id" ]] || id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event merge_group \
             --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
           if [[ "$id" =~ ^[0-9]{1,20}$ ]]; then
             echo "id=$id" >> "$GITHUB_OUTPUT"
@@ -60,8 +74,8 @@ jobs:
             echo "No successful merge group run to read."
           fi
 
-      # Coverage artifacts are kept for 7 days; a week without a merge group
-      # leaves nothing to read, and the floors stay as they are.
+      # Coverage artifacts are kept for 7 days; on a manual run after a week
+      # without a merge group there is nothing to read, and the floors stay.
       - name: Download the coverage reports
         if: steps.run.outputs.id != ''
         continue-on-error: true
