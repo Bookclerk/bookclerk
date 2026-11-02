@@ -877,10 +877,14 @@ Rust code:
    plugins CI's `e2e` check stages) are never mutated.
 2. Mutants live only in function bodies, so a change to data that code
    reads (an attribute, a constant, a type definition) gives no mutants
-   from the diff. When a changed Rust file gets none, the job mutates every
-   function in that file instead, so the tests of the code beside the
-   changed data are still checked. The summary names those files. Code in
-   other files that reads the data is not covered.
+   from the diff. When a changed Rust file gets none, the job mutates the
+   functions in that file instead, so the tests of the code beside the
+   changed data are still checked. The summary names those files. Up to 15
+   of their mutants are all tested; past that, an even sample of about 15
+   is, from an offset that changes with each pull request. Each mutant runs
+   its package's whole test suite, two minutes for some crates, so a large
+   file would otherwise hold a runner for the whole time limit. Code in other files
+   that reads the data is not covered.
 3. Before the first mutant, the job builds what CI's `rust_test` check
    builds first (the jail, the workerd front door, the pinned workerd and
    the platform guests) with `ci-exec.py prereqs rust_test`, and turns on
@@ -904,6 +908,13 @@ locally:
 cargo install cargo-mutants --locked
 git diff origin/main... > /tmp/change.diff
 RUSTFLAGS=--cap-lints=warn cargo mutants --workspace --in-diff /tmp/change.diff
+```
+
+For a file the summary says was mutated whole, mutate all of it with
+`--file`:
+
+```sh
+RUSTFLAGS=--cap-lints=warn cargo mutants --workspace --file crates/bookclerkd/src/api.rs
 ```
 
 Capping lints keeps a mutant that only leaves a parameter unused from

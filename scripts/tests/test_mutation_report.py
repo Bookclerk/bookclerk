@@ -11,7 +11,6 @@ from __future__ import annotations
 import importlib.util
 import os
 import random
-import re
 import subprocess
 import sys
 import tempfile
@@ -125,11 +124,15 @@ class WidenTest(unittest.TestCase):
         out = mr.Results()
         out.mutants[Outcome.CAUGHT] = ["crates/a/src/lib.rs:9:1: replace g -> u32 with 0"]
         text = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs", "crates/a/tests/t.rs"])
-        self.assertIn("every function in them was mutated", text)
+        self.assertIn("the functions in them were mutated instead", text)
+        self.assertNotIn("about 1 in", text)
         self.assertIn("- `crates/a/src/lib.rs`", text)
         # A widened file that yielded no mutant (a test file) is not named.
         self.assertNotIn("tests/t.rs", text)
-        self.assertNotIn("every function", mr.render(out, mr.Run.CLEAN, stopped=False))
+        self.assertNotIn("functions in them", mr.render(out, mr.Run.CLEAN, stopped=False))
+        sampled = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs"], sample=mr.Sample(300, 8))
+        self.assertIn("They hold 300 mutants", sampled)
+        self.assertIn("about 1 in 8 was tested", sampled)
 
 
 class ScoreTest(unittest.TestCase):
@@ -219,39 +222,91 @@ def names_of(job: dict) -> list[str | None]:
     return [s.get("name") for s in job["steps"]]
 
 
-class WidenDiffTest(unittest.TestCase):
-    """The workflow's git commands put a widened file in the diff whole."""
+class SampleTest(unittest.TestCase):
+    """Widened files' mutants are marked line by line, sampled past the budget."""
 
-    def test_git_rebuilds_the_diff(self) -> None:
-        workflow = (ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8")
-        script = re.search(r"- name: Widen to files changed outside functions\n\s+run: \|\n((?:\s{10}.*\n)+)", workflow)
-        assert script
-        body = "\n".join(line[10:] for line in script.group(1).splitlines())
-        # Everything after the cargo-mutants listing, which is stubbed.
-        body = body.replace('cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --list', 'cat "$RUNNER_TEMP/stub-list.txt"')
+    LISTED = "".join(f"crates/a/src/lib.rs:{line}:5: replace f{line} -> bool with true\n" for line in range(1, 11))
+
+    def test_within_budget_every_line_is_marked(self) -> None:
+        lines, sample = mr.sample_lines(self.LISTED, budget=10, seed=7)
+        self.assertEqual(lines, {"crates/a/src/lib.rs": list(range(1, 11))})
+        self.assertEqual(sample, mr.Sample(10, 1))
+
+    def test_past_the_budget_a_rotating_sample_is_marked(self) -> None:
+        picks = []
+        for seed in range(3):
+            lines, sample = mr.sample_lines(self.LISTED, budget=4, seed=seed)
+            self.assertEqual(sample, mr.Sample(10, 3))
+            self.assertLessEqual(len(lines["crates/a/src/lib.rs"]), 4)
+            picks.append(lines["crates/a/src/lib.rs"])
+        self.assertEqual(picks, [[1, 4, 7, 10], [2, 5, 8], [3, 6, 9]])
+        # Every mutant is in exactly one sample.
+        self.assertEqual(sorted(line for pick in picks for line in pick), list(range(1, 11)))
+
+    def test_lines_and_files(self) -> None:
+        self.assertEqual(mr.mutant_line("a.rs:12:5: replace x"), 12)
+        self.assertIsNone(mr.mutant_line("a.rs: replace x"))
+        self.assertIsNone(mr.mutant_line("a.rs:0:1: replace x"))
+        lines, sample = mr.sample_lines("a.rs:3:1: x\nb.rs:1:1: y\nnoise\n", budget=0, seed=0)
+        self.assertEqual(sample.total, 2)
+        self.assertEqual(sum(len(v) for v in lines.values()), 1)
+
+    def test_drop_files(self) -> None:
+        self.assertEqual(mr.changed_rust_files(mr.drop_files(DIFF, {"crates/a/src/lib.rs"})), ["crates/b/src/api.rs"])
+        self.assertIn("docs/x.md", mr.drop_files(DIFF, {"crates/a/src/lib.rs"}))
+        self.assertEqual(mr.drop_files(DIFF, set()), DIFF)
+
+    def test_line_hunks(self) -> None:
+        source = "a\nb\r\nc\nd\n"
+        self.assertEqual(
+            mr.line_hunks("x.rs", source, [1, 2, 4, 9]),
+            "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -0,0 +1,2 @@\n+a\n+b\n@@ -3,0 +4,1 @@\n+d\n",
+        )
+        self.assertEqual(mr.line_hunks("x.rs", "a", [1]).splitlines()[-1], "+a")
+        self.assertEqual(mr.line_hunks("x.rs", source, [9]), "")
+
+    def test_line_hunks_apply_with_git(self) -> None:
+        """Oracle: git applies each section to an empty file of as many lines."""
+        rng = random.Random(573)
+        for _ in range(40):
+            count = rng.randrange(1, 12)
+            text = [f"line {i} {rng.choice(['', 'x', '{ }'])}" for i in range(1, count + 1)]
+            picked = sorted(rng.sample(range(1, count + 1), rng.randrange(1, count + 1)))
+            section = mr.line_hunks("f.rs", "\n".join(text) + "\n", picked)
+            with tempfile.TemporaryDirectory() as tmp:
+                # The old side: the file without the picked lines.
+                Path(tmp, "f.rs").write_text("".join(t + "\n" for i, t in enumerate(text, 1) if i not in picked), encoding="utf-8")
+                subprocess.run(["git", "init", "-q", tmp], check=True)
+                Path(tmp, "p.diff").write_text(section, encoding="utf-8")
+                subprocess.run(["git", "-C", tmp, "apply", "--unidiff-zero", "--whitespace=nowarn", "p.diff"], check=True)
+                self.assertEqual(Path(tmp, "f.rs").read_text(encoding="utf-8"), "\n".join(text) + "\n")
+
+    def test_sample_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo, temp = Path(tmp) / "repo", Path(tmp) / "temp"
-            repo.mkdir()
-            temp.mkdir()
-            git = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(repo)]
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            (repo / "data.rs").write_text("fn a() -> u32 { X }\nconst X: u32 = 1;\n", encoding="utf-8")
-            (repo / "code.rs").write_text("fn b() -> bool { true }\n", encoding="utf-8")
-            subprocess.run([*git, "add", "."], check=True)
-            subprocess.run([*git, "commit", "-qm", "base"], check=True)
-            (repo / "data.rs").write_text("fn a() -> u32 { X }\nconst X: u32 = 2;\n", encoding="utf-8")
-            (repo / "code.rs").write_text("fn b() -> bool { false }\n", encoding="utf-8")
-            subprocess.run([*git, "commit", "-qam", "change"], check=True)
-            diff = subprocess.run([*git, "diff", "HEAD^1", "HEAD"], check=True, capture_output=True, text=True).stdout
-            (temp / "pr.diff").write_text(diff, encoding="utf-8")
-            (temp / "stub-list.txt").write_text("code.rs:1:18: replace b -> bool with true\n", encoding="utf-8")
-            env = {"RUNNER_TEMP": str(temp), "PATH": os.environ["PATH"]}
-            body = body.replace("scripts/mutation_report.py", str(ROOT / "scripts" / "mutation_report.py"))
-            subprocess.run(["bash", "-c", body], cwd=repo, env=env, check=True)
-            scoped = (temp / "pr.diff").read_text(encoding="utf-8")
-        self.assertEqual(scoped.count("+++ b/"), 2, scoped)
-        self.assertIn("--- /dev/null\n+++ b/data.rs\n@@ -0,0 +1,2 @@\n+fn a() -> u32 { X }\n+const X: u32 = 2;\n", scoped)
-        self.assertIn("-fn b() -> bool { true }\n+fn b() -> bool { false }\n", scoped)
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                Path("crates/a/src").mkdir(parents=True)
+                Path("crates/a/src/lib.rs").write_text("".join(f"fn f{i}() {{}}\n" for i in range(1, 11)), encoding="utf-8")
+                Path("pr.diff").write_text(DIFF, encoding="utf-8")
+                Path("listed.txt").write_text(self.LISTED, encoding="utf-8")
+                argv = ["sample", "--diff", "pr.diff", "--listed", "listed.txt", "--budget", "5", "--seed", "1", "--record", "s.json"]
+                self.assertEqual(mr.main(argv), 0)
+                diff = Path("pr.diff").read_text(encoding="utf-8")
+                record = mr.read_sample(Path("s.json").read_text(encoding="utf-8"))
+            finally:
+                os.chdir(cwd)
+        self.assertEqual(record, mr.Sample(10, 2))
+        # The original section of the widened file is replaced by its marked lines.
+        self.assertNotIn("const X", diff)
+        self.assertIn("+fn f2() {}\n", diff)
+        self.assertNotIn("+fn f1() {}", diff)
+        self.assertIn("crates/b/src/api.rs", diff)
+
+    def test_read_sample(self) -> None:
+        self.assertEqual(mr.read_sample('{"total": 3, "every": 1}'), mr.Sample(3, 1))
+        for bad in ("", "[]", "{}", '{"total": -1, "every": 1}', '{"total": 3, "every": 0}', '{"total": "x", "every": 1}'):
+            self.assertIsNone(mr.read_sample(bad), bad)
 
 
 class WiringTest(unittest.TestCase):
@@ -310,9 +365,14 @@ class WiringTest(unittest.TestCase):
         self.assertEqual(steps["Test the mutants"]["env"]["CARGO_INCREMENTAL"], "1")
         self.assertIn("python3 scripts/mutation_report.py", steps["Report"]["run"])
         self.assertIn('--widened "$RUNNER_TEMP/widened.txt"', steps["Report"]["run"])
+        self.assertIn('--sample "$RUNNER_TEMP/sample.json"', steps["Report"]["run"])
+        widen_step = steps["Widen to files changed outside functions"]
+        self.assertEqual(widen_step["env"]["PR"], "${{ github.event.pull_request.number }}")
+        self.assertGreater(int(widen_step["env"]["WIDEN_BUDGET"]), 0)
         widen = steps["Widen to files changed outside functions"]["run"]
         self.assertIn("--list", widen)
         self.assertIn("mutation_report.py widen", widen)
+        self.assertIn("mutation_report.py sample", widen)
         self.assertLess(names_of(job).index("Widen to files changed outside functions"), names_of(job).index("Test the mutants"))
         prereqs = steps["Build the test prerequisites"]["run"]
         self.assertIn("ci-exec.py resolve --force-full", prereqs)

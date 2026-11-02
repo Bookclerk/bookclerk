@@ -113,24 +113,29 @@ jobs:
 
       # Mutants live only in function bodies, so a file changed only outside
       # them (an attribute, a constant, a struct the code reads) gives none
-      # from the diff. Such files go in whole instead: the diff is redone
-      # with them as new files, so every function in them is mutated and the
-      # tests of the code beside the changed data are checked too.
+      # from the diff. Such files are mutated whole instead, so the tests of
+      # the code beside the changed data are checked too: the diff is
+      # rewritten to mark the lines of their mutants. Past the budget, a
+      # sample is marked (1 in k, from an offset that follows the pull
+      # request number). Each mutant runs its package's whole test suite
+      # (about 2 minutes for bookclerk-library), so a file with 230 mutants
+      # would otherwise hold a runner for the whole time limit.
       - name: Widen to files changed outside functions
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          WIDEN_BUDGET: "15"
         run: |
           set -euo pipefail
           cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --list > "$RUNNER_TEMP/listed.txt"
           python3 scripts/mutation_report.py widen --diff "$RUNNER_TEMP/pr.diff" --listed "$RUNNER_TEMP/listed.txt" > "$RUNNER_TEMP/widened.txt"
           if [ -s "$RUNNER_TEMP/widened.txt" ]; then
             mapfile -t files < "$RUNNER_TEMP/widened.txt"
-            exclude=()
-            for f in "${files[@]}"; do exclude+=(":(exclude,literal)$f"); done
-            empty_tree=$(git hash-object -t tree /dev/null)
-            {
-              git diff HEAD^1 HEAD -- . "${exclude[@]}"
-              git diff "$empty_tree" HEAD -- "${files[@]/#/:(literal)}"
-            } > "$RUNNER_TEMP/scoped.diff"
-            mv "$RUNNER_TEMP/scoped.diff" "$RUNNER_TEMP/pr.diff"
+            filters=()
+            for f in "${files[@]}"; do filters+=(--file "$f"); done
+            cargo mutants --workspace --list "${filters[@]}" > "$RUNNER_TEMP/widened-listed.txt"
+            python3 scripts/mutation_report.py sample --diff "$RUNNER_TEMP/pr.diff" \
+              --listed "$RUNNER_TEMP/widened-listed.txt" --budget "$WIDEN_BUDGET" --seed "$PR" \
+              --record "$RUNNER_TEMP/sample.json"
           fi
 
       # `--in-place` mutates this checkout, which the runner throws away;
@@ -160,7 +165,7 @@ jobs:
           STOPPED: ${{ steps.mutants.outputs.stopped }}
         run: |
           set -euo pipefail
-          args=(--out "$RUNNER_TEMP/mutants.out" --exit-code "${CODE:-1}" --widened "$RUNNER_TEMP/widened.txt")
+          args=(--out "$RUNNER_TEMP/mutants.out" --exit-code "${CODE:-1}" --widened "$RUNNER_TEMP/widened.txt" --sample "$RUNNER_TEMP/sample.json")
           if [ "${STOPPED:-}" = "true" ]; then args+=(--stopped); fi
           python3 scripts/mutation_report.py "${args[@]}"
 
