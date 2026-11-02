@@ -1883,6 +1883,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+                  "message": "acquire planned: 1 accepted, 0 already pending or running, 0 not admitted (queue full)",
+                  "ok": true
                 }
               }
             }
@@ -2219,7 +2224,7 @@
                 },
                 "example": {
                   "error": "conflict",
-                  "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "job_id": "integration_scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
                   "message": "integration_scan already pending or running",
                   "ok": false
                 }
@@ -3478,6 +3483,15 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "job_ids": [
+                    "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                    "scan-8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+                  ],
+                  "message": "scan planned: 2 accepted, 0 already pending or running, 0 not admitted (queue full)",
+                  "ok": true
                 }
               }
             }
@@ -3541,9 +3555,9 @@
                     "summary": "Every planned job is already pending or running",
                     "value": {
                       "error": "conflict",
-                      "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                      "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
                       "job_ids": [
-                        "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                        "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
                       ],
                       "message": "scan already pending or running",
                       "ok": false
@@ -3685,6 +3699,14 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+                  "job_ids": [
+                    "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+                  ],
+                  "message": "acquire planned: 1 accepted, 0 already pending or running, 0 not admitted (queue full)",
+                  "ok": true
                 }
               }
             }
@@ -3748,9 +3770,9 @@
                     "summary": "Every planned job is already pending or running",
                     "value": {
                       "error": "conflict",
-                      "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                      "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
                       "job_ids": [
-                        "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                        "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
                       ],
                       "message": "acquire already pending or running",
                       "ok": false
@@ -3929,7 +3951,7 @@
                 },
                 "example": {
                   "error": "conflict",
-                  "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "job_id": "listen_sync-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
                   "message": "listen_sync already pending or running",
                   "ok": false
                 }
@@ -4024,6 +4046,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "",
+                  "message": "reloaded /home/bookclerk/BookclerkFiles/config.toml (master.key wrap=true)",
+                  "ok": true
                 }
               }
             }
@@ -8838,6 +8865,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "",
+                  "message": "copied 1284 row(s) from `sqlite` to `postgres`; updated [database].plugin, wrote /home/bookclerk/BookclerkFiles/config.toml, and reloaded library connection",
+                  "ok": true
                 }
               }
             }
@@ -20039,7 +20071,10 @@
             "items": {
               "type": "string"
             },
-            "description": "More title ids; each (with the single filter above) becomes its own\njob."
+            "description": "More title ids; each (with the single filter above) becomes its own\njob.",
+            "example": [
+              "8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+            ]
           },
           "force": {
             "type": "boolean",
@@ -20086,7 +20121,7 @@
           "job_id": {
             "type": "string",
             "description": "Queued job id, or empty when the action is synchronous.",
-            "example": "job_01jbq9x4e8c7k2m5n6p7r8s9t0"
+            "example": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
           },
           "error": {
             "type": [
@@ -23085,7 +23120,7 @@
               "null"
             ],
             "description": "Terminal outcome when set.",
-            "example": "acked"
+            "example": "ack"
           },
           "errorMessage": {
             "type": [
@@ -23671,7 +23706,7 @@
           "id": {
             "type": "string",
             "description": "Opaque job id returned to the client when the job is accepted.",
-            "example": "job_01jbq9x4e8c7k2m5n6p7r8s9t0"
+            "example": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
           },
           "kind": {
             "$ref": "#/components/schemas/JobKind",
@@ -26375,7 +26410,11 @@
             "items": {
               "type": "string"
             },
-            "description": "Replacement hidden-shelf list when set."
+            "description": "Replacement hidden-shelf list when set.",
+            "example": [
+              "chirp_deals",
+              "from_store"
+            ]
           },
           "discover_sort": {
             "type": [
@@ -26409,7 +26448,10 @@
             "items": {
               "type": "string"
             },
-            "description": "Replacement excluded-store list when set."
+            "description": "Replacement excluded-store list when set.",
+            "example": [
+              "chirp"
+            ]
           },
           "theme": {
             "type": [
@@ -26780,7 +26822,7 @@
             "type": "integer",
             "format": "int32",
             "description": "Requested workerd CPU budget in milliseconds.",
-            "example": 50,
+            "example": 30000,
             "minimum": 0
           },
           "subrequests": {
@@ -26794,7 +26836,7 @@
             "type": "integer",
             "format": "int32",
             "description": "Host hard cap for workerd CPU milliseconds.",
-            "example": 30000,
+            "example": 120000,
             "minimum": 0
           },
           "max_subrequests": {
@@ -26808,7 +26850,7 @@
             "type": "integer",
             "format": "int32",
             "description": "Default plugin state disk budget in mebibytes.",
-            "example": 256,
+            "example": 512,
             "minimum": 0
           },
           "max_disk_mib": {
@@ -26836,7 +26878,7 @@
             "type": "number",
             "format": "double",
             "description": "Manifest / default jail CPU in cores (2 d.p.).",
-            "example": 1.0
+            "example": 0.8
           },
           "max_cpu_cores": {
             "type": "number",
@@ -26857,14 +26899,14 @@
             "type": "integer",
             "format": "int32",
             "description": "Default extra process/thread budget (native consent).",
-            "example": 4,
+            "example": 2,
             "minimum": 0
           },
           "max_extra_processes": {
             "type": "integer",
             "format": "int32",
             "description": "Host hard cap for extra process budget.",
-            "example": 32,
+            "example": 62,
             "minimum": 0
           },
           "known_bindings": {
@@ -26872,7 +26914,14 @@
             "items": {
               "type": "string"
             },
-            "description": "Suggested / default host bindings operators may grant."
+            "description": "Suggested / default host bindings operators may grant.",
+            "example": [
+              "config",
+              "secrets",
+              "plugin_kv",
+              "work_fs",
+              "oauth"
+            ]
           }
         }
       },
@@ -26924,7 +26973,12 @@
             "items": {
               "type": "string"
             },
-            "description": "Operator-facing bullet list of requested capabilities."
+            "description": "Operator-facing bullet list of requested capabilities.",
+            "example": [
+              "storefront entrypoint",
+              "outbound network: *.libro.fm, api.libro.fm",
+              "bindings: config, secrets"
+            ]
           },
           "existing": {
             "oneOf": [
@@ -27066,8 +27120,8 @@
               "string",
               "null"
             ],
-            "description": "Override egress mode when set.",
-            "example": "allowlist"
+            "description": "Override egress mode (`deny` or `outbound`) when set.",
+            "example": "outbound"
           },
           "domains": {
             "type": [
@@ -27077,7 +27131,11 @@
             "items": {
               "type": "string"
             },
-            "description": "Override approved hostnames when set."
+            "description": "Override approved hostnames when set.",
+            "example": [
+              "*.libro.fm",
+              "api.libro.fm"
+            ]
           },
           "tcp": {
             "type": [
@@ -27097,7 +27155,10 @@
             "items": {
               "type": "string"
             },
-            "description": "Override address-space CIDRs when set."
+            "description": "Override address-space CIDRs when set.",
+            "example": [
+              "203.0.113.0/24"
+            ]
           },
           "allowUndeclaredPublicRedirects": {
             "type": [
@@ -27115,7 +27176,11 @@
             "items": {
               "type": "string"
             },
-            "description": "Override approved host bindings when set."
+            "description": "Override approved host bindings when set.",
+            "example": [
+              "config",
+              "secrets"
+            ]
           },
           "compatibilityFlags": {
             "type": [
@@ -27125,7 +27190,10 @@
             "items": {
               "type": "string"
             },
-            "description": "Override compatibility flags when set."
+            "description": "Override compatibility flags when set.",
+            "example": [
+              "nodejs_compat"
+            ]
           },
           "cpuMs": {
             "type": [
@@ -27232,61 +27300,90 @@
             "items": {
               "type": "string"
             },
-            "description": "Exported entrypoints the operator approved (`storefront`, `cli`, …)."
+            "description": "Exported entrypoints the operator approved (`storefront`, `cli`, …).",
+            "example": [
+              "storefront"
+            ]
           },
           "producers": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Event types the operator approved the plugin to publish."
+            "description": "Event types the operator approved the plugin to publish.",
+            "example": [
+              "book_acquired"
+            ]
           },
           "consumers": {
             "type": "array",
             "items": {
               "type": "object"
             },
-            "description": "Approved event-consumer subscriptions."
+            "description": "Approved event-consumer subscriptions.",
+            "example": [
+              {
+                "event_type": "book_acquired",
+                "schema_versions": [
+                  1
+                ],
+                "supports_suspend": false
+              }
+            ]
           },
           "jobs": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Approved job trigger types."
+            "description": "Approved job trigger types.",
+            "example": [
+              "stream_copy"
+            ]
           },
           "networkMode": {
             "type": "string",
-            "description": "Approved egress mode (`deny`, `allowlist`, and similar).",
-            "example": "allowlist"
+            "description": "Approved egress mode (`deny` or `outbound`).",
+            "example": "outbound"
           },
           "domains": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Hostnames the operator approved for egress."
+            "description": "Hostnames the operator approved for egress.",
+            "example": [
+              "*.libro.fm",
+              "api.libro.fm"
+            ]
           },
           "manifestDomains": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Destinations requested by the current manifest."
+            "description": "Destinations requested by the current manifest.",
+            "example": [
+              "*.libro.fm"
+            ]
           },
           "operatorAddedDomains": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Operator-added destinations beyond the manifest."
+            "description": "Operator-added destinations beyond the manifest.",
+            "example": [
+              "api.libro.fm"
+            ]
           },
           "operatorDeniedDomains": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Operator-denied destinations still listed by the manifest."
+            "description": "Operator-denied destinations still listed by the manifest.",
+            "example": []
           },
           "tcp": {
             "type": "array",
@@ -27314,21 +27411,28 @@
             "items": {
               "type": "string"
             },
-            "description": "Effective address-space CIDRs."
+            "description": "Effective address-space CIDRs.",
+            "example": [
+              "203.0.113.0/24"
+            ]
           },
           "operatorAddedCidrs": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Operator-added CIDRs."
+            "description": "Operator-added CIDRs.",
+            "example": [
+              "203.0.113.0/24"
+            ]
           },
           "operatorDeniedCidrs": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Operator-denied CIDRs still listed by the manifest."
+            "description": "Operator-denied CIDRs still listed by the manifest.",
+            "example": []
           },
           "allowUndeclaredPublicRedirects": {
             "type": "boolean",
@@ -27350,14 +27454,21 @@
             "items": {
               "type": "string"
             },
-            "description": "Host bindings the operator approved."
+            "description": "Host bindings the operator approved.",
+            "example": [
+              "config",
+              "secrets"
+            ]
           },
           "compatibilityFlags": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Extra compatibility flags stored on the grant."
+            "description": "Extra compatibility flags stored on the grant.",
+            "example": [
+              "nodejs_compat"
+            ]
           },
           "approvedAt": {
             "type": "string",
@@ -27763,12 +27874,12 @@
           "value": {
             "type": "string",
             "description": "Stored config value; empty string means use the plugin default.",
-            "example": "us"
+            "example": "m4b"
           },
           "label": {
             "type": "string",
             "description": "Operator-facing choice caption.",
-            "example": "United States"
+            "example": "M4B"
           }
         }
       },
@@ -27785,17 +27896,17 @@
           "key": {
             "type": "string",
             "description": "Dotted `config.toml` key for this option.",
-            "example": "sources.libro.marketplace"
+            "example": "container"
           },
           "label": {
             "type": "string",
             "description": "Operator-facing field caption.",
-            "example": "Marketplace"
+            "example": "Container"
           },
           "value": {
             "type": "string",
             "description": "Current string form of the setting.",
-            "example": "us"
+            "example": "m4b"
           },
           "value_type": {
             "type": "string",
@@ -27934,7 +28045,10 @@
             "items": {
               "type": "string"
             },
-            "description": "Nodes whose deployment of the instance is `present`."
+            "description": "Nodes whose deployment of the instance is `present`.",
+            "example": [
+              "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
+            ]
           }
         }
       },
@@ -28304,7 +28418,11 @@
             "items": {
               "type": "string"
             },
-            "description": "Lowercased Discover shelf ids the user has hidden."
+            "description": "Lowercased Discover shelf ids the user has hidden.",
+            "example": [
+              "chirp_deals",
+              "from_store"
+            ]
           },
           "discover_sort": {
             "type": "string",
@@ -28329,7 +28447,10 @@
             "items": {
               "type": "string"
             },
-            "description": "Lowercased store ids hidden from Discover results."
+            "description": "Lowercased store ids hidden from Discover results.",
+            "example": [
+              "chirp"
+            ]
           },
           "theme": {
             "type": "string",
@@ -28913,7 +29034,10 @@
             "items": {
               "type": "string"
             },
-            "description": "Live catalog consumers (plugin keys or instance ids) of this queue."
+            "description": "Live catalog consumers (plugin keys or instance ids) of this queue.",
+            "example": [
+              "platform:bookclerk/bookclerk-plugin-integration-audiobookshelf#audiobookshelf"
+            ]
           }
         }
       },
@@ -29637,19 +29761,23 @@
           "message": {
             "type": "string",
             "description": "Operator-facing status text.",
-            "example": "2 scan jobs queued"
+            "example": "scan planned: 2 accepted, 0 already pending or running, 0 not admitted (queue full)"
           },
           "job_id": {
             "type": "string",
             "description": "First accepted (or, when none was, already queued) job id.",
-            "example": "job_01jbq9x4e8c7k2m5n6p7r8s9t0"
+            "example": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
           },
           "job_ids": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Every accepted or already-queued job id, in plan order."
+            "description": "Every accepted or already-queued job id, in plan order.",
+            "example": [
+              "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+              "scan-8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+            ]
           },
           "error": {
             "type": [
@@ -29948,6 +30076,11 @@
             },
             "propertyNames": {
               "type": "string"
+            },
+            "example": {
+              "daemon.auth.enabled": "true",
+              "daemon.listen": "127.0.0.1:8787,[::1]:8787",
+              "library.auto_acquire": "false"
             }
           },
           "effective": {
@@ -29958,6 +30091,11 @@
             },
             "propertyNames": {
               "type": "string"
+            },
+            "example": {
+              "daemon.auth.enabled": "true",
+              "daemon.listen": "127.0.0.1:8787,[::1]:8787",
+              "library.auto_acquire": "false"
             }
           },
           "plugins": {
@@ -30469,7 +30607,10 @@
               "format": "int32",
               "minimum": 0
             },
-            "description": "Destination ports."
+            "description": "Destination ports.",
+            "example": [
+              443
+            ]
           }
         }
       },

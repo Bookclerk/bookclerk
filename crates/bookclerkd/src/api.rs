@@ -287,7 +287,7 @@ async fn serve_invite_spa(index: &Path) -> Response {
 /// Snapshot of one queued or running control-plane job.
 pub struct JobInfo {
     /// Opaque job id returned to the client when the job is accepted.
-    #[schema(example = "job_01jbq9x4e8c7k2m5n6p7r8s9t0")]
+    #[schema(example = "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f")]
     pub id: String,
     /// What the job does.
     pub kind: bookclerk_library::JobKind,
@@ -430,10 +430,10 @@ struct PatchSettingsRequest {
 /// One selectable value for a Settings dropdown.
 struct PluginSettingChoice {
     /// Stored config value; empty string means use the plugin default.
-    #[schema(example = "us")]
+    #[schema(example = "m4b")]
     value: String,
     /// Operator-facing choice caption.
-    #[schema(example = "United States")]
+    #[schema(example = "M4B")]
     label: String,
 }
 
@@ -441,13 +441,13 @@ struct PluginSettingChoice {
 /// One editable setting shown in the Settings UI.
 struct PluginSettingOption {
     /// Dotted `config.toml` key for this option.
-    #[schema(example = "sources.libro.marketplace")]
+    #[schema(example = "container")]
     key: String,
     /// Operator-facing field caption.
-    #[schema(example = "Marketplace")]
+    #[schema(example = "Container")]
     label: String,
     /// Current string form of the setting.
-    #[schema(example = "us")]
+    #[schema(example = "m4b")]
     value: String,
     /// UI widget hint (`boolean`, `string`, or `number`).
     #[schema(example = "string")]
@@ -513,6 +513,7 @@ struct PluginSettingsGroup {
     placement: Option<crate::config_authority::PlacementView>,
     /// Nodes whose deployment of the instance is `present`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[schema(example = json!(["6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"]))]
     present_on: Vec<String>,
 }
 
@@ -521,8 +522,10 @@ struct PluginSettingsGroup {
 struct SettingsResponse {
     /// Values as written in config.toml (and env overlays), plus `output.*`
     /// from the `core.output` database document.
+    #[schema(example = json!({"daemon.auth.enabled": "true", "daemon.listen": "127.0.0.1:8787,[::1]:8787", "library.auto_acquire": "false"}))]
     settings: std::collections::BTreeMap<String, String>,
     /// Runtime-effective values after the last successful reload (auth, plugins).
+    #[schema(example = json!({"daemon.auth.enabled": "true", "daemon.listen": "127.0.0.1:8787,[::1]:8787", "library.auto_acquire": "false"}))]
     effective: std::collections::BTreeMap<String, String>,
     /// Per-plugin setting groups rendered by the Settings UI.
     plugins: Vec<PluginSettingsGroup>,
@@ -566,19 +569,19 @@ struct PluginConsentBrand {
 /// Host-capped resource defaults shown on the consent dialog.
 struct PluginConsentLimits {
     /// Requested workerd CPU budget in milliseconds.
-    #[schema(example = 50)]
+    #[schema(example = 30000)]
     cpu_ms: u32,
     /// Requested workerd subrequest budget.
     #[schema(example = 50)]
     subrequests: u32,
     /// Host hard cap for workerd CPU milliseconds.
-    #[schema(example = 30000)]
+    #[schema(example = 120000)]
     max_cpu_ms: u32,
     /// Host hard cap for workerd subrequests.
     #[schema(example = 1000)]
     max_subrequests: u32,
     /// Default plugin state disk budget in mebibytes.
-    #[schema(example = 256)]
+    #[schema(example = 512)]
     disk_mib: u32,
     /// Host hard cap for plugin state disk in mebibytes.
     #[schema(example = 4096)]
@@ -590,7 +593,7 @@ struct PluginConsentLimits {
     #[schema(example = 4096)]
     max_memory_mib: u32,
     /// Manifest / default jail CPU in cores (2 d.p.).
-    #[schema(example = 1.0)]
+    #[schema(example = 0.8)]
     cpu_cores: f64,
     /// Host max jail CPU in cores (2 d.p.).
     #[schema(example = 8.0)]
@@ -600,12 +603,13 @@ struct PluginConsentLimits {
     #[schema(example = 2.0)]
     jail_cpu_cores: Option<f64>,
     /// Default extra process/thread budget (native consent).
-    #[schema(example = 4)]
+    #[schema(example = 2)]
     extra_processes: u32,
     /// Host hard cap for extra process budget.
-    #[schema(example = 32)]
+    #[schema(example = 62)]
     max_extra_processes: u32,
     /// Suggested / default host bindings operators may grant.
+    #[schema(example = json!(["config", "secrets", "plugin_kv", "work_fs", "oauth"]))]
     known_bindings: Vec<&'static str>,
 }
 
@@ -620,24 +624,31 @@ struct PluginGrantView {
     #[schema(example = "libro")]
     plugin_id: String,
     /// Exported entrypoints the operator approved (`storefront`, `cli`, …).
+    #[schema(example = json!(["storefront"]))]
     entrypoints: Vec<String>,
     /// Event types the operator approved the plugin to publish.
+    #[schema(example = json!(["book_acquired"]))]
     producers: Vec<String>,
     /// Approved event-consumer subscriptions.
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<Object>, example = json!([{"event_type": "book_acquired", "schema_versions": [1], "supports_suspend": false}]))]
     consumers: Vec<GrantedEventConsumer>,
     /// Approved job trigger types.
+    #[schema(example = json!(["stream_copy"]))]
     jobs: Vec<String>,
-    /// Approved egress mode (`deny`, `allowlist`, and similar).
-    #[schema(example = "allowlist")]
+    /// Approved egress mode (`deny` or `outbound`).
+    #[schema(example = "outbound")]
     network_mode: String,
     /// Hostnames the operator approved for egress.
+    #[schema(example = json!(["*.libro.fm", "api.libro.fm"]))]
     domains: Vec<String>,
     /// Destinations requested by the current manifest.
+    #[schema(example = json!(["*.libro.fm"]))]
     manifest_domains: Vec<String>,
     /// Operator-added destinations beyond the manifest.
+    #[schema(example = json!(["api.libro.fm"]))]
     operator_added_domains: Vec<String>,
     /// Operator-denied destinations still listed by the manifest.
+    #[schema(example = json!([]))]
     operator_denied_domains: Vec<String>,
     /// Effective raw TCP grants.
     tcp: Vec<TcpGrantView>,
@@ -646,10 +657,13 @@ struct PluginGrantView {
     /// Operator-denied TCP grants still listed by the manifest.
     operator_denied_tcp: Vec<TcpGrantView>,
     /// Effective address-space CIDRs.
+    #[schema(example = json!(["203.0.113.0/24"]))]
     address_cidrs: Vec<String>,
     /// Operator-added CIDRs.
+    #[schema(example = json!(["203.0.113.0/24"]))]
     operator_added_cidrs: Vec<String>,
     /// Operator-denied CIDRs still listed by the manifest.
+    #[schema(example = json!([]))]
     operator_denied_cidrs: Vec<String>,
     /// Undeclared public redirect permission.
     #[schema(example = false)]
@@ -661,8 +675,10 @@ struct PluginGrantView {
     #[schema(example = "1f3870be274f6c49b3e31a0c6728957f4e1d5b2c7a8d9e0f1a2b3c4d5e6f7a8b")]
     authority_revision: String,
     /// Host bindings the operator approved.
+    #[schema(example = json!(["config", "secrets"]))]
     bindings: Vec<String>,
     /// Extra compatibility flags stored on the grant.
+    #[schema(example = json!(["nodejs_compat"]))]
     compatibility_flags: Vec<String>,
     /// RFC 3339 timestamp when the grant was last approved.
     #[schema(example = "2026-10-29T10:12:00Z")]
@@ -701,6 +717,7 @@ struct TcpGrantView {
     #[schema(example = "*.libro.fm")]
     host: String,
     /// Destination ports.
+    #[schema(example = json!([443]))]
     ports: Vec<u16>,
 }
 
@@ -779,6 +796,7 @@ struct PluginConsentResponse {
     #[schema(example = false)]
     covered: bool,
     /// Operator-facing bullet list of requested capabilities.
+    #[schema(example = json!(["storefront entrypoint", "outbound network: *.libro.fm, api.libro.fm", "bindings: config, secrets"]))]
     summary: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Previously approved grant, when one is stored.
@@ -805,21 +823,25 @@ struct PluginConsentApproveRequest {
 #[serde(rename_all = "camelCase")]
 /// Operator-supplied grant fields that replace matching request values.
 struct PluginGrantOverride {
-    /// Override egress mode when set.
-    #[schema(example = "allowlist")]
+    /// Override egress mode (`deny` or `outbound`) when set.
+    #[schema(example = "outbound")]
     network_mode: Option<String>,
     /// Override approved hostnames when set.
+    #[schema(example = json!(["*.libro.fm", "api.libro.fm"]))]
     domains: Option<Vec<String>>,
     /// Override raw TCP grants when set.
     tcp: Option<Vec<TcpGrantView>>,
     /// Override address-space CIDRs when set.
+    #[schema(example = json!(["203.0.113.0/24"]))]
     address_cidrs: Option<Vec<String>>,
     /// Override undeclared-public-redirect permission when set.
     #[schema(example = false)]
     allow_undeclared_public_redirects: Option<bool>,
     /// Override approved host bindings when set.
+    #[schema(example = json!(["config", "secrets"]))]
     bindings: Option<Vec<String>>,
     /// Override compatibility flags when set.
+    #[schema(example = json!(["nodejs_compat"]))]
     compatibility_flags: Option<Vec<String>>,
     /// Override workerd CPU milliseconds when set.
     #[schema(example = 100)]
@@ -851,7 +873,7 @@ struct ActionResponse {
     #[schema(example = "scan queued")]
     message: String,
     /// Queued job id, or empty when the action is synchronous.
-    #[schema(example = "job_01jbq9x4e8c7k2m5n6p7r8s9t0")]
+    #[schema(example = "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f")]
     job_id: String,
     /// Machine slug when admission failed (`conflict`, `queue_full`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -894,6 +916,7 @@ pub struct AcquireRequestBody {
     /// More title ids; each (with the single filter above) becomes its own
     /// job.
     #[serde(default)]
+    #[schema(example = json!(["8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"]))]
     pub titles: Vec<String>,
     /// Re-download titles already acquired.
     #[serde(default)]
@@ -3658,7 +3681,7 @@ async fn patch_settings(
     post,
     path = "/api/config/reload",
     responses(
-        (status = 200, description = "The configuration was reloaded.", body = ActionResponse),
+        (status = 200, description = "The configuration was reloaded.", body = ActionResponse, example = json!({"ok": true, "message": "reloaded /home/bookclerk/BookclerkFiles/config.toml (master.key wrap=true)", "job_id": ""})),
         (status = 500, description = "The reload failed; the old configuration stays live.", body = crate::http_error::ErrorJson),
     ),
 )]
@@ -3715,7 +3738,7 @@ pub(crate) async fn apply_migrated_database_plugin(
     path = "/api/database/migrate",
     request_body = DatabaseMigrateRequest,
     responses(
-        (status = 200, description = "The rows were copied.", body = ActionResponse),
+        (status = 200, description = "The rows were copied.", body = ActionResponse, example = json!({"ok": true, "message": "copied 1284 row(s) from `sqlite` to `postgres`; updated [database].plugin, wrote /home/bookclerk/BookclerkFiles/config.toml, and reloaded library connection", "job_id": ""})),
         (status = 400, description = "The target is invalid.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The copy failed.", body = crate::http_error::ErrorJson),
         (status = 409, description = "The migration target matches more than one database plugin."),
@@ -3907,10 +3930,10 @@ async fn status(State(state): State<Arc<AppState>>) -> Result<Json<StatusRespons
     path = "/api/library/scan",
     request_body = Option<ScanRequest>,
     responses(
-        (status = 200, description = "The scan jobs were accepted.", body = ScanPlanResponse),
+        (status = 200, description = "The scan jobs were accepted.", body = ScanPlanResponse, example = json!({"ok": true, "message": "scan planned: 2 accepted, 0 already pending or running, 0 not admitted (queue full)", "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "scan-8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"]})),
         (status = 400, description = "The body names no valid target.", body = ActionResponse, example = json!({"ok": false, "message": "the account named is blank", "job_id": "", "error": "invalid"})),
         (status = 403, description = "The caller may not scan these accounts.", body = ActionResponse, example = json!({"ok": false, "message": "this user may not scan the library", "job_id": "", "error": "forbidden"})),
-        (status = 409, description = "A scan is already pending or running, or no node can run it.", body = PlanConflict, examples(("duplicate" = (summary = "Every planned job is already pending or running", value = json!({"ok": false, "message": "scan already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"}))), ("unroutable" = (summary = "No node runs every plugin instance the job requires", value = json!({"ok": false, "message": "no node runs all of the plugin instances this scan job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node", "job_id": "", "error": "unroutable"}))))),
+        (status = 409, description = "A scan is already pending or running, or no node can run it.", body = PlanConflict, examples(("duplicate" = (summary = "Every planned job is already pending or running", value = json!({"ok": false, "message": "scan already pending or running", "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"}))), ("unroutable" = (summary = "No node runs every plugin instance the job requires", value = json!({"ok": false, "message": "no node runs all of the plugin instances this scan job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node", "job_id": "", "error": "unroutable"}))))),
         (status = 422, description = "No account matched.", body = ScanPlanResponse, example = json!({"ok": false, "message": "no scan-enabled store account to scan", "job_id": "", "job_ids": [], "error": "nothing_to_scan"})),
         (status = 429, description = "The job queue is full.", body = ScanPlanResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "job_ids": [], "error": "queue_full"})),
         (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
@@ -3972,12 +3995,15 @@ struct ScanPlanResponse {
     #[schema(example = true)]
     ok: bool,
     /// Operator-facing status text.
-    #[schema(example = "2 scan jobs queued")]
+    #[schema(
+        example = "scan planned: 2 accepted, 0 already pending or running, 0 not admitted (queue full)"
+    )]
     message: String,
     /// First accepted (or, when none was, already queued) job id.
-    #[schema(example = "job_01jbq9x4e8c7k2m5n6p7r8s9t0")]
+    #[schema(example = "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f")]
     job_id: String,
     /// Every accepted or already-queued job id, in plan order.
+    #[schema(example = json!(["scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "scan-8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"]))]
     job_ids: Vec<String>,
     /// Machine slug when nothing was accepted (`conflict`, `queue_full`,
     /// `nothing_to_scan`, `nothing_to_acquire`).
@@ -4154,10 +4180,10 @@ fn plan_response(kind: &str, admits: Vec<AdmitJob>) -> Response {
     path = "/api/library/acquire",
     request_body = Option<AcquireRequestBody>,
     responses(
-        (status = 200, description = "The acquire jobs were accepted.", body = ScanPlanResponse),
+        (status = 200, description = "The acquire jobs were accepted.", body = ScanPlanResponse, example = json!({"ok": true, "message": "acquire planned: 1 accepted, 0 already pending or running, 0 not admitted (queue full)", "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b", "job_ids": ["acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"]})),
         (status = 400, description = "The body names no valid title.", body = ActionResponse, example = json!({"ok": false, "message": "every title id given is blank", "job_id": "", "error": "invalid"})),
         (status = 403, description = "The caller may not acquire for these accounts.", body = ActionResponse, example = json!({"ok": false, "message": "that title is not in a store account linked to this user", "job_id": "", "error": "forbidden"})),
-        (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = PlanConflict, examples(("duplicate" = (summary = "Every planned job is already pending or running", value = json!({"ok": false, "message": "acquire already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"}))), ("unroutable" = (summary = "No node runs every plugin instance the job requires", value = json!({"ok": false, "message": "no node runs all of the plugin instances this acquire job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node", "job_id": "", "error": "unroutable"}))))),
+        (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = PlanConflict, examples(("duplicate" = (summary = "Every planned job is already pending or running", value = json!({"ok": false, "message": "acquire already pending or running", "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"}))), ("unroutable" = (summary = "No node runs every plugin instance the job requires", value = json!({"ok": false, "message": "no node runs all of the plugin instances this acquire job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node", "job_id": "", "error": "unroutable"}))))),
         (status = 422, description = "No account of the caller's can acquire.", body = ScanPlanResponse, example = json!({"ok": false, "message": "no store account of yours to acquire from", "job_id": "", "job_ids": [], "error": "nothing_to_acquire"})),
         (status = 429, description = "The job queue is full.", body = ScanPlanResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "job_ids": [], "error": "queue_full"})),
         (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
@@ -4379,6 +4405,7 @@ struct QueueInfo {
     #[schema(example = 0)]
     dead_letter: i64,
     /// Live catalog consumers (plugin keys or instance ids) of this queue.
+    #[schema(example = json!(["platform:bookclerk/bookclerk-plugin-integration-audiobookshelf#audiobookshelf"]))]
     consumers: Vec<String>,
 }
 
@@ -4421,7 +4448,7 @@ struct EventDeliveryInfo {
     #[schema(example = 0)]
     invocation_sequence: i64,
     /// Terminal outcome when set.
-    #[schema(example = "acked")]
+    #[schema(example = "ack")]
     outcome: Option<String>,
     /// Operator-facing error.
     #[schema(example = "integration API error (503): library scan in progress")]
@@ -4834,7 +4861,7 @@ async fn legacy_scan(
     operation_id = "legacy_acquire",
     request_body = Option<AcquireRequestBody>,
     responses(
-        (status = 200, description = "The acquire jobs were accepted; see `POST /api/library/acquire` for the other answers.", body = ActionResponse),
+        (status = 200, description = "The acquire jobs were accepted; see `POST /api/library/acquire` for the other answers.", body = ActionResponse, example = json!({"ok": true, "message": "acquire planned: 1 accepted, 0 already pending or running, 0 not admitted (queue full)", "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"})),
     ),
 )]
 #[deprecated(note = "legacy root alias; call the `/api/...` route instead")]
@@ -4888,7 +4915,7 @@ async fn legacy_cancel_job(
     request_body = Option<IntegrationScanRequest>,
     responses(
         (status = 200, description = "The job was accepted.", body = ActionResponse),
-        (status = 409, description = "The same job is already pending or running, or no node can run it.", body = ActionResponse, example = json!({"ok": false, "message": "integration_scan already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "error": "conflict"})),
+        (status = 409, description = "The same job is already pending or running, or no node can run it.", body = ActionResponse, example = json!({"ok": false, "message": "integration_scan already pending or running", "job_id": "integration_scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "error": "conflict"})),
         (status = 429, description = "The job queue is full.", body = ActionResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "error": "queue_full"})),
         (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
         (status = 500, description = "The job could not be queued.", body = ActionResponse, example = json!({"ok": false, "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "job_id": "", "error": "internal_error"})),
@@ -6089,7 +6116,7 @@ fn source_from_purchase_hint(
     path = "/api/discover/sync-listening",
     responses(
         (status = 200, description = "The job was accepted.", body = ActionResponse),
-        (status = 409, description = "The same job is already pending or running, or no node can run it.", body = ActionResponse, example = json!({"ok": false, "message": "listen_sync already pending or running", "job_id": "7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "error": "conflict"})),
+        (status = 409, description = "The same job is already pending or running, or no node can run it.", body = ActionResponse, example = json!({"ok": false, "message": "listen_sync already pending or running", "job_id": "listen_sync-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "error": "conflict"})),
         (status = 429, description = "The job queue is full.", body = ActionResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "error": "queue_full"})),
         (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
         (status = 500, description = "The job could not be queued.", body = ActionResponse, example = json!({"ok": false, "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "job_id": "", "error": "internal_error"})),
@@ -6123,6 +6150,7 @@ struct PreferencesResponse {
     #[schema(example = "library")]
     default_view: String,
     /// Lowercased Discover shelf ids the user has hidden.
+    #[schema(example = json!(["chirp_deals", "from_store"]))]
     disabled_shelves: Vec<String>,
     /// Discover sort key (`relevance`, `popularity`, …).
     #[schema(example = "relevance")]
@@ -6134,6 +6162,7 @@ struct PreferencesResponse {
     #[schema(example = "en")]
     discover_language: Option<String>,
     /// Lowercased store ids hidden from Discover results.
+    #[schema(example = json!(["chirp"]))]
     discover_excluded_sources: Vec<String>,
     /// Appearance preference (`system`, `light`, or `dark`).
     #[schema(example = "system")]
@@ -6147,6 +6176,7 @@ struct PatchPreferencesBody {
     #[schema(example = "discover")]
     default_view: Option<String>,
     /// Replacement hidden-shelf list when set.
+    #[schema(example = json!(["chirp_deals", "from_store"]))]
     disabled_shelves: Option<Vec<String>>,
     /// Replacement Discover sort key when set.
     #[schema(example = "popularity")]
@@ -6160,6 +6190,7 @@ struct PatchPreferencesBody {
     #[schema(example = "de")]
     discover_language: Option<Option<String>>,
     /// Replacement excluded-store list when set.
+    #[schema(example = json!(["chirp"]))]
     discover_excluded_sources: Option<Vec<String>>,
     /// Replacement appearance preference when set (`system`, `light`, `dark`).
     #[schema(example = "dark")]
