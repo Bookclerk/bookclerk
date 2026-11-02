@@ -4,11 +4,14 @@
 ``.github/workflows/codeql.yml`` analyzes GitHub Actions workflows,
 JavaScript/TypeScript, Python and Rust. Rust is the slow one (about 20
 minutes on a hosted runner, and CodeQL has no incremental analysis for it
-yet). A pull request that changes no Rust input cannot add or fix a Rust
-alert, so this script can skip Rust there (``PULL_REQUESTS_SKIP_RUST``),
-but that is off: code scanning's merge rule blocks a pull request that lacks
-a configuration ``main`` has. Pushes to ``main``, the weekly schedule and
-manual runs analyze every language. See ``docs/contributing/ci.md#codeql``.
+yet). A pull request that changes no Rust input would get exactly the Rust
+results ``main`` got for its base commit, so this script marks Rust for
+reuse there (``PULL_REQUESTS_REUSE_RUST``): ``scripts/codeql_reuse.py``
+uploads that analysis again, and the job analyzes Rust only when it can't.
+Rust is never left out, because code scanning's merge rule blocks a pull
+request that lacks a configuration ``main`` has. Pushes to ``main``, the
+weekly schedule and manual runs analyze every language. See
+``docs/contributing/ci.md#codeql``.
 
 The changed paths come from ``git diff -z --no-renames --name-only`` of the
 pull request's merge commit against its base parent, run in the same job.
@@ -20,8 +23,8 @@ is not UTF-8 counts as a Rust input. Parsing is sans-IO so
 the same code against an independent oracle.
 
 Usage: ``codeql_languages.py --event NAME [--paths-file FILE]`` from the
-repository root; writes ``matrix=<json>`` to ``$GITHUB_OUTPUT`` (or stdout
-without it) and a one-line reason to ``$GITHUB_STEP_SUMMARY`` when set.
+repository root; writes ``matrix=<json>`` and ``reuse-rust=true|false`` to
+``$GITHUB_OUTPUT`` (or stdout without it) and a one-line reason to ``$GITHUB_STEP_SUMMARY`` when set.
 """
 
 from __future__ import annotations
@@ -44,8 +47,8 @@ ALWAYS: tuple[str, ...] = ("actions", "javascript-typescript", "python")
 # toolchain pin, Cargo's configuration (a `.cargo/` directory at any depth,
 # see `CARGO_DIR`), and the schemas build scripts compile into Rust (Cap'n
 # Proto for the plugin ABI, protobuf for audible-rs); CodeQL's `none` mode
-# still runs build scripts. This workflow and this script are inputs too, so a change to
-# how Rust is analyzed is analyzed.
+# still runs build scripts. The workflow and the scripts that choose and reuse
+# are inputs too, so a change to how Rust is analyzed is analyzed.
 RUST = "rust"
 RUST_INPUTS: tuple[str, ...] = (
     "*.rs",
@@ -56,6 +59,7 @@ RUST_INPUTS: tuple[str, ...] = (
     "*.proto",
     ".github/workflows/codeql.yml",
     "scripts/codeql_languages.py",
+    "scripts/codeql_reuse.py",
 )
 
 # A directory holding Cargo configuration; any file under one, at any depth,
@@ -65,12 +69,12 @@ CARGO_DIR = ".cargo"
 # Events that always analyze every language.
 FULL_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 
-# Whether a pull request that changes no Rust input skips the Rust analysis.
-# Off: code scanning's merge rule ("CodeQL results") reports a pull request
-# that lacks a configuration main has (`/language:rust`) as neutral, "1
-# configuration not found", and a neutral result blocks the merge (#583). The
-# classification still runs and names the reason in the job summary.
-PULL_REQUESTS_SKIP_RUST = False
+# Whether a pull request that changes no Rust input reuses main's Rust results
+# for its base commit instead of analyzing Rust. Rust is never skipped: code
+# scanning's merge rule ("CodeQL results") reports a pull request that lacks
+# a configuration main has (`/language:rust`) as neutral, "1 configuration
+# not found", and a neutral result blocks the merge (#583).
+PULL_REQUESTS_REUSE_RUST = True
 
 
 @dataclass(frozen=True)
@@ -80,10 +84,14 @@ class Choice:
     Attributes:
         languages: CodeQL language names, in matrix order.
         reason: One sentence for the job summary.
+        reuse_rust: Whether the Rust job may upload main's results for the
+            base commit instead of analyzing; it still analyzes when those
+            results can't be found.
     """
 
     languages: tuple[str, ...]
     reason: str
+    reuse_rust: bool = False
 
 
 def is_rust_input(path: str) -> bool:
@@ -141,10 +149,11 @@ def choose(event: str, paths: Iterable[str | None]) -> Choice:
             not UTF-8; ignored for other events.
 
     Returns:
-        Every language for pushes, schedules and manual runs, and for any
-        event this script does not know (fail toward analyzing). A pull
-        request gets Rust when at least one path is a Rust input or is not
-        UTF-8, and always while `PULL_REQUESTS_SKIP_RUST` is off.
+        Every language, always. Pushes, schedules, manual runs and any
+        event this script does not know (fail toward analyzing) analyze
+        Rust. A pull request whose paths are all UTF-8 and none a Rust
+        input may reuse main's Rust results while
+        `PULL_REQUESTS_REUSE_RUST` is on.
     """
     if event != "pull_request":
         why = "full analysis" if event in FULL_EVENTS else f"unknown event {event!r}: full analysis"
@@ -152,12 +161,13 @@ def choose(event: str, paths: Iterable[str | None]) -> Choice:
     why = rust_reason(paths)
     if why is not None:
         return Choice((*ALWAYS, RUST), f"Rust analyzed: {why}")
-    if not PULL_REQUESTS_SKIP_RUST:
-        return Choice(
-            (*ALWAYS, RUST),
-            "Rust analyzed: the pull request changes no Rust input, but the merge rule needs every configuration main has",
-        )
-    return Choice(ALWAYS, "Rust skipped: the pull request changes no Rust input")
+    if not PULL_REQUESTS_REUSE_RUST:
+        return Choice((*ALWAYS, RUST), "Rust analyzed: reusing main's results is turned off")
+    return Choice(
+        (*ALWAYS, RUST),
+        "Rust may reuse main's results for the base commit: the pull request changes no Rust input",
+        reuse_rust=True,
+    )
 
 
 def rust_reason(paths: Iterable[str | None]) -> str | None:
@@ -189,6 +199,10 @@ def matrix_json(choice: Choice) -> str:
 
     Returns:
         Compact JSON ``{"include": [{"language": ..., "build-mode": "none"}]}``.
+        It carries nothing else: code scanning records the matrix values
+        with each analysis, so a pull request whose values differ from
+        main's would not match main's configuration. Reuse travels as the
+        separate ``reuse-rust`` output.
     """
     include = [{"language": lang, "build-mode": "none"} for lang in choice.languages]
     return json.dumps({"include": include}, separators=(",", ":"))
@@ -215,7 +229,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"codeql_languages: cannot read {args.paths_file}: {err}", file=sys.stderr)
             return 2
     choice = choose(args.event, paths)
-    line = f"matrix={matrix_json(choice)}\n"
+    reuse = "true" if choice.reuse_rust else "false"
+    line = f"matrix={matrix_json(choice)}\nreuse-rust={reuse}\n"
     out = os.environ.get("GITHUB_OUTPUT")
     if out:
         with open(out, "a", encoding="utf-8") as fh:

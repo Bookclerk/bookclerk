@@ -196,16 +196,19 @@ The tests live in `scripts/tests/`, and each corpus beside them.
 - **Changed-path reader** (`parse_paths` and `rust_reason` in
   `scripts/codeql_languages.py`). `codeql.yml` reads the pull request's
   changed file names, which its author chose, and decides whether any is a
-  Rust input (skipping Rust on the others is turned off; see
-  [CodeQL](ci.md#codeql)).
+  Rust input. A pull request with none reuses `main`'s Rust results (see
+  [CodeQL](ci.md#codeql)). The runs and SARIF that
+  `scripts/codeql_reuse.py` reads come from GitHub and from `main`'s own
+  runs, not from the pull request, so that reader is not a boundary. It is
+  tested in `scripts/tests/test_codeql_reuse.py`.
   - Test and corpus: `scripts/tests/test_codeql_languages.py`,
     `scripts/tests/codeql_languages_corpus/` (files named `rust__<case>`
     or `norust__<case>`).
   - Oracle: Rust is analyzed exactly when some NUL-separated name is not
     UTF-8, ends in `.rs`, `.capnp` or `.proto`, is named `Cargo.toml`, `Cargo.lock`
     or `rust-toolchain.toml`, sits under a `.cargo/` directory, or is the
-    workflow or
-    the script, checked with string operations rather than glob patterns.
+    workflow or one of the two scripts, checked with string operations
+    rather than glob patterns.
 
 ### CLA check (Python)
 

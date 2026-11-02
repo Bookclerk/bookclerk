@@ -191,6 +191,7 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
         "tools/codecov/package-lock.json",
         "scripts/mutation_report.py",
         "scripts/codeql_languages.py",
+        "scripts/codeql_reuse.py",
         ".cargo/mutants.toml",
         "scripts/stryker_report.py",
         "scripts/stryker.config.json",
