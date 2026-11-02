@@ -870,20 +870,24 @@ Rust code:
 
 1. It tests the pull request merged onto its base branch, as CI does, and
    mutates only the functions the pull request changes (`--in-diff`, from
-   the merge commit's diff against the base) in any workspace member (`--workspace`;
-   without it cargo-mutants looks only at the default members), so the cost
-   follows the size of the change. Test code, the generated files and the
+   the merge commit's diff against the base) in any workspace member
+   (`--workspace`; without it cargo-mutants looks only at the default
+   members), so the cost follows the size of the change. Test code, the generated files and the
    staged-plugin harness (`bookclerk-plugin-e2e`, whose tests need the
-   plugins CI's `e2e` check stages) are never mutated. Neither is anything
-   outside a function body, such as attributes and type definitions, so a
-   change made only of those has no mutants.
-2. Before the first mutant, the job builds what CI's `rust_test` check
+   plugins CI's `e2e` check stages) are never mutated.
+2. Mutants live only in function bodies, so a change to data that code
+   reads (an attribute, a constant, a type definition) gives no mutants
+   from the diff. When a changed Rust file gets none, the job mutates every
+   function in that file instead, so the tests of the code beside the
+   changed data are still checked. The summary names those files. Code in
+   other files that reads the data is not covered.
+3. Before the first mutant, the job builds what CI's `rust_test` check
    builds first (the jail, the workerd front door, the pinned workerd and
    the platform guests) with `ci-exec.py prereqs rust_test`, and turns on
    the same confinement enforcement as the test job. Tests that launch a
    helper then run instead of skipping.
-3. Each mutant runs the tests of its own package under cargo-nextest.
-4. The run stops after 50 minutes and reports what it tested so far.
+4. Each mutant runs the tests of its own package under cargo-nextest.
+5. The run stops after 50 minutes and reports what it tested so far.
 
 The job summary shows the share of mutants the tests caught and lists the
 missed ones. cargo-mutants also annotates each missed mutant on the pull

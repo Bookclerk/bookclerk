@@ -111,6 +111,28 @@ jobs:
           env -u GITHUB_STEP_SUMMARY python3 scripts/ci-exec.py resolve --force-full --event pull_request --run-id "$GITHUB_RUN_ID" > /dev/null
           python3 scripts/ci-exec.py prereqs rust_test --github-env
 
+      # Mutants live only in function bodies, so a file changed only outside
+      # them (an attribute, a constant, a struct the code reads) gives none
+      # from the diff. Such files go in whole instead: the diff is redone
+      # with them as new files, so every function in them is mutated and the
+      # tests of the code beside the changed data are checked too.
+      - name: Widen to files changed outside functions
+        run: |
+          set -euo pipefail
+          cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --list > "$RUNNER_TEMP/listed.txt"
+          python3 scripts/mutation_report.py widen --diff "$RUNNER_TEMP/pr.diff" --listed "$RUNNER_TEMP/listed.txt" > "$RUNNER_TEMP/widened.txt"
+          if [ -s "$RUNNER_TEMP/widened.txt" ]; then
+            mapfile -t files < "$RUNNER_TEMP/widened.txt"
+            exclude=()
+            for f in "${files[@]}"; do exclude+=(":(exclude,literal)$f"); done
+            empty_tree=$(git hash-object -t tree /dev/null)
+            {
+              git diff HEAD^1 HEAD -- . "${exclude[@]}"
+              git diff "$empty_tree" HEAD -- "${files[@]/#/:(literal)}"
+            } > "$RUNNER_TEMP/scoped.diff"
+            mv "$RUNNER_TEMP/scoped.diff" "$RUNNER_TEMP/pr.diff"
+          fi
+
       # `--in-place` mutates this checkout, which the runner throws away;
       # cargo-mutants restores each file after its mutant. The time limit
       # stops it with SIGINT, which still writes the lists of what it tested.
@@ -138,7 +160,7 @@ jobs:
           STOPPED: ${{ steps.mutants.outputs.stopped }}
         run: |
           set -euo pipefail
-          args=(--out "$RUNNER_TEMP/mutants.out" --exit-code "${CODE:-1}")
+          args=(--out "$RUNNER_TEMP/mutants.out" --exit-code "${CODE:-1}" --widened "$RUNNER_TEMP/widened.txt")
           if [ "${STOPPED:-}" = "true" ]; then args+=(--stopped); fi
           python3 scripts/mutation_report.py "${args[@]}"
 
