@@ -390,7 +390,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"codeql_languages: cannot read {args.paths_file}: {err}", file=sys.stderr)
             return 2
     repo: RepoInputs | None = None
-    if args.event == "pull_request":
+    # Scan only when no path is a Rust input: then every `.rs` file is
+    # main's, so the scan never parses source the pull request wrote.
+    if args.event == "pull_request" and rust_reason(paths) is None:
         try:
             repo = read_repo(Path.cwd())
         except (OSError, subprocess.CalledProcessError) as err:

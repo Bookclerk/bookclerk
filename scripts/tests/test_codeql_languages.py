@@ -249,6 +249,17 @@ class CliTests(unittest.TestCase):
                 del self.root
         self.assertEqual(reuse, "false")
 
+    def test_rust_changes_are_never_scanned(self) -> None:
+        # A changed `.rs` file is the pull request author's; the scan must
+        # not parse it (the choice is already "analyze").
+        old = cl.read_repo
+        cl.read_repo = lambda root: self.fail("scanned a tree with Rust changes")  # type: ignore[assignment]
+        try:
+            _, reuse = self.run_main("pull_request", b"crates/a/src/lib.rs\x00")
+        finally:
+            cl.read_repo = old
+        self.assertEqual(reuse, "false")
+
     def test_unreadable_paths_file_fails(self) -> None:
         self.assertEqual(cl.main(["--event", "pull_request", "--paths-file", "/nonexistent/paths"]), 2)
 
