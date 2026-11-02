@@ -147,7 +147,10 @@ class WiringTest(unittest.TestCase):
     def test_generated_files_are_excluded(self) -> None:
         mutants = tomllib.loads((ROOT / ".cargo" / "mutants.toml").read_text(encoding="utf-8"))
         areas = tomllib.loads((ROOT / "scripts" / "coverage_areas.toml").read_text(encoding="utf-8"))
-        self.assertEqual(sorted(mutants["exclude_globs"]), sorted(p for p in areas["generated"] if p.endswith(".rs")))
+        generated = sorted(p for p in areas["generated"] if p.endswith(".rs"))
+        self.assertEqual(sorted(g for g in mutants["exclude_globs"] if not g.endswith("/**")), generated)
+        # The e2e harness needs staged helpers this workflow does not build.
+        self.assertIn("crates/bookclerk-plugin-e2e/**", mutants["exclude_globs"])
         self.assertEqual(mutants["test_tool"], "nextest")
         self.assertTrue(mutants["cap_lints"])
 

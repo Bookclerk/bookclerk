@@ -865,7 +865,9 @@ Rust code:
 
 1. It mutates only the functions the pull request changes (`--in-diff`,
    from the pull request's diff), so the cost follows the size of the
-   change. Test code and the generated files are never mutated.
+   change. Test code, the generated files and the staged-plugin harness
+   (`bookclerk-plugin-e2e`, whose tests need the helpers CI's `e2e` check
+   stages) are never mutated.
 2. Each mutant runs the tests of its own package under cargo-nextest.
 3. The run stops after 50 minutes and reports what it tested so far.
 

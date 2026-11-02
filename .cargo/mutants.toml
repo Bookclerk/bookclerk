@@ -9,10 +9,18 @@ test_tool = "nextest"
 # capped at warnings for mutant builds only.
 cap_lints = true
 
-# Generated files: tests exercise their generator, not each line it writes.
-# The same list as `generated` in scripts/coverage_areas.toml (a test checks
-# that the two agree).
-exclude_globs = ["crates/bookclerk-plugin-abi/src/generated.rs", "crates/bookclerk-workerd/src/pin.rs"]
+exclude_globs = [
+  # The staged-plugin conformance harness: its tests need the jail, the
+  # workerd front door and the pinned workerd built and staged, which CI's
+  # `e2e` check prepares and this workflow does not. A failing baseline
+  # would stop every other package's mutants too.
+  "crates/bookclerk-plugin-e2e/**",
+  # Generated files: tests exercise their generator, not each line it
+  # writes. The same Rust files as `generated` in
+  # scripts/coverage_areas.toml (a test checks that the two agree).
+  "crates/bookclerk-plugin-abi/src/generated.rs",
+  "crates/bookclerk-workerd/src/pin.rs",
+]
 
 # Some test binaries spawn helpers and take a while to start; give each
 # mutant's test run at least this long, in seconds, before calling it a
