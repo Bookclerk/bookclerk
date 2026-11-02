@@ -107,7 +107,7 @@ class RenderTest(unittest.TestCase):
     def test_other_states(self) -> None:
         self.assertIn("failed to build or its tests failed", mr.render(mr.Results(), mr.Run.BASELINE_FAILED, stopped=False))
         self.assertIn("did not finish", mr.render(mr.Results(), mr.Run.ERROR, stopped=False))
-        self.assertIn("touches no Rust code", mr.render(mr.Results(), mr.Run.CLEAN, stopped=False))
+        self.assertIn("No mutants to test", mr.render(mr.Results(), mr.Run.CLEAN, stopped=False))
         only_unviable = mr.render(results(unviable=2), mr.Run.CLEAN, stopped=False)
         self.assertIn("| 0 | 0 | 0 | 2 |", only_unviable)
         self.assertNotIn("%**", only_unviable)
@@ -187,10 +187,15 @@ class WiringTest(unittest.TestCase):
         self.assertEqual(list(triggers), ["pull_request"])
         self.assertEqual(workflow["permissions"], {"contents": "read"})
         job = workflow["jobs"]["rust"]
-        self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "read"})
+        self.assertEqual(job["permissions"], {"contents": "read"})
         steps = {s.get("name"): s for s in job["steps"]}
         self.assertFalse(job["steps"][0]["with"]["persist-credentials"])
-        self.assertEqual(job["steps"][0]["with"]["ref"], "${{ github.event.pull_request.head.sha }}")
+        # The merge commit (the default ref), so the workflow's scripts are
+        # there even on a branch cut before they were added; its diff against
+        # the base is what gets mutated.
+        self.assertNotIn("ref", job["steps"][0]["with"])
+        self.assertEqual(job["steps"][0]["with"]["fetch-depth"], 2)
+        self.assertEqual(steps["Diff the pull request"]["run"], 'git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"')
         run = steps["Test the mutants"]["run"]
         self.assertIn('--in-diff "$RUNNER_TEMP/pr.diff"', run)
         # Every workspace member, not only the default members.

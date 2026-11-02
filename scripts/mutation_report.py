@@ -176,7 +176,10 @@ def render(results: Results, run: Run, *, stopped: bool) -> str:
     elif run is Run.ERROR and not results.tested:
         lines.append("cargo-mutants did not finish; check the job log.")
     elif not results.tested and not results.count(Outcome.UNVIABLE):
-        lines.append("The change touches no Rust code cargo-mutants can mutate.")
+        lines.append(
+            "No mutants to test: the change holds no Rust function body cargo-mutants mutates. "
+            "Attributes, type definitions, comments, tests and excluded files are not mutated."
+        )
     else:
         score = results.score()
         if score is not None:

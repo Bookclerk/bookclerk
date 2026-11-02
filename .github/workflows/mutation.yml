@@ -8,8 +8,8 @@
 #   still passes on is a "missed" mutant, reported in the job summary and as
 #   an annotation on the diff.
 # - Only the functions the pull request touches are mutated (`--in-diff`,
-#   from the pull request's diff), so the cost follows the change. The run
-#   stops at a time limit and reports what it tested.
+#   from the merge commit's diff against the base), so the cost follows the
+#   change. The run stops at a time limit and reports what it tested.
 # - Trial: report-only and not a required check. Settings live in
 #   .cargo/mutants.toml.
 #
@@ -57,51 +57,37 @@ jobs:
       BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
     permissions:
       contents: read
-      # Read the pull request's diff.
-      pull-requests: read
     steps:
-      # The pull request's head, so the diff's line numbers match the files.
+      # The pull request merged onto its base branch, as CI tests it, so a
+      # branch cut before a workflow change still runs with the scripts this
+      # workflow calls.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
           persist-credentials: false
 
-      # The diff against the merge base, as GitHub shows it. A diff GitHub
-      # will not serve (too large) skips the run.
-      - name: Fetch the pull request's diff
-        id: diff
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          if gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" -H "Accept: application/vnd.github.diff" > "$RUNNER_TEMP/pr.diff"; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice title=Mutation testing::Skipped: GitHub did not serve the pull request's diff."
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          fi
+      # The pull request's changes as they land on the base branch: the
+      # merge commit against its first parent, the base. Its line numbers
+      # match this checkout.
+      - name: Diff the pull request
+        run: git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
 
       - name: Install Rust toolchain
-        if: steps.diff.outputs.ok == 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
 
       # Tool versions shared with the Dev Container (docs/contributing/ci.md#tool-versions).
       - name: Read tool pins
-        if: steps.diff.outputs.ok == 'true'
         id: pins
         run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
 
       - name: Install cargo-nextest and cargo-mutants
-        if: steps.diff.outputs.ok == 'true'
         uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-nextest@${{ steps.pins.outputs.cargo-nextest }},cargo-mutants@27.1.0
 
       - name: Install capnproto
-        if: steps.diff.outputs.ok == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
@@ -109,7 +95,6 @@ jobs:
       # Its own cache: mutant builds cap lints and build incrementally, so
       # CI's `debug` cache would not match.
       - name: Cache cargo
-        if: steps.diff.outputs.ok == 'true'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: mutants
@@ -121,7 +106,6 @@ jobs:
       # skipping. The planner lists them; its summary stays out of this
       # job's.
       - name: Build the test prerequisites
-        if: steps.diff.outputs.ok == 'true'
         run: |
           set -euo pipefail
           env -u GITHUB_STEP_SUMMARY python3 scripts/ci-exec.py resolve --force-full --event pull_request --run-id "$GITHUB_RUN_ID" > /dev/null
@@ -132,7 +116,6 @@ jobs:
       # stops it with SIGINT, which still writes the lists of what it tested.
       - name: Test the mutants
         id: mutants
-        if: steps.diff.outputs.ok == 'true'
         env:
           # Each mutant rebuilds only what it changed. Set on the step:
           # rust-cache exports CARGO_INCREMENTAL=0 for the rest of the job.
@@ -149,7 +132,7 @@ jobs:
           exit 0
 
       - name: Report
-        if: ${{ !cancelled() && steps.diff.outputs.ok == 'true' }}
+        if: ${{ !cancelled() }}
         env:
           CODE: ${{ steps.mutants.outputs.code }}
           STOPPED: ${{ steps.mutants.outputs.stopped }}
@@ -160,7 +143,7 @@ jobs:
           python3 scripts/mutation_report.py "${args[@]}"
 
       - name: Upload the results
-        if: ${{ !cancelled() && steps.diff.outputs.ok == 'true' }}
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutants-rust

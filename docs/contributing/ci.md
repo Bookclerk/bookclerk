@@ -868,12 +868,15 @@ The [`mutation.yml`](../../.github/workflows/mutation.yml) workflow runs
 [cargo-mutants](https://mutants.rs/) on every pull request that changes
 Rust code:
 
-1. It mutates only the functions the pull request changes (`--in-diff`,
-   from the pull request's diff) in any workspace member (`--workspace`;
+1. It tests the pull request merged onto its base branch, as CI does, and
+   mutates only the functions the pull request changes (`--in-diff`, from
+   the merge commit's diff against the base) in any workspace member (`--workspace`;
    without it cargo-mutants looks only at the default members), so the cost
    follows the size of the change. Test code, the generated files and the
    staged-plugin harness (`bookclerk-plugin-e2e`, whose tests need the
-   plugins CI's `e2e` check stages) are never mutated.
+   plugins CI's `e2e` check stages) are never mutated. Neither is anything
+   outside a function body, such as attributes and type definitions, so a
+   change made only of those has no mutants.
 2. Before the first mutant, the job builds what CI's `rust_test` check
    builds first (the jail, the workerd front door, the pinned workerd and
    the platform guests) with `ci-exec.py prereqs rust_test`, and turns on
