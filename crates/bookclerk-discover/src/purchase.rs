@@ -14,34 +14,45 @@ use crate::identity::works_match;
 )]
 pub struct PurchaseHint {
     /// Canonical storefront / plugin id (`audible`, `libro`, `chirp`, …).
+    #[schema(example = "libro")]
     pub source: String,
     /// Storefront-native product id (ASIN, ISBN, UUID, …).
+    #[schema(example = "9780441478125")]
     pub product_id: String,
     /// Display title as shown on the storefront or library card.
+    #[schema(example = "The Left Hand of Darkness")]
     pub title: Option<String>,
     /// Absolute HTTPS URL.
+    #[schema(example = "https://libro.fm/audiobooks/9780441478125")]
     pub url: Option<String>,
     /// Primary / best known sell price in minor units (prefer member when dual).
     /// `0` = free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 1499)]
     pub price_cents: Option<i64>,
     /// ISO 4217 currency code for price fields (`USD`, `EUR`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "USD")]
     pub currency: Option<String>,
     /// Display string from the store (`$2.99`, `FREE`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "$14.99")]
     pub price_label: Option<String>,
     /// Non-member / list price in integer cents when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 2999)]
     pub list_price_cents: Option<i64>,
     /// Human-readable list price from the storefront.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "$29.99")]
     pub list_price_label: Option<String>,
     /// Member / credit price in integer cents when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 1499)]
     pub member_price_cents: Option<i64>,
     /// Human-readable member price from the storefront.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "$14.99")]
     pub member_price_label: Option<String>,
 }
 
@@ -133,26 +144,34 @@ impl PurchaseHint {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct PurchaseHintsQuery {
     /// Display title as shown on the storefront or library card.
+    #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
     /// Comma-separated author names when the storefront provides them.
+    #[schema(example = "Ursula K. Le Guin")]
     pub authors: Option<String>,
     /// Audible / Amazon ASIN when this edition is sold on Audible.
+    #[schema(example = "B002V0QK4C")]
     pub asin: Option<String>,
     /// Canonical ISBN-13 (or ISBN-10 normalized) when published.
+    #[schema(example = "9780441478125")]
     pub isbn: Option<String>,
     /// Storefront id of the edition that produced this card.
+    #[schema(example = "libro")]
     pub candidate_source: Option<String>,
     /// Storefront product id of the edition that produced this card.
+    #[schema(example = "9780441478125")]
     pub candidate_product_id: Option<String>,
     /// Known storefront editions already on the recommendation card.
     #[serde(default)]
     pub store_editions: Vec<crate::identity::StoreEdition>,
     /// Marketplace / region code (`us`, `uk`, …) for catalog lookups.
+    #[schema(example = "us")]
     pub region: Option<String>,
     /// Storefronts the caller has linked accounts for. Treated as **member**
     /// pricing when picking `best`; other stores are compared at list /
     /// non-member price. Every catalog match is still returned in `hints`.
     #[serde(default)]
+    #[schema(example = json!(["libro"]))]
     pub preferred_sources: Vec<String>,
 }
 

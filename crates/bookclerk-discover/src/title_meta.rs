@@ -41,19 +41,26 @@ fn title_reviews_cache() -> &'static TtlCache<TitleReviewsPage> {
 pub struct TitleMetaQuery {
     /// Display title as shown on the storefront or library card.
     #[serde(default)]
+    #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
     /// Comma-separated author names when the storefront provides them.
+    #[schema(example = "Ursula K. Le Guin")]
     pub authors: Option<String>,
     /// Audible / Amazon ASIN when this edition is sold on Audible.
+    #[schema(example = "B002V0QK4C")]
     pub asin: Option<String>,
     /// Canonical ISBN-13 (or ISBN-10 normalized) when published.
+    #[schema(example = "9780441478125")]
     pub isbn: Option<String>,
     /// Comma-separated narrator names when known.
+    #[schema(example = "George Guidall")]
     pub narrators: Option<String>,
     /// Audiobook runtime in whole minutes when known.
+    #[schema(example = 560)]
     pub length_minutes: Option<i64>,
     /// Marketplace / region code (`us`, `uk`, …) for catalog lookups.
     #[serde(default = "default_region")]
+    #[schema(example = "us")]
     pub region: String,
 }
 
@@ -66,52 +73,75 @@ fn default_region() -> String {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct TitleMeta {
     /// Audible / Amazon ASIN when this edition is sold on Audible.
+    #[schema(example = "B002V0QK4C")]
     pub asin: Option<String>,
     /// Display title as shown on the storefront or library card.
+    #[schema(example = "The Left Hand of Darkness")]
     pub title: Option<String>,
     /// Optional subtitle when the catalog distinguishes it from the title.
+    #[schema(example = "A Hainish Novel")]
     pub subtitle: Option<String>,
     /// Comma-separated author names when the storefront provides them.
+    #[schema(example = "Ursula K. Le Guin")]
     pub authors: Option<String>,
     /// Comma-separated narrator names when known.
+    #[schema(example = "George Guidall")]
     pub narrators: Option<String>,
     /// Series name when the title belongs to a named series.
+    #[schema(example = "Hainish Cycle")]
     pub series: Option<String>,
     /// Position within the series (e.g. `1`, `1.5`) when known.
+    #[schema(example = "4")]
     pub series_index: Option<String>,
     /// Canonical ISBN-13 (or ISBN-10 normalized) when published.
+    #[schema(example = "9780441478125")]
     pub isbn: Option<String>,
     /// HTTPS URL for cover art when the catalog exposes one.
+    #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
     /// Publisher or storefront synopsis; may be truncated for embeddings.
+    #[schema(
+        example = "An envoy to the planet Gethen must win the trust of a people who have no fixed gender."
+    )]
     pub description: Option<String>,
     /// Publisher imprint as reported by the catalog.
+    #[schema(example = "Blackstone Publishing")]
     pub publisher: Option<String>,
     /// Audiobook runtime in whole minutes when known.
+    #[schema(example = 560)]
     pub length_minutes: Option<i64>,
     /// Publication date string from the catalog (ISO or storefront format).
+    #[schema(example = "2005-06-21")]
     pub published_at: Option<String>,
     /// Genre / subject tags as a single delimited string when known.
+    #[schema(example = "Science Fiction & Fantasy; Science Fiction")]
     pub categories: Option<String>,
     /// BCP-47 / storefront language code (`en`, `de`, …) when known.
+    #[schema(example = "en")]
     pub language: Option<String>,
     /// `Some(true)` abridged / `Some(false)` unabridged when the storefront said so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = false)]
     pub is_abridged: Option<bool>,
     /// Audible community overall rating (0–5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 4.5)]
     pub rating_overall: Option<f64>,
     /// Narration / performance sub-score when the storefront splits ratings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 4.7)]
     pub rating_performance: Option<f64>,
     /// Story / content sub-score when the storefront splits ratings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 4.3)]
     pub rating_story: Option<f64>,
     /// Count of star ratings (Audible `num_ratings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 12840)]
     pub rating_count: Option<i64>,
     /// Count of written reviews (Audible `num_reviews`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 1932)]
     pub review_count: Option<i64>,
     /// Deprecated: reviews load via `/api/discover/title-reviews`. Kept empty
     /// for older clients; prefer the paginated reviews endpoint.
@@ -123,18 +153,23 @@ pub struct TitleMeta {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct TitleReviewsQuery {
     /// Audible / Amazon ASIN when this edition is sold on Audible.
+    #[schema(example = "B002V0QK4C")]
     pub asin: String,
     /// Marketplace / region code (`us`, `uk`, …) for catalog lookups.
     #[serde(default = "default_region")]
+    #[schema(example = "us")]
     pub region: String,
     /// 1-based page index.
     #[serde(default = "default_reviews_page")]
+    #[schema(example = 1)]
     pub page: u32,
     /// Page size (clamped server-side to 1..=20).
     #[serde(default = "default_reviews_page_size")]
+    #[schema(example = 10)]
     pub page_size: u32,
     /// `MostHelpful` (default) or `MostRecent`.
     #[serde(default = "default_reviews_sort")]
+    #[schema(example = "MostHelpful")]
     pub sort_by: String,
 }
 
@@ -157,14 +192,19 @@ fn default_reviews_sort() -> String {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct TitleReviewsPage {
     /// Audible / Amazon ASIN when this edition is sold on Audible.
+    #[schema(example = "B002V0QK4C")]
     pub asin: String,
     /// 1-based page index for this reviews / list request.
+    #[schema(example = 1)]
     pub page: u32,
     /// Maximum number of items returned in this page.
+    #[schema(example = 10)]
     pub page_size: u32,
     /// When true, another page is available by incrementing [`Self::page`].
+    #[schema(example = true)]
     pub has_more: bool,
-    /// Remote sort key for reviews (`most_helpful`, `most_recent`, …).
+    /// Remote sort key for reviews (`MostHelpful` or `MostRecent`, as applied).
+    #[schema(example = "MostHelpful")]
     pub sort_by: String,
     /// Review rows on this page.
     pub reviews: Vec<TitleReview>,
@@ -174,20 +214,28 @@ pub struct TitleReviewsPage {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct TitleReview {
     /// Stable identifier for this item.
+    #[schema(example = "R3K2M9P1Q7X4Z")]
     pub id: Option<String>,
     /// Display title as shown on the storefront or library card.
+    #[schema(example = "Still the best")]
     pub title: Option<String>,
     /// Full review text from the storefront.
+    #[schema(example = "Guidall's narration carries the quiet of Winter; I listened twice.")]
     pub body: String,
     /// Display name of the review author on the storefront.
+    #[schema(example = "Dana")]
     pub author_name: Option<String>,
     /// Overall star rating for this review when present.
+    #[schema(example = 5)]
     pub overall_rating: Option<i64>,
     /// Narration sub-rating for this review when present.
+    #[schema(example = 5)]
     pub performance_rating: Option<i64>,
     /// Story sub-rating for this review when present.
+    #[schema(example = 4)]
     pub story_rating: Option<i64>,
     /// When the review was submitted (storefront timestamp string).
+    #[schema(example = "2026-02-11")]
     pub submitted_at: Option<String>,
 }
 

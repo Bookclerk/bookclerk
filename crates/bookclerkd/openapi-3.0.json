@@ -12957,112 +12957,133 @@
                     "asin": {
                       "type": "string",
                       "description": "Audible / Amazon ASIN when this edition is sold on Audible.",
+                      "example": "B002V0QK4C",
                       "nullable": true
                     },
                     "title": {
                       "type": "string",
                       "description": "Display title as shown on the storefront or library card.",
+                      "example": "The Left Hand of Darkness",
                       "nullable": true
                     },
                     "subtitle": {
                       "type": "string",
                       "description": "Optional subtitle when the catalog distinguishes it from the title.",
+                      "example": "A Hainish Novel",
                       "nullable": true
                     },
                     "authors": {
                       "type": "string",
                       "description": "Comma-separated author names when the storefront provides them.",
+                      "example": "Ursula K. Le Guin",
                       "nullable": true
                     },
                     "narrators": {
                       "type": "string",
                       "description": "Comma-separated narrator names when known.",
+                      "example": "George Guidall",
                       "nullable": true
                     },
                     "series": {
                       "type": "string",
                       "description": "Series name when the title belongs to a named series.",
+                      "example": "Hainish Cycle",
                       "nullable": true
                     },
                     "series_index": {
                       "type": "string",
                       "description": "Position within the series (e.g. `1`, `1.5`) when known.",
+                      "example": "4",
                       "nullable": true
                     },
                     "isbn": {
                       "type": "string",
                       "description": "Canonical ISBN-13 (or ISBN-10 normalized) when published.",
+                      "example": "9780441478125",
                       "nullable": true
                     },
                     "cover_url": {
                       "type": "string",
                       "description": "HTTPS URL for cover art when the catalog exposes one.",
+                      "example": "https://images.example.com/covers/9780441478125.jpg",
                       "nullable": true
                     },
                     "description": {
                       "type": "string",
                       "description": "Publisher or storefront synopsis; may be truncated for embeddings.",
+                      "example": "An envoy to the planet Gethen must win the trust of a people who have no fixed gender.",
                       "nullable": true
                     },
                     "publisher": {
                       "type": "string",
                       "description": "Publisher imprint as reported by the catalog.",
+                      "example": "Blackstone Publishing",
                       "nullable": true
                     },
                     "length_minutes": {
                       "type": "integer",
                       "format": "int64",
                       "description": "Audiobook runtime in whole minutes when known.",
+                      "example": 560,
                       "nullable": true
                     },
                     "published_at": {
                       "type": "string",
                       "description": "Publication date string from the catalog (ISO or storefront format).",
+                      "example": "2005-06-21",
                       "nullable": true
                     },
                     "categories": {
                       "type": "string",
                       "description": "Genre / subject tags as a single delimited string when known.",
+                      "example": "Science Fiction & Fantasy; Science Fiction",
                       "nullable": true
                     },
                     "language": {
                       "type": "string",
                       "description": "BCP-47 / storefront language code (`en`, `de`, …) when known.",
+                      "example": "en",
                       "nullable": true
                     },
                     "is_abridged": {
                       "type": "boolean",
                       "description": "`Some(true)` abridged / `Some(false)` unabridged when the storefront said so.",
+                      "example": false,
                       "nullable": true
                     },
                     "rating_overall": {
                       "type": "number",
                       "format": "double",
                       "description": "Audible community overall rating (0–5).",
+                      "example": 4.5,
                       "nullable": true
                     },
                     "rating_performance": {
                       "type": "number",
                       "format": "double",
                       "description": "Narration / performance sub-score when the storefront splits ratings.",
+                      "example": 4.7,
                       "nullable": true
                     },
                     "rating_story": {
                       "type": "number",
                       "format": "double",
                       "description": "Story / content sub-score when the storefront splits ratings.",
+                      "example": 4.3,
                       "nullable": true
                     },
                     "rating_count": {
                       "type": "integer",
                       "format": "int64",
                       "description": "Count of star ratings (Audible `num_ratings`).",
+                      "example": 12840,
                       "nullable": true
                     },
                     "review_count": {
                       "type": "integer",
                       "format": "int64",
                       "description": "Count of written reviews (Audible `num_reviews`).",
+                      "example": 1932,
                       "nullable": true
                     },
                     "reviews": {
@@ -21768,45 +21789,54 @@
         "properties": {
           "work_key": {
             "type": "string",
-            "description": "Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author)."
+            "description": "Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author).",
+            "example": "isbn:9780441478125"
           },
           "title": {
             "type": "string",
-            "description": "Display title as shown on the storefront or library card."
+            "description": "Display title as shown on the storefront or library card.",
+            "example": "The Left Hand of Darkness"
           },
           "authors": {
             "type": "string",
             "description": "Comma-separated author names when the storefront provides them.",
+            "example": "Ursula K. Le Guin",
             "nullable": true
           },
           "narrators": {
             "type": "string",
             "description": "Comma-separated narrator names when known.",
+            "example": "George Guidall",
             "nullable": true
           },
           "series": {
             "type": "string",
             "description": "Series name when the title belongs to a named series.",
+            "example": "Hainish Cycle",
             "nullable": true
           },
           "series_index": {
             "type": "string",
             "description": "Position within the series (e.g. `1`, `1.5`) when known.",
+            "example": "4",
             "nullable": true
           },
           "asin": {
             "type": "string",
             "description": "Audible / Amazon ASIN when this edition is sold on Audible.",
+            "example": "B002V0QK4C",
             "nullable": true
           },
           "isbn": {
             "type": "string",
             "description": "Canonical ISBN-13 (or ISBN-10 normalized) when published.",
+            "example": "9780441478125",
             "nullable": true
           },
           "cover_url": {
             "type": "string",
             "description": "HTTPS URL for cover art when the catalog exposes one.",
+            "example": "https://images.example.com/covers/9780441478125.jpg",
             "nullable": true
           },
           "store_editions": {
@@ -21821,65 +21851,80 @@
             "items": {
               "type": "string"
             },
-            "description": "Storefronts that matched (deduped source ids)."
+            "description": "Storefronts that matched (deduped source ids).",
+            "example": [
+              "libro",
+              "chirp"
+            ]
           },
           "subtitle": {
             "type": "string",
             "description": "Optional subtitle when the catalog distinguishes it from the title.",
+            "example": "A Hainish Novel",
             "nullable": true
           },
           "description": {
             "type": "string",
             "description": "Publisher or storefront synopsis; may be truncated for embeddings.",
+            "example": "An envoy to the planet Gethen must win the trust of a people who have no fixed gender.",
             "nullable": true
           },
           "publisher": {
             "type": "string",
             "description": "Publisher imprint as reported by the catalog.",
+            "example": "Blackstone Publishing",
             "nullable": true
           },
           "length_minutes": {
             "type": "integer",
             "format": "int64",
             "description": "Audiobook runtime in whole minutes when known.",
+            "example": 560,
             "nullable": true
           },
           "published_at": {
             "type": "string",
             "description": "Publication date string from the catalog (ISO or storefront format).",
+            "example": "2005-06-21",
             "nullable": true
           },
           "genres": {
             "type": "string",
             "description": "Genre labels from the catalog (comma-separated when multiple).",
+            "example": "Science Fiction, Classics",
             "nullable": true
           },
           "language": {
             "type": "string",
             "description": "BCP-47 / storefront language code (`en`, `de`, …) when known.",
+            "example": "en",
             "nullable": true
           },
           "is_abridged": {
             "type": "boolean",
             "description": "When `Some(true)`, the edition is marked abridged by the storefront.",
+            "example": false,
             "nullable": true
           },
           "rating_overall": {
             "type": "number",
             "format": "double",
             "description": "Aggregate listener rating on the storefront's scale when known.",
+            "example": 4.5,
             "nullable": true
           },
           "rating_count": {
             "type": "integer",
             "format": "int64",
             "description": "Number of ratings backing [`Self::rating_overall`] when known.",
+            "example": 12840,
             "nullable": true
           },
           "price_cents": {
             "type": "integer",
             "format": "int64",
             "description": "Catalog list/deal price in cents when the storefront provided it.",
+            "example": 2499,
             "nullable": true
           },
           "purchase_hints": {
@@ -21911,24 +21956,29 @@
           "page_size": {
             "type": "integer",
             "description": "Maximum number of items returned in this page.",
+            "example": 20,
             "minimum": 0
           },
           "has_more": {
             "type": "boolean",
-            "description": "When true, another page is available via [`Self::next_cursor`]."
+            "description": "When true, another page is available via [`Self::next_cursor`].",
+            "example": true
           },
           "next_cursor": {
             "type": "string",
             "description": "Opaque cursor for the next page; omit or `None` when exhausted.",
+            "example": "s1:4f1c9e2a-7b3d-4c8e-9a6f-0d2b1e3c5a7f",
             "nullable": true
           },
           "sort": {
             "type": "string",
-            "description": "Sort field applied to the merged result set."
+            "description": "Sort field applied to the merged result set.",
+            "example": "relevance"
           },
           "sort_dir": {
             "type": "string",
-            "description": "Ascending or descending order for [`Self::sort`]."
+            "description": "Ascending or descending order for [`Self::sort`].",
+            "example": "desc"
           }
         }
       },
@@ -22907,15 +22957,18 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Stable identifier for this item."
+            "description": "Stable identifier for this item.",
+            "example": "author:ursula-k-le-guin"
           },
           "title": {
             "type": "string",
-            "description": "Display title as shown on the storefront or library card."
+            "description": "Display title as shown on the storefront or library card.",
+            "example": "More from Ursula K. Le Guin"
           },
           "subtitle": {
             "type": "string",
             "description": "Optional subtitle when the catalog distinguishes it from the title.",
+            "example": "Because you’ve liked their work",
             "nullable": true
           },
           "items": {
@@ -29563,58 +29616,69 @@
         "properties": {
           "source": {
             "type": "string",
-            "description": "Canonical storefront / plugin id (`audible`, `libro`, `chirp`, …)."
+            "description": "Canonical storefront / plugin id (`audible`, `libro`, `chirp`, …).",
+            "example": "libro"
           },
           "product_id": {
             "type": "string",
-            "description": "Storefront-native product id (ASIN, ISBN, UUID, …)."
+            "description": "Storefront-native product id (ASIN, ISBN, UUID, …).",
+            "example": "9780441478125"
           },
           "title": {
             "type": "string",
             "description": "Display title as shown on the storefront or library card.",
+            "example": "The Left Hand of Darkness",
             "nullable": true
           },
           "url": {
             "type": "string",
             "description": "Absolute HTTPS URL.",
+            "example": "https://libro.fm/audiobooks/9780441478125",
             "nullable": true
           },
           "price_cents": {
             "type": "integer",
             "format": "int64",
             "description": "Primary / best known sell price in minor units (prefer member when dual).\n`0` = free.",
+            "example": 1499,
             "nullable": true
           },
           "currency": {
             "type": "string",
             "description": "ISO 4217 currency code for price fields (`USD`, `EUR`, …).",
+            "example": "USD",
             "nullable": true
           },
           "price_label": {
             "type": "string",
             "description": "Display string from the store (`$2.99`, `FREE`, …).",
+            "example": "$14.99",
             "nullable": true
           },
           "list_price_cents": {
             "type": "integer",
             "format": "int64",
             "description": "Non-member / list price in integer cents when known.",
+            "example": 2999,
             "nullable": true
           },
           "list_price_label": {
             "type": "string",
             "description": "Human-readable list price from the storefront.",
+            "example": "$29.99",
             "nullable": true
           },
           "member_price_cents": {
             "type": "integer",
             "format": "int64",
             "description": "Member / credit price in integer cents when known.",
+            "example": 1499,
             "nullable": true
           },
           "member_price_label": {
             "type": "string",
             "description": "Human-readable member price from the storefront.",
+            "example": "$14.99",
             "nullable": true
           }
         }
@@ -29657,31 +29721,37 @@
         "properties": {
           "title": {
             "type": "string",
-            "description": "Display title as shown on the storefront or library card."
+            "description": "Display title as shown on the storefront or library card.",
+            "example": "The Left Hand of Darkness"
           },
           "authors": {
             "type": "string",
             "description": "Comma-separated author names when the storefront provides them.",
+            "example": "Ursula K. Le Guin",
             "nullable": true
           },
           "asin": {
             "type": "string",
             "description": "Audible / Amazon ASIN when this edition is sold on Audible.",
+            "example": "B002V0QK4C",
             "nullable": true
           },
           "isbn": {
             "type": "string",
             "description": "Canonical ISBN-13 (or ISBN-10 normalized) when published.",
+            "example": "9780441478125",
             "nullable": true
           },
           "candidate_source": {
             "type": "string",
             "description": "Storefront id of the edition that produced this card.",
+            "example": "libro",
             "nullable": true
           },
           "candidate_product_id": {
             "type": "string",
             "description": "Storefront product id of the edition that produced this card.",
+            "example": "9780441478125",
             "nullable": true
           },
           "store_editions": {
@@ -29694,6 +29764,7 @@
           "region": {
             "type": "string",
             "description": "Marketplace / region code (`us`, `uk`, …) for catalog lookups.",
+            "example": "us",
             "nullable": true
           },
           "preferred_sources": {
@@ -29701,7 +29772,10 @@
             "items": {
               "type": "string"
             },
-            "description": "Storefronts the caller has linked accounts for. Treated as **member**\npricing when picking `best`; other stores are compared at list /\nnon-member price. Every catalog match is still returned in `hints`."
+            "description": "Storefronts the caller has linked accounts for. Treated as **member**\npricing when picking `best`; other stores are compared at list /\nnon-member price. Every catalog match is still returned in `hints`.",
+            "example": [
+              "libro"
+            ]
           }
         }
       },
@@ -29729,58 +29803,69 @@
             "properties": {
               "source": {
                 "type": "string",
-                "description": "Canonical storefront / plugin id (`audible`, `libro`, `chirp`, …)."
+                "description": "Canonical storefront / plugin id (`audible`, `libro`, `chirp`, …).",
+                "example": "libro"
               },
               "product_id": {
                 "type": "string",
-                "description": "Storefront-native product id (ASIN, ISBN, UUID, …)."
+                "description": "Storefront-native product id (ASIN, ISBN, UUID, …).",
+                "example": "9780441478125"
               },
               "title": {
                 "type": "string",
                 "description": "Display title as shown on the storefront or library card.",
+                "example": "The Left Hand of Darkness",
                 "nullable": true
               },
               "url": {
                 "type": "string",
                 "description": "Absolute HTTPS URL.",
+                "example": "https://libro.fm/audiobooks/9780441478125",
                 "nullable": true
               },
               "price_cents": {
                 "type": "integer",
                 "format": "int64",
                 "description": "Primary / best known sell price in minor units (prefer member when dual).\n`0` = free.",
+                "example": 1499,
                 "nullable": true
               },
               "currency": {
                 "type": "string",
                 "description": "ISO 4217 currency code for price fields (`USD`, `EUR`, …).",
+                "example": "USD",
                 "nullable": true
               },
               "price_label": {
                 "type": "string",
                 "description": "Display string from the store (`$2.99`, `FREE`, …).",
+                "example": "$14.99",
                 "nullable": true
               },
               "list_price_cents": {
                 "type": "integer",
                 "format": "int64",
                 "description": "Non-member / list price in integer cents when known.",
+                "example": 2999,
                 "nullable": true
               },
               "list_price_label": {
                 "type": "string",
                 "description": "Human-readable list price from the storefront.",
+                "example": "$29.99",
                 "nullable": true
               },
               "member_price_cents": {
                 "type": "integer",
                 "format": "int64",
                 "description": "Member / credit price in integer cents when known.",
+                "example": 1499,
                 "nullable": true
               },
               "member_price_label": {
                 "type": "string",
                 "description": "Human-readable member price from the storefront.",
+                "example": "$14.99",
                 "nullable": true
               }
             },
@@ -30214,36 +30299,43 @@
         "properties": {
           "work_key": {
             "type": "string",
-            "description": "Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author)."
+            "description": "Stable map key for this work (`isbn:…`, `asin:…`, or soft title+author).",
+            "example": "isbn:9780441478125"
           },
           "title": {
             "type": "string",
-            "description": "Display title as shown on the storefront or library card."
+            "description": "Display title as shown on the storefront or library card.",
+            "example": "The Left Hand of Darkness"
           },
           "authors": {
             "type": "string",
             "description": "Comma-separated author names when the storefront provides them.",
+            "example": "Ursula K. Le Guin",
             "nullable": true
           },
           "asin": {
             "type": "string",
             "description": "Audible / Amazon ASIN when this edition is sold on Audible.",
+            "example": "B002V0QK4C",
             "nullable": true
           },
           "isbn": {
             "type": "string",
             "description": "Canonical ISBN-13 (or ISBN-10 normalized) when published.",
+            "example": "9780441478125",
             "nullable": true
           },
           "cover_url": {
             "type": "string",
             "description": "HTTPS URL for cover art when the catalog exposes one.",
+            "example": "https://images.example.com/covers/9780441478125.jpg",
             "nullable": true
           },
           "wish_count": {
             "type": "integer",
             "format": "int64",
-            "description": "Number of distinct users who wishlisted this title."
+            "description": "Number of distinct users who wishlisted this title.",
+            "example": 3
           },
           "wishers": {
             "type": "array",
@@ -30257,34 +30349,45 @@
             "items": {
               "type": "string"
             },
-            "description": "Sample Bookclerk user UUIDs who requested this title (privacy-capped)."
+            "description": "Sample Bookclerk user UUIDs who requested this title (privacy-capped).",
+            "example": [
+              "0b7e2c1d-5f3a-4e6b-9c8d-1a2b3c4d5e6f"
+            ]
           },
           "first_requested_at": {
             "type": "string",
             "format": "date-time",
-            "description": "UTC timestamp of the earliest wishlist request for this work."
+            "description": "UTC timestamp of the earliest wishlist request for this work.",
+            "example": "2026-09-02T08:15:00Z"
           },
           "last_requested_at": {
             "type": "string",
             "format": "date-time",
-            "description": "UTC timestamp of the latest wishlist request for this work."
+            "description": "UTC timestamp of the latest wishlist request for this work.",
+            "example": "2026-10-29T10:12:00Z"
           },
           "score": {
             "type": "number",
             "format": "double",
-            "description": "Final rank score (`taste_score + wish_count * `[`WISH_COUNT_WEIGHT`])."
+            "description": "Final rank score (`taste_score + wish_count * `[`WISH_COUNT_WEIGHT`]).",
+            "example": 120.61
           },
           "taste_score": {
             "type": "number",
             "format": "double",
-            "description": "Local taste / embedding component before the wish-count boost."
+            "description": "Local taste / embedding component before the wish-count boost.",
+            "example": 0.61
           },
           "reasons": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Short human-readable explanations for why this item was ranked here."
+            "description": "Short human-readable explanations for why this item was ranked here.",
+            "example": [
+              "wishlisted by 3 people",
+              "matches liked author (Ursula K. Le Guin)"
+            ]
           }
         }
       },
@@ -30302,53 +30405,66 @@
           "work_id": {
             "type": "string",
             "description": "Library `works.id` UUID when the recommendation is tied to an owned work.",
+            "example": "5b7e2c1d-8a4f-4e3b-9c6d-2f1a0b9e8d7c",
             "nullable": true
           },
           "title": {
             "type": "string",
-            "description": "Display title as shown on the storefront or library card."
+            "description": "Display title as shown on the storefront or library card.",
+            "example": "The Left Hand of Darkness"
           },
           "authors": {
             "type": "string",
             "description": "Comma-separated author names when the storefront provides them.",
+            "example": "Ursula K. Le Guin",
             "nullable": true
           },
           "narrators": {
             "type": "string",
             "description": "Comma-separated narrator names when known.",
+            "example": "George Guidall",
             "nullable": true
           },
           "series": {
             "type": "string",
             "description": "Series name when the title belongs to a named series.",
+            "example": "Hainish Cycle",
             "nullable": true
           },
           "series_index": {
             "type": "string",
             "description": "Position within the series (e.g. `1`, `1.5`) when known.",
+            "example": "4",
             "nullable": true
           },
           "asin": {
             "type": "string",
             "description": "Audible / Amazon ASIN when this edition is sold on Audible.",
+            "example": "B002V0QK4C",
             "nullable": true
           },
           "isbn": {
             "type": "string",
             "description": "Canonical ISBN-13 (or ISBN-10 normalized) when published.",
+            "example": "9780441478125",
             "nullable": true
           },
           "score": {
             "type": "number",
             "format": "double",
-            "description": "Ranking score (higher is better); units are algorithm-specific."
+            "description": "Ranking score (higher is better); units are algorithm-specific.",
+            "example": 120.87
           },
           "reasons": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Short human-readable explanations for why this item was ranked here."
+            "description": "Short human-readable explanations for why this item was ranked here.",
+            "example": [
+              "wishlisted by 3 people",
+              "matches liked author (Ursula K. Le Guin)"
+            ]
           },
           "purchase_hints": {
             "type": "array",
@@ -30359,21 +30475,25 @@
           },
           "from_request": {
             "type": "boolean",
-            "description": "True when sourced from an open title request rather than storefront discovery."
+            "description": "True when sourced from an open title request rather than storefront discovery.",
+            "example": true
           },
           "request_uuid": {
             "type": "string",
             "description": "Wishlist / title-request UUID when this card came from a request.",
+            "example": "7c1e5a2b-3d4f-4e6a-9b8c-0d1e2f3a4b5c",
             "nullable": true
           },
           "candidate_source": {
             "type": "string",
             "description": "Storefront that proposed this title (`audible`, `libro`, …).",
+            "example": "libro",
             "nullable": true
           },
           "candidate_product_id": {
             "type": "string",
             "description": "Storefront product id of the edition that produced this card.",
+            "example": "9780441478125",
             "nullable": true
           },
           "store_editions": {
@@ -30386,6 +30506,7 @@
           "seed_categories": {
             "type": "string",
             "description": "Categories/subjects copied from the taste seed that produced this hit.",
+            "example": "Science Fiction & Fantasy > Science Fiction",
             "nullable": true
           },
           "categories": {
@@ -30393,51 +30514,64 @@
             "items": {
               "type": "string"
             },
-            "description": "Stable shelf-kind tags for prefs (`finish_series`, `author`, `chirp_deals`, …).\nDynamic shelf titles stay in `build_discover_feed`; membership uses these."
+            "description": "Stable shelf-kind tags for prefs (`finish_series`, `author`, `chirp_deals`, …).\nDynamic shelf titles stay in `build_discover_feed`; membership uses these.",
+            "example": [
+              "finish_series",
+              "author"
+            ]
           },
           "work_key": {
             "type": "string",
-            "description": "Stable bibliographic key for wishlist / merge (`isbn:` / `asin:` / `soft:`…)."
+            "description": "Stable bibliographic key for wishlist / merge (`isbn:` / `asin:` / `soft:`…).",
+            "example": "isbn:9780441478125"
           },
           "cover_url": {
             "type": "string",
             "description": "Cover art URL when known from a storefront catalog hit or wishlist row.",
+            "example": "https://images.example.com/covers/9780441478125.jpg",
             "nullable": true
           },
           "subtitle": {
             "type": "string",
             "description": "Optional bibliographic extras from storefront catalog / Audnexus.",
+            "example": "A Hainish Novel",
             "nullable": true
           },
           "description": {
             "type": "string",
             "description": "Publisher or storefront synopsis; may be truncated for embeddings.",
+            "example": "An envoy to the planet Gethen must win the trust of a people who have no fixed gender.",
             "nullable": true
           },
           "publisher": {
             "type": "string",
             "description": "Publisher imprint as reported by the catalog.",
+            "example": "Blackstone Publishing",
             "nullable": true
           },
           "length_minutes": {
             "type": "integer",
             "format": "int64",
             "description": "Audiobook runtime in whole minutes when known.",
+            "example": 560,
             "nullable": true
           },
           "published_at": {
             "type": "string",
             "description": "Publication date string from the catalog (ISO or storefront format).",
+            "example": "2005-06-21",
             "nullable": true
           },
           "genres": {
             "type": "string",
             "description": "Candidate genres (not taste-seed `seed_categories`).",
+            "example": "Science Fiction, Classics",
             "nullable": true
           },
           "language": {
             "type": "string",
             "description": "BCP-47 / storefront language code (`en`, `de`, …) when known.",
+            "example": "en",
             "nullable": true
           },
           "wishers": {
@@ -30450,7 +30584,8 @@
           "wish_count": {
             "type": "integer",
             "format": "int64",
-            "description": "Number of distinct users who wishlisted this title (may exceed `wishers.len()`)."
+            "description": "Number of distinct users who wishlisted this title (may exceed `wishers.len()`).",
+            "example": 3
           }
         }
       },
@@ -31225,11 +31360,13 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Stable kind id (`finish_series`, `author`, `genre`, `from_store`, …)."
+            "description": "Stable kind id (`finish_series`, `author`, `genre`, `from_store`, …).",
+            "example": "finish_series"
           },
           "label": {
             "type": "string",
-            "description": "Operator-visible label for this account or item."
+            "description": "Operator-visible label for this account or item.",
+            "example": "Finish these series"
           }
         }
       },
@@ -31592,11 +31729,13 @@
         "properties": {
           "source": {
             "type": "string",
-            "description": "Canonical storefront / plugin id (`audible`, `libro`, `chirp`, …)."
+            "description": "Canonical storefront / plugin id (`audible`, `libro`, `chirp`, …).",
+            "example": "libro"
           },
           "product_id": {
             "type": "string",
-            "description": "Storefront-native product id (ASIN, ISBN, UUID, …)."
+            "description": "Storefront-native product id (ASIN, ISBN, UUID, …).",
+            "example": "9780441478125"
           }
         }
       },
@@ -31634,112 +31773,133 @@
           "asin": {
             "type": "string",
             "description": "Audible / Amazon ASIN when this edition is sold on Audible.",
+            "example": "B002V0QK4C",
             "nullable": true
           },
           "title": {
             "type": "string",
             "description": "Display title as shown on the storefront or library card.",
+            "example": "The Left Hand of Darkness",
             "nullable": true
           },
           "subtitle": {
             "type": "string",
             "description": "Optional subtitle when the catalog distinguishes it from the title.",
+            "example": "A Hainish Novel",
             "nullable": true
           },
           "authors": {
             "type": "string",
             "description": "Comma-separated author names when the storefront provides them.",
+            "example": "Ursula K. Le Guin",
             "nullable": true
           },
           "narrators": {
             "type": "string",
             "description": "Comma-separated narrator names when known.",
+            "example": "George Guidall",
             "nullable": true
           },
           "series": {
             "type": "string",
             "description": "Series name when the title belongs to a named series.",
+            "example": "Hainish Cycle",
             "nullable": true
           },
           "series_index": {
             "type": "string",
             "description": "Position within the series (e.g. `1`, `1.5`) when known.",
+            "example": "4",
             "nullable": true
           },
           "isbn": {
             "type": "string",
             "description": "Canonical ISBN-13 (or ISBN-10 normalized) when published.",
+            "example": "9780441478125",
             "nullable": true
           },
           "cover_url": {
             "type": "string",
             "description": "HTTPS URL for cover art when the catalog exposes one.",
+            "example": "https://images.example.com/covers/9780441478125.jpg",
             "nullable": true
           },
           "description": {
             "type": "string",
             "description": "Publisher or storefront synopsis; may be truncated for embeddings.",
+            "example": "An envoy to the planet Gethen must win the trust of a people who have no fixed gender.",
             "nullable": true
           },
           "publisher": {
             "type": "string",
             "description": "Publisher imprint as reported by the catalog.",
+            "example": "Blackstone Publishing",
             "nullable": true
           },
           "length_minutes": {
             "type": "integer",
             "format": "int64",
             "description": "Audiobook runtime in whole minutes when known.",
+            "example": 560,
             "nullable": true
           },
           "published_at": {
             "type": "string",
             "description": "Publication date string from the catalog (ISO or storefront format).",
+            "example": "2005-06-21",
             "nullable": true
           },
           "categories": {
             "type": "string",
             "description": "Genre / subject tags as a single delimited string when known.",
+            "example": "Science Fiction & Fantasy; Science Fiction",
             "nullable": true
           },
           "language": {
             "type": "string",
             "description": "BCP-47 / storefront language code (`en`, `de`, …) when known.",
+            "example": "en",
             "nullable": true
           },
           "is_abridged": {
             "type": "boolean",
             "description": "`Some(true)` abridged / `Some(false)` unabridged when the storefront said so.",
+            "example": false,
             "nullable": true
           },
           "rating_overall": {
             "type": "number",
             "format": "double",
             "description": "Audible community overall rating (0–5).",
+            "example": 4.5,
             "nullable": true
           },
           "rating_performance": {
             "type": "number",
             "format": "double",
             "description": "Narration / performance sub-score when the storefront splits ratings.",
+            "example": 4.7,
             "nullable": true
           },
           "rating_story": {
             "type": "number",
             "format": "double",
             "description": "Story / content sub-score when the storefront splits ratings.",
+            "example": 4.3,
             "nullable": true
           },
           "rating_count": {
             "type": "integer",
             "format": "int64",
             "description": "Count of star ratings (Audible `num_ratings`).",
+            "example": 12840,
             "nullable": true
           },
           "review_count": {
             "type": "integer",
             "format": "int64",
             "description": "Count of written reviews (Audible `num_reviews`).",
+            "example": 1932,
             "nullable": true
           },
           "reviews": {
@@ -31780,112 +31940,133 @@
                 "asin": {
                   "type": "string",
                   "description": "Audible / Amazon ASIN when this edition is sold on Audible.",
+                  "example": "B002V0QK4C",
                   "nullable": true
                 },
                 "title": {
                   "type": "string",
                   "description": "Display title as shown on the storefront or library card.",
+                  "example": "The Left Hand of Darkness",
                   "nullable": true
                 },
                 "subtitle": {
                   "type": "string",
                   "description": "Optional subtitle when the catalog distinguishes it from the title.",
+                  "example": "A Hainish Novel",
                   "nullable": true
                 },
                 "authors": {
                   "type": "string",
                   "description": "Comma-separated author names when the storefront provides them.",
+                  "example": "Ursula K. Le Guin",
                   "nullable": true
                 },
                 "narrators": {
                   "type": "string",
                   "description": "Comma-separated narrator names when known.",
+                  "example": "George Guidall",
                   "nullable": true
                 },
                 "series": {
                   "type": "string",
                   "description": "Series name when the title belongs to a named series.",
+                  "example": "Hainish Cycle",
                   "nullable": true
                 },
                 "series_index": {
                   "type": "string",
                   "description": "Position within the series (e.g. `1`, `1.5`) when known.",
+                  "example": "4",
                   "nullable": true
                 },
                 "isbn": {
                   "type": "string",
                   "description": "Canonical ISBN-13 (or ISBN-10 normalized) when published.",
+                  "example": "9780441478125",
                   "nullable": true
                 },
                 "cover_url": {
                   "type": "string",
                   "description": "HTTPS URL for cover art when the catalog exposes one.",
+                  "example": "https://images.example.com/covers/9780441478125.jpg",
                   "nullable": true
                 },
                 "description": {
                   "type": "string",
                   "description": "Publisher or storefront synopsis; may be truncated for embeddings.",
+                  "example": "An envoy to the planet Gethen must win the trust of a people who have no fixed gender.",
                   "nullable": true
                 },
                 "publisher": {
                   "type": "string",
                   "description": "Publisher imprint as reported by the catalog.",
+                  "example": "Blackstone Publishing",
                   "nullable": true
                 },
                 "length_minutes": {
                   "type": "integer",
                   "format": "int64",
                   "description": "Audiobook runtime in whole minutes when known.",
+                  "example": 560,
                   "nullable": true
                 },
                 "published_at": {
                   "type": "string",
                   "description": "Publication date string from the catalog (ISO or storefront format).",
+                  "example": "2005-06-21",
                   "nullable": true
                 },
                 "categories": {
                   "type": "string",
                   "description": "Genre / subject tags as a single delimited string when known.",
+                  "example": "Science Fiction & Fantasy; Science Fiction",
                   "nullable": true
                 },
                 "language": {
                   "type": "string",
                   "description": "BCP-47 / storefront language code (`en`, `de`, …) when known.",
+                  "example": "en",
                   "nullable": true
                 },
                 "is_abridged": {
                   "type": "boolean",
                   "description": "`Some(true)` abridged / `Some(false)` unabridged when the storefront said so.",
+                  "example": false,
                   "nullable": true
                 },
                 "rating_overall": {
                   "type": "number",
                   "format": "double",
                   "description": "Audible community overall rating (0–5).",
+                  "example": 4.5,
                   "nullable": true
                 },
                 "rating_performance": {
                   "type": "number",
                   "format": "double",
                   "description": "Narration / performance sub-score when the storefront splits ratings.",
+                  "example": 4.7,
                   "nullable": true
                 },
                 "rating_story": {
                   "type": "number",
                   "format": "double",
                   "description": "Story / content sub-score when the storefront splits ratings.",
+                  "example": 4.3,
                   "nullable": true
                 },
                 "rating_count": {
                   "type": "integer",
                   "format": "int64",
                   "description": "Count of star ratings (Audible `num_ratings`).",
+                  "example": 12840,
                   "nullable": true
                 },
                 "review_count": {
                   "type": "integer",
                   "format": "int64",
                   "description": "Count of written reviews (Audible `num_reviews`).",
+                  "example": 1932,
                   "nullable": true
                 },
                 "reviews": {
@@ -31908,37 +32089,44 @@
         "properties": {
           "title": {
             "type": "string",
-            "description": "Display title as shown on the storefront or library card."
+            "description": "Display title as shown on the storefront or library card.",
+            "example": "The Left Hand of Darkness"
           },
           "authors": {
             "type": "string",
             "description": "Comma-separated author names when the storefront provides them.",
+            "example": "Ursula K. Le Guin",
             "nullable": true
           },
           "asin": {
             "type": "string",
             "description": "Audible / Amazon ASIN when this edition is sold on Audible.",
+            "example": "B002V0QK4C",
             "nullable": true
           },
           "isbn": {
             "type": "string",
             "description": "Canonical ISBN-13 (or ISBN-10 normalized) when published.",
+            "example": "9780441478125",
             "nullable": true
           },
           "narrators": {
             "type": "string",
             "description": "Comma-separated narrator names when known.",
+            "example": "George Guidall",
             "nullable": true
           },
           "length_minutes": {
             "type": "integer",
             "format": "int64",
             "description": "Audiobook runtime in whole minutes when known.",
+            "example": 560,
             "nullable": true
           },
           "region": {
             "type": "string",
-            "description": "Marketplace / region code (`us`, `uk`, …) for catalog lookups."
+            "description": "Marketplace / region code (`us`, `uk`, …) for catalog lookups.",
+            "example": "us"
           }
         }
       },
@@ -32335,43 +32523,51 @@
           "id": {
             "type": "string",
             "description": "Stable identifier for this item.",
+            "example": "R3K2M9P1Q7X4Z",
             "nullable": true
           },
           "title": {
             "type": "string",
             "description": "Display title as shown on the storefront or library card.",
+            "example": "Still the best",
             "nullable": true
           },
           "body": {
             "type": "string",
-            "description": "Full review text from the storefront."
+            "description": "Full review text from the storefront.",
+            "example": "Guidall's narration carries the quiet of Winter; I listened twice."
           },
           "author_name": {
             "type": "string",
             "description": "Display name of the review author on the storefront.",
+            "example": "Dana",
             "nullable": true
           },
           "overall_rating": {
             "type": "integer",
             "format": "int64",
             "description": "Overall star rating for this review when present.",
+            "example": 5,
             "nullable": true
           },
           "performance_rating": {
             "type": "integer",
             "format": "int64",
             "description": "Narration sub-rating for this review when present.",
+            "example": 5,
             "nullable": true
           },
           "story_rating": {
             "type": "integer",
             "format": "int64",
             "description": "Story sub-rating for this review when present.",
+            "example": 4,
             "nullable": true
           },
           "submitted_at": {
             "type": "string",
             "description": "When the review was submitted (storefront timestamp string).",
+            "example": "2026-02-11",
             "nullable": true
           }
         }
@@ -32390,27 +32586,32 @@
         "properties": {
           "asin": {
             "type": "string",
-            "description": "Audible / Amazon ASIN when this edition is sold on Audible."
+            "description": "Audible / Amazon ASIN when this edition is sold on Audible.",
+            "example": "B002V0QK4C"
           },
           "page": {
             "type": "integer",
             "format": "int32",
             "description": "1-based page index for this reviews / list request.",
+            "example": 1,
             "minimum": 0
           },
           "page_size": {
             "type": "integer",
             "format": "int32",
             "description": "Maximum number of items returned in this page.",
+            "example": 10,
             "minimum": 0
           },
           "has_more": {
             "type": "boolean",
-            "description": "When true, another page is available by incrementing [`Self::page`]."
+            "description": "When true, another page is available by incrementing [`Self::page`].",
+            "example": true
           },
           "sort_by": {
             "type": "string",
-            "description": "Remote sort key for reviews (`most_helpful`, `most_recent`, …)."
+            "description": "Remote sort key for reviews (`MostHelpful` or `MostRecent`, as applied).",
+            "example": "MostHelpful"
           },
           "reviews": {
             "type": "array",
@@ -32430,27 +32631,32 @@
         "properties": {
           "asin": {
             "type": "string",
-            "description": "Audible / Amazon ASIN when this edition is sold on Audible."
+            "description": "Audible / Amazon ASIN when this edition is sold on Audible.",
+            "example": "B002V0QK4C"
           },
           "region": {
             "type": "string",
-            "description": "Marketplace / region code (`us`, `uk`, …) for catalog lookups."
+            "description": "Marketplace / region code (`us`, `uk`, …) for catalog lookups.",
+            "example": "us"
           },
           "page": {
             "type": "integer",
             "format": "int32",
             "description": "1-based page index.",
+            "example": 1,
             "minimum": 0
           },
           "page_size": {
             "type": "integer",
             "format": "int32",
             "description": "Page size (clamped server-side to 1..=20).",
+            "example": 10,
             "minimum": 0
           },
           "sort_by": {
             "type": "string",
-            "description": "`MostHelpful` (default) or `MostRecent`."
+            "description": "`MostHelpful` (default) or `MostRecent`.",
+            "example": "MostHelpful"
           }
         }
       },
