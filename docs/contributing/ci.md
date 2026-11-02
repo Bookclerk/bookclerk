@@ -938,7 +938,8 @@ workflow does the same for the Cloudflare Workers (`tools/site`,
 1. It finds the lines the pull request adds to the Worker's TypeScript
    sources, from the merge commit's diff against the base. Tests, test
    support, type declarations and configuration files are left out. A
-   Worker with no changed source line skips the rest.
+   Worker with no changed source line skips Stryker, and its summary says
+   so.
 2. It passes those lines to Stryker as `--mutate path:start-end`. Stryker
    also mutates literals (strings, arrays, objects), so a change to data
    gets mutants too.

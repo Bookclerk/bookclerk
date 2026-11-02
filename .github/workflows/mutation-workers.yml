@@ -45,7 +45,8 @@ jobs:
   worker:
     name: Mutants (${{ matrix.name }}, report only)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Stryker's 20 minutes (plus 2 to stop) and room for setup and the report.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

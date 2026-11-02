@@ -100,7 +100,7 @@ class LinesTest(unittest.TestCase):
         for path in ("worker.ts", "src/page.ts", "dashboard/db.ts", "build.ts"):
             self.assertTrue(sr.is_source(path), path)
         for path in ("a.test.ts", "a.fuzz.test.ts", "env.d.ts", "vitest.config.ts", "test/a.ts", "test-support/d1.ts",
-                     "node_modules/x/a.ts", "coverage/a.ts", "a.js", "README.md", ""):
+                     "node_modules/x/a.ts", "coverage/a.ts", "a.js", "README.md", "", "a.spec.ts", "src/__tests__/a.ts"):
             self.assertFalse(sr.is_source(path), path)
 
     def test_unsafe_paths_are_left_out(self) -> None:
@@ -190,6 +190,9 @@ class RenderTest(unittest.TestCase):
         self.assertIn("did not finish", sr.render("site", None, mutated=True))
         empty = sr.parse_report(report(), "tools/site")
         self.assertIn("found no mutant", sr.render("site", empty, mutated=True))
+        unviable = sr.render("site", sr.parse_report(report(mutant("CompileError")), "tools/site"), mutated=True)
+        self.assertIn("none could be tested", unviable)
+        self.assertNotIn("found no mutant", unviable)
         parsed = sr.parse_report(report(mutant("Killed"), mutant("Killed"), mutant("Killed"), mutant("Survived", 7)), "tools/site")
         self.assertIn("reached the time limit", sr.render("site", parsed, mutated=True, stopped=True))
         text = sr.render("site", parsed, mutated=True)

@@ -75,9 +75,9 @@ def is_source(path: str) -> bool:
     """
     parts = PurePosixPath(path).parts
     name = parts[-1] if parts else ""
-    if not name.endswith(".ts") or name.endswith((".d.ts", ".config.ts")) or ".test." in name:
+    if not name.endswith(".ts") or name.endswith((".d.ts", ".config.ts")) or ".test." in name or ".spec." in name:
         return False
-    return not any(part in {"node_modules", "test", "tests", "test-support", "coverage"} for part in parts[:-1])
+    return not any(part in {"node_modules", "test", "tests", "__tests__", "test-support", "coverage"} for part in parts[:-1])
 
 
 def changed_lines(diff: str, root: str) -> dict[str, list[tuple[int, int]]]:
@@ -237,7 +237,9 @@ def render(name: str, parsed: tuple[Results, list[tuple[str, int, str]]] | None,
         if stopped:
             lines += ["Stryker reached the time limit, so only the mutants tested before it are counted.", ""]
         score = results.score()
-        if score is None:
+        if score is None and results.count(Outcome.UNVIABLE):
+            lines.append("Stryker made mutants of the changed lines, but none could be tested (all unviable).")
+        elif score is None:
             lines.append("Stryker found no mutant on the changed lines.")
         else:
             missed = results.count(Outcome.MISSED)
