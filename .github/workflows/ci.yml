@@ -183,6 +183,7 @@ jobs:
           "$PY" scripts/tests/test_cla_check.py
           "$PY" scripts/tests/test_coverage_gate.py
           "$PY" scripts/tests/test_worker_startup.py
+          "$PY" scripts/tests/test_mutation_report.py
           "$PY" scripts/tests/test_dev_env.py
           "$PY" scripts/tests/test_tool_versions.py
 

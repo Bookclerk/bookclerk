@@ -1,0 +1,32 @@
+# cargo-mutants settings for the mutation testing workflow
+# (.github/workflows/mutation.yml, docs/contributing/ci.md#mutation-testing).
+
+# The same runner as CI's `rust_test` check.
+test_tool = "nextest"
+
+# Lints are capped through RUSTFLAGS in .github/workflows/mutation.yml
+# instead, so the test prerequisites it builds share the mutants' flags. Pass
+# `RUSTFLAGS=--cap-lints=warn` locally too.
+cap_lints = false
+
+# Custom-harness test binaries nextest cannot run; CI runs them with
+# `cargo test` (CUSTOM_HARNESS_TESTS in scripts/ci_plan/execute.py, which a
+# test checks this against).
+additional_cargo_test_args = ["-E", "not (binary_id(bookclerk-plugin-catalog::plugin_mutation_lock))"]
+
+exclude_globs = [
+  # The staged-plugin conformance harness: its tests need plugins installed
+  # and staged, which CI's `e2e` check prepares and this workflow does not.
+  # A failing baseline would stop every other package's mutants too.
+  "crates/bookclerk-plugin-e2e/**",
+  # Generated files: tests exercise their generator, not each line it
+  # writes. The same Rust files as `generated` in
+  # scripts/coverage_areas.toml (a test checks that the two agree).
+  "crates/bookclerk-plugin-abi/src/generated.rs",
+  "crates/bookclerk-workerd/src/pin.rs",
+]
+
+# Some test binaries spawn helpers and take a while to start; give each
+# mutant's test run at least this long, in seconds, before calling it a
+# timeout.
+minimum_test_timeout = 120
