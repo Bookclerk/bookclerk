@@ -630,7 +630,7 @@ struct PluginGrantView {
     #[schema(example = json!(["book_acquired"]))]
     producers: Vec<String>,
     /// Approved event-consumer subscriptions.
-    #[schema(value_type = Vec<Object>, example = json!([{"event_type": "book_acquired", "schema_versions": [1], "supports_suspend": false}]))]
+    #[schema(value_type = Vec<Object>, example = json!([{"eventType": "book_acquired", "schemaVersions": [1], "supportsSuspend": false}]))]
     consumers: Vec<GrantedEventConsumer>,
     /// Approved job trigger types.
     #[schema(example = json!(["stream_copy"]))]

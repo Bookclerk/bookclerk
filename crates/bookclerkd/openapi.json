@@ -27372,11 +27372,11 @@
             "description": "Approved event-consumer subscriptions.",
             "example": [
               {
-                "event_type": "book_acquired",
-                "schema_versions": [
+                "eventType": "book_acquired",
+                "schemaVersions": [
                   1
                 ],
-                "supports_suspend": false
+                "supportsSuspend": false
               }
             ]
           },
