@@ -30776,7 +30776,7 @@
           "nonce": {
             "type": "string",
             "description": "Browser-generated one-time nonce persisted across HTTP retries.",
-            "example": "c3RhdGUtOGY2ZTJkMWE"
+            "example": "a7c3e9f1b5d2486e0f3a9c7b1d5e2f8a4c6b0d9e3f7a1c5b8d2e6f0a4c8b1d3e"
           },
           "password": {
             "type": "string",

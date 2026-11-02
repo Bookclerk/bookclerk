@@ -118,7 +118,7 @@ struct RedeemBody {
     #[schema(example = "3f9a1c7e5b2d4a6f8e0c1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a")]
     ticket: String,
     /// Browser-generated one-time nonce persisted across HTTP retries.
-    #[schema(example = "c3RhdGUtOGY2ZTJkMWE")]
+    #[schema(example = "a7c3e9f1b5d2486e0f3a9c7b1d5e2f8a4c6b0d9e3f7a1c5b8d2e6f0a4c8b1d3e")]
     nonce: String,
     /// Required when the linked local user has no password (invite / reset).
     #[serde(default)]
