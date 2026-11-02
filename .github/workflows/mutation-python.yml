@@ -9,9 +9,10 @@
 #   on the diff.
 # - mutmut names each mutant after its function, so
 #   `scripts/mutmut_report.py select` turns the changed lines into name
-#   patterns, one per changed function. A changed line outside every
-#   function (a constant, an import) selects the whole module instead.
-#   Tests and the generated ABI modules are never mutated.
+#   patterns, one per changed function (deleting lines counts as changing
+#   the function they were in). A changed line outside every function (a
+#   constant, an import) selects the whole module instead. Tests and the
+#   generated ABI modules are never mutated.
 # - Trial: report-only and not a required check. Settings live in the
 #   SDK's pyproject.toml ([tool.mutmut]).
 #
@@ -24,6 +25,8 @@ on:
     paths:
       - "packages/plugin-sdk-python/**"
       - "scripts/mutmut_report.py"
+      - "scripts/mutation_report.py"
+      - "scripts/stryker_report.py"
       - ".github/workflows/mutation-python.yml"
 
 permissions:
@@ -54,13 +57,14 @@ jobs:
           persist-credentials: false
 
       # The pull request's changes as they land on the base branch, then
-      # mutmut's name pattern for each changed function, one per line.
+      # mutmut's name pattern for each changed function, one per line, and
+      # the changed functions mutmut never mutates (decorated ones).
       - name: Find the changed functions
         id: select
         run: |
           set -euo pipefail
           git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
-          python3 scripts/mutmut_report.py select --diff "$RUNNER_TEMP/pr.diff" --root "$SDK" > "$RUNNER_TEMP/patterns.txt"
+          python3 scripts/mutmut_report.py select --diff "$RUNNER_TEMP/pr.diff" --root "$SDK" --skipped "$RUNNER_TEMP/skipped.txt" > "$RUNNER_TEMP/patterns.txt"
           if [ -s "$RUNNER_TEMP/patterns.txt" ]; then
             echo "mutate=true" >> "$GITHUB_OUTPUT"
           fi
@@ -86,7 +90,9 @@ jobs:
           echo "$UV_PROJECT_ENVIRONMENT/bin" >> "$GITHUB_PATH"
 
       # mutmut works in a mutants/ copy of the SDK and records each result
-      # as it lands, so stopping it at the time limit keeps what it tested.
+      # as it lands, so stopping it at the time limit keeps what it tested
+      # (the report also reads a results file the stop cut short). SIGINT
+      # goes to the whole process group, mutmut's test workers included.
       # The patterns go to mutmut as separate arguments (no word splitting
       # or globbing by the shell). When no changed function has a mutant,
       # mutmut exits with an error that it found nothing to run; the report
@@ -98,20 +104,22 @@ jobs:
         run: |
           set +e
           mapfile -t patterns < "$RUNNER_TEMP/patterns.txt"
-          timeout --foreground --signal=INT --kill-after=2m 20m mutmut run "${patterns[@]}"
+          timeout --signal=INT --kill-after=2m 20m mutmut run "${patterns[@]}"
           code=$?
           if [ "$code" -eq 124 ] || [ "$code" -eq 130 ] || [ "$code" -eq 137 ]; then
             echo "stopped=true" >> "$GITHUB_OUTPUT"
           fi
           exit 0
 
+      # Only after a selection: a failed one fails the job instead of
+      # reporting that nothing changed.
       - name: Report
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.select.outcome == 'success' }}
         env:
           STOPPED: ${{ steps.mutants.outputs.stopped }}
         run: |
           set -euo pipefail
-          args=(--mutants "$SDK/mutants" --patterns "$RUNNER_TEMP/patterns.txt" --root "$SDK" --out "$RUNNER_TEMP/mutants-python-sdk")
+          args=(--mutants "$SDK/mutants" --patterns "$RUNNER_TEMP/patterns.txt" --skipped "$RUNNER_TEMP/skipped.txt" --root "$SDK" --out "$RUNNER_TEMP/mutants-python-sdk")
           if [ "${STOPPED:-}" = "true" ]; then args+=(--stopped); fi
           python3 scripts/mutmut_report.py report "${args[@]}"
 

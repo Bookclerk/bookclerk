@@ -13,6 +13,7 @@ import ast
 import importlib.util
 import json
 import random
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -56,6 +57,13 @@ def second(b):
     return b * 2
 
 
+class Colour(Enum):
+    RED = 1
+
+    def label(self):
+        return self.name.lower()
+
+
 class Box:
     """A box."""
 
@@ -63,6 +71,10 @@ class Box:
 
     def grow(self, n):
         return self.size + n
+
+    @staticmethod
+    def make():
+        return Box()
 
     async def shrink(self, n):
         return self.size - n
@@ -138,34 +150,53 @@ class SelectTest(unittest.TestCase):
     """Changed lines become one pattern per changed function, or a whole module."""
 
     def test_targets(self) -> None:
+        T = mr.Targets
         cases = {
-            "return a + LIMIT": (["x_first"], False),
-            '"""Docstring."""': (["x_first"], False),
-            "@decorator": (["x_second"], False),
-            "return self.size + n": (["xǁBoxǁgrow"], False),
-            "return self.size - n": (["xǁBoxǁshrink"], False),
-            "size = 4": ([], True),
-            "class Box:": ([], True),
-            "LIMIT = 3": ([], True),
-            "import os": ([], True),
-            '"""Module docstring."""': ([], False),
-            '"""A box."""': ([], False),
-            "# A comment between functions.": ([], False),
+            "return a + LIMIT": T(["x_first"], False, []),
+            '"""Docstring."""': T(["x_first"], False, []),
+            # mutmut skips decorated functions and enum methods, but not a
+            # bare @staticmethod or @classmethod.
+            "@decorator": T([], False, ["second"]),
+            "return b * 2": T([], False, ["second"]),
+            "return self.name.lower()": T([], False, ["Colour.label"]),
+            "return Box()": T(["xǁBoxǁmake"], False, []),
+            "return self.size + n": T(["xǁBoxǁgrow"], False, []),
+            "return self.size - n": T(["xǁBoxǁshrink"], False, []),
+            "size = 4": T([], True, []),
+            "RED = 1": T([], True, []),
+            "class Box:": T([], True, []),
+            "LIMIT = 3": T([], True, []),
+            "import os": T([], True, []),
+            '"""Module docstring."""': T([], False, []),
+            '"""A box."""': T([], False, []),
+            "# A comment between functions.": T([], False, []),
         }
         for line, expected in cases.items():
             with self.subTest(line=line):
                 self.assertEqual(mr.targets(SOURCE, {L[line]}), expected)
-        self.assertEqual(mr.targets(SOURCE, {L["return a + LIMIT"], L["return self.size + n"]}), (["x_first", "xǁBoxǁgrow"], False))
-        self.assertEqual(mr.targets(SOURCE, set()), ([], False))
-        self.assertEqual(mr.targets(SOURCE, {10_000}), ([], False))
+        both = mr.targets(SOURCE, {L["return a + LIMIT"], L["return self.size + n"]})
+        self.assertEqual(both, T(["x_first", "xǁBoxǁgrow"], False, []))
+        self.assertEqual(mr.targets(SOURCE, set()), T([], False, []))
+        self.assertEqual(mr.targets(SOURCE, {10_000}), T([], False, []))
 
     def test_blank_lines_widen_nothing(self) -> None:
         blank = [i + 1 for i, line in enumerate(SOURCE.splitlines()) if not line.strip()]
-        self.assertEqual(mr.targets(SOURCE, set(blank)), ([], False))
+        self.assertEqual(mr.targets(SOURCE, set(blank)), mr.Targets([], False, []))
 
     def test_unparsable_or_unusual_names_widen(self) -> None:
-        self.assertEqual(mr.targets("def broken(:\n", {1}), ([], True))
-        self.assertEqual(mr.targets("def café():\n    return 1\n", {2}), ([], True))
+        self.assertTrue(mr.targets("def broken(:\n", {1}).widen)
+        self.assertTrue(mr.targets("def café():\n    return 1\n", {2}).widen)
+        self.assertFalse(mr.targets("import enum\nclass E(enum.IntEnum):\n    def f(self):\n        return 1\n", {4}).names)
+
+    def test_deleted_lines_select_their_function(self) -> None:
+        diff = (
+            f"diff --git a/{SDK}/src/pkg/mod.py b/{SDK}/src/pkg/mod.py\n--- a/{SDK}/src/pkg/mod.py\n+++ b/{SDK}/src/pkg/mod.py\n"
+            f"@@ -{L['return self.size + n']},3 +{L['return self.size + n']},2 @@\n"
+            "         return self.size + n\n-        if n:\n-            raise ValueError\n \n"
+            "@@ -1,2 +1,1 @@\n-import sys\n \"\"\"Module docstring.\"\"\"\n"
+        )
+        points = mr.changed_points(diff, SDK, GENERATED)
+        self.assertEqual(points, {"src/pkg/mod.py": {L["return self.size + n"], 1}})
 
     def test_sources_and_modules(self) -> None:
         self.assertTrue(mr.is_source("src/pkg/mod.py", GENERATED))
@@ -183,10 +214,12 @@ class SelectTest(unittest.TestCase):
         read = {"src/pkg/mod.py": SOURCE, "src/pkg/__init__.py": "X = 2\n"}
         self.assertEqual(
             mr.select(DIFF, SDK, read, GENERATED),
-            ["pkg.x*", "pkg.mod.x_first__mutmut_*"],
+            (["pkg.x_*", "pkg.xǁ*", "pkg.mod.x_first__mutmut_*"], []),
         )
         # A deleted file has nothing to read.
-        self.assertEqual(mr.select(DIFF, SDK, {}, GENERATED), [])
+        self.assertEqual(mr.select(DIFF, SDK, {}, GENERATED), ([], []))
+        skip = DIFF.replace(f"+{L['return a + LIMIT']},1 @@\n-    return a\n+    return a + LIMIT", f"+{L['return b * 2']},1 @@\n-    return b\n+    return b * 2")
+        self.assertEqual(mr.select(skip, SDK, read, GENERATED), (["pkg.x_*", "pkg.xǁ*"], ["pkg.mod.second"]))
 
     def test_generated_modules_match_the_ruff_exclusions(self) -> None:
         text = (ROOT / SDK / "pyproject.toml").read_text(encoding="utf-8")
@@ -197,6 +230,9 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(mr.generated_modules("not toml ["), frozenset())
         self.assertEqual(mr.generated_modules("[tool]\nmutmut = 1\n"), frozenset())
         self.assertEqual(mr.generated_modules("[tool.mutmut]\ndo_not_mutate = 'x'\n"), frozenset())
+        # Entries are globs, as mutmut reads them.
+        self.assertFalse(mr.is_source("src/pkg/gen/a.py", frozenset({"src/pkg/gen/*"})))
+        self.assertTrue(mr.is_source("src/pkg/a.py", frozenset({"src/pkg/gen/*"})))
 
     def test_fuzz_patterns_round_trip(self) -> None:
         """Oracle: every pattern select writes parses back to the module and function it was made from."""
@@ -206,7 +242,7 @@ class SelectTest(unittest.TestCase):
             module = ".".join(rng.choice(idents) for _ in range(rng.randrange(1, 4)))
             names = sorted({("x_" + rng.choice(idents)) if rng.random() < 0.5 else f"xǁ{rng.choice(idents)}ǁ{rng.choice(idents)}" for _ in range(rng.randrange(0, 4))})
             widen = rng.random() < 0.3
-            parsed = mr.parse_patterns("\n".join(mr.patterns_for(module, names, widen)))
+            parsed = mr.parse_patterns("\n".join(mr.patterns_for(module, mr.Targets(names, widen, []))))
             self.assertEqual(parsed, [(module, None)] if widen else [(module, n) for n in names])
             for module_, base in parsed:
                 key = f"{module_}.{base or 'x_any'}__mutmut_{rng.randrange(1, 999)}"
@@ -218,17 +254,61 @@ class SelectTest(unittest.TestCase):
         for _ in range(300):
             text = "".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 80)))
             lines = {rng.randrange(0, 12) for _ in range(rng.randrange(0, 4))}
-            names, widen = mr.targets(text, lines)
-            self.assertIsInstance(widen, bool)
-            for name in names:
+            found = mr.targets(text, lines)
+            self.assertIsInstance(found.widen, bool)
+            for name in found.names:
                 self.assertRegex(name, r"^x(_|ǁ)[A-Za-z0-9_ǁ]+$")
+
+
+    def test_fuzz_matches_git(self) -> None:
+        """Oracle: inserted lines, and the line before each deleted run, are what git's diff reports."""
+        rng = random.Random(3579)
+        for _ in range(40):
+            before = [f"base {i}" for i in range(rng.randrange(1, 30))]
+            deleted = {i for i in range(len(before)) if rng.random() < 0.15}
+            after = [text for i, text in enumerate(before) if i not in deleted]
+            expected: set[int] = set()
+            # Where each deleted run lands on the new side: the line before it.
+            kept = 0
+            for i in range(len(before)):
+                if i in deleted:
+                    if i == 0 or i - 1 not in deleted:
+                        expected.add(max(kept, 1))
+                else:
+                    kept += 1
+            inserts = sorted(rng.randrange(0, len(after) + 1) for _ in range(rng.randrange(0, 5)))
+            for offset, position in enumerate(inserts):
+                after.insert(position + offset, f"inserted {offset}")
+            # Shift the deletion points past the inserted lines before them.
+            shifted = set()
+            for point in expected:
+                shifted.add(point + sum(1 for o, p in enumerate(inserts) if p + o < point))
+            expected = shifted | {i + 1 for i, text in enumerate(after) if text.startswith("inserted")}
+            with tempfile.TemporaryDirectory() as tmp:
+                old, new = Path(tmp, "old.py"), Path(tmp, "new.py")
+                old.write_text("".join(t + "\n" for t in before), encoding="utf-8")
+                new.write_text("".join(t + "\n" for t in after), encoding="utf-8")
+                result = subprocess.run(
+                    ["git", "diff", "--no-index", f"-U{rng.randrange(0, 4)}", "--", str(old), str(new)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            diff = result.stdout.replace(f"+++ b{new}", f"+++ b/{SDK}/src/pkg/w.py").replace(f"+++ {new}", f"+++ b/{SDK}/src/pkg/w.py")
+            got = mr.changed_points(diff, SDK, GENERATED).get("src/pkg/w.py", set())
+            # git may pair a deletion with a neighbouring insertion as one
+            # change; every inserted line is always reported, and every
+            # reported line is an inserted line or a deletion point.
+            inserted = {i + 1 for i, text in enumerate(after) if text.startswith("inserted")}
+            self.assertLessEqual(inserted, got)
+            self.assertLessEqual(got, expected | {p + 1 for p in expected} | {p - 1 for p in expected})
 
 
 class ResultsTest(unittest.TestCase):
     """mutmut's exit codes map onto the Rust job's outcomes, scoped by the patterns."""
 
     def test_selected_is_exact(self) -> None:
-        patterns = mr.parse_patterns("pkg.x*\npkg.mod.x_first__mutmut_*\nnot a pattern\n")
+        patterns = mr.parse_patterns("pkg.x_*\npkg.xǁ*\npkg.mod.x_first__mutmut_*\nnot a pattern\npkg.x*\n")
         self.assertEqual(patterns, [("pkg", None), ("pkg.mod", "x_first")])
         self.assertTrue(mr.selected("pkg.x_anything__mutmut_3", patterns))
         self.assertTrue(mr.selected("pkg.mod.x_first__mutmut_12", patterns))
@@ -244,6 +324,15 @@ class ResultsTest(unittest.TestCase):
         for bad in ("", "[]", "{}", '{"exit_code_by_key": []}', "{" * 100_000):
             with self.subTest(bad=bad[:20]):
                 self.assertEqual(mr.parse_meta(bad), {})
+
+    def test_a_meta_file_cut_short_is_still_read(self) -> None:
+        codes = {f"a.x_f__mutmut_{n}": (n % 3 or None) for n in range(1, 8)}
+        text = json.dumps({"exit_code_by_key": codes, "durations_by_key": {"a.x_f__mutmut_1": 2}}, indent=4)
+        self.assertEqual(mr.parse_meta(text), codes)
+        cut = text[: text.index("durations_by_key") + 30]
+        self.assertEqual(mr.parse_meta(cut), codes)
+        partial = text[: text.index("a.x_f__mutmut_5")]
+        self.assertEqual(mr.parse_meta(partial), {k: v for k, v in codes.items() if int(k.rsplit("_", 1)[1]) < 5})
 
     def test_change_places_the_mutant(self) -> None:
         mutated = mutated_module(SOURCE, "x_first", "first", {1: ("a + LIMIT", "a - LIMIT"), 2: ('"""Docstring."""\n', "")})
@@ -268,9 +357,17 @@ class ResultsTest(unittest.TestCase):
             "pkg.mod.x_first__mutmut_6": 34,
             "pkg.mod.x_second__mutmut_1": 0,
         }
-        metas = {"src/pkg/mod.py": json.dumps({"exit_code_by_key": codes})}
         patterns = mr.parse_patterns("pkg.mod.x_first__mutmut_*")
-        results, survivors = mr.collect(metas, {"src/pkg/mod.py": (SOURCE, mutated)}, patterns, SDK)
+        loads: list[str] = []
+
+        def load(path: str) -> tuple[str, str]:
+            loads.append(path)
+            return SOURCE, mutated
+
+        results, survivors = mr.collect({"src/pkg/mod.py": codes, "src/pkg/other.py": {"pkg.other.x_g__mutmut_1": 0}}, load, patterns, SDK)
+        # Only a module with a selected missed mutant is read.
+        self.assertEqual(loads, ["src/pkg/mod.py"])
+        self.assertEqual(mr.progress({"src/pkg/mod.py": codes}, patterns), (6, 5))
         self.assertEqual(results.count(Outcome.CAUGHT), 1)
         self.assertEqual(results.count(Outcome.TIMEOUT), 1)
         self.assertEqual(results.count(Outcome.MISSED), 2)
@@ -297,11 +394,11 @@ class ResultsTest(unittest.TestCase):
             mutated = original + "".join(rng.choice(values) for _ in range(rng.randrange(0, 6)))
             codes = {f"pkg.mod.x_f__mutmut_{n}": rng.choice([0, 1, 33, 36, None, -9, 999]) for n in range(rng.randrange(0, 6))}
             codes[rng.choice(values)] = 0
-            meta = json.dumps({"exit_code_by_key": codes})
-            results, survivors = mr.collect({"src/pkg/mod.py": meta}, {"src/pkg/mod.py": (original, mutated)}, [("pkg.mod", None)], SDK)
+            parsed_codes = mr.parse_meta(json.dumps({"exit_code_by_key": codes}))
+            results, survivors = mr.collect({"src/pkg/mod.py": parsed_codes}, lambda _: (original, mutated), [("pkg.mod", None)], SDK)
             for descriptions in results.mutants.values():
                 for description in descriptions:
-                    self.assertLessEqual(len(description), mr.MAX_LINE)
+                    self.assertLessEqual(len(description), sys.modules["mutation_report"].MAX_LINE)
                     self.assertTrue(description.isprintable(), description)
             for _, line, _ in survivors:
                 self.assertGreater(line, 0)
@@ -319,7 +416,11 @@ class RenderTest(unittest.TestCase):
     def test_states(self) -> None:
         patterns = [("pkg.mod", "x_first")]
         self.assertIn("touches no source line", mr.render(None, patterns=[]))
-        self.assertIn("did not finish", mr.render(None, patterns=patterns))
+        self.assertIn("did not test any mutant of the changed functions; check the job log", mr.render(None, patterns=patterns))
+        self.assertIn("reached the time limit first", mr.render(None, patterns=patterns, stopped=True))
+        self.assertIn("cannot mutate any of the changed functions", mr.render(None, patterns=[], skipped=["pkg.mod.second"]))
+        skipped = mr.render(self.results(1, 0), patterns=patterns, skipped=["pkg.mod.second"])
+        self.assertIn("- `pkg.mod.second`", skipped)
         self.assertIn("no mutant in the changed functions", mr.render(self.results(0, 0), patterns=patterns))
         summary = mr.render(self.results(3, 1), patterns=patterns)
         self.assertIn("**75%** of the 4 mutants", summary)
@@ -345,10 +446,12 @@ class MainTest(unittest.TestCase):
             (root / "pyproject.toml").write_text('[tool.mutmut]\ndo_not_mutate = ["src/pkg/abi.py"]\n', encoding="utf-8")
             diff = Path(tmp, "pr.diff")
             diff.write_text(DIFF.replace(f"{SDK}/", f"{root.as_posix()}/"), encoding="utf-8")
+            skipped = Path(tmp, "skipped.txt")
             with mock.patch("sys.stdout") as stdout:
-                self.assertEqual(mr.main(["select", "--diff", str(diff), "--root", root.as_posix()]), 0)
+                self.assertEqual(mr.main(["select", "--diff", str(diff), "--root", root.as_posix(), "--skipped", str(skipped)]), 0)
             printed = "".join(c.args[0] for c in stdout.write.call_args_list)
             self.assertEqual(printed, "pkg.mod.x_first__mutmut_*\n")
+            self.assertEqual(skipped.read_text(encoding="utf-8"), "")
             patterns = Path(tmp, "patterns.txt")
             patterns.write_text(printed, encoding="utf-8")
 
@@ -376,7 +479,18 @@ class MainTest(unittest.TestCase):
             # Patterns but no results: mutmut did not get as far as writing them.
             with mock.patch("sys.stdout") as stdout:
                 self.assertEqual(mr.main(["report", "--mutants", str(Path(tmp, "none")), "--patterns", str(patterns), "--root", root.as_posix(), "--summary", ""]), 0)
-            self.assertIn("did not finish", "".join(c.args[0] for c in stdout.write.call_args_list))
+            self.assertIn("did not test any mutant", "".join(c.args[0] for c in stdout.write.call_args_list))
+            # Results written but none tested: mutmut failed before testing.
+            (mutants / "src" / "pkg" / "mod.py.meta").write_text(json.dumps({"exit_code_by_key": {"pkg.mod.x_first__mutmut_1": None}}), encoding="utf-8")
+            with mock.patch("sys.stdout") as stdout:
+                self.assertEqual(mr.main(["report", "--mutants", str(mutants), "--patterns", str(patterns), "--root", root.as_posix(), "--summary", ""]), 0)
+            self.assertIn("did not test any mutant", "".join(c.args[0] for c in stdout.write.call_args_list))
+            # No selected mutant at all: the changed functions had none.
+            other = Path(tmp, "other.txt")
+            other.write_text("pkg.mod.x_nothing__mutmut_*\n", encoding="utf-8")
+            with mock.patch("sys.stdout") as stdout:
+                self.assertEqual(mr.main(["report", "--mutants", str(mutants), "--patterns", str(other), "--root", root.as_posix(), "--summary", ""]), 0)
+            self.assertIn("found no mutant in the changed functions", "".join(c.args[0] for c in stdout.write.call_args_list))
 
     def test_usage(self) -> None:
         with mock.patch("sys.stderr"):
@@ -409,12 +523,19 @@ class WiringTest(unittest.TestCase):
         # Patterns as separate arguments, never split or globbed by the shell.
         self.assertIn('mapfile -t patterns < "$RUNNER_TEMP/patterns.txt"', run)
         self.assertIn('mutmut run "${patterns[@]}"', run)
-        self.assertIn("timeout --foreground --signal=INT", run)
+        # SIGINT to the whole process group, mutmut's test workers included.
+        self.assertIn("timeout --signal=INT", run)
+        self.assertNotIn("--foreground", run)
         self.assertEqual(steps["Test the mutants"]["id"], "mutants")
         self.assertEqual(steps["Test the mutants"]["working-directory"], "${{ env.SDK }}")
+        self.assertIn("scripts/stryker_report.py", triggers["pull_request"]["paths"])
+        self.assertIn("scripts/mutation_report.py", triggers["pull_request"]["paths"])
+        self.assertIn('--skipped "$RUNNER_TEMP/skipped.txt"', steps["Find the changed functions"]["run"])
+        self.assertIn("steps.select.outcome == 'success'", steps["Report"]["if"])
         report = steps["Report"]["run"]
         self.assertIn("python3 scripts/mutmut_report.py report", report)
         self.assertIn("--stopped", report)
+        self.assertIn('--skipped "$RUNNER_TEMP/skipped.txt"', report)
         self.assertEqual(steps["Report"]["env"]["STOPPED"], "${{ steps.mutants.outputs.stopped }}")
         self.assertEqual(steps["Upload the results"]["with"]["name"], "mutants-python-sdk")
 

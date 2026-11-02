@@ -9,19 +9,24 @@ is report-only and the script always exits 0.
 
 Two subcommands:
 
-- ``select --diff FILE --root DIR`` prints the mutmut mutant-name patterns
-  for the SDK at ``DIR``, one per line, or nothing when no source line
-  changed. mutmut names each mutant after its function
+- ``select --diff FILE --root DIR [--skipped FILE]`` prints the mutmut
+  mutant-name patterns for the SDK at ``DIR``, one per line, or nothing
+  when no source line changed. mutmut names each mutant after its function
   (``<module>.x_<function>__mutmut_<n>``, or
   ``<module>.xǁ<Class>ǁ<method>__mutmut_<n>`` for a method), so a changed
-  function becomes ``<module>.x_<function>__mutmut_*``. mutmut only mutates
+  function becomes ``<module>.x_<function>__mutmut_*``. A line counts as
+  changed when the diff adds it, or when the diff deletes lines right after
+  it, so removing a guard selects its function. mutmut only mutates
   function bodies, so a changed line outside every function (a constant, an
-  import, a class attribute) widens to the whole module, ``<module>.x*``:
-  the tests of the code beside the changed data are then checked. Blank
-  lines, comments and docstrings outside functions widen nothing. Tests and
-  the generated ABI modules (``do_not_mutate`` in the SDK's
-  ``pyproject.toml``) are never selected.
-- ``report --mutants DIR --patterns FILE --root DIR`` reads the results
+  import, a class attribute) widens to the whole module (``<module>.x_*``
+  and ``<module>.xǁ*``): the tests of the code beside the changed data are
+  then checked. Blank lines, comments and docstrings outside functions
+  widen nothing. Tests and the generated ABI modules (``do_not_mutate`` in
+  the SDK's ``pyproject.toml``) are never selected. Changed functions
+  mutmut never mutates (decorated ones, and methods of enum classes) are
+  written to ``--skipped`` so the summary can name them.
+- ``report --mutants DIR --patterns FILE --root DIR [--skipped FILE]``
+  reads the results
   mutmut keeps beside each mutated module (``mutants/src/**/<file>.meta``),
   keeps the mutants the patterns select, appends the summary to
   ``$GITHUB_STEP_SUMMARY`` (``--summary FILE`` overrides) and annotates each
@@ -45,11 +50,12 @@ import os
 import re
 import sys
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from mutation_report import MAX_LINE, MAX_LISTED, Outcome, Results, _code
-from stryker_report import SAFE_PATH, annotations, changed_lines
+from mutation_report import MAX_LISTED, Outcome, Results, _code
+from stryker_report import SAFE_PATH, _clean, annotations
 
 #: Largest file read (a source module, a mutated module or a ``.meta``
 #: file), in bytes; a larger one is skipped.
@@ -84,8 +90,17 @@ MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,99}(?:\.[A-Za-z_][A-Za-z0-9_]{0,9
 #: An identifier ``select`` writes into a pattern.
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,199}$")
 
-#: A pattern ``select`` writes: one function's mutants, or a whole module's.
-PATTERN = re.compile(r"^(?P<module>[A-Za-z0-9_.]{1,2100})\.(?:(?P<base>x(?:_|ǁ)[A-Za-z0-9_ǁ]{1,400})__mutmut_\*|x\*)$")
+#: A pattern ``select`` writes: one function's mutants, or a whole module's
+#: (two patterns, one for functions and one for methods).
+PATTERN = re.compile(r"^(?P<module>[A-Za-z0-9_.]{1,2100})\.(?:(?P<base>x(?:_|ǁ)[A-Za-z0-9_ǁ]{1,400})__mutmut_\*|x_\*|xǁ\*)$")
+
+#: Hunk header of a unified diff: the old side's length, the new side's
+#: first line and length.
+OLD_HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+#: Enum base classes whose methods mutmut 3 never mutates
+#: (``ENUM_BASE_NAMES`` in ``mutmut/mutation/file_mutation.py``).
+ENUM_BASES = frozenset({"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"})
 
 #: A mutant name mutmut writes: module, then the mangled function and number.
 MUTANT = re.compile(r"^(?P<module>[A-Za-z0-9_.]{1,2100})\.(?P<base>x(?:_|ǁ)[^.\s]{1,400})__mutmut_(?P<n>[0-9]{1,9})$")
@@ -116,16 +131,74 @@ def is_source(path: str, generated: frozenset[str]) -> bool:
 
     Args:
         path: The path relative to the SDK's directory.
-        generated: The generated modules, from ``generated_modules``.
+        generated: The generated modules, from ``generated_modules``: paths
+            or globs, matched as mutmut matches ``do_not_mutate``.
 
     Returns:
         True for a ``.py`` file under ``src/`` that is not generated and not
         in a test folder.
     """
     parts = PurePosixPath(path).parts
-    if len(parts) < 2 or parts[0] != "src" or not parts[-1].endswith(".py") or path in generated:
+    if len(parts) < 2 or parts[0] != "src" or not parts[-1].endswith(".py"):
+        return False
+    if any(fnmatch.fnmatch(path, pattern) for pattern in generated):
         return False
     return not any(part in {"tests", "test", "__pycache__"} for part in parts[1:-1])
+
+
+def changed_points(diff: str, root: str, generated: frozenset[str]) -> dict[str, set[int]]:
+    """Collect the changed lines of the SDK's sources from a unified diff.
+
+    Args:
+        diff: The diff, as ``git diff`` writes it.
+        root: The SDK's directory, relative to the repository root.
+        generated: The generated modules, from ``generated_modules``.
+
+    Returns:
+        For each source file under ``root`` (relative to it, matching
+        ``SAFE_PATH`` and kept by ``is_source``), the new-side lines the
+        diff adds, plus, for each run of deleted lines, the line just
+        before it (the first line when the run starts the file).
+    """
+    prefix = root.rstrip("/") + "/"
+    changed: dict[str, set[int]] = {}
+    current: str | None = None
+    line = 0
+    old_remaining = new_remaining = 0
+    for text in diff.splitlines():
+        if text.startswith("diff --git "):
+            current, old_remaining, new_remaining = None, 0, 0
+            continue
+        if old_remaining == 0 and new_remaining == 0 and text.startswith("+++ "):
+            path = text[4:]
+            current = None
+            if path.startswith("b/" + prefix):
+                relative = path[2 + len(prefix) :]
+                if SAFE_PATH.match(relative) and is_source(relative, generated) and ".." not in PurePosixPath(relative).parts:
+                    current = relative
+            continue
+        match = OLD_HUNK.match(text)
+        if match:
+            old_remaining = int(match.group(1)) if match.group(1) is not None else 1
+            line = int(match.group(2))
+            new_remaining = int(match.group(3)) if match.group(3) is not None else 1
+            continue
+        if (old_remaining <= 0 and new_remaining <= 0) or not text:
+            continue
+        if text[0] == "+" and new_remaining > 0:
+            if current is not None:
+                changed.setdefault(current, set()).add(line)
+            line += 1
+            new_remaining -= 1
+        elif text[0] == "-" and old_remaining > 0:
+            if current is not None:
+                changed.setdefault(current, set()).add(max(line - 1, 1))
+            old_remaining -= 1
+        elif text[0] == " ":
+            line += 1
+            old_remaining -= 1
+            new_remaining -= 1
+    return changed
 
 
 def module_name(path: str) -> str | None:
@@ -162,61 +235,99 @@ def _is_docstring(node: ast.stmt) -> bool:
     return isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
 
 
-def targets(source: str, lines: set[int]) -> tuple[list[str], bool]:
+def _mutmut_skips(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Say whether mutmut 3 leaves a function alone because of its decorators.
+
+    mutmut skips every decorated function except one with a single bare
+    ``@staticmethod`` or ``@classmethod``.
+    """
+    decorators = node.decorator_list
+    if not decorators:
+        return False
+    return not (len(decorators) == 1 and isinstance(decorators[0], ast.Name) and decorators[0].id in {"staticmethod", "classmethod"})
+
+
+def _is_enum(node: ast.ClassDef) -> bool:
+    """Say whether a class derives directly from an enum base mutmut skips."""
+    for base in node.bases:
+        name = base.attr if isinstance(base, ast.Attribute) else base.id if isinstance(base, ast.Name) else None
+        if name in ENUM_BASES:
+            return True
+    return False
+
+
+@dataclass
+class Targets:
+    """What one module's changed lines select."""
+
+    #: The mangled names mutmut gives the changed functions it mutates
+    #: (``x_<name>``, or ``xǁ<Class>ǁ<name>`` for a method), sorted.
+    names: list[str]
+    #: Whether a changed line falls in code outside every function, so the
+    #: whole module is mutated.
+    widen: bool
+    #: The changed functions mutmut never mutates (``<name>`` or
+    #: ``<Class>.<name>``), sorted.
+    skipped: list[str]
+
+
+def targets(source: str, lines: set[int]) -> Targets:
     """Find the functions of one module that the changed lines fall in.
 
     Args:
         source: The module's new text.
-        lines: The lines the pull request adds, 1-based.
+        lines: The changed lines, 1-based.
 
     Returns:
-        The mangled names mutmut gives the changed functions (``x_<name>``
-        for a module-level function, ``xǁ<Class>ǁ<name>`` for a method of a
-        module-level class), sorted, and whether a changed line falls in
-        code outside every function, so the whole module should be
-        mutated. A module that does not parse, or a changed function whose
-        name is not a plain ASCII identifier, widens too.
+        The selected functions and whether to widen. A module that does not
+        parse, or a changed function whose name is not a plain ASCII
+        identifier, widens too.
     """
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return [], True
+        return Targets([], True, [])
     source_lines = source.splitlines()
     names: set[str] = set()
+    skipped: set[str] = set()
     widen = False
 
     def hit(start: int, end: int) -> bool:
         return any(start <= line <= end for line in lines)
 
-    def function(name: str, start: int, end: int) -> None:
+    def function(node: ast.FunctionDef | ast.AsyncFunctionDef, owner: ast.ClassDef | None) -> None:
         nonlocal widen
-        if hit(start, end):
-            if all(IDENTIFIER.match(part) for part in name.split("ǁ")):
-                names.add("x" + ("ǁ" if "ǁ" in name else "_") + name)
-            else:
-                widen = True
+        start, end = _span(node)
+        if not hit(start, end):
+            return
+        parts = [owner.name, node.name] if owner is not None else [node.name]
+        if not all(IDENTIFIER.match(part) for part in parts):
+            widen = True
+        elif _mutmut_skips(node) or (owner is not None and _is_enum(owner)):
+            skipped.add(".".join(parts))
+        else:
+            names.add("xǁ" + "ǁ".join(parts) if owner is not None else "x_" + node.name)
 
     for node in tree.body:
         start, end = _span(node)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            function(node.name, start, end)
+            function(node, None)
         elif isinstance(node, ast.ClassDef):
             covered: list[tuple[int, int]] = []
             for item in node.body:
-                item_start, item_end = _span(item)
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    function(f"{node.name}ǁ{item.name}", item_start, item_end)
-                    covered.append((item_start, item_end))
+                    function(item, node)
+                    covered.append(_span(item))
                 elif _is_docstring(item):
-                    covered.append((item_start, item_end))
+                    covered.append(_span(item))
             # Class-level code outside its methods and docstring: the class
             # line, decorators, bases and attributes.
             rest = {line for line in lines if start <= line <= end and not any(a <= line <= b for a, b in covered)}
             if any(_code_line(source_lines, line) for line in rest):
                 widen = True
-        elif not _is_docstring(node) and hit(start, end) and any(_code_line(source_lines, line) for line in lines if start <= line <= end):
+        elif not _is_docstring(node) and any(_code_line(source_lines, line) for line in lines if start <= line <= end):
             widen = True
-    return sorted(names), widen
+    return Targets(sorted(names), widen, sorted(skipped))
 
 
 def _code_line(lines: list[str], line: int) -> bool:
@@ -227,24 +338,25 @@ def _code_line(lines: list[str], line: int) -> bool:
     return bool(text) and not text.startswith("#")
 
 
-def patterns_for(module: str, names: list[str], widen: bool) -> list[str]:
+def patterns_for(module: str, found: Targets) -> list[str]:
     """Write the mutmut patterns for one module's changed functions.
 
     Args:
         module: The dotted module name.
-        names: The mangled function names, from ``targets``.
-        widen: Whether the whole module is mutated instead.
+        found: The module's selection, from ``targets``.
 
     Returns:
-        ``<module>.x*`` when widened, otherwise one
-        ``<module>.<name>__mutmut_*`` per function.
+        ``<module>.x_*`` and ``<module>.xǁ*`` (every function and method)
+        when widened, otherwise one ``<module>.<name>__mutmut_*`` per
+        function. mutmut matches these as globs, so a whole-module pattern
+        also reaches a submodule named ``x_…``; ``selected`` is exact.
     """
-    if widen:
-        return [f"{module}.x*"]
-    return [f"{module}.{name}__mutmut_*" for name in names]
+    if found.widen:
+        return [f"{module}.x_*", f"{module}.xǁ*"]
+    return [f"{module}.{name}__mutmut_*" for name in found.names]
 
 
-def select(diff: str, root: str, read: dict[str, str], generated: frozenset[str]) -> list[str]:
+def select(diff: str, root: str, read: dict[str, str], generated: frozenset[str]) -> tuple[list[str], list[str]]:
     """Build the mutmut patterns for a pull request's changes to the SDK.
 
     Args:
@@ -255,17 +367,20 @@ def select(diff: str, root: str, read: dict[str, str], generated: frozenset[str]
         generated: The generated modules, from ``generated_modules``.
 
     Returns:
-        The patterns, one module after another in path order.
+        The patterns, one module after another in path order, and the
+        changed functions mutmut never mutates, as ``<module>.<name>``.
     """
-    out: list[str] = []
-    for path, runs in changed_lines(diff, root, lambda p: is_source(p, generated)).items():
+    patterns: list[str] = []
+    skipped: list[str] = []
+    for path, lines in sorted(changed_points(diff, root, generated).items()):
         module = module_name(path)
         if module is None or path not in read:
             continue
-        lines = {line for start, end in runs for line in range(start, end + 1)}
-        names, widen = targets(read[path], lines)
-        out += patterns_for(module, names, widen)
-    return out
+        found = targets(read[path], lines)
+        patterns += patterns_for(module, found)
+        if not found.widen:
+            skipped += [f"{module}.{name}" for name in found.skipped]
+    return patterns, skipped
 
 
 def parse_patterns(text: str) -> list[tuple[str, str | None]]:
@@ -276,13 +391,13 @@ def parse_patterns(text: str) -> list[tuple[str, str | None]]:
 
     Returns:
         ``(module, mangled function)`` per pattern, the function ``None``
-        for a whole module; lines that are not a pattern ``select`` writes
-        are left out.
+        for a whole module (listed once for its two patterns); lines that
+        are not a pattern ``select`` writes are left out.
     """
-    out = []
+    out: list[tuple[str, str | None]] = []
     for line in text.splitlines()[:10000]:
         match = PATTERN.match(line.strip())
-        if match:
+        if match and (match.group("module"), match.group("base")) not in out:
             out.append((match.group("module"), match.group("base")))
     return out
 
@@ -291,7 +406,7 @@ def selected(key: str, patterns: list[tuple[str, str | None]]) -> bool:
     """Say whether a mutant name is one the patterns select.
 
     The check is exact: a whole-module pattern selects that module's
-    functions only, not a submodule's whose name starts with ``x``.
+    functions only, not a submodule's.
     """
     match = MUTANT.match(key)
     if not match:
@@ -299,11 +414,21 @@ def selected(key: str, patterns: list[tuple[str, str | None]]) -> bool:
     return any(match.group("module") == module and (base is None or match.group("base") == base) for module, base in patterns)
 
 
+#: One mutant's line in a ``.meta`` file, which mutmut writes with
+#: ``json.dump(indent=4)``.
+META_LINE = re.compile(r'^\s*"(?P<key>[^"\\]{1,2600})": (?P<code>-?[0-9]{1,9}|null),?$')
+
+
 def parse_meta(text: str) -> dict[str, int | None]:
     """Read one of mutmut's ``.meta`` files.
 
+    mutmut rewrites the file after every mutant, so a run stopped at the time
+    limit can leave it cut short. When the JSON does not parse, the
+    ``exit_code_by_key`` object is read line by line up to where it ends or
+    the file stops.
+
     Args:
-        text: The file's JSON.
+        text: The file's text.
 
     Returns:
         Each mutant's exit code (``None`` when mutmut did not test it),
@@ -312,11 +437,27 @@ def parse_meta(text: str) -> dict[str, int | None]:
     try:
         data = json.loads(text)
     except (ValueError, RecursionError):
-        return {}
+        return _salvage_meta(text)
     codes = data.get("exit_code_by_key") if isinstance(data, dict) else None
     if not isinstance(codes, dict):
         return {}
     return {k: v if type(v) is int else None for k, v in codes.items() if isinstance(k, str)}
+
+
+def _salvage_meta(text: str) -> dict[str, int | None]:
+    """Read the ``exit_code_by_key`` lines of a ``.meta`` file cut short."""
+    codes: dict[str, int | None] = {}
+    inside = False
+    for line in text.splitlines():
+        if not inside:
+            inside = line.strip() == '"exit_code_by_key": {'
+            continue
+        match = META_LINE.match(line)
+        if not match:
+            break
+        code = match.group("code")
+        codes[match.group("key")] = None if code == "null" else int(code)
+    return codes
 
 
 def _functions(source: str) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -425,55 +566,74 @@ class Module:
         return line, f"{old or '(nothing)'} → {new or '(removed)'}"
 
 
-def _clean(text: str) -> str:
-    """Make text printable and bounded."""
-    return "".join(c if c.isprintable() else "?" for c in text)[:MAX_LINE]
-
-
 def collect(
-    metas: dict[str, str],
-    modules: dict[str, tuple[str, str]],
+    codes_by_path: dict[str, dict[str, int | None]],
+    load: Callable[[str], tuple[str, str] | None],
     patterns: list[tuple[str, str | None]],
     root: str,
 ) -> tuple[Results, list[tuple[str, int, str]]]:
-    """Gather the selected mutants' outcomes from mutmut's files.
+    """Gather the selected mutants' outcomes from mutmut's results.
 
     Args:
-        metas: Each ``.meta`` file's text, keyed by the source path it
-            belongs to, relative to the SDK (``src/…/tools.py``).
-        modules: ``(original, mutated)`` text per source path, for
-            describing missed mutants; a path missing here leaves them
-            undescribed.
+        codes_by_path: Each ``.meta`` file's exit codes (``parse_meta``),
+            keyed by the source path it belongs to, relative to the SDK
+            (``src/…/tools.py``).
+        load: Returns ``(original, mutated)`` text for a source path, for
+            describing missed mutants, or ``None`` to leave them
+            undescribed; called only for paths with a missed mutant.
         patterns: The selection, from ``parse_patterns``.
         root: The SDK's directory, prefixed to paths so they are
             repository-relative.
 
     Returns:
-        The mutants by outcome, each described as ``path:line: old → new``,
-        and ``(path, line, description)`` for each missed one with a line.
+        The mutants by outcome, each described as
+        ``path:line: old → new (name)``, and ``(path, line, description)``
+        for each missed one with a line.
     """
     results = Results()
     survivors: list[tuple[str, int, str]] = []
     prefix = root.rstrip("/") + "/"
-    for source_path in sorted(metas):
-        codes = parse_meta(metas[source_path])
-        keys = [k for k in codes if selected(k, patterns)]
-        if not keys:
-            continue
-        indexed = Module.read(*modules[source_path]) if source_path in modules else None
+    for source_path in sorted(codes_by_path):
+        codes = codes_by_path[source_path]
+        keys = sorted((k for k in codes if selected(k, patterns)), key=_natural)
         path = _clean(prefix + source_path)
-        for key in sorted(keys, key=_natural):
+        indexed: Module | None = None
+        loaded = False
+        for key in keys:
             code = codes[key]
             outcome = EXIT_CODES.get(code) if code is not None else None
             if outcome is None:
                 continue
-            line, change = indexed.change(key) if indexed is not None and outcome is Outcome.MISSED else (0, "")
+            line, change = 0, ""
+            if outcome is Outcome.MISSED:
+                if not loaded:
+                    texts = load(source_path)
+                    indexed = Module.read(*texts) if texts is not None else None
+                    loaded = True
+                if indexed is not None:
+                    line, change = indexed.change(key)
             name = _clean(key.rsplit(".", 1)[-1])
             description = _clean(f"{path}:{line}: {change} ({name})" if change else f"{path}: {name}")
             results.mutants[outcome].append(description)
             if outcome is Outcome.MISSED and line:
                 survivors.append((path, line, description))
     return results, survivors
+
+
+def progress(codes_by_path: dict[str, dict[str, int | None]], patterns: list[tuple[str, str | None]]) -> tuple[int, int]:
+    """Count the selected mutants, and those mutmut has tested.
+
+    Args:
+        codes_by_path: Each ``.meta`` file's exit codes, by source path.
+        patterns: The selection, from ``parse_patterns``.
+
+    Returns:
+        ``(selected, tested)``: mutmut writes every mutant with no exit
+        code before testing any, so selected mutants none of which has a
+        code mean the run stopped before testing them.
+    """
+    chosen = [code for codes in codes_by_path.values() for key, code in codes.items() if selected(key, patterns)]
+    return len(chosen), sum(code is not None for code in chosen)
 
 
 def _natural(key: str) -> tuple[str, int]:
@@ -486,15 +646,18 @@ def render(
     parsed: tuple[Results, list[tuple[str, int, str]]] | None,
     *,
     patterns: list[tuple[str, str | None]],
+    skipped: list[str] | None = None,
     stopped: bool = False,
 ) -> str:
     """Write the Markdown summary of the SDK's run.
 
     Args:
-        parsed: The collected outcomes, or ``None`` when mutmut left no
-            results.
-        patterns: The selection; empty when no source line changed, so
-            mutmut did not run.
+        parsed: The collected outcomes, or ``None`` when mutmut tested none
+            of the selected mutants (it failed or was stopped first).
+        patterns: The selection; empty when no changed function can be
+            mutated, so mutmut did not run.
+        skipped: Changed functions mutmut never mutates, as
+            ``<module>.<name>``.
         stopped: Whether the workflow stopped mutmut at its time limit, so
             only the mutants tested before then are counted.
 
@@ -503,10 +666,14 @@ def render(
     """
     lines = ["## Mutation testing (Python SDK)", ""]
     widened = sorted({module for module, base in patterns if base is None})
-    if not patterns:
+    skipped = skipped or []
+    if not patterns and not skipped:
         lines.append("No mutants to test: the change touches no source line of the SDK.")
+    elif not patterns:
+        lines.append("No mutants to test: mutmut cannot mutate any of the changed functions.")
     elif parsed is None:
-        lines.append("mutmut did not finish; check the job log.")
+        reason = "it reached the time limit first" if stopped else "check the job log"
+        lines.append(f"mutmut did not test any mutant of the changed functions; {reason}.")
     else:
         results = parsed[0]
         if widened:
@@ -533,6 +700,11 @@ def render(
             lines += [f"- {_code(m)}" for m in missed_list[:MAX_LISTED]]
             if len(missed_list) > MAX_LISTED:
                 lines.append(f"- … and {len(missed_list) - MAX_LISTED} more (see the `mutants-python-sdk` artifact).")
+    if skipped:
+        lines += ["", "mutmut never mutates decorated functions (other than a bare `@staticmethod` or `@classmethod`) or enum methods, so these changed ones were not tested:", ""]
+        lines += [f"- {_code(_clean(name))}" for name in skipped[:MAX_LISTED]]
+        if len(skipped) > MAX_LISTED:
+            lines.append(f"- … and {len(skipped) - MAX_LISTED} more.")
     lines += ["", "Report only: missed mutants do not fail the pull request yet."]
     return "\n".join(lines) + "\n"
 
@@ -552,17 +724,20 @@ def select_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="mutmut_report.py select")
     parser.add_argument("--diff", type=Path, required=True, help="the pull request's diff")
     parser.add_argument("--root", required=True, help="the SDK's directory, relative to the repository root")
+    parser.add_argument("--skipped", type=Path, help="file to write the changed functions mutmut never mutates to")
     args = parser.parse_args(argv)
     root = Path(args.root)
     generated = generated_modules(_read(root / "pyproject.toml") or "")
     diff = args.diff.read_text(encoding="utf-8", errors="replace")
     read = {}
-    for path in changed_lines(diff, args.root, lambda p: is_source(p, generated)):
+    for path in changed_points(diff, args.root, generated):
         text = _read(root / path)
         if text is not None:
             read[path] = text
-    patterns = select(diff, args.root, read, generated)
+    patterns, skipped = select(diff, args.root, read, generated)
     sys.stdout.write("".join(p + "\n" for p in patterns))
+    if args.skipped is not None:
+        args.skipped.write_text("".join(name + "\n" for name in skipped), encoding="utf-8")
     return 0
 
 
@@ -571,30 +746,34 @@ def report_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="mutmut_report.py report")
     parser.add_argument("--mutants", type=Path, required=True, help="mutmut's mutants/ folder")
     parser.add_argument("--patterns", type=Path, required=True, help="the patterns `select` printed")
+    parser.add_argument("--skipped", type=Path, help="the changed functions `select` found mutmut never mutates")
     parser.add_argument("--root", required=True, help="the SDK's directory, relative to the repository root")
     parser.add_argument("--stopped", action="store_true", help="the workflow stopped mutmut at its time limit")
     parser.add_argument("--out", type=Path, help="folder to write <outcome>.txt into, one mutant per line, for the artifact")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""), help="file to append the summary to (none when empty)")
     args = parser.parse_args(argv)
     patterns = parse_patterns(_read(args.patterns) or "")
+    skipped = [line.strip() for line in (_read(args.skipped) or "").splitlines()[:10000] if line.strip()] if args.skipped else []
     parsed = None
     if patterns and (args.mutants / "src").is_dir():
-        metas: dict[str, str] = {}
-        modules: dict[str, tuple[str, str]] = {}
+        codes_by_path: dict[str, dict[str, int | None]] = {}
         for meta in sorted((args.mutants / "src").rglob("*.py.meta"))[:MAX_META_FILES]:
             source_path = meta.relative_to(args.mutants).as_posix()[: -len(".meta")]
-            if not SAFE_PATH.match(source_path):
-                continue
-            text = _read(meta)
-            if text is None:
-                continue
-            metas[source_path] = text
+            text = _read(meta) if SAFE_PATH.match(source_path) else None
+            if text is not None:
+                codes_by_path[source_path] = parse_meta(text)
+
+        def load(source_path: str) -> tuple[str, str] | None:
             original, mutated = _read(Path(args.root) / source_path), _read(args.mutants / source_path)
-            if original is not None and mutated is not None:
-                modules[source_path] = (original, mutated)
-        if any(parse_meta(text) for text in metas.values()):
-            parsed = collect(metas, modules, patterns, args.root)
-    markdown = render(parsed, patterns=patterns, stopped=args.stopped)
+            return (original, mutated) if original is not None and mutated is not None else None
+
+        chosen, tested = progress(codes_by_path, patterns)
+        # Selected mutants exist but none has a result: mutmut failed or
+        # was stopped before testing any. No selected mutant at all is a
+        # finished run: the changed functions have nothing to mutate.
+        if tested or (codes_by_path and not chosen):
+            parsed = collect(codes_by_path, load, patterns, args.root)
+    markdown = render(parsed, patterns=patterns, skipped=skipped, stopped=args.stopped)
     sys.stdout.write(markdown)
     if parsed is not None:
         sys.stdout.write(annotations(parsed[1]))

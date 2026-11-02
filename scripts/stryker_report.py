@@ -33,7 +33,6 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from mutation_report import MAX_LINE, MAX_LISTED, Outcome, Results, _code
@@ -81,20 +80,17 @@ def is_source(path: str) -> bool:
     return not any(part in {"node_modules", "test", "tests", "__tests__", "test-support", "coverage"} for part in parts[:-1])
 
 
-def changed_lines(diff: str, root: str, keep: Callable[[str], bool] = is_source) -> dict[str, list[tuple[int, int]]]:
+def changed_lines(diff: str, root: str) -> dict[str, list[tuple[int, int]]]:
     """Collect the added lines of a Worker's sources from a unified diff.
 
     Args:
         diff: The diff, as ``git diff`` writes it.
         root: The Worker's directory, relative to the repository root.
-        keep: Says whether a path relative to ``root`` is a source file to
-            collect; ``is_source`` by default. The Python SDK's report
-            passes its own.
 
     Returns:
-        For each source file under ``root`` (relative to it, matching
-        ``SAFE_PATH`` and kept by ``keep``), the ranges of lines the diff
-        adds on the new side, merged and sorted.
+        For each source file under ``root`` (relative to it, and matching
+        ``SAFE_PATH``), the ranges of lines the diff adds on the new side,
+        merged and sorted.
     """
     prefix = root.rstrip("/") + "/"
     added: dict[str, set[int]] = {}
@@ -110,7 +106,7 @@ def changed_lines(diff: str, root: str, keep: Callable[[str], bool] = is_source)
             current = None
             if path.startswith("b/" + prefix):
                 relative = path[2 + len(prefix) :]
-                if SAFE_PATH.match(relative) and keep(relative) and ".." not in PurePosixPath(relative).parts:
+                if SAFE_PATH.match(relative) and is_source(relative) and ".." not in PurePosixPath(relative).parts:
                     current = relative
             continue
         match = HUNK.match(text)

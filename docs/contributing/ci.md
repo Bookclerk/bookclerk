@@ -1039,10 +1039,12 @@ The [`mutation-python.yml`](../../.github/workflows/mutation-python.yml)
 workflow does the same for the Python plugin SDK
 (`packages/plugin-sdk-python`) with [mutmut](https://mutmut.readthedocs.io/):
 
-1. It finds the lines the pull request adds under the SDK's `src/`, from
-   the merge commit's diff against the base. Tests and the generated ABI
-   modules are left out. With no changed source line, mutmut does not run
-   and the summary says so.
+1. It finds the lines the pull request changes under the SDK's `src/`, from
+   the merge commit's diff against the base: the lines it adds, and the
+   line before each run of lines it deletes, so removing a guard counts as
+   changing its function. Tests and the generated ABI modules are left
+   out. With no changed source line, mutmut does not run and the summary
+   says so.
 2. mutmut names each mutant after its function, so
    [`scripts/mutmut_report.py`](../../scripts/mutmut_report.py) turns each
    function holding a changed line into a name pattern, such as
@@ -1053,11 +1055,17 @@ workflow does the same for the Python plugin SDK
    the whole module instead, so the tests of the code beside the changed
    data are checked. The summary names those modules. Blank lines,
    comments and docstrings outside functions select nothing. The SDK's
-   tests run in about a second, so a whole module fits in the time limit.
-4. Each mutant runs the tests that cover its function. A mutant no test
+   tests run in about a second, so most modules fit in the time limit.
+4. mutmut never mutates a decorated function (other than one with a single
+   `@staticmethod` or `@classmethod`) or an enum's methods. The summary
+   names the changed functions it skipped for that reason.
+5. Each mutant runs the tests that cover its function. A mutant no test
    runs counts as missed.
-5. The run stops after 20 minutes. The summary then counts the mutants
-   tested before the limit and says the run was stopped.
+6. The run stops after 20 minutes. mutmut records each result as it lands,
+   so the summary then counts the mutants tested before the limit and says
+   the run was stopped. If mutmut fails or stops before testing any
+   selected mutant, the summary says that instead of reporting no
+   mutants.
 
 The job summary has the same shape as the other jobs', with each missed
 mutant's line and change, and each missed mutant is annotated on the
