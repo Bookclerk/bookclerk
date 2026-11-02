@@ -31048,7 +31048,7 @@
               "null"
             ],
             "description": "Canonical work id this edition or request resolves to.",
-            "example": "OL59947W"
+            "example": "7c1e9a2b-3d4f-4e5a-9b6c-8d7e0f1a2b3c"
           },
           "resolved_book_uuid": {
             "type": [

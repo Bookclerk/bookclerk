@@ -981,7 +981,7 @@ pub struct TitleRequestRecord {
     #[schema(example = "isbn:9780441478125")]
     pub work_key: String,
     /// Canonical work id this edition or request resolves to.
-    #[schema(example = "OL59947W")]
+    #[schema(example = "7c1e9a2b-3d4f-4e5a-9b6c-8d7e0f1a2b3c")]
     pub work_id: Option<String>,
     /// Library `books.uuid` once the wishlist item is fulfilled.
     #[schema(example = "3f2c0d7e-9d4b-4a62-8b1e-6d0f7c2a9b31")]
