@@ -415,13 +415,52 @@ async fn register_begin(
     creation_options(&challenge_id, &ccr)
 }
 
+/// Schema for the `credential` member of [`CeremonyFinish`]: the browser's
+/// `PublicKeyCredential` serialized to JSON, an attestation after
+/// `navigator.credentials.create()` or an assertion after
+/// `navigator.credentials.get()`, binary fields base64url-encoded.
+fn credential_schema() -> utoipa::openapi::schema::Schema {
+    utoipa::openapi::ObjectBuilder::new()
+        .schema_type(utoipa::openapi::schema::SchemaType::AnyValue)
+        .description(Some(
+            "W3C PublicKeyCredential as the browser serializes it: a registration attestation (`response.attestationObject`) or an authentication assertion (`response.authenticatorData`, `signature`, `userHandle`), binary fields base64url-encoded.",
+        ))
+        .examples([
+            serde_json::json!({
+                "id": "pQECAyYgASFYIE",
+                "rawId": "pQECAyYgASFYIE",
+                "type": "public-key",
+                "response": {
+                    "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViU",
+                    "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ"
+                },
+                "extensions": {}
+            }),
+            serde_json::json!({
+                "id": "pQECAyYgASFYIE",
+                "rawId": "pQECAyYgASFYIE",
+                "type": "public-key",
+                "response": {
+                    "authenticatorData": "SZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2MFAAAAAQ",
+                    "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ",
+                    "signature": "MEUCIQDx8n2Y3kP1qT7vW9zA4bC6dE8fG0hJ2kL4mN6oP8qR0wIgS2tU4vW6xY8zA0bC2dE4fG6hJ8kL0mN2oP4qR6sT8uY",
+                    "userHandle": "AAAAAAAAAAAAAAAAAAAABw"
+                },
+                "extensions": {}
+            }),
+        ])
+        .build()
+        .into()
+}
+
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Browser attestation/assertion plus the challenge id from `begin`.
 struct CeremonyFinish {
     /// Server-issued challenge id (consumed once; 5-minute TTL).
-    #[schema(example = "6f1d2c3b-4a5e-4f60-9b7c-8d9e0f1a2b3c")]
+    #[schema(example = "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f")]
     challenge_id: String,
     /// Browser `PublicKeyCredential` JSON for `finish_*`.
+    #[schema(schema_with = credential_schema)]
     credential: Value,
     #[serde(default)]
     /// Label stored with the credential (`Passkey` when empty).
