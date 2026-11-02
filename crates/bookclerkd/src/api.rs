@@ -796,7 +796,7 @@ struct PluginConsentResponse {
     #[schema(example = false)]
     covered: bool,
     /// Operator-facing bullet list of requested capabilities.
-    #[schema(example = json!(["storefront entrypoint", "outbound network: *.libro.fm, api.libro.fm", "bindings: config, secrets"]))]
+    #[schema(example = json!(["Plugin: libro (entrypoints: storefront)", "Network: outbound", "Raw TCP connect: *.libro.fm:[443]", "Host bindings: config, secrets"]))]
     summary: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Previously approved grant, when one is stored.
@@ -4180,7 +4180,7 @@ fn plan_response(kind: &str, admits: Vec<AdmitJob>) -> Response {
     path = "/api/library/acquire",
     request_body = Option<AcquireRequestBody>,
     responses(
-        (status = 200, description = "The acquire jobs were accepted.", body = ScanPlanResponse, example = json!({"ok": true, "message": "acquire planned: 1 accepted, 0 already pending or running, 0 not admitted (queue full)", "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b", "job_ids": ["acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"]})),
+        (status = 200, description = "The acquire jobs were accepted.", body = ScanPlanResponse, example = json!({"ok": true, "message": "acquire job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted", "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b", "job_ids": ["acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"]})),
         (status = 400, description = "The body names no valid title.", body = ActionResponse, example = json!({"ok": false, "message": "every title id given is blank", "job_id": "", "error": "invalid"})),
         (status = 403, description = "The caller may not acquire for these accounts.", body = ActionResponse, example = json!({"ok": false, "message": "that title is not in a store account linked to this user", "job_id": "", "error": "forbidden"})),
         (status = 409, description = "The same acquire is already pending or running, or no node can run it.", body = PlanConflict, examples(("duplicate" = (summary = "Every planned job is already pending or running", value = json!({"ok": false, "message": "acquire already pending or running", "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"}))), ("unroutable" = (summary = "No node runs every plugin instance the job requires", value = json!({"ok": false, "message": "no node runs all of the plugin instances this acquire job requires (3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b, 8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f); deploy them to a common node", "job_id": "", "error": "unroutable"}))))),
@@ -4348,7 +4348,7 @@ async fn list_jobs(State(state): State<Arc<AppState>>) -> Result<Json<Vec<JobInf
 #[serde(rename_all = "camelCase")]
 struct DomainEventInfo {
     /// Event id.
-    #[schema(example = "evt_01jbq9x4e8c7k2m5n6p7r8s9t0")]
+    #[schema(example = "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d")]
     id: String,
     /// Event type (`book_acquired`).
     #[schema(example = "book_acquired")]
@@ -4427,10 +4427,10 @@ struct QueueDetail {
 #[serde(rename_all = "camelCase")]
 struct EventDeliveryInfo {
     /// Delivery id (`{event_id}:{plugin_id}`).
-    #[schema(example = "evt_01jbq9x4e8c7k2m5n6p7r8s9t0:audiobookshelf")]
+    #[schema(example = "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf")]
     id: String,
     /// Parent event id.
-    #[schema(example = "evt_01jbq9x4e8c7k2m5n6p7r8s9t0")]
+    #[schema(example = "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d")]
     event_id: String,
     /// Subscriber plugin id.
     #[schema(example = "audiobookshelf")]
@@ -4677,7 +4677,7 @@ async fn list_event_deliveries(
     path = "/api/events/deliveries/{id}/retry",
     params(("id" = String, Path, description = "Delivery id.")),
     responses(
-        (status = 200, description = "The delivery was queued again.", body = ActionResponse),
+        (status = 200, description = "The delivery was queued again.", body = ActionResponse, example = json!({"ok": true, "message": "delivery b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf re-queued", "job_id": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf"})),
         (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The outbox could not be read or written.", body = crate::http_error::ErrorJson),
     ),
@@ -4708,7 +4708,7 @@ async fn retry_event_delivery(
     path = "/api/events/deliveries/{id}/acknowledge",
     params(("id" = String, Path, description = "Delivery id.")),
     responses(
-        (status = 200, description = "The delivery was acknowledged.", body = ActionResponse),
+        (status = 200, description = "The delivery was acknowledged.", body = ActionResponse, example = json!({"ok": true, "message": "delivery b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf acknowledged", "job_id": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf"})),
         (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The outbox could not be read or written.", body = crate::http_error::ErrorJson),
     ),
@@ -4736,7 +4736,7 @@ async fn ack_event_delivery(
     path = "/api/events/deliveries/{id}/cancel",
     params(("id" = String, Path, description = "Delivery id.")),
     responses(
-        (status = 200, description = "The delivery was cancelled or asked to stop.", body = ActionResponse),
+        (status = 200, description = "The delivery was cancelled or asked to stop.", body = ActionResponse, example = json!({"ok": true, "message": "delivery b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf rejected", "job_id": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf"})),
         (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The outbox could not be read or written.", body = crate::http_error::ErrorJson),
     ),
@@ -4767,7 +4767,7 @@ async fn cancel_event_delivery(
     path = "/api/events/deliveries/{id}/resume",
     params(("id" = String, Path, description = "Delivery id.")),
     responses(
-        (status = 200, description = "The delivery was resumed.", body = ActionResponse),
+        (status = 200, description = "The delivery was resumed.", body = ActionResponse, example = json!({"ok": true, "message": "delivery b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf resumed", "job_id": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf"})),
         (status = 404, description = "No such delivery, or it is not in a state this applies to.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The outbox could not be read or written.", body = crate::http_error::ErrorJson),
     ),
@@ -4798,7 +4798,7 @@ async fn resume_event_delivery(
     path = "/api/jobs/{id}/cancel",
     params(("id" = String, Path, description = "Job id.")),
     responses(
-        (status = 200, description = "The job was cancelled or asked to stop.", body = ActionResponse),
+        (status = 200, description = "The job was cancelled or asked to stop.", body = ActionResponse, example = json!({"ok": true, "message": "job scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f cancelled", "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"})),
         (status = 404, description = "No such job.", body = crate::http_error::ErrorJson),
         (status = 500, description = "The job could not be updated.", body = crate::http_error::ErrorJson),
     ),
@@ -4842,7 +4842,7 @@ async fn legacy_status(state: State<Arc<AppState>>) -> Result<Json<StatusRespons
     operation_id = "legacy_scan",
     request_body = Option<ScanRequest>,
     responses(
-        (status = 200, description = "The scan jobs were accepted; see `POST /api/library/scan` for the other answers.", body = ScanPlanResponse),
+        (status = 200, description = "The scan jobs were accepted; see `POST /api/library/scan` for the other answers.", body = ScanPlanResponse, example = json!({"ok": true, "message": "scan job scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f accepted", "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"]})),
     ),
 )]
 #[deprecated(note = "legacy root alias; call the `/api/...` route instead")]
@@ -4861,7 +4861,7 @@ async fn legacy_scan(
     operation_id = "legacy_acquire",
     request_body = Option<AcquireRequestBody>,
     responses(
-        (status = 200, description = "The acquire jobs were accepted; see `POST /api/library/acquire` for the other answers.", body = ActionResponse, example = json!({"ok": true, "message": "acquire planned: 1 accepted, 0 already pending or running, 0 not admitted (queue full)", "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"})),
+        (status = 200, description = "The acquire jobs were accepted; see `POST /api/library/acquire` for the other answers.", body = ActionResponse, example = json!({"ok": true, "message": "acquire job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted", "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"})),
     ),
 )]
 #[deprecated(note = "legacy root alias; call the `/api/...` route instead")]
@@ -4895,7 +4895,7 @@ async fn legacy_list_jobs(state: State<Arc<AppState>>) -> Result<Json<Vec<JobInf
     operation_id = "legacy_cancel_job",
     params(("id" = String, Path, description = "Job id.")),
     responses(
-        (status = 200, description = "The job was cancelled or asked to stop.", body = ActionResponse),
+        (status = 200, description = "The job was cancelled or asked to stop.", body = ActionResponse, example = json!({"ok": true, "message": "job scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f cancelled", "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"})),
         (status = 404, description = "No such job.", body = crate::http_error::ErrorJson),
     ),
 )]
@@ -4914,7 +4914,7 @@ async fn legacy_cancel_job(
     params(("id" = String, Path, description = "Integration instance id.")),
     request_body = Option<IntegrationScanRequest>,
     responses(
-        (status = 200, description = "The job was accepted.", body = ActionResponse),
+        (status = 200, description = "The job was accepted.", body = ActionResponse, example = json!({"ok": true, "message": "integration_scan job integration_scan-9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b accepted", "job_id": "integration_scan-9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b"})),
         (status = 409, description = "The same job is already pending or running, or no node can run it.", body = ActionResponse, example = json!({"ok": false, "message": "integration_scan already pending or running", "job_id": "integration_scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "error": "conflict"})),
         (status = 429, description = "The job queue is full.", body = ActionResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "error": "queue_full"})),
         (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
@@ -6115,7 +6115,7 @@ fn source_from_purchase_hint(
     post,
     path = "/api/discover/sync-listening",
     responses(
-        (status = 200, description = "The job was accepted.", body = ActionResponse),
+        (status = 200, description = "The job was accepted.", body = ActionResponse, example = json!({"ok": true, "message": "listen_sync job listen_sync-2b1a0f9e-8d7c-4b6a-9f5e-4d3c2b1a0f9e accepted", "job_id": "listen_sync-2b1a0f9e-8d7c-4b6a-9f5e-4d3c2b1a0f9e"})),
         (status = 409, description = "The same job is already pending or running, or no node can run it.", body = ActionResponse, example = json!({"ok": false, "message": "listen_sync already pending or running", "job_id": "listen_sync-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "error": "conflict"})),
         (status = 429, description = "The job queue is full.", body = ActionResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "error": "queue_full"})),
         (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),

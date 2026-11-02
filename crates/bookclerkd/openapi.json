@@ -1803,6 +1803,14 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "job_ids": [
+                    "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                  ],
+                  "message": "scan job scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f accepted",
+                  "ok": true
                 }
               }
             }
@@ -1886,7 +1894,7 @@
                 },
                 "example": {
                   "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
-                  "message": "acquire planned: 1 accepted, 0 already pending or running, 0 not admitted (queue full)",
+                  "message": "acquire job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted",
                   "ok": true
                 }
               }
@@ -2045,6 +2053,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "message": "job scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f cancelled",
+                  "ok": true
                 }
               }
             }
@@ -2151,6 +2164,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "integration_scan-9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b",
+                  "message": "integration_scan job integration_scan-9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b accepted",
+                  "ok": true
                 }
               }
             }
@@ -2500,6 +2518,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "message": "job scan-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f cancelled",
+                  "ok": true
                 }
               }
             }
@@ -3017,6 +3040,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf",
+                  "message": "delivery b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf re-queued",
+                  "ok": true
                 }
               }
             }
@@ -3132,6 +3160,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf",
+                  "message": "delivery b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf acknowledged",
+                  "ok": true
                 }
               }
             }
@@ -3247,6 +3280,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf",
+                  "message": "delivery b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf rejected",
+                  "ok": true
                 }
               }
             }
@@ -3362,6 +3400,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf",
+                  "message": "delivery b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf resumed",
+                  "ok": true
                 }
               }
             }
@@ -3705,7 +3748,7 @@
                   "job_ids": [
                     "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
                   ],
-                  "message": "acquire planned: 1 accepted, 0 already pending or running, 0 not admitted (queue full)",
+                  "message": "acquire job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted",
                   "ok": true
                 }
               }
@@ -3897,6 +3940,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "job_id": "listen_sync-2b1a0f9e-8d7c-4b6a-9f5e-4d3c2b1a0f9e",
+                  "message": "listen_sync job listen_sync-2b1a0f9e-8d7c-4b6a-9f5e-4d3c2b1a0f9e accepted",
+                  "ok": true
                 }
               }
             }
@@ -22658,7 +22706,7 @@
           "id": {
             "type": "string",
             "description": "Event id.",
-            "example": "evt_01jbq9x4e8c7k2m5n6p7r8s9t0"
+            "example": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
           },
           "eventType": {
             "type": "string",
@@ -23079,12 +23127,12 @@
           "id": {
             "type": "string",
             "description": "Delivery id (`{event_id}:{plugin_id}`).",
-            "example": "evt_01jbq9x4e8c7k2m5n6p7r8s9t0:audiobookshelf"
+            "example": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d:audiobookshelf"
           },
           "eventId": {
             "type": "string",
             "description": "Parent event id.",
-            "example": "evt_01jbq9x4e8c7k2m5n6p7r8s9t0"
+            "example": "b3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
           },
           "pluginId": {
             "type": "string",
@@ -26975,9 +27023,10 @@
             },
             "description": "Operator-facing bullet list of requested capabilities.",
             "example": [
-              "storefront entrypoint",
-              "outbound network: *.libro.fm, api.libro.fm",
-              "bindings: config, secrets"
+              "Plugin: libro (entrypoints: storefront)",
+              "Network: outbound",
+              "Raw TCP connect: *.libro.fm:[443]",
+              "Host bindings: config, secrets"
             ]
           },
           "existing": {
