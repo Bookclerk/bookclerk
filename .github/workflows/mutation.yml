@@ -35,6 +35,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # CI denies warnings, and a mutant that leaves a parameter unused would
+  # then fail to build and be reported as unviable instead of tested. Lints
+  # are capped for every build in this job, the prerequisites included, so
+  # the mutant builds reuse what they built.
+  RUSTFLAGS: "--cap-lints=warn"
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   RUST_BACKTRACE: "0"
 
@@ -42,7 +47,13 @@ jobs:
   rust:
     name: Rust mutants (report only)
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
+    # As in CI's `unit + integration tests` job: confinement tests that would
+    # otherwise skip without enforcement must run, or their mutants would
+    # all read as missed.
+    env:
+      BOOKCLERK_SANDBOX_REQUIRE_ENFORCEMENT: "1"
+      BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
     permissions:
       contents: read
       # Read the pull request's diff.
@@ -102,6 +113,18 @@ jobs:
         with:
           shared-key: mutants
           cache-on-failure: true
+
+      # The helpers and guests CI's `rust_test` check builds first (the jail,
+      # the workerd front door, the pinned workerd, the platform guests), so
+      # tests that launch them run instead of failing the baseline or
+      # skipping. The planner lists them; its summary stays out of this
+      # job's.
+      - name: Build the test prerequisites
+        if: steps.diff.outputs.ok == 'true'
+        run: |
+          set -euo pipefail
+          env -u GITHUB_STEP_SUMMARY python3 scripts/ci-exec.py resolve --force-full --event pull_request --run-id "$GITHUB_RUN_ID" > /dev/null
+          python3 scripts/ci-exec.py prereqs rust_test --github-env
 
       # `--in-place` mutates this checkout, which the runner throws away;
       # cargo-mutants restores each file after its mutant. The time limit

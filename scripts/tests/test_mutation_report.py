@@ -152,7 +152,23 @@ class WiringTest(unittest.TestCase):
         # The e2e harness needs staged helpers this workflow does not build.
         self.assertIn("crates/bookclerk-plugin-e2e/**", mutants["exclude_globs"])
         self.assertEqual(mutants["test_tool"], "nextest")
-        self.assertTrue(mutants["cap_lints"])
+
+    def test_settings_match_ci(self) -> None:
+        import yaml
+
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from ci_plan import execute
+
+        mutants = tomllib.loads((ROOT / ".cargo" / "mutants.toml").read_text(encoding="utf-8"))
+        # The custom-harness binaries CI runs with `cargo test` stay out of nextest.
+        self.assertEqual(mutants["additional_cargo_test_args"], execute._nextest_filter(execute.CUSTOM_HARNESS_TESTS))
+        # Lints are capped for the whole job, so prerequisites and mutants share flags.
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8"))
+        self.assertFalse(mutants["cap_lints"])
+        self.assertEqual(workflow["env"]["RUSTFLAGS"], "--cap-lints=warn")
+        # The same enforcement switches as CI's test job.
+        ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+        self.assertEqual(workflow["jobs"]["rust"]["env"], ci["jobs"]["test"]["env"])
 
     def test_workflow(self) -> None:
         import yaml
@@ -172,6 +188,11 @@ class WiringTest(unittest.TestCase):
         # rust-cache exports CARGO_INCREMENTAL=0; only a step value wins.
         self.assertEqual(steps["Test the mutants"]["env"]["CARGO_INCREMENTAL"], "1")
         self.assertIn("python3 scripts/mutation_report.py", steps["Report"]["run"])
+        prereqs = steps["Build the test prerequisites"]["run"]
+        self.assertIn("ci-exec.py resolve --force-full", prereqs)
+        self.assertIn("ci-exec.py prereqs rust_test --github-env", prereqs)
+        names = [s.get("name") for s in job["steps"]]
+        self.assertLess(names.index("Build the test prerequisites"), names.index("Test the mutants"))
         # The run's time limit leaves room to report inside the job's.
         self.assertIn("50m", run)
         self.assertGreaterEqual(job["timeout-minutes"], 70)

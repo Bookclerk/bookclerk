@@ -23,6 +23,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 REPO = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
+from ci_plan import execute  # noqa: E402
 from ci_plan.execute import (  # noqa: E402
     BUILD_ONLY_JOBS,
     NEXTEST_RUN,
@@ -1386,6 +1387,38 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(len(workerd), 1, calls)
         self.assertEqual(len(staged), 1, calls)
         self.assertEqual(len(e2e), 2, calls)
+
+    def test_prereqs_only_runs_the_prerequisites(self) -> None:
+        art = artifact(plan("crates/bookclerk-plugin-host/src/rpc.rs"))
+        calls: list[list[str]] = []
+
+        def fake_run(argv, cwd=None, env=None):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0)
+
+        with tempfile.TemporaryDirectory(prefix="bc-exec-") as tmp:
+            ctx = self._exec_ctx(Path(tmp))
+            with mock.patch("ci_plan.execute.subprocess.run", side_effect=fake_run):
+                run_check(art, "rust_test", ctx, prereqs_only=True)
+            env = execute.check_runtime_env(execute.execution_plan(art), "rust_test", ctx)
+        self.assertTrue(any(c[:2] == ["cargo", "build"] for c in calls), calls)
+        self.assertTrue(any(c[:2] == ["cargo", "ensure-workerd"] for c in calls), calls)
+        self.assertFalse(any(c[:3] == ["cargo", "nextest", "run"] for c in calls), calls)
+        self.assertTrue(env["PATH"].startswith(str(ctx.bin_dir)))
+        self.assertTrue(env["BOOKCLERK_WORKERD_BIN"].startswith(str(ctx.bin_dir)))
+
+    def test_github_env_refuses_values_that_start_another_variable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="bc-env-") as tmp:
+            path = Path(tmp) / "env"
+            path.write_text("", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GITHUB_ENV": str(path), "RUNNER_TEMP": tmp}):
+                execute.write_github_env({"A": "1", "B": "two words"})
+                for bad in ({"C": "x\nD=y"}, {"E": "x\ry"}, {"F=G": "x"}):
+                    with self.assertRaises(execute.ExecError):
+                        execute.write_github_env(bad)
+            self.assertEqual(path.read_text(encoding="utf-8"), "A=1\nB=two words\n")
+        with mock.patch.dict(os.environ, {}, clear=True), self.assertRaises(execute.ExecError):
+            execute.write_github_env({"A": "1"})
 
     def test_failed_prerequisite_is_not_marked_complete(self) -> None:
         art = artifact(plan("crates/bookclerk-plugins/optional/source-libro/src/client.rs"))

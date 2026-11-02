@@ -529,6 +529,25 @@ def _nextest_filter(custom: Sequence[tuple[str, str]]) -> list[str]:
     return ["-E", f"not ({ids})"]
 
 
+def check_runtime_env(plan: Plan, check: str, ctx: Context) -> dict[str, str]:
+    """Environment a check's commands run with once its prerequisites are built.
+
+    Args:
+        plan: The execution plan.
+        check: The check.
+        ctx: Paths of this job.
+
+    Returns:
+        ``PATH`` with the workspace's built helpers first, and
+        ``BOOKCLERK_WORKERD_BIN`` when the check's prerequisites fetch the
+        pinned workerd.
+    """
+    env = {"PATH": ctx.path_with_bins()}
+    if any(p["kind"] == "ensure_workerd" for p in plan.prereqs(check)):
+        env["BOOKCLERK_WORKERD_BIN"] = str(ctx.bin_dir / ("workerd.exe" if ctx.os_name == "Windows" else "workerd"))
+    return env
+
+
 def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", commit: str = "") -> list[Command]:
     """Commands for ``check`` (prerequisites excluded).
 
@@ -538,10 +557,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
     """
     params = plan.params(check)
     ws = str(ctx.workspace)
-    ensured = any(p["kind"] == "ensure_workerd" for p in plan.prereqs(check))
-    runtime_env = {"PATH": ctx.path_with_bins()}
-    if ensured:
-        runtime_env["BOOKCLERK_WORKERD_BIN"] = str(ctx.bin_dir / ("workerd.exe" if ctx.os_name == "Windows" else "workerd"))
+    runtime_env = check_runtime_env(plan, check, ctx)
 
     if check == "fmt":
         return [Command("rustfmt", ["cargo", "fmt", "--all", "--", "--check"])]
@@ -1098,10 +1114,13 @@ def run_check(
     *,
     dry_run: bool = False,
     saved_cache_current: bool = False,
+    prereqs_only: bool = False,
 ) -> None:
     """Runs ``check`` with its prerequisites (each prerequisite once per execution).
 
     ``saved_cache_current`` is passed to :func:`planned_commands`.
+    ``prereqs_only`` runs the prerequisites and not the check, for a job that
+    runs the check's tests its own way (the mutation testing workflow).
     """
     # Validated before any path join. Checks that share this artifact share
     # the directory; a new resolve gets a new id and cannot see these markers.
@@ -1109,6 +1128,8 @@ def run_check(
     commands = planned_commands(artifact, check, ctx, saved_cache_current=saved_cache_current)
     if not commands and artifact.get("build_only") and saved_cache_current:
         print(f"::notice::{check}: the saved dependency cache is current; nothing to build")
+    if prereqs_only:
+        commands = [(key, cmd) for key, cmd in commands if key]
     for key, cmd in commands:
         env_note = " ".join(f"{k}={v}" for k, v in sorted(cmd.env.items()) if k != "PATH")
         line = f"{cmd.label}: {' '.join(cmd.argv)}" + (f"  [{env_note}]" if env_note else "")
@@ -1163,6 +1184,27 @@ def write_github_output(values: Mapping[str, str]) -> None:
     if not path:
         return
     with open_github_actions_append(path, label="GITHUB_OUTPUT") as fh:
+        for k, v in values.items():
+            fh.write(f"{k}={v}\n")
+
+
+def write_github_env(values: Mapping[str, str]) -> None:
+    """Append ``values`` to ``$GITHUB_ENV`` so the job's later steps see them.
+
+    Args:
+        values: Variable names and values; a value with a newline is refused,
+            since it would start another variable.
+
+    Raises:
+        ExecError: ``$GITHUB_ENV`` is not set, or a value holds a newline.
+    """
+    path = os.environ.get("GITHUB_ENV")
+    if not path:
+        raise ExecError("--github-env needs $GITHUB_ENV (run inside a workflow step)")
+    for k, v in values.items():
+        if "\n" in v or "\r" in v or "\n" in k or "=" in k:
+            raise ExecError(f"refusing to write `{k}` to GITHUB_ENV: a newline or `=` would start another variable")
+    with open_github_actions_append(path, label="GITHUB_ENV") as fh:
         for k, v in values.items():
             fh.write(f"{k}={v}\n")
 

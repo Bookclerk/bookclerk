@@ -170,6 +170,11 @@ python3 scripts/ci-exec.py run rust_test --run-id local    # run them
   the same temporary directory with the same commit and run id.
 - Checks that share one artifact still run each prerequisite only once.
 - `show` prints commands and doesn't record completion.
+- `prereqs <check>` runs only the check's prerequisites. With
+  `--github-env` it also exports the environment the check's commands run
+  with (`PATH` with the built helpers first, `BOOKCLERK_WORKERD_BIN`), for
+  a job that runs the tests its own way, such as
+  [mutation testing](#mutation-testing).
 
 `scripts/tests/test_ci_contract.py` (PyYAML, hash-pinned in
 `scripts/tests/requirements.txt`) fails when the workflow and the planner
@@ -868,8 +873,13 @@ Rust code:
    change. Test code, the generated files and the staged-plugin harness
    (`bookclerk-plugin-e2e`, whose tests need the helpers CI's `e2e` check
    stages) are never mutated.
-2. Each mutant runs the tests of its own package under cargo-nextest.
-3. The run stops after 50 minutes and reports what it tested so far.
+2. Before the first mutant, the job builds what CI's `rust_test` check
+   builds first (the jail, the workerd front door, the pinned workerd and
+   the platform guests) with `ci-exec.py prereqs rust_test`, and turns on
+   the same confinement enforcement as the test job. Tests that launch a
+   helper then run instead of skipping.
+3. Each mutant runs the tests of its own package under cargo-nextest.
+4. The run stops after 50 minutes and reports what it tested so far.
 
 The job summary shows the share of mutants the tests caught and lists the
 missed ones. cargo-mutants also annotates each missed mutant on the pull
@@ -885,19 +895,20 @@ locally:
 ```sh
 cargo install cargo-mutants --locked
 git diff origin/main... > /tmp/change.diff
-cargo mutants --in-diff /tmp/change.diff
+RUSTFLAGS=--cap-lints=warn cargo mutants --in-diff /tmp/change.diff
 ```
 
-Settings live in [`.cargo/mutants.toml`](../../.cargo/mutants.toml). It
-caps lints for mutant builds, so a mutant that only leaves a parameter
-unused is still tested, and its excluded files must match `generated` in
-`scripts/coverage_areas.toml` (a test checks this).
+Capping lints keeps a mutant that only leaves a parameter unused from
+failing to build under the crates' `deny` lints; the workflow caps them for
+every build in the job. Settings live in
+[`.cargo/mutants.toml`](../../.cargo/mutants.toml): nextest as the test
+runner, the custom-harness test binaries CI runs with `cargo test` left
+out of nextest, and the excluded files, whose generated entries must match
+`generated` in `scripts/coverage_areas.toml`. Tests check both lists.
 
 > [!NOTE]
-> The workflow is a report-only trial and not a required check. Tests that
-> skip when a helper is missing, such as plugin-host tests without the
-> guests built, can report mutants as missed that the full CI suite would
-> catch. The TypeScript Workers and the Python SDK are not covered yet.
+> The workflow is a report-only trial and not a required check. The
+> TypeScript Workers and the Python SDK are not covered yet.
 
 ## Worker startup time
 

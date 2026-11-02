@@ -9,6 +9,9 @@ Subcommands:
   run CHECK Run one check (prerequisites first, once per job).
   gate      CI Gate: job results must match the expected execution.
   show      Print commands (prerequisites + check) without running them.
+  prereqs CHECK
+            Run only the check's prerequisites; with --github-env, also export
+            the environment its commands use (the mutation testing workflow).
 
 The artifact path is ``$BOOKCLERK_CI_PLAN`` or ``$RUNNER_TEMP/ci-plan/ci-plan.json``
 (``--plan`` overrides). See docs/contributing/ci.md.
@@ -32,6 +35,8 @@ from ci_plan.execute import (  # noqa: E402
     SAVED_CACHE_CURRENT_ENV,
     ExecError,
     artifact_summary,
+    check_runtime_env,
+    execution_plan,
     gate,
     git_head,
     job_outputs,
@@ -39,6 +44,7 @@ from ci_plan.execute import (  # noqa: E402
     resolve,
     run_check,
     validate,
+    write_github_env,
     write_github_output,
     write_step_summary,
 )
@@ -81,12 +87,18 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--event", default=os.environ.get("GITHUB_EVENT_NAME", "local"))
     r.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", "local"))
 
-    for name in ("validate", "run", "gate", "show"):
+    for name in ("validate", "run", "gate", "show", "prereqs"):
         p = sub.add_parser(name)
         p.add_argument("--run-id", default=None, help="Expected run id (default: $GITHUB_RUN_ID)")
         p.add_argument("--no-sha-check", action="store_true", help="Local only: skip checkout SHA match")
-        if name in ("run", "show"):
+        if name in ("run", "show", "prereqs"):
             p.add_argument("check", choices=ALL_CHECKS)
+        if name == "prereqs":
+            p.add_argument(
+                "--github-env",
+                action="store_true",
+                help="Also append the check's runtime environment to $GITHUB_ENV for later steps",
+            )
         if name == "gate":
             p.add_argument("--needs-json", default=os.environ.get("NEEDS_JSON"), help="toJSON(needs)")
 
@@ -130,6 +142,12 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.cmd == "show",
                 saved_cache_current=os.environ.get(SAVED_CACHE_CURRENT_ENV) == "true",
             )
+            return 0
+        if args.cmd == "prereqs":
+            ctx = Context.from_env(WORKSPACE)
+            run_check(artifact, args.check, ctx, prereqs_only=True)
+            if args.github_env:
+                write_github_env(check_runtime_env(execution_plan(artifact), args.check, ctx))
             return 0
         if args.cmd == "gate":
             if not args.needs_json:
