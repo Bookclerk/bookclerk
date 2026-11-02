@@ -130,8 +130,14 @@ struct RedeemBody {
     path = "/redeem",
     request_body = RedeemBody,
     responses(
-        (status = 200, description = "Signed in; the response sets the portal session cookie.", body = serde_json::Value),
-        (status = 400, description = "The ticket is invalid, used or expired.", body = PortalErrorBody, example = json!({"error": "claim ticket invalid, expired, or already redeemed"})),
+        (status = 200, description = "Signed in; the response sets the portal session cookie.", body = PortalOk),
+        (status = 400, description = "The ticket or nonce is invalid, used or expired, the ticket's integration is not deployed here, a first local claim needs a password of at least 8 characters, or the library refused the claim (the body carries its message).", body = PortalErrorBody, examples(
+            ("ticket" = (summary = "The ticket does not redeem.", value = json!({"error": "claim ticket invalid, expired, or already redeemed"}))),
+            ("password_required" = (summary = "A first local claim must set a password.", value = json!({"error": "password required — set a password to finish claim login"}))),
+            ("password_short" = (summary = "The password is shorter than 8 characters.", value = json!({"error": "password must be at least 8 characters"}))),
+            ("integration_missing" = (summary = "The ticket's integration is not deployed on this host.", value = json!({"error": "integration `audiobookshelf` is not deployed on this host"}))),
+        )),
+        (status = 503, description = "The library's atomic redeem did not answer in time or its reply was lost; redeem again with the same ticket and nonce.", body = PortalErrorBody, example = json!({"error": "deadline_exceeded: host RPC deadline elapsed"})),
     ),
 )]
 async fn redeem(
@@ -252,8 +258,13 @@ struct IntegrationLoginBody {
     path = "/login/integration",
     request_body = IntegrationLoginBody,
     responses(
-        (status = 200, description = "Signed in through the integration.", body = serde_json::Value),
-        (status = 400, description = "The request is invalid, or the integration refused the login.", body = PortalErrorBody, example = json!({"error": "integration `audiobookshelf` does not support credential login"})),
+        (status = 200, description = "Signed in through the integration; the response sets the portal session cookie.", body = PortalOk),
+        (status = 400, description = "The integration is not deployed here, does not take a username and password, or refused them, or the library database refused the step.", body = PortalErrorBody, examples(
+            ("not_deployed" = (summary = "No such integration on this host.", value = json!({"error": "integration `audiobookshelf` is not deployed on this host"}))),
+            ("no_credential_login" = (summary = "The integration signs in another way.", value = json!({"error": "integration `audiobookshelf` does not support credential login"}))),
+            ("refused" = (summary = "The integration rejected the credentials.", value = json!({"error": "internal: integration API error (401): Invalid user or password"}))),
+            ("library_failed" = (summary = "The library database refused the step.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
+        )),
     ),
 )]
 async fn login_integration(
@@ -311,7 +322,7 @@ async fn login_integration(
     post,
     path = "/logout",
     responses(
-        (status = 200, description = "Signed out (`{\"ok\": true}`); the cookie is cleared.", body = serde_json::Value),
+        (status = 200, description = "Signed out; the cookie is cleared.", body = PortalOk),
     ),
 )]
 async fn logout(State(state): State<PortalState>, headers: HeaderMap) -> Response {
@@ -331,7 +342,7 @@ async fn logout(State(state): State<PortalState>, headers: HeaderMap) -> Respons
     if let Ok(v) = axum::http::HeaderValue::from_str(&cookie) {
         out.append(header::SET_COOKIE, v);
     }
-    (StatusCode::OK, out, Json(serde_json::json!({ "ok": true }))).into_response()
+    (StatusCode::OK, out, Json(PortalOk { ok: true })).into_response()
 }
 
 /// Returns the signed-in portal identity, or 401 when the cookie is missing or expired.
@@ -342,7 +353,11 @@ async fn logout(State(state): State<PortalState>, headers: HeaderMap) -> Respons
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "The signed-in identity.", body = MeResponse),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
+        (status = 400, description = "The library database refused the lookup.", body = PortalErrorBody, example = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"})),
+        (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
+            ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
+            ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
+        )),
     ),
 )]
 async fn me(
@@ -489,9 +504,17 @@ struct PasswordLoginBody {
     request_body = PasswordLoginBody,
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "The account was connected.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
-        (status = 400, description = "The login failed.", body = PortalErrorBody, example = json!({"error": "this source uses OAuth; call /oauth/start instead"})),
+        (status = 200, description = "The account was connected.", body = SourceConnected),
+        (status = 400, description = "No deployed source has that id, the source signs in through OAuth, or the store or the library database refused the step (the body carries its message).", body = PortalErrorBody, examples(
+            ("unknown_source" = (summary = "No deployed source has that id or alias.", value = json!({"error": "unknown source"}))),
+            ("oauth_source" = (summary = "The source signs in through OAuth.", value = json!({"error": "this source uses OAuth; call /oauth/start instead"}))),
+            ("store_refused" = (summary = "The store rejected the email or password.", value = json!({"error": "internal: authentication error: oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"}))),
+            ("library_failed" = (summary = "The library database refused the step.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
+        )),
+        (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
+            ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
+            ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
+        )),
     ),
 )]
 async fn source_password_login(
@@ -499,7 +522,7 @@ async fn source_password_login(
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<PasswordLoginBody>,
-) -> Result<Json<serde_json::Value>, PortalError> {
+) -> Result<Json<SourceConnected>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
     let source = find_source(&state, &id)
         .await
@@ -544,12 +567,12 @@ async fn source_password_login(
     library
         .link_account(identity.id, &plugin_key, &account.account_id, source_id)
         .await?;
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "account_id": account.account_id,
-        "source": source_id,
-        "plugin_key": plugin_key,
-    })))
+    Ok(Json(SourceConnected {
+        ok: true,
+        account_id: account.account_id,
+        source: source_id.to_string(),
+        plugin_key,
+    }))
 }
 
 /// Starts interactive OAuth for an OAuth storefront and returns the browser login URL.
@@ -560,16 +583,25 @@ async fn source_password_login(
     params(("id" = String, Path, description = "Source plugin id.")),
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "The browser login URL.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
-        (status = 400, description = "The source does not use OAuth.", body = PortalErrorBody, example = json!({"error": "this source uses password login; call /login instead"})),
+        (status = 200, description = "The browser login URL.", body = OAuthStartUrl),
+        (status = 400, description = "No deployed source has that id, the source signs in with a password, the store produced no login URL in time, the login stopped before it produced one, or the library database refused the step.", body = PortalErrorBody, examples(
+            ("unknown_source" = (summary = "No deployed source has that id or alias.", value = json!({"error": "unknown source"}))),
+            ("password_source" = (summary = "The source signs in with a password.", value = json!({"error": "this source uses password login; call /login instead"}))),
+            ("url_timeout" = (summary = "The store produced no login URL within five seconds.", value = json!({"error": "timed out waiting for OAuth login URL"}))),
+            ("login_stopped" = (summary = "The store login failed before it produced a URL.", value = json!({"error": "OAuth login URL channel closed"}))),
+            ("library_failed" = (summary = "The library database refused the step.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
+        )),
+        (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
+            ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
+            ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
+        )),
     ),
 )]
 async fn source_oauth_start(
     State(state): State<PortalState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, PortalError> {
+) -> Result<Json<OAuthStartUrl>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
     let source = find_source(&state, &id)
         .await
@@ -581,7 +613,7 @@ async fn source_oauth_start(
         ));
     }
     let url = start_source_oauth_session(&state, source, identity.id).await?;
-    Ok(Json(serde_json::json!({ "url": url })))
+    Ok(Json(OAuthStartUrl { url }))
 }
 
 /// Legacy `POST /libro/login` alias that forwards to the Libro password-login handler.
@@ -592,8 +624,16 @@ async fn source_oauth_start(
     request_body = PasswordLoginBody,
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "The account was connected.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
+        (status = 200, description = "The account was connected.", body = SourceConnected),
+        (status = 400, description = "The Libro.fm source is not deployed here, or the store or the library database refused the step (the body carries its message).", body = PortalErrorBody, examples(
+            ("not_deployed" = (summary = "The Libro.fm source is not deployed on this host.", value = json!({"error": "unknown source"}))),
+            ("store_refused" = (summary = "The store rejected the email or password.", value = json!({"error": "internal: authentication error: oauth/token failed (401 Unauthorized): {\"error\":\"invalid_grant\"}"}))),
+            ("library_failed" = (summary = "The library database refused the step.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
+        )),
+        (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
+            ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
+            ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
+        )),
     ),
 )]
 #[deprecated(note = "legacy alias; call the `/sources/{id}/...` route instead")]
@@ -601,7 +641,7 @@ async fn libro_login_legacy(
     State(state): State<PortalState>,
     headers: HeaderMap,
     Json(body): Json<PasswordLoginBody>,
-) -> Result<Json<serde_json::Value>, PortalError> {
+) -> Result<Json<SourceConnected>, PortalError> {
     source_password_login(State(state), headers, Path("libro".into()), Json(body)).await
 }
 
@@ -612,15 +652,24 @@ async fn libro_login_legacy(
     path = "/audible/start",
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "The browser login URL.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
+        (status = 200, description = "The browser login URL.", body = OAuthStartUrl),
+        (status = 400, description = "The Audible source is not deployed here, the store produced no login URL in time, the login stopped before it produced one, or the library database refused the step.", body = PortalErrorBody, examples(
+            ("not_deployed" = (summary = "The Audible source is not deployed on this host.", value = json!({"error": "unknown source"}))),
+            ("url_timeout" = (summary = "The store produced no login URL within five seconds.", value = json!({"error": "timed out waiting for OAuth login URL"}))),
+            ("login_stopped" = (summary = "The store login failed before it produced a URL.", value = json!({"error": "OAuth login URL channel closed"}))),
+            ("library_failed" = (summary = "The library database refused the step.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
+        )),
+        (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
+            ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
+            ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
+        )),
     ),
 )]
 #[deprecated(note = "legacy alias; call the `/sources/{id}/...` route instead")]
 async fn audible_start(
     State(state): State<PortalState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, PortalError> {
+) -> Result<Json<OAuthStartUrl>, PortalError> {
     source_oauth_start(State(state), headers, Path("audible".into())).await
 }
 
@@ -690,7 +739,11 @@ async fn start_source_oauth_session(
     security(("portalSession" = [])),
     responses(
         (status = 200, description = "Store accounts linked to the caller.", body = ConnectionsResponse),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
+        (status = 400, description = "The library database refused the lookup.", body = PortalErrorBody, example = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"})),
+        (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
+            ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
+            ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
+        )),
     ),
 )]
 async fn connections(
@@ -780,16 +833,23 @@ struct ConnectionInfo {
     params(("source" = String, Path, description = "Source plugin id."), ("account_id" = String, Path, description = "Store account id.")),
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "The account was unlinked.", body = serde_json::Value),
-        (status = 401, description = "The caller is not signed in.", body = PortalErrorBody, example = json!({"error": "not signed in"})),
-        (status = 400, description = "The account is not linked to this identity.", body = PortalErrorBody, example = json!({"error": "account not linked to this identity"})),
+        (status = 200, description = "The account was unlinked.", body = PortalOk),
+        (status = 400, description = "The account is not linked to this identity, or the library database refused the unlink or the credential revoke (the body carries its message).", body = PortalErrorBody, examples(
+            ("not_linked" = (summary = "No link between this identity and the account.", value = json!({"error": "account not linked to this identity"}))),
+            ("library_failed" = (summary = "The library database refused the step.", value = json!({"error": "ORM / database plugin error: Execution Error: error returned from database: database is locked"}))),
+        )),
+        (status = 401, description = "The caller is not signed in, or the portal session expired.", body = PortalErrorBody, examples(
+            ("not_signed_in" = (summary = "No portal session cookie.", value = json!({"error": "not signed in"}))),
+            ("session_expired" = (summary = "The cookie names a session that is gone.", value = json!({"error": "session expired"}))),
+        )),
+        (status = 503, description = "The store sign-out task that follows the last unlink stopped. The link is already gone (a retry answers 400 `account not linked to this identity`) and the account's stored credentials may remain; the daemon log names the task.", body = PortalErrorBody, example = json!({"error": "revoke cleanup failed: task 12 panicked"})),
     ),
 )]
 async fn revoke_connection(
     State(state): State<PortalState>,
     headers: HeaderMap,
     Path((source, account_id)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, PortalError> {
+) -> Result<Json<PortalOk>, PortalError> {
     let identity = require_identity(&state, &headers).await?;
     let library = state.library_snapshot().await;
     let links = library.list_account_links(identity.id).await?;
@@ -843,7 +903,7 @@ async fn revoke_connection(
             .await
             .map_err(|err| PortalError::unavailable(format!("revoke cleanup failed: {err}")))??;
     }
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(Json(PortalOk { ok: true }))
 }
 
 /// Resolves the portal identity from the session cookie, or returns 401.
@@ -884,7 +944,7 @@ async fn session_response(session: String, state: &PortalState) -> Response {
     (
         StatusCode::OK,
         [(header::SET_COOKIE, cookie)],
-        Json(serde_json::json!({ "ok": true })),
+        Json(PortalOk { ok: true }),
     )
         .into_response()
 }
@@ -997,7 +1057,43 @@ impl From<crate::error::IntegrationError> for PortalError {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PortalErrorBody {
     /// Operator-facing error text (no structured code).
+    #[schema(example = "not signed in")]
     pub error: String,
+}
+
+/// JSON body of a portal route that has nothing to report beyond success.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PortalOk {
+    /// Always `true`.
+    #[schema(example = true)]
+    pub ok: bool,
+}
+
+/// JSON body of a connected store account.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SourceConnected {
+    /// Always `true`.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// The store's id for the account.
+    #[schema(example = "reader@example.com")]
+    pub account_id: String,
+    /// The source's id, as listed by `GET /api/portal/sources`.
+    #[schema(example = "libro")]
+    pub source: String,
+    /// The plugin that owns the account.
+    #[schema(example = "bookclerk:source-libro")]
+    pub plugin_key: String,
+}
+
+/// JSON body of an OAuth start: the browser login URL to open.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct OAuthStartUrl {
+    /// The store's login page, bound to this sign-in.
+    #[schema(
+        example = "https://www.amazon.com/ap/signin?openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0&…"
+    )]
+    pub url: String,
 }
 
 impl IntoResponse for PortalError {
@@ -1011,3 +1107,7 @@ impl IntoResponse for PortalError {
             .into_response()
     }
 }
+
+#[cfg(test)]
+#[path = "routes_tests.rs"]
+mod tests;
