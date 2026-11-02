@@ -66,28 +66,40 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
 /// OIDC discovery document served at `/.well-known/openid-configuration`.
 struct DiscoveryDocument {
     /// Issuer origin used as `iss` in minted JWTs (`public_origin` or loopback).
+    #[schema(example = "https://books.example.com")]
     issuer: String,
     /// Absolute URL of the authorization endpoint (`/oidc/authorize`).
+    #[schema(example = "https://books.example.com/oidc/authorize")]
     authorization_endpoint: String,
     /// Absolute URL of the token endpoint (`/oidc/token`).
+    #[schema(example = "https://books.example.com/oidc/token")]
     token_endpoint: String,
     /// Absolute URL of the userinfo endpoint (`/oidc/userinfo`).
+    #[schema(example = "https://books.example.com/oidc/userinfo")]
     userinfo_endpoint: String,
     /// Absolute URL of the refresh-token revocation endpoint (`/oidc/revoke`).
+    #[schema(example = "https://books.example.com/oidc/revoke")]
     revocation_endpoint: String,
     /// Supported `response_type` values; this server only issues `code`.
+    #[schema(example = json!(["code"]))]
     response_types_supported: &'static [&'static str],
     /// Supported token grants: `authorization_code` and `refresh_token`.
+    #[schema(example = json!(["authorization_code", "refresh_token"]))]
     grant_types_supported: &'static [&'static str],
     /// PKCE methods; only S256 is accepted (`plain` is rejected).
+    #[schema(example = json!(["S256"]))]
     code_challenge_methods_supported: &'static [&'static str],
     /// Scopes advertised to clients (`openid`, `profile`, and `email`).
+    #[schema(example = json!(["openid", "profile", "email"]))]
     scopes_supported: &'static [&'static str],
     /// Subject identifier types; only public (stable user id) is used.
+    #[schema(example = json!(["public"]))]
     subject_types_supported: &'static [&'static str],
     /// ID-token signing algorithms; tokens are HS256 with a derived key.
+    #[schema(example = json!(["HS256"]))]
     id_token_signing_alg_values_supported: &'static [&'static str],
     /// Client auth methods: public PKCE (`none`) or `client_secret_post`.
+    #[schema(example = json!(["none", "client_secret_post"]))]
     token_endpoint_auth_methods_supported: &'static [&'static str],
 }
 
@@ -188,20 +200,28 @@ fn branch_authorize(raw: &str) -> Result<Response, StatusCode> {
 /// Form body for `POST /oidc/authorize` after the user grants or denies consent.
 pub struct ConsentBody {
     /// Registered OIDC client id (must exist in the library store).
+    #[schema(example = "audiobookshelf")]
     pub client_id: String,
     /// Redirect URI; must match a URI registered for the client.
+    #[schema(example = "https://abs.example.com/auth/openid/callback")]
     pub redirect_uri: String,
     /// OAuth `response_type`; only `code` is accepted.
+    #[schema(example = "code")]
     pub response_type: String,
     /// Space-separated scopes; defaults to `openid profile` when omitted.
+    #[schema(example = "openid profile email")]
     pub scope: Option<String>,
     /// Opaque CSRF value echoed back on the redirect.
+    #[schema(example = "c3RhdGUtOGY2ZTJkMWE")]
     pub state: Option<String>,
     /// PKCE S256 challenge (base64url SHA-256 of the verifier).
+    #[schema(example = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")]
     pub code_challenge: String,
     /// PKCE method; omitted is treated as `plain` and then rejected.
+    #[schema(example = "S256")]
     pub code_challenge_method: Option<String>,
     /// `deny` aborts with `access_denied`; any other value proceeds to issue a code.
+    #[schema(example = "allow")]
     pub consent: Option<String>,
 }
 
@@ -365,18 +385,25 @@ async fn require_user_session(
 /// `application/x-www-form-urlencoded` body for `POST /oidc/token`.
 pub struct TokenForm {
     /// Grant: `authorization_code` or `refresh_token`; anything else is 400.
+    #[schema(example = "authorization_code")]
     pub grant_type: String,
     /// Authorization code from the redirect (`authorization_code` grant).
+    #[schema(example = "0e5d3f8a-6b2c-4d1e-9f7a-3c4b5d6e7f80")]
     pub code: Option<String>,
     /// Must match the URI bound to the consumed authorization code.
+    #[schema(example = "https://abs.example.com/auth/openid/callback")]
     pub redirect_uri: Option<String>,
     /// Client id; required for code exchange, optional (but checked) on refresh.
+    #[schema(example = "audiobookshelf")]
     pub client_id: Option<String>,
     /// Client secret for confidential clients (`client_secret_post`).
+    #[schema(example = "u7Vb2xK9qR4sT1wY6zA3cD8eF0gH5jL2mN7pQ1rS4tU")]
     pub client_secret: Option<String>,
     /// PKCE verifier; SHA-256 must match the stored challenge.
+    #[schema(example = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")]
     pub code_verifier: Option<String>,
     /// Refresh token to rotate (`refresh_token` grant).
+    #[schema(example = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d")]
     pub refresh_token: Option<String>,
 }
 
@@ -384,17 +411,27 @@ pub struct TokenForm {
 /// Successful token-endpoint JSON (access, optional refresh, and ID tokens).
 struct TokenResponse {
     /// HS256 JWT access token bound to the User (`token_use=access`).
+    #[schema(
+        example = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3IiwidG9rZW5fdXNlIjoiYWNjZXNzIn0.3x9Y…"
+    )]
     access_token: String,
     /// Always `Bearer` for this server.
+    #[schema(example = "Bearer")]
     token_type: &'static str,
     /// Access-token lifetime in seconds (same as [`ACCESS_TTL_SECS`]).
+    #[schema(example = 3600)]
     expires_in: i64,
     /// Opaque refresh token when the client is allowed to receive one.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d")]
     refresh_token: Option<String>,
     /// HS256 ID token; profile/email claims follow the granted scope.
+    #[schema(
+        example = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3IiwibmFtZSI6IkRhbmEgUmVhZGVyIn0.Q2r8…"
+    )]
     id_token: String,
     /// Space-separated scopes granted to this token pair.
+    #[schema(example = "openid profile email")]
     scope: String,
 }
 
@@ -714,8 +751,10 @@ impl UserinfoResponse {
 /// Form body for `POST /oidc/revoke` (RFC 7009-style refresh-token revoke).
 pub struct RevokeForm {
     /// Token to revoke; treated as a refresh token (hashed before lookup).
+    #[schema(example = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d")]
     pub token: String,
     /// Optional hint ignored; this server only stores refresh tokens.
+    #[schema(example = "refresh_token")]
     pub token_type_hint: Option<String>,
 }
 
@@ -1280,7 +1319,7 @@ pub struct OidcClientView {
     pub plugin_id: Option<String>,
     /// The new secret, shown once after create, rotate-secret, or a PUT that makes a public client confidential; never stored in clear.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(example = "Qm9va2NsZXJrLXNlY3JldC1leGFtcGxlLXZhbHVl")]
+    #[schema(example = "K3mP9qT2vX8bN5cR7wZ1yA4dF6hJ0lS2uE9gI3oV5kM")]
     pub client_secret: Option<String>,
 }
 
@@ -1315,27 +1354,35 @@ fn client_view(
 struct OidcClientWrite {
     /// Public client_id (create only; path wins on update).
     #[serde(default)]
+    #[schema(example = "audiobookshelf")]
     client_id: Option<String>,
     /// Operator-facing display name.
     #[serde(default)]
+    #[schema(example = "Audiobookshelf")]
     name: Option<String>,
     /// Allowed OAuth redirect URIs.
     #[serde(default)]
+    #[schema(example = json!(["https://abs.example.com/auth/openid/callback"]))]
     redirect_uris: Vec<String>,
     /// When true, mint a client secret (confidential). When false, public PKCE.
     #[serde(default)]
+    #[schema(example = true)]
     confidential: bool,
     /// When true, token responses include a refresh token.
     #[serde(default = "default_true")]
+    #[schema(example = true)]
     issue_refresh_token: bool,
     /// Scopes this client may request (`openid`, `profile`, `email`).
     #[serde(default)]
+    #[schema(example = json!(["openid", "profile", "email"]))]
     allowed_scopes: Vec<String>,
     /// When true, authorize and token endpoints accept this client.
     #[serde(default = "default_true")]
+    #[schema(example = true)]
     enabled: bool,
     /// Required for a non-elevated Owner whose portal session is older than 15 minutes.
     #[serde(default)]
+    #[schema(example = "correct horse battery staple")]
     current_password: Option<String>,
 }
 
@@ -1605,6 +1652,7 @@ async fn delete_client(
 struct RotateSecretBody {
     /// Required for a non-elevated Owner whose portal session is older than 15 minutes.
     #[serde(default)]
+    #[schema(example = "correct horse battery staple")]
     current_password: Option<String>,
 }
 

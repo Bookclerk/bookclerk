@@ -180,27 +180,38 @@ pub struct LinkedIdentity {
 /// Operator-facing OIDC broker snapshot; secret material is never included.
 struct OidcConfigResponse {
     /// Whether the broker accepts new authorize starts.
+    #[schema(example = true)]
     enabled: bool,
     /// Broker-wide email domain allowlist applied before per-provider rules.
+    #[schema(example = json!(["example.com"]))]
     allowed_email_domains: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Configured `integrations.public_origin` (issuer / callback / invite base).
+    #[schema(example = "https://books.example.com")]
     public_origin: Option<String>,
     /// Effective issuer origin (`public_origin`, else this request, else localhost).
+    #[schema(example = "https://books.example.com")]
     issuer_url: String,
     /// Origin detected from this request (loopback IPs rewritten to `localhost`).
+    #[schema(example = "http://localhost:8787")]
     detected_origin: String,
     /// Absolute OpenID discovery URL (`/.well-known/openid-configuration`).
+    #[schema(example = "https://books.example.com/.well-known/openid-configuration")]
     discovery_url: String,
     /// Absolute authorization endpoint (`/oidc/authorize`) for Bookclerk-as-IdP.
+    #[schema(example = "https://books.example.com/oidc/authorize")]
     authorization_endpoint: String,
     /// Absolute token endpoint (`/oidc/token`) for Bookclerk-as-IdP.
+    #[schema(example = "https://books.example.com/oidc/token")]
     token_endpoint: String,
     /// Absolute userinfo endpoint (`/oidc/userinfo`) for Bookclerk-as-IdP.
+    #[schema(example = "https://books.example.com/oidc/userinfo")]
     userinfo_endpoint: String,
     /// Absolute revocation endpoint (`/oidc/revoke`) for Bookclerk-as-IdP.
+    #[schema(example = "https://books.example.com/oidc/revoke")]
     revocation_endpoint: String,
     /// Absolute `/api/auth/oidc/callback` derived from the effective issuer origin.
+    #[schema(example = "https://books.example.com/api/auth/oidc/callback")]
     callback_url: String,
     /// Configured IdPs with presence flags instead of secret material.
     providers: Vec<OidcProviderView>,
@@ -210,47 +221,66 @@ struct OidcConfigResponse {
 /// One IdP as shown to an operator (no client secret or Apple PEM).
 struct OidcProviderView {
     /// Stable provider id used in authorize URLs and sealed-row names.
+    #[schema(example = "google")]
     id: String,
     /// Operator-facing display name.
+    #[schema(example = "Google")]
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Built-in social preset (`google`, `github`, `apple`, `discord`) when not a generic issuer.
+    #[schema(example = "google")]
     preset: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// OpenID issuer URL for discovery when no social preset applies.
+    #[schema(example = "https://accounts.google.com")]
     issuer: Option<String>,
     /// OAuth client id registered at the IdP.
+    #[schema(example = "123456789012-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6.apps.googleusercontent.com")]
     client_id: String,
     /// OAuth scopes requested at authorize.
+    #[schema(example = json!(["openid", "profile", "email", "groups"]))]
     scopes: Vec<String>,
     /// How a first login becomes a portal user (JIT, mapped role, allowlist, invite-only).
     #[schema(value_type = String)]
+    #[schema(example = "mapped_role")]
     provision: OidcProvisionMode,
     /// Portal role used when no mapped claim matches (`member` by default).
+    #[schema(example = "member")]
     default_role: String,
     /// Claim name read from id_token/userinfo for role mapping (`groups` by default).
+    #[schema(example = "groups")]
     role_claim: String,
     /// IdP group/role claim values mapped onto Bookclerk portal roles.
+    #[schema(example = json!({"bookclerk-admins": "administrator", "household": "member"}))]
     role_map: BTreeMap<String, String>,
     /// When true, a verified email may attach this IdP to an existing user.
+    #[schema(example = true)]
     link_by_email: bool,
     /// Per-provider email domain allowlist (in addition to the broker-wide list).
+    #[schema(example = json!(["example.com"]))]
     allowed_email_domains: Vec<String>,
     /// Exact emails permitted under allowlist provision.
+    #[schema(example = json!(["dana@example.com"]))]
     allowed_emails: Vec<String>,
     /// Exact IdP subject ids permitted under allowlist provision.
+    #[schema(example = json!(["248289761001"]))]
     allowed_subjects: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Apple Developer team id used to mint the client-secret JWT.
+    #[schema(example = "A1B2C3D4E5")]
     apple_team_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Apple Sign In key id paired with the sealed private key.
+    #[schema(example = "K9L8M7N6P5")]
     apple_key_id: Option<String>,
     /// Whether a client secret exists in env, TOML, or the sealed store (value never returned).
+    #[schema(example = true)]
     has_client_secret: bool,
     /// Whether an Apple PEM exists in env, TOML, or the sealed store (PEM never returned).
+    #[schema(example = false)]
     has_apple_private_key: bool,
     /// Where the client secret was found: `env`, `config`, `store`, or `none`.
+    #[schema(example = "store")]
     secret_source: &'static str,
 }
 
@@ -258,18 +288,22 @@ struct OidcProviderView {
 /// Operator PUT body that replaces the broker table (secrets omitted or replaced).
 struct OidcConfigPut {
     /// Whether the broker should accept authorize starts after this write.
+    #[schema(example = true)]
     enabled: bool,
     #[serde(default)]
     /// Replacement broker-wide email domain allowlist.
+    #[schema(example = json!(["example.com"]))]
     allowed_email_domains: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_bounded_oidc_providers")]
     /// Full replacement list of IdPs (omitted secrets keep the previous generation).
     providers: Vec<OidcProviderPut>,
     /// `integrations.public_origin`. Omit to leave unchanged; empty string clears.
     #[serde(default)]
+    #[schema(example = "https://books.example.com")]
     public_origin: Option<String>,
     /// Required for a non-elevated Owner whose portal session is older than 15 minutes.
     #[serde(default)]
+    #[schema(example = "correct horse battery staple")]
     current_password: Option<String>,
 }
 
@@ -277,57 +311,77 @@ struct OidcConfigPut {
 /// One IdP in a PUT: omit secret fields to keep, empty string to clear.
 struct OidcProviderPut {
     /// Stable provider id; also the logical name of the sealed client-secret row.
+    #[schema(example = "google")]
     id: String,
     #[serde(default)]
     /// Operator-facing display name stored in config.toml.
+    #[schema(example = "Google")]
     name: String,
     #[serde(default)]
     /// Built-in social preset; empty or omitted means a generic OpenID issuer.
+    #[schema(example = "google")]
     preset: Option<String>,
     #[serde(default)]
     /// OpenID issuer URL required when `preset` is unset.
+    #[schema(example = "https://accounts.google.com")]
     issuer: Option<String>,
     /// OAuth client id registered at the IdP.
+    #[schema(example = "123456789012-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6.apps.googleusercontent.com")]
     client_id: String,
     /// Omit to keep; empty string to clear; non-empty to store.
     #[serde(default)]
+    #[schema(example = "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4b5c")]
     client_secret: Option<String>,
     #[serde(default)]
     /// OAuth scopes; empty is replaced with the provider default set.
+    #[schema(example = json!(["openid", "profile", "email", "groups"]))]
     scopes: Vec<String>,
     #[serde(default)]
     /// JIT, mapped-role, allowlist, or invite-only policy for first login.
     #[schema(value_type = String)]
+    #[schema(example = "mapped_role")]
     provision: OidcProvisionMode,
     #[serde(default = "default_member_role")]
     /// Fallback portal role when no mapped claim matches.
+    #[schema(example = "member")]
     default_role: String,
     #[serde(default = "default_groups_claim")]
     /// Claim name used for role mapping (defaults to `groups`).
+    #[schema(example = "groups")]
     role_claim: String,
     #[serde(default)]
     /// Claim value to portal role mapping applied at provision time.
+    #[schema(example = json!({"bookclerk-admins": "administrator", "household": "member"}))]
     role_map: BTreeMap<String, String>,
     #[serde(default)]
     /// When true, verified email may attach this IdP to an existing user.
+    #[schema(example = true)]
     link_by_email: bool,
     #[serde(default)]
     /// Per-provider email domain allowlist.
+    #[schema(example = json!(["example.com"]))]
     allowed_email_domains: Vec<String>,
     #[serde(default)]
     /// Exact emails permitted under allowlist provision.
+    #[schema(example = json!(["dana@example.com"]))]
     allowed_emails: Vec<String>,
     #[serde(default)]
     /// Exact IdP subject ids permitted under allowlist provision.
+    #[schema(example = json!(["248289761001"]))]
     allowed_subjects: Vec<String>,
     #[serde(default)]
     /// Apple Developer team id for client-secret JWT minting.
+    #[schema(example = "A1B2C3D4E5")]
     apple_team_id: Option<String>,
     #[serde(default)]
     /// Apple Sign In key id paired with the sealed private key.
+    #[schema(example = "K9L8M7N6P5")]
     apple_key_id: Option<String>,
     /// Omit to keep; empty string to clear; non-empty to store.
     #[serde(default)]
+    #[schema(
+        example = "-----BEGIN PRIVATE KEY-----\\nMIGTAgEAMBMGByqGSM49AgEG…\\n-----END PRIVATE KEY-----"
+    )]
     apple_private_key: Option<String>,
 }
 
@@ -1241,12 +1295,18 @@ async fn start_authorize(
 /// Query or form_post fields from the IdP callback.
 struct CallbackParams {
     /// Authorization code to exchange; required unless `error` is set.
+    #[schema(example = "4/0AX4XfWh3Q2x9kQ8y7Z6v5U4t3S2r1Q0p")]
     code: Option<String>,
     /// CSRF `state` that must match the `bookclerk_oidc_tx` cookie.
+    #[schema(example = "c3RhdGUtOGY2ZTJkMWE")]
     state: Option<String>,
     /// IdP-reported deny/error; redirects the browser to `/?sso_error=denied`.
+    #[schema(example = "access_denied")]
     error: Option<String>,
     /// Apple first-login name/email JSON (form_post only).
+    #[schema(
+        example = "{\"name\":{\"firstName\":\"Dana\",\"lastName\":\"Reader\"},\"email\":\"dana@example.com\"}"
+    )]
     user: Option<String>,
 }
 
