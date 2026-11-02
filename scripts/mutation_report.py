@@ -21,21 +21,26 @@ drives the same code.
 Mutation testing only changes code inside function bodies, so a change to
 data a function reads (an attribute, a constant, a struct definition) yields
 no mutants from the diff. ``mutation_report.py widen`` finds the changed Rust
-files the diff gave no mutant, and the workflow then mutates every function
+files the diff gave no mutant, and the workflow then mutates the functions
 in them, so the tests of the code beside the data are still checked.
+``mutation_report.py sample`` rewrites the diff to mark the lines of those
+files' mutants, all of them within a budget and an even sample past it.
 
 Usage: ``mutation_report.py --out DIR --exit-code N [--stopped] [--widened
-FILE]`` from the repository root (``--summary FILE`` defaults to
-``$GITHUB_STEP_SUMMARY``); ``mutation_report.py widen --diff FILE --listed
-FILE`` prints the files to widen, one per line.
+FILE] [--sample FILE]`` from the repository root (``--summary FILE``
+defaults to ``$GITHUB_STEP_SUMMARY``); ``mutation_report.py widen --diff
+FILE --listed FILE`` prints the files to widen, one per line;
+``mutation_report.py sample --diff FILE --listed FILE --budget N --seed N
+--record FILE`` rewrites the diff for them.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -170,10 +175,177 @@ def files_to_widen(diff: str, listed: str) -> list[str]:
     Returns:
         Each changed Rust file no listed mutant is in, in diff order. Its
         changes are all outside function bodies (or in tests), so the
-        workflow mutates every function in it instead.
+        workflow mutates the functions in it instead.
     """
     covered = {mutant_file(m) for m in parse_list(listed)}
     return [path for path in changed_rust_files(diff) if path not in covered]
+
+
+@dataclass
+class Sample:
+    """Which mutants of the widened files a run tests."""
+
+    #: Mutants cargo-mutants lists in the widened files.
+    total: int
+    #: Mutants the marked lines admit: all of them within the budget.
+    tested: int
+
+
+@dataclass(frozen=True)
+class Span:
+    """The lines one listed mutant covers; marking any of them admits it."""
+
+    #: The file, relative to the repository root.
+    path: str
+    #: First line, 1-based.
+    start: int
+    #: Last line, at least ``start``.
+    end: int
+
+
+def parse_spans(listed: str) -> list[Span]:
+    """Parse ``cargo mutants --list --json`` into the mutants' line spans.
+
+    Args:
+        listed: The JSON listing, written in the same job.
+
+    Returns:
+        One span per well-formed entry, in listing order; malformed entries
+        and a malformed listing yield nothing.
+    """
+    try:
+        entries = json.loads(listed)
+    except ValueError:
+        return []
+    spans = []
+    for entry in entries if isinstance(entries, list) else []:
+        try:
+            path, start, end = entry["file"], entry["span"]["start"]["line"], entry["span"]["end"]["line"]
+        except (TypeError, KeyError):
+            continue
+        if isinstance(path, str) and path and type(start) is int and type(end) is int and 0 < start <= end < 10**7:
+            spans.append(Span(path, start, end))
+    return spans
+
+
+def sample_lines(listed: str, budget: int, seed: int) -> tuple[dict[str, list[int]], Sample]:
+    """Pick the lines of the widened files whose mutants a run tests.
+
+    cargo-mutants tests every mutant whose span covers a marked line, so a
+    line inside a function also admits its whole-body replacements. Within
+    ``budget`` every mutant's first line is marked. Past it, each file first
+    gets the line admitting the fewest mutants, while they fit; then
+    candidate lines (each mutant's first line) are tried in an evenly spread
+    order starting at ``seed``, and a line is kept only while the mutants
+    admitted stay
+    within ``budget``, so successive pull requests test different mutants of
+    the same file and no run tests more than ``budget`` (unless every line
+    alone admits more, when the line admitting the fewest is marked).
+
+    Args:
+        listed: ``cargo mutants --list --json`` over the widened files.
+        budget: The most mutants to admit (at least 1).
+        seed: Picks where the order starts; the workflow passes the pull
+            request number.
+
+    Returns:
+        The marked lines per file, sorted, and what they admit.
+    """
+    spans = parse_spans(listed)
+    budget = max(budget, 1)
+    candidates = list(dict.fromkeys((span.path, span.start) for span in spans))
+    if len(spans) <= budget:
+        order = candidates
+    else:
+        count = len(candidates)
+        stride = max(1, -(-count // budget))
+        order = list(
+            dict.fromkeys(candidates[(seed + j * stride + r) % count] for r in range(stride) for j in range(-(-count // stride)))
+        )
+    def covering(path: str, line: int) -> set[int]:
+        return {i for i, span in enumerate(spans) if span.path == path and span.start <= line <= span.end}
+
+    admitted: set[int] = set()
+    marked: dict[str, set[int]] = {}
+
+    def admit(path: str, line: int) -> None:
+        new = covering(path, line) - admitted
+        if len(admitted) + len(new) <= budget:
+            admitted.update(new)
+            marked.setdefault(path, set()).add(line)
+
+    # Each file first gets the line that admits the fewest, while they fit,
+    # so a file with few mutants is not crowded out by one with many.
+    files = list(dict.fromkeys(path for path, _ in order))
+    for index in range(len(files)):
+        path = files[(seed + index) % len(files)]
+        admit(*min((c for c in order if c[0] == path), key=lambda candidate: len(covering(*candidate))))
+    for path, line in order:
+        admit(path, line)
+    if not admitted and order:
+        # Every line alone admits more than the budget: test the smallest.
+        path, line = min(order, key=lambda candidate: len(covering(*candidate)))
+        admitted = covering(path, line)
+        marked = {path: {line}}
+    return {path: sorted(lines) for path, lines in marked.items()}, Sample(len(spans), len(admitted))
+
+
+def drop_files(diff: str, paths: set[str]) -> str:
+    """Remove the sections of a unified diff that change ``paths``.
+
+    Args:
+        diff: The diff, as ``git diff`` writes it.
+        paths: New-side paths whose ``diff --git`` sections are dropped.
+
+    Returns:
+        The diff without those sections.
+    """
+    kept: list[str] = []
+    skipping = False
+    for line in diff.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            skipping = any(line.rstrip("\r\n").endswith(f" b/{path}") for path in paths)
+        if not skipping:
+            kept.append(line)
+    return "".join(kept)
+
+
+def line_hunks(path: str, source: str, lines: list[int]) -> str:
+    """Write a diff section that marks ``lines`` of ``path`` as added.
+
+    cargo-mutants tests the mutants on a diff's added lines and checks that
+    each added line matches the file, so the section copies each selected
+    line verbatim. Runs of consecutive lines share a hunk.
+
+    Args:
+        path: The file, relative to the repository root.
+        source: Its contents.
+        lines: The 1-based lines to mark, sorted; lines past the end are
+            skipped.
+
+    Returns:
+        The section, or an empty string when no line is in the file.
+    """
+    # The same split as Rust's `str::lines`, which cargo-mutants compares with.
+    text = source.split("\n")
+    if text and text[-1] == "":
+        text.pop()
+    text = [t.removesuffix("\r") for t in text]
+    runs: list[list[int]] = []
+    for line in lines:
+        if not 0 < line <= len(text):
+            continue
+        if runs and runs[-1][-1] + 1 == line:
+            runs[-1].append(line)
+        else:
+            runs.append([line])
+    if not runs:
+        return ""
+    out = [f"diff --git a/{path} b/{path}\n", f"--- a/{path}\n", f"+++ b/{path}\n"]
+    for run in runs:
+        out.append(f"@@ -{run[0] - 1},0 +{run[0]},{len(run)} @@\n")
+        out += [f"+{text[line - 1]}\n" for line in run]
+    return "".join(out)
 
 
 def run_state(exit_code: int) -> Run:
@@ -214,7 +386,9 @@ def _code(text: str) -> str:
     return f"{fence} {text} {fence}" if longest else f"`{text}`"
 
 
-def render(results: Results, run: Run, *, stopped: bool, widened: list[str] | None = None) -> str:
+def render(
+    results: Results, run: Run, *, stopped: bool, widened: list[str] | None = None, sample: Sample | None = None
+) -> str:
     """Write the Markdown summary of a run.
 
     Args:
@@ -222,9 +396,11 @@ def render(results: Results, run: Run, *, stopped: bool, widened: list[str] | No
         run: How the cargo-mutants process ended.
         stopped: Whether the workflow stopped cargo-mutants at its time
             limit, so later mutants were not tested.
-        widened: The files whose every function was mutated because the
+        widened: The files whose functions were mutated because the
             diff changed them outside any function; only those that yielded
             a mutant are named.
+        sample: Which of the widened files' mutants were selected, when
+            they were sampled.
 
     Returns:
         The summary, ending with a newline.
@@ -235,11 +411,20 @@ def render(results: Results, run: Run, *, stopped: bool, widened: list[str] | No
     if named:
         intro = (
             "These files changed only outside function bodies (attributes, types, constants or tests), "
-            "so every function in them was mutated:"
+            "so the functions in them were mutated instead:"
         )
         lines += [intro, ""]
         lines += [f"- {_code(path)}" for path in named[:MAX_LISTED]]
         lines.append("")
+        if sample is not None and sample.tested < sample.total:
+            ran = sum(
+                mutant_file(m) in named for outcome in (Outcome.CAUGHT, Outcome.MISSED, Outcome.TIMEOUT) for m in results.mutants[outcome]
+            )
+            note = (
+                f"The widened files, including any not listed, hold {sample.total} mutants, more than one run tests, "
+                f"so {ran} spread across them were tested; the choice changes with each pull request."
+            )
+            lines += [note, ""]
     if run is Run.BASELINE_FAILED:
         lines.append("The unmutated code failed to build or its tests failed, so no mutant was tested. Check the job log.")
     elif run is Run.ERROR and not results.tested:
@@ -300,8 +485,50 @@ def widen_main(argv: list[str]) -> int:
     return 0
 
 
+def sample_main(argv: list[str]) -> int:
+    """Rewrite the diff so it selects a sample of the widened files' mutants.
+
+    Args:
+        argv: The arguments after ``sample``.
+
+    Returns:
+        0.
+    """
+    parser = argparse.ArgumentParser(prog="mutation_report.py sample", description=sample_lines.__doc__.split("\n", 1)[0])
+    parser.add_argument("--diff", type=Path, required=True, help="the pull request's diff, rewritten in place")
+    parser.add_argument("--listed", type=Path, required=True, help="cargo mutants --list --json over the widened files")
+    parser.add_argument("--budget", type=int, required=True, help="the most widened mutants to select")
+    parser.add_argument("--seed", type=int, required=True, help="picks the sample (the pull request number)")
+    parser.add_argument("--record", type=Path, required=True, help="where to write the sample for the report (JSON)")
+    args = parser.parse_args(argv)
+    lines, sample = sample_lines(args.listed.read_text(encoding="utf-8", errors="replace"), args.budget, args.seed)
+    diff = drop_files(args.diff.read_text(encoding="utf-8", errors="replace"), set(lines))
+    for path, selected in lines.items():
+        diff += line_hunks(path, Path(path).read_text(encoding="utf-8", errors="replace"), selected)
+    args.diff.write_text(diff, encoding="utf-8")
+    args.record.write_text(json.dumps(asdict(sample)), encoding="utf-8")
+    return 0
+
+
+def read_sample(text: str) -> Sample | None:
+    """Parse the sample record ``sample`` wrote.
+
+    Args:
+        text: The JSON record.
+
+    Returns:
+        The sample, or ``None`` when the record is malformed.
+    """
+    try:
+        data = json.loads(text)
+        sample = Sample(int(data["total"]), int(data["tested"]))
+    except (ValueError, KeyError, TypeError):
+        return None
+    return sample if 0 <= sample.tested <= sample.total else None
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Write the summary of a cargo-mutants run, or run ``widen``.
+    """Write the summary of a cargo-mutants run, or run ``widen`` or ``sample``.
 
     Args:
         argv: Command-line arguments; ``sys.argv`` when ``None``.
@@ -312,15 +539,19 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["widen"]:
         return widen_main(argv[1:])
+    if argv[:1] == ["sample"]:
+        return sample_main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--out", type=Path, required=True, help="the run's mutants.out directory")
     parser.add_argument("--exit-code", type=int, required=True, help="cargo-mutants' exit code")
     parser.add_argument("--stopped", action="store_true", help="the run was stopped at its time limit")
     parser.add_argument("--widened", type=Path, help="files mutated whole, one per line (from widen)")
+    parser.add_argument("--sample", type=Path, help="the sample record (from sample)")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""), help="file to append the summary to (none when empty)")
     args = parser.parse_args(argv)
     widened = parse_list(args.widened.read_text(encoding="utf-8", errors="replace")) if args.widened and args.widened.is_file() else []
-    markdown = render(read_results(args.out), run_state(args.exit_code), stopped=args.stopped, widened=widened)
+    sample = read_sample(args.sample.read_text(encoding="utf-8")) if args.sample and args.sample.is_file() else None
+    markdown = render(read_results(args.out), run_state(args.exit_code), stopped=args.stopped, widened=widened, sample=sample)
     sys.stdout.write(markdown)
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
