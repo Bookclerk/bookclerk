@@ -948,28 +948,67 @@ return a default value, and runs the tests. If a test fails, the mutant is
 **caught**. If every test still passes, the mutant is **missed**: nothing
 checks that behavior, so a real bug there would slip through too.
 
-The [`mutation.yml`](../../.github/workflows/mutation.yml) workflow runs
-[cargo-mutants](https://mutants.rs/) on every pull request that changes
-Rust code:
+Mutation testing is slow, so it does not run on pull requests. Three
+workflows run it once a day on `main` instead, each on the code merged
+since its own last successful run:
 
-1. It tests the pull request merged onto its base branch, as CI does, and
-   mutates only the functions the pull request changes (`--in-diff`, from
-   the merge commit's diff against the base) in any workspace member
-   (`--workspace`; without it cargo-mutants looks only at the default
-   members), so the cost follows the size of the change. Test code, the generated files and the
+- [`mutation.yml`](../../.github/workflows/mutation.yml) for Rust, at
+  02:17 UTC.
+- [`mutation-python.yml`](../../.github/workflows/mutation-python.yml) for
+  the Python SDK, at 02:47 UTC.
+- [`mutation-workers.yml`](../../.github/workflows/mutation-workers.yml)
+  for the Workers, at 03:17 UTC.
+
+Each run works like this:
+
+1. [`scripts/mutation_base.py`](../../scripts/mutation_base.py) finds the
+   commit the workflow's last successful run tested, through the GitHub
+   API. A day with nothing merged, or a run that failed, is covered by the
+   next run. With no earlier run to use, it falls back to the last commit
+   from more than 25 hours ago, then to the parent of `HEAD`. Whatever it
+   picks must be a full SHA and an ancestor of `HEAD`.
+2. The run diffs `main` against that commit and mutates only what changed,
+   as described below for each language. The run number seeds every
+   sample, so the choice changes from run to run.
+3. The job summary lists what was tested and what was missed.
+4. When a mutant was missed, the reusable
+   [`mutation-issue.yml`](../../.github/workflows/mutation-issue.yml)
+   workflow files the summary as an issue titled `Missed mutants: <area>`
+   (`rust`, `python-sdk`, `site`, `demo` or `collector`), labelled
+   `mutation-testing`. A later run with missed mutants in the same area
+   comments on the open issue instead of opening another. Close the issue
+   once the tests catch them.
+
+The issue job holds the only write token in these workflows. It checks out
+nothing and runs no repository code; it reads only the summaries the
+mutants jobs uploaded.
+
+To test a range by hand, run the workflow from the **Actions** tab and set
+`base` to the commit to start from. Running it from a branch tests that
+branch against `base`, which is how to try a change to the workflows
+themselves.
+
+### Rust
+
+[cargo-mutants](https://mutants.rs/) tests the Rust code:
+
+1. It mutates only the functions changed since the last run (`--in-diff`)
+   in any workspace member (`--workspace`; without it cargo-mutants looks
+   only at the default members), so the cost follows what merged. With no
+   Rust file changed, the job builds nothing. Test code, the generated files and the
    staged-plugin harness (`bookclerk-plugin-e2e`, whose tests need the
    plugins CI's `e2e` check stages) are never mutated.
 2. Mutants live only in function bodies, so a change to data that code
    reads (an attribute, a constant, a type definition) gives no mutants
    from the diff. When a changed Rust file gets none, the job mutates the
    functions in that file instead, so the tests of the code beside the
-   changed data are still checked. The summary names those files. Up to 15
-   of their mutants are all tested; past that, at most 15 spread across
+   changed data are still checked. The summary names those files. Up to 60
+   of their mutants are all tested; past that, at most 60 spread across
    the files are (counting every mutant a chosen line brings in, such as
    its function's body replacements), and the choice changes with each
-   pull request. Each file gets at least its smallest line while that fits.
-   If every line alone brings in more than 15, the one that brings in the
-   fewest is tested, so such a run can exceed 15. Each mutant runs its package's whole test suite, two minutes for some
+   run. Each file gets at least its smallest line while that fits.
+   If every line alone brings in more than 60, the one that brings in the
+   fewest is tested, so such a run can exceed 60. Each mutant runs its package's whole test suite, two minutes for some
    crates, so a large file would otherwise hold a runner for the whole
    time limit. Code in other files that reads the data is not covered.
 3. Before the first mutant, the job builds what CI's `rust_test` check
@@ -978,11 +1017,10 @@ Rust code:
    the same confinement enforcement as the test job. Tests that launch a
    helper then run instead of skipping.
 4. Each mutant runs the tests of its own package under cargo-nextest.
-5. The run stops after 50 minutes and reports what it tested so far.
+5. The run stops after 4 hours and reports what it tested so far.
 
 The job summary shows the share of mutants the tests caught and lists the
-missed ones. cargo-mutants also annotates each missed mutant on the pull
-request's diff. The full results, with a log per mutant, are in the
+missed ones. The full results, with a log per mutant, are in the
 `mutants-rust` artifact. A mutant that does not build (**unviable**) says
 nothing about the tests and is left out of the score; one whose tests time
 out counts as caught.
@@ -1019,9 +1057,8 @@ workflow does the same for the Cloudflare Workers (`tools/site`,
 `tools/demo` and `tools/diagnostics-collector`) with
 [Stryker](https://stryker-mutator.io/), one job per Worker:
 
-1. It finds the lines the pull request changes in the Worker's TypeScript
-   sources, from the merge commit's diff against the base: the lines it
-   adds, and the line before each run of lines it deletes, so removing a
+1. It finds the lines changed since the last run in the Worker's
+   TypeScript sources: the lines added, and the line before each run of lines it deletes, so removing a
    guard counts as changing the code around it. That line can be a blank
    line or a closing brace with no mutant; when none of a file's changed
    lines has one, step 3 samples the file. Tests, test support, type
@@ -1037,17 +1074,18 @@ workflow does the same for the Cloudflare Workers (`tools/site`,
    changes. The sample skips lines Stryker never mutates (types, imports,
    bare punctuation). At most 30 lines are sampled across those files,
    one per file first while the budget lasts, and the choice changes with
-   each pull request. Stryker takes about five seconds a mutant here, so a
+   each run. Stryker takes about five seconds a mutant here, so a
    whole file would not fit the time limit. The summary names the files
    and how many lines it sampled in each, or says when too little time was
    left for the second pass.
 4. Each mutant runs the Vitest tests that cover it, including the ones
    that run inside the Workers runtime.
-5. Both passes together stop after 20 minutes. The summary then counts the
+5. Both passes together stop after 40 minutes. The summary then counts the
    mutants tested before the limit and says the run was stopped.
 
 The job summary and the `mutants-<worker>` artifact have the same shape as
-the Rust job's. Up to 50 missed mutants are annotated on the diff. Stryker
+the Rust job's, and missed mutants become a `site`, `demo` or `collector`
+issue. Stryker
 is installed for the run only, at the version pinned in the workflow, so
 the Workers' lockfiles do not change. Settings live in
 [`scripts/stryker.config.json`](../../scripts/stryker.config.json):
@@ -1080,10 +1118,9 @@ The [`mutation-python.yml`](../../.github/workflows/mutation-python.yml)
 workflow does the same for the Python plugin SDK
 (`packages/plugin-sdk-python`) with [mutmut](https://mutmut.readthedocs.io/):
 
-1. It finds the lines the pull request changes under the SDK's `src/`, from
-   the merge commit's diff against the base: the lines it adds, placed in
-   the new file, and the lines it deletes, placed in the base's copy of the
-   file. Removing a guard, even a function's last lines, counts as
+1. It finds the lines changed since the last run under the SDK's `src/`:
+   the lines added, placed in the new file, and the lines deleted, placed
+   in the starting commit's copy of the file. Removing a guard, even a function's last lines, counts as
    changing that function, and removing a constant counts as a change
    outside every function. Removing a whole function selects nothing in
    that function. Tests and the generated ABI modules are left
@@ -1106,15 +1143,15 @@ workflow does the same for the Python plugin SDK
    names the changed functions it skipped for that reason.
 5. Each mutant runs the tests that cover its function. A mutant no test
    runs counts as missed.
-6. The run stops after 20 minutes. mutmut records each result as it lands,
+6. The run stops after 60 minutes. mutmut records each result as it lands,
    so the summary then counts the mutants tested before the limit and says
    the run was stopped. If mutmut fails or stops before testing any
    selected mutant, the summary says that instead of reporting no
    mutants.
 
 The job summary has the same shape as the other jobs', with each missed
-mutant's line and change. Up to 50 missed mutants whose line could be
-placed are annotated on the diff. Mutants mutmut ran that ended with a
+mutant's line and change, and missed mutants become a `python-sdk` issue.
+Mutants mutmut ran that ended with a
 result it does not count (a crash, a skip or a suspicious result) are
 left out of the score, and the summary says how many there were. The `mutants-python-sdk` artifact lists every mutant, one file per
 outcome. mutmut is installed for the run only, at the version pinned in
@@ -1135,7 +1172,8 @@ mutmut works in a `mutants/` copy of the SDK and reuses the results in it
 on the next run. Delete that folder afterwards.
 
 > [!NOTE]
-> All three workflows are report-only trials and not required checks.
+> None of the three workflows is a required check, and none runs on pull
+> requests. A missed mutant never blocks a merge; it becomes an issue.
 
 ## Worker startup time
 

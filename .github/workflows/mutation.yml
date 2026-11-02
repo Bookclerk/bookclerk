@@ -1,38 +1,39 @@
-# Mutation testing of the Rust code a pull request changes
+# Nightly mutation testing of the Rust code merged since the last run
 # (docs/contributing/ci.md#mutation-testing).
 #
 # - Coverage shows which lines the tests run, not whether a test would
 #   notice them doing the wrong thing. cargo-mutants makes small changes to
 #   the changed functions (a flipped comparison, a body that returns a
 #   default) and runs the package's tests against each; a change every test
-#   still passes on is a "missed" mutant, reported in the job summary and as
-#   an annotation on the diff.
-# - Only the functions the pull request touches are mutated (`--in-diff`,
-#   from the merge commit's diff against the base), so the cost follows the
-#   change. The run stops at a time limit and reports what it tested.
-# - Trial: report-only and not a required check. Settings live in
-#   .cargo/mutants.toml.
+#   still passes on is a "missed" mutant, reported in the job summary and
+#   filed as an issue (mutation-issue.yml).
+# - Only the functions changed since the last successful run are mutated
+#   (`--in-diff`, from the default branch's diff against that run's commit;
+#   scripts/mutation_base.py), so the cost follows what merged that day. It
+#   runs off pull requests so it never slows them, and stops at a time
+#   limit and reports what it tested.
+# - Never a required check. Settings live in .cargo/mutants.toml.
 #
-# It runs the pull request's code with a read-only token, like CI.
+# A manual run can start from an older commit (`base`).
 
 name: Mutation testing
 
 on:
-  pull_request:
-    paths:
-      # Any Rust file: workspace members live under crates/, examples/ and
-      # tools/; a file outside the workspace yields no mutants.
-      - "**/*.rs"
-      - ".cargo/mutants.toml"
-      - ".github/workflows/mutation.yml"
-      - "scripts/mutation_report.py"
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Commit to start from (default: the last successful run's)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: mutation-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: mutation-rust
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -46,9 +47,10 @@ env:
 
 jobs:
   rust:
-    name: Rust mutants (report only)
+    name: Rust mutants
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # The mutants' 4 hours (plus 5 minutes to stop) and room for the build.
+    timeout-minutes: 300
     # As in CI's `unit + integration tests` job: confinement tests that would
     # otherwise skip without enforcement must run, or their mutants would
     # all read as missed.
@@ -57,22 +59,34 @@ jobs:
       BOOKCLERK_SANDBOX_REQUIRE_SPAWN_ENFORCEMENT: "1"
     permissions:
       contents: read
+      # The last successful run's commit (scripts/mutation_base.py).
+      actions: read
     steps:
-      # The pull request merged onto its base branch, as CI tests it, so a
-      # branch cut before a workflow change still runs with the scripts this
-      # workflow calls.
+      # Full history, to diff against the last run's commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 2
+          fetch-depth: 0
           persist-credentials: false
 
-      # The pull request's changes as they land on the base branch: the
-      # merge commit against its first parent, the base. Its line numbers
-      # match this checkout.
-      - name: Diff the pull request
-        run: git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
+      # What merged since the last successful run. Its line numbers match
+      # this checkout.
+      - name: Diff the code merged since the last run
+        id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          base=$(python3 scripts/mutation_base.py --workflow mutation.yml --base "${BASE:-}")
+          git diff "$base" HEAD > "$RUNNER_TEMP/pr.diff"
+          # Nothing to build or mutate when no Rust file changed.
+          if [ -n "$(git diff --name-only "$base" HEAD -- '*.rs')" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Mutating the Rust changes in \`$base..$GITHUB_SHA\`." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Rust toolchain
+        if: steps.diff.outputs.rust == 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
@@ -80,14 +94,17 @@ jobs:
       # Tool versions shared with the Dev Container (docs/contributing/ci.md#tool-versions).
       - name: Read tool pins
         id: pins
+        if: steps.diff.outputs.rust == 'true'
         run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
 
       - name: Install cargo-nextest and cargo-mutants
+        if: steps.diff.outputs.rust == 'true'
         uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-nextest@${{ steps.pins.outputs.cargo-nextest }},cargo-mutants@27.1.0
 
       - name: Install capnproto
+        if: steps.diff.outputs.rust == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
@@ -95,6 +112,7 @@ jobs:
       # Its own cache: mutant builds cap lints and build incrementally, so
       # CI's `debug` cache would not match.
       - name: Cache cargo
+        if: steps.diff.outputs.rust == 'true'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: mutants
@@ -106,6 +124,7 @@ jobs:
       # skipping. The planner lists them; its summary stays out of this
       # job's.
       - name: Build the test prerequisites
+        if: steps.diff.outputs.rust == 'true'
         run: |
           set -euo pipefail
           env -u GITHUB_STEP_SUMMARY python3 scripts/ci-exec.py resolve --force-full --event pull_request --run-id "$GITHUB_RUN_ID" > /dev/null
@@ -117,14 +136,15 @@ jobs:
       # the code beside the changed data are checked too: the diff is
       # rewritten to mark the lines of their mutants. Past the budget, lines
       # spread across the files are marked until they admit the budget's
-      # worth, starting at a point that follows the pull request number.
+      # worth, starting at a point that follows the run number.
       # Each mutant runs its package's whole test suite
       # (about 2 minutes for bookclerk-library), so a file with 230 mutants
       # would otherwise hold a runner for the whole time limit.
       - name: Widen to files changed outside functions
+        if: steps.diff.outputs.rust == 'true'
         env:
-          PR: ${{ github.event.pull_request.number }}
-          WIDEN_BUDGET: "15"
+          SEED: ${{ github.run_number }}
+          WIDEN_BUDGET: "60"
         run: |
           set -euo pipefail
           cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --list > "$RUNNER_TEMP/listed.txt"
@@ -135,7 +155,7 @@ jobs:
             for f in "${files[@]}"; do filters+=(--file "$f"); done
             cargo mutants --workspace --list --json "${filters[@]}" > "$RUNNER_TEMP/widened-listed.json"
             python3 scripts/mutation_report.py sample --diff "$RUNNER_TEMP/pr.diff" \
-              --listed "$RUNNER_TEMP/widened-listed.json" --budget "$WIDEN_BUDGET" --seed "$PR" \
+              --listed "$RUNNER_TEMP/widened-listed.json" --budget "$WIDEN_BUDGET" --seed "$SEED" \
               --record "$RUNNER_TEMP/sample.json"
           fi
 
@@ -144,13 +164,14 @@ jobs:
       # stops it with SIGINT, which still writes the lists of what it tested.
       - name: Test the mutants
         id: mutants
+        if: steps.diff.outputs.rust == 'true'
         env:
           # Each mutant rebuilds only what it changed. Set on the step:
           # rust-cache exports CARGO_INCREMENTAL=0 for the rest of the job.
           CARGO_INCREMENTAL: "1"
         run: |
           set +e
-          timeout --signal=INT --kill-after=5m 50m \
+          timeout --signal=INT --kill-after=5m 240m \
             cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --in-place --no-shuffle --output "$RUNNER_TEMP"
           code=$?
           echo "code=$code" >> "$GITHUB_OUTPUT"
@@ -162,11 +183,17 @@ jobs:
       - name: Report
         if: ${{ !cancelled() }}
         env:
+          RUST: ${{ steps.diff.outputs.rust }}
           CODE: ${{ steps.mutants.outputs.code }}
           STOPPED: ${{ steps.mutants.outputs.stopped }}
         run: |
           set -euo pipefail
-          args=(--out "$RUNNER_TEMP/mutants.out" --exit-code "${CODE:-1}" --widened "$RUNNER_TEMP/widened.txt" --sample "$RUNNER_TEMP/sample.json")
+          if [ "${RUST:-}" != "true" ]; then
+            echo "No Rust file changed since the last run, so nothing was mutated." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/issue"
+          args=(--out "$RUNNER_TEMP/mutants.out" --exit-code "${CODE:-1}" --widened "$RUNNER_TEMP/widened.txt" --sample "$RUNNER_TEMP/sample.json" --issue "$RUNNER_TEMP/issue/rust.md")
           if [ "${STOPPED:-}" = "true" ]; then args+=(--stopped); fi
           python3 scripts/mutation_report.py "${args[@]}"
 
@@ -178,3 +205,19 @@ jobs:
           path: ${{ runner.temp }}/mutants.out
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Upload the issue body
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-issue-rust
+          path: ${{ runner.temp }}/issue/rust.md
+          if-no-files-found: ignore
+          retention-days: 7
+
+  issue:
+    needs: rust
+    if: ${{ !cancelled() }}
+    permissions:
+      issues: write
+    uses: ./.github/workflows/mutation-issue.yml

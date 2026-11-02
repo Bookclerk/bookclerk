@@ -2,11 +2,11 @@
 """Scopes and summarizes Stryker mutation runs on the Cloudflare Workers.
 
 The TypeScript side of mutation testing (``docs/contributing/ci.md#mutation-testing``):
-``.github/workflows/mutation-workers.yml`` runs Stryker on the lines a pull
-request changes in each Worker (``tools/site``, ``tools/demo``,
+``.github/workflows/mutation-workers.yml`` runs Stryker each night on the
+lines merged since its last run in each Worker (``tools/site``, ``tools/demo``,
 ``tools/diagnostics-collector``) and then this script, which writes the
-Markdown summary. Like the Rust job, the trial is report-only and the script
-always exits 0.
+Markdown summary and, with ``--issue``, the issue body for missed mutants.
+Like the Rust job, it never blocks a merge and the script always exits 0.
 
 Two subcommands:
 
@@ -18,7 +18,7 @@ Two subcommands:
 - ``report --report FILE --root DIR --name NAME`` reads Stryker's JSON
   report (the mutation-testing-report schema), appends the summary to
   ``$GITHUB_STEP_SUMMARY`` (``--summary FILE`` overrides) and annotates
-  each surviving mutant on the diff.
+  each surviving mutant on the run.
 
 The diff and the report come from the same job, written by git and by
 Stryker; parsing is still sans-IO and bounded, and
@@ -36,12 +36,12 @@ import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
-from mutation_report import MAX_LINE, MAX_LISTED, Outcome, Results, _code
+from mutation_report import MAX_LINE, MAX_LISTED, Outcome, Results, _code, write_issue
 
 #: Largest report read, in bytes; a larger one is reported as unreadable.
 MAX_REPORT_BYTES = 64 * 1024 * 1024
 
-#: Most surviving mutants annotated on the diff; the rest are in the summary.
+#: Most surviving mutants annotated on the run; the rest are in the summary.
 MAX_ANNOTATIONS = 50
 
 #: Stryker's mutant statuses, mapped to the Rust job's outcomes. A status
@@ -381,14 +381,14 @@ def widen(
     mutants at a few seconds each, so at most ``budget`` lines are chosen,
     spread across the files: each file gets one first, then the rest are
     evenly spaced over the remaining lines, all starting from a point
-    ``seed`` (the pull request's number) moves.
+    ``seed`` (the workflow's run number) moves.
 
     Args:
         ranges: The changed lines per file, as passed to Stryker.
         mutated: The mutant lines per file from that run's report.
         sources: Each changed file's text, by path; a file missing here is
             not widened.
-        seed: Varies the sample between pull requests.
+        seed: Varies the sample between runs.
         budget: The most lines chosen in all.
 
     Returns:
@@ -439,7 +439,7 @@ def render(
     Args:
         name: The Worker's name, for the heading.
         parsed: The parsed report, or ``None`` when Stryker left none.
-        mutated: Whether the pull request changed any of the Worker's
+        mutated: Whether the diff changed any of the Worker's
             source lines, so Stryker ran.
         stopped: Whether the workflow stopped Stryker at its time limit, so
             the report holds only the mutants tested before then.
@@ -463,7 +463,7 @@ def render(
             names = ", ".join(f"{_code(_clean(path))} ({count} lines)" for path, count in sorted(widened.items()))
             lines += [
                 "No mutant came from some changed lines, as with a type, an import or a deletion, so a sample of the other"
-                f" lines in those files was mutated too, chosen afresh for each pull request: {names}.",
+                f" lines in those files was mutated too, chosen afresh for each run: {names}.",
                 "",
             ]
         if unwidened:
@@ -497,7 +497,7 @@ def render(
             lines += [f"- {_code(m)}" for m in missed_list[:MAX_LISTED]]
             if len(missed_list) > MAX_LISTED:
                 lines.append(f"- … and {len(missed_list) - MAX_LISTED} more (see the `mutants-{name}` artifact).")
-    lines += ["", "Report only: missed mutants do not fail the pull request yet."]
+    lines += ["", "Daily run: missed mutants are filed as an issue and never block a merge."]
     return "\n".join(lines) + "\n"
 
 
@@ -530,7 +530,7 @@ def annotations(survivors: list[tuple[str, int, str]]) -> str:
 def lines_main(argv: list[str]) -> int:
     """Print Stryker's ``--mutate`` value for one Worker's changed lines."""
     parser = argparse.ArgumentParser(prog="stryker_report.py lines")
-    parser.add_argument("--diff", type=Path, required=True, help="the pull request's diff")
+    parser.add_argument("--diff", type=Path, required=True, help="the diff of the code merged since the last run")
     parser.add_argument("--root", required=True, help="the Worker's directory, relative to the repository root")
     args = parser.parse_args(argv)
     patterns = mutate_patterns(changed_lines(args.diff.read_text(encoding="utf-8", errors="replace"), args.root))
@@ -555,7 +555,7 @@ def widen_main(argv: list[str]) -> int:
     parser.add_argument("--report", type=Path, required=True, help="the first pass's Stryker report")
     parser.add_argument("--mutate", required=True, help="the first pass's --mutate value")
     parser.add_argument("--root", type=Path, required=True, help="the Worker's directory")
-    parser.add_argument("--seed", type=int, default=0, help="varies the sample; the pull request's number")
+    parser.add_argument("--seed", type=int, default=0, help="varies the sample; the run number")
     parser.add_argument("--list", type=Path, help="file to write each widened file and its sampled line count to")
     args = parser.parse_args(argv)
     ranges = parse_mutate(args.mutate)
@@ -609,6 +609,7 @@ def report_main(argv: list[str]) -> int:
     parser.add_argument("--widened", type=Path, help="the list `widen --list` wrote")
     parser.add_argument("--unwidened", type=Path, help="the same list, when its sample was not tested")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""), help="file to append the summary to (none when empty)")
+    parser.add_argument("--issue", type=Path, help="file to write the summary to when a mutant was missed, for the issue the workflow files")
     args = parser.parse_args(argv)
     parsed = None
     if not args.not_mutated and args.report.is_file() and args.report.stat().st_size <= MAX_REPORT_BYTES:
@@ -620,6 +621,7 @@ def report_main(argv: list[str]) -> int:
     unwidened = [prefix + path for path in parse_widened(unwidened_text)]
     markdown = render(_clean(args.name), parsed, mutated=not args.not_mutated, stopped=args.stopped, widened=widened, unwidened=unwidened)
     sys.stdout.write(markdown)
+    write_issue(args.issue, markdown, parsed[0] if parsed is not None else None)
     if parsed is not None:
         sys.stdout.write(annotations(parsed[1]))
     if args.summary:
@@ -635,7 +637,7 @@ def main(argv: list[str] | None = None) -> int:
         argv: Command-line arguments; ``sys.argv`` when ``None``.
 
     Returns:
-        0: the trial never fails the workflow.
+        0: a missed mutant becomes an issue, never a failed workflow.
     """
     argv = sys.argv[1:] if argv is None else argv
     commands = {"lines": lines_main, "widen": widen_main, "report": report_main}

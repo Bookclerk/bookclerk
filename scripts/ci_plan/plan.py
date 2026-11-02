@@ -177,7 +177,7 @@ PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 # workflow, from the default branch, and builds nothing; the coverage gate
 # runs in CI Gate on every run, Codecov reads its settings itself, and the
 # bundle uploader in tools/codecov only runs in coverage-upload.yml; the
-# mutation testing reports and settings only run in mutation.yml,
+# mutation testing reports, settings and starting commit only run in mutation.yml,
 # mutation-workers.yml and mutation-python.yml).
 PLAN_JOB_SCRIPT_FILES = frozenset(
     {
@@ -196,6 +196,7 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
         "scripts/stryker_report.py",
         "scripts/stryker.config.json",
         "scripts/mutmut_report.py",
+        "scripts/mutation_base.py",
     }
 )
 

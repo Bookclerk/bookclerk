@@ -142,6 +142,20 @@ class WidenTest(unittest.TestCase):
         self.assertNotIn("hold 9 mutants", everything)
 
 
+class IssueTest(unittest.TestCase):
+    """The issue body is written only when a mutant was missed."""
+
+    def test_write_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp, "issue.md")
+            for found in (None, results(caught=2), results(timeout=1)):
+                mr.write_issue(body, "summary", found)
+                self.assertFalse(body.exists())
+            mr.write_issue(None, "summary", results(missed=1))
+            mr.write_issue(body, "summary", results(caught=1, missed=1))
+            self.assertEqual(body.read_text(encoding="utf-8"), "summary")
+
+
 class ScoreTest(unittest.TestCase):
     """The score counts timeouts as caught and leaves out unviable mutants."""
 
@@ -169,7 +183,7 @@ class RenderTest(unittest.TestCase):
         self.assertIn("**75%** of the 4 mutants", text)
         self.assertIn("| 3 | 1 | 0 | 0 |", text)
         self.assertIn(f"- `{MISSED}`", text)
-        self.assertIn("Report only", text)
+        self.assertIn("Daily run", text)
         self.assertNotIn("time limit", text)
 
     def test_long_lists_are_cut(self) -> None:
@@ -392,23 +406,24 @@ class WiringTest(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8"))
         triggers = workflow.get("on", workflow.get(True))
-        self.assertEqual(list(triggers), ["pull_request"])
+        self.assertEqual(sorted(triggers), ["schedule", "workflow_dispatch"])
+        self.assertIn("base", triggers["workflow_dispatch"]["inputs"])
         self.assertEqual(workflow["permissions"], {"contents": "read"})
         job = workflow["jobs"]["rust"]
-        self.assertEqual(job["permissions"], {"contents": "read"})
+        self.assertEqual(job["permissions"], {"contents": "read", "actions": "read"})
         steps = {s.get("name"): s for s in job["steps"]}
         self.assertFalse(job["steps"][0]["with"]["persist-credentials"])
-        # The merge commit (the default ref), so the workflow's scripts are
-        # there even on a branch cut before they were added; its diff against
-        # the base is what gets mutated.
+        # The default branch with full history; its diff against the last
+        # successful run's commit is what gets mutated.
         self.assertNotIn("ref", job["steps"][0]["with"])
-        self.assertEqual(job["steps"][0]["with"]["fetch-depth"], 2)
-        self.assertEqual(steps["Diff the pull request"]["run"], 'git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"')
+        self.assertEqual(job["steps"][0]["with"]["fetch-depth"], 0)
+        diff = steps["Diff the code merged since the last run"]["run"]
+        self.assertIn("scripts/mutation_base.py --workflow mutation.yml", diff)
+        self.assertIn('git diff "$base" HEAD > "$RUNNER_TEMP/pr.diff"', diff)
         run = steps["Test the mutants"]["run"]
         self.assertIn('--in-diff "$RUNNER_TEMP/pr.diff"', run)
         # Every workspace member, not only the default members.
         self.assertIn("--workspace", run)
-        self.assertEqual(triggers["pull_request"]["paths"][0], "**/*.rs")
         self.assertIn("timeout --signal=INT", run)
         # rust-cache exports CARGO_INCREMENTAL=0; only a step value wins.
         self.assertEqual(steps["Test the mutants"]["env"]["CARGO_INCREMENTAL"], "1")
@@ -416,7 +431,7 @@ class WiringTest(unittest.TestCase):
         self.assertIn('--widened "$RUNNER_TEMP/widened.txt"', steps["Report"]["run"])
         self.assertIn('--sample "$RUNNER_TEMP/sample.json"', steps["Report"]["run"])
         widen_step = steps["Widen to files changed outside functions"]
-        self.assertEqual(widen_step["env"]["PR"], "${{ github.event.pull_request.number }}")
+        self.assertEqual(widen_step["env"]["SEED"], "${{ github.run_number }}")
         self.assertGreater(int(widen_step["env"]["WIDEN_BUDGET"]), 0)
         widen = steps["Widen to files changed outside functions"]["run"]
         self.assertIn("--list", widen)
@@ -429,8 +444,47 @@ class WiringTest(unittest.TestCase):
         names = [s.get("name") for s in job["steps"]]
         self.assertLess(names.index("Build the test prerequisites"), names.index("Test the mutants"))
         # The run's time limit leaves room to report inside the job's.
-        self.assertIn("50m", run)
-        self.assertGreaterEqual(job["timeout-minutes"], 70)
+        self.assertIn("240m", run)
+        self.assertGreaterEqual(job["timeout-minutes"], 250)
+        self.assertIn('--issue "$RUNNER_TEMP/issue/rust.md"', steps["Report"]["run"])
+        assert_files_issues(self, workflow, "rust", "rust")
+
+    def test_issue_workflow(self) -> None:
+        import yaml
+
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "mutation-issue.yml").read_text(encoding="utf-8"))
+        triggers = workflow.get("on", workflow.get(True))
+        self.assertEqual(list(triggers), ["workflow_call"])
+        self.assertEqual(workflow["permissions"], {})
+        job = workflow["jobs"]["issue"]
+        # The only write token: no checkout, so no repository code runs with it.
+        self.assertEqual(job["permissions"], {"issues": "write"})
+        self.assertFalse(any("actions/checkout" in s.get("uses", "") for s in job["steps"]))
+        self.assertEqual(job["steps"][0]["with"]["pattern"], "mutation-issue-*")
+        run = job["steps"][1]["run"]
+        self.assertIn("^[a-z][a-z0-9-]{0,30}$", run)
+        self.assertIn("--body-file", run)
+        self.assertNotIn("--body ", run)
+
+
+def assert_files_issues(case: unittest.TestCase, workflow: dict, job: str, area: str) -> None:
+    """Check that a mutation workflow uploads its issue body and files it.
+
+    Args:
+        case: The test asserting.
+        workflow: The parsed workflow.
+        job: The mutants job's id.
+        area: The issue's area (``rust``, a Worker's name or ``python-sdk``);
+            a matrix job passes its ``${{ matrix.name }}`` expression.
+    """
+    steps = {s.get("name"): s for s in workflow["jobs"][job]["steps"]}
+    upload = steps["Upload the issue body"]["with"]
+    case.assertEqual(upload["name"], f"mutation-issue-{area}")
+    case.assertEqual(upload["if-no-files-found"], "ignore")
+    issue = workflow["jobs"]["issue"]
+    case.assertEqual(issue["needs"], job)
+    case.assertEqual(issue["uses"], "./.github/workflows/mutation-issue.yml")
+    case.assertEqual(issue["permissions"], {"issues": "write"})
 
 
 if __name__ == "__main__":
