@@ -76,7 +76,6 @@ jobs:
       job_tray: ${{ steps.resolve.outputs.job_tray }}
       job_postgres: ${{ steps.resolve.outputs.job_postgres }}
       job_windows_cluster: ${{ steps.resolve.outputs.job_windows_cluster }}
-      job_envelope: ${{ steps.resolve.outputs.job_envelope }}
       job_site: ${{ steps.resolve.outputs.job_site }}
       check_lint: ${{ steps.resolve.outputs.check_lint }}
       check_ui: ${{ steps.resolve.outputs.check_ui }}
@@ -93,6 +92,8 @@ jobs:
       check_site_audit: ${{ steps.resolve.outputs.check_site_audit }}
       check_collector_test: ${{ steps.resolve.outputs.check_collector_test }}
       check_demo_test: ${{ steps.resolve.outputs.check_demo_test }}
+      check_release: ${{ steps.resolve.outputs.check_release }}
+      check_envelope: ${{ steps.resolve.outputs.check_envelope }}
       check_needs_cargo: ${{ steps.resolve.outputs.check_needs_cargo }}
       check_needs_node: ${{ steps.resolve.outputs.check_needs_node }}
       check_needs_uv: ${{ steps.resolve.outputs.check_needs_uv }}
@@ -184,6 +185,7 @@ jobs:
           "$PY" scripts/tests/test_coverage_gate.py
           "$PY" scripts/tests/test_worker_startup.py
           "$PY" scripts/tests/test_mutation_report.py
+          "$PY" scripts/tests/test_codeql_languages.py
           "$PY" scripts/tests/test_dev_env.py
           "$PY" scripts/tests/test_tool_versions.py
 
@@ -573,10 +575,28 @@ jobs:
         run: python3 scripts/ci-exec.py run e2e
 
   release:
-    name: release build
+    name: release build + small-VPS envelope (${{ matrix.lto }} LTO)
     needs: plan
     if: needs.plan.outputs.job_release == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 240
+    # Pull requests link the release binaries with thin LTO, which uses every
+    # core; the merge queue and OSV remediation runs keep the shipping fat
+    # LTO, so the build and envelope that gate main measure the binaries we
+    # ship. The cache key covers every CARGO* variable, so each mode has its
+    # own `release` cache, and the build-only main push seeds both
+    # (docs/contributing/ci.md#release-build).
+    strategy:
+      fail-fast: false
+      matrix:
+        lto: ${{ fromJSON(github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.private-head && '["fat","thin"]' || github.event_name == 'pull_request' && !inputs.private-head && '["thin"]' || '["fat"]') }}
+    env:
+      CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto }}
+      # The collector lives on diagnostics.<DOMAIN>, or on the workers.dev URL
+      # the deploy stores when DOMAIN is unset
+      # (.github/workflows/diagnostics-collector-deploy.yml). Job-wide, so the
+      # envelope's install finds the binaries current instead of rebuilding.
+      BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: ${{ vars.DOMAIN && format('https://diagnostics.{0}', vars.DOMAIN) || vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -645,13 +665,33 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
 
-      # The collector lives on diagnostics.<DOMAIN>, or on the workers.dev URL
-      # the deploy stores when DOMAIN is unset
-      # (.github/workflows/diagnostics-collector-deploy.yml).
       - name: Build release binaries
-        env:
-          BOOKCLERK_DIAGNOSTICS_COLLECTOR_URL: ${{ vars.DOMAIN && format('https://diagnostics.{0}', vars.DOMAIN) || vars.DIAGNOSTICS_COLLECTOR_BASE_URL }}
+        if: needs.plan.outputs.check_release == 'true'
         run: python3 scripts/ci-exec.py run release
+
+      # The envelope runs on the binaries the release step just built; its
+      # `install-platform --release` only compiles what that step did not.
+      - name: Measure the 1 GiB envelope
+        if: needs.plan.outputs.check_envelope == 'true'
+        run: python3 scripts/ci-exec.py run envelope
+
+      - name: Upload envelope metrics
+        if: always() && needs.plan.outputs.check_envelope == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: envelope-metrics
+          path: ${{ runner.temp }}/BookclerkFiles/envelope-metrics.json
+          if-no-files-found: warn
+
+      # The daemon's own log says why it stopped; the step output only says
+      # that it did. The daemon redacts secrets and runs on a throwaway seed.
+      - name: Upload the envelope daemon log
+        if: failure() && needs.plan.outputs.check_envelope == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: envelope-daemon-log
+          path: ${{ runner.temp }}/BookclerkFiles/envelope/bookclerkd-envelope.log
+          if-no-files-found: warn
 
   confinement:
     name: sandbox + jailed tiers (${{ matrix.os }})
@@ -993,71 +1033,6 @@ jobs:
       - name: Cluster startup and identity tests
         run: python scripts/ci-exec.py run windows_cluster
 
-  envelope:
-    name: small-VPS envelope
-    needs: plan
-    if: needs.plan.outputs.job_envelope == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Run by the OSV remediation workflow: test its unpublished lockfile
-      # bump (see docs/contributing/automation.md#osv-remediation).
-      - name: Check out the OSV remediation head
-        if: inputs.private-head
-        uses: ./.github/actions/osv-remediation-head
-        with:
-          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
-          sha: ${{ inputs.private-sha }}
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ci-plan
-          path: ${{ runner.temp }}/ci-plan
-
-      - name: Validate CI plan
-        run: python3 scripts/ci-exec.py validate
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: stable
-
-      - name: Install capnproto
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends capnproto
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: release
-          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
-          cache-on-failure: true
-          save-if: false
-
-      - name: Measure the 1 GiB envelope
-        run: python3 scripts/ci-exec.py run envelope
-
-      - name: Upload envelope metrics
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: envelope-metrics
-          path: ${{ runner.temp }}/BookclerkFiles/envelope-metrics.json
-          if-no-files-found: warn
-
-      # The daemon's own log says why it stopped; the step output only says
-      # that it did. The daemon redacts secrets and runs on a throwaway seed.
-      - name: Upload the envelope daemon log
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: envelope-daemon-log
-          path: ${{ runner.temp }}/BookclerkFiles/envelope/bookclerkd-envelope.log
-          if-no-files-found: warn
-
   site:
     name: website + collector Workers
     needs: plan
@@ -1221,7 +1196,6 @@ jobs:
       - tray
       - postgres
       - windows-cluster
-      - envelope
       - site
     if: always()
     runs-on: ubuntu-latest

@@ -191,6 +191,21 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     is accepted only as `sha256:` and 64 lowercase hex digits, checked
     character by character.
 
+### CodeQL language chooser (Python)
+
+- **Changed-path reader** (`parse_paths` and `choose` in
+  `scripts/codeql_languages.py`). `codeql.yml` reads the pull request's
+  changed file names, which its author chose, and skips the Rust analysis
+  when none is a Rust input.
+  - Test and corpus: `scripts/tests/test_codeql_languages.py`,
+    `scripts/tests/codeql_languages_corpus/` (files named `rust__<case>`
+    or `norust__<case>`).
+  - Oracle: Rust is analyzed exactly when some NUL-separated name is not
+    UTF-8, ends in `.rs`, `.capnp` or `.proto`, is named `Cargo.toml`, `Cargo.lock`
+    or `rust-toolchain.toml`, sits under a `.cargo/` directory, or is the
+    workflow or
+    the script, checked with string operations rather than glob patterns.
+
 ### CLA check (Python)
 
 - **CLA checker** (`scripts/cla_check.py`). It reads the workflow event

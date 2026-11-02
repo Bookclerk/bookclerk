@@ -35,7 +35,9 @@ tested that exact commit. So the push run resolves with `--build-only`
 
 - Only the jobs that save caches run: `check`, `test`, `native-gateway`
   and `release` (`BUILD_ONLY_JOBS` in `scripts/ci_plan/execute.py`). The
-  gate expects every other job to be skipped.
+  gate expects every other job to be skipped. The release job drops its
+  envelope check (`BUILD_ONLY_SKIPPED_CHECKS`), which only measures, and
+  runs a fat and a thin leg so both of its caches stay warm.
 - Builds, Clippy and installs run as usual. `cargo test` and the nextest
   run become `cargo test … --no-run`. Doctests, formatting, scripts,
   staging and runtime assertions are dropped.
@@ -108,7 +110,8 @@ Rust dependency caches use three shared keys. Each is saved by one job on
 - **`debug`**: saved by `test` on Linux and by `native-gateway` on macOS
   and Windows. Restored by `e2e`, `confinement`, `tray`, `postgres` and
   `windows-cluster`.
-- **`release`**: saved by `release`, restored by `envelope`.
+- **`release`**: saved by `release` (the job that also runs the
+  envelope), once per LTO mode (see [Release build](#release-build)).
 
 Fewer entries keep the repository under the Actions cache limit, so jobs
 stop missing their cache.
@@ -347,13 +350,12 @@ when a step matches no test. Name such tests `postgres_*`.
 | `fmt / clippy / docs` | Any of its checks is selected | `lint`, `ui`, `plugin_sdk_abi`, `python_sdk`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
 | `unit + integration tests` | `rust_test` is selected | nextest over the affected packages (the workspace on the full suite), custom-harness targets, feature test runs, bench and example builds |
 | `staged plugin installation (e2e)` | `e2e` is selected | Builds, installs and stages the guests in scope, then the `bookclerk-plugin-e2e` staged targets |
-| `release build` | A shipped binary (hosts, helpers, platform guests) is compiled-affected | See [Release build](#release-build) |
+| `release build + small-VPS envelope (<lto> LTO)` | A shipped binary (hosts, helpers, platform guests) is compiled-affected (`release`), or an `[envelope].paths` input changed, an `[envelope].packages` member is compiled-affected, or the full suite (`envelope`) | Each selected check as its own step; see [Release build](#release-build) and [Small-VPS envelope](#small-vps-envelope) |
 | `sandbox + jailed tiers` (3 OS) | sandbox, jail, media or media-worker is affected | Clippy and enforcement tests (Windows `--test-threads=1`) |
 | `native-behind-workerd gateway` (3 OS) | See [the gateway job](#native-behind-workerd-gateway-job) | The four `native_gateway` targets, plus per-OS extras |
 | `tray` (3 OS) | `bookclerk-tray` is affected | Clippy and tests |
 | `postgres 16/17/18` | An owning package's unit tests are affected | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite | See [Windows cluster](#windows-cluster-startup-and-identity) |
-| `small-VPS envelope` | An `[envelope].paths` input changed, an `[envelope].packages` member is compiled-affected, or the full suite | See [Small-VPS envelope](#small-vps-envelope) |
 | `website + collector Workers` | See [Workers](#website-and-collector-workers) | `site_test`, `site_audit`, `collector_test`, `demo_test`; no Rust toolchain |
 | `CI Gate` | Always | The stable required check (see the [contract](#plan--execution-contract)) |
 
@@ -431,6 +433,22 @@ The release job runs at one of two scopes:
   assertions. It runs when a packaging input changes (`bookclerk-dev`, the
   workerd pins, the platform manifests) or on the full suite.
 
+The release profile ships fat LTO with one codegen unit, which links on a
+single core. On pull requests the job sets
+`CARGO_PROFILE_RELEASE_LTO=thin`, which links in parallel and still checks
+that the release build compiles. The merge queue and OSV remediation runs
+keep fat LTO, so the build and the envelope that gate `main` use the
+binaries we ship.
+
+Cargo recompiles dependencies when the LTO mode changes, and the cache key
+covers every `CARGO*` variable, so each mode has its own `release` cache.
+The job is a matrix over the mode: one `thin` leg on a pull request, one
+`fat` leg in the merge queue, and both on the build-only `main` push, which
+seeds the two caches. Each leg skips its build there when its cache is
+already current. On a 4-core machine a warm thin build of `bookclerkd` took
+about 10 minutes against 17 for fat; a thin build without its own cache
+gains nothing.
+
 ### Native-behind-workerd gateway job
 
 The job runs when any of these hold:
@@ -458,12 +476,14 @@ binding, and different-cluster rejection. Then it runs the full
 
 ### Small-VPS envelope
 
-The job checks that Bookclerk fits a small VPS. Its paths are the harness,
+The check makes sure Bookclerk fits a small VPS. Its paths are the harness,
 the seed, the search rebuild, the library book page and the books HTTP
-handler.
+handler. It runs in the release job, after the release build step when both
+are selected, so the hosts are compiled once per run.
 
-1. On the `ubuntu-latest` VM, it release-builds the hosts and compiles the
-   seed.
+1. On the `ubuntu-latest` VM, `install-platform --release` builds what the
+   release step did not (all of it when only the envelope is selected), and
+   the seed is compiled.
 2. `docker run --memory=1g --memory-swap=1g --cpus=1` runs the seed, the
    daemon and the load in an Ubuntu container of the runner's own release
    (`ubuntu:<VERSION_ID>` from `/etc/os-release`, or `ubuntu:24.04` on a
@@ -533,6 +553,8 @@ The full suite runs all four.
 
 These run outside `CI Gate`:
 
+- **CodeQL** (see [CodeQL](#codeql) below) feeds the repository's code
+  scanning merge rule.
 - **OSV scanning** is a separate workflow and gate. A green OSV job that
   applies [`osv-scanner.toml`](../../osv-scanner.toml) `IgnoredVulns`
   means **zero unignored, actionable** findings, not that ignored
@@ -551,6 +573,43 @@ These run outside `CI Gate`:
   builds and checks the contributor image (see below).
 - **ABS Integration** (`.github/workflows/abs-integration.yml`) tests the
   `audiobookshelf` plugin against a real Audiobookshelf server (see below).
+
+### CodeQL
+
+[`.github/workflows/codeql.yml`](../../.github/workflows/codeql.yml) runs
+CodeQL's default query suite on GitHub Actions workflows,
+JavaScript/TypeScript, Python and Rust, each in build mode `none`. The
+repository's "CodeQL results" merge rule reads its analyses. GitHub's
+default setup for code scanning must be off, or the uploads are refused.
+
+Rust takes about 20 minutes on a hosted runner, and CodeQL has no
+incremental analysis for Rust yet. So a pull request that changes no Rust
+input skips the Rust analysis, because such a change can't add or fix a
+Rust alert:
+
+1. The `Choose languages` job diffs the merge commit against its base
+   (`git diff -z --no-renames --name-only`).
+2. [`scripts/codeql_languages.py`](../../scripts/codeql_languages.py)
+   adds Rust when a path is a `.rs` file, a `.capnp` or `.proto` schema
+   that a build script compiles into Rust, a `Cargo.toml`, `Cargo.lock`,
+   `rust-toolchain.toml`, anything under a `.cargo/` directory at any
+   depth, the workflow, or the script itself. A name that isn't UTF-8
+   also counts. A test fails when a `build.rs` reads a file the chooser
+   doesn't count, because CodeQL runs build scripts even in build mode
+   `none`.
+3. `Analyze (<language>)` runs once per chosen language.
+
+Pushes to `main`, the Monday schedule and manual runs analyze every
+language, so `main` always has a full analysis to compare pull requests
+against. The Rust extractor's own cargo output (build scripts and proc
+macros) is cached under
+`codeql-rust-target-<rustc version>-<Cargo.lock hash>`: `main` saves it
+and pull requests only restore it.
+
+The file names are the pull request author's, so the chooser is an
+untrusted-input boundary, fuzzed in
+`scripts/tests/test_codeql_languages.py` (see
+[Fuzzing](fuzzing.md#codeql-language-chooser-python)).
 
 The Docker image job builds `packaging/docker/Dockerfile` and runs
 `packaging/docker/smoke.sh`, which boots the image twice on one fresh
