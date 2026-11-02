@@ -928,9 +928,50 @@ runner, the custom-harness test binaries CI runs with `cargo test` left
 out of nextest, and the excluded files, whose generated entries must match
 `generated` in `scripts/coverage_areas.toml`. Tests check both lists.
 
+### Workers
+
+The [`mutation-workers.yml`](../../.github/workflows/mutation-workers.yml)
+workflow does the same for the Cloudflare Workers (`tools/site`,
+`tools/demo` and `tools/diagnostics-collector`) with
+[Stryker](https://stryker-mutator.io/), one job per Worker:
+
+1. It finds the lines the pull request adds to the Worker's TypeScript
+   sources, from the merge commit's diff against the base. Tests, test
+   support, type declarations and configuration files are left out. A
+   Worker with no changed source line skips the rest.
+2. It passes those lines to Stryker as `--mutate path:start-end`. Stryker
+   also mutates literals (strings, arrays, objects), so a change to data
+   gets mutants too.
+3. Each mutant runs the Vitest tests that cover it, including the ones
+   that run inside the Workers runtime.
+4. The run stops after 20 minutes.
+
+The job summary and the `mutants-<worker>` artifact have the same shape as
+the Rust job's, and each missed mutant is annotated on the diff. Stryker
+is installed for the run only, at the version pinned in the workflow, so
+the Workers' lockfiles do not change. Settings live in
+[`scripts/stryker.config.json`](../../scripts/stryker.config.json):
+
+- `inPlace`, because some tests read repository files by relative path.
+- A `tsconfigFile` that does not exist, because TypeScript 7 has no
+  JavaScript API for Stryker's tsconfig rewriting. Type checking stays
+  with each Worker's `npm run typecheck`.
+- `vitest.related` off, because the Workers runtime loads modules outside
+  Vitest's module graph, so Vitest cannot tell which tests import a file.
+
+To reproduce a Worker's run locally, from its directory:
+
+```sh
+npm install --no-save @stryker-mutator/core@10.1.1 @stryker-mutator/vitest-runner@10.1.1
+npx stryker run ../../scripts/stryker.config.json --mutate "src/page.ts:10-20"
+```
+
+The report lands in `reports/mutation/mutation.json`; delete that folder
+afterwards.
+
 > [!NOTE]
-> The workflow is a report-only trial and not a required check. The
-> TypeScript Workers and the Python SDK are not covered yet.
+> Both workflows are report-only trials and not required checks. The
+> Python SDK is not covered yet.
 
 ## Worker startup time
 
