@@ -72,3 +72,18 @@ convention = "google"
 # The workerd config templates match the TypeScript SDK's byte for byte,
 # trailing spaces included.
 "src/bookclerk_plugin_sdk/sparse_workerd/config.py" = ["W293"]
+
+# Mutation testing (docs/contributing/ci.md#python-sdk): mutmut copies the
+# sources and tests into mutants/ and runs the tests against each mutant.
+# .github/workflows/mutation-python.yml picks which mutants run; this table
+# says what can be mutated and how the tests run.
+[tool.mutmut]
+source_paths = ["src/bookclerk_plugin_sdk"]
+# The generated ABI modules, the same files ruff leaves alone above; a test
+# in scripts/tests/test_mutmut_report.py keeps the two lists equal.
+do_not_mutate = [
+  "src/bookclerk_plugin_sdk/abi.py",
+  "src/bookclerk_plugin_sdk/_abi.py",
+  "src/bookclerk_plugin_sdk/_wire.py",
+]
+pytest_add_cli_args_test_selection = ["tests"]

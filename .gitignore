@@ -86,3 +86,6 @@ third_party/**/target/
 # cargo-fuzz build products (checked-in corpora stay under fuzz/corpus/)
 fuzz/target/
 fuzz/artifacts/
+
+# Mutation testing scratch (mutmut copies the Python SDK here)
+packages/plugin-sdk-python/mutants/
