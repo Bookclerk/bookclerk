@@ -335,6 +335,7 @@ async fn list_passkeys(
 struct ReauthBody {
     #[serde(default)]
     /// Password used for recent-reauth when the user already has a credential.
+    #[schema(example = "correct horse battery staple")]
     current_password: Option<String>,
 }
 
@@ -418,11 +419,13 @@ async fn register_begin(
 /// Browser attestation/assertion plus the challenge id from `begin`.
 struct CeremonyFinish {
     /// Server-issued challenge id (consumed once; 5-minute TTL).
+    #[schema(example = "6f1d2c3b-4a5e-4f60-9b7c-8d9e0f1a2b3c")]
     challenge_id: String,
     /// Browser `PublicKeyCredential` JSON for `finish_*`.
     credential: Value,
     #[serde(default)]
     /// Label stored with the credential (`Passkey` when empty).
+    #[schema(example = "YubiKey 5C")]
     name: Option<String>,
 }
 
@@ -530,6 +533,7 @@ async fn delete_passkey(
 /// Login-name or email used to start a discoverable-less passkey login.
 struct LoginBegin {
     /// Login name or email looked up before issuing an authentication challenge.
+    #[schema(example = "dana")]
     login: String,
 }
 

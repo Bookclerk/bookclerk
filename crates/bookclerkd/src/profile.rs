@@ -30,12 +30,15 @@ const DISPLAY_NAME_MAX: usize = 80;
 pub struct PatchProfileRequest {
     /// Replacement display name; empty or whitespace clears the field.
     #[serde(default)]
+    #[schema(example = "Dana Reader")]
     pub display_name: Option<String>,
     /// Replacement email; empty or whitespace clears the field.
     #[serde(default)]
+    #[schema(example = "dana@example.com")]
     pub email: Option<String>,
     /// Picture choice (`auto`, `monogram`, `gravatar`, `upload`, or `sso:{id}`).
     #[serde(default)]
+    #[schema(example = "gravatar")]
     pub avatar_source: Option<String>,
 }
 

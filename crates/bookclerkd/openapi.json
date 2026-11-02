@@ -20932,28 +20932,32 @@
               "string",
               "null"
             ],
-            "description": "Optional display name; falls back to login or email."
+            "description": "Optional display name; falls back to login or email.",
+            "example": "Dana Reader"
           },
           "login_name": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional local login name."
+            "description": "Optional local login name.",
+            "example": "dana"
           },
           "email": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional email."
+            "description": "Optional email.",
+            "example": "dana@example.com"
           },
           "password": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional password; hashed before persist and never stored in plaintext."
+            "description": "Optional password; hashed before persist and never stored in plaintext.",
+            "example": "correct horse battery staple"
           }
         }
       },
@@ -21674,7 +21678,8 @@
         "properties": {
           "challenge_id": {
             "type": "string",
-            "description": "Server-issued challenge id (consumed once; 5-minute TTL)."
+            "description": "Server-issued challenge id (consumed once; 5-minute TTL).",
+            "example": "6f1d2c3b-4a5e-4f60-9b7c-8d9e0f1a2b3c"
           },
           "credential": {
             "description": "Browser `PublicKeyCredential` JSON for `finish_*`."
@@ -21684,7 +21689,8 @@
               "string",
               "null"
             ],
-            "description": "Label stored with the credential (`Passkey` when empty)."
+            "description": "Label stored with the credential (`Passkey` when empty).",
+            "example": "YubiKey 5C"
           }
         }
       },
@@ -22501,39 +22507,45 @@
               "string",
               "null"
             ],
-            "description": "Role to assign when permitted (`member` when omitted)."
+            "description": "Role to assign when permitted (`member` when omitted).",
+            "example": "member"
           },
           "display_name": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional display name for the new user."
+            "description": "Optional display name for the new user.",
+            "example": "Sam Reader"
           },
           "login_name": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional local login name for the new user."
+            "description": "Optional local login name for the new user.",
+            "example": "sam"
           },
           "email": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional email for the new user."
+            "description": "Optional email for the new user.",
+            "example": "sam@example.com"
           },
           "password": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional password; hashed before persist. Empty or omitted leaves the user passwordless."
+            "description": "Optional password; hashed before persist. Empty or omitted leaves the user passwordless.",
+            "example": "correct horse battery staple"
           },
           "mint_invite": {
             "type": "boolean",
-            "description": "When true (default), also mint an invite/claim ticket."
+            "description": "When true (default), also mint an invite/claim ticket.",
+            "example": true
           }
         }
       },
@@ -22978,7 +22990,8 @@
         "properties": {
           "password": {
             "type": "string",
-            "description": "Owner account password (re-authentication)."
+            "description": "Owner account password (re-authentication).",
+            "example": "correct horse battery staple"
           }
         }
       },
@@ -23052,7 +23065,8 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Six-digit code from the authenticator app."
+            "description": "Six-digit code from the authenticator app.",
+            "example": "492817"
           }
         }
       },
@@ -23569,7 +23583,8 @@
           "user_id": {
             "type": "integer",
             "format": "int64",
-            "description": "Target `users.id` to impersonate."
+            "description": "Target `users.id` to impersonate.",
+            "example": 7
           }
         }
       },
@@ -24306,7 +24321,8 @@
         "properties": {
           "login": {
             "type": "string",
-            "description": "Login name or email looked up before issuing an authentication challenge."
+            "description": "Login name or email looked up before issuing an authentication challenge.",
+            "example": "dana"
           }
         }
       },
@@ -24319,7 +24335,8 @@
         "properties": {
           "token": {
             "type": "string",
-            "description": "Operator token from the client; compared in constant time and never persisted."
+            "description": "Operator token from the client; compared in constant time and never persisted.",
+            "example": "9b1e4f6a2c8d3e5f7a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f"
           }
         }
       },
@@ -24395,11 +24412,13 @@
         "properties": {
           "challenge_id": {
             "type": "string",
-            "description": "Server-issued challenge id (5-minute TTL, single use)."
+            "description": "Server-issued challenge id (5-minute TTL, single use).",
+            "example": "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c"
           },
           "code": {
             "type": "string",
-            "description": "Six-digit authenticator code."
+            "description": "Six-digit authenticator code.",
+            "example": "492817"
           }
         }
       },
@@ -24454,14 +24473,16 @@
         "properties": {
           "require_second_factor": {
             "type": "boolean",
-            "description": "When true, password login requires TOTP or the user must use a passkey."
+            "description": "When true, password login requires TOTP or the user must use a passkey.",
+            "example": true
           },
           "current_password": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Current password for Owner step-up (operators omit this)."
+            "description": "Current password for Owner step-up (operators omit this).",
+            "example": "correct horse battery staple"
           }
         }
       },
@@ -26502,7 +26523,8 @@
               "string",
               "null"
             ],
-            "description": "Password used for recent-reauth when the user already has a credential."
+            "description": "Password used for recent-reauth when the user already has a credential.",
+            "example": "correct horse battery staple"
           }
         }
       },
@@ -26632,11 +26654,13 @@
         "properties": {
           "login": {
             "type": "string",
-            "description": "Login name or email."
+            "description": "Login name or email.",
+            "example": "dana"
           },
           "password": {
             "type": "string",
-            "description": "Password verified against the stored hash; mismatch fails closed and counts toward lockout."
+            "description": "Password verified against the stored hash; mismatch fails closed and counts toward lockout.",
+            "example": "correct horse battery staple"
           }
         }
       },
@@ -26744,21 +26768,24 @@
               "string",
               "null"
             ],
-            "description": "Replacement display name; empty or whitespace clears the field."
+            "description": "Replacement display name; empty or whitespace clears the field.",
+            "example": "Dana Reader"
           },
           "email": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Replacement email; empty or whitespace clears the field."
+            "description": "Replacement email; empty or whitespace clears the field.",
+            "example": "dana@example.com"
           },
           "avatar_source": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Picture choice (`auto`, `monogram`, `gravatar`, `upload`, or `sso:{id}`)."
+            "description": "Picture choice (`auto`, `monogram`, `gravatar`, `upload`, or `sso:{id}`).",
+            "example": "gravatar"
           }
         }
       },
@@ -26796,35 +26823,40 @@
               "string",
               "null"
             ],
-            "description": "Replacement role (`owner` / `administrator` / `member`) when present."
+            "description": "Replacement role (`owner` / `administrator` / `member`) when present.",
+            "example": "administrator"
           },
           "status": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Replacement status (`active` / `disabled`) when present."
+            "description": "Replacement status (`active` / `disabled`) when present.",
+            "example": "active"
           },
           "display_name": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Replacement display name when present."
+            "description": "Replacement display name when present.",
+            "example": "Sam Reader"
           },
           "login_name": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Replacement local login name when present."
+            "description": "Replacement local login name when present.",
+            "example": "sam"
           },
           "email": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Replacement email when present."
+            "description": "Replacement email when present.",
+            "example": "sam@example.com"
           }
         }
       },
@@ -30280,14 +30312,16 @@
         "properties": {
           "password": {
             "type": "string",
-            "description": "New password; hashed before persist. Empty is rejected."
+            "description": "New password; hashed before persist. Empty is rejected.",
+            "example": "new horse battery staple"
           },
           "current_password": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Required when the caller already has a password (not first-time invite setup)."
+            "description": "Required when the caller already has a password (not first-time invite setup).",
+            "example": "correct horse battery staple"
           },
           "user_id": {
             "type": [
@@ -30295,7 +30329,8 @@
               "null"
             ],
             "format": "int64",
-            "description": "Target `users.id` when a provisioner sets another user's password."
+            "description": "Target `users.id` when a provisioner sets another user's password.",
+            "example": 7
           }
         }
       },
@@ -32069,7 +32104,8 @@
               "string",
               "null"
             ],
-            "description": "Password used for recent-reauth when the user already has a credential."
+            "description": "Password used for recent-reauth when the user already has a credential.",
+            "example": "correct horse battery staple"
           }
         }
       },
