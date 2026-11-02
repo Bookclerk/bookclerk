@@ -1,44 +1,45 @@
-# Mutation testing of the Worker code a pull request changes
+# Nightly mutation testing of the Worker code merged since the last run
 # (docs/contributing/ci.md#mutation-testing).
 #
 # - The TypeScript side of mutation.yml: Stryker makes small changes to the
-#   lines a pull request changes in each Cloudflare Worker (a flipped
-#   condition, an emptied string or array, a removed call) and runs the
-#   Worker's Vitest suite against each; a change every test still passes on
-#   is a "missed" mutant, listed in the job summary and annotated on the
-#   diff. Stryker also mutates literals, so a change to data (a constant
-#   string, a table) gets mutants too.
-# - Only the changed lines of each Worker's sources are mutated (Stryker's
-#   `--mutate path:start-end`, from the merge commit's diff against the
-#   base; a deletion counts as a change to the line before it); tests, test
-#   support and configuration are not.
+#   lines changed in each Cloudflare Worker (a flipped condition, an emptied
+#   string or array, a removed call) and runs the Worker's Vitest suite
+#   against each; a change every test still passes on is a "missed" mutant,
+#   listed in the job summary and filed as an issue (mutation-issue.yml).
+#   Stryker also mutates literals, so a change to data (a constant string, a
+#   table) gets mutants too.
+# - Only the lines of each Worker's sources changed since the last
+#   successful run are mutated (Stryker's `--mutate path:start-end`, from
+#   the default branch's diff against that run's commit;
+#   scripts/mutation_base.py; a deletion counts as a change to the line
+#   before it); tests, test support and configuration are not. It runs off
+#   pull requests so it never slows them.
 # - A changed file whose changed lines give no mutant (a type, an import, an
 #   export) gets a second pass on a sample of its other lines, so the tests
 #   of the code beside the change are still checked, as mutation.yml does
 #   for Rust data changes.
-# - Trial: report-only and not a required check. Settings live in
-#   scripts/stryker.config.json.
+# - Never a required check. Settings live in scripts/stryker.config.json.
 #
-# It runs the pull request's code with a read-only token, like CI.
+# A manual run can start from an older commit (`base`).
 
 name: Mutation testing (Workers)
 
 on:
-  pull_request:
-    paths:
-      - "tools/site/**"
-      - "tools/demo/**"
-      - "tools/diagnostics-collector/**"
-      - "scripts/stryker.config.json"
-      - "scripts/stryker_report.py"
-      - ".github/workflows/mutation-workers.yml"
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Commit to start from (default: the last successful run's)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: mutation-workers-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: mutation-workers
+  cancel-in-progress: false
 
 env:
   # A CI-only tool, pinned here like cargo-mutants in mutation.yml. It is
@@ -48,10 +49,14 @@ env:
 
 jobs:
   worker:
-    name: Mutants (${{ matrix.name }}, report only)
+    name: Mutants (${{ matrix.name }})
     runs-on: ubuntu-latest
-    # Stryker's 20 minutes (plus 2 to stop) and room for setup and the report.
-    timeout-minutes: 45
+    # Stryker's 40 minutes (plus 2 to stop) and room for setup and the report.
+    timeout-minutes: 65
+    permissions:
+      contents: read
+      # The last successful run's commit (scripts/mutation_base.py).
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -63,21 +68,25 @@ jobs:
           - name: collector
             root: tools/diagnostics-collector
     steps:
-      # The pull request merged onto its base branch, as CI tests it.
+      # Full history, to diff against the last run's commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 2
+          fetch-depth: 0
           persist-credentials: false
 
-      # The pull request's changes as they land on the base branch, then the
-      # changed line ranges of this Worker's sources, in Stryker's syntax.
+      # What merged since the last successful run, then the changed line
+      # ranges of this Worker's sources, in Stryker's syntax.
       - name: Find the changed lines
         id: lines
         env:
           ROOT: ${{ matrix.root }}
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ inputs.base }}
         run: |
           set -euo pipefail
-          git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
+          base=$(python3 scripts/mutation_base.py --workflow mutation-workers.yml --base "${BASE:-}")
+          git diff "$base" HEAD > "$RUNNER_TEMP/pr.diff"
+          echo "Mutating the changes in \`$base..$GITHUB_SHA\`." >> "$GITHUB_STEP_SUMMARY"
           mutate=$(python3 scripts/stryker_report.py lines --diff "$RUNNER_TEMP/pr.diff" --root "$ROOT")
           echo "mutate=$mutate" >> "$GITHUB_OUTPUT"
 
@@ -98,7 +107,7 @@ jobs:
           npm install --no-save "@stryker-mutator/core@$STRYKER_VERSION" "@stryker-mutator/vitest-runner@$STRYKER_VERSION"
 
       # `inPlace` mutates this checkout, which the runner throws away;
-      # Stryker restores each file afterwards. The time limit (20 minutes
+      # Stryker restores each file afterwards. The time limit (40 minutes
       # for both passes) leaves room to report inside the job's: on SIGINT,
       # incremental mode writes the mutants tested so far to the report.
       # The signal goes to Stryker alone (`--foreground`, and its binary
@@ -112,11 +121,12 @@ jobs:
         working-directory: ${{ matrix.root }}
         env:
           MUTATE: ${{ steps.lines.outputs.mutate }}
-          PR: ${{ github.event.pull_request.number }}
+          SEED: ${{ github.run_number }}
         run: |
           set +e
-          limit=1200
-          # 0: finished; 1: stopped at the time limit; 2: failed.
+          limit=2400
+          # 0: finished; 1: stopped at the time limit; 2: failed (the
+          # report then fails the job, so the next run retries the range).
           stryker() {
             timeout --foreground --signal=INT --kill-after=2m "$1" node_modules/.bin/stryker run ../../scripts/stryker.config.json --mutate "$2"
             code=$?
@@ -127,8 +137,13 @@ jobs:
             [ "$code" -eq 0 ] || return 2
           }
           SECONDS=0
-          stryker "${limit}s" "$MUTATE" || exit 0
-          widened=$(python3 ../../scripts/stryker_report.py widen --report reports/mutation/mutation.json --mutate "$MUTATE" --root . --seed "$PR" --list "$RUNNER_TEMP/widened.txt")
+          stryker "${limit}s" "$MUTATE"
+          case $? in
+            0) ;;
+            2) echo "failed=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            *) exit 0 ;;
+          esac
+          widened=$(python3 ../../scripts/stryker_report.py widen --report reports/mutation/mutation.json --mutate "$MUTATE" --root . --seed "$SEED" --list "$RUNNER_TEMP/widened.txt")
           [ -n "$widened" ] || exit 0
           left=$((limit - SECONDS))
           # Too little time for a second start-up, or a second pass that
@@ -148,11 +163,19 @@ jobs:
           NAME: ${{ matrix.name }}
           MUTATE: ${{ steps.lines.outputs.mutate }}
           STOPPED: ${{ steps.mutants.outputs.stopped }}
+          FAILED: ${{ steps.mutants.outputs.failed }}
+          LINES: ${{ steps.lines.outcome }}
         run: |
           set -euo pipefail
-          args=(--report "$ROOT/reports/mutation/mutation.json" --root "$ROOT" --name "$NAME" --widened "$RUNNER_TEMP/widened.txt" --unwidened "$RUNNER_TEMP/unwidened.txt")
+          if [ "$LINES" != "success" ]; then
+            echo "Could not choose the lines to mutate; check the job log." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/issue"
+          args=(--report "$ROOT/reports/mutation/mutation.json" --root "$ROOT" --name "$NAME" --widened "$RUNNER_TEMP/widened.txt" --unwidened "$RUNNER_TEMP/unwidened.txt" --issue "$RUNNER_TEMP/issue/$NAME.md")
           if [ -z "$MUTATE" ]; then args+=(--not-mutated); fi
           if [ "${STOPPED:-}" = "true" ]; then args+=(--stopped); fi
+          if [ "${FAILED:-}" = "true" ]; then args+=(--failed); fi
           python3 scripts/stryker_report.py report "${args[@]}"
 
       - name: Upload the results
@@ -163,3 +186,19 @@ jobs:
           path: ${{ matrix.root }}/reports/mutation
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Upload the issue body
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-issue-${{ matrix.name }}
+          path: ${{ runner.temp }}/issue/${{ matrix.name }}.md
+          if-no-files-found: ignore
+          retention-days: 7
+
+  issue:
+    needs: worker
+    if: ${{ !cancelled() }}
+    permissions:
+      issues: write
+    uses: ./.github/workflows/mutation-issue.yml

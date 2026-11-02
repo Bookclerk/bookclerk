@@ -20,6 +20,8 @@ from types import ModuleType
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_mutation_report import assert_files_issues  # noqa: E402
 
 
 def _load() -> ModuleType:
@@ -392,13 +394,13 @@ class RenderTest(unittest.TestCase):
         self.assertIn("**75%** of the 4 mutants", text)
         self.assertIn("| 3 | 1 | 0 | 0 |", text)
         self.assertIn("- `tools/site/src/page.ts:7:5: ConditionalExpression → true`", text)
-        self.assertIn("Report only", text)
+        self.assertIn("Daily run", text)
 
     def test_widened_files_are_named(self) -> None:
         results = sr.Results()
         results.mutants[Outcome.CAUGHT] = ["c"]
         summary = sr.render("site", (results, []), mutated=True, widened={"tools/site/src/types.ts": 12})
-        self.assertIn("in those files was mutated too, chosen afresh for each pull request: `tools/site/src/types.ts` (12 lines).", summary)
+        self.assertIn("in those files was mutated too, chosen afresh for each run: `tools/site/src/types.ts` (12 lines).", summary)
         self.assertIn("of the 1 mutants tested", summary)
         skipped = sr.render("site", (results, []), mutated=True, unwidened=["tools/site/src/types.ts"])
         self.assertIn("`tools/site/src/types.ts`, and the sample of their other lines was not tested", skipped)
@@ -442,6 +444,20 @@ class MainTest(unittest.TestCase):
                 argv = ["report", "--report", str(Path(tmp, "none.json")), "--root", "tools/site", "--name", "site", "--not-mutated", "--summary", ""]
                 self.assertEqual(sr.main(argv), 0)
             self.assertIn("touches no source line", "".join(c.args[0] for c in stdout.write.call_args_list))
+            # Lines to mutate but no report, or a first pass that failed: the
+            # range was not tested, so the run fails and the next one retries.
+            with mock.patch("sys.stdout") as stdout:
+                argv = ["report", "--report", str(Path(tmp, "none.json")), "--root", "tools/site", "--name", "site", "--summary", ""]
+                self.assertEqual(sr.main(argv), 1)
+            self.assertIn("did not finish", "".join(c.args[0] for c in stdout.write.call_args_list))
+            with mock.patch("sys.stdout") as stdout:
+                argv = ["report", "--report", str(data), "--root", "tools/site", "--name", "site", "--failed", "--summary", ""]
+                self.assertEqual(sr.main(argv), 1)
+            self.assertIn("exited with an error", "".join(c.args[0] for c in stdout.write.call_args_list))
+            # A stopped run that saved results stands.
+            with mock.patch("sys.stdout"):
+                argv = ["report", "--report", str(data), "--root", "tools/site", "--name", "site", "--stopped", "--summary", ""]
+                self.assertEqual(sr.main(argv), 0)
 
     def test_usage(self) -> None:
         with mock.patch("sys.stderr"):
@@ -457,25 +473,29 @@ class WiringTest(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "mutation-workers.yml").read_text(encoding="utf-8"))
         triggers = workflow.get("on", workflow.get(True))
-        self.assertEqual(list(triggers), ["pull_request"])
+        self.assertEqual(sorted(triggers), ["schedule", "workflow_dispatch"])
+        self.assertIn("base", triggers["workflow_dispatch"]["inputs"])
         self.assertEqual(workflow["permissions"], {"contents": "read"})
         job = workflow["jobs"]["worker"]
         roots = {entry["root"] for entry in job["strategy"]["matrix"]["include"]}
         self.assertEqual(roots, {"tools/site", "tools/demo", "tools/diagnostics-collector"})
         for root in roots:
-            self.assertIn(f"{root}/**", triggers["pull_request"]["paths"])
             self.assertTrue((ROOT / root / "vitest.config.ts").is_file(), root)
         steps = {s.get("name"): s for s in job["steps"]}
         self.assertFalse(job["steps"][0]["with"]["persist-credentials"])
         self.assertNotIn("ref", job["steps"][0]["with"])
-        self.assertIn("git diff HEAD^1 HEAD", steps["Find the changed lines"]["run"])
+        self.assertEqual(job["steps"][0]["with"]["fetch-depth"], 0)
+        self.assertIn("scripts/mutation_base.py --workflow mutation-workers.yml", steps["Find the changed lines"]["run"])
+        self.assertIn('git diff "$base" HEAD', steps["Find the changed lines"]["run"])
         self.assertIn("npm install --no-save", steps["Install dependencies and Stryker"]["run"])
         run = steps["Test the mutants"]["run"]
         self.assertIn('stryker "${limit}s" "$MUTATE"', run)
         self.assertIn("python3 ../../scripts/stryker_report.py widen", run)
-        self.assertIn('--seed "$PR"', run)
+        self.assertIn('--seed "$SEED"', run)
         self.assertIn('stryker "${left}s" "$widened"', run)
-        self.assertEqual(steps["Test the mutants"]["env"]["PR"], "${{ github.event.pull_request.number }}")
+        self.assertEqual(steps["Test the mutants"]["env"]["SEED"], "${{ github.run_number }}")
+        self.assertIn('--issue "$RUNNER_TEMP/issue/$NAME.md"', steps["Report"]["run"])
+        assert_files_issues(self, workflow, "worker", "${{ matrix.name }}")
         self.assertIn('--widened "$RUNNER_TEMP/widened.txt" --unwidened "$RUNNER_TEMP/unwidened.txt"', steps["Report"]["run"])
         self.assertIn('mv "$RUNNER_TEMP/widened.txt" "$RUNNER_TEMP/unwidened.txt"', run)
         # SIGINT to Stryker alone: the whole process group would stop its

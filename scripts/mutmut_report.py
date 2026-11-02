@@ -2,10 +2,12 @@
 """Scopes and summarizes mutmut mutation runs on the Python plugin SDK.
 
 The Python side of mutation testing (``docs/contributing/ci.md#python-sdk``):
-``.github/workflows/mutation-python.yml`` runs mutmut on the functions a pull
-request changes in ``packages/plugin-sdk-python/src`` and then this script,
-which writes the Markdown summary. Like the Rust and Worker jobs, the trial
-is report-only and the script always exits 0.
+``.github/workflows/mutation-python.yml`` runs mutmut each night on the
+functions merged since its last run in ``packages/plugin-sdk-python/src`` and then this script,
+which writes the Markdown summary and, with ``--issue``, the issue body for
+missed mutants. Like the Rust and Worker jobs, it never blocks a merge and
+the script exits 0 unless mutmut tested none of the selected mutants: then
+it exits 1, so the next daily run covers the same changes.
 
 Two subcommands:
 
@@ -32,7 +34,7 @@ Two subcommands:
   mutmut keeps beside each mutated module (``mutants/src/**/<file>.meta``),
   keeps the mutants the patterns select, appends the summary to
   ``$GITHUB_STEP_SUMMARY`` (``--summary FILE`` overrides) and annotates each
-  missed mutant on the diff, with the line and change read from mutmut's
+  missed mutant on the run, with the line and change read from mutmut's
   copy of the function. ``--out DIR`` also writes every mutant, one file
   per outcome (``caught.txt``, ``missed.txt``, …), for the artifact.
 
@@ -57,7 +59,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from mutation_report import MAX_LISTED, Outcome, Results, _code
+from mutation_report import MAX_LISTED, Outcome, Results, _code, write_issue
 from stryker_report import SAFE_PATH, _clean, annotations
 
 #: Largest file read (a source module, a mutated module or a ``.meta``
@@ -150,7 +152,7 @@ def is_source(path: str, generated: frozenset[str]) -> bool:
 
 @dataclass
 class Change:
-    """How a pull request changes one SDK source file."""
+    """How the diff changes one SDK source file."""
 
     #: The lines the diff adds, on the new side, 1-based.
     added: set[int]
@@ -429,14 +431,14 @@ def select(
     generated: frozenset[str],
     read_old: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Build the mutmut patterns for a pull request's changes to the SDK.
+    """Build the mutmut patterns for a diff's changes to the SDK.
 
     Added lines are placed in the new file. Deleted lines are placed in the
     old one: the function they were in is selected when the new file still
     has it, and deleted code outside every function widens the module.
 
     Args:
-        diff: The pull request's unified diff.
+        diff: The unified diff of the code being mutated.
         root: The SDK's directory, relative to the repository root.
         read: Each changed source file's new text, keyed by its path
             relative to ``root``; a file missing here (deleted) is skipped.
@@ -609,7 +611,7 @@ class Module:
         """Index an original module and mutmut's copy of it.
 
         Args:
-            original: The module's text as the pull request has it.
+            original: The module's text after the diff.
             mutated: mutmut's copy, holding every mutant's function.
 
         Returns:
@@ -813,7 +815,7 @@ def render(
         lines += [f"- {_code(_clean(name))}" for name in skipped[:MAX_LISTED]]
         if len(skipped) > MAX_LISTED:
             lines.append(f"- … and {len(skipped) - MAX_LISTED} more.")
-    lines += ["", "Report only: missed mutants do not fail the pull request yet."]
+    lines += ["", "Daily run: missed mutants are filed as an issue and never block a merge."]
     return "\n".join(lines) + "\n"
 
 
@@ -843,7 +845,7 @@ def _git_show(revision: str, path: str) -> str | None:
 def select_main(argv: list[str]) -> int:
     """Print the mutmut patterns for the SDK's changed functions."""
     parser = argparse.ArgumentParser(prog="mutmut_report.py select")
-    parser.add_argument("--diff", type=Path, required=True, help="the pull request's diff")
+    parser.add_argument("--diff", type=Path, required=True, help="the diff of the code merged since the last run")
     parser.add_argument("--root", required=True, help="the SDK's directory, relative to the repository root")
     parser.add_argument("--skipped", type=Path, help="file to write the changed functions mutmut never mutates to")
     parser.add_argument("--base", help="the git revision the diff starts from, to place deleted lines (HEAD^1 in CI)")
@@ -878,6 +880,7 @@ def report_main(argv: list[str]) -> int:
     parser.add_argument("--stopped", action="store_true", help="the workflow stopped mutmut at its time limit")
     parser.add_argument("--out", type=Path, help="folder to write <outcome>.txt into, one mutant per line, for the artifact")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""), help="file to append the summary to (none when empty)")
+    parser.add_argument("--issue", type=Path, help="file to write the summary to when a mutant was missed, for the issue the workflow files")
     args = parser.parse_args(argv)
     patterns = parse_patterns(_read(args.patterns) or "")
     skipped = [line.strip() for line in (_read(args.skipped) or "").splitlines()[:10000] if line.strip()] if args.skipped else []
@@ -902,6 +905,7 @@ def report_main(argv: list[str]) -> int:
             parsed = collect(codes_by_path, load, patterns, args.root)
     markdown = render(parsed, patterns=patterns, skipped=skipped, stopped=args.stopped)
     sys.stdout.write(markdown)
+    write_issue(args.issue, markdown, parsed[0] if parsed is not None else None)
     if parsed is not None:
         sys.stdout.write(annotations(parsed[1]))
         if args.out is not None:
@@ -911,7 +915,10 @@ def report_main(argv: list[str]) -> int:
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
             handle.write(markdown)
-    return 0
+    # The next daily run starts from the last successful one's commit, so a
+    # run that selected mutants but tested none fails the workflow to keep
+    # the changes in the next run's range.
+    return 1 if patterns and parsed is None else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -921,7 +928,9 @@ def main(argv: list[str] | None = None) -> int:
         argv: Command-line arguments; ``sys.argv`` when ``None``.
 
     Returns:
-        0: the trial never fails the workflow.
+        0, including when mutants were missed (they become an issue); 1 when
+        ``report`` finds mutmut tested none of the selected mutants, so the
+        workflow fails and the next run covers the same changes.
     """
     argv = sys.argv[1:] if argv is None else argv
     commands = {"select": select_main, "report": report_main}

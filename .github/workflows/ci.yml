@@ -187,6 +187,7 @@ jobs:
           "$PY" scripts/tests/test_mutation_report.py
           "$PY" scripts/tests/test_stryker_report.py
           "$PY" scripts/tests/test_mutmut_report.py
+          "$PY" scripts/tests/test_mutation_base.py
           "$PY" scripts/tests/test_codeql_languages.py
           "$PY" scripts/tests/test_codeql_reuse.py
           "$PY" scripts/tests/test_dev_env.py

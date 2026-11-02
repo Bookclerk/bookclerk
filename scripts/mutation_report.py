@@ -2,16 +2,20 @@
 """Summarizes a cargo-mutants run for the mutation testing workflow.
 
 Mutation testing checks that tests would catch a bug, not only that they run
-the code: cargo-mutants makes small changes to the code a pull request
-touches (a flipped comparison, a function that returns a default) and runs
+the code: cargo-mutants makes small changes to the code merged since the
+last daily run (a flipped comparison, a function that returns a default) and runs
 the package's tests against each one. A mutant the tests still pass on is
 "missed": the changed code has no test that checks that behavior. See
 ``docs/contributing/ci.md#mutation-testing``.
 
 ``.github/workflows/mutation.yml`` runs cargo-mutants and then this script,
 which reads the run's ``mutants.out`` directory and writes a Markdown summary
-to ``$GITHUB_STEP_SUMMARY``. The trial is report-only: the script always
-exits 0.
+to ``$GITHUB_STEP_SUMMARY``, and with ``--issue`` the issue body
+``.github/workflows/mutation-issue.yml`` files when a mutant was missed. It
+never blocks a merge. It exits 1 only when the run did not test its range
+(the baseline failed or cargo-mutants errored), so the workflow fails and
+the next daily run, which starts from the last successful one, covers the
+same changes.
 
 The lists are cargo-mutants' own ``caught.txt``, ``missed.txt``,
 ``timeout.txt`` and ``unviable.txt``, one mutant per line, written in the
@@ -168,7 +172,7 @@ def files_to_widen(diff: str, listed: str) -> list[str]:
     """List the changed Rust files the diff gave no mutant.
 
     Args:
-        diff: The pull request's diff.
+        diff: The diff of the code being mutated.
         listed: The output of ``cargo mutants --list --in-diff`` on that
             diff: one mutant per line.
 
@@ -238,7 +242,7 @@ def sample_lines(listed: str, budget: int, seed: int) -> tuple[dict[str, list[in
     candidate lines (each mutant's first line) are tried in an evenly spread
     order starting at ``seed``, and a line is kept only while the mutants
     admitted stay
-    within ``budget``, so successive pull requests test different mutants of
+    within ``budget``, so successive runs test different mutants of
     the same file and no run tests more than ``budget`` (unless every line
     alone admits more, when the line admitting the fewest is marked).
 
@@ -353,6 +357,26 @@ def run_state(exit_code: int) -> Run:
     return EXIT_CODES.get(exit_code, Run.ERROR)
 
 
+def usable(run: Run, stopped: bool) -> bool:
+    """Say whether a run tested the range it was given.
+
+    The next daily run starts from the commit of the last successful one,
+    so a run that failed before testing its mutants must fail the workflow,
+    or the changes it should have tested would never be tested. A run the
+    time limit stopped counts: what it tested stands, and retrying the same
+    range would stop at the same place.
+
+    Args:
+        run: How cargo-mutants ended.
+        stopped: Whether the workflow stopped it at its time limit.
+
+    Returns:
+        ``False`` when the baseline failed or cargo-mutants exited with an
+        error on its own.
+    """
+    return stopped or run not in (Run.BASELINE_FAILED, Run.ERROR)
+
+
 def read_results(out: Path) -> Results:
     """Read the list files of a ``mutants.out`` directory.
 
@@ -422,7 +446,7 @@ def render(
             )
             note = (
                 f"The widened files, including any not listed, hold {sample.total} mutants, more than one run tests, "
-                f"so {ran} spread across them were tested; the choice changes with each pull request."
+                f"so {ran} spread across them were tested; the choice changes with each run."
             )
             lines += [note, ""]
     if run is Run.BASELINE_FAILED:
@@ -461,7 +485,7 @@ def render(
             "> [!WARNING]",
             "> cargo-mutants exited with an error before it finished, so these results are incomplete. Check the job log.",
         ]
-    lines += ["", "Report only: missed mutants do not fail the pull request yet."]
+    lines += ["", "Daily run: missed mutants are filed as an issue and never block a merge."]
     return "\n".join(lines) + "\n"
 
 
@@ -475,7 +499,7 @@ def widen_main(argv: list[str]) -> int:
         0.
     """
     parser = argparse.ArgumentParser(prog="mutation_report.py widen", description=files_to_widen.__doc__.split("\n", 1)[0])
-    parser.add_argument("--diff", type=Path, required=True, help="the pull request's diff")
+    parser.add_argument("--diff", type=Path, required=True, help="the diff of the code merged since the last run")
     parser.add_argument("--listed", type=Path, required=True, help="output of cargo mutants --list --in-diff")
     args = parser.parse_args(argv)
     diff = args.diff.read_text(encoding="utf-8", errors="replace")
@@ -495,10 +519,10 @@ def sample_main(argv: list[str]) -> int:
         0.
     """
     parser = argparse.ArgumentParser(prog="mutation_report.py sample", description=sample_lines.__doc__.split("\n", 1)[0])
-    parser.add_argument("--diff", type=Path, required=True, help="the pull request's diff, rewritten in place")
+    parser.add_argument("--diff", type=Path, required=True, help="the run's diff, rewritten in place")
     parser.add_argument("--listed", type=Path, required=True, help="cargo mutants --list --json over the widened files")
     parser.add_argument("--budget", type=int, required=True, help="the most widened mutants to select")
-    parser.add_argument("--seed", type=int, required=True, help="picks the sample (the pull request number)")
+    parser.add_argument("--seed", type=int, required=True, help="picks the sample (the run number)")
     parser.add_argument("--record", type=Path, required=True, help="where to write the sample for the report (JSON)")
     args = parser.parse_args(argv)
     lines, sample = sample_lines(args.listed.read_text(encoding="utf-8", errors="replace"), args.budget, args.seed)
@@ -527,6 +551,21 @@ def read_sample(text: str) -> Sample | None:
     return sample if 0 <= sample.tested <= sample.total else None
 
 
+def write_issue(path: Path | None, markdown: str, results: Results | None) -> None:
+    """Write the summary as an issue body when the run missed a mutant.
+
+    The daily workflows file the body as an issue (one per area, updated by
+    later runs), so a run with no missed mutant writes nothing.
+
+    Args:
+        path: Where to write the body; nothing is written when ``None``.
+        markdown: The run's summary.
+        results: The run's mutants, or ``None`` when it produced none.
+    """
+    if path is not None and results is not None and results.count(Outcome.MISSED):
+        path.write_text(markdown, encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Write the summary of a cargo-mutants run, or run ``widen`` or ``sample``.
 
@@ -534,7 +573,9 @@ def main(argv: list[str] | None = None) -> int:
         argv: Command-line arguments; ``sys.argv`` when ``None``.
 
     Returns:
-        0: the trial never fails the workflow.
+        0, including when mutants were missed (they become an issue); 1 when
+        the run did not test its range (``usable``), so the workflow fails
+        and the next run covers the same changes.
     """
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["widen"]:
@@ -548,15 +589,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--widened", type=Path, help="files mutated whole, one per line (from widen)")
     parser.add_argument("--sample", type=Path, help="the sample record (from sample)")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""), help="file to append the summary to (none when empty)")
+    parser.add_argument("--issue", type=Path, help="file to write the summary to when a mutant was missed, for the issue the workflow files")
     args = parser.parse_args(argv)
     widened = parse_list(args.widened.read_text(encoding="utf-8", errors="replace")) if args.widened and args.widened.is_file() else []
     sample = read_sample(args.sample.read_text(encoding="utf-8")) if args.sample and args.sample.is_file() else None
-    markdown = render(read_results(args.out), run_state(args.exit_code), stopped=args.stopped, widened=widened, sample=sample)
+    results = read_results(args.out)
+    run = run_state(args.exit_code)
+    markdown = render(results, run, stopped=args.stopped, widened=widened, sample=sample)
     sys.stdout.write(markdown)
+    write_issue(args.issue, markdown, results)
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
             handle.write(markdown)
-    return 0
+    return 0 if usable(run, args.stopped) else 1
 
 
 if __name__ == "__main__":

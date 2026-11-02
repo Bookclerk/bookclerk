@@ -24,6 +24,8 @@ from types import ModuleType
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_mutation_report import assert_files_issues  # noqa: E402
 SDK = "packages/plugin-sdk-python"
 
 
@@ -462,7 +464,7 @@ class RenderTest(unittest.TestCase):
         summary = mr.render(self.results(3, 1), patterns=patterns)
         self.assertIn("**75%** of the 4 mutants", summary)
         self.assertIn("- `m0`", summary)
-        self.assertIn("Report only", summary)
+        self.assertIn("Daily run", summary)
         self.assertIn("time limit", mr.render(self.results(1, 0), patterns=patterns, stopped=True))
         widened = mr.render(self.results(1, 0), patterns=[("pkg.mod", None)])
         self.assertIn("outside any function in `pkg.mod`, so all of their mutable functions", widened)
@@ -550,12 +552,12 @@ class MainTest(unittest.TestCase):
             self.assertIn("touches no source line", "".join(c.args[0] for c in stdout.write.call_args_list))
             # Patterns but no results: mutmut did not get as far as writing them.
             with mock.patch("sys.stdout") as stdout:
-                self.assertEqual(mr.main(["report", "--mutants", str(Path(tmp, "none")), "--patterns", str(patterns), "--root", root.as_posix(), "--summary", ""]), 0)
+                self.assertEqual(mr.main(["report", "--mutants", str(Path(tmp, "none")), "--patterns", str(patterns), "--root", root.as_posix(), "--summary", ""]), 1)
             self.assertIn("did not test any mutant", "".join(c.args[0] for c in stdout.write.call_args_list))
             # Results written but none tested: mutmut failed before testing.
             (mutants / "src" / "pkg" / "mod.py.meta").write_text(json.dumps({"exit_code_by_key": {"pkg.mod.x_first__mutmut_1": None}}), encoding="utf-8")
             with mock.patch("sys.stdout") as stdout:
-                self.assertEqual(mr.main(["report", "--mutants", str(mutants), "--patterns", str(patterns), "--root", root.as_posix(), "--summary", ""]), 0)
+                self.assertEqual(mr.main(["report", "--mutants", str(mutants), "--patterns", str(patterns), "--root", root.as_posix(), "--summary", ""]), 1)
             self.assertIn("did not test any mutant", "".join(c.args[0] for c in stdout.write.call_args_list))
             # No selected mutant at all: the changed functions had none.
             other = Path(tmp, "other.txt")
@@ -578,9 +580,8 @@ class WiringTest(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "mutation-python.yml").read_text(encoding="utf-8"))
         triggers = workflow.get("on", workflow.get(True))
-        self.assertEqual(list(triggers), ["pull_request"])
-        self.assertIn(f"{SDK}/**", triggers["pull_request"]["paths"])
-        self.assertIn("scripts/mutmut_report.py", triggers["pull_request"]["paths"])
+        self.assertEqual(sorted(triggers), ["schedule", "workflow_dispatch"])
+        self.assertIn("base", triggers["workflow_dispatch"]["inputs"])
         self.assertEqual(workflow["permissions"], {"contents": "read"})
         self.assertEqual(workflow["env"]["SDK"], SDK)
         self.assertRegex(workflow["env"]["MUTMUT_VERSION"], r"^\d+\.\d+\.\d+$")
@@ -588,7 +589,9 @@ class WiringTest(unittest.TestCase):
         steps = {s.get("name"): s for s in job["steps"]}
         self.assertFalse(job["steps"][0]["with"]["persist-credentials"])
         self.assertNotIn("ref", job["steps"][0]["with"])
-        self.assertIn("git diff HEAD^1 HEAD", steps["Find the changed functions"]["run"])
+        self.assertEqual(job["steps"][0]["with"]["fetch-depth"], 0)
+        self.assertIn("scripts/mutation_base.py --workflow mutation-python.yml", steps["Find the changed functions"]["run"])
+        self.assertIn('--base "$base"', steps["Find the changed functions"]["run"])
         self.assertIn("--locked", steps["Install the test dependencies and mutmut"]["run"])
         self.assertIn('"mutmut==$MUTMUT_VERSION"', steps["Install the test dependencies and mutmut"]["run"])
         run = steps["Test the mutants"]["run"]
@@ -600,8 +603,6 @@ class WiringTest(unittest.TestCase):
         self.assertNotIn("--foreground", run)
         self.assertEqual(steps["Test the mutants"]["id"], "mutants")
         self.assertEqual(steps["Test the mutants"]["working-directory"], "${{ env.SDK }}")
-        self.assertIn("scripts/stryker_report.py", triggers["pull_request"]["paths"])
-        self.assertIn("scripts/mutation_report.py", triggers["pull_request"]["paths"])
         self.assertIn('--skipped "$RUNNER_TEMP/skipped.txt"', steps["Find the changed functions"]["run"])
         self.assertIn("steps.select.outcome == 'success'", steps["Report"]["if"])
         report = steps["Report"]["run"]
@@ -610,6 +611,8 @@ class WiringTest(unittest.TestCase):
         self.assertIn('--skipped "$RUNNER_TEMP/skipped.txt"', report)
         self.assertEqual(steps["Report"]["env"]["STOPPED"], "${{ steps.mutants.outputs.stopped }}")
         self.assertEqual(steps["Upload the results"]["with"]["name"], "mutants-python-sdk")
+        self.assertIn('--issue "$RUNNER_TEMP/issue/python-sdk.md"', report)
+        assert_files_issues(self, workflow, "mutants", "python-sdk")
 
     def test_settings(self) -> None:
         config = tomllib.loads((ROOT / SDK / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mutmut"]
