@@ -166,6 +166,8 @@ class WiringTest(unittest.TestCase):
         run = steps["Test the mutants"]["run"]
         self.assertIn('--in-diff "$RUNNER_TEMP/pr.diff"', run)
         self.assertIn("timeout --signal=INT", run)
+        # rust-cache exports CARGO_INCREMENTAL=0; only a step value wins.
+        self.assertEqual(steps["Test the mutants"]["env"]["CARGO_INCREMENTAL"], "1")
         self.assertIn("python3 scripts/mutation_report.py", steps["Report"]["run"])
         # The run's time limit leaves room to report inside the job's.
         self.assertIn("50m", run)

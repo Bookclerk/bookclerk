@@ -35,8 +35,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Each mutant rebuilds only what it changed.
-  CARGO_INCREMENTAL: "1"
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   RUST_BACKTRACE: "0"
 
@@ -111,6 +109,10 @@ jobs:
       - name: Test the mutants
         id: mutants
         if: steps.diff.outputs.ok == 'true'
+        env:
+          # Each mutant rebuilds only what it changed. Set on the step:
+          # rust-cache exports CARGO_INCREMENTAL=0 for the rest of the job.
+          CARGO_INCREMENTAL: "1"
         run: |
           set +e
           timeout --signal=INT --kill-after=5m 50m \
