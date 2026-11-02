@@ -21334,19 +21334,23 @@
         "properties": {
           "bg": {
             "type": "string",
-            "description": "Background color (`#RRGGBB`)."
+            "description": "Background color (`#RRGGBB`).",
+            "example": "#1F4E3D"
           },
           "fg": {
             "type": "string",
-            "description": "Foreground / text color (`#RRGGBB`)."
+            "description": "Foreground / text color (`#RRGGBB`).",
+            "example": "#F4F1EA"
           },
           "accent": {
             "type": "string",
-            "description": "Accent color (`#RRGGBB`)."
+            "description": "Accent color (`#RRGGBB`).",
+            "example": "#2F6B53"
           },
           "logo": {
             "type": "string",
-            "description": "Logo image href (often a favicon URL)."
+            "description": "Logo image href (often a favicon URL).",
+            "example": "https://www.google.com/s2/favicons?domain=libro.fm&sz=128"
           }
         }
       },
@@ -22089,11 +22093,13 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Stored option value (for example `m4b`)."
+            "description": "Stored option value (for example `m4b`).",
+            "example": "m4b"
           },
           "label": {
             "type": "string",
-            "description": "Operator-facing value label."
+            "description": "Operator-facing value label.",
+            "example": "M4B"
           }
         }
       },
@@ -22123,30 +22129,36 @@
         "properties": {
           "account_id": {
             "type": "string",
-            "description": "Store account id (unique within its source)."
+            "description": "Store account id (unique within its source).",
+            "example": "reader@example.com"
           },
           "source": {
             "type": "string",
-            "description": "Source plugin id that owns this account."
+            "description": "Source plugin id that owns this account.",
+            "example": "libro"
           },
           "plugin_key": {
             "type": "string",
-            "description": "Provenance-qualified PluginKey that owns the account."
+            "description": "Provenance-qualified PluginKey that owns the account.",
+            "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
           },
           "label": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Operator-facing account label when the store provided one."
+            "description": "Operator-facing account label when the store provided one.",
+            "example": "Household"
           },
           "connection_status": {
             "type": "string",
-            "description": "Connection state (`active`, revoked, …); defaults to `active` if the account row is missing."
+            "description": "Connection state (`active`, revoked, …); defaults to `active` if the account row is missing.",
+            "example": "active"
           },
           "source_enabled": {
             "type": "boolean",
-            "description": "Whether `[sources.<id>] enabled` is currently true (new connects blocked when false)."
+            "description": "Whether `[sources.<id>] enabled` is currently true (new connects blocked when false).",
+            "example": true
           },
           "brand": {
             "oneOf": [
@@ -23816,15 +23828,18 @@
         "properties": {
           "provider": {
             "type": "string",
-            "description": "Integration plugin id (must be enabled in config)."
+            "description": "Integration plugin id (must be enabled in config).",
+            "example": "audiobookshelf"
           },
           "username": {
             "type": "string",
-            "description": "Provider login name forwarded to `authenticate_user`."
+            "description": "Provider login name forwarded to `authenticate_user`.",
+            "example": "dana"
           },
           "password": {
             "type": "string",
-            "description": "Provider password; never logged."
+            "description": "Provider password; never logged.",
+            "example": "correct horse battery staple"
           }
         }
       },
@@ -24398,18 +24413,21 @@
         "properties": {
           "provider": {
             "type": "string",
-            "description": "Identity provider id (`local` or an integration plugin id)."
+            "description": "Identity provider id (`local` or an integration plugin id).",
+            "example": "local"
           },
           "external_user_id": {
             "type": "string",
-            "description": "Provider-scoped user id stored on the portal identity row."
+            "description": "Provider-scoped user id stored on the portal identity row.",
+            "example": "user:7"
           },
           "label": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional display label from the identity row."
+            "description": "Optional display label from the identity row.",
+            "example": "Dana Reader"
           }
         }
       },
@@ -26581,11 +26599,13 @@
         "properties": {
           "email": {
             "type": "string",
-            "description": "Store account email / username."
+            "description": "Store account email / username.",
+            "example": "reader@example.com"
           },
           "password": {
             "type": "string",
-            "description": "Store account password; never logged."
+            "description": "Store account password; never logged.",
+            "example": "correct horse battery staple"
           }
         }
       },
@@ -29752,18 +29772,21 @@
         "properties": {
           "ticket": {
             "type": "string",
-            "description": "Raw claim-ticket token to redeem into a portal session."
+            "description": "Raw claim-ticket token to redeem into a portal session.",
+            "example": "3f9a1c7e5b2d4a6f8e0c1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a"
           },
           "nonce": {
             "type": "string",
-            "description": "Browser-generated one-time nonce persisted across HTTP retries."
+            "description": "Browser-generated one-time nonce persisted across HTTP retries.",
+            "example": "c3RhdGUtOGY2ZTJkMWE"
           },
           "password": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Required when the linked local user has no password (invite / reset)."
+            "description": "Required when the linked local user has no password (invite / reset).",
+            "example": "correct horse battery staple"
           }
         }
       },
@@ -30655,11 +30678,13 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "Config table key (for example `container`)."
+            "description": "Config table key (for example `container`).",
+            "example": "container"
           },
           "label": {
             "type": "string",
-            "description": "Operator-facing option name."
+            "description": "Operator-facing option name.",
+            "example": "Container"
           },
           "values": {
             "type": "array",
@@ -30714,15 +30739,18 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Source plugin id (`audible`, `libro`, …)."
+            "description": "Source plugin id (`audible`, `libro`, …).",
+            "example": "libro"
           },
           "name": {
             "type": "string",
-            "description": "Operator-facing storefront name."
+            "description": "Operator-facing storefront name.",
+            "example": "Libro.fm"
           },
           "auth": {
             "type": "string",
-            "description": "Portal auth mode (`password` or `oauth`)."
+            "description": "Portal auth mode (`password` or `oauth`).",
+            "example": "password"
           },
           "config_options": {
             "type": "array",

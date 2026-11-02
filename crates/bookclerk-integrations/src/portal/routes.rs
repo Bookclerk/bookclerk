@@ -115,11 +115,14 @@ pub async fn portal_identity_from_headers(
 /// JSON body for `POST /redeem` (claim ticket plus retry nonce).
 struct RedeemBody {
     /// Raw claim-ticket token to redeem into a portal session.
+    #[schema(example = "3f9a1c7e5b2d4a6f8e0c1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a")]
     ticket: String,
     /// Browser-generated one-time nonce persisted across HTTP retries.
+    #[schema(example = "c3RhdGUtOGY2ZTJkMWE")]
     nonce: String,
     /// Required when the linked local user has no password (invite / reset).
     #[serde(default)]
+    #[schema(example = "correct horse battery staple")]
     password: Option<String>,
 }
 
@@ -244,10 +247,13 @@ async fn redeem(
 /// JSON body for `POST /login/integration` (provider credential login).
 struct IntegrationLoginBody {
     /// Integration plugin id (must be enabled in config).
+    #[schema(example = "audiobookshelf")]
     provider: String,
     /// Provider login name forwarded to `authenticate_user`.
+    #[schema(example = "dana")]
     username: String,
     /// Provider password; never logged.
+    #[schema(example = "correct horse battery staple")]
     password: String,
 }
 
@@ -376,10 +382,13 @@ async fn me(
 /// JSON body for `GET /me`.
 struct MeResponse {
     /// Identity provider id (`local` or an integration plugin id).
+    #[schema(example = "local")]
     provider: String,
     /// Provider-scoped user id stored on the portal identity row.
+    #[schema(example = "user:7")]
     external_user_id: String,
     /// Optional display label from the identity row.
+    #[schema(example = "Dana Reader")]
     label: Option<String>,
 }
 
@@ -441,10 +450,13 @@ struct SourcesResponse {
 /// One enabled storefront as shown on the portal Accounts page.
 struct SourceInfo {
     /// Source plugin id (`audible`, `libro`, …).
+    #[schema(example = "libro")]
     id: String,
     /// Operator-facing storefront name.
+    #[schema(example = "Libro.fm")]
     name: String,
     /// Portal auth mode (`password` or `oauth`).
+    #[schema(example = "password")]
     auth: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     /// Store-specific knobs the SPA can present (omitted when empty).
@@ -457,8 +469,10 @@ struct SourceInfo {
 /// One storefront config option (key, label, allowed values).
 struct SourceConfigOptionInfo {
     /// Config table key (for example `container`).
+    #[schema(example = "container")]
     key: String,
     /// Operator-facing option name.
+    #[schema(example = "Container")]
     label: String,
     /// Allowed values the SPA may offer for this option.
     values: Vec<ConfigOptionValueInfo>,
@@ -468,8 +482,10 @@ struct SourceConfigOptionInfo {
 /// One allowed value for a storefront config option.
 struct ConfigOptionValueInfo {
     /// Stored option value (for example `m4b`).
+    #[schema(example = "m4b")]
     id: String,
     /// Operator-facing value label.
+    #[schema(example = "M4B")]
     label: String,
 }
 
@@ -477,12 +493,16 @@ struct ConfigOptionValueInfo {
 /// CSS colors and logo href for a storefront or integration brand.
 struct BrandInfo {
     /// Background color (`#RRGGBB`).
+    #[schema(example = "#1F4E3D")]
     bg: String,
     /// Foreground / text color (`#RRGGBB`).
+    #[schema(example = "#F4F1EA")]
     fg: String,
     /// Accent color (`#RRGGBB`).
+    #[schema(example = "#2F6B53")]
     accent: String,
     /// Logo image href (often a favicon URL).
+    #[schema(example = "https://www.google.com/s2/favicons?domain=libro.fm&sz=128")]
     logo: String,
 }
 
@@ -490,8 +510,10 @@ struct BrandInfo {
 /// JSON body for password-store connect (`email` + `password`).
 struct PasswordLoginBody {
     /// Store account email / username.
+    #[schema(example = "reader@example.com")]
     email: String,
     /// Store account password; never logged.
+    #[schema(example = "correct horse battery staple")]
     password: String,
 }
 
@@ -803,16 +825,22 @@ struct ConnectionsResponse {
 /// One linked store account on the portal Accounts page.
 struct ConnectionInfo {
     /// Store account id (unique within its source).
+    #[schema(example = "reader@example.com")]
     account_id: String,
     /// Source plugin id that owns this account.
+    #[schema(example = "libro")]
     source: String,
     /// Provenance-qualified PluginKey that owns the account.
+    #[schema(example = "platform:bookclerk/bookclerk-plugin-source-libro#libro")]
     plugin_key: String,
     /// Operator-facing account label when the store provided one.
+    #[schema(example = "Household")]
     label: Option<String>,
     /// Connection state (`active`, revoked, …); defaults to `active` if the account row is missing.
+    #[schema(example = "active")]
     connection_status: String,
     /// Whether `[sources.<id>] enabled` is currently true (new connects blocked when false).
+    #[schema(example = true)]
     source_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Storefront or integration brand when a plugin or fallback palette is available.
