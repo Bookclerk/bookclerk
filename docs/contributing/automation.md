@@ -83,7 +83,9 @@ The knobs live in the workflow's `with:` block:
 
 1. In **Settings → General → Pull Requests**, enable **Allow auto-merge**.
 2. Create a GitHub App with repository permissions **Contents: read and
-   write** and **Pull requests: read and write**, and no webhook. Install
+   write**, **Pull requests: read and write** and **Workflows: read and
+   write** (GitHub refuses to let an App turn on auto-merge for a pull
+   request that edits `.github/workflows/`), and no webhook. Install
    it on this repository only. Transferring the repository doesn't
    transfer the App: if the organization should own it, transfer the App
    separately.
