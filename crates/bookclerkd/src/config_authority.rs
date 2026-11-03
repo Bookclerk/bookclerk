@@ -1071,13 +1071,16 @@ pub async fn get_plugin_instances(
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct CreatePluginInstance {
     /// Canonical plugin key; the plugin must have a pinned schema.
+    #[schema(example = "platform:bookclerk/bookclerk-plugin-source-libro#libro")]
     plugin_key: String,
     /// Operator-facing name.
     #[serde(default)]
+    #[schema(example = "Libro.fm (household)")]
     display_name: String,
     /// Make the instance local to this node (H-2): it deploys only there
     /// and is never placed by the scheduler.
     #[serde(default)]
+    #[schema(example = "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c")]
     node_id: Option<String>,
 }
 
@@ -1213,7 +1216,7 @@ pub(crate) struct PluginInstanceConfigResponse {
     secret_refs: Vec<bookclerk_library::control_plane::InstanceSecretRefV1>,
     /// Settings as the guest sees them: schema defaults overlaid with the
     /// stored values. Empty when the plugin has no pinned schema.
-    #[schema(value_type = Object, example = json!({"root": "/srv/audiobooks", "multi_destination": "sync_missing"}))]
+    #[schema(example = json!({"root": "/srv/audiobooks", "multi_destination": "sync_missing"}))]
     effective: std::collections::BTreeMap<String, serde_json::Value>,
     /// Declared settings from the pinned schema; empty when there is none.
     #[schema(value_type = Vec<crate::openapi::SettingSpecDoc>)]
@@ -1294,20 +1297,23 @@ fn setting_value_json(value: &bookclerk_library::control_plane::SettingValue) ->
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutPluginInstanceConfig {
     /// Revision the caller last observed.
+    #[schema(example = 4)]
     expected_revision: i64,
     /// Scalar settings. Secret values are not accepted here.
     #[serde(default)]
-    #[schema(value_type = Object)]
+    #[schema(example = json!({"container": "m4b"}))]
     settings: std::collections::BTreeMap<String, bookclerk_library::control_plane::SettingValue>,
     /// Secret refs to keep. Omitted refs are dropped from the document; the
     /// ciphertext stays sealed until the secret is overwritten.
     #[serde(default)]
     #[schema(value_type = Vec<Object>)]
+    #[schema(example = json!([{"key": "password", "name": "password"}]))]
     secret_refs: Vec<bookclerk_library::control_plane::InstanceSecretRefV1>,
     /// Secret values to seal, keyed by the declared `secret` setting. Each
     /// is sealed into `encrypted_secrets` and referenced from the document;
     /// the plaintext is never stored in the document or echoed back.
     #[serde(default)]
+    #[schema(example = json!({"password": "correct horse battery staple"}))]
     secrets: std::collections::BTreeMap<String, String>,
 }
 
@@ -1441,6 +1447,7 @@ pub(crate) struct PutPluginDeployment {
     /// the caller wants compare-and-swap. Omitted means "replace whatever is
     /// current".
     #[serde(default)]
+    #[schema(example = 4)]
     expected_revision: Option<i64>,
 }
 
@@ -2267,15 +2274,19 @@ pub(crate) struct NodeRuntimeChanged {
 pub(crate) struct PutNodeRuntime {
     /// Operator label.
     #[serde(default)]
+    #[schema(example = "Study Mac mini")]
     label: Option<String>,
     /// Share of detected CPU the scheduler may commit (1..=100).
     #[serde(default)]
+    #[schema(example = 75)]
     cpu_budget_percent: Option<u8>,
     /// Share of detected memory the scheduler may commit (1..=100).
     #[serde(default)]
+    #[schema(example = 60)]
     memory_budget_percent: Option<u8>,
     /// False drains the node.
     #[serde(default)]
+    #[schema(example = true)]
     schedulable: Option<bool>,
 }
 
@@ -2350,6 +2361,7 @@ pub async fn put_node_runtime(
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutNodeLabels {
     /// The node's complete operator label set.
+    #[schema(example = json!(["region=eu", "gpu"]))]
     labels: Vec<String>,
 }
 
@@ -2405,6 +2417,7 @@ pub(crate) struct NodeOwnerChanged {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PutNodeOwner {
     /// User who owns the node, or `null` to clear.
+    #[schema(example = 7)]
     user_id: Option<i64>,
 }
 
@@ -2452,9 +2465,11 @@ pub(crate) struct PutPluginPlacement {
     replicas: bookclerk_library::control_plane::Replicas,
     /// Label constraints (`name`, `name=value`, `!name`).
     #[serde(default)]
+    #[schema(example = json!(["region=eu", "!gpu"]))]
     constraints: Vec<String>,
     /// Current revision to replace; omit (or 0) to create.
     #[serde(default)]
+    #[schema(example = 4)]
     expected_revision: Option<i64>,
 }
 

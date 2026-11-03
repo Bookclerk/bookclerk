@@ -551,28 +551,37 @@ mod scope_tests {
 #[into_params(parameter_in = Query)]
 pub struct BranchAuthorizeParams {
     /// Must be [`BRANCH_CLIENT_ID`].
+    #[schema(example = "bookclerk-branch")]
     pub client_id: String,
     /// Where the code goes: loopback or https.
+    #[schema(example = "http://127.0.0.1:41923/enroll/callback")]
     pub redirect_uri: String,
     /// Must be `code`.
+    #[schema(example = "code")]
     pub response_type: String,
     /// Must be [`BRANCH_SCOPE`].
     #[serde(default)]
+    #[schema(example = "node:enroll")]
     pub scope: Option<String>,
     /// Echoed on the redirect.
     #[serde(default)]
+    #[schema(example = "c3RhdGUtOGY2ZTJkMWE")]
     pub state: Option<String>,
     /// PKCE S256 challenge.
+    #[schema(example = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")]
     pub code_challenge: String,
     /// Must be `S256`.
     #[serde(default)]
+    #[schema(example = "S256")]
     pub code_challenge_method: Option<String>,
     /// The name the branch asks to join as.
     #[serde(default)]
+    #[schema(example = "study-mini")]
     pub branch_name: Option<String>,
     /// `1` when the joining install offers to join as a clerk
     /// ([`bookclerk_node_proto::CLERK_OFFER_PARAM`]).
     #[serde(default)]
+    #[schema(example = "1")]
     pub clerk_offer: Option<String>,
 }
 
@@ -1526,6 +1535,7 @@ async fn branches_json(
 pub struct RemoveBranchTitles {
     /// Only this branch's entries; every branch's when absent.
     #[serde(default)]
+    #[schema(example = "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c")]
     pub node_id: Option<String>,
 }
 
@@ -1578,6 +1588,7 @@ pub async fn post_remove_branch_titles(
 #[serde(deny_unknown_fields)]
 pub struct PutBranches {
     /// "Let new branches join" (`core.host_enrollment.enabled`).
+    #[schema(example = true)]
     pub enrollment: bool,
 }
 

@@ -214,12 +214,15 @@ pub(crate) struct PostNodeInvite {
     /// User who will own the node. Defaults to the caller; the operator
     /// must name one.
     #[serde(default)]
+    #[schema(example = 7)]
     user_id: Option<i64>,
     /// Link lifetime in seconds (default 24 h, 5 min to 7 days).
     #[serde(default)]
+    #[schema(example = 86400)]
     ttl_secs: Option<u64>,
     /// Label shown in listings.
     #[serde(default)]
+    #[schema(example = "Study Mac mini")]
     label: String,
 }
 
@@ -575,6 +578,7 @@ pub async fn delete_node_credential(
 #[serde(deny_unknown_fields)]
 pub(crate) struct PutHostEnrollment {
     /// Whether host nodes may enroll into this cluster.
+    #[schema(example = true)]
     enabled: bool,
 }
 
@@ -676,15 +680,20 @@ const MAX_ENROLL_BODY_BYTES: usize = 16 * 1024;
 #[serde(deny_unknown_fields)]
 struct EnrollBody {
     /// Link id from the token.
+    #[schema(example = "9f2c7b1e4a8d3c6f0b5e2a7d4c1f8e3b")]
     link_id: String,
     /// Link secret from the token.
+    #[schema(example = "kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o")]
     secret: String,
     /// Ed25519 public signing key.
+    #[schema(example = "Nflg3bNZ7h6Q7aePwVccVzry1BxzaqtguKtJlkfPE0M")]
     sign_pk: String,
     /// X25519 public box key.
+    #[schema(example = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo")]
     box_pk: String,
     /// Host's Bookclerk version.
     #[serde(default)]
+    #[schema(example = "0.4.0")]
     software_version: String,
 }
 

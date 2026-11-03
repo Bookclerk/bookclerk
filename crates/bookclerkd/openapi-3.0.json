@@ -6797,11 +6797,13 @@
                   "account": {
                     "type": "string",
                     "description": "Scan only this store account of the owner cluster.",
+                    "example": "reader@example.com",
                     "nullable": true
                   },
                   "plugin_instance_id": {
                     "type": "string",
                     "description": "Pin every planned job to this owner plugin instance.",
+                    "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
                     "nullable": true
                   }
                 },
@@ -20552,15 +20554,18 @@
         "properties": {
           "cluster_id": {
             "type": "string",
-            "description": "Owner cluster id."
+            "description": "Owner cluster id.",
+            "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           },
           "plugin_key": {
             "type": "string",
-            "description": "Canonical plugin key."
+            "description": "Canonical plugin key.",
+            "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
           },
           "request_digest": {
             "type": "string",
-            "description": "The `request_digest` of the request the operator reviewed, as the\nlisting shows it (refused when the recorded request is another one)."
+            "description": "The `request_digest` of the request the operator reviewed, as the\nlisting shows it (refused when the recorded request is another one).",
+            "example": "9b74c9897bac770ffc029102a200c5de3a9c4a1d6c2f1e0b5a7d8c9e0f1a2b3c"
           },
           "deny_domains": {
             "type": "array",
@@ -20568,6 +20573,9 @@
               "type": "string"
             },
             "description": "Domains to take out of the request.",
+            "example": [
+              "telemetry.example.com"
+            ],
             "uniqueItems": true
           },
           "deny_bindings": {
@@ -20576,11 +20584,15 @@
               "type": "string"
             },
             "description": "Bindings to take out of the request.",
+            "example": [
+              "oauth"
+            ],
             "uniqueItems": true
           },
           "deny_network": {
             "type": "boolean",
-            "description": "Deny all network access."
+            "description": "Deny all network access.",
+            "example": false
           }
         },
         "additionalProperties": false
@@ -21329,43 +21341,52 @@
         "properties": {
           "client_id": {
             "type": "string",
-            "description": "Must be [`BRANCH_CLIENT_ID`]."
+            "description": "Must be [`BRANCH_CLIENT_ID`].",
+            "example": "bookclerk-branch"
           },
           "redirect_uri": {
             "type": "string",
-            "description": "Where the code goes: loopback or https."
+            "description": "Where the code goes: loopback or https.",
+            "example": "http://127.0.0.1:41923/enroll/callback"
           },
           "response_type": {
             "type": "string",
-            "description": "Must be `code`."
+            "description": "Must be `code`.",
+            "example": "code"
           },
           "scope": {
             "type": "string",
             "description": "Must be [`BRANCH_SCOPE`].",
+            "example": "node:enroll",
             "nullable": true
           },
           "state": {
             "type": "string",
             "description": "Echoed on the redirect.",
+            "example": "c3RhdGUtOGY2ZTJkMWE",
             "nullable": true
           },
           "code_challenge": {
             "type": "string",
-            "description": "PKCE S256 challenge."
+            "description": "PKCE S256 challenge.",
+            "example": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
           },
           "code_challenge_method": {
             "type": "string",
             "description": "Must be `S256`.",
+            "example": "S256",
             "nullable": true
           },
           "branch_name": {
             "type": "string",
             "description": "The name the branch asks to join as.",
+            "example": "study-mini",
             "nullable": true
           },
           "clerk_offer": {
             "type": "string",
             "description": "`1` when the joining install offers to join as a clerk\n([`bookclerk_node_proto::CLERK_OFFER_PARAM`]).",
+            "example": "1",
             "nullable": true
           }
         }
@@ -21755,20 +21776,24 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The code from the library."
+            "description": "The code from the library.",
+            "example": "BhD5jGe21A8WEIm7SrdBZ-KXhs5B9HkeUSEc58grX94"
           },
           "state": {
             "type": "string",
-            "description": "The `state` it came back with."
+            "description": "The `state` it came back with.",
+            "example": "c3RhdGUtOGY2ZTJkMWE"
           },
           "error": {
             "type": "string",
             "description": "The library's `error` (`access_denied`), when it sent one.",
+            "example": "access_denied",
             "nullable": true
           },
           "connection": {
             "type": "string",
             "description": "The connection type the library's user chose (`clerk`; a branch\nwhen left out). The code is bound to it, so a changed value only\nfails the redeem.",
+            "example": "clerk",
             "nullable": true
           }
         },
@@ -22162,7 +22187,10 @@
             "items": {
               "type": "string"
             },
-            "description": "Job ids on the owner cluster."
+            "description": "Job ids on the owner cluster.",
+            "example": [
+              "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+            ]
           }
         },
         "additionalProperties": false
@@ -22252,11 +22280,13 @@
           "account": {
             "type": "string",
             "description": "Scan only this store account of the owner cluster.",
+            "example": "reader@example.com",
             "nullable": true
           },
           "plugin_instance_id": {
             "type": "string",
             "description": "Pin every planned job to this owner plugin instance.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
             "nullable": true
           }
         },
@@ -22707,15 +22737,18 @@
         "properties": {
           "plugin_key": {
             "type": "string",
-            "description": "Canonical plugin key; the plugin must have a pinned schema."
+            "description": "Canonical plugin key; the plugin must have a pinned schema.",
+            "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
           },
           "display_name": {
             "type": "string",
-            "description": "Operator-facing name."
+            "description": "Operator-facing name.",
+            "example": "Libro.fm (household)"
           },
           "node_id": {
             "type": "string",
             "description": "Make the instance local to this node (H-2): it deploys only there\nand is never placed by the scheduler.",
+            "example": "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c",
             "nullable": true
           }
         }
@@ -23372,23 +23405,28 @@
         "properties": {
           "link_id": {
             "type": "string",
-            "description": "Link id from the token."
+            "description": "Link id from the token.",
+            "example": "9f2c7b1e4a8d3c6f0b5e2a7d4c1f8e3b"
           },
           "secret": {
             "type": "string",
-            "description": "Link secret from the token."
+            "description": "Link secret from the token.",
+            "example": "kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o"
           },
           "sign_pk": {
             "type": "string",
-            "description": "Ed25519 public signing key."
+            "description": "Ed25519 public signing key.",
+            "example": "Nflg3bNZ7h6Q7aePwVccVzry1BxzaqtguKtJlkfPE0M"
           },
           "box_pk": {
             "type": "string",
-            "description": "X25519 public box key."
+            "description": "X25519 public box key.",
+            "example": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
           },
           "software_version": {
             "type": "string",
-            "description": "Host's Bookclerk version."
+            "description": "Host's Bookclerk version.",
+            "example": "0.4.0"
           }
         },
         "additionalProperties": false
@@ -23967,7 +24005,8 @@
         "properties": {
           "address": {
             "type": "string",
-            "description": "The library's address (`https://owner.example`, `owner.lan:8443`)."
+            "description": "The library's address (`https://owner.example`, `owner.lan:8443`).",
+            "example": "https://books.example.com"
           }
         },
         "additionalProperties": false
@@ -24263,7 +24302,8 @@
         "properties": {
           "link": {
             "type": "string",
-            "description": "The whole branch invite (`https://<library>/enroll#bcn1...`)."
+            "description": "The whole branch invite (`https://<library>/enroll#bcn1...`).",
+            "example": "https://books.example.com/enroll#bcn1.9f2c7b1e4a8d3c6f0b5e2a7d4c1f8e3b.kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o"
           }
         },
         "additionalProperties": false
@@ -24636,7 +24676,8 @@
         "properties": {
           "cluster_id": {
             "type": "string",
-            "description": "The library (owner cluster id) to leave."
+            "description": "The library (owner cluster id) to leave.",
+            "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           }
         },
         "additionalProperties": false
@@ -25711,31 +25752,38 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The authorization code from the callback."
+            "description": "The authorization code from the callback.",
+            "example": "BhD5jGe21A8WEIm7SrdBZ-KXhs5B9HkeUSEc58grX94"
           },
           "code_verifier": {
             "type": "string",
-            "description": "The PKCE verifier."
+            "description": "The PKCE verifier.",
+            "example": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
           },
           "redirect_uri": {
             "type": "string",
-            "description": "The redirect URI the authorization was requested with."
+            "description": "The redirect URI the authorization was requested with.",
+            "example": "http://127.0.0.1:41923/enroll/callback"
           },
           "sign_pk": {
             "type": "string",
-            "description": "Ed25519 public signing key."
+            "description": "Ed25519 public signing key.",
+            "example": "Nflg3bNZ7h6Q7aePwVccVzry1BxzaqtguKtJlkfPE0M"
           },
           "box_pk": {
             "type": "string",
-            "description": "X25519 public box key."
+            "description": "X25519 public box key.",
+            "example": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
           },
           "branch_name": {
             "type": "string",
-            "description": "The name this branch joins as (the node's label)."
+            "description": "The name this branch joins as (the node's label).",
+            "example": "study-mini"
           },
           "software_version": {
             "type": "string",
-            "description": "The joining install's Bookclerk version."
+            "description": "The joining install's Bookclerk version.",
+            "example": "0.4.0"
           },
           "connection": {
             "allOf": [
@@ -28834,7 +28882,12 @@
           },
           "effective": {
             "type": "object",
-            "description": "Settings as the guest sees them: schema defaults overlaid with the\nstored values. Empty when the plugin has no pinned schema."
+            "description": "Settings as the guest sees them: schema defaults overlaid with the\nstored values. Empty when the plugin has no pinned schema.",
+            "additionalProperties": {},
+            "example": {
+              "multi_destination": "sync_missing",
+              "root": "/srv/audiobooks"
+            }
           },
           "schema": {
             "type": "array",
@@ -29691,18 +29744,21 @@
             "type": "integer",
             "format": "int64",
             "description": "User who will own the node. Defaults to the caller; the operator\nmust name one.",
+            "example": 7,
             "nullable": true
           },
           "ttl_secs": {
             "type": "integer",
             "format": "int64",
             "description": "Link lifetime in seconds (default 24 h, 5 min to 7 days).",
+            "example": 86400,
             "minimum": 0,
             "nullable": true
           },
           "label": {
             "type": "string",
-            "description": "Label shown in listings."
+            "description": "Label shown in listings.",
+            "example": "Study Mac mini"
           }
         },
         "additionalProperties": false
@@ -29714,24 +29770,29 @@
           "coordinate": {
             "type": "string",
             "description": "Registry coordinate (`cargo:…@v`, `registry:…#name@v`).",
+            "example": "cargo:bookclerk-plugin-source-chirp@0.4.1",
             "nullable": true
           },
           "package": {
             "type": "string",
             "description": "Operator-placed package directory under `plugin-packages/`.",
+            "example": "bookclerk-plugin-source-chirp-0.4.1",
             "nullable": true
           },
           "activate": {
             "type": "boolean",
-            "description": "Make the new version active even when another is."
+            "description": "Make the new version active even when another is.",
+            "example": true
           },
           "approve": {
             "type": "boolean",
-            "description": "Record the requested consent as approved."
+            "description": "Record the requested consent as approved.",
+            "example": false
           },
           "allow_unverified_publisher": {
             "type": "boolean",
-            "description": "Accept a publisher without independent authenticity."
+            "description": "Accept a publisher without independent authenticity.",
+            "example": false
           }
         }
       },
@@ -30095,7 +30156,8 @@
         "properties": {
           "version": {
             "type": "string",
-            "description": "Installed version to activate."
+            "description": "Installed version to activate.",
+            "example": "0.4.1"
           }
         }
       },
@@ -30108,7 +30170,8 @@
         "properties": {
           "enrollment": {
             "type": "boolean",
-            "description": "\"Let new branches join\" (`core.host_enrollment.enabled`)."
+            "description": "\"Let new branches join\" (`core.host_enrollment.enabled`).",
+            "example": true
           }
         },
         "additionalProperties": false
@@ -30161,7 +30224,8 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Whether host nodes may enroll into this cluster."
+            "description": "Whether host nodes may enroll into this cluster.",
+            "example": true
           }
         },
         "additionalProperties": false
@@ -30178,7 +30242,11 @@
             "items": {
               "type": "string"
             },
-            "description": "The node's complete operator label set."
+            "description": "The node's complete operator label set.",
+            "example": [
+              "region=eu",
+              "gpu"
+            ]
           }
         }
       },
@@ -30190,6 +30258,7 @@
             "type": "integer",
             "format": "int64",
             "description": "User who owns the node, or `null` to clear.",
+            "example": 7,
             "nullable": true
           }
         }
@@ -30201,12 +30270,14 @@
           "label": {
             "type": "string",
             "description": "Operator label.",
+            "example": "Study Mac mini",
             "nullable": true
           },
           "cpu_budget_percent": {
             "type": "integer",
             "format": "int32",
             "description": "Share of detected CPU the scheduler may commit (1..=100).",
+            "example": 75,
             "minimum": 0,
             "nullable": true
           },
@@ -30214,12 +30285,14 @@
             "type": "integer",
             "format": "int32",
             "description": "Share of detected memory the scheduler may commit (1..=100).",
+            "example": 60,
             "minimum": 0,
             "nullable": true
           },
           "schedulable": {
             "type": "boolean",
             "description": "False drains the node.",
+            "example": true,
             "nullable": true
           }
         }
@@ -30267,6 +30340,7 @@
             "type": "integer",
             "format": "int64",
             "description": "Revision the caller last observed; required when the row exists and\nthe caller wants compare-and-swap. Omitted means \"replace whatever is\ncurrent\".",
+            "example": 4,
             "nullable": true
           }
         }
@@ -30281,24 +30355,40 @@
           "expected_revision": {
             "type": "integer",
             "format": "int64",
-            "description": "Revision the caller last observed."
+            "description": "Revision the caller last observed.",
+            "example": 4
           },
           "settings": {
             "type": "object",
-            "description": "Scalar settings. Secret values are not accepted here."
+            "description": "Scalar settings. Secret values are not accepted here.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SettingValue"
+            },
+            "example": {
+              "container": "m4b"
+            }
           },
           "secret_refs": {
             "type": "array",
             "items": {
               "type": "object"
             },
-            "description": "Secret refs to keep. Omitted refs are dropped from the document; the\nciphertext stays sealed until the secret is overwritten."
+            "description": "Secret refs to keep. Omitted refs are dropped from the document; the\nciphertext stays sealed until the secret is overwritten.",
+            "example": [
+              {
+                "key": "password",
+                "name": "password"
+              }
+            ]
           },
           "secrets": {
             "type": "object",
             "description": "Secret values to seal, keyed by the declared `secret` setting. Each\nis sealed into `encrypted_secrets` and referenced from the document;\nthe plaintext is never stored in the document or echoed back.",
             "additionalProperties": {
               "type": "string"
+            },
+            "example": {
+              "password": "correct horse battery staple"
             }
           }
         }
@@ -30330,12 +30420,17 @@
             "items": {
               "type": "string"
             },
-            "description": "Label constraints (`name`, `name=value`, `!name`)."
+            "description": "Label constraints (`name`, `name=value`, `!name`).",
+            "example": [
+              "region=eu",
+              "!gpu"
+            ]
           },
           "expected_revision": {
             "type": "integer",
             "format": "int64",
             "description": "Current revision to replace; omit (or 0) to create.",
+            "example": 4,
             "nullable": true
           }
         }
@@ -30994,6 +31089,7 @@
           "node_id": {
             "type": "string",
             "description": "Only this branch's entries; every branch's when absent.",
+            "example": "2b7e1c4d-9f3a-4e8b-a6c5-0d1e2f3a4b5c",
             "nullable": true
           }
         },
@@ -31085,11 +31181,13 @@
         "properties": {
           "cluster_id": {
             "type": "string",
-            "description": "Owner cluster id."
+            "description": "Owner cluster id.",
+            "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           },
           "plugin_key": {
             "type": "string",
-            "description": "Canonical plugin key."
+            "description": "Canonical plugin key.",
+            "example": "platform:bookclerk/bookclerk-plugin-source-libro#libro"
           }
         },
         "additionalProperties": false
@@ -31526,15 +31624,18 @@
         "properties": {
           "cluster_id": {
             "type": "string",
-            "description": "The library (owner cluster id)."
+            "description": "The library (owner cluster id).",
+            "example": "6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
           },
           "share_books": {
             "type": "boolean",
-            "description": "\"Share this branch's books with *library*\"."
+            "description": "\"Share this branch's books with *library*\".",
+            "example": true
           },
           "include_branches": {
             "type": "boolean",
-            "description": "\"Include books from my own branches\"."
+            "description": "\"Include books from my own branches\".",
+            "example": false
           }
         },
         "additionalProperties": false
@@ -31801,21 +31902,25 @@
         "properties": {
           "address": {
             "type": "string",
-            "description": "The library's address."
+            "description": "The library's address.",
+            "example": "https://books.example.com"
           },
           "fingerprint": {
             "type": "string",
             "description": "The fingerprint the operator confirmed (self-signed libraries).",
+            "example": "kQ3nUj9Z2vY4xW8pT6rS1aB5cD7eF0gH2iJ4kL6mN8o",
             "nullable": true
           },
           "branch_name": {
             "type": "string",
             "description": "The name to join as (default: this machine's name).",
+            "example": "study-mini",
             "nullable": true
           },
           "clerk": {
             "type": "boolean",
-            "description": "Offer to join as a clerk (an owner node that shares the library's\ndatabase): only an empty install may, and its data is replaced."
+            "description": "Offer to join as a clerk (an owner node that shares the library's\ndatabase): only an empty install may, and its data is replaced.",
+            "example": false
           }
         },
         "additionalProperties": false
@@ -33150,11 +33255,13 @@
         "properties": {
           "finish": {
             "type": "boolean",
-            "description": "Complete the job with this commit (the job's closing upload)."
+            "description": "Complete the job with this commit (the job's closing upload).",
+            "example": true
           },
           "detail": {
             "type": "string",
             "description": "Outcome text recorded as the job's progress when `finish` is set.",
+            "example": "acquired 3 titles",
             "nullable": true
           }
         },
