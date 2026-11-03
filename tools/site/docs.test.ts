@@ -14,6 +14,7 @@ import {
   docUrl,
   GENERATED_TITLES,
   markdownFiles,
+  NAV,
   renderDocs,
   rewriteLink,
   siteMarkdown,
@@ -166,10 +167,22 @@ test("every doc renders, and every link between docs resolves", () => {
     }
   }
   assert.deepEqual(broken, []);
-  // Every doc is in the sidebar, the index aside.
+  // Every doc is in the sidebar, the index aside, and in the group NAV
+  // gives it: "More" only catches a doc someone forgot to list.
   const listed = new Set(nav.flatMap((g) => g.pages.map((p) => p.key)));
   assert.deepEqual(
     docs.map((d) => d.key).filter((k) => k !== "README" && !listed.has(k)),
+    [],
+  );
+  assert.deepEqual(
+    nav.filter((g) => g.title === "More").flatMap((g) => g.pages.map((p) => p.key)),
+    [],
+    "every doc is listed in NAV (tools/site/render.ts)",
+  );
+  // And NAV names no page that does not exist.
+  const keys = new Set([...docs.map((d) => d.key), ...Object.keys(GENERATED_TITLES)]);
+  assert.deepEqual(
+    NAV.flatMap((g) => g.pages).filter((k) => !keys.has(k)),
     [],
   );
 });
