@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Decides whether to put a pull request back in the merge queue.
+"""Recovers CI runs that failed only because GitHub never gave a job a runner.
 
 GitHub sometimes never hands a merge-group job a hosted runner (most often
 macOS arm64). The job sits queued, GitHub cancels it with the annotation
 "The job was not acquired by Runner of type hosted even after multiple
 attempts", ``CI Gate`` fails, and the queue removes the pull request with
-every test that did run green. ``.github/workflows/merge-queue-requeue.yml``
-runs this script when a ``merge_group`` CI run fails and turns auto-merge
-back on only when that is the whole story:
+every test that did run green. A pull request's own CI run fails the same
+way. ``.github/workflows/merge-queue-requeue.yml`` runs this script when a
+CI run fails.
+
+For a ``merge_group`` run it turns auto-merge back on only when that is the
+whole story:
 
 - the run is a ``merge_group`` run of this repository's CI workflow, on a
   ``gh-readonly-queue/main/pr-<n>-<sha>`` branch;
@@ -26,14 +29,29 @@ back on only when that is the whole story:
   ``gh pr merge --match-head-commit``, so a push in between makes the
   enqueue fail instead of queueing the new commit.
 
+For a ``pull_request`` run (``--rerun``) it re-runs the failed jobs when:
+
+- the run is a failed ``pull_request`` run of this repository's CI
+  workflow (a fork's pull request included: a re-run keeps the original
+  run's read-only context), on attempt 1 to ``MAX_PR_RUN_ATTEMPTS - 1``,
+  so one run gets at most ``MAX_PR_RUN_ATTEMPTS - 1`` re-runs;
+- the jobs pass the same not-acquired test as above. A run cancelled by a
+  newer push has no not-acquired annotation, so it is never re-run;
+- no newer ``pull_request`` CI run exists for the same head branch and
+  head repository. CI cancels superseded pull request runs in its
+  concurrency group, so re-running an old run would cancel the run for
+  the pull request's current commit.
+
 The checks are sans-IO functions over the bytes the GitHub API returns, so
 ``scripts/tests/test_merge_queue_requeue.py`` drives the same code the
 workflow does. See ``docs/contributing/ci.md#merge-queue-re-enqueue``.
 
-Usage: ``merge_queue_requeue.py --repo OWNER/NAME --run-id ID`` with
-``GH_TOKEN`` set; writes ``pr=<n>`` and ``sha=<head>`` to ``$GITHUB_OUTPUT``
-(or stdout without it) when the pull request should go back in the queue, and one line to
-``$GITHUB_STEP_SUMMARY`` either way.
+Usage: ``merge_queue_requeue.py --repo OWNER/NAME --run-id ID [--rerun]``
+with ``GH_TOKEN`` set. Without ``--rerun`` it writes ``pr=<n>`` and
+``sha=<head>`` to ``$GITHUB_OUTPUT`` (or stdout without it) when the pull
+request should go back in the queue; with ``--rerun`` it writes
+``rerun=true`` when the run's failed jobs should run again. It writes one
+line to ``$GITHUB_STEP_SUMMARY`` either way.
 """
 
 from __future__ import annotations
@@ -45,6 +63,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from urllib.parse import quote
 
 # The CI workflow whose merge-group runs are watched.
 CI_WORKFLOW_PATH = ".github/workflows/ci.yml"
@@ -52,6 +71,10 @@ CI_WORKFLOW_PATH = ".github/workflows/ci.yml"
 # How many times one pull request head may enter the queue: the first
 # enqueue plus two retries.
 MAX_ENQUEUES_PER_HEAD = 3
+
+# How many attempts one pull request CI run may have: the first plus two
+# re-runs for jobs that never got a runner.
+MAX_PR_RUN_ATTEMPTS = 3
 
 # Jobs that fail or end because another job did, never on their own.
 FOLLOWER_JOBS = ("CI Gate", "merge-queue fail-fast")
@@ -132,6 +155,98 @@ def queued_pr(raw: bytes, repo: str) -> int | None:
         return None
     match = QUEUE_BRANCH_RE.fullmatch(branch)
     return int(match.group(1)) if match else None
+
+
+def pr_run_attempt(raw: bytes, repo: str) -> int | None:
+    """Reads the attempt number of a failed pull request CI run.
+
+    Args:
+        raw: The JSON body of ``GET /repos/{repo}/actions/runs/{id}``.
+        repo: ``OWNER/NAME`` of this repository.
+
+    Returns:
+        ``run_attempt`` (at least 1) when the run is a completed, failed
+        ``pull_request`` run of ``CI_WORKFLOW_PATH`` in ``repo``; otherwise
+        None. The head may come from a fork.
+    """
+    run = _load(raw)
+    if not isinstance(run, dict):
+        return None
+    base = run.get("repository")
+    attempt = run.get("run_attempt")
+    if (
+        run.get("event") != "pull_request"
+        or run.get("path") != CI_WORKFLOW_PATH
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "failure"
+        or not isinstance(base, dict)
+        or base.get("full_name") != repo
+        or not _is_int(attempt)
+        or attempt < 1
+    ):
+        return None
+    return attempt
+
+
+def run_lineage(raw: bytes) -> tuple[str, str, int] | None:
+    """Reads where a CI run's head comes from and its place in the workflow.
+
+    Args:
+        raw: The JSON body of ``GET /repos/{repo}/actions/runs/{id}``.
+
+    Returns:
+        ``(head repository, head branch, run_number)`` with a non-empty
+        ``OWNER/NAME`` and branch and a ``run_number`` of at least 1;
+        otherwise None. ``run_number`` grows with every new run of a
+        workflow and stays the same across re-runs.
+    """
+    run = _load(raw)
+    if not isinstance(run, dict):
+        return None
+    head_repo = run.get("head_repository")
+    branch = run.get("head_branch")
+    number = run.get("run_number")
+    if not isinstance(head_repo, dict):
+        return None
+    name = head_repo.get("full_name")
+    if not isinstance(name, str) or not name or not isinstance(branch, str) or not branch:
+        return None
+    if not _is_int(number) or number < 1:
+        return None
+    return name, branch, number
+
+
+def newer_run(raw: bytes, head_repo: str, run_number: int) -> bool | None:
+    """Whether a run listing holds a later run from the same head repository.
+
+    Args:
+        raw: The JSON body of ``GET /repos/{repo}/actions/workflows/{file}/runs``
+            filtered to one event and head branch.
+        head_repo: ``OWNER/NAME`` the head branch lives in (a fork's
+            branch can share its name with one in this repository).
+        run_number: The ``run_number`` of the run being recovered.
+
+    Returns:
+        True when a run from ``head_repo`` has a larger ``run_number``,
+        False when none has, and None when the body is not a run listing.
+    """
+    body = _load(raw)
+    if not isinstance(body, dict):
+        return None
+    runs = body.get("workflow_runs")
+    if not isinstance(runs, list):
+        return None
+    newer = False
+    for run in runs:
+        if not isinstance(run, dict):
+            return None
+        repo = run.get("head_repository")
+        number = run.get("run_number")
+        if not isinstance(repo, dict) or not _is_int(number):
+            return None
+        if repo.get("full_name") == head_repo and number > run_number:
+            newer = True
+    return newer
 
 
 def _is_follower(name: str) -> bool:
@@ -267,6 +382,77 @@ def enqueues_since_head(raw: bytes) -> int | None:
     return count
 
 
+def _stranded_reason(repo: str, run_id: int, gh: Gh) -> str | None:
+    """Checks that a run failed only because jobs never got a runner.
+
+    Args:
+        repo: ``OWNER/NAME`` of this repository.
+        run_id: The failed CI workflow run.
+        gh: Runs ``gh``.
+
+    Returns:
+        None when every unsuccessful job is a follower job or a stranded
+        job with GitHub's not-acquired annotation, and at least one is
+        stranded; otherwise a sentence saying why not.
+
+    Raises:
+        subprocess.CalledProcessError: When a GitHub API call fails.
+    """
+    stranded = stranded_jobs(gh(["api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"]))
+    if stranded is None:
+        return f"run {run_id} has a job that failed or was cancelled after it started."
+    if not stranded:
+        return f"run {run_id} has no job that waited for a runner."
+    for job_id in stranded:
+        if not not_acquired(gh(["api", f"repos/{repo}/check-runs/{job_id}/annotations"])):
+            return f"job {job_id} of run {run_id} was cancelled without GitHub's not-acquired annotation."
+    return None
+
+
+def decide_rerun(repo: str, run_id: int, gh: Gh) -> tuple[bool, str]:
+    """Decides whether a pull request CI run's failed jobs run again.
+
+    Args:
+        repo: ``OWNER/NAME`` of this repository.
+        run_id: The failed CI workflow run.
+        gh: Runs ``gh`` (``run_gh`` outside tests).
+
+    Returns:
+        ``(True, reason)`` when the failed jobs should run again, else
+        ``(False, reason)``; ``reason`` is one sentence.
+    """
+    try:
+        raw = gh(["api", f"repos/{repo}/actions/runs/{run_id}"])
+        attempt = pr_run_attempt(raw, repo)
+        lineage = run_lineage(raw)
+        if attempt is None or lineage is None:
+            return False, f"run {run_id} is not a failed pull request CI run of {repo}."
+        if attempt >= MAX_PR_RUN_ATTEMPTS:
+            return False, f"run {run_id} already ran {attempt} times."
+        why_not = _stranded_reason(repo, run_id, gh)
+        if why_not is not None:
+            return False, why_not
+        # Checked last, as close to the re-run as possible: re-running a
+        # superseded run would cancel CI for the current commit.
+        head_repo, branch, number = lineage
+        workflow = CI_WORKFLOW_PATH.rsplit("/", 1)[-1]
+        listing = gh(
+            [
+                "api",
+                f"repos/{repo}/actions/workflows/{workflow}/runs"
+                f"?event=pull_request&branch={quote(branch, safe='')}&per_page=100",
+            ]
+        )
+        newer = newer_run(listing, head_repo, number)
+        if newer is None:
+            return False, f"could not list the CI runs of {head_repo}:{branch}."
+        if newer:
+            return False, f"run {run_id} is superseded by a newer run for {head_repo}:{branch}."
+    except subprocess.CalledProcessError:
+        return False, "a GitHub API call failed."
+    return True, f"run {run_id} failed only because GitHub never gave a job a runner; re-running its failed jobs."
+
+
 def decide(repo: str, run_id: int, gh: Gh) -> tuple[tuple[int, str] | None, str]:
     """Decides whether the run's pull request goes back in the queue.
 
@@ -284,14 +470,9 @@ def decide(repo: str, run_id: int, gh: Gh) -> tuple[tuple[int, str] | None, str]
         pr = queued_pr(gh(["api", f"repos/{repo}/actions/runs/{run_id}"]), repo)
         if pr is None:
             return None, f"run {run_id} is not a failed merge-group CI run of {repo}."
-        stranded = stranded_jobs(gh(["api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"]))
-        if stranded is None:
-            return None, f"run {run_id} for #{pr} has a job that failed or was cancelled after it started."
-        if not stranded:
-            return None, f"run {run_id} for #{pr} has no job that waited for a runner."
-        for job_id in stranded:
-            if not not_acquired(gh(["api", f"repos/{repo}/check-runs/{job_id}/annotations"])):
-                return None, f"job {job_id} of run {run_id} was cancelled without GitHub's not-acquired annotation."
+        why_not = _stranded_reason(repo, run_id, gh)
+        if why_not is not None:
+            return None, f"#{pr}: {why_not}"
         head = pr_head(gh(["api", f"repos/{repo}/pulls/{pr}"]), repo)
         if head is None:
             return None, f"#{pr} is closed, a draft, already has auto-merge, or comes from a fork."
@@ -335,30 +516,36 @@ def main(argv: Sequence[str] | None = None, gh: Gh = run_gh) -> int:
         gh: Runs ``gh``.
 
     Returns:
-        0, also when the pull request stays out of the queue; 2 on bad
-        arguments.
+        0, also when nothing is recovered; 2 on bad arguments.
     """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", required=True)
     parser.add_argument("--run-id", required=True, type=int)
+    parser.add_argument("--rerun", action="store_true", help="decide on a pull request run's re-run")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo) or args.run_id <= 0:
         print("merge_queue_requeue: bad --repo or --run-id", file=sys.stderr)
         return 2
-    target, reason = decide(args.repo, args.run_id, gh)
+    if args.rerun:
+        rerun, reason = decide_rerun(args.repo, args.run_id, gh)
+        output = "rerun=true\n" if rerun else ""
+        label = "Pull request re-run"
+    else:
+        target, reason = decide(args.repo, args.run_id, gh)
+        output = f"pr={target[0]}\nsha={target[1]}\n" if target is not None else ""
+        label = "Merge-queue re-enqueue"
     print(reason)
-    if target is not None:
-        pr, head = target
+    if output:
         out = os.environ.get("GITHUB_OUTPUT")
         if out:
             with open(out, "a", encoding="utf-8") as fh:
-                fh.write(f"pr={pr}\nsha={head}\n")
+                fh.write(output)
         else:
-            print(f"pr={pr}\nsha={head}")
+            print(output, end="")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as fh:
-            fh.write(f"Merge-queue re-enqueue: {reason}\n")
+            fh.write(f"{label}: {reason}\n")
     return 0
 
 

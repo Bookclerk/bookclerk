@@ -1,0 +1,49 @@
+{
+ "total_count": 4,
+ "workflow_runs": [
+  {
+   "id": 41732205041,
+   "run_number": 3551,
+   "event": "pull_request",
+   "head_branch": "claude/project-thread-bslas8",
+   "head_sha": "83c83d85fe30442b55b0199996d86cdbe4129694",
+   "conclusion": "success",
+   "head_repository": {
+    "full_name": "Bookclerk/bookclerk"
+   }
+  },
+  {
+   "id": 41717878100,
+   "run_number": 3541,
+   "event": "pull_request",
+   "head_branch": "claude/project-thread-bslas8",
+   "head_sha": "fa7ec815d7da87a5609d47ef8b12dd7e83d0d07a",
+   "conclusion": "failure",
+   "head_repository": {
+    "full_name": "Bookclerk/bookclerk"
+   }
+  },
+  {
+   "id": 41717154410,
+   "run_number": 3540,
+   "event": "pull_request",
+   "head_branch": "claude/project-thread-bslas8",
+   "head_sha": "32c1093000000000000000000000000000000000",
+   "conclusion": "cancelled",
+   "head_repository": {
+    "full_name": "Bookclerk/bookclerk"
+   }
+  },
+  {
+   "id": 41716456919,
+   "run_number": 3538,
+   "event": "pull_request",
+   "head_branch": "claude/project-thread-bslas8",
+   "head_sha": "e1861e7000000000000000000000000000000000",
+   "conclusion": "cancelled",
+   "head_repository": {
+    "full_name": "Bookclerk/bookclerk"
+   }
+  }
+ ]
+}

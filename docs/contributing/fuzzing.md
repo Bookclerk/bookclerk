@@ -226,20 +226,28 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     A SARIF file is accepted only when it is version 2.1.0, every run is
     from CodeQL, and every run carries the id `/language:rust`.
 
-- **Merge-queue re-enqueue** (`queued_pr`, `stranded_jobs`,
-  `not_acquired`, `pr_head` and `enqueues_since_head` in
-  `scripts/merge_queue_requeue.py`). It reads GitHub API responses about
-  a failed merge-group run, not pull request content, so it isn't an
-  untrusted boundary. Its output decides whether a pull request goes back
-  in the queue, though, so it is fuzzed the same way.
+- **Missing-runner recovery** (`queued_pr`, `pr_run_attempt`,
+  `run_lineage`, `newer_run`, `stranded_jobs`, `not_acquired`, `pr_head`
+  and `enqueues_since_head` in `scripts/merge_queue_requeue.py`). It reads GitHub API responses about
+  a failed merge-group or pull request run, not pull request content, so
+  it isn't an untrusted boundary. Its output decides whether a pull
+  request goes back in the queue or a run is re-run, though, so it is
+  fuzzed the same way.
   - Test and corpus: `scripts/tests/test_merge_queue_requeue.py`,
     `scripts/tests/merge_queue_requeue_corpus/` (files named
-    `run__<case>`, `jobs__<case>`, `annotations__<case>`, `pr__<case>` or
-    `timeline__<case>`, trimmed from the run that removed #604 from the
+    `run__<case>`, `runs__<case>`, `jobs__<case>`, `annotations__<case>`,
+    `pr__<case>` or `timeline__<case>`, trimmed from the run that removed #604 from the
     queue), replayed and mutated both as bytes and as JSON values.
   - Oracle: explicit walks with exact type checks. A run counts only when
     it is a failed or cancelled `merge_group` run of `ci.yml` in this
-    repository on a `gh-readonly-queue/main/pr-<n>-<40 hex>` branch. Jobs
+    repository on a `gh-readonly-queue/main/pr-<n>-<40 hex>` branch. A
+    pull request run's attempt counts only when the run is a failed
+    `pull_request` run of `ci.yml` whose base repository is this one and
+    whose `run_attempt` is an integer of at least 1. A run's lineage
+    needs a non-empty head repository and branch and a `run_number` of at
+    least 1; a run listing supersedes it only when every entry is an
+    object with an integer `run_number` and one from the same head
+    repository has a larger number. Jobs
     qualify only when every job that didn't succeed or skip is a follower
     job or was cancelled with no runner and no steps. The annotation check
     needs a `failure` annotation naming the not-acquired runner. A pull

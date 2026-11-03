@@ -1,5 +1,6 @@
-# Put a pull request back in the merge queue when GitHub never gave one of
-# its merge-group jobs a runner.
+# Recover CI runs that failed only because GitHub never gave a job a
+# runner: put a merge group's pull request back in the queue, and re-run a
+# pull request run's failed jobs.
 #
 # - Hosted runners (most often macOS arm64) sometimes never pick a job up.
 #   GitHub cancels it with "The job was not acquired by Runner of type
@@ -15,13 +16,20 @@
 #   the automation App turn auto-merge back on, which enqueues it again
 #   with every check still required. The enqueue names that head
 #   (`--match-head-commit`), so a push in between makes it fail.
+# - When a pull_request CI run fails the same way (same job checks), the
+#   `rerun` job re-runs its failed jobs with the workflow's own token, at
+#   most twice per run (attempts 1 and 2 only). A real failure, or a run a
+#   newer push cancelled, is never re-run: those jobs carry no not-acquired
+#   annotation. A run a newer push superseded is skipped too, since
+#   re-running it would cancel CI for the current commit. A re-run keeps
+#   the original run's context, fork pull requests included.
 # - It runs from the default branch through `workflow_run`, checks out the
 #   default branch only and runs no pull request code; it reads the GitHub
 #   API and nothing the pull request produced.
 #
 # See docs/contributing/ci.md#merge-queue-re-enqueue.
 
-name: Merge queue re-enqueue
+name: Missing-runner recovery
 
 on:
   workflow_run:
@@ -85,3 +93,36 @@ jobs:
           SHA: ${{ steps.decide.outputs.sha }}
         # Only the head that was queued: a push since then makes this fail.
         run: gh pr merge "$PR" --repo "$REPO" --auto --squash --match-head-commit "$SHA"
+
+  rerun:
+    name: re-run a pull request run after a missing runner
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Read the run and its jobs, and re-run the failed ones.
+      actions: write
+      # The stranded jobs' annotations.
+      checks: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Decide
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: python3 scripts/merge_queue_requeue.py --repo "$REPO" --run-id "$RUN_ID" --rerun
+
+      - name: Re-run the failed jobs
+        if: steps.decide.outputs.rerun == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: gh run rerun "$RUN_ID" --failed --repo "$REPO"

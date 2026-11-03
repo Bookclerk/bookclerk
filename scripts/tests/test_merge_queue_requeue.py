@@ -80,6 +80,61 @@ class QueuedPrTests(unittest.TestCase):
         self.assertIsNone(mq.queued_pr(seed("run__pr604.json"), "other/repo"))
 
 
+class PrRunAttemptTests(unittest.TestCase):
+    """Only failed pull request runs of this repository's CI count."""
+
+    def test_reads_the_attempt(self) -> None:
+        """Reads the attempt of a same-repository and a fork pull request run."""
+        self.assertEqual(mq.pr_run_attempt(seed("run__pr605_attempt1.json"), REPO), 1)
+        self.assertEqual(mq.pr_run_attempt(seed("run__pr_fork_attempt3.json"), REPO), 3)
+
+    def test_rejects_other_runs(self) -> None:
+        """Rejects runs that are not failed pull request CI runs of this repository."""
+        bad = {
+            "merge group": seed("run__pr604.json"),
+            "cancelled": edited("run__pr605_attempt1.json", conclusion="cancelled"),
+            "success": edited("run__pr605_attempt1.json", conclusion="success"),
+            "running": edited("run__pr605_attempt1.json", status="in_progress"),
+            "other workflow": edited("run__pr605_attempt1.json", path=".github/workflows/codeql.yml"),
+            "other base repo": edited("run__pr605_attempt1.json", repository={"full_name": "x/y"}),
+            "attempt zero": edited("run__pr605_attempt1.json", run_attempt=0),
+            "attempt string": edited("run__pr605_attempt1.json", run_attempt="1"),
+            "attempt bool": edited("run__pr605_attempt1.json", run_attempt=True),
+            "not json": b"nope",
+        }
+        for name, raw in bad.items():
+            with self.subTest(case=name):
+                self.assertIsNone(mq.pr_run_attempt(raw, REPO))
+
+
+class SupersededTests(unittest.TestCase):
+    """A newer run on the same head branch and repository supersedes a run."""
+
+    def test_lineage(self) -> None:
+        """Reads head repository, branch and run number; rejects incomplete runs."""
+        self.assertEqual(
+            mq.run_lineage(seed("run__pr605_attempt1.json")),
+            ("Bookclerk/bookclerk", "claude/project-thread-bslas8", 3541),
+        )
+        for name, raw in {
+            "no number": edited("run__pr605_attempt1.json", run_number=None),
+            "zero": edited("run__pr605_attempt1.json", run_number=0),
+            "no branch": edited("run__pr605_attempt1.json", head_branch=None),
+            "no head repo": edited("run__pr605_attempt1.json", head_repository=None),
+        }.items():
+            with self.subTest(case=name):
+                self.assertIsNone(mq.run_lineage(raw))
+
+    def test_newer_run(self) -> None:
+        """Only a larger run number from the same head repository supersedes."""
+        self.assertIs(mq.newer_run(seed("runs__pr605_current.json"), REPO, 3541), False)
+        self.assertIs(mq.newer_run(seed("runs__pr605_superseded.json"), REPO, 3541), True)
+        self.assertIs(mq.newer_run(seed("runs__fork_same_branch.json"), REPO, 3541), False)
+        self.assertIs(mq.newer_run(seed("runs__fork_same_branch.json"), "someone/bookclerk", 3541), True)
+        self.assertIsNone(mq.newer_run(b'{"workflow_runs": [1]}', REPO, 1))
+        self.assertIsNone(mq.newer_run(b"[]", REPO, 1))
+
+
 class StrandedJobsTests(unittest.TestCase):
     """Only jobs that never started, with nothing else wrong."""
 
@@ -240,6 +295,105 @@ class DecideTests(unittest.TestCase):
         self.assertIn("failed", reason)
 
 
+PR_RUN_ID = 41717878100
+
+
+def rerun_bodies() -> dict[str, bytes]:
+    base = f"repos/{REPO}"
+    jobs = json.loads(seed("jobs__pr605_two_stranded.json"))
+    stranded = [j["id"] for j in jobs["jobs"] if j["conclusion"] == "cancelled"]
+    bodies = {
+        f"{base}/actions/runs/{PR_RUN_ID}": seed("run__pr605_attempt1.json"),
+        f"{base}/actions/runs/{PR_RUN_ID}/jobs": seed("jobs__pr605_two_stranded.json"),
+        f"{base}/actions/workflows/ci.yml/runs": seed("runs__pr605_current.json"),
+    }
+    for job_id in stranded:
+        bodies[f"{base}/check-runs/{job_id}/annotations"] = seed("annotations__not_acquired.json")
+    return bodies
+
+
+class DecideRerunTests(unittest.TestCase):
+    """Pull request runs: re-run only stranded jobs, at most twice."""
+
+    def test_the_605_run_is_re_run(self) -> None:
+        """The run #605 lost to missing macOS runners is re-run."""
+        rerun, reason = mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(rerun_bodies()))
+        self.assertTrue(rerun)
+        self.assertIn("never gave", reason)
+
+    def test_stays_failed(self) -> None:
+        """Each refusal reason keeps the run failed."""
+        base = f"repos/{REPO}"
+        jobs = json.loads(seed("jobs__pr605_two_stranded.json"))
+        first = next(j["id"] for j in jobs["jobs"] if j["conclusion"] == "cancelled")
+        cases = {
+            "third attempt": {f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr605_attempt1.json", run_attempt=3)},
+            "merge group": {f"{base}/actions/runs/{PR_RUN_ID}": seed("run__pr604.json")},
+            "real failure": {f"{base}/actions/runs/{PR_RUN_ID}/jobs": seed("jobs__real_failure.json")},
+            "nothing stranded": {f"{base}/actions/runs/{PR_RUN_ID}/jobs": seed("jobs__all_green.json")},
+            "cancelled by a push": {f"{base}/check-runs/{first}/annotations": seed("annotations__empty.json")},
+            "superseded before recovery ran": {
+                f"{base}/actions/workflows/ci.yml/runs": seed("runs__pr605_superseded.json")
+            },
+            "run listing unreadable": {f"{base}/actions/workflows/ci.yml/runs": b"[]"},
+            "no head branch": {
+                f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr605_attempt1.json", head_branch="")
+            },
+        }
+        for name, over in cases.items():
+            with self.subTest(case=name):
+                bodies = rerun_bodies()
+                bodies.update(over)
+                rerun, reason = mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(bodies))
+                self.assertFalse(rerun)
+                self.assertTrue(reason)
+                if name == "superseded before recovery ran":
+                    self.assertIn("superseded", reason)
+
+    def test_lists_runs_of_the_same_branch(self) -> None:
+        """The last call lists pull request CI runs of the run's head branch."""
+        gh = FakeGh(rerun_bodies())
+        self.assertTrue(mq.decide_rerun(REPO, PR_RUN_ID, gh)[0])
+        self.assertEqual(
+            gh.calls[-1],
+            [
+                "api",
+                f"repos/{REPO}/actions/workflows/ci.yml/runs"
+                "?event=pull_request&branch=claude%2Fproject-thread-bslas8&per_page=100",
+            ],
+        )
+
+    def test_a_fork_branch_of_the_same_name_does_not_supersede(self) -> None:
+        """A newer run from a fork's same-named branch is another pull request's."""
+        bodies = rerun_bodies()
+        bodies[f"repos/{REPO}/actions/workflows/ci.yml/runs"] = seed("runs__fork_same_branch.json")
+        self.assertTrue(mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(bodies))[0])
+
+    def test_a_fork_pull_request_run_is_re_run(self) -> None:
+        """A fork's run on attempts 1 and 2 is re-run like any other."""
+        for attempt in (1, 2):
+            with self.subTest(attempt=attempt):
+                bodies = rerun_bodies()
+                bodies[f"repos/{REPO}/actions/runs/{PR_RUN_ID}"] = edited(
+                    "run__pr605_attempt1.json",
+                    run_attempt=attempt,
+                    head_repository={"full_name": "someone/bookclerk"},
+                )
+                self.assertTrue(mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(bodies))[0])
+
+    def test_second_attempt_still_re_runs(self) -> None:
+        """Attempt 2 is still re-run; attempt 3 is the cap."""
+        bodies = rerun_bodies()
+        bodies[f"repos/{REPO}/actions/runs/{PR_RUN_ID}"] = edited("run__pr605_attempt1.json", run_attempt=2)
+        self.assertTrue(mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(bodies))[0])
+
+    def test_api_failure_stays_failed(self) -> None:
+        """A failed API call keeps the run failed."""
+        rerun, reason = mq.decide_rerun(REPO, PR_RUN_ID, FakeGh({}))
+        self.assertFalse(rerun)
+        self.assertIn("failed", reason)
+
+
 class RunGhTests(unittest.TestCase):
     """A stalled `gh` call becomes a handled failure instead of holding the job."""
 
@@ -291,6 +445,19 @@ class CliTests(unittest.TestCase):
         bodies = happy_bodies()
         bodies[f"repos/{REPO}/actions/runs/{RUN_ID}/jobs"] = seed("jobs__real_failure.json")
         code, out, _ = self.run_main(["--repo", REPO, "--run-id", str(RUN_ID)], FakeGh(bodies))
+        self.assertEqual((code, out), (0, ""))
+
+    def test_rerun_writes_the_flag(self) -> None:
+        """An eligible run writes ``rerun=true`` and a summary line."""
+        code, out, summary = self.run_main(
+            ["--repo", REPO, "--run-id", str(PR_RUN_ID), "--rerun"], FakeGh(rerun_bodies())
+        )
+        self.assertEqual((code, out), (0, "rerun=true\n"))
+        self.assertIn("Pull request re-run", summary)
+
+    def test_no_rerun_writes_nothing(self) -> None:
+        """A refused re-run writes no output."""
+        code, out, _ = self.run_main(["--repo", REPO, "--run-id", str(PR_RUN_ID), "--rerun"], FakeGh({}))
         self.assertEqual((code, out), (0, ""))
 
     def test_bad_arguments_never_call_github(self) -> None:
@@ -401,7 +568,55 @@ def oracle_enqueues(raw: bytes) -> int | None:
     return sum(1 for e in events[last_head + 1 :] if e == "added_to_merge_queue")
 
 
+def oracle_pr_run_attempt(raw: bytes) -> int | None:
+    """Independent reading of ``pr_run_attempt`` with exact type checks."""
+    run = _parse(raw)
+    if type(run) is not dict or type(run.get("repository")) is not dict:
+        return None
+    attempt = run.get("run_attempt")
+    if not (
+        run.get("event") == "pull_request"
+        and run.get("path") == ".github/workflows/ci.yml"
+        and run.get("status") == "completed"
+        and run.get("conclusion") == "failure"
+        and run["repository"].get("full_name") == REPO
+        and type(attempt) is int
+        and attempt >= 1
+    ):
+        return None
+    return attempt
+
+
+def oracle_run_lineage(raw: bytes) -> tuple[str, str, int] | None:
+    """Independent reading of ``run_lineage`` with exact type checks."""
+    run = _parse(raw)
+    if type(run) is not dict or type(run.get("head_repository")) is not dict:
+        return None
+    name = run["head_repository"].get("full_name")
+    branch = run.get("head_branch")
+    number = run.get("run_number")
+    if type(name) is str and name != "" and type(branch) is str and branch != "" and type(number) is int and number > 0:
+        return name, branch, number
+    return None
+
+
+def oracle_newer_run(raw: bytes, head_repo: str, run_number: int) -> bool | None:
+    """Independent reading of ``newer_run`` with exact type checks."""
+    body = _parse(raw)
+    if type(body) is not dict or type(body.get("workflow_runs")) is not list:
+        return None
+    runs = body["workflow_runs"]
+    if not all(type(r) is dict and type(r.get("head_repository")) is dict and type(r.get("run_number")) is int for r in runs):
+        return None
+    return any(r["head_repository"].get("full_name") == head_repo and r["run_number"] > run_number for r in runs)
+
+
 def check_against_oracles(case: unittest.TestCase, raw: bytes, label: str) -> None:
+    """Asserts every parser agrees with its oracle on one body."""
+    case.assertEqual(mq.run_lineage(raw), oracle_run_lineage(raw), label)
+    for number in (1, 3541, 3551):
+        case.assertEqual(mq.newer_run(raw, REPO, number), oracle_newer_run(raw, REPO, number), label)
+    case.assertEqual(mq.pr_run_attempt(raw, REPO), oracle_pr_run_attempt(raw), label)
     case.assertEqual(mq.queued_pr(raw, REPO), oracle_queued_pr(raw), label)
     case.assertEqual(mq.stranded_jobs(raw), oracle_stranded(raw), label)
     case.assertEqual(mq.not_acquired(raw), oracle_not_acquired(raw), label)
@@ -410,14 +625,15 @@ def check_against_oracles(case: unittest.TestCase, raw: bytes, label: str) -> No
 
 
 class CorpusTests(unittest.TestCase):
-    """Replays the seed corpus (``run__``, ``jobs__``, ``annotations__``, ``pr__``, ``timeline__``)."""
+    """Replays the seed corpus (``run__``, ``runs__``, ``jobs__``, ``annotations__``, ``pr__``, ``timeline__``)."""
 
     def test_corpus_matches_oracles(self) -> None:
+        """Every seed parses the same through the parsers and the oracles."""
         seeds = sorted(CORPUS.iterdir())
         self.assertGreaterEqual(len(seeds), 15)
         for path in seeds:
             with self.subTest(seed=path.name):
-                self.assertIn(path.name.split("__")[0], ("run", "jobs", "annotations", "pr", "timeline"))
+                self.assertIn(path.name.split("__")[0], ("run", "runs", "jobs", "annotations", "pr", "timeline"))
                 check_against_oracles(self, path.read_bytes(), path.name)
 
 
