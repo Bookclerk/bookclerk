@@ -1216,8 +1216,7 @@ pub(crate) struct PluginInstanceConfigResponse {
     secret_refs: Vec<bookclerk_library::control_plane::InstanceSecretRefV1>,
     /// Settings as the guest sees them: schema defaults overlaid with the
     /// stored values. Empty when the plugin has no pinned schema.
-    #[schema(value_type = Object, example = json!({"root": "/srv/audiobooks", "multi_destination": "sync_missing"}))]
-    #[schema(example = json!({"container": "m4b"}))]
+    #[schema(example = json!({"root": "/srv/audiobooks", "multi_destination": "sync_missing"}))]
     effective: std::collections::BTreeMap<String, serde_json::Value>,
     /// Declared settings from the pinned schema; empty when there is none.
     #[schema(value_type = Vec<crate::openapi::SettingSpecDoc>)]
@@ -1302,7 +1301,6 @@ pub(crate) struct PutPluginInstanceConfig {
     expected_revision: i64,
     /// Scalar settings. Secret values are not accepted here.
     #[serde(default)]
-    #[schema(value_type = Object)]
     #[schema(example = json!({"container": "m4b"}))]
     settings: std::collections::BTreeMap<String, bookclerk_library::control_plane::SettingValue>,
     /// Secret refs to keep. Omitted refs are dropped from the document; the

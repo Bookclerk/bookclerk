@@ -21002,7 +21002,7 @@
               "null"
             ],
             "description": "Must be [`BRANCH_SCOPE`].",
-            "example": "branch"
+            "example": "node:enroll"
           },
           "state": {
             "type": [
@@ -28030,7 +28030,15 @@
           },
           "effective": {
             "type": "object",
-            "description": "Settings as the guest sees them: schema defaults overlaid with the\nstored values. Empty when the plugin has no pinned schema."
+            "description": "Settings as the guest sees them: schema defaults overlaid with the\nstored values. Empty when the plugin has no pinned schema.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            },
+            "example": {
+              "multi_destination": "sync_missing",
+              "root": "/srv/audiobooks"
+            }
           },
           "schema": {
             "type": "array",
@@ -29308,7 +29316,16 @@
           },
           "settings": {
             "type": "object",
-            "description": "Scalar settings. Secret values are not accepted here."
+            "description": "Scalar settings. Secret values are not accepted here.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SettingValue"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "example": {
+              "container": "m4b"
+            }
           },
           "secret_refs": {
             "type": "array",

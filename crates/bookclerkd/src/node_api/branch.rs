@@ -561,7 +561,7 @@ pub struct BranchAuthorizeParams {
     pub response_type: String,
     /// Must be [`BRANCH_SCOPE`].
     #[serde(default)]
-    #[schema(example = "branch")]
+    #[schema(example = "node:enroll")]
     pub scope: Option<String>,
     /// Echoed on the redirect.
     #[serde(default)]
