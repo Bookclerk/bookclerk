@@ -20,8 +20,9 @@
 #   `rerun` job re-runs its failed jobs with the workflow's own token, at
 #   most twice per run (attempts 1 and 2 only). A real failure, or a run a
 #   newer push cancelled, is never re-run: those jobs carry no not-acquired
-#   annotation. A re-run keeps the original run's context, fork pull
-#   requests included.
+#   annotation. A run a newer push superseded is skipped too, since
+#   re-running it would cancel CI for the current commit. A re-run keeps
+#   the original run's context, fork pull requests included.
 # - It runs from the default branch through `workflow_run`, checks out the
 #   default branch only and runs no pull request code; it reads the GitHub
 #   API and nothing the pull request produced.

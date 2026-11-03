@@ -105,6 +105,32 @@ class PrRunAttemptTests(unittest.TestCase):
                 self.assertIsNone(mq.pr_run_attempt(raw, REPO))
 
 
+class SupersededTests(unittest.TestCase):
+    """A newer run on the same head branch and repository supersedes a run."""
+
+    def test_lineage(self) -> None:
+        self.assertEqual(
+            mq.run_lineage(seed("run__pr605_attempt1.json")),
+            ("Bookclerk/bookclerk", "claude/project-thread-bslas8", 3541),
+        )
+        for name, raw in {
+            "no number": edited("run__pr605_attempt1.json", run_number=None),
+            "zero": edited("run__pr605_attempt1.json", run_number=0),
+            "no branch": edited("run__pr605_attempt1.json", head_branch=None),
+            "no head repo": edited("run__pr605_attempt1.json", head_repository=None),
+        }.items():
+            with self.subTest(case=name):
+                self.assertIsNone(mq.run_lineage(raw))
+
+    def test_newer_run(self) -> None:
+        self.assertIs(mq.newer_run(seed("runs__pr605_current.json"), REPO, 3541), False)
+        self.assertIs(mq.newer_run(seed("runs__pr605_superseded.json"), REPO, 3541), True)
+        self.assertIs(mq.newer_run(seed("runs__fork_same_branch.json"), REPO, 3541), False)
+        self.assertIs(mq.newer_run(seed("runs__fork_same_branch.json"), "someone/bookclerk", 3541), True)
+        self.assertIsNone(mq.newer_run(b'{"workflow_runs": [1]}', REPO, 1))
+        self.assertIsNone(mq.newer_run(b"[]", REPO, 1))
+
+
 class StrandedJobsTests(unittest.TestCase):
     """Only jobs that never started, with nothing else wrong."""
 
@@ -275,6 +301,7 @@ def rerun_bodies() -> dict[str, bytes]:
     bodies = {
         f"{base}/actions/runs/{PR_RUN_ID}": seed("run__pr605_attempt1.json"),
         f"{base}/actions/runs/{PR_RUN_ID}/jobs": seed("jobs__pr605_two_stranded.json"),
+        f"{base}/actions/workflows/ci.yml/runs": seed("runs__pr605_current.json"),
     }
     for job_id in stranded:
         bodies[f"{base}/check-runs/{job_id}/annotations"] = seed("annotations__not_acquired.json")
@@ -298,7 +325,14 @@ class DecideRerunTests(unittest.TestCase):
             "merge group": {f"{base}/actions/runs/{PR_RUN_ID}": seed("run__pr604.json")},
             "real failure": {f"{base}/actions/runs/{PR_RUN_ID}/jobs": seed("jobs__real_failure.json")},
             "nothing stranded": {f"{base}/actions/runs/{PR_RUN_ID}/jobs": seed("jobs__all_green.json")},
-            "superseded by a push": {f"{base}/check-runs/{first}/annotations": seed("annotations__empty.json")},
+            "cancelled by a push": {f"{base}/check-runs/{first}/annotations": seed("annotations__empty.json")},
+            "superseded before recovery ran": {
+                f"{base}/actions/workflows/ci.yml/runs": seed("runs__pr605_superseded.json")
+            },
+            "run listing unreadable": {f"{base}/actions/workflows/ci.yml/runs": b"[]"},
+            "no head branch": {
+                f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr605_attempt1.json", head_branch="")
+            },
         }
         for name, over in cases.items():
             with self.subTest(case=name):
@@ -307,6 +341,25 @@ class DecideRerunTests(unittest.TestCase):
                 rerun, reason = mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(bodies))
                 self.assertFalse(rerun)
                 self.assertTrue(reason)
+                if name == "superseded before recovery ran":
+                    self.assertIn("superseded", reason)
+
+    def test_lists_runs_of_the_same_branch(self) -> None:
+        gh = FakeGh(rerun_bodies())
+        self.assertTrue(mq.decide_rerun(REPO, PR_RUN_ID, gh)[0])
+        self.assertEqual(
+            gh.calls[-1],
+            [
+                "api",
+                f"repos/{REPO}/actions/workflows/ci.yml/runs"
+                "?event=pull_request&branch=claude%2Fproject-thread-bslas8&per_page=100",
+            ],
+        )
+
+    def test_a_fork_branch_of_the_same_name_does_not_supersede(self) -> None:
+        bodies = rerun_bodies()
+        bodies[f"repos/{REPO}/actions/workflows/ci.yml/runs"] = seed("runs__fork_same_branch.json")
+        self.assertTrue(mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(bodies))[0])
 
     def test_second_attempt_still_re_runs(self) -> None:
         bodies = rerun_bodies()
@@ -509,7 +562,32 @@ def oracle_pr_run_attempt(raw: bytes) -> int | None:
     return attempt
 
 
+def oracle_run_lineage(raw: bytes) -> tuple[str, str, int] | None:
+    run = _parse(raw)
+    if type(run) is not dict or type(run.get("head_repository")) is not dict:
+        return None
+    name = run["head_repository"].get("full_name")
+    branch = run.get("head_branch")
+    number = run.get("run_number")
+    if type(name) is str and name != "" and type(branch) is str and branch != "" and type(number) is int and number > 0:
+        return name, branch, number
+    return None
+
+
+def oracle_newer_run(raw: bytes, head_repo: str, run_number: int) -> bool | None:
+    body = _parse(raw)
+    if type(body) is not dict or type(body.get("workflow_runs")) is not list:
+        return None
+    runs = body["workflow_runs"]
+    if not all(type(r) is dict and type(r.get("head_repository")) is dict and type(r.get("run_number")) is int for r in runs):
+        return None
+    return any(r["head_repository"].get("full_name") == head_repo and r["run_number"] > run_number for r in runs)
+
+
 def check_against_oracles(case: unittest.TestCase, raw: bytes, label: str) -> None:
+    case.assertEqual(mq.run_lineage(raw), oracle_run_lineage(raw), label)
+    for number in (1, 3541, 3551):
+        case.assertEqual(mq.newer_run(raw, REPO, number), oracle_newer_run(raw, REPO, number), label)
     case.assertEqual(mq.pr_run_attempt(raw, REPO), oracle_pr_run_attempt(raw), label)
     case.assertEqual(mq.queued_pr(raw, REPO), oracle_queued_pr(raw), label)
     case.assertEqual(mq.stranded_jobs(raw), oracle_stranded(raw), label)
@@ -519,14 +597,14 @@ def check_against_oracles(case: unittest.TestCase, raw: bytes, label: str) -> No
 
 
 class CorpusTests(unittest.TestCase):
-    """Replays the seed corpus (``run__``, ``jobs__``, ``annotations__``, ``pr__``, ``timeline__``)."""
+    """Replays the seed corpus (``run__``, ``runs__``, ``jobs__``, ``annotations__``, ``pr__``, ``timeline__``)."""
 
     def test_corpus_matches_oracles(self) -> None:
         seeds = sorted(CORPUS.iterdir())
         self.assertGreaterEqual(len(seeds), 15)
         for path in seeds:
             with self.subTest(seed=path.name):
-                self.assertIn(path.name.split("__")[0], ("run", "jobs", "annotations", "pr", "timeline"))
+                self.assertIn(path.name.split("__")[0], ("run", "runs", "jobs", "annotations", "pr", "timeline"))
                 check_against_oracles(self, path.read_bytes(), path.name)
 
 

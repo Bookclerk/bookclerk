@@ -36,7 +36,11 @@ For a ``pull_request`` run (``--rerun``) it re-runs the failed jobs when:
   run's read-only context), on attempt 1 to ``MAX_PR_RUN_ATTEMPTS - 1``,
   so one run gets at most ``MAX_PR_RUN_ATTEMPTS - 1`` re-runs;
 - the jobs pass the same not-acquired test as above. A run cancelled by a
-  newer push has no not-acquired annotation, so it is never re-run.
+  newer push has no not-acquired annotation, so it is never re-run;
+- no newer ``pull_request`` CI run exists for the same head branch and
+  head repository. CI cancels superseded pull request runs in its
+  concurrency group, so re-running an old run would cancel the run for
+  the pull request's current commit.
 
 The checks are sans-IO functions over the bytes the GitHub API returns, so
 ``scripts/tests/test_merge_queue_requeue.py`` drives the same code the
@@ -59,6 +63,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from urllib.parse import quote
 
 # The CI workflow whose merge-group runs are watched.
 CI_WORKFLOW_PATH = ".github/workflows/ci.yml"
@@ -181,6 +186,67 @@ def pr_run_attempt(raw: bytes, repo: str) -> int | None:
     ):
         return None
     return attempt
+
+
+def run_lineage(raw: bytes) -> tuple[str, str, int] | None:
+    """Reads where a CI run's head comes from and its place in the workflow.
+
+    Args:
+        raw: The JSON body of ``GET /repos/{repo}/actions/runs/{id}``.
+
+    Returns:
+        ``(head repository, head branch, run_number)`` with a non-empty
+        ``OWNER/NAME`` and branch and a ``run_number`` of at least 1;
+        otherwise None. ``run_number`` grows with every new run of a
+        workflow and stays the same across re-runs.
+    """
+    run = _load(raw)
+    if not isinstance(run, dict):
+        return None
+    head_repo = run.get("head_repository")
+    branch = run.get("head_branch")
+    number = run.get("run_number")
+    if not isinstance(head_repo, dict):
+        return None
+    name = head_repo.get("full_name")
+    if not isinstance(name, str) or not name or not isinstance(branch, str) or not branch:
+        return None
+    if not _is_int(number) or number < 1:
+        return None
+    return name, branch, number
+
+
+def newer_run(raw: bytes, head_repo: str, run_number: int) -> bool | None:
+    """Whether a run listing holds a later run from the same head repository.
+
+    Args:
+        raw: The JSON body of ``GET /repos/{repo}/actions/workflows/{file}/runs``
+            filtered to one event and head branch.
+        head_repo: ``OWNER/NAME`` the head branch lives in (a fork's
+            branch can share its name with one in this repository).
+        run_number: The ``run_number`` of the run being recovered.
+
+    Returns:
+        True when a run from ``head_repo`` has a larger ``run_number``,
+        False when none has, and None when the body is not a run listing.
+    """
+    body = _load(raw)
+    if not isinstance(body, dict):
+        return None
+    runs = body.get("workflow_runs")
+    if not isinstance(runs, list):
+        return None
+    newer = False
+    for run in runs:
+        if not isinstance(run, dict):
+            return None
+        repo = run.get("head_repository")
+        number = run.get("run_number")
+        if not isinstance(repo, dict) or not _is_int(number):
+            return None
+        if repo.get("full_name") == head_repo and number > run_number:
+            newer = True
+    return newer
 
 
 def _is_follower(name: str) -> bool:
@@ -356,14 +422,32 @@ def decide_rerun(repo: str, run_id: int, gh: Gh) -> tuple[bool, str]:
         ``(False, reason)``; ``reason`` is one sentence.
     """
     try:
-        attempt = pr_run_attempt(gh(["api", f"repos/{repo}/actions/runs/{run_id}"]), repo)
-        if attempt is None:
+        raw = gh(["api", f"repos/{repo}/actions/runs/{run_id}"])
+        attempt = pr_run_attempt(raw, repo)
+        lineage = run_lineage(raw)
+        if attempt is None or lineage is None:
             return False, f"run {run_id} is not a failed pull request CI run of {repo}."
         if attempt >= MAX_PR_RUN_ATTEMPTS:
             return False, f"run {run_id} already ran {attempt} times."
         why_not = _stranded_reason(repo, run_id, gh)
         if why_not is not None:
             return False, why_not
+        # Checked last, as close to the re-run as possible: re-running a
+        # superseded run would cancel CI for the current commit.
+        head_repo, branch, number = lineage
+        workflow = CI_WORKFLOW_PATH.rsplit("/", 1)[-1]
+        listing = gh(
+            [
+                "api",
+                f"repos/{repo}/actions/workflows/{workflow}/runs"
+                f"?event=pull_request&branch={quote(branch, safe='')}&per_page=100",
+            ]
+        )
+        newer = newer_run(listing, head_repo, number)
+        if newer is None:
+            return False, f"could not list the CI runs of {head_repo}:{branch}."
+        if newer:
+            return False, f"run {run_id} is superseded by a newer run for {head_repo}:{branch}."
     except subprocess.CalledProcessError:
         return False, "a GitHub API call failed."
     return True, f"run {run_id} failed only because GitHub never gave a job a runner; re-running its failed jobs."

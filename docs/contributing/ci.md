@@ -1336,6 +1336,10 @@ and `CI Gate`) on the same commit when:
    annotation, so it is never re-run.
 2. The run is on its first or second attempt, so one run gets at most two
    re-runs.
+3. No newer `pull_request` CI run exists for the same head branch and
+   repository. CI cancels a pull request's older runs when a new one
+   starts, so re-running a run that a push has superseded would cancel CI
+   for the current commit. This is checked last, just before the re-run.
 
 The re-run uses the workflow's own token (`actions: write`), not the
 automation App, and keeps the original run's context, so a fork's pull
