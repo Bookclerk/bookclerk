@@ -82,6 +82,21 @@ pub enum Access {
 }
 
 impl Access {
+    /// True when the layer resolves a library user's session and so refuses
+    /// a user who still has to enroll a second factor
+    /// ([`crate::totp::enrollment_blocks`]) before the handler runs: every
+    /// layer but the public and operator-only ones.
+    fn gates_enrollment(self) -> bool {
+        match self {
+            Access::Public | Access::Operator => false,
+            Access::OperatorOrAdministrator
+            | Access::OperatorOrOwner
+            | Access::OperatorOrNodeOwner
+            | Access::OperatorOrUser
+            | Access::OperatorOrPortal => true,
+        }
+    }
+
     /// The security schemes any one of which satisfies the layer.
     ///
     /// # Returns
@@ -290,7 +305,8 @@ fn operations_mut(item: &mut PathItem) -> Vec<&mut Operation> {
 /// * `prefix` - Where the group is nested (`""` when merged at the root).
 fn add_group(doc: &mut OpenApi, mut group: OpenApi, access: Access, prefix: &str) {
     use utoipa::openapi::ResponseBuilder;
-    for item in group.paths.paths.values_mut() {
+    for (path, item) in group.paths.paths.iter_mut() {
+        let full_path = format!("{prefix}{path}");
         for op in operations_mut(item) {
             // The auth layer answers before the handler runs: 401 without a
             // credential, and 403 when the caller's role falls short (every
@@ -332,6 +348,12 @@ fn add_group(doc: &mut OpenApi, mut group: OpenApi, access: Access, prefix: &str
                         .map(|scheme| SecurityRequirement::new(*scheme, Vec::<String>::new()))
                         .collect(),
                 );
+            }
+            if access.gates_enrollment()
+                && full_path.starts_with("/api/")
+                && !crate::totp::enrollment_exempt(&full_path)
+            {
+                add_enrollment_refusal(op);
             }
         }
     }
@@ -492,8 +514,9 @@ pub fn document() -> OpenApi {
 /// Gives every error response the middleware answers its example: the
 /// `ErrorJson` [`crate::http_error::brand_error_responses`] writes for that
 /// status (slug, message and status, as [`crate::http_error::ErrorJson::for_status`]
-/// builds them) on a JSON body typed [`API_ERROR`] or `ErrorJson`, and the
-/// 504's text on its `text/plain` body. A response whose route states its
+/// builds them) on a JSON body typed [`API_ERROR`] or `ErrorJson`, the
+/// 504's text on its `text/plain` body, and the branded page
+/// ([`crate::http_error::branded_page`]) on a `text/html` body. A response whose route states its
 /// own example (`example` or `examples`) keeps it, so a handler that writes
 /// its own words shows them.
 ///
@@ -542,6 +565,8 @@ fn add_middleware_error_examples(doc: &mut OpenApi) {
                                 .ok();
                     } else if media == "text/plain" && status == StatusCode::GATEWAY_TIMEOUT {
                         content.example = Some(crate::api::API_TIMEOUT_MESSAGE.into());
+                    } else if media == "text/html" {
+                        content.example = Some(crate::http_error::branded_page(status).into());
                     }
                 }
             }
@@ -976,6 +1001,154 @@ fn add_middleware_refusals(doc: &mut OpenApi) {
             }
         }
     }
+}
+
+/// The error slug of the refusal [`crate::totp::enrollment_blocks`] produces.
+const MFA_ENROLLMENT_REQUIRED: &str = "mfa_enrollment_required";
+
+/// The message of that refusal, as [`crate::auth`] writes it.
+const MFA_ENROLLMENT_MESSAGE: &str = "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.";
+
+/// States the 403 a route behind a session-resolving access layer may
+/// answer before its handler runs: when `daemon.auth.require_second_factor`
+/// is on, the layer ([`crate::auth`]) refuses a signed-in user who has
+/// enrolled neither a passkey nor an authenticator app with
+/// `mfa_enrollment_required`. [`add_group`] calls this for every `/api/`
+/// route of a group whose access [`Access::gates_enrollment`], except the
+/// ones [`crate::totp::enrollment_exempt`] keeps open for enrolling and
+/// signing out.
+///
+/// A route without a 403 gets one with the `ErrorJson` body and two named
+/// examples (the middleware's `forbidden` and the enrollment refusal); a
+/// route whose 403 already carries the standard error body gets the
+/// example added beside its own (a single `example` becomes a named one,
+/// under its slug); a route whose 403 has a body of its own keeps it and
+/// states `ErrorJson` as the other shape (`anyOf`, since a body with only
+/// `error` fits both), since the refusal
+/// arrives before the handler and in the middleware's words. A route that
+/// already names the refusal is left as it is.
+///
+/// # Arguments
+///
+/// * `op` - The operation, before [`fill_untyped_content`] types its bare
+///   error responses.
+fn add_enrollment_refusal(op: &mut Operation) {
+    use axum::http::StatusCode;
+    use utoipa::openapi::example::ExampleBuilder;
+    use utoipa::openapi::schema::{AnyOfBuilder, Schema};
+    use utoipa::openapi::{Content, ContentBuilder, Ref, RefOr, ResponseBuilder};
+    const SENTENCE: &str =
+        "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.";
+    let example_named = |name: &str, summary: &str, value: serde_json::Value| {
+        (
+            name.to_string(),
+            RefOr::T(
+                ExampleBuilder::new()
+                    .summary(summary)
+                    .value(Some(value))
+                    .build(),
+            ),
+        )
+    };
+    let standard_body = |schema: &Option<RefOr<Schema>>| match schema {
+        Some(RefOr::Ref(reference)) => {
+            let name = reference
+                .ref_location
+                .rsplit('/')
+                .next()
+                .unwrap_or_default();
+            name == API_ERROR || name == "ErrorJson"
+        }
+        _ => false,
+    };
+    let response = match op.responses.responses.get_mut("403") {
+        Some(RefOr::T(response)) => response,
+        Some(RefOr::Ref(_)) => return,
+        None => {
+            op.responses.responses.insert(
+                "403".to_string(),
+                ResponseBuilder::new().description(SENTENCE).build().into(),
+            );
+            match op.responses.responses.get_mut("403") {
+                Some(RefOr::T(response)) => response,
+                _ => return,
+            }
+        }
+    };
+    if !response.description.contains(MFA_ENROLLMENT_REQUIRED) {
+        response.description = format!("{} {SENTENCE}", response.description.trim_end());
+    }
+    let json = response
+        .content
+        .iter_mut()
+        .find(|(media, _)| media.starts_with("application/json"))
+        .map(|(_, content)| content);
+    let content: &mut Content = match json {
+        Some(RefOr::T(content)) => content,
+        Some(RefOr::Ref(_)) => return,
+        None => {
+            let (name, forbidden) = example_named(
+                "forbidden",
+                "The caller may not do this",
+                serde_json::to_value(crate::http_error::ErrorJson::for_status(
+                    StatusCode::FORBIDDEN,
+                ))
+                .unwrap_or_default(),
+            );
+            let mut built = ContentBuilder::new()
+                .schema(Some(Ref::from_schema_name("ErrorJson")))
+                .build();
+            built.examples.insert(name, forbidden);
+            response
+                .content
+                .insert("application/json".to_string(), RefOr::T(built));
+            match response.content.get_mut("application/json") {
+                Some(RefOr::T(content)) => content,
+                _ => return,
+            }
+        }
+    };
+    if content.examples.contains_key(MFA_ENROLLMENT_REQUIRED) {
+        return;
+    }
+    if !standard_body(&content.schema) {
+        if let Some(own) = content.schema.take() {
+            content.schema = Some(RefOr::T(Schema::AnyOf(
+                AnyOfBuilder::new()
+                    .item(own)
+                    .item(Ref::from_schema_name("ErrorJson"))
+                    .build(),
+            )));
+        }
+    }
+    if let Some(own) = content.example.take() {
+        // The body's slug names the example when it is one; a handler
+        // whose `error` is a sentence gets `route`.
+        let slug = own.get("error").and_then(serde_json::Value::as_str);
+        let name = slug
+            .filter(|slug| {
+                !slug.is_empty()
+                    && slug.len() <= 40
+                    && slug
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            })
+            .unwrap_or("route")
+            .to_string();
+        let (name, example) = example_named(&name, "The route's own refusal", own);
+        content.examples.insert(name, example);
+    }
+    let (name, example) = example_named(
+        MFA_ENROLLMENT_REQUIRED,
+        "The user must enroll a second factor first",
+        serde_json::to_value(crate::http_error::ErrorJson::new(
+            StatusCode::FORBIDDEN,
+            MFA_ENROLLMENT_REQUIRED,
+            MFA_ENROLLMENT_MESSAGE,
+        ))
+        .unwrap_or_default(),
+    );
+    content.examples.insert(name, example);
 }
 
 /// True when a session cookie can be the operation's credential: it names a
@@ -1656,6 +1829,98 @@ mod tests {
         assert!(csrf("post", "/api/auth/logout"));
         assert!(!csrf("post", "/api/auth/login"));
         assert!(!csrf("get", "/api/preferences"));
+    }
+
+    /// Every `/api/` route behind a session-resolving access layer states
+    /// the `mfa_enrollment_required` refusal on its 403 with an example and
+    /// keeps its own body beside the middleware's; the enrollment and
+    /// sign-out routes, the public routes and the operator-only routes do
+    /// not.
+    #[test]
+    fn enrollment_refusals_are_stated() {
+        let doc = document_value();
+        let forbidden =
+            |method: &str, path: &str| doc["paths"][path][method]["responses"]["403"].clone();
+        let names_refusal = |response: &serde_json::Value| {
+            response["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("mfa_enrollment_required"))
+        };
+        for (method, path) in [
+            ("get", "/api/wishlist"),
+            ("post", "/api/library/scan"),
+            ("get", "/api/library/books"),
+            ("get", "/api/status"),
+            ("get", "/api/config/nodes"),
+            ("get", "/api/auth/oidc/clients"),
+        ] {
+            let response = forbidden(method, path);
+            assert!(names_refusal(&response), "{method} {path} 403: {response}");
+            let example = &response["content"]["application/json"]["examples"]
+                ["mfa_enrollment_required"]["value"];
+            assert_eq!(
+                example["error"], "mfa_enrollment_required",
+                "{method} {path} 403 example"
+            );
+            assert_eq!(example["status"], 403, "{method} {path} 403 example");
+        }
+        // Exempt, public and operator-only routes keep their own 403 or none.
+        assert!(forbidden("get", "/api/auth/me").is_null());
+        assert!(!names_refusal(&forbidden("get", "/api/auth/totp")));
+        assert!(
+            forbidden("get", "/api/auth/oidc/elevate")["content"]["application/json"]["examples"]
+                .is_null()
+        );
+        assert!(!names_refusal(&forbidden("get", "/api/auth/oidc/elevate")));
+        assert!(!names_refusal(&forbidden("get", "/api/settings")));
+        // A route with a body of its own states both shapes, and its own example by its slug.
+        let scan = forbidden("post", "/api/library/scan");
+        let scan = &scan["content"]["application/json"];
+        let any_of = scan["schema"]["anyOf"].as_array().expect("anyOf");
+        assert_eq!(any_of.len(), 2);
+        assert_eq!(any_of[0]["$ref"], "#/components/schemas/ActionResponse");
+        assert_eq!(any_of[1]["$ref"], "#/components/schemas/ErrorJson");
+        assert_eq!(scan["examples"]["forbidden"]["value"]["error"], "forbidden");
+        assert!(scan.get("example").is_none());
+        // A route that already names the refusal is left as it is: one example, one mention.
+        let clients = forbidden("get", "/api/auth/oidc/clients");
+        assert_eq!(
+            clients["description"]
+                .as_str()
+                .unwrap_or_default()
+                .matches("mfa_enrollment_required")
+                .count(),
+            1
+        );
+        assert_eq!(
+            clients["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ErrorJson"
+        );
+        assert_eq!(
+            clients["content"]["application/json"]["examples"]
+                .as_object()
+                .map(|m| m.len()),
+            Some(2)
+        );
+        // A text body keeps its media type and gains the JSON one.
+        let cancel = forbidden("delete", "/api/wishlist/{uuid}");
+        assert!(cancel["content"]["text/plain"].is_object());
+        assert_eq!(
+            cancel["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ErrorJson"
+        );
+        // A route whose `error` is a sentence names its own example `route`.
+        let runtime = forbidden("put", "/api/config/nodes/{node_id}/runtime");
+        assert!(
+            runtime["content"]["application/json"]["examples"]["route"].is_object(),
+            "{runtime}"
+        );
+        // A route without a 403 before gets the middleware's own refusal too.
+        let wishlist = forbidden("get", "/api/wishlist");
+        assert_eq!(
+            wishlist["content"]["application/json"]["examples"]["forbidden"]["value"]["status"],
+            403
+        );
     }
 
     /// Every request and response media type carries a schema, so generated

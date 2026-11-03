@@ -1278,10 +1278,12 @@ jobs:
 
       # Web API contract (docs/contributing/ci.md#web-api-contract): how
       # many declared responses the daemon's tests observed and every
-      # response that disagreed with the document. Report-only for now.
+      # response that disagreed with the document. A disagreement, or an
+      # observed share under the floor in scripts/coverage_areas.toml,
+      # fails the gate.
       - name: Web API contract
         if: ${{ !cancelled() && !inputs.private-head }}
         run: >-
           python3 scripts/contract_coverage.py
           --reports "$RUNNER_TEMP/coverage/contract"
-          --mode report
+          --mode enforce

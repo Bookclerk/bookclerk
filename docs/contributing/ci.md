@@ -863,12 +863,24 @@ SPA, is served on purpose without one). A declared response nobody
 observed is not a
 finding yet; it marks a route the tests do not reach.
 
-The report is informational: the step passes whatever it finds. The
-layer never fails a test either, so a disagreement shows up in CI Gate's
-summary, not in a test's output. Enforcing the report (a disagreement
-fails CI Gate, and the observed share gets a floor that only rises, like
-the coverage floors) is the next step once the first reports have been
-read and the routes they name fixed.
+The step is enforced: a disagreement fails CI Gate, and so does an
+observed share below the floor `[contract] floor` in
+[`scripts/coverage_areas.toml`](../../scripts/coverage_areas.toml) states
+(a percentage of the declared responses; raise it when the share rises,
+keeping it a little below the measured value, and never lower it to make
+a change pass). The floor is not checked when no report file exists,
+that is, when a selective run did not test the daemon's package. The
+layer never fails a test, so a disagreement shows up in CI Gate's
+summary, not in a test's output.
+
+A disagreement means the route's `#[utoipa::path]` declaration and its
+handler differ. Fix the one that is wrong: a status the handler answers
+on purpose is declared (with a realistic example when the body is JSON),
+and a handler that answers something its route should not is corrected.
+The access layer's refusals (`401`, `403`, the second-factor enrollment
+`403`), the CSRF `403`, the `504` timeout and the JSON extractor's
+rejections are stated by the document builder
+(`crates/bookclerkd/src/openapi.rs`), not by each route.
 
 To see the report locally, start it empty (each test process appends a
 file of its own, so an old run's hits would otherwise stay in it), run
@@ -877,7 +889,7 @@ the daemon's tests and the script:
 ```sh
 rm -rf target/contract-report
 cargo nextest run -p bookclerkd
-python3 scripts/contract_coverage.py --reports target/contract-report
+python3 scripts/contract_coverage.py --reports target/contract-report --mode enforce
 ```
 
 `BOOKCLERK_CONTRACT_REPORT_DIR` moves the report files elsewhere.

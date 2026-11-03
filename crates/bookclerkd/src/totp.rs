@@ -235,6 +235,27 @@ pub(crate) async fn require_second_factor(state: &AppState) -> bool {
     state.config.read().await.daemon.auth.require_second_factor
 }
 
+/// True for the routes a user who still has to enroll a second factor may
+/// use: signing out, reading and editing their own account, and the
+/// enrollment routes themselves. [`enrollment_blocks`] never refuses them,
+/// and the OpenAPI document leaves the `mfa_enrollment_required` refusal
+/// off them.
+///
+/// # Arguments
+///
+/// * `path` - The request path, as the router matched it.
+pub(crate) fn enrollment_exempt(path: &str) -> bool {
+    path == "/api/auth/logout"
+        || path == "/api/portal/logout"
+        || path == "/api/auth/me"
+        || path == "/api/auth/password"
+        || path == "/api/preferences"
+        || path.starts_with("/api/auth/totp")
+        || path.starts_with("/api/auth/passkeys")
+        || path.starts_with("/api/auth/sessions")
+        || path.starts_with("/api/auth/profile")
+}
+
 /// True when a portal caller must enroll TOTP or a passkey before using the library.
 ///
 /// # Arguments
@@ -252,16 +273,7 @@ pub(crate) async fn enrollment_blocks(
     if !require_second_factor(state).await {
         return false;
     }
-    if path == "/api/auth/logout"
-        || path == "/api/portal/logout"
-        || path == "/api/auth/me"
-        || path == "/api/auth/password"
-        || path == "/api/preferences"
-        || path.starts_with("/api/auth/totp")
-        || path.starts_with("/api/auth/passkeys")
-        || path.starts_with("/api/auth/sessions")
-        || path.starts_with("/api/auth/profile")
-    {
+    if enrollment_exempt(path) {
         return false;
     }
     let Ok(Some(user)) = library.get_user(user_id).await else {

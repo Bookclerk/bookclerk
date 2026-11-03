@@ -168,6 +168,39 @@ class BuildReportTest(unittest.TestCase):
         self.assertEqual(data["disagreements"], [])
 
 
+class FloorTest(unittest.TestCase):
+    def test_the_floor_is_read_from_the_contract_table(self) -> None:
+        self.assertEqual(cc.read_floor("mode = 'enforce'\n[contract]\nfloor = 8\n"), 8.0)
+        self.assertIsNone(cc.read_floor("mode = 'enforce'\n[areas.rust]\nfloor = 74\n"))
+        for bad in ("[contract]\nmode = 1\n", "[contract]\nfloor = true\n", "[contract]\nfloor = 101\n", "contract = 3\n", "= nope"):
+            with self.assertRaises(ValueError, msg=bad):
+                cc.read_floor(bad)
+
+    def test_the_committed_file_states_a_floor(self) -> None:
+        text = (ROOT / "scripts" / "coverage_areas.toml").read_text(encoding="utf-8")
+        floor = cc.read_floor(text)
+        self.assertIsNotNone(floor)
+        self.assertGreater(floor, 0)
+
+    def test_the_floor_needs_report_files_and_counts_the_share(self) -> None:
+        document = {"paths": {"/api/jobs": {"get": {"tags": ["Jobs"], "responses": {"200": {"content": {"application/json": {}}}, "404": {}}}}}}
+        empty = cc.build_report(document, [])
+        self.assertIsNone(cc.share(cc.build_report({"paths": {}}, [])))
+        self.assertFalse(cc.below_floor(empty, 50.0))
+        self.assertIn("not checked: no report file", cc.render(empty, "enforce", 50.0))
+        half = cc.build_report(document, [line("get", "/api/jobs", 200, "application/json", "declared")])
+        self.assertEqual(cc.share(half), 50.0)
+        self.assertFalse(cc.below_floor(half, 50.0))
+        self.assertTrue(cc.below_floor(half, 50.5))
+        self.assertFalse(cc.below_floor(half, None))
+        self.assertIn("Floor: 50.5% of the declared responses observed (**below the floor**; this fails CI Gate).", cc.render(half, "enforce", 50.5))
+        self.assertIn("(**below the floor**; reported only)", cc.render(half, "report", 50.5))
+        self.assertIn("Floor: 50% of the declared responses observed (met).", cc.render(half, "enforce", 50.0))
+        self.assertNotIn("Floor:", cc.render(half, "enforce", None))
+        data = cc.as_json(half, 50.5)
+        self.assertEqual((data["share"], data["floor"], data["below_floor"]), (50.0, 50.5, True))
+
+
 class MainTest(unittest.TestCase):
     def run_script(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -201,6 +234,33 @@ class MainTest(unittest.TestCase):
             result = self.run_script("--reports", str(Path(tmp) / "missing"), "--format", "json")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["files"], 0)
+
+    def test_enforce_mode_applies_the_floor_from_the_option_or_the_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            reports = Path(tmp) / "reports"
+            reports.mkdir()
+            (reports / "1.jsonl").write_text(
+                line("get", "/api/jobs", 200, "application/json", "declared") + "\n", encoding="utf-8"
+            )
+            result = self.run_script("--reports", str(reports), "--mode", "enforce", "--floor", "99", "--format", "json")
+            self.assertEqual(result.returncode, 1, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual((data["floor"], data["below_floor"], data["disagreements"]), (99.0, True, []))
+            result = self.run_script("--reports", str(reports), "--mode", "report", "--floor", "99")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("below the floor", result.stdout)
+            config = Path(tmp) / "areas.toml"
+            config.write_text("[contract]\nfloor = 0\n", encoding="utf-8")
+            result = self.run_script("--reports", str(reports), "--mode", "enforce", "--config", str(config), "--format", "json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["floor"], 0.0)
+            config.write_text("[contract]\nfloor = 'nine'\n", encoding="utf-8")
+            result = self.run_script("--reports", str(reports), "--config", str(config))
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("floor must be a percentage", result.stderr)
+            result = self.run_script("--reports", str(Path(tmp) / "missing"), "--mode", "enforce", "--floor", "99", "--format", "json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(json.loads(result.stdout)["below_floor"])
 
 
 if __name__ == "__main__":
