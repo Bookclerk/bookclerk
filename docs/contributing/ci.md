@@ -1327,6 +1327,20 @@ The workflow runs from the default branch, reads only the GitHub API and
 runs no pull request code. The step summary says why it did or didn't
 enqueue.
 
+A pull request's own CI run can fail the same way. When a `pull_request`
+CI run fails, the same workflow re-runs its failed jobs (the stranded jobs
+and `CI Gate`) on the same commit when:
+
+1. Every job that didn't succeed or skip passes the same test as steps 1
+   and 2 above. A run cancelled by a newer push has no not-acquired
+   annotation, so it is never re-run.
+2. The run is on its first or second attempt, so one run gets at most two
+   re-runs.
+
+The re-run uses the workflow's own token (`actions: write`), not the
+automation App, and keeps the original run's context, so a fork's pull
+request is re-run with the same read-only permissions it had.
+
 ## Expected pull-request feedback
 
 With `SELECTIVE_CI=1`, a pull request should see these jobs after `plan`:

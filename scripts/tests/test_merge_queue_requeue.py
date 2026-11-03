@@ -80,6 +80,31 @@ class QueuedPrTests(unittest.TestCase):
         self.assertIsNone(mq.queued_pr(seed("run__pr604.json"), "other/repo"))
 
 
+class PrRunAttemptTests(unittest.TestCase):
+    """Only failed pull request runs of this repository's CI count."""
+
+    def test_reads_the_attempt(self) -> None:
+        self.assertEqual(mq.pr_run_attempt(seed("run__pr605_attempt1.json"), REPO), 1)
+        self.assertEqual(mq.pr_run_attempt(seed("run__pr_fork_attempt3.json"), REPO), 3)
+
+    def test_rejects_other_runs(self) -> None:
+        bad = {
+            "merge group": seed("run__pr604.json"),
+            "cancelled": edited("run__pr605_attempt1.json", conclusion="cancelled"),
+            "success": edited("run__pr605_attempt1.json", conclusion="success"),
+            "running": edited("run__pr605_attempt1.json", status="in_progress"),
+            "other workflow": edited("run__pr605_attempt1.json", path=".github/workflows/codeql.yml"),
+            "other base repo": edited("run__pr605_attempt1.json", repository={"full_name": "x/y"}),
+            "attempt zero": edited("run__pr605_attempt1.json", run_attempt=0),
+            "attempt string": edited("run__pr605_attempt1.json", run_attempt="1"),
+            "attempt bool": edited("run__pr605_attempt1.json", run_attempt=True),
+            "not json": b"nope",
+        }
+        for name, raw in bad.items():
+            with self.subTest(case=name):
+                self.assertIsNone(mq.pr_run_attempt(raw, REPO))
+
+
 class StrandedJobsTests(unittest.TestCase):
     """Only jobs that never started, with nothing else wrong."""
 
@@ -240,6 +265,60 @@ class DecideTests(unittest.TestCase):
         self.assertIn("failed", reason)
 
 
+PR_RUN_ID = 41717878100
+
+
+def rerun_bodies() -> dict[str, bytes]:
+    base = f"repos/{REPO}"
+    jobs = json.loads(seed("jobs__pr605_two_stranded.json"))
+    stranded = [j["id"] for j in jobs["jobs"] if j["conclusion"] == "cancelled"]
+    bodies = {
+        f"{base}/actions/runs/{PR_RUN_ID}": seed("run__pr605_attempt1.json"),
+        f"{base}/actions/runs/{PR_RUN_ID}/jobs": seed("jobs__pr605_two_stranded.json"),
+    }
+    for job_id in stranded:
+        bodies[f"{base}/check-runs/{job_id}/annotations"] = seed("annotations__not_acquired.json")
+    return bodies
+
+
+class DecideRerunTests(unittest.TestCase):
+    """Pull request runs: re-run only stranded jobs, at most twice."""
+
+    def test_the_605_run_is_re_run(self) -> None:
+        rerun, reason = mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(rerun_bodies()))
+        self.assertTrue(rerun)
+        self.assertIn("never gave", reason)
+
+    def test_stays_failed(self) -> None:
+        base = f"repos/{REPO}"
+        jobs = json.loads(seed("jobs__pr605_two_stranded.json"))
+        first = next(j["id"] for j in jobs["jobs"] if j["conclusion"] == "cancelled")
+        cases = {
+            "third attempt": {f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr605_attempt1.json", run_attempt=3)},
+            "merge group": {f"{base}/actions/runs/{PR_RUN_ID}": seed("run__pr604.json")},
+            "real failure": {f"{base}/actions/runs/{PR_RUN_ID}/jobs": seed("jobs__real_failure.json")},
+            "nothing stranded": {f"{base}/actions/runs/{PR_RUN_ID}/jobs": seed("jobs__all_green.json")},
+            "superseded by a push": {f"{base}/check-runs/{first}/annotations": seed("annotations__empty.json")},
+        }
+        for name, over in cases.items():
+            with self.subTest(case=name):
+                bodies = rerun_bodies()
+                bodies.update(over)
+                rerun, reason = mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(bodies))
+                self.assertFalse(rerun)
+                self.assertTrue(reason)
+
+    def test_second_attempt_still_re_runs(self) -> None:
+        bodies = rerun_bodies()
+        bodies[f"repos/{REPO}/actions/runs/{PR_RUN_ID}"] = edited("run__pr605_attempt1.json", run_attempt=2)
+        self.assertTrue(mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(bodies))[0])
+
+    def test_api_failure_stays_failed(self) -> None:
+        rerun, reason = mq.decide_rerun(REPO, PR_RUN_ID, FakeGh({}))
+        self.assertFalse(rerun)
+        self.assertIn("failed", reason)
+
+
 class RunGhTests(unittest.TestCase):
     """A stalled `gh` call becomes a handled failure instead of holding the job."""
 
@@ -291,6 +370,17 @@ class CliTests(unittest.TestCase):
         bodies = happy_bodies()
         bodies[f"repos/{REPO}/actions/runs/{RUN_ID}/jobs"] = seed("jobs__real_failure.json")
         code, out, _ = self.run_main(["--repo", REPO, "--run-id", str(RUN_ID)], FakeGh(bodies))
+        self.assertEqual((code, out), (0, ""))
+
+    def test_rerun_writes_the_flag(self) -> None:
+        code, out, summary = self.run_main(
+            ["--repo", REPO, "--run-id", str(PR_RUN_ID), "--rerun"], FakeGh(rerun_bodies())
+        )
+        self.assertEqual((code, out), (0, "rerun=true\n"))
+        self.assertIn("Pull request re-run", summary)
+
+    def test_no_rerun_writes_nothing(self) -> None:
+        code, out, _ = self.run_main(["--repo", REPO, "--run-id", str(PR_RUN_ID), "--rerun"], FakeGh({}))
         self.assertEqual((code, out), (0, ""))
 
     def test_bad_arguments_never_call_github(self) -> None:
@@ -401,7 +491,26 @@ def oracle_enqueues(raw: bytes) -> int | None:
     return sum(1 for e in events[last_head + 1 :] if e == "added_to_merge_queue")
 
 
+def oracle_pr_run_attempt(raw: bytes) -> int | None:
+    run = _parse(raw)
+    if type(run) is not dict or type(run.get("repository")) is not dict:
+        return None
+    attempt = run.get("run_attempt")
+    if not (
+        run.get("event") == "pull_request"
+        and run.get("path") == ".github/workflows/ci.yml"
+        and run.get("status") == "completed"
+        and run.get("conclusion") == "failure"
+        and run["repository"].get("full_name") == REPO
+        and type(attempt) is int
+        and attempt >= 1
+    ):
+        return None
+    return attempt
+
+
 def check_against_oracles(case: unittest.TestCase, raw: bytes, label: str) -> None:
+    case.assertEqual(mq.pr_run_attempt(raw, REPO), oracle_pr_run_attempt(raw), label)
     case.assertEqual(mq.queued_pr(raw, REPO), oracle_queued_pr(raw), label)
     case.assertEqual(mq.stranded_jobs(raw), oracle_stranded(raw), label)
     case.assertEqual(mq.not_acquired(raw), oracle_not_acquired(raw), label)
