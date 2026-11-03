@@ -419,7 +419,7 @@ async fn register_begin(
 /// `PublicKeyCredential` serialized to JSON, an attestation after
 /// `navigator.credentials.create()` or an assertion after
 /// `navigator.credentials.get()`, binary fields base64url-encoded.
-fn credential_schema() -> utoipa::openapi::schema::Schema {
+pub(crate) fn credential_schema() -> utoipa::openapi::schema::Schema {
     utoipa::openapi::ObjectBuilder::new()
         .schema_type(utoipa::openapi::schema::SchemaType::AnyValue)
         .description(Some(

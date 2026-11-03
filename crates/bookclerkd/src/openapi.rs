@@ -483,6 +483,7 @@ pub fn document() -> OpenApi {
         .insert(API_ERROR.to_string(), api_error_schema());
     add_middleware_refusals(&mut doc);
     fill_untyped_content(&mut doc);
+    add_extractor_rejections(&mut doc);
     add_middleware_error_examples(&mut doc);
     close_nested_output_schemas(&mut doc);
     doc
@@ -588,12 +589,324 @@ fn api_error_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>
         .description(Some(
             "An error. `error` is a stable slug; bodies the error middleware writes also carry `message` and `status`, and some routes add fields of their own.",
         ))
-        .property("error", ObjectBuilder::new().schema_type(Type::String).description(Some("Stable machine slug.")))
+        .property(
+            "error",
+            ObjectBuilder::new()
+                .schema_type(Type::String)
+                .description(Some("Stable machine slug."))
+                .examples([serde_json::json!("not_found")]),
+        )
         .required("error")
-        .property("message", ObjectBuilder::new().schema_type(Type::String).description(Some("Explanation for people.")))
-        .property("status", ObjectBuilder::new().schema_type(Type::Integer).description(Some("The HTTP status, repeated.")))
+        .property(
+            "message",
+            ObjectBuilder::new()
+                .schema_type(Type::String)
+                .description(Some("Explanation for people."))
+                .examples([serde_json::json!("That page or resource was not found.")]),
+        )
+        .property(
+            "status",
+            ObjectBuilder::new()
+                .schema_type(Type::Integer)
+                .description(Some("The HTTP status, repeated."))
+                .examples([serde_json::json!(404)]),
+        )
         .build()
         .into()
+}
+
+/// Routes whose handler reads its JSON body itself (to verify a signature
+/// over the raw bytes, or to answer a malformed body with its own words),
+/// so axum's `Json` extractor never rejects a request for them and their
+/// `#[utoipa::path]` states the outcomes the handler writes.
+const MANUAL_JSON_BODIES: &[&str] = &[
+    "/api/node/v1/enroll",
+    "/api/node/v1/enroll/oauth",
+    "/api/auth/branch-consent",
+    "/api/node/v1/uploads/{upload_id}/commit",
+];
+
+/// The three refusals axum's `Json` extractor writes before a handler
+/// runs, as `(status, description, how the route's description is
+/// extended when it already states the status)`.
+const EXTRACTOR_REJECTIONS: [(&str, &str, &str); 3] = [
+    (
+        "400",
+        "The body is not syntactically valid JSON.",
+        "As `text/plain`, when the body is not syntactically valid JSON.",
+    ),
+    (
+        "415",
+        "The request did not declare a JSON body.",
+        "As `text/plain`, when the request did not declare a JSON body.",
+    ),
+    (
+        "422",
+        "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+        "As `text/plain`, when the JSON does not fit the body.",
+    ),
+];
+
+/// A request body's `application/json` schema resolved to the object serde
+/// deserializes: the schema's name when it is a component (`$ref`), and
+/// the object itself.
+struct BodyObject<'a> {
+    /// The component name (the Rust type's), or `None` for an inline body.
+    name: Option<&'a str>,
+    /// The object schema.
+    object: &'a utoipa::openapi::schema::Object,
+}
+
+/// The text axum's `Json` extractor answers with for each of
+/// [`EXTRACTOR_REJECTIONS`]: the 400 and 415 are the extractor's fixed
+/// messages; the 422 is the message serde writes for `{}` when the body has
+/// a required field, for a wrong type in its first string, boolean or array
+/// field, or for `null` when every field is optional and none of those
+/// kinds (the derived deserializer names the struct).
+///
+/// # Arguments
+///
+/// * `status` - One of `400`, `415` or `422`.
+/// * `body` - The request body's schema, resolved to its object form.
+///
+/// # Returns
+///
+/// The response text.
+fn extractor_rejection_text(status: &str, body: Option<&BodyObject<'_>>) -> String {
+    use utoipa::openapi::schema::{Schema, SchemaType, Type};
+    use utoipa::openapi::RefOr;
+    const DATA: &str = "Failed to deserialize the JSON body into the target type";
+    match status {
+        "400" => {
+            "Failed to parse the request body as JSON: expected value at line 1 column 1".into()
+        }
+        "415" => "Expected request with `Content-Type: application/json`".into(),
+        _ => {
+            let Some(BodyObject { name, object: body }) = body else {
+                return format!("{DATA}: invalid type: null, expected a map at line 1 column 4");
+            };
+            if let Some(field) = body.required.first() {
+                return format!("{DATA}: missing field `{field}` at line 1 column 2");
+            }
+            let typed = |want: Type| {
+                body.properties.iter().find_map(|(name, schema)| {
+                    let schema_type = match schema {
+                        RefOr::T(Schema::Object(object)) => &object.schema_type,
+                        RefOr::T(Schema::Array(array)) => &array.schema_type,
+                        RefOr::T(_) | RefOr::Ref(_) => return None,
+                    };
+                    let kinds: Vec<Type> = match schema_type {
+                        SchemaType::Type(kind) => vec![kind.clone()],
+                        SchemaType::Array(kinds) => kinds.clone(),
+                        SchemaType::AnyValue => Vec::new(),
+                    };
+                    kinds.contains(&want).then_some(name.as_str())
+                })
+            };
+            // serde reports the column after the offending `1` in `{"<field>":1}`.
+            let wrong = |field: &str, expected: &str| {
+                let column = field.len() + 5;
+                format!("{DATA}: {field}: invalid type: integer `1`, expected {expected} at line 1 column {column}")
+            };
+            if let Some(field) = typed(Type::String) {
+                return wrong(field, "a string");
+            }
+            if let Some(field) = typed(Type::Boolean) {
+                return wrong(field, "a boolean");
+            }
+            if let Some(field) = typed(Type::Array) {
+                return wrong(field, "a sequence");
+            }
+            match name {
+                Some(name) => {
+                    format!("{DATA}: invalid type: null, expected struct {name} at line 1 column 4")
+                }
+                None => format!("{DATA}: invalid type: null, expected a map at line 1 column 4"),
+            }
+        }
+    }
+}
+
+/// Resolves a request body's `application/json` schema to the object serde
+/// deserializes: a `$ref` is looked up in `components`, and the
+/// `oneOf [T, null]` of an optional body yields `T`.
+///
+/// # Arguments
+///
+/// * `schema` - The media type's schema.
+/// * `components` - The document's components, for `$ref`s.
+///
+/// # Returns
+///
+/// The object schema with its component name, or `None` when the body is
+/// not an object.
+fn body_object<'a>(
+    schema: &'a utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+    components: &'a utoipa::openapi::Components,
+) -> Option<BodyObject<'a>> {
+    use utoipa::openapi::schema::Schema;
+    use utoipa::openapi::RefOr;
+    match schema {
+        RefOr::Ref(reference) => {
+            let name = reference.ref_location.rsplit('/').next()?;
+            let mut body = body_object(components.schemas.get(name)?, components)?;
+            body.name.get_or_insert(name);
+            Some(body)
+        }
+        RefOr::T(Schema::Object(object)) => Some(BodyObject { name: None, object }),
+        RefOr::T(Schema::OneOf(one_of)) => one_of
+            .items
+            .iter()
+            .find_map(|item| body_object(item, components)),
+        RefOr::T(_) => None,
+    }
+}
+
+/// The extractor's message prefixes, by which a route's own `text/plain`
+/// example is told from one that already documents the extractor.
+const EXTRACTOR_PREFIXES: [&str; 3] = [
+    "Failed to parse the request body as JSON",
+    "Expected request with `Content-Type: application/json`",
+    "Failed to deserialize the JSON body into the target type",
+];
+
+/// Adds the extractor's text to a `text/plain` response the route already
+/// states: the route's own example moves to the named `route` example and
+/// the extractor's becomes `extractor`, so both stay documented. A response
+/// whose example is already the extractor's is left as it is.
+///
+/// # Arguments
+///
+/// * `content` - The route's `text/plain` media type.
+/// * `text` - The extractor's text for this status.
+///
+/// # Returns
+///
+/// Whether the content changed (the route's own text was kept beside the
+/// extractor's), so the caller extends the description.
+fn add_extractor_example(content: &mut utoipa::openapi::Content, text: &str) -> bool {
+    use utoipa::openapi::example::ExampleBuilder;
+    use utoipa::openapi::RefOr;
+    let documents_extractor = |value: &serde_json::Value| {
+        value
+            .as_str()
+            .is_some_and(|value| EXTRACTOR_PREFIXES.iter().any(|p| value.starts_with(p)))
+    };
+    if content.examples.values().any(|example| match example {
+        RefOr::T(example) => example.value.as_ref().is_some_and(documents_extractor),
+        RefOr::Ref(_) => false,
+    }) || content.examples.contains_key("extractor")
+    {
+        return false;
+    }
+    if let Some(own) = content.example.take() {
+        if documents_extractor(&own) {
+            content.example = Some(own);
+            return false;
+        }
+        content.examples.insert(
+            "route".to_string(),
+            RefOr::T(
+                ExampleBuilder::new()
+                    .summary("The route's own refusal")
+                    .value(Some(own))
+                    .build(),
+            ),
+        );
+    }
+    content.examples.insert(
+        "extractor".to_string(),
+        RefOr::T(
+            ExampleBuilder::new()
+                .summary("The JSON extractor's refusal")
+                .value(Some(text.into()))
+                .build(),
+        ),
+    );
+    true
+}
+
+/// States the refusals axum's `Json` extractor writes for every route that
+/// reads a JSON body, as the `text/plain` responses it sends: 400 for a
+/// body that is not JSON, 415 for a request without
+/// `Content-Type: application/json` (not on a route whose body is optional,
+/// where the extractor yields no body instead) and 422 for JSON that does
+/// not fit. A route that already states a status keeps its own body and
+/// gets the `text/plain` one beside it; a route whose own `text/plain`
+/// text is not the extractor's keeps it as a named example beside the
+/// extractor's; [`MANUAL_JSON_BODIES`] are skipped.
+///
+/// # Arguments
+///
+/// * `doc` - The document, after [`fill_untyped_content`] gave every error
+///   response declared without a body its JSON one, so a route's bare 400
+///   keeps that body beside the extractor's text.
+fn add_extractor_rejections(doc: &mut OpenApi) {
+    use utoipa::openapi::schema::{ObjectBuilder, Type};
+    use utoipa::openapi::{ContentBuilder, RefOr, Required, ResponseBuilder};
+    let components = doc.components.clone().unwrap_or_default();
+    for (path, item) in doc.paths.paths.iter_mut() {
+        if MANUAL_JSON_BODIES.contains(&path.as_str()) {
+            continue;
+        }
+        for op in operations_mut(item) {
+            let Some(RefOr::T(body)) = op.request_body.as_ref() else {
+                continue;
+            };
+            let Some(RefOr::T(json)) = body
+                .content
+                .iter()
+                .find(|(media, _)| media.starts_with("application/json"))
+                .map(|(_, content)| content)
+            else {
+                continue;
+            };
+            let optional = body.required != Some(Required::True);
+            let object = json
+                .schema
+                .as_ref()
+                .and_then(|schema| body_object(schema, &components));
+            for (status, description, extension) in EXTRACTOR_REJECTIONS {
+                if status == "415" && optional {
+                    continue;
+                }
+                let text = extractor_rejection_text(status, object.as_ref());
+                let content = ContentBuilder::new()
+                    .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
+                    .example(Some(text.clone().into()))
+                    .build();
+                match op.responses.responses.get_mut(status) {
+                    Some(RefOr::T(response)) => {
+                        match response.content.get_mut("text/plain") {
+                            Some(RefOr::T(existing)) => {
+                                if !add_extractor_example(existing, &text) {
+                                    continue;
+                                }
+                            }
+                            Some(RefOr::Ref(_)) => continue,
+                            None => {
+                                response
+                                    .content
+                                    .insert("text/plain".to_string(), RefOr::T(content));
+                            }
+                        }
+                        response.description = format!("{} {extension}", response.description);
+                    }
+                    Some(RefOr::Ref(_)) => {}
+                    None => {
+                        op.responses.responses.insert(
+                            status.to_string(),
+                            ResponseBuilder::new()
+                                .description(description)
+                                .content("text/plain", content)
+                                .build()
+                                .into(),
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// States the outcomes the router's outer layers produce before a handler
@@ -1367,6 +1680,386 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every JSON body is typed: no request or response is left to the
+    /// any-value schema [`fill_untyped_content`] gives a body without one,
+    /// so generated clients and the rendered reference know its shape.
+    #[test]
+    fn json_bodies_are_typed() {
+        let doc = document_value();
+        let mut untyped = Vec::new();
+        for (method, path, op) in operations(&doc) {
+            let bodies = std::iter::once(("request", &op["requestBody"])).chain(
+                op["responses"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(s, r)| (s.as_str(), r)),
+            );
+            for (status, body) in bodies {
+                for (media, content) in body["content"].as_object().into_iter().flatten() {
+                    let any_value = content["schema"]
+                        .as_object()
+                        .is_some_and(|schema| schema.is_empty());
+                    if media.starts_with("application/json") && any_value {
+                        untyped.push(format!("{method} {path} {status}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            untyped.is_empty(),
+            "JSON bodies without a schema: {untyped:?}"
+        );
+    }
+
+    /// Whether a schema is composed of others (`$ref`, `allOf`, `oneOf`,
+    /// `anyOf`), or lists such items, so its example comes from them.
+    fn composed(schema: &serde_json::Value) -> bool {
+        let composes = |value: &serde_json::Value| {
+            ["$ref", "allOf", "oneOf", "anyOf"]
+                .iter()
+                .any(|key| value.get(key).is_some())
+        };
+        composes(schema) || schema.get("items").is_some_and(composes)
+    }
+
+    /// Whether a schema needs no example of its own: it carries one, it is
+    /// composed of schemas that do ([`composed`]), or its `enum` has one
+    /// value (a tag such as `kind` or `method`), which is its example.
+    fn exemplified(schema: &serde_json::Value) -> bool {
+        schema.get("example").is_some()
+            || schema.get("examples").is_some()
+            || composed(schema)
+            || schema["enum"]
+                .as_array()
+                .is_some_and(|values| values.len() == 1)
+    }
+
+    /// Collects the properties under `schema` without an example, walking
+    /// the properties of every nested object, the branches of `oneOf`,
+    /// `allOf` and `anyOf`, array items and map values.
+    fn properties_without_example(at: &str, schema: &serde_json::Value, out: &mut Vec<String>) {
+        for (name, property) in schema["properties"].as_object().into_iter().flatten() {
+            let at = format!("{at}.{name}");
+            if !exemplified(property) {
+                out.push(at.clone());
+            }
+            properties_without_example(&at, property, out);
+        }
+        for key in ["oneOf", "allOf", "anyOf"] {
+            for (index, branch) in schema[key].as_array().into_iter().flatten().enumerate() {
+                properties_without_example(&format!("{at}.{key}[{index}]"), branch, out);
+            }
+        }
+        if schema["items"].is_object() {
+            properties_without_example(&format!("{at}[]"), &schema["items"], out);
+        }
+        if schema["additionalProperties"].is_object() {
+            properties_without_example(&format!("{at}.*"), &schema["additionalProperties"], out);
+        }
+    }
+
+    /// Every property of every schema, in the components and inline in a
+    /// body, nested objects and the branches of a composed schema included,
+    /// carries an `example` or `examples`, unless it is composed of other
+    /// schemas (which carry their own) or is a one-value `enum`, so the
+    /// rendered reference can show a complete example for every body.
+    #[test]
+    fn every_property_carries_an_example() {
+        let doc = document_value();
+        let mut missing = Vec::new();
+        for (name, schema) in doc["components"]["schemas"]
+            .as_object()
+            .into_iter()
+            .flatten()
+        {
+            properties_without_example(name, schema, &mut missing);
+        }
+        for (method, path, op) in operations(&doc) {
+            let bodies = std::iter::once(("request", &op["requestBody"])).chain(
+                op["responses"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(s, r)| (s.as_str(), r)),
+            );
+            for (status, body) in bodies {
+                for (media, content) in body["content"].as_object().into_iter().flatten() {
+                    properties_without_example(
+                        &format!("{method} {path} {status} {media}"),
+                        &content["schema"],
+                        &mut missing,
+                    );
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "properties without an example: {missing:?}"
+        );
+    }
+
+    /// The walk reaches a property inside a `oneOf` branch, an `allOf`
+    /// part, array items and map values, and accepts a one-value `enum`.
+    #[test]
+    fn nested_properties_are_checked() {
+        let schema = serde_json::json!({
+            "oneOf": [
+                { "type": "object", "properties": {
+                    "method": { "type": "string", "enum": ["totp"] },
+                    "code": { "type": "string" }
+                } },
+                { "allOf": [
+                    { "$ref": "#/components/schemas/Other" },
+                    { "type": "object", "properties": { "extra": { "type": "integer" } } }
+                ] }
+            ],
+            "properties": {
+                "list": { "type": "array", "items": { "type": "object", "properties": {
+                    "deep": { "type": "string", "example": "x" },
+                    "deeper": { "type": "string" }
+                } } },
+                "map": { "type": "object", "additionalProperties": { "type": "object", "properties": {
+                    "value": { "type": "boolean" }
+                } } }
+            }
+        });
+        let mut missing = Vec::new();
+        properties_without_example("S", &schema, &mut missing);
+        assert_eq!(
+            missing,
+            [
+                "S.list",
+                "S.list[].deeper",
+                "S.map",
+                "S.map.*.value",
+                "S.oneOf[0].code",
+                "S.oneOf[1].allOf[1].extra",
+            ]
+        );
+    }
+
+    /// Every response outside the 2xx range shows the body it carries: the
+    /// route's own example, or the one [`add_middleware_error_examples`] and
+    /// [`add_extractor_rejections`] write for a status the daemon's layers
+    /// answer.
+    #[test]
+    fn error_responses_carry_an_example() {
+        let doc = document_value();
+        let mut missing = Vec::new();
+        for (method, path, op) in operations(&doc) {
+            for (status, response) in op["responses"].as_object().into_iter().flatten() {
+                if status.starts_with('2') {
+                    continue;
+                }
+                for (media, content) in response["content"].as_object().into_iter().flatten() {
+                    let shown = content.get("example").is_some()
+                        || content["examples"]
+                            .as_object()
+                            .is_some_and(|examples| !examples.is_empty());
+                    if !shown {
+                        missing.push(format!("{method} {path} {status} {media}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "error responses without an example: {missing:?}"
+        );
+    }
+
+    /// Every route that reads a JSON body states the extractor's refusals
+    /// as `text/plain` responses with the text axum writes, except the
+    /// routes that read their body themselves, and a route's own words for
+    /// a status are kept beside them.
+    #[test]
+    fn json_body_routes_state_extractor_rejections() {
+        let doc = document_value();
+        let mut missing = Vec::new();
+        for (method, path, op) in operations(&doc) {
+            let reads_json = op["requestBody"]["content"]
+                .as_object()
+                .is_some_and(|content| content.keys().any(|m| m.starts_with("application/json")));
+            if !reads_json || MANUAL_JSON_BODIES.contains(&path.as_str()) {
+                continue;
+            }
+            let optional = op["requestBody"]["required"] != serde_json::json!(true);
+            for (status, _, _) in EXTRACTOR_REJECTIONS {
+                if status == "415" && optional {
+                    assert!(
+                        op["responses"].get(status).is_none(),
+                        "{method} {path} states a 415 its optional body never produces"
+                    );
+                    continue;
+                }
+                let text = &op["responses"][status]["content"]["text/plain"];
+                let stated = text["example"].is_string()
+                    || text["examples"]["extractor"]["value"].is_string();
+                if !stated {
+                    missing.push(format!("{method} {path} {status}"));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "extractor refusals not stated: {missing:?}"
+        );
+
+        let config = &doc["paths"]["/api/config/plugin-instances/{id}/config"]["put"]["responses"];
+        assert_eq!(
+            config["422"]["content"]["text/plain"]["example"],
+            serde_json::json!(
+                "Failed to deserialize the JSON body into the target type: missing field `expected_revision` at line 1 column 2"
+            )
+        );
+        assert_eq!(
+            config["415"]["content"]["text/plain"]["example"],
+            serde_json::json!("Expected request with `Content-Type: application/json`")
+        );
+        let bootstrap = &doc["paths"]["/api/auth/bootstrap"]["post"]["responses"];
+        assert_eq!(
+            bootstrap["422"]["content"]["text/plain"]["example"],
+            serde_json::json!(
+                "Failed to deserialize the JSON body into the target type: display_name: invalid type: integer `1`, expected a string at line 1 column 17"
+            )
+        );
+        let scan = &doc["paths"]["/api/library/scan"]["post"]["responses"];
+        assert!(scan.get("415").is_none(), "an optional body has no 415");
+        assert!(scan["422"]["content"]["text/plain"]["example"].is_string());
+        let preferences = &doc["paths"]["/api/preferences"]["patch"]["responses"];
+        assert_eq!(
+            preferences["400"]["content"]["text/plain"]["example"],
+            serde_json::json!(
+                "Failed to parse the request body as JSON: expected value at line 1 column 10"
+            ),
+            "a route's own extractor text is kept as it is"
+        );
+        assert!(preferences["400"]["content"]["text/plain"]
+            .get("examples")
+            .is_none());
+        let hints = &doc["paths"]["/api/discover/purchase-hints"]["post"]["responses"]["400"];
+        let hints_text = &hints["content"]["text/plain"];
+        assert!(hints_text.get("example").is_none());
+        assert_eq!(
+            hints_text["examples"]["route"]["value"],
+            serde_json::json!("title, asin, isbn, or candidate_product_id is required"),
+            "a route's own text moves to a named example"
+        );
+        assert_eq!(
+            hints_text["examples"]["extractor"]["value"],
+            serde_json::json!(
+                "Failed to parse the request body as JSON: expected value at line 1 column 1"
+            )
+        );
+        assert!(hints["description"]
+            .as_str()
+            .is_some_and(|d| d.ends_with("when the body is not syntactically valid JSON.")));
+        let owner = &doc["paths"]["/api/config/nodes/{node_id}/owner"]["put"]["responses"];
+        assert_eq!(
+            owner["422"]["content"]["text/plain"]["example"],
+            serde_json::json!(
+                "Failed to deserialize the JSON body into the target type: invalid type: null, expected struct PutNodeOwner at line 1 column 4"
+            ),
+            "a body with only optional fields of other kinds names its struct"
+        );
+        let users = &doc["paths"]["/api/users"]["post"]["responses"]["400"];
+        assert!(
+            users["content"]["application/json"].is_object()
+                && users["content"]["text/plain"]["example"].is_string(),
+            "a route's own JSON body keeps its place beside the extractor's text"
+        );
+    }
+
+    /// The 422 text names the first required field, then the first string,
+    /// boolean or array field, and falls back when the body is not an object.
+    #[test]
+    fn extractor_rejection_text_follows_the_body() {
+        use utoipa::openapi::schema::{ArrayBuilder, ObjectBuilder, Type};
+        let text = |name: Option<&str>, object: Option<&utoipa::openapi::schema::Object>| {
+            let body = object.map(|object| BodyObject { name, object });
+            extractor_rejection_text("422", body.as_ref())
+                .trim_start_matches("Failed to deserialize the JSON body into the target type: ")
+                .to_string()
+        };
+        assert_eq!(
+            text(None, None),
+            "invalid type: null, expected a map at line 1 column 4"
+        );
+        let required = ObjectBuilder::new()
+            .property("name", ObjectBuilder::new().schema_type(Type::String))
+            .required("name")
+            .build();
+        assert_eq!(
+            text(Some("Body"), Some(&required)),
+            "missing field `name` at line 1 column 2"
+        );
+        let flag = ObjectBuilder::new()
+            .property("on", ObjectBuilder::new().schema_type(Type::Boolean))
+            .build();
+        assert_eq!(
+            text(None, Some(&flag)),
+            "on: invalid type: integer `1`, expected a boolean at line 1 column 7"
+        );
+        let list = ObjectBuilder::new()
+            .property(
+                "ids",
+                ArrayBuilder::new().items(ObjectBuilder::new().schema_type(Type::Integer)),
+            )
+            .build();
+        assert_eq!(
+            text(None, Some(&list)),
+            "ids: invalid type: integer `1`, expected a sequence at line 1 column 8"
+        );
+        let numbers = ObjectBuilder::new()
+            .property("n", ObjectBuilder::new().schema_type(Type::Integer))
+            .build();
+        assert_eq!(
+            text(Some("Numbers"), Some(&numbers)),
+            "invalid type: null, expected struct Numbers at line 1 column 4"
+        );
+        assert_eq!(
+            text(None, Some(&numbers)),
+            "invalid type: null, expected a map at line 1 column 4"
+        );
+    }
+
+    /// A route's own `text/plain` example moves beside the extractor's as a
+    /// named example, and one that already is the extractor's stays alone.
+    #[test]
+    fn extractor_example_keeps_the_routes_text() {
+        use utoipa::openapi::ContentBuilder;
+        let mut own = ContentBuilder::new()
+            .example(Some("title is required".into()))
+            .build();
+        assert!(add_extractor_example(
+            &mut own,
+            "Failed to parse the request body as JSON: x"
+        ));
+        assert!(own.example.is_none());
+        assert_eq!(own.examples.len(), 2);
+        assert!(!add_extractor_example(
+            &mut own,
+            "Failed to parse the request body as JSON: x"
+        ));
+        let mut already = ContentBuilder::new()
+            .example(Some(
+                "Expected request with `Content-Type: application/json`".into(),
+            ))
+            .build();
+        assert!(!add_extractor_example(
+            &mut already,
+            "Expected request with `Content-Type: application/json`"
+        ));
+        assert!(already.example.is_some() && already.examples.is_empty());
+        let mut bare = ContentBuilder::new().build();
+        assert!(add_extractor_example(
+            &mut bare,
+            "Failed to parse the request body as JSON: x"
+        ));
+        assert_eq!(bare.examples.len(), 1);
     }
 
     /// Every error response has a body: its own, or the `ErrorJson` the

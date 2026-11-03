@@ -178,6 +178,23 @@ Some of these need more than a cell:
   `cargo run -p bookclerkd -- --print-openapi > crates/bookclerkd/openapi.json`
   and
   `cargo run -p bookclerkd -- --print-openapi 3.0 > crates/bookclerkd/openapi-3.0.json`.
+  Sibling tests keep the document complete: every JSON body names a
+  schema (`json_bodies_are_typed`), every schema property, nested objects
+  and `oneOf`/`allOf` branches included, carries an `example` unless it
+  is composed of other schemas or a one-value `enum`
+  (`every_property_carries_an_example`), every response outside the 2xx
+  range shows its body (`error_responses_carry_an_example`) and every
+  route that reads a JSON body through the `Json` extractor states its
+  400 and 422, plus its 415 when the body is required
+  (`json_body_routes_state_extractor_rejections`; the daemon adds them to
+  the document itself, and the routes that read their body by hand,
+  listed in `MANUAL_JSON_BODIES` in `crates/bookclerkd/src/openapi.rs`,
+  state their own refusals). A new field gets `#[schema(example = …)]` with a
+  value the daemon really writes; a free-form `serde_json::Value` or map
+  field gets `#[schema(schema_with = …)]` returning a schema with
+  `examples`, since utoipa drops `example` on `value_type = Object`; an
+  error response a handler writes itself gets `example = json!(…)` on its
+  `#[utoipa::path]` entry.
 
 Pull requests use a dependency-aware planner
 ([`scripts/ci-plan.py`](../../scripts/ci-plan.py)), so only the affected

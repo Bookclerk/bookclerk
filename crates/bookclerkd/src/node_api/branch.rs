@@ -1033,14 +1033,17 @@ pub enum StepUp {
     /// A current authenticator code.
     Totp {
         /// Six digits.
+        #[schema(example = "492817")]
         code: String,
     },
     /// A user-verified passkey assertion for a challenge from
     /// `POST /api/auth/branch-consent/step-up`.
     Passkey {
         /// The challenge id.
+        #[schema(example = "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f")]
         challenge_id: String,
         /// The browser's `PublicKeyCredential` JSON.
+        #[schema(schema_with = crate::passkeys::credential_schema)]
         credential: serde_json::Value,
     },
 }
@@ -1067,9 +1070,11 @@ pub struct BranchConsentBody {
     #[serde(flatten)]
     pub params: BranchAuthorizeParams,
     /// True to let the branch join; false to deny.
+    #[schema(example = true)]
     pub approve: bool,
     /// `branch` (default) or `clerk`.
     #[serde(default)]
+    #[schema(example = "branch")]
     pub connection: Option<String>,
     /// The fresh second factor a clerk needs.
     #[serde(default)]

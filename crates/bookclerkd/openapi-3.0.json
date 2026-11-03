@@ -60,6 +60,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The token is wrong (`unauthorized`).",
             "content": {
@@ -87,6 +98,28 @@
                   "message": "Operator token sign-in is unavailable after an Owner account exists. Open Bookclerk from the system tray, or elevate from an Owner session.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `token` at line 1 column 2"
               }
             }
           },
@@ -505,7 +538,7 @@
             }
           },
           "400": {
-            "description": "Operator auth is off, or the password is empty.",
+            "description": "Operator auth is off, or the password is empty. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -516,6 +549,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -561,6 +600,28 @@
                   "message": "Conflict",
                   "status": 409
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `password` at line 1 column 2"
               }
             }
           },
@@ -715,7 +776,7 @@
             }
           },
           "400": {
-            "description": "The email is invalid.",
+            "description": "The email is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -726,6 +787,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -756,6 +823,28 @@
                   "message": "Conflict",
                   "status": 409
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: display_name: invalid type: integer `1`, expected a string at line 1 column 17"
               }
             }
           },
@@ -826,7 +915,7 @@
             }
           },
           "400": {
-            "description": "The password is empty (the standard error body).",
+            "description": "The password is empty (the standard error body). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -837,6 +926,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -882,6 +977,28 @@
                   "message": "That page or resource was not found.",
                   "status": 404
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `password` at line 1 column 2"
               }
             }
           },
@@ -952,6 +1069,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The login or password is wrong, or the user has no password (`invalid_credentials`).",
             "content": {
@@ -992,6 +1120,28 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `login` at line 1 column 2"
               }
             }
           },
@@ -1154,7 +1304,7 @@
             }
           },
           "400": {
-            "description": "The request is invalid.",
+            "description": "The request is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1165,6 +1315,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -1210,6 +1366,28 @@
                   "message": "Conflict",
                   "status": 409
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: role: invalid type: integer `1`, expected a string at line 1 column 9"
               }
             }
           },
@@ -1395,7 +1573,7 @@
             }
           },
           "400": {
-            "description": "A value is invalid. An invalid email names itself; any other invalid value gets the standard error body.",
+            "description": "A value is invalid. An invalid email names itself; any other invalid value gets the standard error body. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1405,6 +1583,12 @@
                   "error": "invalid_email",
                   "message": "Enter a valid email address."
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -1463,6 +1647,28 @@
                 "example": {
                   "error": "last_owner"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: role: invalid type: integer `1`, expected a string at line 1 column 9"
               }
             }
           },
@@ -1824,6 +2030,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in, or the credential is wrong.",
             "content": {
@@ -1851,6 +2068,17 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: account: invalid type: integer `1`, expected a string at line 1 column 12"
               }
             }
           }
@@ -1962,6 +2190,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in, or the credential is wrong.",
             "content": {
@@ -1989,6 +2228,17 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: asin: invalid type: integer `1`, expected a string at line 1 column 9"
               }
             }
           }
@@ -2239,7 +2489,7 @@
             }
           },
           "400": {
-            "description": "The integration cannot scan a library.",
+            "description": "The integration cannot scan a library. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2250,6 +2500,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -2311,6 +2567,17 @@
                   "message": "integration_scan already pending or running",
                   "ok": false
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: force: invalid type: integer `1`, expected a boolean at line 1 column 10"
               }
             }
           },
@@ -3614,7 +3881,7 @@
             }
           },
           "400": {
-            "description": "The body names no valid target.",
+            "description": "The body names no valid target. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3626,6 +3893,12 @@
                   "message": "the account named is blank",
                   "ok": false
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -3694,7 +3967,7 @@
             }
           },
           "422": {
-            "description": "No account matched.",
+            "description": "No account matched. As `text/plain`, when the JSON does not fit the body.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3707,6 +3980,12 @@
                   "message": "no scan-enabled store account to scan",
                   "ok": false
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: account: invalid type: integer `1`, expected a string at line 1 column 12"
               }
             }
           },
@@ -3882,7 +4161,7 @@
             }
           },
           "400": {
-            "description": "The body names no valid title.",
+            "description": "The body names no valid title. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3894,6 +4173,12 @@
                   "message": "every title id given is blank",
                   "ok": false
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -3962,7 +4247,7 @@
             }
           },
           "422": {
-            "description": "No account of the caller's can acquire.",
+            "description": "No account of the caller's can acquire. As `text/plain`, when the JSON does not fit the body.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3975,6 +4260,12 @@
                   "message": "no store account of yours to acquire from",
                   "ok": false
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: asin: invalid type: integer `1`, expected a string at line 1 column 9"
               }
             }
           },
@@ -4409,7 +4700,7 @@
             }
           },
           "400": {
-            "description": "A value is outside its range.",
+            "description": "A value is outside its range. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4418,6 +4709,12 @@
                 "example": {
                   "error": "invalid configuration: retention_days must be 1..=3650"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -4462,6 +4759,28 @@
                   "current_revision": 7,
                   "error": "revision_conflict"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `expected_revision` at line 1 column 2"
               }
             }
           },
@@ -4612,7 +4931,7 @@
             }
           },
           "400": {
-            "description": "The body is invalid, or a key or value is not an output setting.",
+            "description": "The body is invalid, or a key or value is not an output setting. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4621,6 +4940,12 @@
                 "example": {
                   "error": "invalid configuration: cover_size must be `native` or a pixel size 1..=10000"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -4665,6 +4990,28 @@
                   "current_revision": 7,
                   "error": "revision_conflict"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `expected_revision` at line 1 column 2"
               }
             }
           },
@@ -4815,7 +5162,7 @@
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The body is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4824,6 +5171,12 @@
                 "example": {
                   "error": "invalid plugin instance: display_name must be at most 64 bytes without control characters"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -4867,6 +5220,28 @@
                 "example": {
                   "error": "book not found: plugin `source-libro` has no pinned settings schema; install it on a node first"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `plugin_key` at line 1 column 2"
               }
             }
           },
@@ -5200,7 +5575,7 @@
             }
           },
           "400": {
-            "description": "The body is invalid, or a value does not fit the pinned schema.",
+            "description": "The body is invalid, or a value does not fit the pinned schema. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5209,6 +5584,12 @@
                 "example": {
                   "error": "invalid configuration: secret `api_token` is empty"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -5266,6 +5647,28 @@
                   "current_revision": 7,
                   "error": "revision_conflict"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `expected_revision` at line 1 column 2"
               }
             }
           },
@@ -5354,7 +5757,7 @@
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The body is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5363,6 +5766,12 @@
                 "example": {
                   "error": "invalid configuration: desired must be `present`, `absent`, `placed`, or `unplaced`"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -5419,6 +5828,28 @@
                 "example": {
                   "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is placed by the scheduler (2 replica(s) on region=eu); change it with `bookclerk plugins deploy`, or drop the placement with `bookclerk plugins deploy --manual` first"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `desired` at line 1 column 2"
               }
             }
           },
@@ -5498,7 +5929,7 @@
             }
           },
           "400": {
-            "description": "The body is invalid.",
+            "description": "The body is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5507,6 +5938,12 @@
                 "example": {
                   "error": "invalid configuration: replicas must be at most 64"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -5564,6 +6001,28 @@
                   "current_revision": 7,
                   "error": "revision_conflict"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `replicas` at line 1 column 2"
               }
             }
           },
@@ -5762,7 +6221,7 @@
             }
           },
           "400": {
-            "description": "The body is invalid, or a label is malformed.",
+            "description": "The body is invalid, or a label is malformed. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5771,6 +6230,12 @@
                 "example": {
                   "error": "invalid configuration: label `Region=EU` must be `name` or `name=value` using lowercase letters, digits, and `._/-` (at most 63 bytes)"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -5814,6 +6279,28 @@
                 "example": {
                   "error": "book not found: node 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `labels` at line 1 column 2"
               }
             }
           },
@@ -5893,7 +6380,7 @@
             }
           },
           "400": {
-            "description": "The user is disabled and cannot own a node.",
+            "description": "The user is disabled and cannot own a node. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5902,6 +6389,12 @@
                 "example": {
                   "error": "user 42 is disabled and cannot own a node"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -5945,6 +6438,28 @@
                 "example": {
                   "error": "book not found: user 42"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: invalid type: null, expected struct PutNodeOwner at line 1 column 4"
               }
             }
           },
@@ -6095,7 +6610,7 @@
             }
           },
           "400": {
-            "description": "The body is invalid: neither or both of `coordinate` and `package`, a malformed coordinate or package name, or a manifest the host rejects.",
+            "description": "The body is invalid: neither or both of `coordinate` and `package`, a malformed coordinate or package name, or a manifest the host rejects. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6104,6 +6619,12 @@
                 "example": {
                   "error": "pass exactly one of `coordinate` or `package`"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -6158,6 +6679,28 @@
                 "example": {
                   "error": "version source-libro 0.4.2 is already installed with different content; install a new version"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: coordinate: invalid type: integer `1`, expected a string at line 1 column 15"
               }
             }
           },
@@ -6476,6 +7019,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in, or the credential is wrong.",
             "content": {
@@ -6516,6 +7070,28 @@
                 "example": {
                   "error": "book not found: version source-libro 0.4.2"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `version` at line 1 column 2"
               }
             }
           },
@@ -6825,7 +7401,7 @@
             }
           },
           "400": {
-            "description": "The account named is blank, or the owner refused the request as invalid (`invalid`).",
+            "description": "The account named is blank, or the owner refused the request as invalid (`invalid`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6847,6 +7423,12 @@
                     }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -6889,6 +7471,17 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: account: invalid type: integer `1`, expected a string at line 1 column 12"
               }
             }
           },
@@ -7018,7 +7611,7 @@
             }
           },
           "400": {
-            "description": "Too many job ids (`too_many_jobs`), or the owner refused the request as invalid (`invalid`).",
+            "description": "Too many job ids (`too_many_jobs`), or the owner refused the request as invalid (`invalid`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7039,6 +7632,12 @@
                     }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -7081,6 +7680,28 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `job_ids` at line 1 column 2"
               }
             }
           },
@@ -7199,7 +7820,7 @@
             }
           },
           "400": {
-            "description": "The narrowing or the recorded request is not valid (`invalid_approval`).",
+            "description": "The narrowing or the recorded request is not valid (`invalid_approval`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7209,6 +7830,12 @@
                   "detail": "the recorded request does not parse",
                   "error": "invalid_approval"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -7267,6 +7894,28 @@
                   "detail": "the request for bookclerk:source-libro changed since it was reviewed (now version 1.4.3, request 9c1e4f7a2b3d5e6f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f); review it again",
                   "error": "approval_refused"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
               }
             }
           },
@@ -7335,6 +7984,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in.",
             "content": {
@@ -7375,6 +8035,28 @@
                 "example": {
                   "error": "not_found"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
               }
             }
           },
@@ -7541,7 +8223,7 @@
             }
           },
           "400": {
-            "description": "The address is not a library (`invalid_address`), or is plain HTTP off this machine (`transport_insecure`).",
+            "description": "The address is not a library (`invalid_address`), or is plain HTTP off this machine (`transport_insecure`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7563,6 +8245,12 @@
                     }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -7627,6 +8315,28 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `address` at line 1 column 2"
               }
             }
           },
@@ -7721,7 +8431,7 @@
             }
           },
           "400": {
-            "description": "The address is not a library (`invalid_address`), or is plain HTTP off this machine (`transport_insecure`).",
+            "description": "The address is not a library (`invalid_address`), or is plain HTTP off this machine (`transport_insecure`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7743,6 +8453,12 @@
                     }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -7826,6 +8542,28 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `address` at line 1 column 2"
               }
             }
           },
@@ -7920,7 +8658,7 @@
             }
           },
           "400": {
-            "description": "The callback carries no code or an unknown connection type (`invalid_request`), or the sign-in did not offer a clerk join (`clerk_not_offered`).",
+            "description": "The callback carries no code or an unknown connection type (`invalid_request`), or the sign-in did not offer a clerk join (`clerk_not_offered`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7949,6 +8687,12 @@
                     }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -8045,6 +8789,28 @@
                   "detail": "this sign-in is unknown, already used, or took longer than 10 minutes; start again",
                   "error": "join_expired"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: code: invalid type: integer `1`, expected a string at line 1 column 9"
               }
             }
           },
@@ -8153,7 +8919,7 @@
             }
           },
           "400": {
-            "description": "The link is not a branch invite (`invalid_invite`), or is plain HTTP off this machine (`transport_insecure`).",
+            "description": "The link is not a branch invite (`invalid_invite`), or is plain HTTP off this machine (`transport_insecure`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8175,6 +8941,12 @@
                     }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -8244,6 +9016,28 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `link` at line 1 column 2"
               }
             }
           },
@@ -8348,6 +9142,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in.",
             "content": {
@@ -8389,6 +9194,28 @@
                   "detail": "this install is not a branch of that library",
                   "error": "not_found"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
               }
             }
           },
@@ -8553,7 +9380,7 @@
             }
           },
           "400": {
-            "description": "A key is unknown or a value is invalid.",
+            "description": "A key is unknown or a value is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8564,6 +9391,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -8609,6 +9442,28 @@
                   "message": "Conflict",
                   "status": 409
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `settings` at line 1 column 2"
               }
             }
           },
@@ -8818,7 +9673,7 @@
             }
           },
           "400": {
-            "description": "An override is not allowed.",
+            "description": "An override is not allowed. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8829,6 +9684,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -8874,6 +9735,28 @@
                   "message": "That page or resource was not found.",
                   "status": 404
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `approve` at line 1 column 2"
               }
             }
           },
@@ -9060,7 +9943,7 @@
             }
           },
           "400": {
-            "description": "The target is invalid.",
+            "description": "The target is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9071,6 +9954,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -9116,6 +10005,28 @@
                   "message": "Conflict",
                   "status": 409
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `to` at line 1 column 2"
               }
             }
           },
@@ -9186,7 +10097,7 @@
             }
           },
           "400": {
-            "description": "Operator auth is off.",
+            "description": "Operator auth is off. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9197,6 +10108,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -9242,6 +10159,28 @@
                   "message": "That page or resource was not found.",
                   "status": 404
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `user_id` at line 1 column 2"
               }
             }
           },
@@ -9715,7 +10654,7 @@
             }
           },
           "400": {
-            "description": "The body is invalid, or a budget is outside 1..=100.",
+            "description": "The body is invalid, or a budget is outside 1..=100. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9724,6 +10663,12 @@
                 "example": {
                   "error": "invalid configuration: cpu_budget_percent must be between 1 and 100"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -9778,6 +10723,28 @@
                 "example": {
                   "error": "node.runtime for 9b1c7d2e-4f3a-4b6c-8d1e-2f3a4b5c6d7e kept changing; retry"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: label: invalid type: integer `1`, expected a string at line 1 column 10"
               }
             }
           },
@@ -10046,7 +11013,7 @@
             }
           },
           "400": {
-            "description": "The operator named no user, the ttl or label is out of range, or the user is disabled.",
+            "description": "The operator named no user, the ttl or label is out of range, or the user is disabled. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10078,6 +11045,12 @@
                     }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -10146,6 +11119,28 @@
                 "example": {
                   "error": "book not found: user 7"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: label: invalid type: integer `1`, expected a string at line 1 column 10"
               }
             }
           },
@@ -11181,6 +12176,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in.",
             "content": {
@@ -11240,6 +12246,28 @@
                 "example": {
                   "error": "core.host_enrollment kept changing; retry"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `enrollment` at line 1 column 2"
               }
             }
           },
@@ -11310,6 +12338,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in.",
             "content": {
@@ -11356,6 +12395,28 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: node_id: invalid type: integer `1`, expected a string at line 1 column 12"
               }
             }
           },
@@ -11530,6 +12591,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in.",
             "content": {
@@ -11590,6 +12662,28 @@
                   "detail": "this install is not a branch of that library",
                   "error": "not_found"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `cluster_id` at line 1 column 2"
               }
             }
           },
@@ -11898,6 +12992,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in.",
             "content": {
@@ -11957,6 +13062,28 @@
                 "example": {
                   "error": "core.host_enrollment kept changing; retry"
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `enabled` at line 1 column 2"
               }
             }
           },
@@ -12492,13 +13619,22 @@
             }
           },
           "400": {
-            "description": "The query is malformed or too large.",
+            "description": "The query is malformed or too large. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "title, asin, isbn, or candidate_product_id is required"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "title, asin, isbn, or candidate_product_id is required"
+                  }
+                }
               }
             }
           },
@@ -12529,6 +13665,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `title` at line 1 column 2"
               }
             }
           },
@@ -12587,13 +13745,22 @@
             }
           },
           "400": {
-            "description": "The query is malformed or too large.",
+            "description": "The query is malformed or too large. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "at most 24 purchase-hint queries per batch"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "at most 24 purchase-hint queries per batch"
+                  }
+                }
               }
             }
           },
@@ -12624,6 +13791,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: queries: invalid type: integer `1`, expected a sequence at line 1 column 12"
               }
             }
           },
@@ -13102,13 +14291,22 @@
             }
           },
           "400": {
-            "description": "The query is malformed or too large.",
+            "description": "The query is malformed or too large. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "title, asin, or isbn is required"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "title, asin, or isbn is required"
+                  }
+                }
               }
             }
           },
@@ -13139,6 +14337,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: title: invalid type: integer `1`, expected a string at line 1 column 10"
               }
             }
           },
@@ -13197,13 +14417,22 @@
             }
           },
           "400": {
-            "description": "The query is malformed or too large.",
+            "description": "The query is malformed or too large. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "at most 24 title-meta queries per batch"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "at most 24 title-meta queries per batch"
+                  }
+                }
               }
             }
           },
@@ -13234,6 +14463,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: queries: invalid type: integer `1`, expected a sequence at line 1 column 12"
               }
             }
           },
@@ -13292,13 +14543,22 @@
             }
           },
           "400": {
-            "description": "The query is malformed or too large.",
+            "description": "The query is malformed or too large. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "asin is required"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "asin is required"
+                  }
+                }
               }
             }
           },
@@ -13329,6 +14589,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `asin` at line 1 column 2"
               }
             }
           },
@@ -13458,13 +14740,22 @@
             }
           },
           "400": {
-            "description": "The title is missing or invalid.",
+            "description": "The title is missing or invalid. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "title is required"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "title is required"
+                  }
+                }
               }
             }
           },
@@ -13495,6 +14786,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `title` at line 1 column 2"
               }
             }
           },
@@ -14041,7 +15354,7 @@
             }
           },
           "400": {
-            "description": "A value is invalid (`display_name_too_long`, `invalid_email`, `invalid_avatar_source`), or the body sets none of the three fields (the standard error body).",
+            "description": "A value is invalid (`display_name_too_long`, `invalid_email`, `invalid_avatar_source`), or the body sets none of the three fields (the standard error body). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14081,6 +15394,12 @@
                     }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -14141,6 +15460,28 @@
                   "message": "That email is already used by another account.",
                   "status": 409
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: display_name: invalid type: integer `1`, expected a string at line 1 column 17"
               }
             }
           },
@@ -15207,7 +16548,7 @@
             }
           },
           "400": {
-            "description": "The client id or a redirect URI is invalid (`oidc_client`).",
+            "description": "The client id or a redirect URI is invalid (`oidc_client`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15218,6 +16559,12 @@
                   "message": "at least one redirect URI is required",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -15297,6 +16644,28 @@
                   "message": "a client with this id already exists",
                   "status": 409
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: client_id: invalid type: integer `1`, expected a string at line 1 column 14"
               }
             }
           },
@@ -15394,7 +16763,7 @@
             }
           },
           "400": {
-            "description": "The client id or a redirect URI is invalid (`oidc_client`).",
+            "description": "The client id or a redirect URI is invalid (`oidc_client`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15405,6 +16774,12 @@
                   "message": "client id may only contain letters, digits, '.', '_', '-', and '~'",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -15484,6 +16859,28 @@
                   "message": "unknown client",
                   "status": 404
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: client_id: invalid type: integer `1`, expected a string at line 1 column 14"
               }
             }
           },
@@ -15630,6 +17027,17 @@
           "204": {
             "description": "The client was deleted."
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).",
             "content": {
@@ -15721,6 +17129,17 @@
                   "message": "plugin-provided clients cannot be deleted; disable them instead",
                   "status": 409
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: client_id: invalid type: integer `1`, expected a string at line 1 column 14"
               }
             }
           },
@@ -15826,6 +17245,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`oidc_client`).",
             "content": {
@@ -15902,6 +17332,17 @@
                   "message": "unknown client",
                   "status": 404
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
               }
             }
           },
@@ -16495,7 +17936,7 @@
             }
           },
           "400": {
-            "description": "A provider or the public origin is invalid (`oidc_config`).",
+            "description": "A provider or the public origin is invalid (`oidc_config`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16506,6 +17947,12 @@
                   "message": "public origin must use http or https",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -16570,6 +18017,28 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `enabled` at line 1 column 2"
               }
             }
           },
@@ -16724,7 +18193,7 @@
             }
           },
           "400": {
-            "description": "The daemon's origin is not a valid WebAuthn relying party (set `integrations.public_origin`).",
+            "description": "The daemon's origin is not a valid WebAuthn relying party (set `integrations.public_origin`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16735,6 +18204,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -16765,6 +18240,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
               }
             }
           },
@@ -16832,7 +18329,7 @@
             }
           },
           "400": {
-            "description": "The challenge is unknown or expired, the attestation is invalid, or the daemon's origin is not a valid WebAuthn relying party.",
+            "description": "The challenge is unknown or expired, the attestation is invalid, or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16843,6 +18340,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -16888,6 +18391,28 @@
                   "message": "Conflict",
                   "status": 409
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `challenge_id` at line 1 column 2"
               }
             }
           },
@@ -16966,6 +18491,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong.",
             "content": {
@@ -17008,6 +18544,28 @@
                   "message": "That page or resource was not found.",
                   "status": 404
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
               }
             }
           },
@@ -17075,7 +18633,7 @@
             }
           },
           "400": {
-            "description": "The daemon's origin is not a valid WebAuthn relying party (set `integrations.public_origin`).",
+            "description": "The daemon's origin is not a valid WebAuthn relying party (set `integrations.public_origin`). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17086,6 +18644,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -17131,6 +18695,28 @@
                   "message": "That page or resource was not found.",
                   "status": 404
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `login` at line 1 column 2"
               }
             }
           },
@@ -17209,7 +18795,7 @@
             }
           },
           "400": {
-            "description": "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party.",
+            "description": "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17220,6 +18806,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -17250,6 +18842,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `challenge_id` at line 1 column 2"
               }
             }
           },
@@ -17426,7 +19040,7 @@
             }
           },
           "400": {
-            "description": "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party.",
+            "description": "The challenge is unknown or expired, the credential is malformed, or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17437,6 +19051,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -17467,6 +19087,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `challenge_id` at line 1 column 2"
               }
             }
           },
@@ -17533,6 +19175,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The challenge is unknown or expired, TOTP is off for the user, or the code is wrong (`invalid_code`); or the challenged user no longer exists (the standard error body).",
             "content": {
@@ -17558,6 +19211,28 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `challenge_id` at line 1 column 2"
               }
             }
           },
@@ -17635,6 +19310,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong.",
             "content": {
@@ -17677,6 +19363,28 @@
                   "message": "Conflict",
                   "status": 409
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
               }
             }
           },
@@ -17744,7 +19452,7 @@
             }
           },
           "400": {
-            "description": "No enrollment is pending; start one first.",
+            "description": "No enrollment is pending; start one first. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17755,6 +19463,12 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -17813,6 +19527,28 @@
                   "message": "Conflict",
                   "status": 409
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `code` at line 1 column 2"
               }
             }
           },
@@ -17945,6 +19681,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong.",
             "content": {
@@ -17972,6 +19719,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
               }
             }
           },
@@ -18123,6 +19892,17 @@
               }
             }
           },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
           "401": {
             "description": "The caller is not signed in (the standard error body), or an Owner's session is older than fifteen minutes and `current_password` is missing or wrong (`reauth_required`).",
             "content": {
@@ -18176,6 +19956,28 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `require_second_factor` at line 1 column 2"
               }
             }
           },
@@ -19379,7 +21181,7 @@
             }
           },
           "400": {
-            "description": "The ticket or nonce is invalid, used or expired, the ticket's integration is not deployed here, a first local claim needs a password of at least 8 characters, or the library refused the claim (the body carries its message).",
+            "description": "The ticket or nonce is invalid, used or expired, the ticket's integration is not deployed here, a first local claim needs a password of at least 8 characters, or the library refused the claim (the body carries its message). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -19411,6 +21213,34 @@
                     }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `ticket` at line 1 column 2"
               }
             }
           },
@@ -19472,7 +21302,7 @@
             }
           },
           "400": {
-            "description": "The integration is not deployed here, does not take a username and password, or refused them, or the library database refused the step.",
+            "description": "The integration is not deployed here, does not take a username and password, or refused them, or the library database refused the step. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -19504,6 +21334,34 @@
                     }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `provider` at line 1 column 2"
               }
             }
           },
@@ -19721,7 +21579,7 @@
             }
           },
           "400": {
-            "description": "No deployed source has that id, the source signs in through OAuth, or the store or the library database refused the step (the body carries its message).",
+            "description": "No deployed source has that id, the source signs in through OAuth, or the store or the library database refused the step (the body carries its message). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -19753,6 +21611,12 @@
                     }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -19792,6 +21656,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `email` at line 1 column 2"
               }
             }
           },
@@ -19974,7 +21860,7 @@
             }
           },
           "400": {
-            "description": "The Libro.fm source is not deployed here, or the store or the library database refused the step (the body carries its message).",
+            "description": "The Libro.fm source is not deployed here, or the store or the library database refused the step (the body carries its message). As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
@@ -20000,6 +21886,12 @@
                     }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -20039,6 +21931,28 @@
                   "message": "You do not have access to this resource.",
                   "status": 403
                 }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `email` at line 1 column 2"
               }
             }
           },
@@ -20531,15 +22445,18 @@
         "properties": {
           "error": {
             "type": "string",
-            "description": "Stable machine slug."
+            "description": "Stable machine slug.",
+            "example": "not_found"
           },
           "message": {
             "type": "string",
-            "description": "Explanation for people."
+            "description": "Explanation for people.",
+            "example": "That page or resource was not found."
           },
           "status": {
             "type": "integer",
-            "description": "The HTTP status, repeated."
+            "description": "The HTTP status, repeated.",
+            "example": 404
           }
         }
       },
@@ -21409,11 +23326,13 @@
             "properties": {
               "approve": {
                 "type": "boolean",
-                "description": "True to let the branch join; false to deny."
+                "description": "True to let the branch join; false to deny.",
+                "example": true
               },
               "connection": {
                 "type": "string",
                 "description": "`branch` (default) or `clerk`.",
+                "example": "branch",
                 "nullable": true
               },
               "step_up": {
@@ -21429,7 +23348,8 @@
                     "properties": {
                       "code": {
                         "type": "string",
-                        "description": "Six digits."
+                        "description": "Six digits.",
+                        "example": "492817"
                       },
                       "method": {
                         "type": "string",
@@ -21450,10 +23370,21 @@
                     "properties": {
                       "challenge_id": {
                         "type": "string",
-                        "description": "The challenge id."
+                        "description": "The challenge id.",
+                        "example": "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f"
                       },
                       "credential": {
-                        "description": "The browser's `PublicKeyCredential` JSON."
+                        "description": "W3C PublicKeyCredential as the browser serializes it: a registration attestation (`response.attestationObject`) or an authentication assertion (`response.authenticatorData`, `signature`, `userHandle`), binary fields base64url-encoded.",
+                        "example": {
+                          "extensions": {},
+                          "id": "pQECAyYgASFYIE",
+                          "rawId": "pQECAyYgASFYIE",
+                          "response": {
+                            "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViU",
+                            "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ"
+                          },
+                          "type": "public-key"
+                        }
                       },
                       "method": {
                         "type": "string",
@@ -29518,7 +31449,56 @@
           },
           "grant": {
             "type": "object",
-            "description": "The consent grant recorded for every node: the entrypoints, events,\njobs, network domains and TCP targets the manifest asked for."
+            "description": "The grant document, as the consent store keeps it: approved entrypoints, event producers and consumers, jobs, the network mode with the effective, manifest, operator-added and operator-denied domains, TCP targets and CIDRs, host bindings, compatibility flags, resource budgets and the approval time.",
+            "example": {
+              "addressCidrs": [],
+              "allowUndeclaredPublicRedirects": false,
+              "approvedAt": "2026-11-02T14:03:27.481920311+00:00",
+              "bindings": [
+                "config",
+                "secrets"
+              ],
+              "compatibilityFlags": [],
+              "consumers": [],
+              "cpuRatePercent": 80,
+              "diskMib": 512,
+              "domains": [],
+              "entrypoints": [
+                "storefront"
+              ],
+              "extraProcesses": 2,
+              "jobs": [],
+              "manifestCidrs": [],
+              "manifestDomains": [],
+              "manifestTcp": [
+                {
+                  "host": "*.libro.fm",
+                  "ports": [
+                    443
+                  ]
+                }
+              ],
+              "memoryMib": 512,
+              "networkMode": "outbound",
+              "operatorAddedCidrs": [],
+              "operatorAddedDomains": [],
+              "operatorAddedTcp": [],
+              "operatorDeniedCidrs": [],
+              "operatorDeniedDomains": [],
+              "operatorDeniedTcp": [],
+              "pluginId": "libro",
+              "pluginKey": "cargo:https://crates.io#bookclerk-plugin-source-libro",
+              "producers": [],
+              "schemaVersion": 2,
+              "tcp": [
+                {
+                  "host": "*.libro.fm",
+                  "ports": [
+                    443
+                  ]
+                }
+              ]
+            }
           }
         }
       },
@@ -32014,7 +33994,8 @@
             "properties": {
               "code": {
                 "type": "string",
-                "description": "Six digits."
+                "description": "Six digits.",
+                "example": "492817"
               },
               "method": {
                 "type": "string",
@@ -32035,10 +34016,21 @@
             "properties": {
               "challenge_id": {
                 "type": "string",
-                "description": "The challenge id."
+                "description": "The challenge id.",
+                "example": "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f"
               },
               "credential": {
-                "description": "The browser's `PublicKeyCredential` JSON."
+                "description": "W3C PublicKeyCredential as the browser serializes it: a registration attestation (`response.attestationObject`) or an authentication assertion (`response.authenticatorData`, `signature`, `userHandle`), binary fields base64url-encoded.",
+                "example": {
+                  "extensions": {},
+                  "id": "pQECAyYgASFYIE",
+                  "rawId": "pQECAyYgASFYIE",
+                  "response": {
+                    "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViU",
+                    "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ"
+                  },
+                  "type": "public-key"
+                }
               },
               "method": {
                 "type": "string",
