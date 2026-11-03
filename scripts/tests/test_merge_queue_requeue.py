@@ -200,8 +200,8 @@ class DecideTests(unittest.TestCase):
 
     def test_the_604_ejection_is_enqueued_again(self) -> None:
         gh = FakeGh(happy_bodies())
-        pr, reason = mq.decide(REPO, RUN_ID, gh)
-        self.assertEqual(pr, 604)
+        target, reason = mq.decide(REPO, RUN_ID, gh)
+        self.assertEqual(target, (604, "601c089641a459acd8cca2daa02905c3d33c1703"))
         self.assertIn("never gave", reason)
         self.assertIn(["api", "--paginate", "--slurp", f"repos/{REPO}/issues/604/timeline?per_page=100"], gh.calls)
 
@@ -215,20 +215,28 @@ class DecideTests(unittest.TestCase):
             "already queued": {f"{base}/pulls/604": seed("pr__auto_merge_set.json")},
             "cap reached": {f"{base}/issues/604/timeline": seed("timeline__three_enqueues.json")},
             "timeline unreadable": {f"{base}/issues/604/timeline": b"{}"},
+            "pushed after the failure": {
+                f"{base}/issues/604/timeline": json.dumps(
+                    json.loads(seed("timeline__pr604.json"))
+                    + [[{"event": "committed", "sha": "c" * 40}]]
+                ).encode()
+            },
         }
         for name, over in cases.items():
             with self.subTest(case=name):
                 bodies = happy_bodies()
                 bodies.update(over)
-                pr, reason = mq.decide(REPO, RUN_ID, FakeGh(bodies))
-                self.assertIsNone(pr)
+                target, reason = mq.decide(REPO, RUN_ID, FakeGh(bodies))
+                self.assertIsNone(target)
                 self.assertTrue(reason)
+                if name == "pushed after the failure":
+                    self.assertIn("new head", reason)
 
     def test_api_failure_stays_out(self) -> None:
         bodies = happy_bodies()
         del bodies[f"repos/{REPO}/pulls/604"]
-        pr, reason = mq.decide(REPO, RUN_ID, FakeGh(bodies))
-        self.assertIsNone(pr)
+        target, reason = mq.decide(REPO, RUN_ID, FakeGh(bodies))
+        self.assertIsNone(target)
         self.assertIn("failed", reason)
 
 
@@ -274,7 +282,9 @@ class CliTests(unittest.TestCase):
 
     def test_requeue_writes_the_number(self) -> None:
         code, out, summary = self.run_main(["--repo", REPO, "--run-id", str(RUN_ID)], FakeGh(happy_bodies()))
-        self.assertEqual((code, out), (0, "pr=604\n"))
+        self.assertEqual(
+            (code, out), (0, "pr=604\nsha=601c089641a459acd8cca2daa02905c3d33c1703\n")
+        )
         self.assertIn("#604", summary)
 
     def test_stay_out_writes_nothing(self) -> None:

@@ -18,17 +18,21 @@ back on only when that is the whole story:
   pull request from the queue has no such annotation, so it never counts;
 - the pull request is open, not a draft, has no auto-merge set, and comes
   from this repository;
-- it entered the queue fewer than ``MAX_ENQUEUES_PER_HEAD`` times since its
-  head last changed, so one commit is retried at most
-  ``MAX_ENQUEUES_PER_HEAD - 1`` times.
+- its current head is the one that was queued (it entered the queue at
+  least once since its head last changed, so a commit pushed after the
+  failure is never enqueued on the failure's account) and fewer than
+  ``MAX_ENQUEUES_PER_HEAD`` times, so one commit is retried at most
+  ``MAX_ENQUEUES_PER_HEAD - 1`` times. The workflow passes that head to
+  ``gh pr merge --match-head-commit``, so a push in between makes the
+  enqueue fail instead of queueing the new commit.
 
 The checks are sans-IO functions over the bytes the GitHub API returns, so
 ``scripts/tests/test_merge_queue_requeue.py`` drives the same code the
 workflow does. See ``docs/contributing/ci.md#merge-queue-re-enqueue``.
 
 Usage: ``merge_queue_requeue.py --repo OWNER/NAME --run-id ID`` with
-``GH_TOKEN`` set; writes ``pr=<n>`` to ``$GITHUB_OUTPUT`` (or stdout without
-it) when the pull request should go back in the queue, and one line to
+``GH_TOKEN`` set; writes ``pr=<n>`` and ``sha=<head>`` to ``$GITHUB_OUTPUT``
+(or stdout without it) when the pull request should go back in the queue, and one line to
 ``$GITHUB_STEP_SUMMARY`` either way.
 """
 
@@ -263,7 +267,7 @@ def enqueues_since_head(raw: bytes) -> int | None:
     return count
 
 
-def decide(repo: str, run_id: int, gh: Gh) -> tuple[int | None, str]:
+def decide(repo: str, run_id: int, gh: Gh) -> tuple[tuple[int, str] | None, str]:
     """Decides whether the run's pull request goes back in the queue.
 
     Args:
@@ -272,8 +276,9 @@ def decide(repo: str, run_id: int, gh: Gh) -> tuple[int | None, str]:
         gh: Runs ``gh`` (``run_gh`` outside tests).
 
     Returns:
-        ``(number, reason)`` with the pull request number when it should be
-        enqueued again, else ``(None, reason)``; ``reason`` is one sentence.
+        ``((number, head), reason)`` with the pull request number and the
+        head commit that was queued when it should be enqueued again, else
+        ``(None, reason)``; ``reason`` is one sentence.
     """
     try:
         pr = queued_pr(gh(["api", f"repos/{repo}/actions/runs/{run_id}"]), repo)
@@ -287,17 +292,20 @@ def decide(repo: str, run_id: int, gh: Gh) -> tuple[int | None, str]:
         for job_id in stranded:
             if not not_acquired(gh(["api", f"repos/{repo}/check-runs/{job_id}/annotations"])):
                 return None, f"job {job_id} of run {run_id} was cancelled without GitHub's not-acquired annotation."
-        if pr_head(gh(["api", f"repos/{repo}/pulls/{pr}"]), repo) is None:
+        head = pr_head(gh(["api", f"repos/{repo}/pulls/{pr}"]), repo)
+        if head is None:
             return None, f"#{pr} is closed, a draft, already has auto-merge, or comes from a fork."
         timeline = gh(["api", "--paginate", "--slurp", f"repos/{repo}/issues/{pr}/timeline?per_page=100"])
         enqueues = enqueues_since_head(timeline)
         if enqueues is None:
             return None, f"could not read the timeline of #{pr}."
+        if enqueues == 0:
+            return None, f"#{pr} has a new head since it was queued; it waits for its own enqueue."
         if enqueues >= MAX_ENQUEUES_PER_HEAD:
             return None, f"#{pr} already entered the queue {enqueues} times on its current head."
     except subprocess.CalledProcessError:
         return None, "a GitHub API call failed."
-    return pr, f"#{pr} left the queue only because GitHub never gave run {run_id} a runner; enqueueing it again."
+    return (pr, head), f"#{pr} left the queue only because GitHub never gave run {run_id} a runner; enqueueing it again."
 
 
 def run_gh(args: Sequence[str]) -> bytes:
@@ -337,15 +345,16 @@ def main(argv: Sequence[str] | None = None, gh: Gh = run_gh) -> int:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo) or args.run_id <= 0:
         print("merge_queue_requeue: bad --repo or --run-id", file=sys.stderr)
         return 2
-    pr, reason = decide(args.repo, args.run_id, gh)
+    target, reason = decide(args.repo, args.run_id, gh)
     print(reason)
-    if pr is not None:
+    if target is not None:
+        pr, head = target
         out = os.environ.get("GITHUB_OUTPUT")
         if out:
             with open(out, "a", encoding="utf-8") as fh:
-                fh.write(f"pr={pr}\n")
+                fh.write(f"pr={pr}\nsha={head}\n")
         else:
-            print(f"pr={pr}")
+            print(f"pr={pr}\nsha={head}")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as fh:

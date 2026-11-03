@@ -1316,8 +1316,11 @@ only when all of these hold:
    from the queue has none, so a hand dequeue stays dequeued.
 3. The pull request is open, isn't a draft, comes from this repository and
    doesn't already have auto-merge on.
-4. Its current head has entered the queue fewer than three times, so one
-   commit is retried at most twice. A new push resets the count.
+4. Its current head is the one that was queued, and it has entered the
+   queue fewer than three times, so one commit is retried at most twice. A
+   commit pushed after the failure waits for its own enqueue, and the
+   enqueue names the queued head (`--match-head-commit`), so a push in
+   between makes it fail.
 
 Every check stays required: the new merge group runs the full suite again.
 The workflow runs from the default branch, reads only the GitHub API and
