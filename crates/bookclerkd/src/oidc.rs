@@ -158,8 +158,21 @@ pub struct AuthorizeQuery {
     path = "/oidc/authorize",
     params(AuthorizeQuery),
     responses(
-        (status = 302, description = "Redirects to sign-in, the consent page, or the client."),
-        (status = 400, description = "The request is invalid."),
+        (status = 303, description = "A `bookclerk-branch` request is sent to the SPA consent page (`/join/approve`)."),
+        (status = 307, description = "Redirects to sign-in (no user session) or to the client with a code."),
+        (status = 400, description = "The request is invalid. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body. A query string that cannot be parsed gets a plain-text line.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+            (String = "text/plain", example = json!("Failed to deserialize query string: missing field `client_id`")),
+        )),
+        (status = 403, description = "An operator token was sent, or the user is disabled. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 500, description = "The client or the session could not be read, or the code could not be stored. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
     ),
 )]
 async fn authorize(
@@ -232,10 +245,23 @@ pub struct ConsentBody {
     request_body(content = ConsentBody, content_type = "application/x-www-form-urlencoded"),
     security(("portalSession" = [])),
     responses(
-        (status = 302, description = "Redirects to the client with a code or `access_denied`."),
-        (status = 400, description = "The request is invalid."),
-        (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "An operator token was sent, or the user is disabled."),
+        (status = 307, description = "Redirects to the client with a code or `access_denied`."),
+        (status = 400, description = "The request is invalid. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 401, description = "The caller is not signed in. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 403, description = "An operator token was sent, or the user is disabled. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 500, description = "The client or the session could not be read, or the code could not be stored. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
     ),
 )]
 async fn authorize_consent(
@@ -442,8 +468,22 @@ struct TokenResponse {
     request_body(content = TokenForm, content_type = "application/x-www-form-urlencoded"),
     responses(
         (status = 200, description = "Tokens.", body = TokenResponse),
-        (status = 400, description = "The grant is invalid or unsupported."),
-        (status = 401, description = "The client failed to authenticate."),
+        (status = 400, description = "The grant is invalid or unsupported. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 401, description = "The client failed to authenticate. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 403, description = "The token's user is disabled. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 500, description = "The code, the token or the user could not be read or stored. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
     ),
 )]
 async fn token(

@@ -40,9 +40,11 @@ screen for secrets).
    response, and CI Gate reports how many declared responses the tests
    observed and every disagreement. The layer is compiled only into the
    test binary; the daemon's own router does not change.
-3. The report is informational first. Once the disagreements it finds are
-   fixed, a disagreement fails CI Gate and the observed share gets a floor
-   that only rises, the way the coverage floors do.
+3. The report was informational first. With the disagreements the first
+   report found fixed, a disagreement fails CI Gate and the observed share
+   has a floor that only rises (`[contract] floor` in
+   `scripts/coverage_areas.toml`), the way the coverage floors do; the
+   floor is not checked when a selective run did not test the daemon.
 4. Examples stay hand-written. Generating them from recorded responses is
    deferred until the observed share is high enough that recordings would
    replace most of them; a recording then replaces an example route by
@@ -52,8 +54,12 @@ screen for secrets).
 
 - A handler that answers a status or body its route does not declare is
   listed in CI Gate's summary, by method, route, status, media type and
-  the validator's message, as soon as a test exercises it, and will fail
-  CI Gate once the report is enforced.
+  the validator's message, as soon as a test exercises it, and fails
+  CI Gate.
+- Refusals a layer produces before any handler runs (the access layers'
+  `401` and `403`, the second-factor enrollment `403`, CSRF, the timeout)
+  are stated by the document builder for every route they apply to, so
+  the first test that meets one on a new route does not fail the gate.
 - A route no test reaches is invisible to the layer. The report's
   observed share makes that visible, and the floor keeps it from shrinking.
 - The checks add one dev-dependency (`jsonschema`) to the daemon and one

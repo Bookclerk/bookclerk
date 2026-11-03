@@ -483,6 +483,17 @@ fn accept_preference(value: Option<&HeaderValue>) -> Option<bool> {
 /// Full wordmark (same asset as the login page), inlined so errors work without `ui/dist`.
 const LOGO_SVG: &str = include_str!("../../../assets/brand/svg/bookclerk-logo.svg");
 
+/// The branded HTML page the middleware writes for a bare `status` on a
+/// route outside the API (its generic message from [`describe`]), for the
+/// document's `text/html` error examples.
+///
+/// # Arguments
+///
+/// * `status` - The status the page explains.
+pub(crate) fn branded_page(status: StatusCode) -> String {
+    render_html(status, describe(status).1)
+}
+
 /// Inlines the wordmark and branded CSS so errors work without `ui/dist`.
 fn render_html(status: StatusCode, message: &str) -> String {
     let code = status.as_u16();

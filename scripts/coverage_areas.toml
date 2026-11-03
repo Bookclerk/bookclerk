@@ -31,6 +31,16 @@ generated = [
   "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/abi.py",
 ]
 
+# The Web API contract (docs/contributing/ci.md#web-api-contract), read by
+# scripts/contract_coverage.py: `floor` is the lowest share of the
+# document's declared responses (route, status and media type) the daemon's
+# tests may observe, in percent. Raise it when the share rises (keep it a
+# little below the measured value) and never lower it to make a change pass.
+# Not an area: it counts responses, not lines, and it is not checked when the
+# plan did not run the daemon's tests.
+[contract]
+floor = 8
+
 [areas.rust]
 report = "rust/lcov.info"
 test_results = "rust/junit.xml"
