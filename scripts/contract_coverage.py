@@ -28,13 +28,22 @@ share below the floor ``[contract] floor`` in ``scripts/coverage_areas.toml``
 states (a percentage that only rises, like the coverage floors; it is not
 checked when no report file exists, that is, when the plan did not run the
 daemon's tests), and a missing report when the plan (``--plan``) says the
-daemon's tests ran. The parsers are sans-IO so
-``scripts/tests/test_contract_coverage.py`` drives the same code.
+daemon's tests ran and the test job (``--tests-result``) succeeded. A failed
+or cancelled test job already fails CI Gate, so its missing report is not a
+second finding.
+
+When there is no report file and none is demanded (a build-only main push,
+a selective plan without the daemon's package, a test job that did not
+finish), the daemon's tests did not run: the script prints one line and
+leaves the step summary alone rather than repeat an empty report. The
+per-area table sits in a fold so the summary leads with the verdict. The
+parsers are sans-IO so ``scripts/tests/test_contract_coverage.py`` drives
+the same code.
 
 Usage: ``contract_coverage.py --reports DIR [--document FILE] [--mode
 report|enforce] [--config FILE] [--floor PERCENT] [--plan ci-plan.json]
-[--summary FILE] [--format summary|json]`` from the repository root
-(``--summary`` defaults to ``$GITHUB_STEP_SUMMARY``).
+[--tests-result RESULT] [--summary FILE] [--format summary|json]`` from the
+repository root (``--summary`` defaults to ``$GITHUB_STEP_SUMMARY``).
 """
 
 from __future__ import annotations
@@ -341,10 +350,14 @@ def render(report: Report, mode: str, floor: float | None = None, missing: bool 
     else:
         lines.append("Every response the tests produced agrees with the document.")
         lines.append("")
+    lines.append("<details><summary>Observed responses per area</summary>")
+    lines.append("")
     lines.append("| Area | Declared | Observed | Share |")
     lines.append("| --- | ---: | ---: | ---: |")
     for area, (declared, observed) in report.by_area().items():
         lines.append(f"| {area} | {declared} | {observed} | {percent(observed, declared)} |")
+    lines.append("")
+    lines.append("</details>")
     if report.malformed:
         lines.append("")
         lines.append(f"**{report.malformed} report line(s) were not hits** and were skipped; a partial line {word}.")
@@ -411,6 +424,24 @@ def plan_tested_daemon(text: str) -> bool:
     return isinstance(packages, list) and "bookclerkd" in packages
 
 
+#: The results GitHub Actions gives a job (``needs.<job>.result``).
+TEST_RESULTS = ("success", "failure", "cancelled", "skipped")
+
+
+def not_run_note(tests_result: str | None) -> str:
+    """The one line printed instead of a report when the daemon's tests did not run.
+
+    Args:
+        tests_result: The test job's result, if given.
+
+    Returns:
+        A line naming why there is nothing to report.
+    """
+    if tests_result is not None and tests_result != "success":
+        return f"Web API contract: not checked; the test job ended `{tests_result}` without a report.\n"
+    return "Web API contract: not checked; the daemon's tests did not run in this plan.\n"
+
+
 def percentage(text: str) -> float:
     """Parses a ``--floor`` value: a finite number from 0 to 100.
 
@@ -448,6 +479,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=DEFAULT_CONFIG, type=Path, help="the file whose [contract] floor applies")
     parser.add_argument("--floor", type=percentage, default=None, help="the lowest observed share allowed, in percent (overrides --config)")
     parser.add_argument("--plan", type=Path, default=None, help="the run's ci-plan.json; a plan that tested the daemon demands a report")
+    parser.add_argument(
+        "--tests-result",
+        choices=TEST_RESULTS,
+        default=None,
+        help="the test job's result; only a successful test job owes a report (default: assume success)",
+    )
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY"), help="append the Markdown here")
     parser.add_argument("--format", choices=("summary", "json"), default="summary", help="what to print")
     args = parser.parse_args(argv)
@@ -472,13 +509,19 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     reports = read_reports(args.reports) if args.reports.is_dir() else []
     report = build_report(document, reports)
-    missing = expected and report.files == 0
+    finished = args.tests_result in (None, "success")
+    missing = expected and finished and report.files == 0
+    # Nothing ran and nothing was owed: one line, and no empty report in
+    # the step summary.
+    quiet = report.files == 0 and not missing
     markdown = render(report, args.mode, floor, missing)
     if args.format == "json":
         print(json.dumps(as_json(report, floor, missing), indent=2))
+    elif quiet:
+        print(not_run_note(args.tests_result), end="")
     else:
         print(markdown, end="")
-    if args.summary:
+    if args.summary and not quiet:
         with open(args.summary, "a", encoding="utf-8") as handle:
             handle.write(markdown)
     failed = report.disagreements or report.malformed or missing or below_floor(report, floor)

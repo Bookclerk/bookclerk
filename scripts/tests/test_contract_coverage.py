@@ -150,6 +150,8 @@ class BuildReportTest(unittest.TestCase):
         self.assertIn("each is reported only", text)
         self.assertIn("| `invalid` | `GET` | `/api/things/{id}` | 200 | `application/json` | a \\| b |", text)
         self.assertIn("| Things | 3 | 0 | 0.0% |", text)
+        self.assertLess(text.index("each is reported only"), text.index("<details><summary>Observed responses per area"))
+        self.assertTrue(text.rstrip().endswith("</details>"))
         self.assertIn("each fails CI Gate", cc.render(report, "enforce"))
         clean = cc.render(cc.build_report(DOCUMENT, []), "report")
         self.assertIn("Every response the tests produced agrees", clean)
@@ -234,6 +236,38 @@ class MainTest(unittest.TestCase):
             result = self.run_script("--reports", str(Path(tmp) / "missing"), "--format", "json")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["files"], 0)
+
+    def test_a_run_without_the_daemons_tests_leaves_the_summary_alone(self) -> None:
+        workspace = json.dumps({"execution": {"checks": {"rust_test": {"params": {"workspace": True}}}}})
+        build_only = json.dumps({"build_only": True, "execution": {"checks": {"rust_test": {"params": {"workspace": True}}}}})
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = Path(tmp) / "ci-plan.json"
+            summary = Path(tmp) / "summary.md"
+            empty = Path(tmp) / "reports"
+            empty.mkdir()
+            plan.write_text(build_only, encoding="utf-8")
+            result = self.run_script("--reports", str(empty), "--mode", "enforce", "--plan", str(plan), "--summary", str(summary))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "Web API contract: not checked; the daemon's tests did not run in this plan.\n")
+            self.assertFalse(summary.exists())
+            plan.write_text(workspace, encoding="utf-8")
+            for ended in ("cancelled", "failure", "skipped"):
+                result = self.run_script(
+                    "--reports", str(empty), "--mode", "enforce", "--plan", str(plan), "--tests-result", ended, "--summary", str(summary)
+                )
+                self.assertEqual(result.returncode, 0, ended)
+                self.assertIn(f"the test job ended `{ended}` without a report", result.stdout)
+                self.assertFalse(summary.exists())
+            result = self.run_script("--reports", str(empty), "--mode", "enforce", "--plan", str(plan), "--tests-result", "success", "--summary", str(summary))
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("**No report file**", summary.read_text(encoding="utf-8"))
+            result = self.run_script("--reports", str(empty), "--tests-result", "neutral")
+            self.assertEqual(result.returncode, 2)
+            (empty / "1.jsonl").write_text(line("get", "/api/jobs", 200, "application/json", "declared") + "\n", encoding="utf-8")
+            summary.unlink()
+            result = self.run_script("--reports", str(empty), "--mode", "enforce", "--floor", "0", "--tests-result", "failure", "--summary", str(summary))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("## Web API contract", summary.read_text(encoding="utf-8"))
 
     def test_enforce_mode_applies_the_floor_from_the_option_or_the_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
