@@ -1281,12 +1281,17 @@ jobs:
       # many declared responses the daemon's tests observed and every
       # response that disagreed with the document. A disagreement, an
       # observed share under the floor in scripts/coverage_areas.toml, or
-      # no report at all when the plan ran the daemon's tests, fails the
-      # gate.
+      # no report at all when the plan ran the daemon's tests and the test
+      # job succeeded, fails the gate. A run whose tests did not run (a
+      # build-only main push, a selective plan) gets one log line and no
+      # summary.
       - name: Web API contract
         if: ${{ !cancelled() && !inputs.private-head }}
+        env:
+          TESTS_RESULT: ${{ needs.test.result }}
         run: >-
           python3 scripts/contract_coverage.py
           --reports "$RUNNER_TEMP/coverage/contract"
           --plan "$RUNNER_TEMP/ci-plan/ci-plan.json"
+          --tests-result "$TESTS_RESULT"
           --mode enforce

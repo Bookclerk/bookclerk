@@ -855,7 +855,7 @@ beside its coverage report and CI Gate runs
 them.
 
 The step summary shows how many of the declared responses (route, status
-and media type) the tests observed, in all and per tag, and lists every
+and media type) the tests observed, in all and (in a fold) per tag, and lists every
 disagreement: a status or media type the route does not declare, a body
 that does not validate, a body that is not JSON, and a matched route the
 document does not describe (an HTML page, such as the invite page or the
@@ -868,10 +868,14 @@ observed share below the floor `[contract] floor` in
 [`scripts/coverage_areas.toml`](../../scripts/coverage_areas.toml) states
 (a percentage of the declared responses; raise it when the share rises,
 keeping it a little below the measured value, and never lower it to make
-a change pass). The floor is not checked when no report file exists
-because a selective run did not test the daemon's package; when the plan
-did test it and no report exists all the same, or a report line is not a
-whole hit (a partial write), the gate fails too. The layer never fails a
+a change pass). When no report file exists because the daemon's tests
+did not run (a build-only main push, a selective run that did not test
+the daemon's package, or a test job that failed or was cancelled before
+writing one), the floor is not checked and the step prints one line
+instead of adding an empty report to the summary; a failed or cancelled
+test job fails CI Gate on its own. When the plan tested the daemon's
+package, the test job succeeded and no report exists all the same, or a
+report line is not a whole hit (a partial write), the gate fails too. The layer never fails a
 test, so a disagreement shows up in CI Gate's summary, not in a test's
 output.
 
