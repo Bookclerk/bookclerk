@@ -582,7 +582,7 @@ JavaScript/TypeScript, Python and Rust, each in build mode `none`. The
 repository's "CodeQL results" merge rule reads its analyses. GitHub's
 default setup for code scanning must be off, or the uploads are refused.
 
-Rust takes about 20 minutes on a hosted runner, and CodeQL has no
+Rust takes about 20 minutes on a GitHub-hosted runner, and CodeQL has no
 incremental analysis for Rust yet (tracked in
 [#585](https://github.com/Bookclerk/bookclerk/issues/585)). Rust can't be
 left out of a pull request either: the "CodeQL results" merge rule reports
