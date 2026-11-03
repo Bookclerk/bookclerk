@@ -189,7 +189,10 @@ Some of these need more than a cell:
   (`json_body_routes_state_extractor_rejections`; the daemon adds them to
   the document itself, and the routes that read their body by hand,
   listed in `MANUAL_JSON_BODIES` in `crates/bookclerkd/src/openapi.rs`,
-  state their own refusals). A new field gets `#[schema(example = …)]` with a
+  state their own refusals), and every example, on a field, a schema or
+  a body, validates against the schema it illustrates, references
+  followed and formats such as `uuid` and `date-time` asserted
+  (`every_example_matches_its_schema`). A new field gets `#[schema(example = …)]` with a
   value the daemon really writes; a free-form `serde_json::Value` or map
   field gets `#[schema(schema_with = …)]` returning a schema with
   `examples`, since utoipa drops `example` on `value_type = Object`; an

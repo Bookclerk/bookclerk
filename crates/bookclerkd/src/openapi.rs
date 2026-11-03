@@ -1871,6 +1871,279 @@ mod tests {
         );
     }
 
+    /// Escapes `token` for use in a JSON pointer (RFC 6901).
+    fn pointer_token(token: &str) -> String {
+        token.replace('~', "~0").replace('/', "~1")
+    }
+
+    /// Collects every example under `schema` as `(pointer, example)`
+    /// pairs, where `pointer` locates the subschema the example belongs
+    /// to: the schema's own `example` and `examples`, then those of its
+    /// properties, the branches of `oneOf`, `allOf` and `anyOf`, array
+    /// items and map values.
+    fn examples_under(
+        pointer: &str,
+        schema: &serde_json::Value,
+        out: &mut Vec<(String, serde_json::Value)>,
+    ) {
+        if let Some(example) = schema.get("example") {
+            out.push((pointer.to_string(), example.clone()));
+        }
+        for example in schema["examples"].as_array().into_iter().flatten() {
+            out.push((pointer.to_string(), example.clone()));
+        }
+        for (name, property) in schema["properties"].as_object().into_iter().flatten() {
+            let at = format!("{pointer}/properties/{}", pointer_token(name));
+            examples_under(&at, property, out);
+        }
+        for key in ["oneOf", "allOf", "anyOf"] {
+            for (index, branch) in schema[key].as_array().into_iter().flatten().enumerate() {
+                examples_under(&format!("{pointer}/{key}/{index}"), branch, out);
+            }
+        }
+        if schema["items"].is_object() {
+            examples_under(&format!("{pointer}/items"), &schema["items"], out);
+        }
+        if schema["additionalProperties"].is_object() {
+            examples_under(
+                &format!("{pointer}/additionalProperties"),
+                &schema["additionalProperties"],
+                out,
+            );
+        }
+    }
+
+    /// Rewrites every `#/components/schemas/` reference under `value` to
+    /// `#/$defs/`, so a schema lifted out of the document resolves its
+    /// references against a `$defs` map in the same root.
+    fn redirect_refs(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, inner) in map.iter_mut() {
+                    if key == "$ref" {
+                        if let Some(target) = inner.as_str() {
+                            if let Some(name) = target.strip_prefix("#/components/schemas/") {
+                                *inner = serde_json::Value::String(format!("#/$defs/{name}"));
+                            }
+                        }
+                    } else {
+                        redirect_refs(inner);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(redirect_refs),
+            _ => {}
+        }
+    }
+
+    /// Compiles `schema` as a JSON Schema 2020-12 root, with every
+    /// reachable subschema addressable by pointer and formats asserted,
+    /// not only annotated. With `components`, the root carries the
+    /// document's component schemas under `$defs`, so references to them
+    /// resolve inside the root and each is addressable as `#/$defs/<name>`.
+    fn validators(
+        components: Option<&serde_json::Value>,
+        schema: &serde_json::Value,
+    ) -> jsonschema::ValidatorMap {
+        let mut root = schema.clone();
+        if let Some(components) = components {
+            root["$defs"] = components.clone();
+            redirect_refs(&mut root);
+        }
+        jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .should_validate_formats(true)
+            .build_map(&root)
+            .expect("the document's schemas are valid JSON Schema")
+    }
+
+    /// Validates each `(pointer, example)` pair against the validator at
+    /// that pointer, recording every violation under `at`.
+    fn check_examples(
+        at: &str,
+        map: &jsonschema::ValidatorMap,
+        examples: &[(String, serde_json::Value)],
+        out: &mut Vec<String>,
+    ) {
+        for (pointer, example) in examples {
+            let Some(validator) = map.get(pointer) else {
+                out.push(format!(
+                    "{at} {pointer}: no schema compiled at this pointer"
+                ));
+                continue;
+            };
+            for error in validator.iter_errors(example) {
+                out.push(format!(
+                    "{at} {pointer}: {error} (at instance path {})",
+                    error.instance_path()
+                ));
+            }
+        }
+    }
+
+    /// Every example in the document is valid against the schema it
+    /// illustrates: a schema's own `example` and `examples` and those of
+    /// its properties, nested objects, composition branches, array items
+    /// and map values, in the components and inline in a body, plus each
+    /// body's `example` and the `value` of each named entry in its
+    /// `examples`. The check follows `$ref`s and asserts `format`s, so an
+    /// example that omits a field the type requires, carries a value of
+    /// the wrong type, uses a value outside an `enum`, or breaks a `uuid`
+    /// or `date-time` format fails here instead of in review.
+    #[test]
+    fn every_example_matches_its_schema() {
+        let doc = document_value();
+        let components = &doc["components"]["schemas"];
+        let mut violations = Vec::new();
+        let mut checked = 0;
+
+        // The components, compiled once: every pointer under `#/$defs`.
+        let mut examples = Vec::new();
+        for (name, schema) in components.as_object().into_iter().flatten() {
+            examples_under(
+                &format!("#/$defs/{}", pointer_token(name)),
+                schema,
+                &mut examples,
+            );
+        }
+        let component_map = validators(Some(components), &serde_json::json!({}));
+        check_examples("components", &component_map, &examples, &mut violations);
+        checked += examples.len();
+
+        // Each body: the content's own examples against the content schema,
+        // and the examples inside an inline schema against their pointers.
+        // A body that is one reference to a component reuses the component
+        // validators, since its nested examples were checked above.
+        for (method, path, op) in operations(&doc) {
+            let bodies = std::iter::once(("request", &op["requestBody"])).chain(
+                op["responses"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(s, r)| (s.as_str(), r)),
+            );
+            for (status, body) in bodies {
+                for (media, content) in body["content"].as_object().into_iter().flatten() {
+                    let Some(schema) = content.get("schema") else {
+                        continue;
+                    };
+                    let at = format!("{method} {path} {status} {media}");
+                    let mut examples = Vec::new();
+                    if let Some(example) = content.get("example") {
+                        examples.push(("#".to_string(), example.clone()));
+                    }
+                    for (name, entry) in content["examples"].as_object().into_iter().flatten() {
+                        let Some(value) = entry.get("value") else {
+                            violations.push(format!("{at}: example {name} has no value"));
+                            continue;
+                        };
+                        examples.push(("#".to_string(), value.clone()));
+                    }
+                    let referenced = schema["$ref"]
+                        .as_str()
+                        .filter(|_| schema.as_object().is_some_and(|map| map.len() == 1))
+                        .and_then(|target| target.strip_prefix("#/components/schemas/"));
+                    if let Some(name) = referenced {
+                        let pointer = format!("#/$defs/{}", pointer_token(name));
+                        for (at, _) in &mut examples {
+                            at.clone_from(&pointer);
+                        }
+                        check_examples(&at, &component_map, &examples, &mut violations);
+                        checked += examples.len();
+                        continue;
+                    }
+                    examples_under("#", schema, &mut examples);
+                    if examples.is_empty() {
+                        continue;
+                    }
+                    let mut referenced = Vec::new();
+                    refs(schema, &mut referenced);
+                    let map = validators((!referenced.is_empty()).then_some(components), schema);
+                    check_examples(&at, &map, &examples, &mut violations);
+                    checked += examples.len();
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "{} example(s) do not match their schema:\n{}",
+            violations.len(),
+            violations.join("\n")
+        );
+        // Over two thousand today; a walk that finds far fewer has stopped
+        // reaching the examples rather than found a smaller document.
+        assert!(checked >= 2000, "only {checked} examples were checked");
+    }
+
+    /// The example check reaches an example on a property, inside a
+    /// composition branch, on array items and on map values, follows a
+    /// component reference, asserts formats, and names each violation by
+    /// its pointer and instance path.
+    #[test]
+    fn example_violations_are_named() {
+        let components = serde_json::json!({
+            "Id": { "type": "string", "format": "uuid", "example": "not-a-uuid" }
+        });
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["id"],
+            "example": { "id": "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f", "count": "three" },
+            "examples": [ { "id": "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f" } ],
+            "properties": {
+                "id": { "$ref": "#/components/schemas/Id" },
+                "count": { "type": "integer", "example": 3 },
+                "mode": { "oneOf": [
+                    { "type": "string", "enum": ["deny", "outbound"], "example": "allow" }
+                ] },
+                "tags": { "type": "array", "items": { "type": "string", "example": 7 } },
+                "limits": { "type": "object", "additionalProperties": {
+                    "type": "integer", "minimum": 0, "example": -1
+                } }
+            }
+        });
+        let mut examples = Vec::new();
+        examples_under("#", &schema, &mut examples);
+        let map = validators(Some(&components), &schema);
+        let mut violations = Vec::new();
+        check_examples("S", &map, &examples, &mut violations);
+        let pointers: Vec<&str> = violations
+            .iter()
+            .map(|v| v.split(':').next().unwrap_or(v))
+            .collect();
+        assert_eq!(
+            pointers,
+            [
+                "S #",
+                "S #/properties/limits/additionalProperties",
+                "S #/properties/mode/oneOf/0",
+                "S #/properties/tags/items",
+            ]
+        );
+        assert!(
+            violations[0].contains("/count"),
+            "the root example's wrong field is named: {}",
+            violations[0]
+        );
+        let mut examples = Vec::new();
+        examples_under("#/$defs/Id", &components["Id"], &mut examples);
+        let map = validators(Some(&components), &serde_json::json!({}));
+        let mut violations = Vec::new();
+        check_examples("components", &map, &examples, &mut violations);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].starts_with("components #/$defs/Id:"));
+        let mut violations = Vec::new();
+        check_examples(
+            "S",
+            &map,
+            &[("#/nowhere".to_string(), serde_json::json!(1))],
+            &mut violations,
+        );
+        assert_eq!(
+            violations,
+            ["S #/nowhere: no schema compiled at this pointer"]
+        );
+    }
+
     /// Every route that reads a JSON body states the extractor's refusals
     /// as `text/plain` responses with the text axum writes, except the
     /// routes that read their body themselves, and a route's own words for
