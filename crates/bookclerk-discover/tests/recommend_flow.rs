@@ -48,7 +48,7 @@ mod integration {
         // Simulate a catalog-only candidate by creating a work without ownership:
         // use a second account "wishlist" book then we still treat it as owned.
         // Instead, open a title request for book 3.
-        store
+        let request = store
             .create_title_request(&NewTitleRequest {
                 uuid: None,
                 identity_id: None,
@@ -61,7 +61,7 @@ mod integration {
                 work_key: String::new(),
                 work_id: None,
                 resolved_book_uuid: None,
-                cover_url: None,
+                cover_url: Some("https://img.example/book-3.jpg".into()),
             })
             .await
             .unwrap();
@@ -92,10 +92,25 @@ mod integration {
         };
         let registry = bookclerk_source::SourceRegistry::new();
         let recs = recommend(&store, &registry, &opts).await.unwrap();
-        assert!(
-            recs.iter()
-                .any(|r| r.from_request && r.title.contains("Book 3")),
-            "expected open request in recommendations: {recs:?}"
+        let requested = recs
+            .iter()
+            .find(|r| r.from_request && r.title.contains("Book 3"))
+            .unwrap_or_else(|| panic!("expected open request in recommendations: {recs:?}"));
+        // The card links back to the request it came from.
+        assert_eq!(
+            requested.request_uuid.as_deref(),
+            Some(request.uuid.as_str())
         );
+        // And carries what the request recorded about the work.
+        assert_eq!(requested.authors.as_deref(), Some("Ada Author"));
+        assert_eq!(requested.asin.as_deref(), Some("B000003"));
+        assert_eq!(
+            requested.cover_url.as_deref(),
+            Some("https://img.example/book-3.jpg")
+        );
+        assert_eq!(requested.wish_count, 1);
+        assert!(requested.score > 0.0, "{requested:?}");
+        assert!(!requested.reasons.is_empty(), "{requested:?}");
+        assert!(!requested.work_key.is_empty(), "{requested:?}");
     }
 }

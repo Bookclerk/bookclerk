@@ -961,6 +961,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn audible_links_use_the_marketplace_host() {
+        for (region, host) in [
+            ("us", "audible.com"),
+            ("uk", "audible.co.uk"),
+            ("ca", "audible.ca"),
+            ("au", "audible.com.au"),
+            ("fr", "audible.fr"),
+            ("de", "audible.de"),
+            ("jp", "audible.co.jp"),
+            ("it", "audible.it"),
+            ("in", "audible.in"),
+            ("es", "audible.es"),
+        ] {
+            assert_eq!(
+                audible_hint("b0abc", None, region).url.as_deref(),
+                Some(format!("https://www.{host}/pd/B0ABC").as_str()),
+                "{region}"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_or_push_fills_an_existing_row_and_appends_new_sources() {
+        let mut hints = vec![PurchaseHint::link("audible", "B0ABC", None, None)];
+        merge_or_push(
+            &mut hints,
+            PurchaseHint::link(
+                "Audible",
+                "b0abc",
+                Some("Title".into()),
+                Some("https://www.audible.com/pd/B0ABC".into()),
+            )
+            .with_price(1999, "USD", "$19.99"),
+        );
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].price_cents, Some(1999));
+        assert_eq!(hints[0].currency.as_deref(), Some("USD"));
+        assert_eq!(hints[0].title.as_deref(), Some("Title"));
+        assert_eq!(
+            hints[0].url.as_deref(),
+            Some("https://www.audible.com/pd/B0ABC")
+        );
+        merge_or_push(&mut hints, PurchaseHint::link("libro", "978", None, None));
+        assert_eq!(hints.len(), 2);
+        assert_eq!(hints[1].source, "libro");
+    }
+
+    #[test]
     fn money_label_parsing() {
         assert_eq!(parse_money_label_to_cents("$2.99"), Some(299));
         assert_eq!(parse_money_label_to_cents("FREE"), Some(0));

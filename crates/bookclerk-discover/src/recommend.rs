@@ -1352,6 +1352,57 @@ fn split_tokens_display(s: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// A store holding one unfinished book rated 5 by "Ada Author", and its rows.
+    async fn rated_library() -> (LibraryStore, Vec<BookRecord>) {
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        store
+            .upsert_account("audible", "acct", "us", Some("Main"), true, "audible")
+            .await
+            .unwrap();
+        let mut book = bookclerk_library::NewBook::minimal("B000001", "acct", "us", "Liked");
+        book.authors = Some("Ada Author".into());
+        let book = store.upsert_book(&book).await.unwrap();
+        store
+            .update_user_fields(
+                &book.uuid,
+                "acct",
+                &bookclerk_library::UserBookFields {
+                    rating_overall: Some(5.0),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let books = store.list_books(None).await.unwrap();
+        (store, books)
+    }
+
+    #[tokio::test]
+    async fn a_highly_rated_book_makes_its_author_liked() {
+        let (store, books) = rated_library().await;
+        let profile = build_taste_profile(&store, &books, &[], &RecommendOptions::default())
+            .await
+            .unwrap();
+        let weight = profile.liked_authors.get("ada author").copied();
+        assert!(
+            weight.is_some_and(|w| w >= 2.0),
+            "a 5-star rating adds at least 2 to its author: {weight:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shelf_taste_weights_a_highly_rated_book() {
+        let (_store, books) = rated_library().await;
+        let taste = build_shelf_taste(&books, &[]);
+        assert_eq!(
+            taste.authors.get("ada author"),
+            Some(&("Ada Author".to_owned(), 2.0))
+        );
+        assert!(!taste.owned_sources.is_empty());
+    }
+
     #[test]
     fn wish_count_dominates_taste_in_combined_score() {
         // Strong taste, single wish vs weak taste, two wishes.

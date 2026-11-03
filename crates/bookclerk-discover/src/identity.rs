@@ -1160,12 +1160,22 @@ mod tests {
                     ..QueueWisher::default()
                 }],
                 sample_uuids: vec!["b".into()],
-                first_requested_at: now,
-                last_requested_at: now,
+                // Asked for earlier and again later than the first entry:
+                // the merge keeps the widest span.
+                first_requested_at: now - chrono::Duration::hours(1),
+                last_requested_at: now + chrono::Duration::hours(1),
             },
         ]);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].wish_count, 3);
+        assert_eq!(
+            merged[0].first_requested_at,
+            now - chrono::Duration::hours(1)
+        );
+        assert_eq!(
+            merged[0].last_requested_at,
+            now + chrono::Duration::hours(1)
+        );
         assert!(merged[0].work_key.starts_with("isbn:"));
         assert_eq!(merged[0].title, "Project Hail Mary");
         assert_eq!(
@@ -1183,6 +1193,40 @@ mod tests {
         assert_eq!(merged[0].store_editions.len(), 2);
         assert_eq!(merged[0].purchase_hints.len(), 2);
         assert_eq!(merged[0].wishers.len(), 2);
+    }
+
+    #[test]
+    fn work_map_key_without_a_title_uses_the_product_id() {
+        // An author alone never makes a soft key, so untitled cards from
+        // different products stay apart.
+        assert_eq!(
+            work_map_key(
+                None,
+                None,
+                "  ",
+                Some("Jane Doe"),
+                Some("libro"),
+                Some("p1")
+            ),
+            "libro:p1"
+        );
+    }
+
+    #[test]
+    fn bare_title_is_ambiguous_only_with_a_volume_of_the_same_series() {
+        assert!(bare_vs_volume_title_ambiguity("Dune", "Dune: Messiah"));
+        assert!(!bare_vs_volume_title_ambiguity(
+            "Foundation",
+            "Dune: Messiah"
+        ));
+    }
+
+    #[test]
+    fn an_empty_author_list_matches_nothing() {
+        let some = vec!["Andy Weir".to_owned()];
+        assert!(!authors_match_lists(&[], &some));
+        assert!(!authors_match_lists(&some, &[]));
+        assert!(authors_match_lists(&some, &some));
     }
 
     #[test]
