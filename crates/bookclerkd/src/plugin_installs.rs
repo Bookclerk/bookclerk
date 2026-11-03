@@ -297,8 +297,10 @@ pub(crate) struct PluginVersionApproved {
 
 /// Schema of [`PluginVersionApproved::grant`]: the grant document as
 /// `bookclerk_plugin_host::PluginGrant` serializes it (camel-case keys), with
-/// the grant a native Libro.fm install records as its example, built from
-/// the type so the example cannot drift from the fields.
+/// the grant a native Libro.fm install from crates.io records as its
+/// example (`pluginKey` is the canonical package key, `pluginId` the
+/// manifest alias), built from the type so the example cannot drift from
+/// the fields.
 ///
 /// # Returns
 ///
@@ -308,7 +310,7 @@ fn plugin_grant_schema() -> utoipa::openapi::schema::Schema {
     use utoipa::openapi::schema::{ObjectBuilder, SchemaType, Type};
     let grant = PluginGrant {
         schema_version: bookclerk_plugin_host::GRANT_SCHEMA_VERSION,
-        plugin_key: "libro".into(),
+        plugin_key: "cargo:https://crates.io#bookclerk-plugin-source-libro".into(),
         plugin_id: "libro".into(),
         entrypoints: BTreeSet::from(["storefront".into()]),
         network_mode: "outbound".into(),

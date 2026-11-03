@@ -6459,7 +6459,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: invalid type: null, expected a map at line 1 column 4"
+                "example": "Failed to deserialize the JSON body into the target type: invalid type: null, expected struct PutNodeOwner at line 1 column 4"
               }
             }
           },
@@ -13619,13 +13619,22 @@
             }
           },
           "400": {
-            "description": "The query is malformed or too large.",
+            "description": "The query is malformed or too large. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "title, asin, isbn, or candidate_product_id is required"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "title, asin, isbn, or candidate_product_id is required"
+                  }
+                }
               }
             }
           },
@@ -13736,13 +13745,22 @@
             }
           },
           "400": {
-            "description": "The query is malformed or too large.",
+            "description": "The query is malformed or too large. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "at most 24 purchase-hint queries per batch"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "at most 24 purchase-hint queries per batch"
+                  }
+                }
               }
             }
           },
@@ -14273,13 +14291,22 @@
             }
           },
           "400": {
-            "description": "The query is malformed or too large.",
+            "description": "The query is malformed or too large. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "title, asin, or isbn is required"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "title, asin, or isbn is required"
+                  }
+                }
               }
             }
           },
@@ -14390,13 +14417,22 @@
             }
           },
           "400": {
-            "description": "The query is malformed or too large.",
+            "description": "The query is malformed or too large. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "at most 24 title-meta queries per batch"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "at most 24 title-meta queries per batch"
+                  }
+                }
               }
             }
           },
@@ -14507,13 +14543,22 @@
             }
           },
           "400": {
-            "description": "The query is malformed or too large.",
+            "description": "The query is malformed or too large. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "asin is required"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "asin is required"
+                  }
+                }
               }
             }
           },
@@ -14695,13 +14740,22 @@
             }
           },
           "400": {
-            "description": "The title is missing or invalid.",
+            "description": "The title is missing or invalid. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "title is required"
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": "title is required"
+                  }
+                }
               }
             }
           },
@@ -23272,11 +23326,13 @@
             "properties": {
               "approve": {
                 "type": "boolean",
-                "description": "True to let the branch join; false to deny."
+                "description": "True to let the branch join; false to deny.",
+                "example": true
               },
               "connection": {
                 "type": "string",
                 "description": "`branch` (default) or `clerk`.",
+                "example": "branch",
                 "nullable": true
               },
               "step_up": {
@@ -23292,7 +23348,8 @@
                     "properties": {
                       "code": {
                         "type": "string",
-                        "description": "Six digits."
+                        "description": "Six digits.",
+                        "example": "492817"
                       },
                       "method": {
                         "type": "string",
@@ -23313,10 +23370,21 @@
                     "properties": {
                       "challenge_id": {
                         "type": "string",
-                        "description": "The challenge id."
+                        "description": "The challenge id.",
+                        "example": "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f"
                       },
                       "credential": {
-                        "description": "The browser's `PublicKeyCredential` JSON."
+                        "description": "W3C PublicKeyCredential as the browser serializes it: a registration attestation (`response.attestationObject`) or an authentication assertion (`response.authenticatorData`, `signature`, `userHandle`), binary fields base64url-encoded.",
+                        "example": {
+                          "extensions": {},
+                          "id": "pQECAyYgASFYIE",
+                          "rawId": "pQECAyYgASFYIE",
+                          "response": {
+                            "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViU",
+                            "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ"
+                          },
+                          "type": "public-key"
+                        }
                       },
                       "method": {
                         "type": "string",
@@ -31419,7 +31487,7 @@
               "operatorDeniedDomains": [],
               "operatorDeniedTcp": [],
               "pluginId": "libro",
-              "pluginKey": "libro",
+              "pluginKey": "cargo:https://crates.io#bookclerk-plugin-source-libro",
               "producers": [],
               "schemaVersion": 2,
               "tcp": [
@@ -33926,7 +33994,8 @@
             "properties": {
               "code": {
                 "type": "string",
-                "description": "Six digits."
+                "description": "Six digits.",
+                "example": "492817"
               },
               "method": {
                 "type": "string",
@@ -33947,10 +34016,21 @@
             "properties": {
               "challenge_id": {
                 "type": "string",
-                "description": "The challenge id."
+                "description": "The challenge id.",
+                "example": "6d2f0c1e-8a4b-4f3d-9e7c-5b1a2c3d4e5f"
               },
               "credential": {
-                "description": "The browser's `PublicKeyCredential` JSON."
+                "description": "W3C PublicKeyCredential as the browser serializes it: a registration attestation (`response.attestationObject`) or an authentication assertion (`response.authenticatorData`, `signature`, `userHandle`), binary fields base64url-encoded.",
+                "example": {
+                  "extensions": {},
+                  "id": "pQECAyYgASFYIE",
+                  "rawId": "pQECAyYgASFYIE",
+                  "response": {
+                    "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViU",
+                    "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ"
+                  },
+                  "type": "public-key"
+                }
               },
               "method": {
                 "type": "string",
