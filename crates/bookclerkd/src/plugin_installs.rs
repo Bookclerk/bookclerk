@@ -25,7 +25,7 @@ use bookclerk_plugin_catalog::{
 };
 use bookclerk_plugin_host::{
     host_artifact, install_version, version_consent_request, InstallRequest, PluginError,
-    AUTHORIZED_PACKAGE_DIR,
+    PluginGrant, TcpGrant, AUTHORIZED_PACKAGE_DIR,
 };
 use serde::{Deserialize, Serialize};
 
@@ -291,24 +291,55 @@ pub(crate) struct PluginVersionApproved {
     approved: bool,
     /// The consent grant recorded for every node: the entrypoints, events,
     /// jobs, network domains and TCP targets the manifest asked for.
-    #[schema(value_type = Object, example = json!({
-        "schemaVersion": 1,
-        "pluginKey": "libro",
-        "pluginId": "libro",
-        "entrypoints": ["source"],
-        "producers": [],
-        "consumers": [],
-        "jobs": ["scan"],
-        "networkMode": "domains",
-        "domains": ["libro.fm", "api.libro.fm"],
-        "manifestDomains": ["libro.fm", "api.libro.fm"],
-        "operatorAddedDomains": [],
-        "operatorDeniedDomains": [],
-        "tcp": [],
-        "manifestTcp": [],
-        "operatorAddedTcp": []
-    }))]
+    #[schema(schema_with = plugin_grant_schema)]
     grant: bookclerk_plugin_host::PluginGrant,
+}
+
+/// Schema of [`PluginVersionApproved::grant`]: the grant document as
+/// `bookclerk_plugin_host::PluginGrant` serializes it (camel-case keys), with
+/// the grant a native Libro.fm install records as its example, built from
+/// the type so the example cannot drift from the fields.
+///
+/// # Returns
+///
+/// A free-form object schema carrying the example.
+fn plugin_grant_schema() -> utoipa::openapi::schema::Schema {
+    use std::collections::BTreeSet;
+    use utoipa::openapi::schema::{ObjectBuilder, SchemaType, Type};
+    let grant = PluginGrant {
+        schema_version: bookclerk_plugin_host::GRANT_SCHEMA_VERSION,
+        plugin_key: "libro".into(),
+        plugin_id: "libro".into(),
+        entrypoints: BTreeSet::from(["storefront".into()]),
+        network_mode: "outbound".into(),
+        tcp: BTreeSet::from([TcpGrant {
+            host: "*.libro.fm".into(),
+            ports: vec![443],
+        }]),
+        manifest_tcp: BTreeSet::from([TcpGrant {
+            host: "*.libro.fm".into(),
+            ports: vec![443],
+        }]),
+        bindings: BTreeSet::from(["config".into(), "secrets".into()]),
+        disk_mib: Some(bookclerk_plugin_host::PLUGIN_STATE_BUDGET_MIB_DEFAULT),
+        memory_mib: Some(bookclerk_plugin_host::PLUGIN_JAIL_MEMORY_MIB_DEFAULT),
+        cpu_rate_percent: Some(bookclerk_plugin_host::PLUGIN_JAIL_CPU_RATE_DEFAULT),
+        extra_processes: Some(bookclerk_plugin_host::PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT),
+        approved_at: "2026-11-02T14:03:27.481920311+00:00".into(),
+        ..PluginGrant::empty()
+    };
+    let mut builder = ObjectBuilder::new()
+        .schema_type(SchemaType::Type(Type::Object))
+        .description(Some(
+            "The grant document, as the consent store keeps it: approved entrypoints, event \
+             producers and consumers, jobs, the network mode with the effective, manifest, \
+             operator-added and operator-denied domains, TCP targets and CIDRs, host bindings, \
+             compatibility flags, resource budgets and the approval time.",
+        ));
+    if let Ok(example) = serde_json::to_value(&grant) {
+        builder = builder.examples([example]);
+    }
+    builder.build().into()
 }
 
 /// `GET /api/config/plugins`: every installed plugin.
