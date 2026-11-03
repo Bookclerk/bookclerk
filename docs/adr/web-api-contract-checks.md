@@ -51,8 +51,9 @@ screen for secrets).
 ## Consequences
 
 - A handler that answers a status or body its route does not declare is
-  named in CI Gate's summary by the first test that exercises it, and will
-  fail CI Gate once the report is enforced.
+  listed in CI Gate's summary, by method, route, status, media type and
+  the validator's message, as soon as a test exercises it, and will fail
+  CI Gate once the report is enforced.
 - A route no test reaches is invisible to the layer. The report's
   observed share makes that visible, and the floor keeps it from shrinking.
 - The checks add one dev-dependency (`jsonschema`) to the daemon and one

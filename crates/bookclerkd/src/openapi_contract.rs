@@ -12,8 +12,10 @@
 //! report, so the report says how far the document and the daemon agree
 //! before any floor is enforced.
 //!
-//! [`assess`] is sans-IO (document, request facts and body bytes in, an
-//! outcome out), so the unit tests drive the same code the layer does.
+//! [`assess`] is sans-IO (document, its compiled validators, request facts
+//! and body bytes in, an outcome out) and [`observe`] records nothing, so
+//! the unit tests drive the same code the layer does against documents and
+//! report sinks of their own.
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -27,8 +29,10 @@ use axum::middleware::Next;
 use axum::response::Response;
 use serde::Serialize;
 
-/// The most body bytes the layer buffers to validate a JSON response.
-const BODY_LIMIT: usize = 16 * 1024 * 1024;
+/// The largest JSON body, by its `Content-Length`, the layer buffers to
+/// validate; a longer one passes through unread and is recorded as not
+/// validated, so the response under test is never changed.
+const BODY_LIMIT: u64 = 16 * 1024 * 1024;
 
 /// Where the report files go when `BOOKCLERK_CONTRACT_REPORT_DIR` is unset:
 /// `target/contract-report` at the workspace root, one file per process.
@@ -118,7 +122,12 @@ pub(crate) fn validators(
     schema: &serde_json::Value,
 ) -> jsonschema::ValidatorMap {
     let mut root = schema.clone();
-    root["$defs"] = components.clone();
+    // A document without components (a test fixture) has no `$defs`.
+    root["$defs"] = if components.is_object() {
+        components.clone()
+    } else {
+        serde_json::json!({})
+    };
     redirect_refs(&mut root);
     jsonschema::options()
         .with_draft(jsonschema::Draft::Draft202012)
@@ -127,23 +136,32 @@ pub(crate) fn validators(
         .expect("the document's schemas are valid JSON Schema")
 }
 
-/// The validators compiled from the document's components, once per
-/// process, plus one map per inline body schema the layer has met, keyed
-/// by `method path status media`.
-struct Compiled {
+/// The validators compiled from one document's components, plus one map
+/// per inline body schema met so far, keyed by `method path status media`.
+/// Each document gets its own: the daemon's document has [`Compiled::shared`],
+/// a test fixture builds one with [`Compiled::new`].
+pub(crate) struct Compiled {
     /// `#/$defs/<name>` for every component schema and its subschemas.
     components: jsonschema::ValidatorMap,
     /// Inline body schemas compiled on first use.
     inline: Mutex<HashMap<String, jsonschema::ValidatorMap>>,
 }
 
-/// The process's compiled validators for `doc`.
-fn compiled(doc: &serde_json::Value) -> &'static Compiled {
-    static COMPILED: OnceLock<Compiled> = OnceLock::new();
-    COMPILED.get_or_init(|| Compiled {
-        components: validators(&doc["components"]["schemas"], &serde_json::json!({})),
-        inline: Mutex::new(HashMap::new()),
-    })
+impl Compiled {
+    /// Compiles the component schemas of `doc`.
+    pub(crate) fn new(doc: &serde_json::Value) -> Self {
+        Self {
+            components: validators(&doc["components"]["schemas"], &serde_json::json!({})),
+            inline: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The validators for the daemon's own document ([`document`]), compiled
+    /// once per process.
+    fn shared() -> &'static Self {
+        static COMPILED: OnceLock<Compiled> = OnceLock::new();
+        COMPILED.get_or_init(|| Self::new(document()))
+    }
 }
 
 /// The media type of `content_type` without its parameters, in lower
@@ -162,9 +180,11 @@ fn is_json(media: &str) -> bool {
 }
 
 /// Validates `body` against the schema declared for `key` in `content`,
-/// a Media Type Object, with `components` reachable by reference.
+/// a Media Type Object, with `doc`'s components reachable by reference
+/// through `compiled`, the validators built from `doc`.
 fn validate_body(
     doc: &serde_json::Value,
+    compiled: &Compiled,
     key: &str,
     content: &serde_json::Value,
     body: &serde_json::Value,
@@ -172,7 +192,6 @@ fn validate_body(
     let Some(schema) = content.get("schema") else {
         return Vec::new();
     };
-    let compiled = compiled(doc);
     let referenced = schema["$ref"]
         .as_str()
         .filter(|_| schema.as_object().is_some_and(|map| map.len() == 1))
@@ -201,12 +220,13 @@ fn validate_body(
     }
 }
 
-/// Compares one response with `doc`: the route template `path` and
+/// Compares one response with `doc` (whose validators are `compiled`): the route template `path` and
 /// `method` (lower case) the router matched, the `status` it answered,
 /// the `media` type of the body and the body `bytes` when the media is
 /// JSON.
 pub(crate) fn assess(
     doc: &serde_json::Value,
+    compiled: &Compiled,
     method: &str,
     path: &str,
     status: StatusCode,
@@ -249,7 +269,7 @@ pub(crate) fn assess(
         }
     };
     let key = format!("{method} {path} {} {media}", status.as_u16());
-    let errors = validate_body(doc, &key, entry.1, &body);
+    let errors = validate_body(doc, compiled, &key, entry.1, &body);
     if errors.is_empty() {
         Outcome::Declared
     } else {
@@ -269,6 +289,14 @@ pub(crate) fn report_path(dir: &Path, pid: u32) -> PathBuf {
 ///
 /// Returns the I/O error when the directory or file cannot be written.
 pub(crate) fn append(path: &Path, hit: &Hit) -> std::io::Result<()> {
+    // One write per line, under a process-wide lock, so lines from the
+    // responses one process answers concurrently never interleave.
+    static LOCK: Mutex<()> = Mutex::new(());
+    let mut line = serde_json::to_string(hit).map_err(std::io::Error::other)?;
+    line.push('\n');
+    let _guard = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -276,8 +304,7 @@ pub(crate) fn append(path: &Path, hit: &Hit) -> std::io::Result<()> {
         .create(true)
         .append(true)
         .open(path)?;
-    let line = serde_json::to_string(hit).map_err(std::io::Error::other)?;
-    writeln!(file, "{line}")
+    file.write_all(line.as_bytes())
 }
 
 /// This process's report file, from `BOOKCLERK_CONTRACT_REPORT_DIR` or
@@ -307,10 +334,29 @@ fn record(hit: &Hit) {
     }
 }
 
-/// The layer: compares the response to a matched route with the document
-/// and records the outcome, passing the response on unchanged (a JSON body
-/// is buffered and re-wrapped).
+/// The layer: compares the response to a matched route with the daemon's
+/// document ([`observe`]) and records the outcome in this process's
+/// report, passing the response on unchanged.
 pub(crate) async fn check(req: Request, next: Next) -> Response {
+    let (hit, response) = observe(document(), Compiled::shared(), req, next).await;
+    if let Some(hit) = hit {
+        record(&hit);
+    }
+    response
+}
+
+/// Runs `req` through `next` and compares the response with `doc` (whose
+/// validators are `compiled`): the [`Hit`] for a route the router matched
+/// (`None` for an unmatched request) and the response to pass on. A JSON
+/// body is buffered and re-wrapped; one whose `Content-Length` is over
+/// [`BODY_LIMIT`] passes through unread and is recorded as not validated,
+/// so the response a test asserts on is never changed.
+pub(crate) async fn observe(
+    doc: &serde_json::Value,
+    compiled: &Compiled,
+    req: Request,
+    next: Next,
+) -> (Option<Hit>, Response) {
     let method = req.method().as_str().to_ascii_lowercase();
     let matched = req
         .extensions()
@@ -318,7 +364,7 @@ pub(crate) async fn check(req: Request, next: Next) -> Response {
         .map(|path| path.as_str().to_string());
     let response = next.run(req).await;
     let Some(path) = matched else {
-        return response;
+        return (None, response);
     };
     let status = response.status();
     let media = media_type(
@@ -327,35 +373,45 @@ pub(crate) async fn check(req: Request, next: Next) -> Response {
             .get(header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok()),
     );
-    let (parts, body) = response.into_parts();
-    let (bytes, body) = if is_json(&media) {
-        match axum::body::to_bytes(body, BODY_LIMIT).await {
-            Ok(bytes) => (Some(bytes.clone()), Body::from(bytes)),
-            Err(error) => {
-                record(&Hit {
-                    method,
-                    path,
-                    status: status.as_u16(),
-                    media,
-                    outcome: Outcome::Unparsed {
-                        error: format!("body not readable: {error}"),
-                    },
-                });
-                return Response::from_parts(parts, Body::empty());
-            }
-        }
-    } else {
-        (None, body)
+    let length = response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    let hit = |outcome: Outcome| {
+        Some(Hit {
+            method: method.clone(),
+            path: path.clone(),
+            status: status.as_u16(),
+            media: media.clone(),
+            outcome,
+        })
     };
-    let outcome = assess(document(), &method, &path, status, &media, bytes.as_deref());
-    record(&Hit {
-        method,
-        path,
-        status: status.as_u16(),
-        media,
-        outcome,
-    });
-    Response::from_parts(parts, body)
+    if !is_json(&media) {
+        let outcome = assess(doc, compiled, &method, &path, status, &media, None);
+        return (hit(outcome), response);
+    }
+    if let Some(length) = length.filter(|length| *length > BODY_LIMIT) {
+        let outcome = Outcome::Unparsed {
+            error: format!("body of {length} bytes not validated (limit {BODY_LIMIT})"),
+        };
+        return (hit(outcome), response);
+    }
+    // The length is within the limit, or unstated, which no JSON response
+    // of the daemon's tests is at a size worth refusing; the body is read
+    // whole so that it can be handed on intact.
+    let (parts, body) = response.into_parts();
+    let bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let outcome = Outcome::Unparsed {
+                error: format!("body not readable: {error}"),
+            };
+            return (hit(outcome), Response::from_parts(parts, Body::empty()));
+        }
+    };
+    let outcome = assess(doc, compiled, &method, &path, status, &media, Some(&bytes));
+    (hit(outcome), Response::from_parts(parts, Body::from(bytes)))
 }
 
 #[cfg(test)]
@@ -394,10 +450,13 @@ mod tests {
         })
     }
 
-    /// Shorthand for [`assess`] on the test document.
+    /// Shorthand for [`assess`] on the test document, with validators of
+    /// its own (the daemon's document keeps the process-wide ones).
     fn outcome(method: &str, status: u16, media: &str, body: Option<&str>) -> Outcome {
+        let doc = doc();
         assess(
-            &doc(),
+            &doc,
+            &Compiled::new(&doc),
             method,
             "/api/things/{id}",
             StatusCode::from_u16(status).expect("status"),
@@ -461,10 +520,12 @@ mod tests {
         );
         assert_eq!(outcome("get", 415, "text/plain", None), Outcome::Declared);
         assert_eq!(outcome("post", 200, "none", None), Outcome::Undocumented);
+        let bare = serde_json::json!({ "paths": { "/x": { "get": { "responses": {
+            "200": { "content": { "text/plain": {} } } } } } } });
         assert_eq!(
             assess(
-                &serde_json::json!({ "paths": { "/x": { "get": { "responses": {
-                    "200": { "content": { "text/plain": {} } } } } } } }),
+                &bare,
+                &Compiled::new(&bare),
                 "get",
                 "/x",
                 StatusCode::NOT_FOUND,
@@ -532,23 +593,52 @@ mod tests {
     }
 
     /// The real router matches a route template, the layer sees the final
-    /// response and records it under the template, not the request path.
+    /// response and records it under the template, not the request path;
+    /// the body passes through, and a body too long to validate passes
+    /// through unread. The test's own document and sink keep it apart
+    /// from the daemon's report, whichever test runs first in the process.
     #[tokio::test]
     async fn the_layer_records_the_matched_route() {
         use axum::routing::get;
+        use std::sync::Arc;
         use tower::ServiceExt as _;
-        // Under nextest this test is its own process, so the report lands
-        // in a directory of its own; under `cargo test` another test may
-        // have fixed the path already, and the shared file serves as well.
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("BOOKCLERK_CONTRACT_REPORT_DIR", dir.path());
+        static DOC: OnceLock<(serde_json::Value, Compiled)> = OnceLock::new();
+        let (doc, compiled) = DOC.get_or_init(|| {
+            let doc = doc();
+            let compiled = Compiled::new(&doc);
+            (doc, compiled)
+        });
+        let hits: Arc<Mutex<Vec<Hit>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = hits.clone();
         let app = axum::Router::new()
             .route(
                 "/api/things/{id}",
                 get(|| async { axum::Json(serde_json::json!({ "id": "x" })) }),
             )
-            .layer(axum::middleware::from_fn(check));
+            .route(
+                "/api/things/{id}/large",
+                get(|| async {
+                    (
+                        [
+                            (header::CONTENT_TYPE, "application/json".to_string()),
+                            (header::CONTENT_LENGTH, (BODY_LIMIT + 1).to_string()),
+                        ],
+                        r#"{"id":"x"}"#,
+                    )
+                }),
+            )
+            .layer(axum::middleware::from_fn(move |req, next| {
+                let sink = sink.clone();
+                async move {
+                    let (hit, response) = observe(doc, compiled, req, next).await;
+                    if let Some(hit) = hit {
+                        sink.lock().expect("hits").push(hit);
+                    }
+                    response
+                }
+            }));
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/api/things/7")
@@ -562,16 +652,39 @@ mod tests {
             .await
             .expect("body");
         assert_eq!(body.as_ref(), br#"{"id":"x"}"#, "the body passes through");
-        let text = std::fs::read_to_string(process_report()).expect("this process's report");
-        let line = text
-            .lines()
-            .rev()
-            .find(|line| line.contains("/api/things/{id}"))
-            .expect("the hit was recorded");
-        let hit: serde_json::Value = serde_json::from_str(line).expect("json line");
-        assert_eq!(hit["method"], "get");
-        assert_eq!(hit["status"], 200);
-        assert_eq!(hit["media"], "application/json");
-        assert_eq!(hit["outcome"]["kind"], "undocumented");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/things/7/large")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("body");
+        assert_eq!(
+            body.as_ref(),
+            br#"{"id":"x"}"#,
+            "a long body passes through unread"
+        );
+        let hits = hits.lock().expect("hits");
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert_eq!(hits[0].method, "get");
+        assert_eq!(hits[0].path, "/api/things/{id}");
+        assert_eq!(hits[0].status, 200);
+        assert_eq!(hits[0].media, "application/json");
+        assert!(
+            matches!(&hits[0].outcome, Outcome::Invalid { errors } if errors.len() == 1 && errors[0].contains("/id")),
+            "{:?}",
+            hits[0].outcome
+        );
+        assert_eq!(hits[1].path, "/api/things/{id}/large");
+        assert!(
+            matches!(&hits[1].outcome, Outcome::Unparsed { error } if error.contains("not validated")),
+            "{:?}",
+            hits[1].outcome
+        );
     }
 }

@@ -870,9 +870,12 @@ fails CI Gate, and the observed share gets a floor that only rises, like
 the coverage floors) is the next step once the first reports have been
 read and the routes they name fixed.
 
-To see the report locally, run the daemon's tests and the script:
+To see the report locally, start it empty (each test process appends a
+file of its own, so an old run's hits would otherwise stay in it), run
+the daemon's tests and the script:
 
 ```sh
+rm -rf target/contract-report
 cargo nextest run -p bookclerkd
 python3 scripts/contract_coverage.py --reports target/contract-report
 ```
