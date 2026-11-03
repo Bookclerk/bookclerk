@@ -1294,6 +1294,39 @@ With a queue required, "require branches to be up to date" no longer
 matters. The queue tests each entry against the current `main`, stacked on
 the entries ahead of it.
 
+### Merge-queue re-enqueue
+
+Hosted runners, most often macOS arm64, sometimes never pick up a
+merge-group job. GitHub cancels the job with the annotation "The job was
+not acquired by Runner of type hosted even after multiple attempts",
+`CI Gate` fails, and the queue removes the pull request although every job
+that ran passed.
+
+`merge-queue-requeue.yml` puts such a pull request back in the queue. It
+runs when a `merge_group` CI run fails, and
+[`scripts/merge_queue_requeue.py`](../../scripts/merge_queue_requeue.py)
+re-enables auto-merge with the [automation App](automation.md#automation-app)
+only when all of these hold:
+
+1. Every job that didn't succeed or skip is `CI Gate`, `merge-queue
+   fail-fast`, or a job that was cancelled before it got a runner or ran a
+   step.
+2. Each of those never-started jobs carries GitHub's not-acquired
+   annotation. A job cancelled because someone removed the pull request
+   from the queue has none, so a hand dequeue stays dequeued.
+3. The pull request is open, isn't a draft, comes from this repository and
+   doesn't already have auto-merge on.
+4. Its current head is the one that was queued, and it has entered the
+   queue fewer than three times, so one commit is retried at most twice. A
+   commit pushed after the failure waits for its own enqueue, and the
+   enqueue names the queued head (`--match-head-commit`), so a push in
+   between makes it fail.
+
+Every check stays required: the new merge group runs the full suite again.
+The workflow runs from the default branch, reads only the GitHub API and
+runs no pull request code. The step summary says why it did or didn't
+enqueue.
+
 ## Expected pull-request feedback
 
 With `SELECTIVE_CI=1`, a pull request should see these jobs after `plan`:

@@ -42,7 +42,11 @@ stamps its own ledger. So any files folder works with a release, including
 a container volume (see [Running Bookclerk → Docker](../server/operations.md#docker)).
 
 `cargo build-app --platform` and `cargo ensure-workerd` fetch the pinned
-`workerd` into `target/<profile>/`. Reference Echo examples are never
+`workerd` into `target/<profile>/`. The download is tried up to four times,
+waiting 2, 4 and 8 seconds between tries, when the connection drops, a try
+takes longer than five minutes, or the server answers 5xx, 408 or 429. Any
+other answer, a redirect loop, or a digest that does not match the pin fails
+at once. Reference Echo examples are never
 packaged.
 
 ### Cloudflare `workerd` pin

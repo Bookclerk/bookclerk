@@ -1,0 +1,13 @@
+{
+ "number": 604,
+ "state": "open",
+ "draft": true,
+ "auto_merge": null,
+ "head": {
+  "sha": "601c089641a459acd8cca2daa02905c3d33c1703",
+  "ref": "deps/tool-versions",
+  "repo": {
+   "full_name": "Bookclerk/bookclerk"
+  }
+ }
+}

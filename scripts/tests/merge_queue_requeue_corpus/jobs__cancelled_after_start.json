@@ -1,0 +1,358 @@
+{
+ "total_count": 21,
+ "jobs": [
+  {
+   "id": 126002173227,
+   "name": "plan",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034949",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002173806,
+   "name": "merge-queue fail-fast",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034950",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Cancel the run when a job fails",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764298,
+   "name": "staged plugin installation (e2e)",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034956",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764327,
+   "name": "release build + small-VPS envelope (fat LTO)",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034960",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764367,
+   "name": "postgres 18",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034967",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Initialize containers",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764375,
+   "name": "windows cluster startup + identity",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034963",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764377,
+   "name": "sandbox + jailed tiers (macos-latest)",
+   "status": "completed",
+   "conclusion": "cancelled",
+   "runner_name": "GitHub Actions 1",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764379,
+   "name": "sandbox + jailed tiers (windows-latest)",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034955",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764389,
+   "name": "native-behind-workerd gateway (ubuntu-latest)",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034957",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764414,
+   "name": "postgres 16",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034961",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Initialize containers",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764468,
+   "name": "native-behind-workerd gateway (macos-latest)",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034973",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764482,
+   "name": "fmt / clippy / docs",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034959",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764486,
+   "name": "sandbox + jailed tiers (ubuntu-latest)",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034966",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764491,
+   "name": "tray (ubuntu-latest)",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034958",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764533,
+   "name": "native-behind-workerd gateway (windows-latest)",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034962",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764549,
+   "name": "website + collector Workers",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034968",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764555,
+   "name": "unit + integration tests",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034969",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764634,
+   "name": "tray (macos-latest)",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034965",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764724,
+   "name": "tray (windows-latest)",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034964",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126002764777,
+   "name": "postgres 17",
+   "status": "completed",
+   "conclusion": "success",
+   "runner_name": "GitHub Actions 1000034970",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Initialize containers",
+     "conclusion": "success"
+    }
+   ]
+  },
+  {
+   "id": 126017431862,
+   "name": "CI Gate",
+   "status": "completed",
+   "conclusion": "failure",
+   "runner_name": "GitHub Actions 1000034977",
+   "steps": [
+    {
+     "name": "Set up job",
+     "conclusion": "success"
+    },
+    {
+     "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+     "conclusion": "success"
+    }
+   ]
+  }
+ ]
+}

@@ -226,6 +226,28 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     A SARIF file is accepted only when it is version 2.1.0, every run is
     from CodeQL, and every run carries the id `/language:rust`.
 
+- **Merge-queue re-enqueue** (`queued_pr`, `stranded_jobs`,
+  `not_acquired`, `pr_head` and `enqueues_since_head` in
+  `scripts/merge_queue_requeue.py`). It reads GitHub API responses about
+  a failed merge-group run, not pull request content, so it isn't an
+  untrusted boundary. Its output decides whether a pull request goes back
+  in the queue, though, so it is fuzzed the same way.
+  - Test and corpus: `scripts/tests/test_merge_queue_requeue.py`,
+    `scripts/tests/merge_queue_requeue_corpus/` (files named
+    `run__<case>`, `jobs__<case>`, `annotations__<case>`, `pr__<case>` or
+    `timeline__<case>`, trimmed from the run that removed #604 from the
+    queue), replayed and mutated both as bytes and as JSON values.
+  - Oracle: explicit walks with exact type checks. A run counts only when
+    it is a failed or cancelled `merge_group` run of `ci.yml` in this
+    repository on a `gh-readonly-queue/main/pr-<n>-<40 hex>` branch. Jobs
+    qualify only when every job that didn't succeed or skip is a follower
+    job or was cancelled with no runner and no steps. The annotation check
+    needs a `failure` annotation naming the not-acquired runner. A pull
+    request qualifies only when it is open, `draft` is `false`, auto-merge
+    is unset and its head is a full commit id in this repository. Enqueues
+    are counted after the last `committed` or `head_ref_force_pushed`
+    event.
+
 - **Mutation testing start commit** (`choose` in
   `scripts/mutation_base.py`). The nightly mutation workflows read the
   commit of their last successful run from the GitHub API and diff `main`

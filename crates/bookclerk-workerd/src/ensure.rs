@@ -3,6 +3,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
@@ -324,21 +325,141 @@ fn probe_version(bin: &Path) -> Result<bool> {
     Ok(combined.contains(WORKERD_RELEASE_TAG) || combined.contains(pin))
 }
 
-/// Downloads the pinned workerd artifact; fails on non-2xx or a truncated body.
-fn download(url: &str) -> Result<Vec<u8>> {
-    let mut response = ureq::get(url)
-        .call()
-        .with_context(|| format!("GET {url}"))?;
+/// How many times [`download`] tries the request before it gives up.
+const DOWNLOAD_ATTEMPTS: u32 = 4;
+
+/// Wait before the first retry of [`download`]; it doubles after each retry
+/// (2 s, 4 s, 8 s), so a failing download gives up after about 14 s of waiting.
+const DOWNLOAD_FIRST_BACKOFF: Duration = Duration::from_secs(2);
+
+/// Longest one download attempt may take, headers and body together. The
+/// gzipped release is tens of megabytes; a connection that stalls past
+/// this fails the attempt as a transient timeout instead of hanging.
+const DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Outcome of one download attempt, as [`with_retries`] sees it.
+enum Attempt {
+    /// The attempt read the whole body.
+    Done(Vec<u8>),
+    /// The attempt failed in a way a later attempt may not (a dropped
+    /// connection, a timeout, a 5xx, 408 or 429 answer).
+    Transient(anyhow::Error),
+    /// The attempt failed in a way that retrying cannot fix (any other 4xx).
+    Permanent(anyhow::Error),
+}
+
+/// Runs `attempt` until it returns [`Attempt::Done`] or [`Attempt::Permanent`],
+/// or `attempts` tries have failed transiently.
+///
+/// # Arguments
+///
+/// * `attempts` - total number of tries, at least 1 (0 is treated as 1).
+/// * `first_backoff` - wait after the first transient failure; doubled after
+///   each further one.
+/// * `sleep` - performs the wait (the real [`std::thread::sleep`] outside tests).
+/// * `attempt` - performs one try.
+///
+/// # Returns
+///
+/// The bytes of the first successful attempt.
+///
+/// # Errors
+///
+/// Returns the permanent error at once, or the last transient error once
+/// every attempt has failed, with the number of attempts in its context.
+fn with_retries(
+    attempts: u32,
+    first_backoff: Duration,
+    mut sleep: impl FnMut(Duration),
+    mut attempt: impl FnMut() -> Attempt,
+) -> Result<Vec<u8>> {
+    let attempts = attempts.max(1);
+    let mut backoff = first_backoff;
+    let mut tried = 0;
+    loop {
+        tried += 1;
+        match attempt() {
+            Attempt::Done(body) => return Ok(body),
+            Attempt::Permanent(err) => return Err(err),
+            Attempt::Transient(err) if tried >= attempts => {
+                return Err(err.context(format!("gave up after {tried} attempts")));
+            }
+            Attempt::Transient(err) => {
+                eprintln!(
+                    "bookclerk-workerd: attempt {tried} of {attempts} failed ({err:#}); \
+                     retrying in {}s",
+                    backoff.as_secs()
+                );
+                sleep(backoff);
+                backoff = backoff.saturating_mul(2);
+            }
+        }
+    }
+}
+
+/// Whether an HTTP status is worth retrying: server errors, 408 (request
+/// timeout) and 429 (rate limited). Other 4xx answers will not change.
+fn status_is_transient(status: u16) -> bool {
+    status >= 500 || status == 408 || status == 429
+}
+
+/// Sorts a `ureq` error into a transient or a permanent [`Attempt`].
+fn classify(url: &str, err: ureq::Error) -> Attempt {
+    let transient = match &err {
+        ureq::Error::StatusCode(status) => status_is_transient(*status),
+        // A redirect loop on the release host will loop again.
+        ureq::Error::TooManyRedirects => false,
+        // Connection resets, timeouts, DNS and TLS hiccups on a CI runner
+        // are worth another try; the pinned URL itself does not change.
+        _ => true,
+    };
+    let err = anyhow::Error::new(err).context(format!("GET {url}"));
+    if transient {
+        Attempt::Transient(err)
+    } else {
+        Attempt::Permanent(err)
+    }
+}
+
+/// One GET of `url`, reading the whole body.
+///
+/// `ureq` reports 4xx and 5xx answers as [`ureq::Error::StatusCode`] (its
+/// default `http_status_as_error`), so [`classify`] sees those. It follows
+/// redirects, so any other non-2xx answer that reaches this function (a
+/// 304, a 3xx without `Location`) will not change and is permanent.
+fn download_once(url: &str) -> Attempt {
+    let request = ureq::get(url)
+        .config()
+        .timeout_global(Some(DOWNLOAD_ATTEMPT_TIMEOUT))
+        .build();
+    let mut response = match request.call() {
+        Ok(response) => response,
+        Err(err) => return classify(url, err),
+    };
     if !response.status().is_success() {
-        bail!("GET {url} returned {}", response.status());
+        return Attempt::Permanent(anyhow::anyhow!("GET {url} returned {}", response.status()));
     }
     let mut body = Vec::new();
-    response
-        .body_mut()
-        .as_reader()
-        .read_to_end(&mut body)
-        .context("read download body")?;
-    Ok(body)
+    match response.body_mut().as_reader().read_to_end(&mut body) {
+        Ok(_) => Attempt::Done(body),
+        // A peer that disconnects mid-body leaves a truncated download.
+        Err(err) => Attempt::Transient(anyhow::Error::new(err).context("read download body")),
+    }
+}
+
+/// Downloads `url` with [`download_once`], retrying transient failures and
+/// waiting with `sleep` between attempts.
+fn download_with(url: &str, sleep: impl FnMut(Duration)) -> Result<Vec<u8>> {
+    with_retries(DOWNLOAD_ATTEMPTS, DOWNLOAD_FIRST_BACKOFF, sleep, || {
+        download_once(url)
+    })
+}
+
+/// Downloads the pinned workerd artifact, retrying transient failures with
+/// exponential backoff; fails on a permanent non-2xx answer or once every
+/// attempt has failed.
+fn download(url: &str) -> Result<Vec<u8>> {
+    download_with(url, std::thread::sleep)
 }
 
 /// Rejects the download when the SHA-256 hex digest does not match the pin.
@@ -355,6 +476,198 @@ fn verify_sha256(bytes: &[u8], expected_hex: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serves canned HTTP answers on a loopback port, one connection each,
+    /// in order, and returns the URL.
+    fn serve(answers: Vec<&'static [u8]>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for answer in answers {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                let _ = stream.read(&mut request);
+                let _ = stream.write_all(answer);
+            }
+        });
+        format!("http://{addr}/workerd.gz")
+    }
+
+    /// Serves one canned HTTP answer on a loopback port and returns its URL.
+    fn serve_once(answer: &'static [u8]) -> String {
+        serve(vec![answer])
+    }
+
+    #[test]
+    fn download_retries_a_server_error_then_returns_the_body() {
+        let url = serve(vec![
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        ]);
+        let mut waits = Vec::new();
+        let body = download_with(&url, |d| waits.push(d)).unwrap();
+        assert_eq!(body, b"ok");
+        assert_eq!(waits, [DOWNLOAD_FIRST_BACKOFF]);
+    }
+
+    #[test]
+    fn download_once_does_not_retry_not_modified() {
+        let url = serve_once(b"HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n");
+        match download_once(&url) {
+            Attempt::Permanent(err) => assert!(err.to_string().contains("304"), "{err:#}"),
+            Attempt::Done(_) | Attempt::Transient(_) => panic!("304 should be permanent"),
+        }
+    }
+
+    #[test]
+    fn download_once_reads_a_whole_body() {
+        let url =
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        assert!(matches!(download_once(&url), Attempt::Done(body) if body == b"ok"));
+    }
+
+    #[test]
+    fn download_once_retries_a_server_error() {
+        let url = serve_once(
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        assert!(matches!(download_once(&url), Attempt::Transient(_)));
+    }
+
+    #[test]
+    fn download_once_does_not_retry_not_found() {
+        let url =
+            serve_once(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        assert!(matches!(download_once(&url), Attempt::Permanent(_)));
+    }
+
+    #[test]
+    fn download_once_retries_a_truncated_body() {
+        let url = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\npartial",
+        );
+        assert!(matches!(download_once(&url), Attempt::Transient(_)));
+    }
+
+    #[test]
+    fn with_retries_returns_the_first_success_after_transient_failures() {
+        let mut waits = Vec::new();
+        let mut calls = 0;
+        let got = with_retries(
+            4,
+            Duration::from_secs(2),
+            |d| waits.push(d),
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Attempt::Transient(anyhow::anyhow!("peer disconnected"))
+                } else {
+                    Attempt::Done(b"ok".to_vec())
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(got, b"ok");
+        assert_eq!(calls, 3);
+        assert_eq!(waits, [Duration::from_secs(2), Duration::from_secs(4)]);
+    }
+
+    #[test]
+    fn with_retries_gives_up_after_the_last_attempt() {
+        let mut waits = Vec::new();
+        let mut calls = 0;
+        let err = with_retries(
+            4,
+            Duration::from_secs(2),
+            |d| waits.push(d),
+            || {
+                calls += 1;
+                Attempt::Transient(anyhow::anyhow!("peer disconnected"))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 4);
+        assert_eq!(
+            waits,
+            [
+                Duration::from_secs(2),
+                Duration::from_secs(4),
+                Duration::from_secs(8)
+            ]
+        );
+        let text = format!("{err:#}");
+        assert!(text.contains("gave up after 4 attempts"), "{text}");
+        assert!(text.contains("peer disconnected"), "{text}");
+    }
+
+    #[test]
+    fn with_retries_stops_at_a_permanent_failure() {
+        let mut waits = Vec::new();
+        let mut calls = 0;
+        let err = with_retries(
+            4,
+            Duration::from_secs(2),
+            |d| waits.push(d),
+            || {
+                calls += 1;
+                Attempt::Permanent(anyhow::anyhow!("404"))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(waits.is_empty());
+        assert_eq!(err.to_string(), "404");
+    }
+
+    #[test]
+    fn with_retries_tries_once_when_attempts_is_zero() {
+        let mut calls = 0;
+        let err = with_retries(
+            0,
+            Duration::from_secs(2),
+            |_| panic!("no wait expected"),
+            || {
+                calls += 1;
+                Attempt::Transient(anyhow::anyhow!("reset"))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(format!("{err:#}").contains("gave up after 1 attempts"));
+    }
+
+    #[test]
+    fn only_server_timeout_and_rate_limit_statuses_are_transient() {
+        for status in [500, 502, 503, 504, 408, 429] {
+            assert!(status_is_transient(status), "{status}");
+        }
+        for status in [400, 401, 403, 404, 410] {
+            assert!(!status_is_transient(status), "{status}");
+        }
+    }
+
+    #[test]
+    fn classify_sorts_ureq_errors() {
+        assert!(matches!(
+            classify("u", ureq::Error::StatusCode(503)),
+            Attempt::Transient(_)
+        ));
+        assert!(matches!(
+            classify("u", ureq::Error::StatusCode(404)),
+            Attempt::Permanent(_)
+        ));
+        assert!(matches!(
+            classify("u", ureq::Error::TooManyRedirects),
+            Attempt::Permanent(_)
+        ));
+        let io = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
+        match classify("https://example.invalid/w.gz", ureq::Error::Io(io)) {
+            Attempt::Transient(err) => {
+                assert!(err.to_string().contains("GET https://example.invalid/w.gz"));
+            }
+            Attempt::Done(_) | Attempt::Permanent(_) => panic!("io error should be transient"),
+        }
+    }
 
     #[test]
     fn host_asset_defined_for_ci_linux() {

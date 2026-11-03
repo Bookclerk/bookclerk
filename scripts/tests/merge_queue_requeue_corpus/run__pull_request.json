@@ -1,0 +1,13 @@
+{
+ "id": 41660521252,
+ "name": "CI",
+ "path": ".github/workflows/ci.yml",
+ "event": "pull_request",
+ "status": "completed",
+ "conclusion": "failure",
+ "head_branch": "deps/tool-versions",
+ "head_sha": "a27055a56edb65bf5a517bc2cab5688f346e5681",
+ "head_repository": {
+  "full_name": "Bookclerk/bookclerk"
+ }
+}
