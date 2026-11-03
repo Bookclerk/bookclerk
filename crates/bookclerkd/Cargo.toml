@@ -108,6 +108,9 @@ tower = { version = "0.5", features = ["util"] }
 tracing-log = "0.2"
 tracing-subscriber.workspace = true
 wiremock.workspace = true
+# Checks every example in the OpenAPI document against its schema; no
+# remote references, so no resolver features.
+jsonschema = { version = "0.60.2", default-features = false }
 
 [lints]
 workspace = true
