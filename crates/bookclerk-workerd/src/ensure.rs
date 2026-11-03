@@ -332,6 +332,11 @@ const DOWNLOAD_ATTEMPTS: u32 = 4;
 /// (2 s, 4 s, 8 s), so a failing download gives up after about 14 s of waiting.
 const DOWNLOAD_FIRST_BACKOFF: Duration = Duration::from_secs(2);
 
+/// Longest one download attempt may take, headers and body together. The
+/// gzipped release is tens of megabytes; a connection that stalls past
+/// this fails the attempt as a transient timeout instead of hanging.
+const DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Outcome of one download attempt, as [`with_retries`] sees it.
 enum Attempt {
     /// The attempt read the whole body.
@@ -402,6 +407,8 @@ fn status_is_transient(status: u16) -> bool {
 fn classify(url: &str, err: ureq::Error) -> Attempt {
     let transient = match &err {
         ureq::Error::StatusCode(status) => status_is_transient(*status),
+        // A redirect loop on the release host will loop again.
+        ureq::Error::TooManyRedirects => false,
         // Connection resets, timeouts, DNS and TLS hiccups on a CI runner
         // are worth another try; the pinned URL itself does not change.
         _ => true,
@@ -416,13 +423,22 @@ fn classify(url: &str, err: ureq::Error) -> Attempt {
 
 /// One GET of `url`, reading the whole body.
 ///
-/// `ureq` reports every non-2xx answer as [`ureq::Error::StatusCode`] (its
-/// default `http_status_as_error`), so [`classify`] sees those too.
+/// `ureq` reports 4xx and 5xx answers as [`ureq::Error::StatusCode`] (its
+/// default `http_status_as_error`), so [`classify`] sees those. It follows
+/// redirects, so any other non-2xx answer that reaches this function (a
+/// 304, a 3xx without `Location`) will not change and is permanent.
 fn download_once(url: &str) -> Attempt {
-    let mut response = match ureq::get(url).call() {
+    let request = ureq::get(url)
+        .config()
+        .timeout_global(Some(DOWNLOAD_ATTEMPT_TIMEOUT))
+        .build();
+    let mut response = match request.call() {
         Ok(response) => response,
         Err(err) => return classify(url, err),
     };
+    if !response.status().is_success() {
+        return Attempt::Permanent(anyhow::anyhow!("GET {url} returned {}", response.status()));
+    }
     let mut body = Vec::new();
     match response.body_mut().as_reader().read_to_end(&mut body) {
         Ok(_) => Attempt::Done(body),
@@ -431,16 +447,19 @@ fn download_once(url: &str) -> Attempt {
     }
 }
 
+/// Downloads `url` with [`download_once`], retrying transient failures and
+/// waiting with `sleep` between attempts.
+fn download_with(url: &str, sleep: impl FnMut(Duration)) -> Result<Vec<u8>> {
+    with_retries(DOWNLOAD_ATTEMPTS, DOWNLOAD_FIRST_BACKOFF, sleep, || {
+        download_once(url)
+    })
+}
+
 /// Downloads the pinned workerd artifact, retrying transient failures with
 /// exponential backoff; fails on a permanent non-2xx answer or once every
 /// attempt has failed.
 fn download(url: &str) -> Result<Vec<u8>> {
-    with_retries(
-        DOWNLOAD_ATTEMPTS,
-        DOWNLOAD_FIRST_BACKOFF,
-        std::thread::sleep,
-        || download_once(url),
-    )
+    download_with(url, std::thread::sleep)
 }
 
 /// Rejects the download when the SHA-256 hex digest does not match the pin.
@@ -458,17 +477,46 @@ fn verify_sha256(bytes: &[u8], expected_hex: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Serves one canned HTTP answer on a loopback port and returns its URL.
-    fn serve_once(answer: &'static [u8]) -> String {
+    /// Serves canned HTTP answers on a loopback port, one connection each,
+    /// in order, and returns the URL.
+    fn serve(answers: Vec<&'static [u8]>) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0u8; 4096];
-            let _ = stream.read(&mut request);
-            let _ = stream.write_all(answer);
+            for answer in answers {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                let _ = stream.read(&mut request);
+                let _ = stream.write_all(answer);
+            }
         });
         format!("http://{addr}/workerd.gz")
+    }
+
+    /// Serves one canned HTTP answer on a loopback port and returns its URL.
+    fn serve_once(answer: &'static [u8]) -> String {
+        serve(vec![answer])
+    }
+
+    #[test]
+    fn download_retries_a_server_error_then_returns_the_body() {
+        let url = serve(vec![
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        ]);
+        let mut waits = Vec::new();
+        let body = download_with(&url, |d| waits.push(d)).unwrap();
+        assert_eq!(body, b"ok");
+        assert_eq!(waits, [DOWNLOAD_FIRST_BACKOFF]);
+    }
+
+    #[test]
+    fn download_once_does_not_retry_not_modified() {
+        let url = serve_once(b"HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n");
+        match download_once(&url) {
+            Attempt::Permanent(err) => assert!(err.to_string().contains("304"), "{err:#}"),
+            Attempt::Done(_) | Attempt::Transient(_) => panic!("304 should be permanent"),
+        }
     }
 
     #[test]
@@ -606,6 +654,10 @@ mod tests {
         ));
         assert!(matches!(
             classify("u", ureq::Error::StatusCode(404)),
+            Attempt::Permanent(_)
+        ));
+        assert!(matches!(
+            classify("u", ureq::Error::TooManyRedirects),
             Attempt::Permanent(_)
         ));
         let io = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
