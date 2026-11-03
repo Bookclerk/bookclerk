@@ -369,6 +369,18 @@ class DecideRerunTests(unittest.TestCase):
         bodies[f"repos/{REPO}/actions/workflows/ci.yml/runs"] = seed("runs__fork_same_branch.json")
         self.assertTrue(mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(bodies))[0])
 
+    def test_a_fork_pull_request_run_is_re_run(self) -> None:
+        """A fork's run on attempts 1 and 2 is re-run like any other."""
+        for attempt in (1, 2):
+            with self.subTest(attempt=attempt):
+                bodies = rerun_bodies()
+                bodies[f"repos/{REPO}/actions/runs/{PR_RUN_ID}"] = edited(
+                    "run__pr605_attempt1.json",
+                    run_attempt=attempt,
+                    head_repository={"full_name": "someone/bookclerk"},
+                )
+                self.assertTrue(mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(bodies))[0])
+
     def test_second_attempt_still_re_runs(self) -> None:
         """Attempt 2 is still re-run; attempt 3 is the cap."""
         bodies = rerun_bodies()
