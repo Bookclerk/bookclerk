@@ -221,6 +221,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn enroll_request_debug_names_the_request_but_not_its_secrets() {
+        let request = OAuthEnrollRequest {
+            code: "the-code".into(),
+            code_verifier: "the-verifier".into(),
+            redirect_uri: "http://127.0.0.1:41923/enroll/callback".into(),
+            sign_pk: "sign".into(),
+            box_pk: "box".into(),
+            branch_name: "study-mini".into(),
+            software_version: "0.4.0".into(),
+            connection: ConnectionType::Branch,
+        };
+        let shown = format!("{request:?}");
+        assert!(shown.starts_with("OAuthEnrollRequest {"), "{shown}");
+        assert!(
+            shown.contains("http://127.0.0.1:41923/enroll/callback"),
+            "{shown}"
+        );
+        assert!(shown.contains("study-mini"), "{shown}");
+        assert!(!shown.contains("the-code"), "{shown}");
+        assert!(!shown.contains("the-verifier"), "{shown}");
+    }
+
+    #[test]
     fn redirect_uris_are_loopback_or_https_only() {
         for ok in [
             "http://127.0.0.1:41234/join/callback",
