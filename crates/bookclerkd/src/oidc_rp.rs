@@ -1123,11 +1123,26 @@ async fn list_identities(
     params(ProviderQuery),
     responses(
         (status = 307, description = "Redirects to the identity provider, with the transaction cookie set."),
-        (status = 400, description = "No provider was named."),
-        (status = 404, description = "OIDC sign-in is disabled, or no enabled provider has this id."),
-        (status = 429, description = "Too many attempts; retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
-        (status = 500, description = "The transaction could not be stored."),
-        (status = 502, description = "The provider's discovery document could not be fetched."),
+        (status = 400, description = "No provider was named. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 404, description = "OIDC sign-in is disabled, or no enabled provider has this id. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 429, description = "Too many attempts; retry after `Retry-After` seconds. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 500, description = "The transaction could not be stored. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 502, description = "The provider's discovery document could not be fetched. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
     ),
 )]
 async fn login_start(
@@ -1166,13 +1181,34 @@ async fn login_start(
     security(("portalSession" = [])),
     responses(
         (status = 307, description = "Redirects to the identity provider for re-authentication, with the transaction cookie set."),
-        (status = 400, description = "No provider was named and the Owner has no linked OIDC identity."),
-        (status = 401, description = "The caller is not signed in."),
-        (status = 403, description = "The caller is not an Owner."),
-        (status = 404, description = "OIDC sign-in is disabled, or no enabled provider has this id."),
-        (status = 429, description = "Too many attempts; retry after `Retry-After` seconds.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
-        (status = 500, description = "The linked identities or the transaction could not be read or stored."),
-        (status = 502, description = "The provider's discovery document could not be fetched."),
+        (status = 400, description = "No provider was named and the Owner has no linked OIDC identity. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 401, description = "The caller is not signed in. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 403, description = "The caller is not an Owner. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 404, description = "OIDC sign-in is disabled, or no enabled provider has this id. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 429, description = "Too many attempts; retry after `Retry-After` seconds. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 500, description = "The linked identities or the transaction could not be read or stored. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 502, description = "The provider's discovery document could not be fetched. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
     ),
 )]
 async fn elevate_start(
@@ -1323,11 +1359,26 @@ struct CallbackParams {
     params(CallbackParams),
     responses(
         (status = 303, description = "Redirects into the app: to `/` signed in, to `/settings` after an elevation, or with `sso_error` naming why sign-in did not finish (`denied`, `csrf`, `expired`, `nonce`, `sub`, `disabled`, `no_role`, `conflict`, `mismatch`)."),
-        (status = 400, description = "The code or the state is missing, or an elevation has no user."),
-        (status = 403, description = "The elevated user is not an Owner."),
-        (status = 404, description = "OIDC sign-in is disabled, the provider is gone, or the elevated user no longer exists."),
-        (status = 500, description = "The transaction, the identities or the user could not be read or stored."),
-        (status = 502, description = "The provider's discovery, token, keys or userinfo endpoint failed, or its tokens were unusable."),
+        (status = 400, description = "The code or the state is missing, or an elevation has no user. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 403, description = "The elevated user is not an Owner. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 404, description = "OIDC sign-in is disabled, the provider is gone, or the elevated user no longer exists. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 500, description = "The transaction, the identities or the user could not be read or stored. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 502, description = "The provider's discovery, token, keys or userinfo endpoint failed, or its tokens were unusable. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
     ),
 )]
 async fn callback_get(
@@ -1345,11 +1396,26 @@ async fn callback_get(
     request_body(content = CallbackParams, content_type = "application/x-www-form-urlencoded"),
     responses(
         (status = 303, description = "Redirects into the app: to `/` signed in, to `/settings` after an elevation, or with `sso_error` naming why sign-in did not finish (`denied`, `csrf`, `expired`, `nonce`, `sub`, `disabled`, `no_role`, `conflict`, `mismatch`)."),
-        (status = 400, description = "The code or the state is missing, or an elevation has no user."),
-        (status = 403, description = "The elevated user is not an Owner."),
-        (status = 404, description = "OIDC sign-in is disabled, the provider is gone, or the elevated user no longer exists."),
-        (status = 500, description = "The transaction, the identities or the user could not be read or stored."),
-        (status = 502, description = "The provider's discovery, token, keys or userinfo endpoint failed, or its tokens were unusable."),
+        (status = 400, description = "The code or the state is missing, or an elevation has no user. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 403, description = "The elevated user is not an Owner. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 404, description = "OIDC sign-in is disabled, the provider is gone, or the elevated user no longer exists. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 500, description = "The transaction, the identities or the user could not be read or stored. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
+        (status = 502, description = "The provider's discovery, token, keys or userinfo endpoint failed, or its tokens were unusable. Browsers get an HTML page; a request that asks for JSON (`Accept` or `Content-Type`) gets the standard error body.", content(
+            (crate::http_error::ErrorJson = "application/json"),
+            (String = "text/html"),
+        )),
     ),
 )]
 async fn callback_post(

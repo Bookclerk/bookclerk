@@ -147,10 +147,10 @@ class BuildReportTest(unittest.TestCase):
         )
         text = cc.render(report, "report")
         self.assertIn("**0 of 5** (0.0%)", text)
-        self.assertIn("are reported only", text)
+        self.assertIn("each is reported only", text)
         self.assertIn("| `invalid` | `GET` | `/api/things/{id}` | 200 | `application/json` | a \\| b |", text)
         self.assertIn("| Things | 3 | 0 | 0.0% |", text)
-        self.assertIn("fail CI Gate", cc.render(report, "enforce"))
+        self.assertIn("each fails CI Gate", cc.render(report, "enforce"))
         clean = cc.render(cc.build_report(DOCUMENT, []), "report")
         self.assertIn("Every response the tests produced agrees", clean)
         self.assertEqual(cc.percent(1, 0), "n/a")
@@ -180,7 +180,7 @@ class FloorTest(unittest.TestCase):
         text = (ROOT / "scripts" / "coverage_areas.toml").read_text(encoding="utf-8")
         floor = cc.read_floor(text)
         self.assertIsNotNone(floor)
-        self.assertGreater(floor, 0)
+        self.assertGreaterEqual(floor, 8)
 
     def test_the_floor_needs_report_files_and_counts_the_share(self) -> None:
         document = {"paths": {"/api/jobs": {"get": {"tags": ["Jobs"], "responses": {"200": {"content": {"application/json": {}}}, "404": {}}}}}}
@@ -194,7 +194,7 @@ class FloorTest(unittest.TestCase):
         self.assertTrue(cc.below_floor(half, 50.5))
         self.assertFalse(cc.below_floor(half, None))
         self.assertIn("Floor: 50.5% of the declared responses observed (**below the floor**; this fails CI Gate).", cc.render(half, "enforce", 50.5))
-        self.assertIn("(**below the floor**; reported only)", cc.render(half, "report", 50.5))
+        self.assertIn("(**below the floor**; this is reported only)", cc.render(half, "report", 50.5))
         self.assertIn("Floor: 50% of the declared responses observed (met).", cc.render(half, "enforce", 50.0))
         self.assertNotIn("Floor:", cc.render(half, "enforce", None))
         data = cc.as_json(half, 50.5)
@@ -261,6 +261,46 @@ class MainTest(unittest.TestCase):
             result = self.run_script("--reports", str(Path(tmp) / "missing"), "--mode", "enforce", "--floor", "99", "--format", "json")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(json.loads(result.stdout)["below_floor"])
+            for bad in ("nan", "inf", "-1", "101", "nine"):
+                result = self.run_script("--reports", str(reports), "--mode", "enforce", "--floor", bad)
+                self.assertEqual(result.returncode, 2, bad)
+                self.assertIn("--floor", result.stderr)
+            result = self.run_script("--reports", str(reports), "--config", str(Path(tmp) / "absent.toml"))
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("absent.toml", result.stderr)
+
+    def test_enforce_mode_demands_the_report_the_plan_promises_and_whole_lines(self) -> None:
+        daemon = json.dumps({"execution": {"checks": {"rust_test": {"params": {"packages": ["bookclerkd"]}}}}})
+        workspace = json.dumps({"execution": {"checks": {"rust_test": {"params": {"workspace": True}}}}})
+        other = json.dumps({"execution": {"checks": {"rust_test": {"params": {"packages": ["bookclerk-mp4"]}}}}})
+        build_only = json.dumps({"build_only": True, "execution": {"checks": {"rust_test": {"params": {"workspace": True}}}}})
+        for text, expected in ((daemon, True), (workspace, True), (other, False), (build_only, False), ("{}", False), ("nope", False), ('{"execution": {"checks": {"rust_test": {"params": 3}}}}', False)):
+            self.assertEqual(cc.plan_tested_daemon(text), expected, text)
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = Path(tmp) / "ci-plan.json"
+            plan.write_text(daemon, encoding="utf-8")
+            reports = Path(tmp) / "reports"
+            reports.mkdir()
+            result = self.run_script("--reports", str(reports), "--mode", "enforce", "--floor", "0", "--plan", str(plan), "--format", "json")
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertTrue(json.loads(result.stdout)["missing"])
+            result = self.run_script("--reports", str(reports), "--mode", "report", "--floor", "0", "--plan", str(plan))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("**No report file**, though the plan ran the daemon's tests; this is reported only.", result.stdout)
+            plan.write_text(other, encoding="utf-8")
+            result = self.run_script("--reports", str(reports), "--mode", "enforce", "--floor", "0", "--plan", str(plan), "--format", "json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(json.loads(result.stdout)["missing"])
+            result = self.run_script("--reports", str(reports), "--mode", "enforce", "--plan", str(Path(tmp) / "absent.json"))
+            self.assertEqual(result.returncode, 2)
+            (reports / "1.jsonl").write_text(
+                line("get", "/api/jobs", 200, "application/json", "declared") + "\n" + '{"method": "get", "pa', encoding="utf-8"
+            )
+            result = self.run_script("--reports", str(reports), "--mode", "enforce", "--floor", "0", "--format", "json")
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["malformed"], 1)
+            result = self.run_script("--reports", str(reports), "--mode", "enforce", "--floor", "0")
+            self.assertIn("were not hits** and were skipped; a partial line fails CI Gate.", result.stdout)
 
 
 if __name__ == "__main__":

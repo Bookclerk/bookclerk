@@ -270,6 +270,33 @@ fn tag_for(path: &str) -> Option<&'static str> {
         .map(|(tag, _, _)| *tag)
 }
 
+/// Every operation of a path item with its HTTP method, mutably, for a
+/// pass that treats safe and unsafe methods differently.
+///
+/// # Arguments
+///
+/// * `item` - One path's operations.
+///
+/// # Returns
+///
+/// The operations that are set, each with its method.
+fn operations_with_methods_mut(item: &mut PathItem) -> Vec<(axum::http::Method, &mut Operation)> {
+    use axum::http::Method;
+    [
+        (Method::GET, item.get.as_mut()),
+        (Method::PUT, item.put.as_mut()),
+        (Method::POST, item.post.as_mut()),
+        (Method::DELETE, item.delete.as_mut()),
+        (Method::OPTIONS, item.options.as_mut()),
+        (Method::HEAD, item.head.as_mut()),
+        (Method::PATCH, item.patch.as_mut()),
+        (Method::TRACE, item.trace.as_mut()),
+    ]
+    .into_iter()
+    .filter_map(|(method, op)| op.map(|op| (method, op)))
+    .collect()
+}
+
 /// Every operation of a path item, mutably.
 ///
 /// # Arguments
@@ -307,7 +334,7 @@ fn add_group(doc: &mut OpenApi, mut group: OpenApi, access: Access, prefix: &str
     use utoipa::openapi::ResponseBuilder;
     for (path, item) in group.paths.paths.iter_mut() {
         let full_path = format!("{prefix}{path}");
-        for op in operations_mut(item) {
+        for (method, op) in operations_with_methods_mut(item) {
             // The auth layer answers before the handler runs: 401 without a
             // credential, and 403 when the caller's role falls short (every
             // layer but the any-session one checks a role).
@@ -349,11 +376,12 @@ fn add_group(doc: &mut OpenApi, mut group: OpenApi, access: Access, prefix: &str
                         .collect(),
                 );
             }
-            if access.gates_enrollment()
-                && full_path.starts_with("/api/")
-                && !crate::totp::enrollment_exempt(&full_path)
-            {
-                add_enrollment_refusal(op);
+            if access.gates_enrollment() && !crate::totp::enrollment_exempt(&full_path) {
+                // The any-session layer checks no role, so a safe method
+                // there has no generic `forbidden`; a write still has the
+                // CSRF refusal.
+                let generic_forbidden = access != Access::OperatorOrPortal || !method.is_safe();
+                add_enrollment_refusal(op, generic_forbidden);
             }
         }
     }
@@ -1013,13 +1041,14 @@ const MFA_ENROLLMENT_MESSAGE: &str = "This server requires a passkey or authenti
 /// answer before its handler runs: when `daemon.auth.require_second_factor`
 /// is on, the layer ([`crate::auth`]) refuses a signed-in user who has
 /// enrolled neither a passkey nor an authenticator app with
-/// `mfa_enrollment_required`. [`add_group`] calls this for every `/api/`
-/// route of a group whose access [`Access::gates_enrollment`], except the
-/// ones [`crate::totp::enrollment_exempt`] keeps open for enrolling and
-/// signing out.
+/// `mfa_enrollment_required`. [`add_group`] calls this for every route of a
+/// group whose access [`Access::gates_enrollment`] (the legacy unprefixed
+/// routes included), except the ones [`crate::totp::enrollment_exempt`]
+/// keeps open for enrolling and signing out.
 ///
-/// A route without a 403 gets one with the `ErrorJson` body and two named
-/// examples (the middleware's `forbidden` and the enrollment refusal); a
+/// A route without a 403 gets one with the `ErrorJson` body and the
+/// enrollment refusal as a named example, beside the middleware's
+/// `forbidden` when `generic_forbidden` says the route can answer one; a
 /// route whose 403 already carries the standard error body gets the
 /// example added beside its own (a single `example` becomes a named one,
 /// under its slug); a route whose 403 has a body of its own keeps it and
@@ -1032,7 +1061,10 @@ const MFA_ENROLLMENT_MESSAGE: &str = "This server requires a passkey or authenti
 ///
 /// * `op` - The operation, before [`fill_untyped_content`] types its bare
 ///   error responses.
-fn add_enrollment_refusal(op: &mut Operation) {
+/// * `generic_forbidden` - Whether a layer can answer the route with the
+///   middleware's plain `forbidden` (a role check, or the CSRF check on a
+///   write); false for a safe method behind the any-session layer.
+fn add_enrollment_refusal(op: &mut Operation, generic_forbidden: bool) {
     use axum::http::StatusCode;
     use utoipa::openapi::example::ExampleBuilder;
     use utoipa::openapi::schema::{AnyOfBuilder, Schema};
@@ -1098,7 +1130,9 @@ fn add_enrollment_refusal(op: &mut Operation) {
             let mut built = ContentBuilder::new()
                 .schema(Some(Ref::from_schema_name("ErrorJson")))
                 .build();
-            built.examples.insert(name, forbidden);
+            if generic_forbidden {
+                built.examples.insert(name, forbidden);
+            }
             response
                 .content
                 .insert("application/json".to_string(), RefOr::T(built));
@@ -1831,13 +1865,25 @@ mod tests {
         assert!(!csrf("get", "/api/preferences"));
     }
 
-    /// Every `/api/` route behind a session-resolving access layer states
-    /// the `mfa_enrollment_required` refusal on its 403 with an example and
-    /// keeps its own body beside the middleware's; the enrollment and
-    /// sign-out routes, the public routes and the operator-only routes do
-    /// not.
+    /// Every route behind a session-resolving access layer, the legacy
+    /// unprefixed ones included, states the `mfa_enrollment_required`
+    /// refusal on its 403 with an example and keeps its own body beside the
+    /// middleware's; the enrollment and sign-out routes, the public routes
+    /// and the operator-only routes do not.
     #[test]
     fn enrollment_refusals_are_stated() {
+        // The predicate itself, for every access variant.
+        for (access, gates) in [
+            (Access::Public, false),
+            (Access::Operator, false),
+            (Access::OperatorOrAdministrator, true),
+            (Access::OperatorOrOwner, true),
+            (Access::OperatorOrNodeOwner, true),
+            (Access::OperatorOrUser, true),
+            (Access::OperatorOrPortal, true),
+        ] {
+            assert_eq!(access.gates_enrollment(), gates, "{access:?}");
+        }
         let doc = document_value();
         let forbidden =
             |method: &str, path: &str| doc["paths"][path][method]["responses"]["403"].clone();
@@ -1853,6 +1899,9 @@ mod tests {
             ("get", "/api/status"),
             ("get", "/api/config/nodes"),
             ("get", "/api/auth/oidc/clients"),
+            ("get", "/api/auth/branch-consent"),
+            ("get", "/status"),
+            ("post", "/scan"),
         ] {
             let response = forbidden(method, path);
             assert!(names_refusal(&response), "{method} {path} 403: {response}");
@@ -1864,8 +1913,30 @@ mod tests {
             );
             assert_eq!(example["status"], 403, "{method} {path} 403 example");
         }
+        // A safe method behind the any-session layer has no generic
+        // `forbidden` (that layer checks no role); its writes keep it for
+        // the CSRF refusal, and role-checked groups keep it everywhere.
+        let examples = |method: &str, path: &str| {
+            forbidden(method, path)["content"]["application/json"]["examples"]
+                .as_object()
+                .map(|examples| examples.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            examples("get", "/api/wishlist"),
+            ["mfa_enrollment_required"]
+        );
+        assert_eq!(
+            examples("post", "/api/wishlist"),
+            ["forbidden", "mfa_enrollment_required"]
+        );
+        assert_eq!(
+            examples("get", "/api/status"),
+            ["forbidden", "mfa_enrollment_required"]
+        );
         // Exempt, public and operator-only routes keep their own 403 or none.
         assert!(forbidden("get", "/api/auth/me").is_null());
+        assert!(forbidden("get", "/health").is_null());
         assert!(!names_refusal(&forbidden("get", "/api/auth/totp")));
         assert!(
             forbidden("get", "/api/auth/oidc/elevate")["content"]["application/json"]["examples"]
@@ -1915,8 +1986,8 @@ mod tests {
             runtime["content"]["application/json"]["examples"]["route"].is_object(),
             "{runtime}"
         );
-        // A route without a 403 before gets the middleware's own refusal too.
-        let wishlist = forbidden("get", "/api/wishlist");
+        // A write without a 403 before gets the middleware's own refusal too.
+        let wishlist = forbidden("post", "/api/wishlist");
         assert_eq!(
             wishlist["content"]["application/json"]["examples"]["forbidden"]["value"]["status"],
             403

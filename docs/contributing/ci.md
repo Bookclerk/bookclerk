@@ -868,13 +868,16 @@ observed share below the floor `[contract] floor` in
 [`scripts/coverage_areas.toml`](../../scripts/coverage_areas.toml) states
 (a percentage of the declared responses; raise it when the share rises,
 keeping it a little below the measured value, and never lower it to make
-a change pass). The floor is not checked when no report file exists,
-that is, when a selective run did not test the daemon's package. The
-layer never fails a test, so a disagreement shows up in CI Gate's
-summary, not in a test's output.
+a change pass). The floor is not checked when no report file exists
+because a selective run did not test the daemon's package; when the plan
+did test it and no report exists all the same, or a report line is not a
+whole hit (a partial write), the gate fails too. The layer never fails a
+test, so a disagreement shows up in CI Gate's summary, not in a test's
+output.
 
-A disagreement means the route's `#[utoipa::path]` declaration and its
-handler differ. Fix the one that is wrong: a status the handler answers
+A disagreement means the document and the daemon differ for one
+response. For a route's own statuses, fix the `#[utoipa::path]`
+declaration or the handler that is wrong: a status the handler answers
 on purpose is declared (with a realistic example when the body is JSON),
 and a handler that answers something its route should not is corrected.
 The access layer's refusals (`401`, `403`, the second-factor enrollment

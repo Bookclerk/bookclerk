@@ -23,22 +23,25 @@ this script over them, which:
 
 The result goes to the step summary as Markdown. In ``report`` mode the
 script always exits 0; in ``enforce`` mode a disagreement fails CI Gate,
-and so does an observed share below the floor ``[contract] floor`` in
-``scripts/coverage_areas.toml`` states (a percentage that only rises, like
-the coverage floors; it is not checked when no report file exists, that
-is, when the plan did not run the daemon's tests). The parsers are sans-IO
-so ``scripts/tests/test_contract_coverage.py`` drives the same code.
+and so do a report line that is not a hit (a partial write), an observed
+share below the floor ``[contract] floor`` in ``scripts/coverage_areas.toml``
+states (a percentage that only rises, like the coverage floors; it is not
+checked when no report file exists, that is, when the plan did not run the
+daemon's tests), and a missing report when the plan (``--plan``) says the
+daemon's tests ran. The parsers are sans-IO so
+``scripts/tests/test_contract_coverage.py`` drives the same code.
 
 Usage: ``contract_coverage.py --reports DIR [--document FILE] [--mode
-report|enforce] [--config FILE] [--floor PERCENT] [--summary FILE]
-[--format summary|json]`` from the repository root (``--summary`` defaults
-to ``$GITHUB_STEP_SUMMARY``).
+report|enforce] [--config FILE] [--floor PERCENT] [--plan ci-plan.json]
+[--summary FILE] [--format summary|json]`` from the repository root
+(``--summary`` defaults to ``$GITHUB_STEP_SUMMARY``).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import tomllib
@@ -287,14 +290,18 @@ def below_floor(report: Report, floor: float | None) -> bool:
     return floor is not None and report.files > 0 and observed is not None and observed < floor
 
 
-def render(report: Report, mode: str, floor: float | None = None) -> str:
+def render(report: Report, mode: str, floor: float | None = None, missing: bool = False) -> str:
     """The step summary for `report` as Markdown.
 
     Args:
         report: What the tests observed and where they disagreed.
         mode: ``report`` or ``enforce``, which decides what the findings do.
         floor: The lowest observed share allowed, in percent, if any.
+        missing: Whether the plan ran the daemon's tests and no report file
+            exists all the same (the layer did not write, or the file was
+            not kept), which is a finding of its own.
     """
+    word = "fails CI Gate" if mode == "enforce" else "is reported only"
     total = len(report.declared)
     seen = len(report.observed)
     lines = [
@@ -304,18 +311,20 @@ def render(report: Report, mode: str, floor: float | None = None) -> str:
         f"from {report.files} report file(s).",
         "",
     ]
+    if missing:
+        lines.append(f"**No report file**, though the plan ran the daemon's tests; this {word}.")
+        lines.append("")
     if floor is not None:
         if report.files == 0:
-            verdict = "not checked: no report file, so the daemon's tests did not run in this plan"
+            verdict = "not checked: no report file" + ("" if missing else ", so the daemon's tests did not run in this plan")
         elif below_floor(report, floor):
-            verdict = "**below the floor**; " + ("this fails CI Gate" if mode == "enforce" else "reported only")
+            verdict = "**below the floor**; this " + word
         else:
             verdict = "met"
         lines.append(f"Floor: {floor:g}% of the declared responses observed ({verdict}).")
         lines.append("")
     if report.disagreements:
-        word = "fail CI Gate" if mode == "enforce" else "are reported only"
-        lines.append(f"**{len(report.disagreements)} disagreement(s)** between the document and the daemon; they {word}.")
+        lines.append(f"**{len(report.disagreements)} disagreement(s)** between the document and the daemon; each {word}.")
         lines.append("")
         lines.append("| Kind | Method | Route | Status | Media | Detail |")
         lines.append("| --- | --- | --- | --- | --- | --- |")
@@ -338,18 +347,25 @@ def render(report: Report, mode: str, floor: float | None = None) -> str:
         lines.append(f"| {area} | {declared} | {observed} | {percent(observed, declared)} |")
     if report.malformed:
         lines.append("")
-        lines.append(f"{report.malformed} report line(s) were not hits and were skipped.")
+        lines.append(f"**{report.malformed} report line(s) were not hits** and were skipped; a partial line {word}.")
     return "\n".join(lines) + "\n"
 
 
-def as_json(report: Report, floor: float | None = None) -> dict:
-    """The report as plain data, for ``--format json``."""
+def as_json(report: Report, floor: float | None = None, missing: bool = False) -> dict:
+    """The report as plain data, for ``--format json``.
+
+    Args:
+        report: What the tests observed and where they disagreed.
+        floor: The lowest observed share allowed, in percent, if any.
+        missing: Whether a report was demanded and none exists.
+    """
     return {
         "declared": len(report.declared),
         "observed": len(report.observed),
         "share": share(report),
         "floor": floor,
         "below_floor": below_floor(report, floor),
+        "missing": missing,
         "areas": {area: {"declared": d, "observed": o} for area, (d, o) in report.by_area().items()},
         "disagreements": [
             {
@@ -368,6 +384,56 @@ def as_json(report: Report, floor: float | None = None) -> dict:
     }
 
 
+def plan_tested_daemon(text: str) -> bool:
+    """Whether the run's ``ci-plan.json`` ran the daemon's tests.
+
+    Args:
+        text: The plan's contents.
+
+    Returns:
+        True when the plan's ``rust_test`` check ran the whole workspace or
+        the ``bookclerkd`` package and the run was not build-only; false
+        otherwise, and for a plan that is not in the expected shape (the
+        report is then not demanded).
+    """
+    try:
+        plan = json.loads(text)
+        if plan.get("build_only") is True:
+            return False
+        params = plan["execution"]["checks"]["rust_test"]["params"]
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        return False
+    if not isinstance(params, dict):
+        return False
+    if params.get("workspace") is True:
+        return True
+    packages = params.get("packages")
+    return isinstance(packages, list) and "bookclerkd" in packages
+
+
+def percentage(text: str) -> float:
+    """Parses a ``--floor`` value: a finite number from 0 to 100.
+
+    Args:
+        text: The command-line value.
+
+    Returns:
+        The floor in percent.
+
+    Raises:
+        argparse.ArgumentTypeError: `text` is not a number, is NaN or
+            infinite, or lies outside 0 to 100 (``nan`` would compare
+            false to every share and read as a met floor).
+    """
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if not math.isfinite(value) or not 0 <= value <= 100:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a percentage from 0 to 100")
+    return value
+
+
 def read_reports(directory: Path) -> list[str]:
     """The contents of every ``.jsonl`` file under `directory`, in path order."""
     return [p.read_text(encoding="utf-8", errors="replace") for p in sorted(directory.rglob("*.jsonl"))]
@@ -380,7 +446,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--document", default=DEFAULT_DOCUMENT, type=Path, help="the OpenAPI 3.1 document")
     parser.add_argument("--mode", choices=("report", "enforce"), default="report")
     parser.add_argument("--config", default=DEFAULT_CONFIG, type=Path, help="the file whose [contract] floor applies")
-    parser.add_argument("--floor", type=float, default=None, help="the lowest observed share allowed, in percent (overrides --config)")
+    parser.add_argument("--floor", type=percentage, default=None, help="the lowest observed share allowed, in percent (overrides --config)")
+    parser.add_argument("--plan", type=Path, default=None, help="the run's ci-plan.json; a plan that tested the daemon demands a report")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY"), help="append the Markdown here")
     parser.add_argument("--format", choices=("summary", "json"), default="summary", help="what to print")
     args = parser.parse_args(argv)
@@ -390,23 +457,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.document}: not an OpenAPI document", file=sys.stderr)
         return 2
     floor = args.floor
-    if floor is None and args.config.is_file():
+    if floor is None:
         try:
             floor = read_floor(args.config.read_text(encoding="utf-8"))
-        except ValueError as err:
+        except (OSError, ValueError) as err:
             print(f"{args.config}: {err}", file=sys.stderr)
+            return 2
+    expected = False
+    if args.plan is not None:
+        try:
+            expected = plan_tested_daemon(args.plan.read_text(encoding="utf-8"))
+        except OSError as err:
+            print(f"{args.plan}: {err}", file=sys.stderr)
             return 2
     reports = read_reports(args.reports) if args.reports.is_dir() else []
     report = build_report(document, reports)
-    markdown = render(report, args.mode, floor)
+    missing = expected and report.files == 0
+    markdown = render(report, args.mode, floor, missing)
     if args.format == "json":
-        print(json.dumps(as_json(report, floor), indent=2))
+        print(json.dumps(as_json(report, floor, missing), indent=2))
     else:
         print(markdown, end="")
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as handle:
             handle.write(markdown)
-    if args.mode == "enforce" and (report.disagreements or below_floor(report, floor)):
+    failed = report.disagreements or report.malformed or missing or below_floor(report, floor)
+    if args.mode == "enforce" and failed:
         return 1
     return 0
 
