@@ -1,0 +1,84 @@
+# Put a pull request back in the merge queue when GitHub never gave one of
+# its merge-group jobs a runner.
+#
+# - Hosted runners (most often macOS arm64) sometimes never pick a job up.
+#   GitHub cancels it with "The job was not acquired by Runner of type
+#   hosted even after multiple attempts", CI Gate fails, and the queue
+#   removes the pull request although every job that ran passed.
+# - When a merge_group CI run fails, `scripts/merge_queue_requeue.py`
+#   checks that this is the only thing that went wrong (every other
+#   unsuccessful job is CI Gate or merge-queue fail-fast, and each stranded
+#   job carries GitHub's not-acquired annotation, which a hand dequeue does
+#   not), that the pull request is open, not a draft, from this repository
+#   and not already queued, and that its current head entered the queue
+#   fewer than three times. Only then does the automation App turn
+#   auto-merge back on, which enqueues it again with every check still
+#   required.
+# - It runs from the default branch through `workflow_run`, checks out the
+#   default branch only and runs no pull request code; it reads the GitHub
+#   API and nothing the pull request produced.
+#
+# See docs/contributing/ci.md#merge-queue-re-enqueue.
+
+name: Merge queue re-enqueue
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: merge-queue-requeue-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  requeue:
+    name: re-enqueue after a missing runner
+    if: >-
+      github.event.workflow_run.event == 'merge_group' &&
+      contains(fromJSON('["failure", "cancelled"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # The run and its jobs.
+      actions: read
+      # The stranded jobs' annotations.
+      checks: read
+      # The pull request and its timeline.
+      pull-requests: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Decide
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: python3 scripts/merge_queue_requeue.py --repo "$REPO" --run-id "$RUN_ID"
+
+      - name: Mint automation App token
+        if: steps.decide.outputs.pr != ''
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          # GitHub refuses to enable auto-merge for an App without it when
+          # the pull request edits `.github/workflows/`.
+          permission-workflows: write
+
+      - name: Enable auto-merge
+        if: steps.decide.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.decide.outputs.pr }}
+        run: gh pr merge "$PR" --repo "$REPO" --auto --squash

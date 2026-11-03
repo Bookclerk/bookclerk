@@ -1,0 +1,22 @@
+[
+ [
+  {
+   "event": "added_to_merge_queue"
+  },
+  {
+   "event": "added_to_merge_queue"
+  },
+  {
+   "event": "added_to_merge_queue"
+  }
+ ],
+ [
+  {
+   "event": "committed",
+   "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  {
+   "event": "added_to_merge_queue"
+  }
+ ]
+]

@@ -1,0 +1,13 @@
+{
+ "id": 41660521252,
+ "name": "CI",
+ "path": ".github/workflows/ci.yml",
+ "event": "merge_group",
+ "status": "completed",
+ "conclusion": "success",
+ "head_branch": "gh-readonly-queue/main/pr-604-9bc9f97b61370d35f573f5f1dc23b99d75eb155b",
+ "head_sha": "a27055a56edb65bf5a517bc2cab5688f346e5681",
+ "head_repository": {
+  "full_name": "Bookclerk/bookclerk"
+ }
+}
