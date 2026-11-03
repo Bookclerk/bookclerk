@@ -1378,51 +1378,49 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     // Brand empty 4xx/5xx bodies (auth, missing routes, handler StatusCode).
     // Timeout wraps API handlers; normalize trailing slashes before matching.
     // Trace outermost.
-    app.layer(middleware::from_fn(html_document_no_cache))
+    let app = app
+        .layer(middleware::from_fn(html_document_no_cache))
         .layer(middleware::from_fn(api_timeout_middleware))
-        .layer(middleware::from_fn(http_error::brand_error_responses))
-        .layer(NormalizePathLayer::trim_trailing_slash())
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(|request: &Request| {
-                    tracing::span!(
-                        Level::INFO,
-                        "http.request",
-                        method = %request.method(),
-                        path = %request.uri().path(),
-                    )
-                })
-                .on_response(
-                    |response: &Response, latency: Duration, _span: &tracing::Span| {
-                        let status = response.status();
-                        let latency_ms = latency.as_millis() as u64;
-                        if status.is_server_error() || latency_ms >= 1_000 {
-                            tracing::warn!(
-                                status = status.as_u16(),
-                                latency_ms,
-                                "request completed with elevated latency or server error"
-                            );
-                        } else if latency_ms >= 250 {
-                            tracing::info!(
-                                status = status.as_u16(),
-                                latency_ms,
-                                "request completed"
-                            );
-                        }
-                    },
+        .layer(middleware::from_fn(http_error::brand_error_responses));
+    // Test builds compare every response with the OpenAPI document, after
+    // the branding so the body compared is the one a client receives.
+    #[cfg(test)]
+    let app = app.layer(middleware::from_fn(crate::openapi_contract::check));
+    app.layer(NormalizePathLayer::trim_trailing_slash()).layer(
+        TraceLayer::new_for_http()
+            .make_span_with(|request: &Request| {
+                tracing::span!(
+                    Level::INFO,
+                    "http.request",
+                    method = %request.method(),
+                    path = %request.uri().path(),
                 )
-                .on_failure(
-                    |failure: ServerErrorsFailureClass,
-                     latency: Duration,
-                     _span: &tracing::Span| {
-                        tracing::error!(
-                            failure = ?failure,
-                            latency_ms = latency.as_millis() as u64,
-                            "request failed"
+            })
+            .on_response(
+                |response: &Response, latency: Duration, _span: &tracing::Span| {
+                    let status = response.status();
+                    let latency_ms = latency.as_millis() as u64;
+                    if status.is_server_error() || latency_ms >= 1_000 {
+                        tracing::warn!(
+                            status = status.as_u16(),
+                            latency_ms,
+                            "request completed with elevated latency or server error"
                         );
-                    },
-                ),
-        )
+                    } else if latency_ms >= 250 {
+                        tracing::info!(status = status.as_u16(), latency_ms, "request completed");
+                    }
+                },
+            )
+            .on_failure(
+                |failure: ServerErrorsFailureClass, latency: Duration, _span: &tracing::Span| {
+                    tracing::error!(
+                        failure = ?failure,
+                        latency_ms = latency.as_millis() as u64,
+                        "request failed"
+                    );
+                },
+            ),
+    )
 }
 
 /// Opens the discover embedder on a blocking thread so ONNX load cannot stall the HTTP runtime.

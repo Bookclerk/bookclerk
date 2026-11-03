@@ -204,6 +204,7 @@ export const NAV: NavSpec[] = [
       "adr/untrusted-input-fuzzing",
       "adr/security-advisory-automation",
       "adr/observability",
+      "adr/web-api-contract-checks",
       "adr/licensing",
     ],
   },

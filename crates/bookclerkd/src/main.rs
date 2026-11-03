@@ -29,6 +29,8 @@ mod oidc;
 mod oidc_rp;
 mod oidc_verify;
 mod openapi;
+#[cfg(test)]
+mod openapi_contract;
 mod origin;
 mod passkeys;
 mod placement;
