@@ -192,7 +192,10 @@ Some of these need more than a cell:
   state their own refusals), and every example, on a field, a schema or
   a body, validates against the schema it illustrates, references
   followed and formats such as `uuid` and `date-time` asserted
-  (`every_example_matches_its_schema`). A new field gets `#[schema(example = …)]` with a
+  (`every_example_matches_its_schema`). The test build also compares
+  every response the tests produce with the document and reports the
+  disagreements in CI Gate (see
+  [Web API contract](ci.md#web-api-contract)). A new field gets `#[schema(example = …)]` with a
   value the daemon really writes; a free-form `serde_json::Value` or map
   field gets `#[schema(schema_with = …)]` returning a schema with
   `examples`, since utoipa drops `example` on `value_type = Object`; an

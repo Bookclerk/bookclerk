@@ -183,6 +183,7 @@ jobs:
           "$PY" scripts/tests/test_image_release_tags.py
           "$PY" scripts/tests/test_cla_check.py
           "$PY" scripts/tests/test_coverage_gate.py
+          "$PY" scripts/tests/test_contract_coverage.py
           "$PY" scripts/tests/test_worker_startup.py
           "$PY" scripts/tests/test_mutation_report.py
           "$PY" scripts/tests/test_stryker_report.py
@@ -521,6 +522,17 @@ jobs:
           if [ -f target/nextest/ci/junit.xml ]; then
             mkdir -p "$CI_COVERAGE_DIR/rust"
             cp target/nextest/ci/junit.xml "$CI_COVERAGE_DIR/rust/junit.xml"
+          fi
+
+      # The daemon's test build records every response it compared with the
+      # OpenAPI document, one file per test process
+      # (docs/contributing/ci.md#web-api-contract); CI Gate reports them.
+      - name: Keep the Web API contract report
+        if: ${{ !cancelled() && env.CI_BUILD_ONLY != 'true' }}
+        run: |
+          if [ -d target/contract-report ]; then
+            mkdir -p "$CI_COVERAGE_DIR/contract"
+            cp target/contract-report/*.jsonl "$CI_COVERAGE_DIR/contract/"
           fi
 
       - name: Upload the Rust coverage report
@@ -1255,3 +1267,13 @@ jobs:
           --reports "$RUNNER_TEMP/coverage"
           --diff "$RUNNER_TEMP/ci-patch/patch.diff"
           --plan "$RUNNER_TEMP/ci-plan/ci-plan.json"
+
+      # Web API contract (docs/contributing/ci.md#web-api-contract): how
+      # many declared responses the daemon's tests observed and every
+      # response that disagreed with the document. Report-only for now.
+      - name: Web API contract
+        if: ${{ !cancelled() && !inputs.private-head }}
+        run: >-
+          python3 scripts/contract_coverage.py
+          --reports "$RUNNER_TEMP/coverage/contract"
+          --mode report

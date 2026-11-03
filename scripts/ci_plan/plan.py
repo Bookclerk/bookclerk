@@ -175,7 +175,7 @@ DOC_FILES = frozenset(
 PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 # Scripts that only plan-job tests exercise (the CLA checker runs in its own
 # workflow, from the default branch, and builds nothing; the coverage gate
-# runs in CI Gate on every run, Codecov reads its settings itself, and the
+# runs in CI Gate on every run, as does the Web API contract report, Codecov reads its settings itself, and the
 # bundle uploader in tools/codecov only runs in coverage-upload.yml; the
 # mutation testing reports, settings and starting commit only run in mutation.yml,
 # mutation-workers.yml and mutation-python.yml).
@@ -186,6 +186,7 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
         "scripts/cla_branch/setup-rulesets.sh",
         "scripts/coverage_gate.py",
         "scripts/coverage_areas.toml",
+        "scripts/contract_coverage.py",
         ".github/codecov.yml",
         "tools/codecov/package.json",
         "tools/codecov/package-lock.json",

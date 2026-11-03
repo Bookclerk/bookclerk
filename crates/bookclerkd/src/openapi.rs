@@ -1935,48 +1935,24 @@ mod tests {
         }
     }
 
-    /// Rewrites every `#/components/schemas/` reference under `value` to
-    /// `#/$defs/`, so a schema lifted out of the document resolves its
-    /// references against a `$defs` map in the same root.
-    fn redirect_refs(value: &mut serde_json::Value) {
-        match value {
-            serde_json::Value::Object(map) => {
-                for (key, inner) in map.iter_mut() {
-                    if key == "$ref" {
-                        if let Some(target) = inner.as_str() {
-                            if let Some(name) = target.strip_prefix("#/components/schemas/") {
-                                *inner = serde_json::Value::String(format!("#/$defs/{name}"));
-                            }
-                        }
-                    } else {
-                        redirect_refs(inner);
-                    }
-                }
-            }
-            serde_json::Value::Array(items) => items.iter_mut().for_each(redirect_refs),
-            _ => {}
-        }
-    }
-
     /// Compiles `schema` as a JSON Schema 2020-12 root, with every
     /// reachable subschema addressable by pointer and formats asserted,
     /// not only annotated. With `components`, the root carries the
     /// document's component schemas under `$defs`, so references to them
-    /// resolve inside the root and each is addressable as `#/$defs/<name>`.
+    /// resolve inside the root and each is addressable as `#/$defs/<name>`
+    /// (the layer in [`crate::openapi_contract`] compiles the same way).
     fn validators(
         components: Option<&serde_json::Value>,
         schema: &serde_json::Value,
     ) -> jsonschema::ValidatorMap {
-        let mut root = schema.clone();
-        if let Some(components) = components {
-            root["$defs"] = components.clone();
-            redirect_refs(&mut root);
+        match components {
+            Some(components) => crate::openapi_contract::validators(components, schema),
+            None => jsonschema::options()
+                .with_draft(jsonschema::Draft::Draft202012)
+                .should_validate_formats(true)
+                .build_map(schema)
+                .expect("the document's schemas are valid JSON Schema"),
         }
-        jsonschema::options()
-            .with_draft(jsonschema::Draft::Draft202012)
-            .should_validate_formats(true)
-            .build_map(&root)
-            .expect("the document's schemas are valid JSON Schema")
     }
 
     /// Collects a body's own examples from `content`, a Media Type

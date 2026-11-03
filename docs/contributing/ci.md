@@ -840,6 +840,45 @@ pytest with `--cov=packages/plugin-sdk-python/src`. For Rust,
 `cargo llvm-cov nextest -p <crate>` covers one crate; the whole workspace
 needs a lot of disk.
 
+### Web API contract
+
+The daemon's test build layers a check over its router
+(`crates/bookclerkd/src/openapi_contract.rs`): every response the tests
+produce is compared with the committed OpenAPI document. The route the
+router matched, the method, the status and the media type must be
+declared, and a JSON body must validate against the declared schema,
+references followed and formats asserted. Each response is one JSON line
+in `target/contract-report/<pid>.jsonl` (one file per test process, since
+cargo-nextest runs each test in its own); the test job keeps the files
+beside its coverage report and CI Gate runs
+[`scripts/contract_coverage.py`](../../scripts/contract_coverage.py) over
+them.
+
+The step summary shows how many of the declared responses (route, status
+and media type) the tests observed, in all and per tag, and lists every
+disagreement: a status or media type the route does not declare, a body
+that does not validate, a body that is not JSON, and a matched route the
+document does not describe (an HTML page, such as the invite page or the
+SPA, is served on purpose without one). A declared response nobody
+observed is not a
+finding yet; it marks a route the tests do not reach.
+
+The report is informational: the step passes whatever it finds. The
+layer never fails a test either, so a disagreement shows up in CI Gate's
+summary, not in a test's output. Enforcing the report (a disagreement
+fails CI Gate, and the observed share gets a floor that only rises, like
+the coverage floors) is the next step once the first reports have been
+read and the routes they name fixed.
+
+To see the report locally, run the daemon's tests and the script:
+
+```sh
+cargo nextest run -p bookclerkd
+python3 scripts/contract_coverage.py --reports target/contract-report
+```
+
+`BOOKCLERK_CONTRACT_REPORT_DIR` moves the report files elsewhere.
+
 ### Codecov
 
 The same reports also go to [Codecov](https://about.codecov.io/), which
