@@ -28,7 +28,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 REPO = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
-from ci_plan.plan import CHECK_JOB, JOB_CHECKS, STEP_GATED_JOBS  # noqa: E402
+from ci_plan.plan import CHECK_JOB, JOB_CHECKS, OS_LEG_JOBS, STEP_GATED_JOBS  # noqa: E402
 
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 OUTPUT_REF = re.compile(r"needs\.plan\.outputs\.([A-Za-z0-9_]+)")
@@ -37,9 +37,8 @@ RUN_CHECK = re.compile(r"ci-exec\.py run ([a-z0-9_]+)\b")
 FAIL_FAST_JOB = "merge-queue-fail-fast"
 # Checks out the OSV remediation workflow's sealed lockfile bump.
 PRIVATE_HEAD_ACTION = "./.github/actions/osv-remediation-head"
-# The macOS runner label every macOS CI job uses. `macos-latest` (macOS 26)
-# jobs kept going unassigned; see docs/contributing/ci.md#macos-runner-label.
-MACOS_RUNNER = "macos-15"
+# The macOS job's display name, which CI Gate's stranded-job step names.
+MACOS_JOB_NAME = "macOS (sandbox, gateway, tray)"
 
 
 def _load() -> dict:
@@ -70,16 +69,40 @@ class WorkflowContractTests(unittest.TestCase):
         cls.wf = _load()
         cls.jobs = cls.wf["jobs"]
 
-    def test_macos_jobs_use_the_pinned_label(self) -> None:
+    def test_macos_runs_on_one_job_that_covers_every_macos_leg(self) -> None:
         macos = {
-            (name, label)
+            name
             for name, job in self.jobs.items()
-            for label in job.get("strategy", {}).get("matrix", {}).get("os", [])
-            + [job.get("runs-on", "")]
+            for label in [job.get("runs-on", ""), *job.get("strategy", {}).get("matrix", {}).get("os", [])]
             if isinstance(label, str) and label.startswith("macos")
         }
-        self.assertTrue(macos, "CI has no macOS job")
-        self.assertEqual({label for _, label in macos}, {MACOS_RUNNER}, sorted(macos))
+        self.assertEqual(macos, {"macos"})
+        job = self.jobs["macos"]
+        self.assertEqual(job["name"], MACOS_JOB_NAME)
+        self.assertEqual(job["runs-on"], "macos-latest")
+        self.assertEqual(job["needs"], "plan")
+        owners = OS_LEG_JOBS["macos"]
+        self.assertEqual(
+            job["if"].split(" || "),
+            [f"needs.plan.outputs.job_{o.replace('-', '_')} == 'true'" for o in owners],
+        )
+        runs = [s for s in job["steps"] if RUN_CHECK.search(s.get("run", ""))]
+        self.assertEqual([RUN_CHECK.search(s["run"]).group(1) for s in runs], [c for o in owners for c in JOB_CHECKS[o]])
+        for step in runs:
+            owner = CHECK_JOB[RUN_CHECK.search(step["run"]).group(1)]
+            # Each leg runs when its owner is planned, after a failed leg too.
+            self.assertEqual(step["if"], f"${{{{ !cancelled() && needs.plan.outputs.job_{owner.replace('-', '_')} == 'true' }}}}")
+
+    def test_gate_names_the_macos_job_for_its_stranded_step(self) -> None:
+        steps = self.jobs["ci-gate"]["steps"]
+        stranded = next(s for s in steps if s.get("id") == "stranded")
+        self.assertEqual(stranded["if"], "needs.macos.result == 'cancelled' && !inputs.private-head")
+        self.assertIn(f'--stranded-job "{MACOS_JOB_NAME}"', stranded["run"])
+        self.assertNotIn("uses", stranded)
+        gate = next(s for s in steps if "ci-exec.py gate" in s.get("run", ""))
+        self.assertEqual(gate["env"]["CI_GATE_STRANDED"], "${{ steps.stranded.outputs.stranded == 'true' && 'macos' || '' }}")
+        checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
+        self.assertIs(checkout["with"]["persist-credentials"], False)
 
     def test_emitted_outputs_match_plan_job_outputs(self) -> None:
         from ci_plan.execute import job_outputs
@@ -111,7 +134,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(_emitted_keys() - used, {"mode"})
 
     def test_jobs_match_planner(self) -> None:
-        gated = [j for j in self.jobs if j not in ("plan", "ci-gate", FAIL_FAST_JOB)]
+        gated = [j for j in self.jobs if j not in ("plan", "ci-gate", FAIL_FAST_JOB, *OS_LEG_JOBS)]
         self.assertEqual(set(gated), set(JOB_CHECKS))
         for job in gated:
             self.assertEqual(
@@ -126,6 +149,8 @@ class WorkflowContractTests(unittest.TestCase):
         for job_name, job in self.jobs.items():
             for step in job.get("steps", []):
                 for check in RUN_CHECK.findall(step.get("run", "")):
+                    if job_name in OS_LEG_JOBS:
+                        continue
                     self.assertNotIn(check, seen, f"{check} run in {seen.get(check)} and {job_name}")
                     self.assertEqual(CHECK_JOB.get(check), job_name, f"{check} runs in wrong job {job_name}")
                     seen[check] = job_name
@@ -178,7 +203,7 @@ class WorkflowContractTests(unittest.TestCase):
         gate = self.jobs["ci-gate"]
         self.assertEqual(gate["name"], "CI Gate")
         self.assertEqual(gate["if"], "always()")
-        self.assertEqual(set(gate["needs"]), {"plan", *JOB_CHECKS})
+        self.assertEqual(set(gate["needs"]), {"plan", *JOB_CHECKS, *OS_LEG_JOBS})
         run = next(s for s in gate["steps"] if "ci-exec.py gate" in s.get("run", ""))
         self.assertEqual(run["env"]["NEEDS_JSON"], "${{ toJSON(needs) }}")
 
@@ -186,15 +211,12 @@ class WorkflowContractTests(unittest.TestCase):
         job = self.jobs["native-gateway"]
         self.assertEqual(job["runs-on"], "${{ matrix.os }}")
         self.assertIs(job["strategy"]["fail-fast"], False)
-        self.assertEqual(job["strategy"]["matrix"], {"os": ["ubuntu-latest", MACOS_RUNNER, "windows-latest"]})
+        self.assertEqual(job["strategy"]["matrix"], {"os": ["ubuntu-latest", "windows-latest"]})
         steps = job["steps"]
         capnp = {s.get("if") for s in steps if "capnp" in s.get("run", "") and "ci-exec.py" not in s.get("run", "")}
         self.assertEqual(
             capnp,
-            {
-                f"runner.os == '{os}' && env.CI_SAVED_CACHE_CURRENT != 'true'"
-                for os in ("Linux", "macOS", "Windows")
-            },
+            {f"runner.os == '{os}' && env.CI_SAVED_CACHE_CURRENT != 'true'" for os in ("Linux", "Windows")},
         )
         run = [s for s in steps if "ci-exec.py run native_gateway" in s.get("run", "")]
         self.assertEqual(len(run), 1)
@@ -306,7 +328,7 @@ class WorkflowContractTests(unittest.TestCase):
                     if step["with"]["save-if"] is not False and step["with"]["save-if"] != "false":
                         self.assertIn("refs/heads/main", step["with"]["save-if"])
                         savers.add(name)
-        self.assertEqual(savers, set(BUILD_ONLY_JOBS))
+        self.assertEqual(savers, set(BUILD_ONLY_JOBS) | {"macos"})
 
     def test_build_only_jobs_skip_when_their_saved_cache_is_current(self) -> None:
         """Each cache-saving job looks its own key up first and skips the build on a hit."""
@@ -316,7 +338,7 @@ class WorkflowContractTests(unittest.TestCase):
             self.wf["env"]["CI_BUILD_ONLY"],
             "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}",
         )
-        for name in BUILD_ONLY_JOBS:
+        for name in (*BUILD_ONLY_JOBS, "macos"):
             with self.subTest(job=name):
                 steps = self.jobs[name]["steps"]
                 caches = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("Swatinem/rust-cache@")]
@@ -362,7 +384,13 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('gh run cancel "$RUN_ID"', job["steps"][0]["run"])
         self.assertNotIn(FAIL_FAST_JOB, self.jobs["ci-gate"]["needs"])
         for name, other in self.jobs.items():
-            if name != FAIL_FAST_JOB:
+            if name == "ci-gate":
+                # Read-only, for the stranded-job step.
+                self.assertEqual(
+                    other["permissions"],
+                    {"contents": "read", "actions": "read", "checks": "read", "issues": "read", "pull-requests": "read"},
+                )
+            elif name != FAIL_FAST_JOB:
                 self.assertNotIn("permissions", other, name)
         self.assertEqual(self.wf["permissions"], {"contents": "read"})
 

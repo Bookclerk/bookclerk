@@ -107,9 +107,9 @@ Rust dependency caches use three shared keys. Each is saved by one job on
 `main` and restored by the others:
 
 - **`lint`**: saved by `check`.
-- **`debug`**: saved by `test` on Linux and by `native-gateway` on macOS
-  and Windows. Restored by `e2e`, `confinement`, `tray`, `postgres` and
-  `windows-cluster`.
+- **`debug`**: saved by `test` on Linux, by `native-gateway` on Windows
+  and by the [macOS job](#macos-job) on macOS. Restored by `e2e`,
+  `confinement`, `tray`, `postgres` and `windows-cluster`.
 - **`release`**: saved by `release` (the job that also runs the
   envelope), once per LTO mode (see [Release build](#release-build)).
 
@@ -351,9 +351,10 @@ when a step matches no test. Name such tests `postgres_*`.
 | `unit + integration tests` | `rust_test` is selected | nextest over the affected packages (the workspace on the full suite), custom-harness targets, feature test runs, bench and example builds |
 | `staged plugin installation (e2e)` | `e2e` is selected | Builds, installs and stages the guests in scope, then the `bookclerk-plugin-e2e` staged targets |
 | `release build + small-VPS envelope (<lto> LTO)` | A shipped binary (hosts, helpers, platform guests) is compiled-affected (`release`), or an `[envelope].paths` input changed, an `[envelope].packages` member is compiled-affected, or the full suite (`envelope`) | Each selected check as its own step; see [Release build](#release-build) and [Small-VPS envelope](#small-vps-envelope) |
-| `sandbox + jailed tiers` (3 OS) | sandbox, jail, media or media-worker is affected | Clippy and enforcement tests (Windows `--test-threads=1`) |
-| `native-behind-workerd gateway` (3 OS) | See [the gateway job](#native-behind-workerd-gateway-job) | The four `native_gateway` targets, plus per-OS extras |
-| `tray` (3 OS) | `bookclerk-tray` is affected | Clippy and tests |
+| `sandbox + jailed tiers` (Linux, Windows) | sandbox, jail, media or media-worker is affected | Clippy and enforcement tests (Windows `--test-threads=1`) |
+| `native-behind-workerd gateway` (Linux, Windows) | See [the gateway job](#native-behind-workerd-gateway-job) | The four `native_gateway` targets, plus per-OS extras |
+| `tray` (Linux, Windows) | `bookclerk-tray` is affected | Clippy and tests |
+| `macOS (sandbox, gateway, tray)` | Any of the three jobs above runs | The macOS run of each of them, one step each; see [macOS job](#macos-job) |
 | `postgres 16/17/18` | An owning package's unit tests are affected | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite | See [Windows cluster](#windows-cluster-startup-and-identity) |
 | `website + collector Workers` | See [Workers](#website-and-collector-workers) | `site_test`, `site_audit`, `collector_test`, `demo_test`; no Rust toolchain |
@@ -458,7 +459,7 @@ The job runs when any of these hold:
 - a `[native_gateway].paths` smoke input changed;
 - it is the full suite.
 
-On every OS it runs
+On every OS (on macOS, as a step of the [macOS job](#macos-job)) it runs
 `cargo test -p bookclerk-plugin-e2e --test native_gateway --test native_gateway_isolation --test native_gateway_lifecycle --test native_gateway_authenticated_endpoint`
 (see [the smoke](#native-behind-workerd-gateway-smoke) below).
 
@@ -1281,8 +1282,8 @@ Configure repository rulesets or branch protection so the **required** CI check 
 **`CI Gate`** (plus the OSV check), **not** every matrix child.
 
 > [!WARNING]
-> Skipped `release`, `confinement`, `native-gateway` and `tray` jobs report
-> `skipped`. If those job names are required individually, merges stay
+> Skipped `release`, `confinement`, `native-gateway`, `tray` and macOS jobs
+> report `skipped`. If those job names are required individually, merges stay
 > pending forever.
 
 Also enable a merge queue that consumes `merge_group` checks, so the full
@@ -1300,28 +1301,43 @@ With a queue required, "require branches to be up to date" no longer
 matters. The queue tests each entry against the current `main`, stacked on
 the entries ahead of it.
 
-### macOS runner label
+### macOS job
 
-The macOS jobs (`confinement`, `native-gateway` and `tray`) run on
-`macos-15`, not `macos-latest`. Since 2 November 2026, GitHub has often
-failed to give `macos-latest` jobs (the `macos-26-arm64` image) a runner,
-with no GitHub Status incident. Merge groups failed on most attempts. The
-`macos-15` label uses a separate pool of runners, which is the workaround
-other projects reported.
+The macOS runs of `confinement`, `native-gateway` and `tray` share one
+job, `macOS (sandbox, gateway, tray)`, on `macos-latest`. Since 2 November
+2026, GitHub has often failed to give macOS jobs a runner, whichever macOS
+label they ask for. In the runs checked on 4 November, no more than two
+of this repository's macOS jobs ran at the same time. One job per run asks
+for one macOS runner instead of three.
 
-The pin has costs:
+The job runs when any of the three jobs is planned. It runs each planned
+check as its own step, and a step still runs after an earlier one failed,
+so one round shows every failure. It saves the macOS `debug` cache on
+`main`, as `native-gateway` does on Windows. In `OS_LEG_JOBS` in
+[`scripts/ci_plan/plan.py`](../../scripts/ci_plan/plan.py), `CI Gate`
+expects the job whenever it expects any of the three.
 
-- CI tests on macOS 15 rather than macOS 26. Both images are Apple
-  silicon (arm64), so the build target doesn't change.
-- When GitHub retires `macos-15`, the pin has to move to a newer label.
+GitHub sometimes never gives the job a runner. It cancels the job with the
+not-acquired annotation (see [re-enqueue](#merge-queue-re-enqueue) below),
+and `CI Gate` fails, as for any job that doesn't succeed. After one retry,
+the macOS checks are best effort:
 
-`test_macos_jobs_use_the_pinned_label` in
-[`scripts/tests/test_ci_contract.py`](../../scripts/tests/test_ci_contract.py)
-fails if a CI job uses any other macOS label. To move back to
-`macos-latest` once GitHub fixes the problem, change `MACOS_RUNNER` there
-and the three matrices in `ci.yml` together. The
-[re-enqueue](#merge-queue-re-enqueue) recovery doesn't depend on the label,
-so it still catches the occasional job that never gets a runner.
+1. A pull request run is re-run once (attempt 2). On a merge group, the
+   pull request goes back in the queue once.
+2. If the macOS job gets no runner again, `CI Gate` passes without it. A
+   step in `CI Gate` runs
+   `scripts/merge_queue_requeue.py --stranded-job` to check that the job
+   was cancelled with no runner and no step, that it carries the
+   not-acquired annotation, and that the run is a pull request run on
+   attempt 2 or later, or a merge group whose pull request has entered the
+   queue at least twice on its current head.
+3. The gate prints a warning and a step-summary note that the macOS checks
+   didn't run on that commit.
+
+A macOS job that ran and failed, or was cancelled after it started, always
+fails the gate. So does a stranded job on a `main` push or an OSV
+remediation run. The gate job reads the GitHub API with a read-only token
+(`actions`, `checks`, `issues` and `pull-requests`).
 
 ### Merge-queue re-enqueue
 
@@ -1352,6 +1368,8 @@ only when all of these hold:
    between makes it fail.
 
 Every check stays required: the new merge group runs the full suite again.
+A run whose `CI Gate` passed (the [macOS job](#macos-job) let through) is
+never re-enqueued or re-run.
 The workflow runs from the default branch, reads only the GitHub API and
 runs no pull request code. The step summary says why it did or didn't
 enqueue.

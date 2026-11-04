@@ -726,7 +726,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -777,7 +777,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -845,10 +845,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
 
-      - name: Install capnproto (macOS)
-        if: runner.os == 'macOS' && env.CI_SAVED_CACHE_CURRENT != 'true'
-        run: brew install capnp
-
       - name: Install capnproto (Windows)
         if: runner.os == 'Windows' && env.CI_SAVED_CACHE_CURRENT != 'true'
         shell: pwsh
@@ -871,7 +867,7 @@ jobs:
           }
           echo $toolsDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Native gateway smoke (+ Windows/macOS workerd checks)
+      - name: Native gateway smoke (+ Windows workerd checks)
         run: python scripts/ci-exec.py run native_gateway
 
   tray:
@@ -882,7 +878,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -922,6 +918,94 @@ jobs:
           save-if: false
 
       - name: Tray clippy + tests
+        run: python scripts/ci-exec.py run tray
+
+  # The macOS legs of `confinement`, `native-gateway` and `tray`, one step
+  # each, on one runner: a run asks GitHub for one macOS runner instead of
+  # three (docs/contributing/ci.md#macos-job). Each step runs when its
+  # owning job is planned, and after an earlier step failed too, so one
+  # round shows every failure. When GitHub never gives this job a runner
+  # even after a retry, CI Gate lets the run pass without it.
+  macos:
+    name: macOS (sandbox, gateway, tray)
+    needs: plan
+    timeout-minutes: 90
+    if: >-
+      needs.plan.outputs.job_confinement == 'true' ||
+      needs.plan.outputs.job_native_gateway == 'true' ||
+      needs.plan.outputs.job_tray == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Run by the OSV remediation workflow: test its unpublished lockfile
+      # bump (see docs/contributing/automation.md#osv-remediation).
+      - name: Check out the OSV remediation head
+        if: inputs.private-head
+        uses: ./.github/actions/osv-remediation-head
+        with:
+          key: ${{ secrets.OSV_REMEDIATION_BUNDLE_KEY }}
+          sha: ${{ inputs.private-sha }}
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Validate CI plan
+        run: python scripts/ci-exec.py validate
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          components: clippy
+
+      # Build-only main push: as in `native-gateway`, skip the build when
+      # this key is already saved (docs/contributing/ci.md#build-only-main-pushes).
+      - name: Look up the saved cache
+        id: saved
+        if: env.CI_BUILD_ONLY == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: debug
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          cache-on-failure: true
+          lookup-only: true
+          save-if: false
+
+      - name: Skip the build when the saved cache is current
+        if: steps.saved.outputs.cache-hit == 'true'
+        shell: bash
+        run: echo "CI_SAVED_CACHE_CURRENT=true" >> "$GITHUB_ENV"
+
+      - name: Cache cargo
+        if: env.CI_SAVED_CACHE_CURRENT != 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: debug
+          env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' && !inputs.private-head }}
+
+      - name: Install capnproto
+        if: needs.plan.outputs.job_native_gateway == 'true' && env.CI_SAVED_CACHE_CURRENT != 'true'
+        run: brew install capnp
+
+      - name: Confinement clippy + enforcement tests
+        if: ${{ !cancelled() && needs.plan.outputs.job_confinement == 'true' }}
+        run: python scripts/ci-exec.py run confinement
+
+      - name: Native gateway smoke + workerd lib tests
+        if: ${{ !cancelled() && needs.plan.outputs.job_native_gateway == 'true' }}
+        run: python scripts/ci-exec.py run native_gateway
+
+      - name: Tray clippy + tests
+        if: ${{ !cancelled() && needs.plan.outputs.job_tray == 'true' }}
         run: python scripts/ci-exec.py run tray
 
   postgres:
@@ -1219,13 +1303,24 @@ jobs:
       - confinement
       - native-gateway
       - tray
+      - macos
       - postgres
       - windows-cluster
       - site
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The stranded-job step: this run's jobs, the macOS job's
+      # annotations, and a merge group's pull request timeline.
+      actions: read
+      checks: read
+      issues: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Run by the OSV remediation workflow: test its unpublished lockfile
       # bump (see docs/contributing/automation.md#osv-remediation).
@@ -1246,9 +1341,26 @@ jobs:
       - name: Validate CI plan
         run: python3 scripts/ci-exec.py validate
 
+      # GitHub sometimes never gives the macOS job a runner. Once that has
+      # been retried (a pull request run re-run once, a merge group
+      # re-enqueued once), the gate lets the run pass without it
+      # (docs/contributing/ci.md#macos-job). Reads the GitHub API only.
+      - name: Check whether the macOS job never got a runner
+        id: stranded
+        if: needs.macos.result == 'cancelled' && !inputs.private-head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: >-
+          python3 scripts/merge_queue_requeue.py --repo "$REPO" --run-id "$RUN_ID"
+          --run-attempt "$RUN_ATTEMPT" --stranded-job "macOS (sandbox, gateway, tray)"
+
       - name: Compare job results with the expected execution
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+          CI_GATE_STRANDED: ${{ steps.stranded.outputs.stranded == 'true' && 'macos' || '' }}
         run: python3 scripts/ci-exec.py gate
 
       # Coverage (docs/contributing/ci.md#coverage): patch coverage of the
