@@ -3934,7 +3934,7 @@ impl LibraryStore {
     ///
     /// The listing is derived from the flat row ([`listing_from_book`]);
     /// a scan that has the plugin's structured record uses
-    /// [`Self::upsert_scanned_book`] instead. A row that fails listing
+    /// [`Self::upsert_scanned_title`] instead. A row that fails listing
     /// validation is still stored, and the listing is skipped with a warning.
     ///
     /// # Errors

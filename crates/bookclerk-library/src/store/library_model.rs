@@ -481,7 +481,7 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError`] when a read or write fails, when the stored
     /// rows are inconsistent, or when other writers kept changing the rows
-    /// for [`LINK_ATTEMPTS`] attempts.
+    /// for three attempts.
     pub async fn record_listing(
         &self,
         listing: &resolve::Listing,
