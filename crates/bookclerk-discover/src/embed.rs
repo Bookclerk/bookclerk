@@ -214,14 +214,14 @@ impl Embedder for OnnxEmbedder {
 pub fn text_for_work(work: &WorkRecord) -> String {
     let mut parts = Vec::new();
     parts.push(work.title.clone());
-    if let Some(a) = &work.authors {
-        parts.push(a.clone());
+    if !work.credits.is_empty() {
+        parts.push(work.credits.join(", "));
     }
-    if let Some(n) = &work.narrators {
-        parts.push(n.clone());
+    if !work.narrators.is_empty() {
+        parts.push(work.narrators.join(", "));
     }
-    if let Some(s) = &work.series {
-        parts.push(s.clone());
+    if !work.series.is_empty() {
+        parts.push(work.series.join(", "));
     }
     if let Some(c) = &work.categories {
         parts.push(c.clone());

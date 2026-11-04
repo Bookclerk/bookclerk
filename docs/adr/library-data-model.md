@@ -1,6 +1,6 @@
 # ADR: Library data model (works, expressions, editions, holdings)
 
-- **Status:** Accepted; steps 1 and 2 implemented (see [Status of the work](#status-of-the-work))
+- **Status:** Accepted; steps 1 to 3 implemented (see [Status of the work](#status-of-the-work))
 - **Date:** 2026-11-04
 - **Related:** [Schema versioning](schema-versioning.md),
   [SQL database contract](sql-database-contract.md),
@@ -307,6 +307,16 @@ Planned as separate pull requests, in this order:
    media kind.
 6. Web API and UI.
 7. The `metadata` entrypoint, with OpenLibrary and Audnexus moved into plugins.
+
+The dotted names in decision 6 name the events; the published event types
+are spelled in snake case, like `book_acquired`. Step 3 publishes
+`edition_linked`, `edition_updated` and `holding_added`, so subscribe to
+those spellings. It derives a listing from every stored `books` row, so the
+new tables fill as titles are scanned or imported. `holding_removed` and
+`edition_files_written` come with the steps that remove holdings and write
+files. The old tables are dropped by
+the step that moves their last reader off them: `title_files` with step 4,
+`branch_titles` with step 5 and `books` with step 6.
 
 User-facing pages (the glossary, *Where books go*, *Branches*, the plugin ABI
 reference) change with the step that changes their behaviour.

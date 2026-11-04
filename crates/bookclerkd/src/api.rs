@@ -5257,12 +5257,6 @@ async fn discover_recommendations(
     // centroid / storefront seed work that needs real embeddings.
     let use_onnx = has_books && cfg.discovery.embeddings_enabled;
 
-    if has_books {
-        let _ = bookclerk_discover::rebuild_works_from_library(&library)
-            .await
-            .map_err(internal_err)?;
-    }
-
     let _discover = state
         .discover_gate
         .clone()

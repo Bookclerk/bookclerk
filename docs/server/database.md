@@ -646,12 +646,42 @@ collection deletes unreferenced objects.
 Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `accounts`, `books`, `title_files`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
-`operator_sessions`, `account_links`, `works`, `work_editions`,
-`listening_progress`, `title_requests`, `title_request_sources`,
+`operator_sessions`, `account_links`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `user_preferences`, `encrypted_secrets`, `jobs`,
 `job_temp_paths`, `domain_events`, `event_deliveries`,
 `event_subscriber_nodes`, `event_outbox_stats`, `bookclerk_slots`,
-`plugin_databases` and `bookclerk_schema_migrations`.
+`plugin_databases` and `bookclerk_schema_migrations`, plus the library
+model tables below.
+
+The library model ([ADR](../adr/library-data-model.md)) stores what the
+library holds as works, expressions and editions:
+
+- `works`, `expressions` and `editions`, with `work_identifiers` and
+  `edition_identifiers` (a strong identifier is unique through
+  `strong_key`);
+- `store_listings` (one per plugin, marketplace and product) and
+  `holdings` (who holds each listing: an account or a branch library);
+- `contributors` and `credits`, `series` and `series_entries`;
+- `resolution_overrides` (an Administrator's pins and splits) and
+  `resolution_conflicts` (identifier clashes the resolver recorded instead
+  of merging).
+
+Every stored title is linked into its work, expression, edition,
+identifiers, listing and holding in one guarded batch (`linkListing`); a
+batch that lost a race answers `retry` and the title is resolved again, up
+to three times. Its contributors, credits, series and series entries follow
+in separate batches, so a scan that stops between them can leave a linked
+title without them; the next scan writes what is missing. A title that still cannot be resolved
+keeps its `books` row, is logged as a warning, and is resolved again on
+the next scan, so one title never stops the rest of a scan. A work takes
+its titles' description, subjects, categories and cover where it has none
+yet, and an episode stored before its show is linked to the show once the
+show has been scanned. A work first stored from a listing that named no
+author gains its matching key once a listing names one, so other stores'
+listings of the same book can find it. Likewise, an expression first
+stored without a language, an abridgement or a narrator gains them from a
+later scan that names them, so another store's listing with the same ISBN
+can join its edition; values already known are never overwritten.
 
 - The `jobs` table is the durable daemon queue (see
   [Jobs](../internals/jobs.md)).

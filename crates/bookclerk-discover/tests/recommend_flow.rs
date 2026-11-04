@@ -2,9 +2,7 @@
 
 #[cfg(test)]
 mod integration {
-    use bookclerk_discover::{
-        embed_dirty_works, rebuild_works_from_library, recommend, HashEmbedder, RecommendOptions,
-    };
+    use bookclerk_discover::{embed_dirty_works, recommend, HashEmbedder, RecommendOptions};
     use bookclerk_library::{NewBook, NewTitleRequest, RequestStatus};
 
     #[tokio::test]
@@ -66,8 +64,8 @@ mod integration {
             .await
             .unwrap();
 
-        let linked = rebuild_works_from_library(&store).await.unwrap();
-        assert!(linked >= 2);
+        // Every upserted title is resolved into a work as it is stored.
+        assert!(store.list_works().await.unwrap().len() >= 2);
 
         let mut embedder = HashEmbedder::new(32);
         let n = embed_dirty_works(&store, &mut embedder).await.unwrap();

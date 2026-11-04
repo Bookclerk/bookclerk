@@ -27,6 +27,7 @@ members = [
     "crates/bookclerk-plugin-manifest",
     "crates/bookclerk-plugin-sdk",
     "crates/bookclerk-plugin-tools",
+    "crates/bookclerk-resolve",
     "crates/bookclerk-sandbox",
     "crates/bookclerk-search",
     "crates/bookclerk-source",
@@ -89,6 +90,7 @@ bookclerk-media-worker = { path = "crates/bookclerk-media-worker" }
 bookclerk-storage = { path = "crates/bookclerk-storage" }
 bookclerk-library = { path = "crates/bookclerk-library" }
 bookclerk-source = { path = "crates/bookclerk-source" }
+bookclerk-resolve = { path = "crates/bookclerk-resolve" }
 bookclerk-acquire = { path = "crates/bookclerk-acquire" }
 bookclerk-naming = { path = "crates/bookclerk-naming" }
 bookclerk-node-client = { path = "crates/bookclerk-node-client" }

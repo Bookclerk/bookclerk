@@ -7,7 +7,7 @@
 //! Because it derives from audiobookshelf, this module is licensed under
 //! GPL-3.0-only rather than the workspace's AGPL-3.0-or-later.
 
-use unicode_normalization::UnicodeNormalization;
+use bookclerk_resolve::normalize::has_subtitle;
 
 /// Weights used by AudioBookshelf (duration dominates).
 const W_DURATION: f64 = 0.7;
@@ -304,35 +304,10 @@ fn title_similarity(title_query: &str, book: &ScoreInput<'_>, keep_subtitle: boo
     levenshtein_similarity(&norm_title_query, &norm_book_title)
 }
 
-/// True when the title already embeds a subtitle after `: ` or ` - `.
-fn has_subtitle(title: &str) -> bool {
-    title.contains(": ") || title.contains(" - ")
-}
-
-/// Drops the first `: ` or ` - ` suffix so compares can ignore subtitles.
-fn strip_subtitle(title: &str) -> String {
-    if let Some((left, _)) = title.split_once(": ") {
-        left.trim().to_string()
-    } else if let Some((left, _)) = title.split_once(" - ") {
-        left.trim().to_string()
-    } else {
-        title.to_string()
-    }
-}
-
-/// NFD-decomposes and strips combining marks so accented letters compare as ASCII.
-fn replace_accented_chars(s: &str) -> String {
-    s.nfd()
-        .filter(|c| !unicode_normalization::char::is_combining_mark(*c))
-        .collect()
-}
-
-/// Collapses Unicode whitespace runs to a single ASCII space.
-fn strip_redundant_spaces(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 /// Clean a title for fuzzy compares (AudioBookshelf `cleanTitleForCompares`).
+///
+/// Decodes HTML entities (Libro.fm and others ship entity-encoded titles),
+/// then cleans with [`bookclerk_resolve::normalize::clean_title`].
 ///
 /// # Arguments
 ///
@@ -341,152 +316,29 @@ fn strip_redundant_spaces(s: &str) -> String {
 ///
 /// # Returns
 ///
-/// String result for this operation.
+/// The cleaned, lower-cased title.
 #[must_use]
 pub fn clean_title_for_compares(title: &str, keep_subtitle: bool) -> String {
-    if title.is_empty() {
-        return String::new();
-    }
-    // Libro (and others) may ship entity-encoded titles; decode before compare.
     let title = bookclerk_library::decode_html_entities_cow(title);
-    let title = strip_redundant_spaces(title.as_ref());
-    let stripped = if keep_subtitle {
-        title
-    } else {
-        strip_subtitle(&title)
-    };
-    // Remove parenthetical content (ABS: /\([^)]*\)/g).
-    let mut without_parens = String::with_capacity(stripped.len());
-    let mut chars = stripped.chars();
-    while let Some(c) = chars.next() {
-        if c == '(' {
-            for nc in chars.by_ref() {
-                if nc == ')' {
-                    break;
-                }
-            }
-        } else {
-            without_parens.push(c);
-        }
-    }
-    let cleaned = strip_redundant_spaces(&without_parens).replace('\'', "");
-    replace_accented_chars(&cleaned).to_ascii_lowercase()
+    bookclerk_resolve::normalize::clean_title(title.as_ref(), keep_subtitle)
 }
 
 /// Clean an author string for fuzzy compares (AudioBookshelf `cleanAuthorForCompares`).
 ///
+/// Decodes HTML entities, then cleans with
+/// [`bookclerk_resolve::normalize::clean_author`].
+///
 /// # Arguments
 ///
-/// * `author` - String `author` for this call.
+/// * `author` - Author name or comma-separated names.
 ///
 /// # Returns
 ///
-/// String result for this operation.
+/// The cleaned, lower-cased name.
 #[must_use]
 pub fn clean_author_for_compares(author: &str) -> String {
-    if author.is_empty() {
-        return String::new();
-    }
     let author = bookclerk_library::decode_html_entities_cow(author);
-    let author = strip_redundant_spaces(author.as_ref());
-    let mut clean = replace_accented_chars(&author).to_ascii_lowercase();
-    clean = separate_initials(&clean);
-    clean = strip_middle_initials(&clean);
-    clean = strip_et_al(&clean);
-    clean
-}
-
-/// Inserts a space after `x.y` so initials tokenize like AudioBookshelf (`j.k.` → `j. k.`).
-fn separate_initials(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(s.len() + 4);
-    let mut i = 0;
-    while i < bytes.len() {
-        out.push(bytes[i]);
-        if bytes[i].is_ascii_lowercase()
-            && i + 2 < bytes.len()
-            && bytes[i + 1] == b'.'
-            && bytes[i + 2].is_ascii_lowercase()
-        {
-            out.push(b'.');
-            out.push(b' ');
-            i += 2;
-            continue;
-        }
-        i += 1;
-    }
-    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
-}
-
-/// Removes middle initials between a surname-like token and a following two-letter word.
-fn strip_middle_initials(s: &str) -> String {
-    let b = s.as_bytes();
-    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0usize;
-    while i < b.len() {
-        let mut removed = false;
-        if i >= 2 && is_word(b[i - 1]) && is_word(b[i - 2]) {
-            // Collect end offsets of each `\s+[a-z]\.?` repetition so we can
-            // backtrack like JS when the `\s+\w\w` lookahead fails.
-            let mut ends = Vec::new();
-            let mut j = i;
-            loop {
-                let before = j;
-                while j < b.len() && b[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j == before || j >= b.len() || !b[j].is_ascii_lowercase() {
-                    break;
-                }
-                j += 1;
-                if j < b.len() && b[j] == b'.' {
-                    j += 1;
-                }
-                ends.push(j);
-            }
-            for &end in ends.iter().rev() {
-                let mut k = end;
-                let before_ws = k;
-                while k < b.len() && b[k].is_ascii_whitespace() {
-                    k += 1;
-                }
-                if k > before_ws && k + 1 < b.len() && is_word(b[k]) && is_word(b[k + 1]) {
-                    i = end;
-                    removed = true;
-                    break;
-                }
-            }
-        }
-        if !removed {
-            out.push(b[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
-}
-
-/// Drops a trailing ` et al` / ` et al.` suffix used on multi-author credits.
-fn strip_et_al(s: &str) -> String {
-    const SUFFIX: &[u8] = b" et al";
-    let mut out = Vec::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i..].starts_with(SUFFIX) {
-            let mut j = i + SUFFIX.len();
-            if j < bytes.len() && bytes[j] == b'.' {
-                j += 1;
-            }
-            if j == bytes.len() || bytes[j] == b' ' {
-                i = j;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+    bookclerk_resolve::normalize::clean_author(author.as_ref())
 }
 
 /// Levenshtein distance (case-insensitive by default, matching ABS).
@@ -793,13 +645,6 @@ mod tests {
             clean_author_for_compares("John R. R. Tolkien"),
             "john tolkien"
         );
-    }
-
-    #[test]
-    fn author_ascii_transforms_preserve_utf8() {
-        assert_eq!(separate_initials("josé a.b. author"), "josé a. b. author");
-        assert_eq!(strip_et_al("José Author et al."), "José Author");
-        assert_eq!(strip_et_al("Søren Kierkegaard et al."), "Søren Kierkegaard");
     }
 
     #[test]

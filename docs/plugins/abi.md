@@ -245,10 +245,13 @@ The host `EventPublisher` writes straight into the library outbox
 - **Host-emitted types.** Some domain events belong to the host.
   `book_acquired` is one: a source plugin's acquire handler returns the
   book, then the host's acquire pipeline records it and publishes
-  `book_acquired` in the same transaction as the library row. A plugin
-  can consume it under `[[events.consumers]]`, but can't declare it under
+  `book_acquired` in the same transaction as the library row.
+  `edition_linked`, `edition_updated` and `holding_added` are the others:
+  the library model resolver publishes them in the same batch as the
+  store listing they describe. A plugin can consume them under
+  `[[events.consumers]]`, but can't declare them under
   `[[events.producers]]` (`check` and load fail), and the host publisher
-  refuses it even from an older grant.
+  refuses them even from an older grant.
 - **Producer grant.** The binding exists only when the manifest declares
   `[[events.producers]]` *and* the operator grant covers those types (the
   consent request lists them). Publishing a type outside that
@@ -659,6 +662,19 @@ supports_suspend = false
 `domain_events` in the same transaction as the library acquire-status
 change (book uuid, storage key, product ids; never media bytes). It sets
 the envelope `source` to the book's storefront plugin id.
+
+**Library model events.** Recording a store listing publishes, in the same
+batch as its rows:
+
+- `edition_linked` (`editionId`, `listingId`) when a listing is first
+  stored or now sells another edition;
+- `edition_updated` (`editionId`) when the listing filled a missing
+  subtitle, publication date or duration on its edition;
+- `holding_added` (`listingId`, `holder`) when an account or branch
+  library holds the listing for the first time; `account_id` is the
+  account for an account holder.
+
+Their `source` is the storefront plugin that reported the listing.
 
 **Claiming.**
 

@@ -244,7 +244,9 @@ def _validate_int(field: str, value: Any, low: int, high: int, message: str) -> 
         raise ValueError(f"plugin.toml: {field} {message}")
 
 
-HOST_EVENT_TYPES = frozenset({"book_acquired"})
+HOST_EVENT_TYPES = frozenset(
+    {"book_acquired", "edition_linked", "edition_updated", "holding_added"}
+)
 """Domain event types only the host emits; plugins consume them but cannot produce them."""
 
 MAX_KV_NAMESPACE_VALUE_BYTES = 1_048_576

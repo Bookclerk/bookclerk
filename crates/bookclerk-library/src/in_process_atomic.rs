@@ -111,6 +111,29 @@ impl AtomicTxnBackend for InProcessSqliteAtomic {
         unsupported("disable_user_totp")
     }
 
+    async fn link_listing(&self, params: crate::library_link::ListingLinkParams) -> Result<String> {
+        let op = crate::DbAtomicParams::LinkListing(Box::new(params));
+        let operation_id = crate::db_atomic_operation_id(&op);
+        Ok(crate::execute_named_atomic(&self.db, &operation_id, &op)
+            .await?
+            .status)
+    }
+
+    async fn write_credits(&self, params: crate::library_link::CreditBatchParams) -> Result<()> {
+        let op = crate::DbAtomicParams::WriteCredits(Box::new(params));
+        let operation_id = crate::db_atomic_operation_id(&op);
+        let status = crate::execute_named_atomic(&self.db, &operation_id, &op)
+            .await?
+            .status;
+        if status == atomic_status::OK {
+            Ok(())
+        } else {
+            Err(LibraryError::Other(anyhow::anyhow!(
+                "credit batch answered `{status}`"
+            )))
+        }
+    }
+
     async fn publish_domain_event(
         &self,
         _spec: PublishDomainEventSpec,

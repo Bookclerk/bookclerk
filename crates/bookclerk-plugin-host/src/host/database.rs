@@ -2514,6 +2514,33 @@ impl bookclerk_library::AtomicTxnBackend for RpcAtomicBackend {
         Ok(())
     }
 
+    async fn link_listing(
+        &self,
+        params: bookclerk_library::library_link::ListingLinkParams,
+    ) -> bookclerk_library::Result<String> {
+        let result = self
+            .call(DbAtomicParams::LinkListing(Box::new(params)))
+            .await?;
+        Ok(result.status)
+    }
+
+    async fn write_credits(
+        &self,
+        params: bookclerk_library::library_link::CreditBatchParams,
+    ) -> bookclerk_library::Result<()> {
+        let result = self
+            .call(DbAtomicParams::WriteCredits(Box::new(params)))
+            .await?;
+        if result.status == bookclerk_library::atomic_status::OK {
+            Ok(())
+        } else {
+            Err(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+                "credit batch answered `{}`",
+                result.status
+            )))
+        }
+    }
+
     async fn publish_domain_event(
         &self,
         spec: bookclerk_library::PublishDomainEventSpec,

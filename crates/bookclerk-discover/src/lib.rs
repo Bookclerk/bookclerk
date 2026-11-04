@@ -27,7 +27,6 @@ mod recommend;
 mod shelves;
 mod title_meta;
 mod ttl_cache;
-mod works;
 
 pub use bookclerk_source::{
     default_preferred_language, language_rank, normalize_language, CatalogSearchField,
@@ -72,4 +71,3 @@ pub use title_meta::{
     resolve_title_meta, resolve_title_meta_batch, resolve_title_reviews, TitleMeta, TitleMetaQuery,
     TitleReview, TitleReviewsPage, TitleReviewsQuery,
 };
-pub use works::rebuild_works_from_library;

@@ -99,6 +99,10 @@ paths = [
 ]
 
 [[test_input]]
+package = "bookclerk-resolve"
+paths = ["fuzz/corpus/library_resolve/**"]
+
+[[test_input]]
 package = "bookclerk-cli"
 paths = ["crates/bookclerk-plugins/platform/database-sqlite/plugin.toml"]
 
