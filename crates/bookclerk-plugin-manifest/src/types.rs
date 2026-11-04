@@ -1823,6 +1823,23 @@ pub enum JailNetworkNeed {
 mod tests {
     use super::*;
 
+    #[test]
+    fn every_entrypoint_maps_to_its_family() {
+        let families: Vec<PluginFamily> = ALL_ENTRYPOINTS.map(entrypoint_family).to_vec();
+        assert_eq!(
+            families,
+            vec![
+                PluginFamily::Source,
+                PluginFamily::Output,
+                PluginFamily::Database,
+                PluginFamily::Integration,
+                PluginFamily::Integration,
+                PluginFamily::Integration,
+                PluginFamily::Integration,
+            ]
+        );
+    }
+
     /// Minimal v3 native manifest body; callers append tables.
     fn native(extra: &str) -> String {
         format!(

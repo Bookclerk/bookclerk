@@ -569,6 +569,19 @@ mod tests {
     use bookclerk_plugin_catalog::{PluginKey, PluginProvenance};
     use bookclerk_plugin_manifest::PluginManifest;
 
+    #[test]
+    fn health_result_maps_not_ok_to_the_guest_detail() {
+        let health = |ok: bool, detail: &str| bookclerk_plugin_sdk::HealthOk {
+            ok,
+            detail: detail.to_string(),
+        };
+        assert!(health_result(health(true, "")).is_ok());
+        let err = health_result(health(false, "catalog down")).expect_err("not ok");
+        assert!(err.to_string().contains("catalog down"), "{err}");
+        let err = health_result(health(false, "")).expect_err("not ok");
+        assert!(err.to_string().contains("health failed"), "{err}");
+    }
+
     const ABS_TOML: &str = r#"
 api_version = 3
 id = "audiobookshelf"

@@ -51,17 +51,17 @@ use crate::{PluginError, Result};
 pub type GuestDatabaseFactory =
     Arc<dyn Fn(Arc<AtomicBool>, u64) -> Arc<dyn bookclerk_plugin_sdk::GuestDatabase> + Send + Sync>;
 
-/// Type-erased typed storefront call executed on the vat thread against the
-/// opened `storefront` entrypoint (or the open / missing-entrypoint error).
-type ContentSourceCall = Box<
+/// Type-erased typed call executed on the vat thread against one opened
+/// named entrypoint `S` (or the open / missing-entrypoint error).
+type EntrypointCall<S> = Box<
     dyn FnOnce(
-            std::result::Result<
-                Box<dyn bookclerk_plugin_sdk::ContentSource>,
-                bookclerk_plugin_sdk::PluginError,
-            >,
+            std::result::Result<Box<S>, bookclerk_plugin_sdk::PluginError>,
         ) -> LocalBoxFuture<'static, ()>
         + Send,
 >;
+
+/// Typed storefront call against the opened `storefront` entrypoint.
+type ContentSourceCall = EntrypointCall<dyn bookclerk_plugin_sdk::ContentSource>;
 
 /// Type-erased typed remote-library call executed on the vat thread against
 /// the opened `remoteLibrary` entrypoint (or the open / missing error).
@@ -75,17 +75,8 @@ type RemoteLibraryCall = Box<
         + Send,
 >;
 
-/// Type-erased typed metadata call executed on the vat thread against the
-/// opened `metadata` entrypoint (or the open / missing error).
-type MetadataCall = Box<
-    dyn FnOnce(
-            std::result::Result<
-                Box<dyn bookclerk_plugin_sdk::MetadataProvider>,
-                bookclerk_plugin_sdk::PluginError,
-            >,
-        ) -> LocalBoxFuture<'static, ()>
-        + Send,
->;
+/// Typed metadata call against the opened `metadata` entrypoint.
+type MetadataCall = EntrypointCall<dyn bookclerk_plugin_sdk::MetadataProvider>;
 
 /// `!Send` boxed future pinned for the vat's `LocalSet`.
 type LocalBoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
@@ -1233,21 +1224,8 @@ impl PluginSession {
         Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
             + 'static,
     {
-        let (reply, rx) = oneshot::channel::<Result<T>>();
-        let erased: ContentSourceCall = Box::new(move |stub| {
-            Box::pin(async move {
-                let out = match stub {
-                    Ok(stub) => call(stub).await.map_err(map_abi),
-                    Err(err) => Err(map_abi(err)),
-                };
-                let _ = reply.send(out);
-            })
-        });
-        self.tx
-            .send(Work::Storefront { call: erased })
-            .map_err(|_| PluginError::unavailable("plugin vat thread closed"))?;
-        rx.await
-            .map_err(|_| PluginError::unavailable("plugin vat thread dropped reply"))?
+        self.entrypoint_call(call, |call| Work::Storefront { call })
+            .await
     }
 
     /// One typed `metadata` method on the opened primary entrypoints.
@@ -1266,8 +1244,37 @@ impl PluginSession {
         Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
             + 'static,
     {
+        self.entrypoint_call(call, |call| Work::Metadata { call })
+            .await
+    }
+
+    /// Sends one typed call against the named entrypoint `S` to the vat
+    /// thread and waits for its output.
+    ///
+    /// # Arguments
+    ///
+    /// * `call` - runs on the vat thread with the opened entrypoint stub.
+    /// * `work` - wraps the erased call in the [`Work`] variant that opens
+    ///   `S`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the vat thread is gone, the guest did not
+    /// export the entrypoint, or the method fails.
+    async fn entrypoint_call<S, T, F, Fut>(
+        &self,
+        call: F,
+        work: impl FnOnce(EntrypointCall<S>) -> Work,
+    ) -> Result<T>
+    where
+        S: ?Sized + 'static,
+        T: Send + 'static,
+        F: FnOnce(Box<S>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
         let (reply, rx) = oneshot::channel::<Result<T>>();
-        let erased: MetadataCall = Box::new(move |stub| {
+        let erased: EntrypointCall<S> = Box::new(move |stub| {
             Box::pin(async move {
                 let out = match stub {
                     Ok(stub) => call(stub).await.map_err(map_abi),
@@ -1277,7 +1284,7 @@ impl PluginSession {
             })
         });
         self.tx
-            .send(Work::Metadata { call: erased })
+            .send(work(erased))
             .map_err(|_| PluginError::unavailable("plugin vat thread closed"))?;
         rx.await
             .map_err(|_| PluginError::unavailable("plugin vat thread dropped reply"))?
@@ -2187,6 +2194,37 @@ async fn primary_entrypoints<'a>(
 }
 
 /// Fails closed when the guest did not export `name`.
+/// Opens the primary entrypoints and runs one typed call against the named
+/// entrypoint `S` that `pick` selects.
+///
+/// The call receives the open error, or the missing-entrypoint error when the
+/// guest did not export `name`, instead of a stub.
+///
+/// # Arguments
+///
+/// * `name` - the entrypoint's wire name, for the missing-entrypoint error.
+/// * `pick` - selects the entrypoint's stub from the opened set.
+/// * `call` - the erased call from [`PluginSession::entrypoint_call`].
+///
+/// # Errors
+///
+/// Never fails: errors reach `call`. The `Result` fits [`with_session`].
+async fn run_entrypoint_call<S: ?Sized>(
+    client: &PluginClient,
+    account_id: &str,
+    primary: &mut PrimaryState,
+    name: &str,
+    pick: impl FnOnce(&OpenedEntrypoints) -> Option<Box<S>>,
+    call: EntrypointCall<S>,
+) -> Result<()> {
+    let stub = primary_entrypoints(client, account_id, primary, None)
+        .await
+        .and_then(|eps| pick(eps).ok_or_else(|| missing_entrypoint(name)))
+        .map_err(host_err_to_abi);
+    call(stub).await;
+    Ok(())
+}
+
 fn missing_entrypoint(name: &str) -> PluginError {
     PluginError::message(format!("plugin exported no `{name}` entrypoint"))
 }
@@ -3006,62 +3044,36 @@ fn vat_thread(
                             let _ = reply.send(out);
                         }
                         Work::Storefront { call } => {
-                            let _ = with_session(
-                                &session_cancel,
-                                &mut child,
-                                &mut guest,
-                                async {
-                                    let stub = primary_entrypoints(
-                                        &client,
-                                        &account_id,
-                                        &mut primary,
-                                        None,
-                                    )
-                                    .await
-                                    .and_then(|eps| {
-                                        eps.storefront
-                                            .clone()
-                                            .ok_or_else(|| missing_entrypoint("storefront"))
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "storefront",
+                                |eps| {
+                                    eps.storefront.clone().map(|stub| {
+                                        Box::new(stub) as Box<dyn bookclerk_plugin_sdk::ContentSource>
                                     })
-                                    .map(|stub| {
-                                        Box::new(stub)
-                                            as Box<dyn bookclerk_plugin_sdk::ContentSource>
-                                    })
-                                    .map_err(host_err_to_abi);
-                                    call(stub).await;
-                                    Ok(())
                                 },
-                            )
-                            .await;
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
                         }
                         Work::Metadata { call } => {
-                            let _ = with_session(
-                                &session_cancel,
-                                &mut child,
-                                &mut guest,
-                                async {
-                                    let stub = primary_entrypoints(
-                                        &client,
-                                        &account_id,
-                                        &mut primary,
-                                        None,
-                                    )
-                                    .await
-                                    .and_then(|eps| {
-                                        eps.metadata
-                                            .clone()
-                                            .ok_or_else(|| missing_entrypoint("metadata"))
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "metadata",
+                                |eps| {
+                                    eps.metadata.clone().map(|stub| {
+                                        Box::new(stub) as Box<dyn bookclerk_plugin_sdk::MetadataProvider>
                                     })
-                                    .map(|stub| {
-                                        Box::new(stub)
-                                            as Box<dyn bookclerk_plugin_sdk::MetadataProvider>
-                                    })
-                                    .map_err(host_err_to_abi);
-                                    call(stub).await;
-                                    Ok(())
                                 },
-                            )
-                            .await;
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
                         }
                         Work::RemoteLibrary { call, cancel } => {
                             tokio::select! {

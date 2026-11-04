@@ -59,6 +59,65 @@ def _wait_for_health(base: str, token: str, timeout_s: float = 15.0) -> None:
         time.sleep(0.05)
 
 
+# Entrypoints with a ``health`` method, in probe order, and their interfaces.
+_HEALTH_INTERFACES: tuple[tuple[str, str], ...] = (
+    ("storefront", "ContentSource"),
+    ("remoteLibrary", "RemoteLibrary"),
+    ("metadata", "MetadataProvider"),
+)
+
+
+def _health_iface(entrypoints: list[Any]) -> str | None:
+    """Interface to probe for ``health``, from a manifest's entrypoints.
+
+    Args:
+        entrypoints: The manifest's ``entrypoints`` list.
+
+    Returns:
+        The first interface in ``_HEALTH_INTERFACES`` order whose entrypoint
+        the plugin exports, or ``None`` when none has a health probe (the
+        default entrypoint's event / job triggers have none).
+    """
+    names = {str(e) for e in entrypoints}
+    for entrypoint, iface in _HEALTH_INTERFACES:
+        if entrypoint in names:
+            return iface
+    return None
+
+
+def _health_codecs(iface: str) -> tuple[Any, Any]:
+    """Params and results codecs of ``iface``'s ``health`` method.
+
+    Args:
+        iface: ``ContentSource``, ``RemoteLibrary`` or ``MetadataProvider``.
+
+    Returns:
+        The ``(params, results)`` struct codecs.
+
+    Raises:
+        ValueError: When ``iface`` has no health probe.
+    """
+    from .. import _wire
+
+    codecs = {
+        "ContentSource": (
+            _wire._content_source_health_params_codec,
+            _wire._content_source_health_results_codec,
+        ),
+        "RemoteLibrary": (
+            _wire._remote_library_health_params_codec,
+            _wire._remote_library_health_results_codec,
+        ),
+        "MetadataProvider": (
+            _wire._metadata_provider_health_params_codec,
+            _wire._metadata_provider_health_results_codec,
+        ),
+    }
+    if iface not in codecs:
+        raise ValueError(f"{iface} has no health probe")
+    return codecs[iface]
+
+
 def _invoke_health(base: str, iface: str, token: str) -> Any:
     """``POST /invoke`` health probe for an entrypoint interface.
 
@@ -76,15 +135,7 @@ def _invoke_health(base: str, iface: str, token: str) -> Any:
     """
     from .. import _wire
 
-    if iface == "ContentSource":
-        params = _wire._content_source_health_params_codec
-        results = _wire._content_source_health_results_codec
-    elif iface == "MetadataProvider":
-        params = _wire._metadata_provider_health_params_codec
-        results = _wire._metadata_provider_health_results_codec
-    else:
-        params = _wire._remote_library_health_params_codec
-        results = _wire._remote_library_health_results_codec
+    params, results = _health_codecs(iface)
     req = urllib.request.Request(
         f"{base}/invoke",
         data=_wire._encode_message(params, {}, _wire.NO_CAPS),
@@ -215,15 +266,7 @@ def run_smoke(plugin_dir: Path) -> str:
         # `health` is a method of the storefront, remoteLibrary and metadata
         # entrypoints; the default entrypoint (event/job triggers) has no
         # health probe.
-        entrypoints = [str(e) for e in (manifest.get("entrypoints") or [])]
-        if "storefront" in entrypoints:
-            health_iface: str | None = "ContentSource"
-        elif "remoteLibrary" in entrypoints:
-            health_iface = "RemoteLibrary"
-        elif "metadata" in entrypoints:
-            health_iface = "MetadataProvider"
-        else:
-            health_iface = None
+        health_iface = _health_iface(manifest.get("entrypoints") or [])
         health = _invoke_health(base, health_iface, bridge_token) if health_iface else None
         detail = {
             "plugin": manifest["id"],

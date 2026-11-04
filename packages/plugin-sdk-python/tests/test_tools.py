@@ -1011,3 +1011,28 @@ def test_manifest_capabilities_report_queues():
     assert caps["queueConsumers"] == ["notify"]
     assert caps["queueProducers"] == ["jobs"]
     assert caps["bindings"] == ["JOBS", "JOBS_AGAIN"]
+
+
+def test_smoke_health_probe_picks_the_first_health_entrypoint():
+    from bookclerk_plugin_sdk.sparse_workerd.smoke import _health_iface
+
+    assert _health_iface(["cli", "storefront", "metadata"]) == "ContentSource"
+    assert _health_iface(["remoteLibrary", "metadata"]) == "RemoteLibrary"
+    assert _health_iface(["metadata"]) == "MetadataProvider"
+    assert _health_iface(["cli"]) is None
+    assert _health_iface([]) is None
+
+
+def test_smoke_health_codecs_cover_every_health_interface():
+    from bookclerk_plugin_sdk import _wire
+    from bookclerk_plugin_sdk.sparse_workerd.smoke import _HEALTH_INTERFACES, _health_codecs
+
+    for _, iface in _HEALTH_INTERFACES:
+        params, results = _health_codecs(iface)
+        assert params is not None and results is not None
+    assert _health_codecs("MetadataProvider") == (
+        _wire._metadata_provider_health_params_codec,
+        _wire._metadata_provider_health_results_codec,
+    )
+    with pytest.raises(ValueError, match="no health probe"):
+        _health_codecs("Storage")

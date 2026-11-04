@@ -5656,6 +5656,17 @@ mod tests {
             .await
             .expect_err("chapters");
         assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
+
+        // The same defaults through a local capability and the typed client.
+        let client = MetadataProviderClient::new(capnp_rpc::new_client(MetadataProviderServer {
+            inner: Arc::new(Bare),
+        }));
+        assert!(client.health().await.expect("health over capnp").ok);
+        let err = client
+            .lookup(MetadataLookupParams::default())
+            .await
+            .expect_err("lookup over capnp");
+        assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
     }
 
     #[tokio::test(flavor = "current_thread")]
