@@ -34,7 +34,8 @@ tested that exact commit. So the push run resolves with `--build-only`
 (`build_only: true` in the artifact):
 
 - Only the jobs that save caches run: `check`, `test`, `native-gateway`
-  and `release` (`BUILD_ONLY_JOBS` in `scripts/ci_plan/execute.py`). The
+  and `release` (`BUILD_ONLY_JOBS` in `scripts/ci_plan/execute.py`), plus
+  the [macOS job](#macos-job), which runs the `native-gateway` leg. The
   gate expects every other job to be skipped. The release job drops its
   envelope check (`BUILD_ONLY_SKIPPED_CHECKS`), which only measures, and
   runs a fat and a thin leg so both of its caches stay warm.
@@ -1331,7 +1332,9 @@ the macOS checks are best effort:
    annotation, and that the same happened on the try before: the previous
    attempt of a pull request run, or the pull request's previous merge
    group, when it has entered the queue at least twice on its current
-   head. A first miss after a retry for another reason still fails.
+   head. That merge group must have started after the pull request first
+   entered the queue on its current head, so a run of an older head never
+   counts. A first miss after a retry for another reason still fails.
 3. The gate prints a warning and a step-summary note that the macOS checks
    didn't run on that commit.
 

@@ -97,7 +97,7 @@ class WorkflowContractTests(unittest.TestCase):
         ids = [s.get("id") for s in job["steps"]]
         setup = ids.index("setup")
         self.assertNotIn("if", job["steps"][setup])
-        self.assertLess(setup, job["steps"].index(runs[0]))
+        self.assertEqual(job["steps"].index(runs[0]), setup + 1)
 
     def test_gate_names_the_macos_job_for_its_stranded_step(self) -> None:
         steps = self.jobs["ci-gate"]["steps"]

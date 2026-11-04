@@ -434,7 +434,8 @@ def stranded_bodies(attempt: int = 2) -> dict[str, bytes]:
 def merge_group_gate_bodies() -> dict[str, bytes]:
     """The 604 merge group, as its CI Gate sees it, with the macOS job stranded."""
     base = f"repos/{REPO}"
-    timeline = json.loads(seed("timeline__pr604.json")) + [[{"event": "added_to_merge_queue"}]]
+    # Re-enqueued after the first merge group (run 3490) stranded macOS.
+    timeline = json.loads(seed("timeline__pr604.json")) + [[{"event": "added_to_merge_queue", "created_at": "2026-11-03T21:55:00Z"}]]
     return {
         f"{base}/actions/runs/{RUN_ID}": edited(
             "run__pr604.json", status="in_progress", conclusion=None, repository={"full_name": REPO}, run_number=3500
@@ -535,13 +536,55 @@ class StrandedJobTests(unittest.TestCase):
         self.assertFalse(passes)
         self.assertIn("no earlier merge group", reason)
 
+    def test_merge_group_on_an_older_head_is_no_retry(self) -> None:
+        # #604 got a new head after run 3490 and was queued twice since; the
+        # first of those entries left no run, so 3490 tested the old head.
+        bodies = merge_group_gate_bodies()
+        timeline = json.loads(seed("timeline__pr604.json")) + [
+            [
+                {"event": "committed", "sha": "e" * 40},
+                {"event": "added_to_merge_queue", "created_at": "2026-11-03T21:30:00Z"},
+                {"event": "added_to_merge_queue", "created_at": "2026-11-03T21:55:00Z"},
+            ]
+        ]
+        bodies[f"repos/{REPO}/issues/604/timeline"] = json.dumps(timeline).encode()
+        gh = FakeGh(bodies)
+        passes, reason = mq.decide_stranded(REPO, RUN_ID, 1, MACOS_JOB, gh)
+        self.assertFalse(passes)
+        self.assertIn("on its head", reason)
+        listing = next(c for c in gh.calls if "/actions/workflows/" in c[-1])
+        self.assertEqual(listing[1:3], ["--paginate", "--slurp"])
+        self.assertIn("created=%3E%3D2026-11-03T21%3A30%3A00Z", listing[-1])
+        # A timeline whose entry has no timestamp proves nothing.
+        unstamped = [{"event": "committed"}, {"event": "added_to_merge_queue"}, {"event": "added_to_merge_queue"}]
+        bodies[f"repos/{REPO}/issues/604/timeline"] = json.dumps([*timeline, unstamped]).encode()
+        passes, reason = mq.decide_stranded(REPO, RUN_ID, 1, MACOS_JOB, FakeGh(bodies))
+        self.assertFalse(passes)
+        self.assertIn("entered the queue", reason)
+
     def test_previous_queue_run(self) -> None:
         raw = seed("runs__pr604_merge_groups.json")
-        self.assertEqual(mq.previous_queue_run(raw, 604, 3500), 41650000001)
-        self.assertEqual(mq.previous_queue_run(raw, 604, 3490), 41630000003)
-        self.assertIsNone(mq.previous_queue_run(raw, 604, 3470))
-        self.assertIsNone(mq.previous_queue_run(raw, 605, 9999))
-        self.assertIsNone(mq.previous_queue_run(b"[]", 604, 3500))
+        old = "2026-11-03T00:00:00Z"
+        self.assertEqual(mq.previous_queue_run(raw, 604, 3500, old), 41650000001)
+        self.assertEqual(mq.previous_queue_run(raw, 604, 3490, old), 41630000003, "found on the second page")
+        self.assertEqual(mq.previous_queue_run(raw, 604, 3500, "2026-11-03T21:00:00Z"), 41650000001, "at since counts")
+        self.assertIsNone(mq.previous_queue_run(raw, 604, 3500, "2026-11-03T21:00:01Z"), "older head")
+        self.assertIsNone(mq.previous_queue_run(raw, 604, 3470, old))
+        self.assertIsNone(mq.previous_queue_run(raw, 605, 9999, old))
+        self.assertIsNone(mq.previous_queue_run(raw, 604, 3500, "yesterday"))
+        self.assertIsNone(mq.previous_queue_run(b"[]", 604, 3500, old))
+        self.assertIsNone(mq.previous_queue_run(b'{"workflow_runs": []}', 604, 3500, old), "not slurped")
+
+    def test_first_enqueue_on_head(self) -> None:
+        self.assertEqual(mq.first_enqueue_on_head(seed("timeline__pr604.json")), "2026-11-03T20:30:00Z")
+        stamp = [{"event": "added_to_merge_queue", "created_at": "2026-11-03T21:00:00Z"}]
+        later = [{"event": "added_to_merge_queue", "created_at": "2026-11-03T22:00:00Z"}]
+        self.assertEqual(mq.first_enqueue_on_head(json.dumps([stamp, later]).encode()), "2026-11-03T21:00:00Z")
+        pushed = [stamp + [{"event": "head_ref_force_pushed"}] + later]
+        self.assertEqual(mq.first_enqueue_on_head(json.dumps(pushed).encode()), "2026-11-03T22:00:00Z")
+        for raw in (b'[[{"event": "committed"}]]', b'[[{"event": "added_to_merge_queue"}]]', b"[{}]", b"{"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(mq.first_enqueue_on_head(raw))
 
     def test_refusals(self) -> None:
         base = f"repos/{REPO}"
@@ -814,18 +857,51 @@ def oracle_gate_run(raw: bytes) -> tuple[str, str] | None:
     return None
 
 
-def oracle_previous_queue_run(raw: bytes, pr: int, run_number: int) -> int | None:
-    """Independent reading of ``previous_queue_run`` with exact type checks."""
-    body = _parse(raw)
-    if type(body) is not dict or type(body.get("workflow_runs")) is not list:
+def oracle_time(value: object) -> bool:
+    """Whether a value has the API's ``YYYY-MM-DDTHH:MM:SSZ`` shape, by hand."""
+    if type(value) is not str or len(value) != 20 or not value.isascii():
+        return False
+    digits = value[0:4] + value[5:7] + value[8:10] + value[11:13] + value[14:16] + value[17:19]
+    return digits.isdigit() and value[4] + value[7] + value[10] + value[13] + value[16] + value[19] == "--T::Z"
+
+
+def oracle_first_enqueue(raw: bytes) -> str | None:
+    """Independent reading of ``first_enqueue_on_head`` with exact type checks."""
+    pages = _parse(raw)
+    if type(pages) is not list or not all(type(p) is list for p in pages):
         return None
-    runs = body["workflow_runs"]
+    events = [e for p in pages for e in p]
+    if not all(type(e) is dict for e in events):
+        return None
+    last_head = max((i for i, e in enumerate(events) if e.get("event") in ("committed", "head_ref_force_pushed")), default=-1)
+    entries = [e for e in events[last_head + 1 :] if e.get("event") == "added_to_merge_queue"]
+    if not entries or not oracle_time(entries[0].get("created_at")):
+        return None
+    return entries[0]["created_at"]
+
+
+def oracle_previous_queue_run(raw: bytes, pr: int, run_number: int, since: str) -> int | None:
+    """Independent reading of ``previous_queue_run`` with exact type checks."""
+    pages = _parse(raw)
+    if type(pages) is not list or not oracle_time(since):
+        return None
+    if not all(type(p) is dict and type(p.get("workflow_runs")) is list for p in pages):
+        return None
+    runs = [r for p in pages for r in p["workflow_runs"]]
     if not all(
-        type(r) is dict and type(r.get("run_number")) is int and type(r.get("id")) is int and type(r.get("head_branch")) is str
+        type(r) is dict
+        and type(r.get("run_number")) is int
+        and type(r.get("id")) is int
+        and type(r.get("head_branch")) is str
+        and oracle_time(r.get("created_at"))
         for r in runs
     ):
         return None
-    mine = [r for r in runs if oracle_queued_pr_branch(r["head_branch"]) == pr and r["run_number"] < run_number]
+    mine = [
+        r
+        for r in runs
+        if oracle_queued_pr_branch(r["head_branch"]) == pr and r["run_number"] < run_number and r["created_at"] >= since
+    ]
     return max(mine, key=lambda r: r["run_number"])["id"] if mine else None
 
 
@@ -891,8 +967,10 @@ def check_against_oracles(case: unittest.TestCase, raw: bytes, label: str) -> No
     for name in ("macOS (sandbox, gateway, tray)", "CI Gate", "tray (macos-latest)"):
         case.assertEqual(mq.stranded_job(raw, name), oracle_stranded_job(raw, name), label)
     case.assertEqual(mq.gate_passed(raw), oracle_gate_passed(raw), label)
-    for pr, number in ((604, 3500), (604, 3490), (603, 10**6)):
-        case.assertEqual(mq.previous_queue_run(raw, pr, number), oracle_previous_queue_run(raw, pr, number), label)
+    case.assertEqual(mq.first_enqueue_on_head(raw), oracle_first_enqueue(raw), label)
+    for pr, number, since in ((604, 3500, "2026-11-03T00:00:00Z"), (604, 3490, "2026-11-03T21:00:00Z"), (603, 10**6, "x")):
+        got = mq.previous_queue_run(raw, pr, number, since)
+        case.assertEqual(got, oracle_previous_queue_run(raw, pr, number, since), label)
 
 
 class CorpusTests(unittest.TestCase):
@@ -914,7 +992,7 @@ class FuzzTests(unittest.TestCase):
     VALUES: list[object] = [
         None, True, False, 0, 1, -1, 1.5, "", "x", "success", "cancelled", "failure", "skipped",
         "merge_group", "pull_request", "open", "CI Gate", "macOS (sandbox, gateway, tray)", "completed", "added_to_merge_queue",
-        "committed", REPO, [], {}, [1], {"a": 1},
+        "committed", "2026-11-03T21:00:00Z", "2026-13-99T99:99:99Z", REPO, [], {}, [1], {"a": 1},
     ]  # fmt: skip
 
     def mutate_json(self, rng: random.Random, node: object) -> object:

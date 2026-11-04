@@ -117,6 +117,9 @@ QUEUE_BRANCH_RE = re.compile(r"gh-readonly-queue/main/pr-([1-9][0-9]{0,9})-[0-9a
 # A full commit id, as the API reports it.
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 
+# A UTC timestamp as the API reports it; strings of this shape order by time.
+TIME_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+
 # Timeline events after which the pull request has a new head.
 HEAD_CHANGE_EVENTS = frozenset({"committed", "head_ref_force_pushed"})
 
@@ -256,38 +259,48 @@ def stranded_job(raw: bytes, name: str) -> int | None:
     return job_id
 
 
-def previous_queue_run(raw: bytes, pr: int, run_number: int) -> int | None:
-    """Finds the latest earlier merge-group CI run for one pull request.
+def previous_queue_run(raw: bytes, pr: int, run_number: int, since: str) -> int | None:
+    """Finds the latest earlier merge-group CI run for one pull request head.
 
     Args:
-        raw: The JSON body of ``GET /repos/{repo}/actions/workflows/{file}/runs``
-            filtered to ``merge_group`` runs.
+        raw: The ``gh api --paginate --slurp`` body of
+            ``GET /repos/{repo}/actions/workflows/{file}/runs`` filtered to
+            ``merge_group`` runs: a list of pages, each a run listing.
         pr: The pull request the current merge group tests.
         run_number: The current run's ``run_number``.
+        since: When the pull request first entered the queue on its current
+            head (``first_enqueue_on_head``); earlier runs tested an older head.
 
     Returns:
         The id of the run with the largest ``run_number`` below
-        ``run_number`` whose head branch is a queue branch for ``pr``;
-        None when there is none or the body is not a run listing.
+        ``run_number`` whose head branch is a queue branch for ``pr`` and
+        which was created at or after ``since``; None when there is none,
+        ``since`` is not a timestamp, or the body is not a run listing.
     """
-    body = _load(raw)
-    runs = body.get("workflow_runs") if isinstance(body, dict) else None
-    if not isinstance(runs, list):
+    pages = _load(raw)
+    if not isinstance(pages, list) or not TIME_RE.fullmatch(since):
         return None
     best: tuple[int, int] | None = None
-    for run in runs:
-        if not isinstance(run, dict):
+    for page in pages:
+        runs = page.get("workflow_runs") if isinstance(page, dict) else None
+        if not isinstance(runs, list):
             return None
-        number = run.get("run_number")
-        run_id = run.get("id")
-        branch = run.get("head_branch")
-        if not _is_int(number) or not _is_int(run_id) or not isinstance(branch, str):
-            return None
-        match = QUEUE_BRANCH_RE.fullmatch(branch)
-        if match is None or int(match.group(1)) != pr or number >= run_number:
-            continue
-        if best is None or number > best[0]:
-            best = (number, run_id)
+        for run in runs:
+            if not isinstance(run, dict):
+                return None
+            number = run.get("run_number")
+            run_id = run.get("id")
+            branch = run.get("head_branch")
+            created = run.get("created_at")
+            if not _is_int(number) or not _is_int(run_id) or not isinstance(branch, str):
+                return None
+            if not isinstance(created, str) or not TIME_RE.fullmatch(created):
+                return None
+            match = QUEUE_BRANCH_RE.fullmatch(branch)
+            if match is None or int(match.group(1)) != pr or number >= run_number or created < since:
+                continue
+            if best is None or number > best[0]:
+                best = (number, run_id)
     return best[1] if best is not None else None
 
 
@@ -566,6 +579,37 @@ def enqueues_since_head(raw: bytes) -> int | None:
     return count
 
 
+def first_enqueue_on_head(raw: bytes) -> str | None:
+    """Finds when the pull request first entered the queue on its head.
+
+    Args:
+        raw: The ``gh api --paginate --slurp`` body of
+            ``GET /repos/{repo}/issues/{n}/timeline``: a list of pages, each
+            a list of events, oldest first.
+
+    Returns:
+        The ``created_at`` of the first ``added_to_merge_queue`` event after
+        the last event in ``HEAD_CHANGE_EVENTS``; None when there is none,
+        that event has no timestamp, or the body is not the expected shape.
+    """
+    pages = _load(raw)
+    if not isinstance(pages, list):
+        return None
+    first: object = None
+    for page in pages:
+        if not isinstance(page, list):
+            return None
+        for event in page:
+            if not isinstance(event, dict):
+                return None
+            kind = event.get("event")
+            if isinstance(kind, str) and kind in HEAD_CHANGE_EVENTS:
+                first = None
+            elif kind == "added_to_merge_queue" and first is None:
+                first = event.get("created_at", "")
+    return first if isinstance(first, str) and TIME_RE.fullmatch(first) else None
+
+
 def _stranded_reason(repo: str, run_id: int, gh: Gh) -> str | None:
     """Checks that a run failed only because jobs never got a runner.
 
@@ -743,11 +787,14 @@ def decide_stranded(repo: str, run_id: int, attempt: int, name: str, gh: Gh) -> 
                 return False, f"could not read the timeline of #{pr}."
             if enqueues < MIN_ENQUEUES_TO_PASS_STRANDED:
                 return False, f"{name} never got a runner on #{pr}'s first merge group; it is re-enqueued once first."
+            since = first_enqueue_on_head(timeline)
+            if since is None:
+                return False, f"could not read when #{pr} entered the queue on its head."
             workflow = CI_WORKFLOW_PATH.rsplit("/", 1)[-1]
-            listing = gh(["api", f"repos/{repo}/actions/workflows/{workflow}/runs?event=merge_group&per_page=100"])
-            previous = previous_queue_run(listing, pr, number)
+            runs = f"repos/{repo}/actions/workflows/{workflow}/runs?event=merge_group&created={quote('>=' + since, safe='')}&per_page=100"
+            previous = previous_queue_run(gh(["api", "--paginate", "--slurp", runs]), pr, number, since)
             if previous is None:
-                return False, f"found no earlier merge group of #{pr}."
+                return False, f"found no earlier merge group of #{pr} on its head."
             before = f"repos/{repo}/actions/runs/{previous}/jobs?per_page=100"
             if _stranded_with_annotation(repo, before, name, gh) is None:
                 return False, f"{name} got a runner in #{pr}'s previous merge group; this is its first miss there."
