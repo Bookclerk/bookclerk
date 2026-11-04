@@ -249,38 +249,14 @@ Integrations (Audiobookshelf), embeddings, discover and the search index
 subscribe to them, so a metadata-only change refreshes them as a new link
 does. The batch `rebuild_works_from_library()` pass is removed.
 
-### 7. Moving existing libraries: rebuild the title tables, rescan, restore state
+### 7. Existing development libraries: reset
 
-No in-place migration is written for an unreleased schema. A full
-`cargo reset --yes` is not the path either: it deletes the whole files
-directory, including `master.key`, the default local destination's
-audiobooks, and the database rows that hold accounts, sealed credentials,
-users and plugin configuration. Instead only the title tables are rebuilt:
-
-1. `bookclerk library export-state` ships **before** the schema change (with
-   the ABI step), so it runs against the current schema and is available in
-   the build people already have. It writes what only Bookclerk knows:
-   finished flags, tags, ignored titles, title requests, listening progress
-   and saved filters, keyed by store, product id and identifiers.
-2. The schema step adds `bookclerk db rebuild-library`. It runs only when the
-   database's unreleased checksum is the exact one of the last pre-overhaul
-   schema, which the binary carries as a constant; any other state still
-   fails closed as [schema versioning](schema-versioning.md) requires. It
-   drops the old title tables, creates the new ones and records the new
-   checksum in one step. Every other table (users, accounts, sealed secrets,
-   plugin configuration, nodes, jobs) is kept, as is everything on disk. The
-   same step clears each branch's catalog sync state on `nodes`
-   (`catalog_cursor`, `catalog_pass_started_at` and `catalog_full_pass_at`),
-   so every branch sends its whole catalog on its next session instead of
-   resuming from a cursor into tables that no longer exist.
-3. A rescan of each account fills listings, holdings and the bibliographic
-   tables.
-4. Storage matching re-links files already at each destination into
-   `edition_files`, so nothing is downloaded again.
-5. `bookclerk library import-state` re-applies the export by identifier.
-
-This replaces neither the normal library-open check nor the documented
-`cargo reset --yes` for any other checksum mismatch.
+Bookclerk has no release, so no library holds anything that has to be
+carried across. The schema step changes the unreleased checksum like any
+other schema change. A development library then fails closed as
+[schema versioning](schema-versioning.md) requires, and is recreated with
+`cargo reset --yes`. No in-place migration, state export or partial rebuild
+is written.
 
 The Libation importer in `bookclerk-migrate` writes the new tables directly.
 
@@ -305,8 +281,8 @@ not found ([#559](https://github.com/Bookclerk/bookclerk/issues/559)).
   fix the rest with overrides.
 - Three levels add a join to most title queries. The list views read a
   denormalised page index refreshed by the events above, not the full join.
-- Every development library rebuilds its title tables once. Backups taken
-  before the change can't be restored afterwards.
+- Every development library is reset once. Backups taken before the change
+  can't be restored afterwards.
 - Every storefront plugin changes in the same pull request as the records.
   A third-party plugin built against the development schema has to be
   rebuilt, which is acceptable before the first release.
@@ -318,10 +294,8 @@ Planned as separate pull requests, in this order:
 1. This ADR.
 2. ABI: the new capnp fields and enums replace the flat ones, both SDKs,
    and the four first-party storefronts filling them. Until step 3 the host
-   maps the structured fields onto the current `books` row. `export-state`
-   against the current schema.
-3. Schema and resolver, with its fuzz target, plus `db rebuild-library` and
-   `import-state`.
+   maps the structured fields onto the current `books` row.
+3. Schema and resolver, with its fuzz target.
 4. Acquire and files: per-edition acquisition, `edition_files`, and the
    naming discriminator.
 5. Cluster: branch titles become holdings; node frames carry identifiers and
