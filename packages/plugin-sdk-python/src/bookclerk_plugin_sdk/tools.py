@@ -850,20 +850,20 @@ def check_main_module_source(
     base = "BookclerkEntrypoint"
     if "BookclerkPlugin" in src:
         raise ValueError(
-            f"{main_name}: `BookclerkPlugin` was removed in api_version 3; extend "
-            f"`{base}` (default class with event()/job() triggers) and define "
-            "named entrypoint classes (Storefront, Storage, RemoteLibrary, "
-            "DatabaseAdapter, Cli, Oidc, Metadata)"
+            f"{main_name}: `BookclerkPlugin` was removed in api_version 3; extend `{base}` "
+            "(default export with event()/job() triggers) and export named entrypoint classes "
+            "(Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata)"
         )
     if language == "python":
         if "bookclerk_plugin_sdk" not in src and base not in src:
-            raise ValueError(
-                f"{main_name}: import {base} from bookclerk_plugin_sdk.workerd "
-                f"(e.g. `from bookclerk_plugin_sdk.workerd import {base}, js`)"
-            )
-    else:
-        if "@bookclerk/plugin-sdk" not in src and base not in src:
-            raise ValueError(f'{main_name}: import {base} from "@bookclerk/plugin-sdk/workerd"')
+            raise ValueError(f"{main_name}: import {base} from bookclerk_plugin_sdk.workerd")
+    elif "@bookclerk/plugin-sdk" not in src and base not in src:
+        raise ValueError(
+            f'{main_name}: import {base} from "@bookclerk/plugin-sdk/workerd" '
+            '(or "@bookclerk/plugin-sdk")'
+        )
+    # Any other `…Entrypoint` name (the SDK base or a named entrypoint base)
+    # means the module builds on the SDK rather than on the runtime's class.
     if "WorkerEntrypoint" in src and "Entrypoint" not in src.replace("WorkerEntrypoint", ""):
         raise ValueError(f"{main_name}: subclass {base}, not bare WorkerEntrypoint")
     for wire in entrypoints:
@@ -871,19 +871,17 @@ def check_main_module_source(
         if cls is None:
             continue
         if language == "python":
-            exported = re.search(rf"^class\s+{cls}\s*\(", src, re.MULTILINE) is not None
+            exported = re.search(rf"^class[ \t]+{cls}[ \t]*\(", src, re.MULTILINE) is not None
             hint = f"class {cls}({cls}Entrypoint)"
         else:
+            word = rf"(?<![A-Za-z0-9_$]){cls}(?![A-Za-z0-9_$])"
             exported = (
-                re.search(rf"export\s+class\s+{cls}\b", src) is not None
-                or re.search(rf"export\s*\{{[^}}]*\b{cls}\b[^}}]*\}}", src) is not None
+                re.search(rf"export\s+class\s+{word}", src) is not None
+                or re.search(rf"export\s*\{{[^}}]*{word}[^}}]*\}}", src) is not None
             )
             hint = f"export class {cls} extends {cls}Entrypoint"
         if not exported:
-            raise ValueError(
-                f"{main_name}: entrypoint `{wire}` declared in plugin.toml but the main "
-                f"module does not define `{cls}` ({hint})"
-            )
+            raise ValueError(f'{main_name}: entrypoints = ["{wire}"] requires `{hint}`')
 
 
 def check_plugin(plugin_dir: Path) -> str:

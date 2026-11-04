@@ -92,33 +92,35 @@ export function checkMainModuleSource(
         `${mainName}: import ${base} from "@bookclerk/plugin-sdk/workerd" (or "@bookclerk/plugin-sdk")`,
       );
     }
-    if (src.includes("WorkerEntrypoint") && !src.includes(base) && !src.includes("Entrypoint")) {
-      throw new Error(
-        `${mainName}: subclass ${base} from "@bookclerk/plugin-sdk/workerd", not bare WorkerEntrypoint`,
-      );
-    }
   } else {
     const usesPackage = src.includes("bookclerk_plugin_sdk") || src.includes(base);
     if (!usesPackage) {
       throw new Error(`${mainName}: import ${base} from bookclerk_plugin_sdk.workerd`);
     }
   }
+  // Any other `…Entrypoint` name (the SDK base or a named entrypoint base)
+  // means the module builds on the SDK rather than on the runtime's class.
+  if (
+    src.includes("WorkerEntrypoint") &&
+    !src.replaceAll("WorkerEntrypoint", "").includes("Entrypoint")
+  ) {
+    throw new Error(`${mainName}: subclass ${base}, not bare WorkerEntrypoint`);
+  }
   for (const wire of entrypoints) {
     const cls = ENTRYPOINT_EXPORT_CLASSES[wire];
     if (!cls) continue;
+    const word = `(?<![A-Za-z0-9_$])${cls}(?![A-Za-z0-9_$])`;
     const exported =
       language === "js"
-        ? new RegExp(`export\\s+class\\s+${cls}\\b`).test(src) ||
-          new RegExp(`export\\s*\\{[^}]*\\b${cls}\\b[^}]*\\}`).test(src)
-        : new RegExp(`^class\\s+${cls}\\s*\\(`, "m").test(src);
+        ? new RegExp(`export\\s+class\\s+${word}`).test(src) ||
+          new RegExp(`export\\s*\\{[^}]*${word}[^}]*\\}`).test(src)
+        : new RegExp(`^class[ \\t]+${cls}[ \\t]*\\(`, "m").test(src);
     if (!exported) {
       const hint =
         language === "js"
           ? `export class ${cls} extends ${cls}Entrypoint`
           : `class ${cls}(${cls}Entrypoint)`;
-      throw new Error(
-        `${mainName}: entrypoint \`${wire}\` declared in plugin.toml but the main module does not export \`${cls}\` (${hint})`,
-      );
+      throw new Error(`${mainName}: entrypoints = ["${wire}"] requires \`${hint}\``);
     }
   }
 }

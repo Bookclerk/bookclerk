@@ -1,0 +1,275 @@
+[
+  {
+    "entrypoints": [],
+    "error": null,
+    "language": "js",
+    "name": "js minimal",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexport default class extends BookclerkEntrypoint {}\n"
+  },
+  {
+    "entrypoints": [],
+    "error": "index.js: `BookclerkPlugin` was removed in api_version 3; extend `BookclerkEntrypoint` (default export with event()/job() triggers) and export named entrypoint classes (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata)",
+    "language": "js",
+    "name": "js removed base",
+    "src": "import { BookclerkPlugin } from \"@bookclerk/plugin-sdk\";\n"
+  },
+  {
+    "entrypoints": [],
+    "error": "main.py: `BookclerkPlugin` was removed in api_version 3; extend `BookclerkEntrypoint` (default export with event()/job() triggers) and export named entrypoint classes (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata)",
+    "language": "python",
+    "name": "py removed base",
+    "src": "from bookclerk_plugin_sdk import BookclerkPlugin\n"
+  },
+  {
+    "entrypoints": [],
+    "error": "index.js: import BookclerkEntrypoint from \"@bookclerk/plugin-sdk/workerd\" (or \"@bookclerk/plugin-sdk\")",
+    "language": "js",
+    "name": "js no sdk import",
+    "src": "export default { fetch() {} };\n"
+  },
+  {
+    "entrypoints": [],
+    "error": null,
+    "language": "js",
+    "name": "js package import only",
+    "src": "import \"@bookclerk/plugin-sdk\";\n"
+  },
+  {
+    "entrypoints": [],
+    "error": null,
+    "language": "js",
+    "name": "js base name only",
+    "src": "export default class extends BookclerkEntrypoint {}\n"
+  },
+  {
+    "entrypoints": [],
+    "error": "main.py: import BookclerkEntrypoint from bookclerk_plugin_sdk.workerd",
+    "language": "python",
+    "name": "py no sdk import",
+    "src": "class Default:\n    pass\n"
+  },
+  {
+    "entrypoints": [],
+    "error": null,
+    "language": "python",
+    "name": "py package only",
+    "src": "import bookclerk_plugin_sdk\n"
+  },
+  {
+    "entrypoints": [],
+    "error": null,
+    "language": "python",
+    "name": "py base name only",
+    "src": "class Default(BookclerkEntrypoint):\n    pass\n"
+  },
+  {
+    "entrypoints": [],
+    "error": "index.js: subclass BookclerkEntrypoint, not bare WorkerEntrypoint",
+    "language": "js",
+    "name": "js bare WorkerEntrypoint",
+    "src": "import { WorkerEntrypoint } from \"cloudflare:workers\";\nimport \"@bookclerk/plugin-sdk\";\nexport default class extends WorkerEntrypoint {}\n"
+  },
+  {
+    "entrypoints": [],
+    "error": "main.py: subclass BookclerkEntrypoint, not bare WorkerEntrypoint",
+    "language": "python",
+    "name": "py bare WorkerEntrypoint",
+    "src": "import bookclerk_plugin_sdk\nfrom workers import WorkerEntrypoint\nclass Default(WorkerEntrypoint):\n    pass\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": null,
+    "language": "js",
+    "name": "js WorkerEntrypoint beside a named base",
+    "src": "import { WorkerEntrypoint } from \"cloudflare:workers\";\nimport { StorageEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexport class Storage extends StorageEntrypoint {}\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": null,
+    "language": "js",
+    "name": "js storage exported",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexport class Storage extends StorageEntrypoint {}\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": null,
+    "language": "js",
+    "name": "js storage in export list",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nclass Storage extends StorageEntrypoint {}\nexport { Cli, Storage };\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": null,
+    "language": "js",
+    "name": "js export list without spaces",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nclass Storage {}\nexport{Storage}\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": null,
+    "language": "js",
+    "name": "js storage renamed in export list",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nclass S {}\nexport { S as Storage };\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "index.js: entrypoints = [\"storage\"] requires `export class Storage extends StorageEntrypoint`",
+    "language": "js",
+    "name": "js storage missing",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "index.js: entrypoints = [\"storage\"] requires `export class Storage extends StorageEntrypoint`",
+    "language": "js",
+    "name": "js longer class name",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexport class StorageX extends StorageEntrypoint {}\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "index.js: entrypoints = [\"storage\"] requires `export class Storage extends StorageEntrypoint`",
+    "language": "js",
+    "name": "js class name with dollar",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexport class Storage$ extends StorageEntrypoint {}\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "index.js: entrypoints = [\"storage\"] requires `export class Storage extends StorageEntrypoint`",
+    "language": "js",
+    "name": "js export list dollar prefix",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nclass $Storage {}\nexport { $Storage };\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "index.js: entrypoints = [\"storage\"] requires `export class Storage extends StorageEntrypoint`",
+    "language": "js",
+    "name": "js export default class",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexport default class Storage extends StorageEntrypoint {}\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "index.js: entrypoints = [\"storage\"] requires `export class Storage extends StorageEntrypoint`",
+    "language": "js",
+    "name": "js exportclass without space",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexportclass Storage {}\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": null,
+    "language": "js",
+    "name": "js export class across spaces",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexport   class\tStorage extends StorageEntrypoint {}\n"
+  },
+  {
+    "entrypoints": ["databaseAdapter"],
+    "error": null,
+    "language": "js",
+    "name": "js database adapter",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexport class DatabaseAdapter extends DatabaseAdapterEntrypoint {}\n"
+  },
+  {
+    "entrypoints": ["remoteLibrary"],
+    "error": "index.js: entrypoints = [\"remoteLibrary\"] requires `export class RemoteLibrary extends RemoteLibraryEntrypoint`",
+    "language": "js",
+    "name": "js remote library missing",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexport class Storage extends StorageEntrypoint {}\n"
+  },
+  {
+    "entrypoints": ["storage", "storefront", "cli"],
+    "error": "index.js: entrypoints = [\"storefront\"] requires `export class Storefront extends StorefrontEntrypoint`",
+    "language": "js",
+    "name": "js first missing entrypoint reported",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexport class Storage extends StorageEntrypoint {}\n"
+  },
+  {
+    "name": "js metadata missing",
+    "language": "js",
+    "entrypoints": ["metadata"],
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\n",
+    "error": "index.js: entrypoints = [\"metadata\"] requires `export class Metadata extends MetadataEntrypoint`"
+  },
+  {
+    "name": "py metadata defined",
+    "language": "python",
+    "entrypoints": ["metadata"],
+    "src": "from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint\nclass Metadata(MetadataEntrypoint):\n    pass\n",
+    "error": null
+  },
+  {
+    "entrypoints": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc"],
+    "error": null,
+    "language": "js",
+    "name": "js all entrypoints",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexport class Storefront extends StorefrontEntrypoint {}\nexport class Storage extends StorageEntrypoint {}\nexport class DatabaseAdapter extends DatabaseAdapterEntrypoint {}\nexport class RemoteLibrary extends RemoteLibraryEntrypoint {}\nexport class Cli extends CliEntrypoint {}\nexport class Oidc extends OidcEntrypoint {}\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": null,
+    "language": "python",
+    "name": "py storage defined",
+    "src": "from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint\nclass Storage(StorageEntrypoint):\n    pass\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "main.py: entrypoints = [\"storage\"] requires `class Storage(StorageEntrypoint)`",
+    "language": "python",
+    "name": "py storage missing",
+    "src": "from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": null,
+    "language": "python",
+    "name": "py class with extra spaces",
+    "src": "from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint\nclass  Storage\t(StorageEntrypoint):\n    pass\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "main.py: entrypoints = [\"storage\"] requires `class Storage(StorageEntrypoint)`",
+    "language": "python",
+    "name": "py class across a newline",
+    "src": "from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint\nclass\nStorage(StorageEntrypoint):\n    pass\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "main.py: entrypoints = [\"storage\"] requires `class Storage(StorageEntrypoint)`",
+    "language": "python",
+    "name": "py indented class",
+    "src": "from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint\nif True:\n    class Storage(StorageEntrypoint):\n        pass\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "main.py: entrypoints = [\"storage\"] requires `class Storage(StorageEntrypoint)`",
+    "language": "python",
+    "name": "py class without bases",
+    "src": "from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint\nclass Storage:\n    pass\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "main.py: entrypoints = [\"storage\"] requires `class Storage(StorageEntrypoint)`",
+    "language": "python",
+    "name": "py longer class name",
+    "src": "from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint\nclass StorageEntrypoint(object):\n    pass\n"
+  },
+  {
+    "entrypoints": ["oidc"],
+    "error": null,
+    "language": "python",
+    "name": "py oidc defined",
+    "src": "from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint\nclass Oidc(OidcEntrypoint):\n    pass\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "main.py: entrypoints = [\"storage\"] requires `class Storage(StorageEntrypoint)`",
+    "language": "python",
+    "name": "py js syntax does not count",
+    "src": "from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint\nexport class Storage extends StorageEntrypoint {}\n"
+  },
+  {
+    "entrypoints": ["storage"],
+    "error": "index.js: entrypoints = [\"storage\"] requires `export class Storage extends StorageEntrypoint`",
+    "language": "js",
+    "name": "js py syntax does not count",
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nclass Storage(StorageEntrypoint):\n"
+  }
+]
