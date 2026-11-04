@@ -54,7 +54,7 @@ use crate::error::{LibraryError, Result};
 use crate::models::{is_downloadable, AcquireStatus, BookRecord, JobRecord};
 use crate::models::{JobKind, JobState};
 use crate::store::event_outbox::{book_acquired_spec, prepare_publish_domain_event};
-use crate::store::{LibraryStore, TitleFile};
+use crate::store::{EditionFile, FileOwner, FileRole, LibraryStore};
 
 /// How long a granted upload's token is accepted past its latest
 /// extension (the grant, an accepted file, or a renewal of the job's
@@ -532,9 +532,13 @@ const KEY_PROBES_PER_READ: usize = 32;
 /// (the same file stem with any further extension, such as its cover,
 /// `.cue` or chapter JSON). Every copy is checked, on every destination:
 /// these columns do not say which destination they were written on (rows
-/// acquired before `title_files` existed are known only here), so a match
+/// that predate their `edition_files` record are known only here), so a match
 /// on any destination is refused, failing closed. The destination-scoped
-/// record of every file a title wrote is checked by `claim_upload_keys`.
+/// record of every file an edition wrote is checked by `claim_upload_keys`.
+///
+/// `siblings` are the titles whose keys are the uploader's own: the
+/// title itself and every other account's row of the same edition, which
+/// share its files.
 ///
 /// Only the other titles' keys that could match are read, so the read
 /// stays small (and under the guest's result-row cap) however many titles
@@ -549,7 +553,7 @@ const KEY_PROBES_PER_READ: usize = 32;
 /// Returns an error when a read fails.
 pub(super) async fn claims_another_books_key(
     store: &LibraryStore,
-    book_uuid: &str,
+    siblings: &BTreeSet<String>,
     files: &[UploadFile],
 ) -> Result<bool> {
     let copies: BTreeSet<&str> = files
@@ -591,7 +595,7 @@ pub(super) async fn claims_another_books_key(
             .select_only()
             .column(books::Column::StorageKey)
             .column(books::Column::PdfStorageKey)
-            .filter(books::Column::Uuid.ne(book_uuid))
+            .filter(books::Column::Uuid.is_not_in(siblings.iter().cloned()))
             .filter(any)
             .into_tuple()
             .all(store.db())
@@ -622,15 +626,16 @@ struct ClaimedKey<'a> {
     /// The storage key.
     key: &'a str,
     /// Its record before the claim; `None` when it was unrecorded.
-    prior: Option<TitleFile>,
+    prior: Option<EditionFile>,
 }
 
-/// Claims every copy of `files` for the title `book_uuid` with `upload_id`
-/// as its writer ([`LibraryStore::claim_title_file`]); answers false as
-/// soon as one is a key another library title holds on that destination
-/// (one its acquire wrote, or another title's upload claimed), so a folder
-/// several titles share never lets one overwrite another's chapter, part or
-/// sidecar files. A `catalog` upload (a branch title's) is refused keys a
+/// Claims every copy of `files` for `owner` with `upload_id` as its writer
+/// ([`LibraryStore::claim_edition_file`]); answers false as soon as one is
+/// a key another edition holds on that destination (one its acquire wrote,
+/// or another edition's upload claimed), so a folder several titles share
+/// never lets one overwrite another's chapter, part or sidecar files.
+/// `primary` is the upload's primary audio key, which gives each file its
+/// role ([`FileRole::for_key`]). A `catalog` upload (a branch title's) is refused keys a
 /// branch title holds as well; a Host job's upload of a book takes those
 /// over, as an acquire on this node would.
 ///
@@ -643,14 +648,22 @@ struct ClaimedKey<'a> {
 /// Returns an error when a read or write fails.
 async fn claim_upload_keys<'a>(
     store: &LibraryStore,
-    book_uuid: &str,
+    owner: &FileOwner,
+    primary: &str,
     upload_id: &str,
     files: &'a [UploadFile],
     catalog: bool,
     claimed: &mut Vec<ClaimedKey<'a>>,
 ) -> Result<bool> {
-    'copies: for copy in files.iter().flat_map(|file| &file.copies) {
-        let mut prior = store.title_file(&copy.destination, &copy.key).await?;
+    // Collected first: an iterator adapter held across the awaits below
+    // would keep the future from being `Send`.
+    let mut copies: Vec<(&'a UploadFile, &'a bookclerk_node_proto::FileCopy)> = Vec::new();
+    for file in files {
+        copies.extend(file.copies.iter().map(|copy| (file, copy)));
+    }
+    'copies: for (file, copy) in copies {
+        let role = FileRole::for_key(&copy.key, Some(primary));
+        let mut prior = store.edition_file(&copy.destination, &copy.key).await?;
         // A claim fails when another title holds the key, or when the
         // record changed since it was read; only the latter is retried.
         for _ in 0..CLAIM_ATTEMPTS {
@@ -660,11 +673,13 @@ async fn claim_upload_keys<'a>(
                 prior: prior.clone(),
             });
             if store
-                .claim_title_file(
+                .claim_edition_file(
                     &copy.destination,
                     &copy.key,
-                    book_uuid,
+                    owner,
                     upload_id,
+                    role,
+                    Some(file.sha256.as_str()),
                     prior.as_ref(),
                     catalog,
                 )
@@ -674,7 +689,7 @@ async fn claim_upload_keys<'a>(
             }
             // A refused claim changed nothing.
             claimed.pop();
-            let now = store.title_file(&copy.destination, &copy.key).await?;
+            let now = store.edition_file(&copy.destination, &copy.key).await?;
             if now == prior {
                 return Ok(false);
             }
@@ -686,7 +701,7 @@ async fn claim_upload_keys<'a>(
 }
 
 /// Gives back every key in `claimed` that `upload_id` still holds, newest
-/// first, to whoever held it before ([`LibraryStore::release_title_file`]).
+/// first, to whoever held it before ([`LibraryStore::release_edition_file`]).
 ///
 /// # Errors
 ///
@@ -698,7 +713,7 @@ async fn release_upload_keys(
 ) -> Result<()> {
     for claim in claimed.iter().rev() {
         store
-            .release_title_file(
+            .release_edition_file(
                 claim.destination,
                 claim.key,
                 upload_id,
@@ -746,14 +761,12 @@ pub(super) async fn upload_holds_its_keys(
     if session.book_uuid.is_empty() {
         return Ok(true);
     }
-    Ok(store
-        .count_title_files_of(&session.book_uuid, &session.upload_id)
-        .await?
-        == granted_key_count(session))
+    Ok(store.count_edition_files_by(&session.upload_id).await? == granted_key_count(session))
 }
 
 /// True while `key` on `destination` is still `session`'s own: its
-/// recorded latest writer is this upload. A later upload of the title, an
+/// recorded latest writer is this upload (an upload id is unique, and
+/// claims keys for its own title only). A later upload of the title, an
 /// acquire run on this node, or another title may have written the key
 /// since; the receiving node then leaves the file alone when it cleans up
 /// after `session`, so a stale abort never deletes a replacement's file.
@@ -768,11 +781,9 @@ pub async fn upload_owns_key(
     key: &str,
 ) -> Result<bool> {
     Ok(store
-        .title_file(destination, key)
+        .edition_file(destination, key)
         .await?
-        .is_some_and(|file| {
-            file.writer == session.upload_id && file.book_uuid == session.book_uuid
-        }))
+        .is_some_and(|file| file.writer == session.upload_id))
 }
 
 /// `key` without its file name's last extension (`A/T/T.m4b` → `A/T/T`);
@@ -869,7 +880,13 @@ pub async fn grant_upload(
             }
             NodeTrust::Nothing => return Ok(UploadGrant::Lost),
         }
-        if claims_another_books_key(store, &book.uuid, req.files).await? {
+        // Every account's row of the title's edition shares its files.
+        let Some(edition) = store.edition_of_book(&book.uuid).await? else {
+            return Ok(UploadGrant::Refused("unresolved_title"));
+        };
+        let mut siblings = store.books_of_edition(&edition).await?;
+        siblings.insert(book.uuid.clone());
+        if claims_another_books_key(store, &siblings, req.files).await? {
             return Ok(UploadGrant::Refused("key_of_another_book"));
         }
     }
@@ -947,10 +964,29 @@ pub(super) async fn open_upload_session(
         .map_err(LibraryError::Orm)?;
     let catalog = job_id == bookclerk_node_proto::CATALOG_ITEM;
     let mut claimed = Vec::new();
-    if !req.book_uuid.is_empty() {
+    // A branch title holds its keys itself; a book's are its edition's.
+    let owner = if req.book_uuid.is_empty() {
+        None
+    } else if catalog {
+        Some(FileOwner::BranchTitle(req.book_uuid.to_string()))
+    } else {
+        match store.file_owner_of_book(req.book_uuid).await {
+            Ok(Some(owner)) => Some(owner),
+            Ok(None) => {
+                undo_grant(store, &upload_id, &claimed).await;
+                return Ok(UploadGrant::Refused("unresolved_title"));
+            }
+            Err(err) => {
+                undo_grant(store, &upload_id, &claimed).await;
+                return Err(err);
+            }
+        }
+    };
+    if let Some(owner) = &owner {
         match claim_upload_keys(
             store,
-            req.book_uuid,
+            owner,
+            req.primary_key,
             &upload_id,
             req.files,
             catalog,
@@ -1009,10 +1045,11 @@ pub(super) async fn open_upload_session(
     // An older grant still claiming when this one claimed may have taken
     // a key back since (the same title's claims succeed for either); with
     // it aborted now, this grant claims its keys once more.
-    if !req.book_uuid.is_empty() && !superseded.is_empty() {
+    if let (Some(owner), false) = (&owner, superseded.is_empty()) {
         match claim_upload_keys(
             store,
-            req.book_uuid,
+            owner,
+            req.primary_key,
             &upload_id,
             req.files,
             catalog,
@@ -1533,19 +1570,19 @@ pub async fn commit_upload(
     ];
     binds.extend(trust_binds);
     // A title's upload still holds every key it was granted: each is
-    // recorded for the title with this upload as its latest writer (the
-    // keys are unique, so the count says all of them). Gated in the same
+    // recorded with this upload as its latest writer (the keys are unique,
+    // and an upload claims for its own title only, so the count says all
+    // of them). Gated in the same
     // statement, so a key taken between the check above and the batch is
     // never recorded as this title's. The closing upload holds none.
     let keys_sql = if session.book_uuid.is_empty() {
         "1 = 1"
     } else {
         binds.extend([
-            text(&session.book_uuid),
             text(upload_id),
             batch::int(i64::try_from(granted_key_count(&session)).unwrap_or(i64::MAX)),
         ]);
-        "(SELECT COUNT(*) FROM title_files WHERE book_uuid = ? AND writer = ?) = ?"
+        "(SELECT COUNT(*) FROM edition_files WHERE writer = ?) = ?"
     };
     let mut statements = vec![exec(
         &format!(

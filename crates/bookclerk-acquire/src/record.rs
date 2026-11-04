@@ -1,8 +1,9 @@
-//! Records every file key an acquire writes (`title_files`).
+//! Records every file key an acquire writes (`edition_files`).
 //!
 //! [`RecordingBackend`] wraps one destination's backend for one acquire
-//! run and records each key the run writes against the title, just before
-//! the write, on that destination ([`LibraryStore::record_title_file`]).
+//! run and records each key the run writes against the title's edition,
+//! just before the write, on that destination
+//! ([`LibraryStore::record_edition_file`]).
 //! The library's primary audio and PDF keys say nothing of a title's
 //! chapter or part files and sidecars, so this record is what lets the
 //! owner refuse a host upload another title's files in a folder titles
@@ -12,7 +13,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::time::SystemTime;
 
-use bookclerk_library::LibraryStore;
+use bookclerk_library::{FileOwner, FileRole, LibraryStore};
 use bookclerk_storage::{
     ByteRange, ListPage, ObjectInfo, ObjectMeta, ObjectProbe, PutStreamResult, StorageBackend,
     StorageError,
@@ -22,7 +23,7 @@ use tokio::io::AsyncRead;
 
 use crate::destinations::{destination_id, AcquireDestination, AcquireDestinations};
 
-/// One destination's backend whose writes are recorded for one title.
+/// One destination's backend whose writes are recorded for one edition.
 pub(crate) struct RecordingBackend {
     /// The destination's own backend.
     inner: Box<dyn StorageBackend>,
@@ -30,12 +31,13 @@ pub(crate) struct RecordingBackend {
     library: LibraryStore,
     /// The destination's id ([`destination_id`]).
     destination: &'static str,
-    /// Library id of the title the acquire writes.
-    book_uuid: String,
+    /// The edition the acquire writes.
+    owner: FileOwner,
 }
 
 impl RecordingBackend {
-    /// Records `key` for the title before it is written.
+    /// Records `key` for the edition before it is written, with the role
+    /// its extension names ([`FileRole::for_key`]).
     ///
     /// # Errors
     ///
@@ -43,7 +45,12 @@ impl RecordingBackend {
     /// the write is then not attempted, so no file goes unrecorded.
     async fn record(&self, key: &str) -> bookclerk_storage::Result<()> {
         self.library
-            .record_title_file(self.destination, key, &self.book_uuid)
+            .record_edition_file(
+                self.destination,
+                key,
+                &self.owner,
+                FileRole::for_key(key, None),
+            )
             .await
             .map_err(|err| {
                 StorageError::Other(anyhow::anyhow!("could not record a title's file: {err}"))
@@ -52,24 +59,24 @@ impl RecordingBackend {
 }
 
 /// `destinations` with each backend wrapped in a [`RecordingBackend`] for
-/// the title `book_uuid`; the same backends unwrapped when the title has no
-/// library row (`None`), since there is no title to record them for.
+/// the edition `owner`; the same backends unwrapped when the title has no
+/// library row (`None`), since there is no edition to record them for.
 pub(crate) fn recording_destinations(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
-    book_uuid: Option<&str>,
+    owner: Option<&FileOwner>,
 ) -> AcquireDestinations {
     let items = destinations
         .items
         .iter()
         .map(|item| AcquireDestination {
             kind: item.kind,
-            backend: match book_uuid {
-                Some(book_uuid) => Box::new(RecordingBackend {
+            backend: match owner {
+                Some(owner) => Box::new(RecordingBackend {
                     inner: item.backend.clone_box(),
                     library: library.clone(),
                     destination: destination_id(item.kind),
-                    book_uuid: book_uuid.to_string(),
+                    owner: owner.clone(),
                 }),
                 None => item.backend.clone_box(),
             },
@@ -102,7 +109,7 @@ impl StorageBackend for RecordingBackend {
             inner: self.inner.clone_box(),
             library: self.library.clone(),
             destination: self.destination,
-            book_uuid: self.book_uuid.clone(),
+            owner: self.owner.clone(),
         })
     }
 

@@ -1,6 +1,6 @@
 # ADR: Library data model (works, expressions, editions, holdings)
 
-- **Status:** Accepted; steps 1 to 3 implemented (see [Status of the work](#status-of-the-work))
+- **Status:** Accepted; steps 1 to 4 implemented, with upload quality moved to step 5 (see [Status of the work](#status-of-the-work))
 - **Date:** 2026-11-04
 - **Related:** [Schema versioning](schema-versioning.md),
   [SQL database contract](sql-database-contract.md),
@@ -317,6 +317,17 @@ new tables fill as titles are scanned or imported. `holding_removed` and
 files. The old tables are dropped by
 the step that moves their last reader off them: `title_files` with step 4,
 `branch_titles` with step 5 and `books` with step 6.
+
+Step 4 records every file in `edition_files` with its edition and role,
+acquires an edition once for all its account rows, and names another
+edition's files apart (`Abridged`, then the first narrator, then a short
+edition id). Two parts of decision 3 move to step 5, because node frames
+do not carry them yet: the quality comparison (an upload's file carries no
+bitrate or lossless flag, so `lossless` and `bitrate_kbps` stay empty and
+a key held by the same edition is granted as before), and the
+discriminator for a Host's upload (the Host names its keys before the
+owner sees them). `edition_files_written` comes with step 5 too, once a
+file's quality is known.
 
 User-facing pages (the glossary, *Where books go*, *Branches*, the plugin ABI
 reference) change with the step that changes their behaviour.

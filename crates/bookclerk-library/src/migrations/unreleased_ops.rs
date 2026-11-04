@@ -1293,22 +1293,32 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_node_upload_sessions_job ON node_upload_sessions(job_id)",
     ),
-    // Every file key a title's acquire or host upload wrote, per output
-    // destination, so an upload is never granted another title's file in a
-    // folder titles share. `writer` is the host upload id that claimed the
-    // key last, or `acquire` for an acquire run on the node itself.
+    // Every file key an acquire or a host upload wrote, per output
+    // destination, and the edition it belongs to (`owner_kind = 'edition'`),
+    // so an upload is never granted another edition's file in a folder
+    // titles share. A title a branch shares here owns its keys as
+    // `branch_title` until branch titles become holdings. `writer` is the
+    // host upload id that claimed the key last, or `acquire` for an acquire
+    // run on the node itself. `role` says what the file is; audio quality
+    // (`lossless`, `bitrate_kbps`) decides whether a later copy of the same
+    // edition replaces it.
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS title_files (
+        r"CREATE TABLE IF NOT EXISTS edition_files (
         destination TEXT NOT NULL,
         storage_key TEXT NOT NULL,
-        book_uuid TEXT NOT NULL,
+        owner_kind TEXT NOT NULL CHECK (owner_kind IN ('edition', 'branch_title')),
+        owner_id TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('audio', 'part', 'chapter', 'pdf', 'cover', 'sidecar', 'transcript', 'epub')),
+        lossless INTEGER NOT NULL DEFAULT 0,
+        bitrate_kbps INTEGER,
+        sha256 TEXT,
         writer TEXT NOT NULL,
         written_at TEXT NOT NULL,
         PRIMARY KEY (destination, storage_key)
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_title_files_book ON title_files(book_uuid)",
+        r"CREATE INDEX IF NOT EXISTS idx_edition_files_owner ON edition_files(owner_kind, owner_id)",
     ),
     // The live socket's revision reads take each table's newest change
     // stamp every couple of seconds; an index makes that a lookup.
@@ -1464,6 +1474,11 @@ mod tests {
             "holdings",
             "entitlement",
             Entitlement::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "edition_files",
+            "role",
+            crate::FileRole::ALL.iter().map(|k| k.as_str()),
         );
     }
 }

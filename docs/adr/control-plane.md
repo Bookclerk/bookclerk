@@ -1547,14 +1547,16 @@ the handed credentials only. There is no in-process fallback.
   another title already has (its recorded audio or PDF key, or a sidecar
   of that audio) is refused too (`key_out_of_scope`,
   `key_of_another_book`). The Host's keys never decide where a title goes.
-  Every file a title writes is recorded per destination in `title_files`:
-  an acquire on a node records each key (audio, chapter or part files,
-  sidecars, PDF) just before writing it, and a grant claims every key of
-  its manifest for the title. A key recorded for another library title on
-  that destination is refused (`key_of_another_book`), so a folder several
-  titles share (a template without the title, podcast episodes in the
-  parent's folder, a flat layout) never lets one title overwrite another's
-  files. The claim is one conditional write per key, so of two uploads of
+  Every file a title writes is recorded per destination in
+  `edition_files`, for the title's edition: an acquire on a node records
+  each key (audio, chapter or part files, sidecars, PDF) just before
+  writing it, and a grant claims every key of its manifest for the
+  edition. A key recorded for another edition on that destination is
+  refused (`key_of_another_book`), so a folder several titles share (a
+  template without the title, podcast episodes in the parent's folder, a
+  flat layout) never lets one title overwrite another's files. The account
+  rows of one edition share its keys. A title not resolved to an edition
+  yet is refused (`unresolved_title`) until a scan resolves it. The claim is one conditional write per key, so of two uploads of
   different titles racing for one key only one is granted.
 - **Host paths.** The Host uses the owner's job and title ids as work
   directory names only when each is one plain segment (ASCII letters,
@@ -1587,7 +1589,7 @@ the handed credentials only. There is no in-process fallback.
   has every received copy deleted by the receiving owner node, and so has
   an upload left open when the closing commit completes the job. A failed
   or released run's uploads are deleted before the job ends and its
-  permits are given back. A copy is deleted only while `title_files` still
+  permits are given back. A copy is deleted only while `edition_files` still
   names that upload as the key's latest writer, so a cleanup that runs
   late (after a lost fence) leaves alone a file a later upload or acquire
   wrote. A file that finished streaming just as its upload was aborted is

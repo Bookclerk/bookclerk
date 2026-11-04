@@ -2139,9 +2139,7 @@ mod results_and_uploads {
             panic!("granted");
         };
         // A local acquire of another title records the key, then writes it.
-        world
-            .owner
-            .record_title_file("local", KEY, &other.uuid)
+        record_for_book(&world.owner, "local", KEY, &other.uuid)
             .await
             .unwrap();
         let mut tcp = tokio::net::TcpStream::connect(world.addr).await.unwrap();
@@ -2597,9 +2595,7 @@ mod results_and_uploads {
             !files_under(local_out.path()).is_empty()
         })
         .await;
-        world
-            .owner
-            .record_title_file("local", KEY, &other.uuid)
+        record_for_book(&world.owner, "local", KEY, &other.uuid)
             .await
             .unwrap();
         std::fs::write(local_out.path().join(KEY), b"xyz").unwrap();
@@ -3130,27 +3126,43 @@ mod results_and_uploads {
             )
             .await
             .unwrap();
-        world
-            .owner
-            .record_title_file("local", "Author/Title t1/Title t1 [t1].cue", &other.uuid)
-            .await
-            .unwrap();
+        record_for_book(
+            &world.owner,
+            "local",
+            "Author/Title t1/Title t1 [t1].cue",
+            &other.uuid,
+        )
+        .await
+        .unwrap();
         // The folder template (`<title short>`) is shared, so only the
         // title's planned names are in scope there: another title's names
-        // are refused by name, and a planned name another title holds by
-        // its claim.
-        for (key, reason) in [
-            ("Author/Title t1/Title t2.m4b", "key_out_of_scope"),
-            ("Author/Title t1/Title t2.jpg", "key_out_of_scope"),
-            ("Author/Title t1/Title t1 [t1].cue", "key_of_another_book"),
+        // are refused by name. A planned name another edition holds moves
+        // the title's own names apart (the edition discriminator), so the
+        // Host's keys under the plain name are out of scope as well.
+        for key in [
+            "Author/Title t1/Title t2.m4b",
+            "Author/Title t1/Title t2.jpg",
+            "Author/Title t1/Title t1 [t1].cue",
         ] {
             let body = grant(vec![
                 local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
                 local_file(key, b"other"),
             ])
             .await;
-            assert_eq!(refusal(&body), reason, "{key}");
+            assert_eq!(refusal(&body), "key_out_of_scope", "{key}");
         }
+        // With the other edition's file gone, the plain names are the
+        // title's again.
+        world
+            .owner
+            .release_edition_file(
+                "local",
+                "Author/Title t1/Title t1 [t1].cue",
+                bookclerk_library::ACQUIRE_WRITER,
+                None,
+            )
+            .await
+            .unwrap();
         let body = grant(vec![
             local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
             local_file("Author/Title t1/Title t1 [t1].jpg", b"jpeg"),
@@ -3547,9 +3559,7 @@ mod results_and_uploads {
             .remove(0)
             .options;
         let key = planned_key(&book, &options);
-        world
-            .owner
-            .record_title_file("local", &key, &other.uuid)
+        record_for_book(&world.owner, "local", &key, &other.uuid)
             .await
             .unwrap();
         let guests = StubGuests {
@@ -3894,4 +3904,26 @@ async fn a_guarded_task_is_aborted_with_its_guard() {
     assert!(!waited.is_finished());
     wait.abort();
     finished(&waited).await;
+}
+
+/// Records `key` on `destination` as a local acquire of `book_uuid`'s
+/// edition wrote it.
+async fn record_for_book(
+    store: &bookclerk_library::LibraryStore,
+    destination: &str,
+    key: &str,
+    book_uuid: &str,
+) -> bookclerk_library::Result<()> {
+    let owner = store
+        .file_owner_of_book(book_uuid)
+        .await?
+        .expect("the book resolves to an edition");
+    store
+        .record_edition_file(
+            destination,
+            key,
+            &owner,
+            bookclerk_library::FileRole::for_key(key, None),
+        )
+        .await
 }

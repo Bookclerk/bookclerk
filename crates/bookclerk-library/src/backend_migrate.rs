@@ -7,12 +7,12 @@
 use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, TransactionTrait};
 
 use crate::entities::{
-    account_links, accounts, books, claim_tickets, contributors, credits, edition_identifiers,
-    editions, embeddings, encrypted_secrets, expressions, holdings, ignored_titles, job_temp_paths,
-    jobs, listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
-    operator_sessions, portal_identities, portal_sessions, resolution_conflicts,
-    resolution_overrides, saved_filters, security_audit_events, series, series_entries,
-    store_listings, title_files, title_request_sources, title_requests, user_invites,
+    account_links, accounts, books, claim_tickets, contributors, credits, edition_files,
+    edition_identifiers, editions, embeddings, encrypted_secrets, expressions, holdings,
+    ignored_titles, job_temp_paths, jobs, listening_progress, oidc_auth_codes, oidc_clients,
+    oidc_refresh_tokens, oidc_rp_states, operator_sessions, portal_identities, portal_sessions,
+    resolution_conflicts, resolution_overrides, saved_filters, security_audit_events, series,
+    series_entries, store_listings, title_request_sources, title_requests, user_invites,
     user_preferences, users, webauthn_challenges, webauthn_credentials, work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
@@ -117,7 +117,7 @@ pub async fn migrate_library_backend(
     copy!(resolution_overrides, "resolution_overrides");
     copy!(resolution_conflicts, "resolution_conflicts");
     copy!(books, "books");
-    copy!(title_files, "title_files");
+    copy!(edition_files, "edition_files");
     copy!(ignored_titles, "ignored_titles");
     copy!(saved_filters, "saved_filters");
     copy!(claim_tickets, "claim_tickets");
@@ -221,7 +221,7 @@ async fn dry_run_counts(
     count!(resolution_overrides, "resolution_overrides");
     count!(resolution_conflicts, "resolution_conflicts");
     count!(books, "books");
-    count!(title_files, "title_files");
+    count!(edition_files, "edition_files");
     count!(ignored_titles, "ignored_titles");
     count!(saved_filters, "saved_filters");
     count!(claim_tickets, "claim_tickets");

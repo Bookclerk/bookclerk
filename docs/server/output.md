@@ -152,6 +152,24 @@ bookclerk config template preview <asin>
 
 Replace `<asin>` with a book's ASIN.
 
+### Two editions with one name
+
+Two editions of a book can name the same path: an abridged and an
+unabridged recording, or two narrators' readings, under a template
+without the product id. Bookclerk records which edition each file
+belongs to, so the second edition's acquire never overwrites the first's.
+Its title gets a short tag instead, built from what differs:
+
+1. `Abridged`, for an abridged edition;
+2. otherwise its first narrator, such as `Twin (Ada Reader)`;
+3. otherwise the first eight letters and digits of its edition id.
+
+The tag goes on the folder too when the folder is named after the title.
+
+Copies of one edition on several accounts (the same book bought twice)
+share their files. The edition is downloaded once, and every account's
+copy is marked acquired at its path.
+
 **Path sanitization** cleans up characters a file system can't store. Set
 `output.path_sanitization` to `auto`, `windows`, `posix`, `s3` or `none`,
 or list your own `output.replacement_characters`.

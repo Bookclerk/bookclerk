@@ -7074,14 +7074,14 @@ impl LibraryStore {
     }
 }
 
+pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
 pub(crate) mod library_model;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
 pub(crate) mod storage_scan;
-pub(crate) mod title_files;
+pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
-pub use title_files::{TitleFile, ACQUIRE_WRITER};
 pub(crate) mod job_queue;
 
 mod books_page;

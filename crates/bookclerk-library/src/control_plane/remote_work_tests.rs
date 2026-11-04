@@ -21,7 +21,7 @@ use crate::models::{EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobReso
 use crate::secrets::{
     build_sealed_record, get_secret, secret_account_type, secret_kind, unseal_secret, upsert_secret,
 };
-use crate::store::LibraryStore;
+use crate::store::{FileOwner, FileRole, LibraryStore};
 
 const PLUGIN: &str = "path:file:///tmp/store#store";
 const HOST: &str = "host-riley";
@@ -3281,16 +3281,18 @@ async fn a_shared_folder_never_grants_another_titles_recorded_file() {
         .unwrap();
     // The neighbour's acquire wrote a chapter file into the shared folder
     // on `local`, and a cover there on `s3` only.
-    w.store
-        .record_title_file("local", "Author/Title/Neighbour - 01.mp3", &neighbour.uuid)
+    record_for_book(
+        &w.store,
+        "local",
+        "Author/Title/Neighbour - 01.mp3",
+        &neighbour.uuid,
+    )
+    .await
+    .unwrap();
+    record_for_book(&w.store, "s3", "Author/Title/cover.jpg", &neighbour.uuid)
         .await
         .unwrap();
-    w.store
-        .record_title_file("s3", "Author/Title/cover.jpg", &neighbour.uuid)
-        .await
-        .unwrap();
-    w.store
-        .record_title_file("local", "Author/Title/Gone.jpg", "no-such-title")
+    record_for_book(&w.store, "local", "Author/Title/Gone.jpg", "no-such-title")
         .await
         .unwrap();
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
@@ -3342,8 +3344,8 @@ async fn a_shared_folder_never_grants_another_titles_recorded_file() {
         "Author/Title/cover.jpg",
         "Author/Title/Gone.jpg",
     ] {
-        let file = w.store.title_file("local", key).await.unwrap().unwrap();
-        assert_eq!(file.book_uuid, book_uuid, "{key}");
+        let file = w.store.edition_file("local", key).await.unwrap().unwrap();
+        assert_eq!(file.owner, owner_of(&w.store, &book_uuid).await, "{key}");
         assert_eq!(file.writer, upload_id, "{key}");
     }
     let session = load_upload(&w.store, &upload_id).await.unwrap().unwrap();
@@ -3366,8 +3368,7 @@ async fn a_shared_folder_never_grants_another_titles_recorded_file() {
     ));
     // An acquire on the owner that writes the key afterwards takes it
     // over, so the upload no longer owns it.
-    w.store
-        .record_title_file("local", "Author/Title/cover.jpg", &book_uuid)
+    record_for_book(&w.store, "local", "Author/Title/cover.jpg", &book_uuid)
         .await
         .unwrap();
     assert!(
@@ -3559,6 +3560,88 @@ async fn grant_title(
     .unwrap()
 }
 
+/// The account rows of one edition share its files: a key another
+/// account's acquire of the same edition recorded is granted to this
+/// title's upload, and the claim keeps it the edition's.
+#[tokio::test]
+async fn an_upload_may_write_a_key_its_edition_already_holds() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    // The same product on another account: the same edition.
+    let sibling = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            uuid: None,
+            ..scanned("sam-acct", "t1")
+        })
+        .await
+        .unwrap();
+    let owner = owner_of(&w.store, &book_uuid).await;
+    assert_eq!(owner_of(&w.store, &sibling.uuid).await, owner);
+    record_for_book(&w.store, "local", "Author/Title/cover.jpg", &sibling.uuid)
+        .await
+        .unwrap();
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let granted = grant_title(
+        &w.store,
+        &job_id,
+        fence,
+        &book_uuid,
+        &with_local_file(&files, "Author/Title/cover.jpg"),
+    )
+    .await;
+    let UploadGrant::Granted { upload_id, .. } = granted else {
+        panic!("a key of the title's own edition is granted: {granted:?}");
+    };
+    let cover = w
+        .store
+        .edition_file("local", "Author/Title/cover.jpg")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cover.owner, owner);
+    assert_eq!(cover.writer, upload_id);
+    assert_eq!(cover.role, FileRole::Cover);
+    let audio = w
+        .store
+        .edition_file("local", "Author/Title/Title.m4b")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(audio.role, FileRole::Audio);
+    assert_eq!(audio.sha256.as_deref(), Some("ab".repeat(32).as_str()));
+}
+
+/// A title not resolved to an edition yet has no owner to record its keys
+/// for, so its upload is refused (the next scan resolves it again).
+#[tokio::test]
+async fn an_unresolved_titles_upload_is_refused() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    crate::entities::store_listings::Entity::delete_many()
+        .filter(crate::entities::store_listings::Column::ProductId.eq("t1"))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert!(w.store.edition_of_book(&book_uuid).await.unwrap().is_none());
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    assert!(matches!(
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await,
+        UploadGrant::Refused("unresolved_title")
+    ));
+    assert!(w
+        .store
+        .edition_file("local", "Author/Title/Title.m4b")
+        .await
+        .unwrap()
+        .is_none());
+}
+
 /// A grant refused once claiming began leaves every key as it was: a key
 /// it claimed fresh is unrecorded again, a key an open upload of the
 /// title held is that upload's again (it is neither superseded nor robbed
@@ -3578,10 +3661,14 @@ async fn a_refused_upload_grant_gives_back_the_keys_it_claimed() {
         })
         .await
         .unwrap();
-    w.store
-        .record_title_file("local", "Author/Title/Neighbour - 01.mp3", &neighbour.uuid)
-        .await
-        .unwrap();
+    record_for_book(
+        &w.store,
+        "local",
+        "Author/Title/Neighbour - 01.mp3",
+        &neighbour.uuid,
+    )
+    .await
+    .unwrap();
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
     let UploadGrant::Granted {
         upload_id: first, ..
@@ -3601,15 +3688,15 @@ async fn a_refused_upload_grant_gives_back_the_keys_it_claimed() {
     ));
     let primary = w
         .store
-        .title_file("local", "Author/Title/Title.m4b")
+        .edition_file("local", "Author/Title/Title.m4b")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(primary.writer, first, "the open upload holds its key again");
-    assert_eq!(primary.book_uuid, book_uuid);
+    assert_eq!(primary.owner, owner_of(&w.store, &book_uuid).await);
     assert!(
         w.store
-            .title_file("local", "Author/Title/fresh.jpg")
+            .edition_file("local", "Author/Title/fresh.jpg")
             .await
             .unwrap()
             .is_none(),
@@ -3617,12 +3704,12 @@ async fn a_refused_upload_grant_gives_back_the_keys_it_claimed() {
     );
     assert_eq!(
         w.store
-            .title_file("local", "Author/Title/Neighbour - 01.mp3")
+            .edition_file("local", "Author/Title/Neighbour - 01.mp3")
             .await
             .unwrap()
             .unwrap()
-            .book_uuid,
-        neighbour.uuid
+            .owner,
+        owner_of(&w.store, &neighbour.uuid).await
     );
     let open: Vec<String> = node_upload_sessions::Entity::find()
         .filter(node_upload_sessions::Column::JobId.eq(&job_id))
@@ -3658,8 +3745,7 @@ async fn an_upload_commit_is_refused_once_a_key_was_taken() {
             .unwrap());
     }
     // An acquire on the owner wrote the cover since.
-    w.store
-        .record_title_file("local", "Author/Title/cover.jpg", &book_uuid)
+    record_for_book(&w.store, "local", "Author/Title/cover.jpg", &book_uuid)
         .await
         .unwrap();
     assert_eq!(
@@ -3855,7 +3941,7 @@ async fn an_older_upload_grant_never_aborts_a_newer_one() {
     );
     assert_eq!(
         w.store
-            .title_file("local", "Author/Title/Title.m4b")
+            .edition_file("local", "Author/Title/Title.m4b")
             .await
             .unwrap()
             .unwrap()
@@ -3880,8 +3966,7 @@ async fn a_lost_fence_upload_commit_answers_lost_before_key_taken() {
         panic!("granted");
     };
     assert!(record_upload_file(&w.store, &upload_id, 0).await.unwrap());
-    w.store
-        .record_title_file("local", "Author/Title/Title.m4b", &book_uuid)
+    record_for_book(&w.store, "local", "Author/Title/Title.m4b", &book_uuid)
         .await
         .unwrap();
     let past = (chrono::Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
@@ -3969,6 +4054,31 @@ async fn a_job_upload_takes_over_a_branch_titles_keys() {
     let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
     upload_title(&w.store, &job_id, fence, &book_uuid, &files).await;
-    let held = w.store.title_file("local", &key).await.unwrap().unwrap();
-    assert_eq!(held.book_uuid, book_uuid);
+    let held = w.store.edition_file("local", &key).await.unwrap().unwrap();
+    assert_eq!(held.owner, owner_of(&w.store, &book_uuid).await);
+}
+
+/// The edition owner `book_uuid`'s files are recorded under; a uuid with no
+/// edition (no such book) reads as an edition id that does not exist, so
+/// its record is a stale owner's.
+async fn owner_of(store: &LibraryStore, book_uuid: &str) -> FileOwner {
+    store
+        .file_owner_of_book(book_uuid)
+        .await
+        .unwrap()
+        .unwrap_or_else(|| FileOwner::Edition(book_uuid.to_owned()))
+}
+
+/// Records `key` on `destination` as an acquire of `book_uuid`'s edition
+/// wrote it.
+async fn record_for_book(
+    store: &LibraryStore,
+    destination: &str,
+    key: &str,
+    book_uuid: &str,
+) -> crate::Result<()> {
+    let owner = owner_of(store, book_uuid).await;
+    store
+        .record_edition_file(destination, key, &owner, FileRole::for_key(key, None))
+        .await
 }

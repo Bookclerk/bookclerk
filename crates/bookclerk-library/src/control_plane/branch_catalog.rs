@@ -48,9 +48,10 @@ use super::uploads::{
     claims_another_books_key, granted_key_count, open_upload_session, upload_holds_its_keys,
     UploadDestination, UploadGrant, UploadGrantRequest, UploadSession,
 };
-use crate::entities::{books, branch_titles, nodes, title_files, users};
+use crate::entities::{books, branch_titles, edition_files, editions, nodes, users};
 use crate::error::{LibraryError, Result};
 use crate::models::UserStatus;
+use crate::store::edition_files::like_escaped;
 use crate::store::LibraryStore;
 
 /// `branch_titles.state` of a title its branch still shares.
@@ -624,7 +625,7 @@ pub async fn pending_deliveries(
 /// sidecars), and no key lies in or below a folder holding another title's
 /// audio (`folder_of_another_book`: a library book's, or another branch's
 /// delivered title's). The keys are then claimed for this upload
-/// in `title_files`, refused when another title holds one there.
+/// in `edition_files`, refused when another title holds one there.
 ///
 /// # Errors
 ///
@@ -681,9 +682,9 @@ pub async fn grant_catalog_upload(
     }
     // Any declared key, not only the primary's stem: a sidecar such as
     // another title's cover, `.cue`, chapter JSON or metadata file, or that
-    // title's audio or PDF itself, even where no `title_files` record says
+    // title's audio or PDF itself, even where no `edition_files` record says
     // who wrote it.
-    if claims_another_books_key(store, &row.uuid, files).await? {
+    if claims_another_books_key(store, &BTreeSet::from([row.uuid.clone()]), files).await? {
         return Ok(UploadGrant::Refused("key_of_another_book"));
     }
     // The branch's own keys are the title's scope on every destination:
@@ -746,19 +747,6 @@ fn stem_pattern(primary: &str) -> String {
     pattern
 }
 
-/// `text` with the `LIKE` wildcards (`%`, `_`) and the escape character
-/// itself escaped with `\`, for a pattern matched with that escape.
-fn like_escaped(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len() + 2);
-    for c in text.chars() {
-        if matches!(c, '%' | '_' | '\\') {
-            escaped.push('\\');
-        }
-        escaped.push(c);
-    }
-    escaped
-}
-
 /// The folder `key` lies in (everything before its last `/`); `""` for a
 /// key at the top of the outputs.
 fn key_folder(key: &str) -> &str {
@@ -806,11 +794,11 @@ fn folder_probes(folders: &[String]) -> BTreeSet<&str> {
 /// books (whatever its owner, in any state), or a title another branch
 /// shares here whose files were delivered (`uuid` is the title being
 /// granted; a detached title counts, since its files stay), or any file
-/// key `title_files` records there for such a title (a book, or another
+/// key `edition_files` records there for such a title (an edition, or another
 /// branch's title, even one whose upload is only granted). A catalog
 /// upload writes into no folder another title lives in, nor below one, so
 /// no declared name, however chosen, can replace that title's files,
-/// recorded in `title_files` or not.
+/// recorded in `edition_files` or not.
 ///
 /// `node_id`'s own titles never hold a folder against it: a branch may
 /// lay several of its titles out in one folder (a flat
@@ -865,28 +853,36 @@ async fn folders_of_another_title(
         // folder too, so of two titles reaching one folder before either
         // is delivered, whoever claims a key in it first keeps it.
         let files_here = chunk.iter().fold(Condition::any(), |any, folder| {
-            any.add(directly_in(title_files::Column::StorageKey, folder))
+            any.add(directly_in(edition_files::Column::StorageKey, folder))
         });
         let other_titles = Condition::any()
             .add(
-                title_files::Column::BookUuid.in_subquery(
-                    Query::select()
-                        .column(books::Column::Uuid)
-                        .from(books::Entity)
-                        .to_owned(),
-                ),
+                Condition::all()
+                    .add(edition_files::Column::OwnerKind.eq("edition"))
+                    .add(
+                        edition_files::Column::OwnerId.in_subquery(
+                            Query::select()
+                                .column(editions::Column::Id)
+                                .from(editions::Entity)
+                                .to_owned(),
+                        ),
+                    ),
             )
             .add(
-                title_files::Column::BookUuid.in_subquery(
-                    Query::select()
-                        .column(branch_titles::Column::Uuid)
-                        .from(branch_titles::Entity)
-                        .and_where(branch_titles::Column::NodeId.ne(node_id))
-                        .to_owned(),
-                ),
+                Condition::all()
+                    .add(edition_files::Column::OwnerKind.eq("branch_title"))
+                    .add(edition_files::Column::OwnerId.ne(uuid))
+                    .add(
+                        edition_files::Column::OwnerId.in_subquery(
+                            Query::select()
+                                .column(branch_titles::Column::Uuid)
+                                .from(branch_titles::Entity)
+                                .and_where(branch_titles::Column::NodeId.ne(node_id))
+                                .to_owned(),
+                        ),
+                    ),
             );
-        let files = title_files::Entity::find()
-            .filter(title_files::Column::BookUuid.ne(uuid))
+        let files = edition_files::Entity::find()
             .filter(other_titles)
             .filter(files_here)
             .count(store.db())
@@ -942,7 +938,7 @@ async fn keys_in_use(
 /// delivered manifest on the title. One batch, each statement gated on the
 /// upload being open, the catalog fence still being the node's and its
 /// sharing on, its credential live, the upload still holding every key it
-/// was granted (`title_files`; a key another title took since is refused
+/// was granted (`edition_files`; a key another title took since is refused
 /// as `key_taken`), and the title's manifest unchanged since the grant. A
 /// concurrent identical commit that landed first answers committed.
 ///
@@ -984,14 +980,13 @@ pub(super) async fn commit_catalog_upload(
                              AND share_books = 1) \
                 AND EXISTS (SELECT 1 FROM node_credentials \
                              WHERE node_id = ? AND revoked_at IS NULL) \
-                AND (SELECT COUNT(*) FROM title_files WHERE book_uuid = ? AND writer = ?) = ?",
+                AND (SELECT COUNT(*) FROM edition_files WHERE writer = ?) = ?",
             vec![
                 text(&now),
                 text(&session.upload_id),
                 text(&session.node_id),
                 batch::int(session.generation),
                 text(&session.node_id),
-                text(&session.book_uuid),
                 text(&session.upload_id),
                 batch::int(i64::try_from(granted_keys).unwrap_or(i64::MAX)),
             ],

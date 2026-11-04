@@ -644,7 +644,7 @@ collection deletes unreferenced objects.
 ### Tables
 
 Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
-`accounts`, `books`, `title_files`, `ignored_titles`, `saved_filters`,
+`accounts`, `books`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
 `operator_sessions`, `account_links`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `user_preferences`, `encrypted_secrets`, `jobs`,
@@ -664,7 +664,17 @@ library holds as works, expressions and editions:
 - `contributors` and `credits`, `series` and `series_entries`;
 - `resolution_overrides` (an Administrator's pins and splits) and
   `resolution_conflicts` (identifier clashes the resolver recorded instead
-  of merging).
+  of merging);
+- `edition_files`: every key an acquire or a host upload wrote, per
+  destination, with the edition it belongs to (or, until branch titles
+  become holdings, the branch title), its role (`audio`, `part`,
+  `chapter`, `pdf`, `cover`, `sidecar`, `transcript`, `epub`) and, for an
+  upload, the file's SHA-256. The quality columns (`lossless`,
+  `bitrate_kbps`) stay empty until uploads carry a file's quality.
+
+A book is acquired once per edition: the account rows of one edition share
+its keys, and a book not resolved to an edition yet is neither acquired
+nor uploaded until the next scan resolves it.
 
 Every stored title is linked into its work, expression, edition,
 identifiers, listing and holding in one guarded batch (`linkListing`); a

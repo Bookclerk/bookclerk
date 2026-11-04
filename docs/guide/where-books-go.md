@@ -42,6 +42,12 @@ The same page also sets:
 - whether to save the cover image, a companion PDF and chapter information
   beside each book.
 
+If you own a book on two accounts, it is downloaded once and both copies
+point at the same files. If two different editions of a book would get
+the same name, such as an abridged and an unabridged recording, the
+second one's name gets a short tag, like `(Abridged)` or its narrator's
+name, so neither overwrites the other.
+
 ## Books you already have
 
 If you already keep audiobooks in a folder or bucket, Bookclerk can match
