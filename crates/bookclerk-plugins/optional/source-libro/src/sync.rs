@@ -256,3 +256,46 @@ fn parse_libro_datetime(raw: &str) -> Option<DateTime<Utc>> {
                 .map(|ndt| DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc))
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bookclerk_plugin_sdk::{Abridgement, CreditRole, IdentifierScheme};
+
+    #[test]
+    fn scan_row_carries_one_credit_per_listed_name() {
+        let book: Audiobook = serde_json::from_value(serde_json::json!({
+            "isbn": "9781980053446",
+            "title": "Ashes of Man",
+            "authors": ["Christopher Ruocchio", "  "],
+            "abridged": true,
+            "series": "Sun Eater",
+            "series_num": 5,
+            "genres": [{"name": "Science Fiction"}],
+            "audiobook_info": {"narrators": ["Samuel Roukin"], "duration": 3600},
+            "publication_date": "2022-07-05",
+            "user_metadata": {"added_at": "2023-01-02T03:04:05Z"}
+        }))
+        .expect("audiobook");
+        let row = audiobook_to_scan_book(&book, "acct", "us");
+        assert_eq!(row.identifiers[0].scheme, IdentifierScheme::Isbn);
+        assert_eq!(row.identifiers[0].value, "9781980053446");
+        let names: Vec<(CreditRole, &str)> = row
+            .credits
+            .iter()
+            .map(|c| (c.role, c.name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (CreditRole::Author, "Christopher Ruocchio"),
+                (CreditRole::Narrator, "Samuel Roukin"),
+            ]
+        );
+        assert_eq!(row.abridgement, Abridgement::Abridged);
+        assert_eq!(row.series_entries[0].position.as_deref(), Some("5"));
+        assert_eq!(row.length_minutes, Some(60));
+        assert_eq!(row.purchased_at.as_deref(), Some("2023-01-02T03:04:05Z"));
+        assert_eq!(row.categories.as_deref(), Some("Science Fiction"));
+    }
+}

@@ -354,3 +354,40 @@ fn parse_ga_date(raw: &str) -> Option<DateTime<Utc>> {
                 .map(|ndt| DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc))
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bookclerk_plugin_sdk::{CreditRole, ExpressionKind};
+
+    #[test]
+    fn scan_rows_are_dramatisations() {
+        let product: Product = serde_json::from_value(serde_json::json!({
+            "Id": "ga-1",
+            "Title": "Part 1",
+            "ProductName": "Red Rising",
+            "Author": "Pierce Brown",
+            "Series": "Red Rising",
+            "Episode": "1",
+            "Genre": "Science Fiction",
+            "Purchased Date": "1700000000"
+        }))
+        .expect("product");
+        let row = product_to_scan_book(&product, "acct", "us");
+        assert_eq!(row.expression_kind, ExpressionKind::Dramatisation);
+        assert_eq!(row.credits[0].name, "Pierce Brown");
+        assert_eq!(row.credits[0].role, CreditRole::Author);
+        assert_eq!(row.series_entries[0].position.as_deref(), Some("1"));
+        assert_eq!(row.purchased_at.as_deref(), Some("2023-11-14T22:13:20Z"));
+        assert_eq!(row.categories.as_deref(), Some("Science Fiction"));
+
+        let card = LibraryItem {
+            product_id: "ga-2".into(),
+            title: Some(" ".into()),
+            listen_path: None,
+        };
+        let row = library_item_to_scan_book(&card, "acct", "us");
+        assert_eq!(row.title, "GraphicAudio ga-2");
+        assert_eq!(row.expression_kind, ExpressionKind::Dramatisation);
+    }
+}

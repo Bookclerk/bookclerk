@@ -231,3 +231,37 @@ fn parse_chirp_date(raw: &str) -> Option<DateTime<Utc>> {
                 .map(|ndt| DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc))
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bookclerk_plugin_sdk::{Abridgement, CreditRole};
+
+    #[test]
+    fn scan_row_splits_display_names_into_credits() {
+        let book: Audiobook = serde_json::from_value(serde_json::json!({
+            "id": "123",
+            "displayTitle": "The Lincoln Lawyer",
+            "displayAuthors": "Michael Connelly",
+            "displayNarrators": "Dick Hill, Peter Giles",
+            "durationMs": 600000,
+            "abridged": false,
+            "releasedOn": "2005-10-03",
+            "tracks": []
+        }))
+        .expect("audiobook");
+        let row = audiobook_to_scan_book(&book, "acct", "us");
+        assert_eq!(row.product_id, "123");
+        assert_eq!(row.length_minutes, Some(10));
+        assert_eq!(row.abridgement, Abridgement::Unabridged);
+        assert_eq!(row.published_at.as_deref(), Some("2005-10-03T00:00:00Z"));
+        let narrators: Vec<&str> = row
+            .credits
+            .iter()
+            .filter(|c| c.role == CreditRole::Narrator)
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(narrators, ["Dick Hill", "Peter Giles"]);
+        assert_eq!(row.credits[0].role, CreditRole::Author);
+    }
+}

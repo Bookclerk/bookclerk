@@ -1,6 +1,6 @@
 # ADR: Library data model (works, expressions, editions, holdings)
 
-- **Status:** Accepted; not yet implemented (see [Status of the work](#status-of-the-work))
+- **Status:** Accepted; steps 1 and 2 implemented (see [Status of the work](#status-of-the-work))
 - **Date:** 2026-11-04
 - **Related:** [Schema versioning](schema-versioning.md),
   [SQL database contract](sql-database-contract.md),
@@ -193,14 +193,19 @@ queries go through SQL-v1.
 
 - `workKind :WorkKind`, `expressionKind :ExpressionKind` and
   `mediaKind :MediaKind`;
-- `identifiers :List(Identifier)` (level, scheme, value, marketplace), where
-  `level` says whether the id names the work or the edition, and so which
-  identifier table it lands in;
-- `credits :List(Credit)` (name, role, level, position);
-- `seriesEntries :List(SeriesEntry)`;
+- `identifiers :List(Identifier)` (scheme, value, marketplace). The
+  `IdentifierScheme` enum fixes whether an id names the work or the
+  edition, and so which identifier table it lands in, so the record has no
+  separate level that could contradict it;
+- `credits :List(Credit)` (name, role, level) in billing order, where the
+  list position is the credit's position and `level` defaults to the
+  role's usual level;
+- `seriesEntries :List(SeriesEntry)` (name, position, the store's own
+  series id);
 - `parentProductId` for podcast episodes;
 - on `ScanBook` only, `language` and `abridgement :Abridgement`, which
-  `CatalogHit` already has.
+  `CatalogHit` already has, plus `publishedAt`, `purchasedAt` and
+  `categories`, which the scan path used to drop.
 
 Cap'n Proto reads an absent enum field as ordinal 0, so ordinal 0 is
 always the value a guest gets when it says nothing. The schema is
@@ -208,10 +213,10 @@ unreleased, so there are no older guests to tell apart, and the new enums
 follow the rule the schema already uses (`CatalogSort`, `Entrypoint`):
 
 - Ordinal 0 is the common case: `book` for `WorkKind`, `audiobook` for
-  `MediaKind`, `narration` for `ExpressionKind`, `edition` for the
-  identifier level and `author` for the credit role. A guest that returns
-  anything else sets the field, and the conformance tests check that each
-  first-party plugin does.
+  `MediaKind`, `narration` for `ExpressionKind`, `isbn` for
+  `IdentifierScheme`, `author` for the credit role and `roleDefault` for
+  the credit level. A guest that returns anything else sets the field, and
+  each first-party storefront's tests check that it does.
 - `unknown @0` is used only where a source can honestly not know the
   answer, and the resolver treats unknown differently from any known value.
   Today that is `Abridgement`, which already works this way.
