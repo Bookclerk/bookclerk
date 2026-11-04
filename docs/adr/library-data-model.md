@@ -97,7 +97,8 @@ Each enum is a Rust enum matched exhaustively, a capnp enum on the wire, and a
 
 | Table | One row is | Unique key |
 | --- | --- | --- |
-| `edition_identifiers` | One external id of an edition: `scheme` (`asin`, `isbn13`, `olid`, or a store's own product scheme), `value`, `marketplace` (empty for global schemes) | `(scheme, value, marketplace)` |
+| `work_identifiers` | One external id of a work (an OpenLibrary work id, for example), shared by all its expressions and editions | `(scheme, value)` |
+| `edition_identifiers` | One external id of an edition: `scheme`, `value`, `marketplace` (empty for global schemes) and `strength` (see below) | `(scheme, value, marketplace)` for strong schemes only |
 | `contributors` | A person or organisation, with a sort name | Surrogate id |
 | `credits` | A contributor's `role` on a work, expression or edition, with a position | `(target_kind, target_id, contributor_id, role)` |
 | `series`, `series_entries` | A series and a work's place in it (position text plus a sortable decimal) | `(series_id, work_id)` |
@@ -106,6 +107,16 @@ Each enum is a Rust enum matched exhaustively, a capnp enum on the wire, and a
 | `edition_files` | A file of an edition at a destination, with `role` (`audio`, `part`, `chapter`, `pdf`, `cover`, `sidecar`, `transcript`, `epub`), digest, quality and writer | `(destination, storage_key)` |
 | `user_title_state` | One user's finished flag, rating, tags and progress for a work | `(user_id, work_id)` |
 | `resolution_overrides` | An Administrator's manual merge or split, which the resolver obeys | `(subject_kind, subject_id)` |
+
+Identifiers have a strength, fixed per scheme:
+
+- **Strong** schemes name exactly one edition: a store's own product id in
+  its marketplace, an Audible ASIN in its marketplace, an OpenLibrary edition
+  id. They are unique.
+- **Weak** schemes are shared in practice and only suggest a match: ISBN-10
+  and ISBN-13 (Audible's abridged and unabridged products can carry one ISBN,
+  as `bookclerk-enrich`'s `ISBN_MATCH_GAP_CLOSE` notes). They are indexed but
+  not unique, and one weak value can sit on several editions.
 
 Credit roles are a closed enum: `author`, `narrator`, `translator`, `editor`,
 `illustrator`, `publisher`, `host`, `cast`, `adaptor`.
@@ -137,21 +148,31 @@ Storefronts and metadata providers describe what they see; the host decides
 identity. A sans-IO resolver maps each incoming listing to an edition, an
 expression and a work:
 
-1. **Edition** by identifier. Any shared identifier means the same edition.
-   Two identifiers that point at different editions are never merged
-   automatically; the conflict is recorded for an Administrator.
+1. **Edition** by a shared strong identifier. A weak identifier (an ISBN)
+   proposes a candidate edition, which is accepted only when its expression
+   is compatible (same kind, language, abridgement and narrator credits) and
+   its media kind matches. Two strong identifiers that point at different
+   editions are never merged automatically; the conflict is recorded for an
+   Administrator.
 2. **Expression** within the work: same kind, language, abridgement and
-   narrator or translator credits.
-3. **Work** by a shared work-level identifier (an OpenLibrary work id, for
-   example), else by the existing `bookclerk-enrich` match score above a
-   confidence floor, else a new work.
+   narrator or translator credits. Any of these that the source left
+   unspecified never matches a specified value, so missing data makes a new
+   expression rather than a wrong merge.
+3. **Work** by a shared `work_identifiers` row, else by a work-level matcher,
+   else a new work. The work-level matcher compares normalised title and
+   author credits only, reusing `bookclerk-enrich`'s text normalisation but
+   not `calculate_match_confidence`: that score includes recording signals
+   (duration, narrator) and treats any ten-character alphanumeric title as an
+   ASIN.
 4. `resolution_overrides` win over every automatic step.
 
 Resolution runs on guest-supplied identifiers and credits, so it is an
 untrusted-input boundary. It ships with a `cargo-fuzz` target, a seed corpus
-and a replay test, with an oracle that checks: one identifier never maps to
-two editions, editions with conflicting identifiers are never merged, and
-resolving the same input twice changes nothing
+and a replay test, with an oracle that checks: one strong identifier never
+maps to two editions, a weak identifier alone never merges two editions with
+incompatible expressions or media kinds, editions with conflicting strong
+identifiers are never merged, and resolving the same input twice changes
+nothing
 ([fuzzing ADR](untrusted-input-fuzzing.md)).
 
 Each link is written as one atomic batch, never as a read-modify-write across
@@ -163,11 +184,21 @@ queries go through SQL-v1.
 
 `ScanBook` and `CatalogHit` gain new ordinals only:
 
-- `mediaKind :MediaKind` and `workKind :WorkKind`;
-- `identifiers :List(Identifier)` (scheme, value, marketplace);
+- `workKind :WorkKind`, `expressionKind :ExpressionKind` and
+  `mediaKind :MediaKind`;
+- `identifiers :List(Identifier)` (level, scheme, value, marketplace), where
+  `level` says whether the id names the work or the edition, and so which
+  identifier table it lands in;
 - `credits :List(Credit)` (name, role, level, position);
 - `seriesEntries :List(SeriesEntry)`;
-- `parentProductId` for podcast episodes.
+- `parentProductId` for podcast episodes;
+- on `ScanBook` only, `language` and `abridgement :Abridgement`, which
+  `CatalogHit` already has.
+
+Every new enum starts with `unspecified @0`. Cap'n Proto reads an absent
+field as ordinal 0, so an older guest that never sets the field is
+indistinguishable from one that says "unspecified", and both trigger the
+flat-field fallback. In Rust each maps to an `Option` of the enum.
 
 The flat text fields (`authors`, `narrators`, `asin`, `isbn`, `contentKind`,
 `series`, `seriesIndex`) stay on the wire, documented as deprecated. The host
@@ -186,21 +217,34 @@ and `edition_files.written` on the `core.events` outbox. Integrations
 (Audiobookshelf), embeddings and discover subscribe to them. The batch
 `rebuild_works_from_library()` pass is removed.
 
-### 7. Moving existing libraries: reset, rescan, restore state
+### 7. Moving existing libraries: rebuild the title tables, rescan, restore state
 
-No in-place migration is written for an unreleased schema. Instead:
+No in-place migration is written for an unreleased schema. A full
+`cargo reset --yes` is not the path either: it deletes the whole files
+directory, including `master.key`, the default local destination's
+audiobooks, and the database rows that hold accounts, sealed credentials,
+users and plugin configuration. Instead only the title tables are rebuilt:
 
-1. `bookclerk library export-state` writes what only Bookclerk knows: finished
-   flags, tags, ignored titles, title requests, listening progress and saved
-   filters, keyed by store, product id and identifiers.
-2. The development reset applies the new schema, as
-   [schema versioning](schema-versioning.md) already requires for a changed
-   unreleased checksum.
+1. `bookclerk library export-state` ships **before** the schema change (with
+   the ABI step), so it runs against the current schema and is available in
+   the build people already have. It writes what only Bookclerk knows:
+   finished flags, tags, ignored titles, title requests, listening progress
+   and saved filters, keyed by store, product id and identifiers.
+2. The schema step adds `bookclerk db rebuild-library`. It runs only when the
+   database's unreleased checksum is the exact one of the last pre-overhaul
+   schema, which the binary carries as a constant; any other state still
+   fails closed as [schema versioning](schema-versioning.md) requires. It
+   drops the old title tables, creates the new ones and records the new
+   checksum in one step. Every other table (users, accounts, sealed secrets,
+   plugin configuration, nodes, jobs) is kept, as is everything on disk.
 3. A rescan of each account fills listings, holdings and the bibliographic
    tables.
 4. Storage matching re-links files already at each destination into
    `edition_files`, so nothing is downloaded again.
 5. `bookclerk library import-state` re-applies the export by identifier.
+
+This replaces neither the normal library-open check nor the documented
+`cargo reset --yes` for any other checksum mismatch.
 
 The Libation importer in `bookclerk-migrate` writes the new tables directly.
 
@@ -225,8 +269,8 @@ not found ([#559](https://github.com/Bookclerk/bookclerk/issues/559)).
   fix the rest with overrides.
 - Three levels add a join to most title queries. The list views read a
   denormalised page index refreshed by the events above, not the full join.
-- Every development library is reset once. Backups taken before the change
-  can't be restored afterwards.
+- Every development library rebuilds its title tables once. Backups taken
+  before the change can't be restored afterwards.
 - Storefront plugins need an update to fill the structured fields, but keep
   working unchanged in the meantime through the flat-field fallback.
 
@@ -236,8 +280,8 @@ Planned as separate pull requests, in this order:
 
 1. This ADR.
 2. ABI: the new capnp fields and enums, both SDKs, and the four first-party
-   storefronts filling them.
-3. Schema and resolver, with its fuzz target, plus `export-state` and
+   storefronts filling them; `export-state` against the current schema.
+3. Schema and resolver, with its fuzz target, plus `db rebuild-library` and
    `import-state`.
 4. Acquire and files: per-edition acquisition, `edition_files`, and the
    naming discriminator.
