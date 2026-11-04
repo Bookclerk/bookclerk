@@ -26,7 +26,7 @@ Both modes date the generated API reference in ``last-updated.json``, which
 the build writes for the hand-written pages only: a generated page whose
 content is unchanged in the docs repository keeps the date the repository's
 current ``last-updated.json`` gives it, and a new or changed one gets the
-publish date (UTC).
+publish time (UTC, ``YYYY-MM-DDTHH:MM:SSZ``).
 
 The token is read from ``DOCS_TOKEN`` and never printed. See docs/contributing/automation.md#docs-publishing.
 """
@@ -70,7 +70,10 @@ TRAILER_RE = re.compile(r"^Source-Commit: ([0-9a-f]{40})$", re.MULTILINE)
 # generated pages this script dates in it (`<key>.md` under GENERATED_PREFIX).
 LAST_UPDATED_FILE = "last-updated.json"
 GENERATED_PREFIX = "api/"
-DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+# A page's date: an instant in UTC to the second, which the site shows in
+# the reader's own time zone, or a calendar date alone (files published
+# before instants were written, and generated pages dated then).
+DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$")
 
 # Upper bound on the JSON payload of one create-tree call. Large trees are
 # written as a chain of trees, each based on the previous one.
@@ -544,18 +547,26 @@ class DocsRepo:
 
 
 def is_date(text: object) -> bool:
-    """Tell whether a value is a real calendar date written ``YYYY-MM-DD``.
+    """Tell whether a value is a page date ``last-updated.json`` may hold.
+
+    That is a real calendar date written ``YYYY-MM-DD``, optionally followed
+    by a real UTC time to the second, ``THH:MM:SSZ``.
 
     Args:
         text: The value.
 
     Returns:
-        True for a string such as ``2026-10-27``; False for ``2026-02-30``.
+        True for a string such as ``2026-10-27`` or ``2026-10-27T14:05:09Z``;
+        False for ``2026-02-30``, ``2026-10-27T24:00:00Z`` or an offset other
+        than ``Z``.
     """
     if not isinstance(text, str) or not DATE_RE.fullmatch(text):
         return False
     try:
-        date.fromisoformat(text)
+        if len(text) == len("YYYY-MM-DD"):
+            date.fromisoformat(text)
+        else:
+            datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
     except ValueError:
         return False
     return True
@@ -603,13 +614,13 @@ def previous_dates(data: bytes | None) -> dict[str, str]:
 
 
 def date_generated_pages(
-    files: list[LocalFile], remote: dict[str, tuple[str, str]], previous: dict[str, str], today: str
+    files: list[LocalFile], remote: dict[str, tuple[str, str]], previous: dict[str, str], published: str
 ) -> list[LocalFile]:
     """Add the generated pages to the built tree's ``last-updated.json``.
 
     A generated page (``api/<key>.md``) whose blob equals the one in the docs
     repository keeps its previous date; a new or changed page, or one with no
-    previous date, gets ``today``. The build's dates for hand-written pages
+    previous date, gets ``published``. The build's dates for hand-written pages
     are kept as they are. A tree without ``last-updated.json`` (built without
     the git history) is returned unchanged.
 
@@ -617,15 +628,17 @@ def date_generated_pages(
         files: The built tree.
         remote: Path -> (mode, blob id) of the docs repository's current tree.
         previous: Dates from its current ``last-updated.json``.
-        today: The publish date, ``YYYY-MM-DD``.
+        published: The publish time, ``YYYY-MM-DDTHH:MM:SSZ``.
 
     Returns:
         The tree, with ``last-updated.json`` rewritten.
 
     Raises:
         PublishError: The built ``last-updated.json`` is not the document
-            ``docs-markdown.py`` writes.
+            ``docs-markdown.py`` writes, or ``published`` is not a page date.
     """
+    if len(published) != len("YYYY-MM-DDTHH:MM:SSZ") or not is_date(published):
+        raise PublishError(f"publish time {published!r} is not YYYY-MM-DDTHH:MM:SSZ")
     built = next((f for f in files if f.path == LAST_UPDATED_FILE), None)
     if built is None:
         return files
@@ -642,20 +655,20 @@ def date_generated_pages(
         key = f.path.removesuffix(".md")
         kept = previous.get(key)
         unchanged = remote.get(f.path) == ("100644", f.sha)
-        pages[key] = kept if unchanged and kept is not None else today
+        pages[key] = kept if unchanged and kept is not None else published
     document["pages"] = dict(sorted(pages.items()))
     data = (json.dumps(document, indent=1) + "\n").encode("utf-8")
     dated = LocalFile(path=LAST_UPDATED_FILE, data=data, sha=blob_sha(data))
     return [dated if f.path == LAST_UPDATED_FILE else f for f in files]
 
 
-def today_utc() -> str:
-    """The publish date.
+def now_utc() -> str:
+    """The publish time.
 
     Returns:
-        Today in UTC, ``YYYY-MM-DD``.
+        Now in UTC, to the second: ``YYYY-MM-DDTHH:MM:SSZ``.
     """
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def tree_entries(files: list[LocalFile], remote: dict[str, tuple[str, str]], repo: DocsRepo) -> list[dict[str, Any]]:
@@ -715,14 +728,14 @@ def chunks(entries: list[dict[str, Any]], limit: int = TREE_CHUNK_BYTES) -> Iter
         yield batch
 
 
-def write_tree(repo: DocsRepo, base_commit: str, files: list[LocalFile], today: str) -> tuple[str, bool]:
+def write_tree(repo: DocsRepo, base_commit: str, files: list[LocalFile], published: str) -> tuple[str, bool]:
     """Write the built tree on top of ``base_commit``'s tree.
 
     Args:
         repo: The docs repository.
         base_commit: Commit whose tree is replaced.
         files: The built tree.
-        today: The publish date, for generated pages that changed
+        published: The publish time, for generated pages that changed
             (:func:`date_generated_pages`).
 
     Returns:
@@ -736,7 +749,7 @@ def write_tree(repo: DocsRepo, base_commit: str, files: list[LocalFile], today: 
         previous = previous_dates(repo.blob(current[1]))
     else:
         previous = {}
-    files = date_generated_pages(files, remote, previous, today)
+    files = date_generated_pages(files, remote, previous, published)
     entries = tree_entries(files, remote, repo)
     tree = base_tree
     for batch in chunks(entries):
@@ -745,7 +758,7 @@ def write_tree(repo: DocsRepo, base_commit: str, files: list[LocalFile], today: 
 
 
 def publish_main(
-    repo: DocsRepo, branch: str, files: list[LocalFile], source_repo: str, source_commit: str, today: str | None = None
+    repo: DocsRepo, branch: str, files: list[LocalFile], source_repo: str, source_commit: str, published: str | None = None
 ) -> str:
     """Commit the built tree onto the docs ``branch``.
 
@@ -755,7 +768,7 @@ def publish_main(
         files: The built tree.
         source_repo: Repository the docs were built from.
         source_commit: Commit they were built from.
-        today: The publish date (default: today in UTC).
+        published: The publish time (default: now, in UTC).
 
     Returns:
         A one-line summary of what happened.
@@ -764,7 +777,7 @@ def publish_main(
     head_commit = repo.commit(head)
     if source_commit_of(head_commit.get("message", "")) == source_commit:
         return f"{branch} already carries {source_commit}"
-    tree, changed = write_tree(repo, head, files, today or today_utc())
+    tree, changed = write_tree(repo, head, files, published or now_utc())
     if not changed:
         return f"no changes for {source_commit}; {branch} stays at {head}"
     new = repo.create_commit(commit_message(source_repo, source_commit, None), tree, [head])
@@ -779,7 +792,7 @@ def publish_release(
     source_repo: str,
     source_commit: str,
     tag: str,
-    today: str | None = None,
+    published: str | None = None,
 ) -> str:
     """Tag the docs commit for a release, creating it when ``branch`` has none.
 
@@ -790,7 +803,7 @@ def publish_release(
         source_repo: Repository the docs were built from.
         source_commit: The commit the release tag points at.
         tag: The release tag.
-        today: The publish date (default: today in UTC).
+        published: The publish time (default: now, in UTC).
 
     Returns:
         A one-line summary of what happened.
@@ -813,7 +826,7 @@ def publish_release(
     head = repo.branch_head(branch) or repo.initialize(branch)
     found = repo.find_source_commit(branch, source_commit)
     if found is None:
-        tree, _changed = write_tree(repo, head, files, today or today_utc())
+        tree, _changed = write_tree(repo, head, files, published or now_utc())
         found = repo.create_commit(commit_message(source_repo, source_commit, tag), tree, [head])
         how = "new commit beside main"
     else:

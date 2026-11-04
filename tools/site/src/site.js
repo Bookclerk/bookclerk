@@ -1,5 +1,6 @@
-// Shared layout enhancements: anchor clearance for the sticky header and a
-// pre-release notice that collapses based on its actual number of lines.
+// Shared layout enhancements: anchor clearance for the sticky header, a
+// pre-release notice that collapses based on its actual number of lines, and
+// page dates shown in the reader's own time zone.
 (() => {
   "use strict";
 
@@ -55,4 +56,52 @@
   update();
   // A loaded web font can change line breaks without changing the viewport.
   if (document.fonts) document.fonts.ready.then(update);
+})();
+
+// Page dates ("Last updated", the /sitemap list) are rendered as the date in
+// UTC, so pages read the same without JavaScript. A <time data-local-date>
+// carries the instant it names (`YYYY-MM-DDTHH:MM:SSZ`); this rewrites its
+// text to the date in the browser's time zone, in the page's language, and
+// its tooltip to the full local time with its zone. Nothing is stored or sent: the time
+// zone is only read by Intl, here.
+(() => {
+  "use strict";
+
+  /** The instants the server writes; anything else is left as it is. */
+  const INSTANT = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
+
+  if (typeof Intl !== "object" || typeof Intl.DateTimeFormat !== "function") return;
+  const times = document.querySelectorAll("time[data-local-date]");
+  if (times.length === 0) return;
+
+  /** The page's language (`en`), so the text matches the rest of the page. */
+  const locale = document.documentElement.lang || undefined;
+  let day;
+  let full;
+  try {
+    day = new Intl.DateTimeFormat(locale, { dateStyle: "medium" });
+    // The tooltip names the zone (`GMT+9`, `PST`), since the page's other
+    // copies of the date (Markdown, sitemaps) are in UTC.
+    full = new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    });
+  } catch {
+    // A browser without dateStyle keeps the UTC date.
+    return;
+  }
+
+  for (const time of times) {
+    const stamp = time.getAttribute("datetime") || "";
+    if (!INSTANT.test(stamp)) continue;
+    const at = new Date(stamp);
+    // Browsers roll an impossible day (Feb 30) over to the next month.
+    if (Number.isNaN(at.getTime()) || at.toISOString() !== stamp.replace("Z", ".000Z")) continue;
+    time.textContent = day.format(at);
+    time.setAttribute("title", full.format(at));
+  }
 })();

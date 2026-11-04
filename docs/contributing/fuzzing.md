@@ -159,7 +159,8 @@ The tests live in `scripts/tests/`, and each corpus beside them.
   - Test and corpus: `scripts/tests/test_docs_publish.py`,
     `scripts/tests/docs_publish_dates_corpus/`.
   - Oracle: an independent reading of the document's shape by exact types,
-    and of each date digit by digit against a days-in-month table.
+    of each date digit by digit against a days-in-month table, and of an
+    optional `THH:MM:SSZ` time field by field.
 
 ### Image publishing (Python)
 
@@ -528,8 +529,10 @@ fuzzing in `npm test`.
   repository's `last-updated.json`, and lists every page for
   `/sitemap.xml`. Corpus `tools/site/fuzz/last_updated/`. Oracle: the
   document's shape read through property descriptors, the date digit by
-  digit against a days-in-month table, and each sitemap key segment by
-  segment. The date shown is only `Mon D, YYYY`.
+  digit against a days-in-month table, an optional `THH:MM:SSZ` time field
+  by field, and each sitemap key segment by segment. The date shown is only
+  `Mon D, YYYY`, and its `<time>` element holds only the date's own
+  characters.
 - **IndexNow sitemap reader** (`readSitemap` in `tools/site/indexnow.ts`)
   reads the live site's sitemaps in the `indexnow` workflow, which then
   submits the URLs they list. Corpus `tools/site/fuzz/indexnow_sitemap/`.

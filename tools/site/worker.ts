@@ -50,8 +50,14 @@
 // fetches only from its own assets and the docs repository.
 
 import { API_INDEX, API_SCHEMAS } from "./api-reference.ts";
-import { datedPages, LAST_UPDATED_FILE, MAX_LAST_UPDATED_BYTES, pageDate } from "./last-updated.ts";
-import type { IsoDate } from "./last-updated.ts";
+import {
+  datedPages,
+  LAST_UPDATED_FILE,
+  MAX_LAST_UPDATED_BYTES,
+  pageDate,
+  utcDate,
+} from "./last-updated.ts";
+import type { PageDate } from "./last-updated.ts";
 import {
   apiSearchPages,
   docMarkdownUrl,
@@ -899,7 +905,7 @@ async function serveSitemap(request: Request, url: URL, deps: DocsDeps): Promise
     const name = sitemapSection(key);
     const section = sections.get(name) ?? [];
     if (section.length === 0) sections.set(name, section);
-    section.push({ path, lastmod: date });
+    section.push({ path, lastmod: utcDate(date) });
   }
 
   let response: Response;
@@ -955,7 +961,7 @@ interface ListedDoc {
   /** Its URL path. */
   path: string;
   /** When it last changed. */
-  date: IsoDate;
+  date: PageDate;
 }
 
 /**

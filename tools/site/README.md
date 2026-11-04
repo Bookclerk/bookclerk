@@ -79,6 +79,9 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   the compact notice. Headers remain sticky without the script.
   At 720px and below, marketing navigation puts Download beside the brand
   and the other links on one line below; GitHub remains visible above 480px.
+  It also shows each page date (`<time data-local-date>`) in the reader's
+  own time zone and the page's language, through `Intl.DateTimeFormat`;
+  nothing is stored or sent, and without the script the date is UTC.
 - `src/catalog-records.json` – the complete, expandable catalog of English
   unabridged audiobook editions. It is bundled into the build and the Worker
   but never published: the Worker samples four records per homepage request
@@ -181,7 +184,10 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   git history (`scripts/docs-markdown.py`; the generated `api/` pages are
   dated by `scripts/docs-publish.py` from when their content last changed),
   and formats the "Last updated" date under each page's title (also
-  `dateModified` in its JSON-LD). The Worker fetches the file beside the
+  `dateModified` in its JSON-LD). A page's date is the UTC instant it
+  last changed (older files hold a date alone); the page shows its UTC
+  date, and `src/site.js` rewrites a `<time data-local-date>` to the date
+  in the reader's own time zone. The Worker fetches the file beside the
   page, for HTML only; when it is missing or unreadable, the page has no
   date. It also lists every dated page (`datedPages`) for the sitemap. The
   file comes from outside the Worker, so `fuzz.test.ts` replays

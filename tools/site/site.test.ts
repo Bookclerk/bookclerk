@@ -1,5 +1,6 @@
 // Shared browser layout behavior: the complete notice determines whether it
-// collapses, and section anchors clear the sticky header's actual height.
+// collapses, section anchors clear the sticky header's actual height, and
+// page dates are shown in the reader's own time zone.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -49,7 +50,9 @@ function layout(noticePresent = true) {
     document: {
       querySelector: (selector: string) =>
         selector === ".site-header" ? header : noticePresent ? ribbon : null,
+      querySelectorAll: () => [],
       documentElement: {
+        lang: "en",
         style: { setProperty: (name: string, value: string) => properties.set(name, value) },
       },
       fonts: {
@@ -151,4 +154,139 @@ test("released pages still measure the header without a notice", () => {
   assert.equal(page.anchorHeight(), "81px");
   page.resizeHeader(128);
   assert.equal(page.anchorHeight(), "128px");
+});
+
+/** A stand-in `<time>` element: its attributes and text. */
+interface FakeTime {
+  /** Its attributes by name. */
+  attributes: Map<string, string>;
+  /** Its text. */
+  textContent: string;
+  /**
+   * Reads an attribute.
+   *
+   * @param name - The attribute.
+   * @returns Its value, or null.
+   */
+  getAttribute(name: string): string | null;
+  /**
+   * Writes an attribute.
+   *
+   * @param name - The attribute.
+   * @param value - Its value.
+   */
+  setAttribute(name: string, value: string): void;
+}
+
+/**
+ * Makes a stand-in `<time data-local-date>` as render.ts writes it.
+ *
+ * @param datetime - Its `datetime` attribute.
+ * @param text - Its text (the UTC date).
+ * @returns The element.
+ */
+function fakeTime(datetime: string, text: string): FakeTime {
+  const attributes = new Map([
+    ["datetime", datetime],
+    ["title", "UTC"],
+  ]);
+  return {
+    attributes,
+    textContent: text,
+    getAttribute: (name) => attributes.get(name) ?? null,
+    setAttribute: (name, value) => {
+      attributes.set(name, value);
+    },
+  };
+}
+
+/**
+ * Runs the shipped script over some page dates, as a reader in `timeZone`.
+ *
+ * @param times - The page's `time[data-local-date]` elements.
+ * @param timeZone - The reader's IANA time zone.
+ * @param intl - Replaces Intl (undefined: the real one, pinned to `timeZone`).
+ */
+function localize(times: FakeTime[], timeZone: string, intl?: unknown): void {
+  /** Intl.DateTimeFormat as a reader in `timeZone` gets it. */
+  class ReaderFormat extends Intl.DateTimeFormat {
+    /**
+     * Pins the time zone; everything else is the script's.
+     *
+     * @param locale - The locale the script asks for.
+     * @param options - The script's options.
+     */
+    constructor(locale?: string, options?: Intl.DateTimeFormatOptions) {
+      super(locale, { ...options, timeZone });
+    }
+  }
+  runInNewContext(readFileSync(new URL("src/site.js", import.meta.url), "utf8"), {
+    document: {
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => (selector === "time[data-local-date]" ? times : []),
+      documentElement: { lang: "en", style: { setProperty: () => {} } },
+    },
+    Intl: intl === undefined ? { DateTimeFormat: ReaderFormat } : intl,
+  });
+}
+
+test("page dates show the reader's own date and time", () => {
+  // 23:30 UTC on Oct 26 is already Oct 27 in Tokyo, still Oct 26 in Los Angeles.
+  for (const [zone, date, full] of [
+    ["Asia/Tokyo", "Oct 27, 2026", /^Oct 27, 2026, 8:30\sAM GMT\+9$/],
+    ["America/Los_Angeles", "Oct 26, 2026", /^Oct 26, 2026, 4:30\sPM PDT$/],
+    ["UTC", "Oct 26, 2026", /^Oct 26, 2026, 11:30\sPM UTC$/],
+  ] as const) {
+    const time = fakeTime("2026-10-26T23:30:05Z", "Oct 26, 2026");
+    localize([time], zone);
+    assert.equal(time.textContent, date, zone);
+    assert.match(time.attributes.get("title") ?? "", full, zone);
+  }
+});
+
+test("page dates that name no instant keep the server's text", () => {
+  const times = [
+    fakeTime("2026-10-26", "Oct 26, 2026"),
+    fakeTime("2026-10-26T23:30:05+09:00", "Oct 26, 2026"),
+    fakeTime("2026-02-30T12:00:00Z", "Feb 30, 2026"),
+    fakeTime("", "Oct 26, 2026"),
+  ];
+  localize(times, "Asia/Tokyo");
+  for (const time of times) {
+    assert.equal(time.attributes.get("title"), "UTC");
+  }
+  assert.deepEqual(
+    times.map((t) => t.textContent),
+    ["Oct 26, 2026", "Oct 26, 2026", "Feb 30, 2026", "Oct 26, 2026"],
+  );
+});
+
+test("browsers without Intl date styles keep the UTC date", () => {
+  for (const intl of [
+    undefined,
+    {
+      DateTimeFormat: class {
+        /** Refuses the options, as a browser without dateStyle does. */
+        constructor() {
+          throw new RangeError("dateStyle");
+        }
+      },
+    },
+  ]) {
+    const time = fakeTime("2026-10-26T23:30:05Z", "Oct 26, 2026");
+    if (intl === undefined) {
+      runInNewContext(readFileSync(new URL("src/site.js", import.meta.url), "utf8"), {
+        document: {
+          querySelector: () => null,
+          querySelectorAll: () => [time],
+          documentElement: { lang: "en", style: { setProperty: () => {} } },
+        },
+        Intl: undefined,
+      });
+    } else {
+      localize([time], "UTC", intl);
+    }
+    assert.equal(time.textContent, "Oct 26, 2026");
+    assert.equal(time.attributes.get("title"), "UTC");
+  }
 });

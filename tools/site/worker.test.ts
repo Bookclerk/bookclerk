@@ -63,7 +63,9 @@ const GENERATED: Readonly<Record<string, string>> = {
   "api/web/jobs.md": "# Jobs\n\n## `GET /api/jobs`\n\nLists jobs.\n",
   "last-updated.json": JSON.stringify({
     version: 1,
-    pages: { "plugins/README": "2026-10-26", "api/rust/demo/index": "2026-10-01" },
+    // One instant, as the build writes them, and one date alone, as older
+    // publishes wrote them.
+    pages: { "plugins/README": "2026-10-26T23:30:05Z", "api/rust/demo/index": "2026-10-01" },
   }),
 };
 
@@ -567,7 +569,7 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   assert.equal(ld["@graph"][0]?.url, "https://bookclerk.app/docs/plugins");
   assert.match(
     html,
-    /<span class="doc-action doc-updated"><svg [^>]*>.*?<\/svg>Last updated <time datetime="2026-10-26">Oct 26, 2026<\/time><\/span>/,
+    /<span class="doc-action doc-updated"><svg [^>]*>.*?<\/svg>Last updated <time datetime="2026-10-26T23:30:05Z" data-local-date title="Oct 26, 2026, 23:30 UTC">Oct 26, 2026<\/time><\/span>/,
   );
   assert.match(
     html,
@@ -579,7 +581,7 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   );
   assert.equal(
     (ld["@graph"][0] as { dateModified?: string } | undefined)?.dateModified,
-    "2026-10-26",
+    "2026-10-26T23:30:05Z",
   );
 
   const home = await get("/", "*/*");
@@ -682,6 +684,7 @@ test("generated pages link to what they are generated from and keep links inside
   assert.match(html, /href="\/docs\/api\/typescript"/);
   assert.match(html, /<h2 id="thing">/);
   // The publish step dates generated pages by when their content last changed.
+  // A date alone names no instant, so the browser leaves it as it is.
   assert.match(html, /Last updated <time datetime="2026-10-01">Oct 1, 2026<\/time>/);
 });
 
@@ -1070,7 +1073,7 @@ test("/sitemap lists every page for people, grouped like the sidebar, with dates
   );
   assert.match(
     html,
-    /<h2 id="sitemap-build-plugins">Build plugins<\/h2>\n<ul><li><a href="\/docs\/plugins">[^<]+<\/a> <span class="faint">· <time datetime="2026-10-26">Oct 26, 2026<\/time><\/span><\/li><\/ul>/,
+    /<h2 id="sitemap-build-plugins">Build plugins<\/h2>\n<ul><li><a href="\/docs\/plugins">[^<]+<\/a> <span class="faint">· <time datetime="2026-10-26T23:30:05Z" data-local-date title="Oct 26, 2026, 23:30 UTC">Oct 26, 2026<\/time><\/span><\/li><\/ul>/,
   );
   assert.match(
     html,

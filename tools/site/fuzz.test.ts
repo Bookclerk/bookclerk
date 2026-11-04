@@ -15,7 +15,7 @@ import { HTTP_METHODS } from "./api-reference.ts";
 import { highlight } from "./highlight.ts";
 import { datedPages, formatDate, MAX_DOC_KEY_LENGTH, pageDate } from "./last-updated.ts";
 import { MAX_DOCUMENT_BYTES, MAX_SITEMAP_ENTRIES, readSitemap, readSnapshot } from "./indexnow.ts";
-import { renderDoc, SEARCH_INDEX } from "./render.ts";
+import { renderDoc, SEARCH_INDEX, timeHtml } from "./render.ts";
 import { docsTarget, pickEncoding, sitePageLocation } from "./worker.ts";
 import type { Encoding } from "./worker.ts";
 
@@ -437,6 +437,14 @@ const DATE_FRAGMENTS = [
   '"README"',
   '"__proto__"',
   "2026-10-26",
+  "T",
+  "Z",
+  "T12:00:00Z",
+  "T23:59:59Z",
+  "T24:00:00Z",
+  "T12:60:00Z",
+  "+00:00",
+  ".000",
   "<",
   "&",
   "é",
@@ -474,11 +482,12 @@ const MONTH_NAMES = [
 /**
  * The date pageDate should find, computed independently of last-updated.ts:
  * the structure is checked with `in`/`typeof` lookups on a null-prototype copy,
- * and the date with digit-by-digit reading and a days-in-month table.
+ * the date with digit-by-digit reading and a days-in-month table, and the
+ * optional `THH:MM:SSZ` time character by character with its field ranges.
  *
  * @param json - The dates file.
  * @param key - The page key.
- * @returns The expected `YYYY-MM-DD`, or null.
+ * @returns The expected `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SSZ`, or null.
  */
 function oraclePageDate(json: string, key: string): string | null {
   let document: unknown;
@@ -494,8 +503,26 @@ function oraclePageDate(json: string, key: string): string | null {
   if (typeof pages !== "object" || pages === null || pages instanceof Array) return null;
   if (!Object.getOwnPropertyNames(pages).includes(key)) return null;
   const value = Object.getOwnPropertyDescriptor(pages, key)?.value;
-  if (typeof value !== "string" || value.length !== 10 || value[4] !== "-" || value[7] !== "-")
+  if (
+    typeof value !== "string" ||
+    (value.length !== 10 && value.length !== 20) ||
+    value[4] !== "-" ||
+    value[7] !== "-"
+  )
     return null;
+  if (value.length === 20) {
+    if (value[10] !== "T" || value[13] !== ":" || value[16] !== ":" || value[19] !== "Z")
+      return null;
+    const fields = [value.slice(11, 13), value.slice(14, 16), value.slice(17, 19)];
+    const limits = [23, 59, 59];
+    for (let f = 0; f < 3; f++) {
+      const text = fields[f] ?? "";
+      const tens = text.charCodeAt(0) - 48;
+      const ones = text.charCodeAt(1) - 48;
+      if (tens < 0 || tens > 9 || ones < 0 || ones > 9) return null;
+      if (tens * 10 + ones > (limits[f] ?? 0)) return null;
+    }
+  }
   let year = 0;
   let month = 0;
   let day = 0;
@@ -529,13 +556,24 @@ function checkPageDate(json: string, key: string, context: string): void {
   );
   if (got === null) return;
   const shown = formatDate(got);
-  const [year = "", month = "", day = ""] = got.split("-");
+  const [year = "", month = "", day = ""] = got.slice(0, 10).split("-");
   assert.equal(
     shown,
     `${MONTH_NAMES[Number(month) - 1]?.slice(0, 3)} ${Number(day)}, ${year}`,
     context,
   );
   assert.match(shown, /^[A-Za-z]{3} [0-9]{1,2}, [0-9]{4}$/, context);
+  // The element needs no escaping: only the date's own characters reach it.
+  const element = timeHtml(got);
+  if (got.length === 20) {
+    assert.equal(
+      element,
+      `<time datetime="${got}" data-local-date title="${shown}, ${got.slice(11, 16)} UTC">${shown}</time>`,
+      context,
+    );
+  } else {
+    assert.equal(element, `<time datetime="${got}">${shown}</time>`, context);
+  }
 }
 
 test("pageDate agrees with the oracle on its seed corpus", () => {
