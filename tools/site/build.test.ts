@@ -390,6 +390,9 @@ test("pages load fonts from the site itself, and every font they name is publish
     const css = site.page(assetUrl("site.css").slice(1));
     const named = [...css.matchAll(/url\("\/fonts\/([^"]+)"\)/g)].flatMap((m) => m[1] ?? []);
     assert.ok(named.length > 0);
+    // The heading self-links draw their icon from the published SVG.
+    assert.match(css, /\.heading-anchor::before \{[^}]*\bmask: url\("\/link-icon\.svg"\)/);
+    assert.ok(site.page("link-icon.svg").startsWith("<svg"));
     for (const name of ["index.html", "download.html", "404.html"]) {
       const html = site.page(name);
       // No third-party origin may block rendering or learn who visits.

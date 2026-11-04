@@ -237,6 +237,13 @@ class RenderTest(unittest.TestCase):
     def test_one_page_per_public_module(self) -> None:
         self.assertEqual(sorted(self.pages), ["demo/README.md", "demo/proto.md", "other/README.md"])
 
+    def test_two_pages_for_one_file_are_refused(self) -> None:
+        # A public module named README would land on its crate root's file.
+        renderer = rm.Renderer({"demo": rm.Crate("demo", demo_crate())})
+        renderer.pages["demo"].append(renderer.pages["demo"][0])
+        with self.assertRaisesRegex(ValueError, "two pages render to demo/README.md"):
+            renderer.render_all()
+
     def test_root_page(self) -> None:
         page = self.pages["demo/README.md"]
         self.assertEqual(page.count("\n# "), 0)

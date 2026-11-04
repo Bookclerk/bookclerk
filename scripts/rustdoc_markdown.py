@@ -1101,10 +1101,16 @@ class Renderer:
 
         Returns:
             Page file under ``api/rust`` -> Markdown.
+
+        Raises:
+            ValueError: Two pages would be written to one file (a public
+                module named ``README`` beside its crate root).
         """
         out = {}
         for name, pages in self.pages.items():
             for page in pages:
+                if page.file in out:
+                    raise ValueError(f"two pages render to {page.file}")
                 out[page.file] = self.render_page(self.crates[name], page)
         return out
 
