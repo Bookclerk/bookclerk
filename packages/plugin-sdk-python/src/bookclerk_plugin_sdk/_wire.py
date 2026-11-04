@@ -3198,28 +3198,6 @@ _queue_batch_codec = _Codec(0, 2, _write_queue_batch, _read_queue_batch)
 """Wire codec for ``QueueBatch`` (0 data words, 2 pointers)."""
 
 
-def _write_scheduled_controller(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    s.set_text(0, v["cron"])
-    s.set_u64(0, v["scheduledTime"])
-    s.set_text(1, v["fireId"])
-    s.set_u32(2, v["attempt"])
-    s.set_u64(2, v["deadlineUnixMs"])
-
-
-def _read_scheduled_controller(s: _StructReader, caps: _CapTable) -> Any:
-    return {
-        "cron": s.get_text(0),
-        "scheduledTime": s.get_u64(0),
-        "fireId": s.get_text(1),
-        "attempt": s.get_u32(2),
-        "deadlineUnixMs": s.get_u64(2),
-    }
-
-
-_scheduled_controller_codec = _Codec(3, 2, _write_scheduled_controller, _read_scheduled_controller)
-"""Wire codec for ``ScheduledController`` (3 data words, 2 pointers)."""
-
-
 def _write_queue_retry(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u32(0, v["delaySeconds"])
     s.set_text(0, v["reason"])
@@ -3578,6 +3556,28 @@ def _read_kv_list_reply(s: _StructReader, caps: _CapTable) -> Any:
 
 _kv_list_reply_codec = _Codec(1, 1, _write_kv_list_reply, _read_kv_list_reply)
 """Wire codec for ``KvListReply`` (1 data words, 1 pointers)."""
+
+
+def _write_scheduled_controller(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["cron"])
+    s.set_u64(0, v["scheduledTime"])
+    s.set_text(1, v["fireId"])
+    s.set_u32(2, v["attempt"])
+    s.set_u64(2, v["deadlineUnixMs"])
+
+
+def _read_scheduled_controller(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "cron": s.get_text(0),
+        "scheduledTime": s.get_u64(0),
+        "fireId": s.get_text(1),
+        "attempt": s.get_u32(2),
+        "deadlineUnixMs": s.get_u64(2),
+    }
+
+
+_scheduled_controller_codec = _Codec(3, 2, _write_scheduled_controller, _read_scheduled_controller)
+"""Wire codec for ``ScheduledController`` (3 data words, 2 pointers)."""
 
 
 def _write_db_value(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

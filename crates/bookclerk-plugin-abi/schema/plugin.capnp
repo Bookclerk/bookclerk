@@ -2040,22 +2040,6 @@ struct QueueBatch {
   messages @1 :List(QueueMessage);
 }
 
-# One fire of a `[triggers] crons` schedule (`scheduled(controller)`).
-struct ScheduledController {
-  # The schedule that fired, normalized to single spaces (`0 3 * * MON`).
-  cron @0 :Text;
-  # Fire time, UTC unix milliseconds (always a whole minute). Retries of
-  # one fire keep it.
-  scheduledTime @1 :UInt64;
-  # Durable id of this fire, stable across retries; dedupe on it.
-  fireId @2 :Text;
-  # Failure attempt, starting at 1.
-  attempt @3 :UInt32;
-  # UTC unix milliseconds. Host fence/lease is authoritative; this hint must
-  # not outlive the fence.
-  deadlineUnixMs @4 :UInt64;
-}
-
 # Redeliver a queue message later.
 struct QueueRetry {
   # Seconds before redelivery; zero applies the consumer's `retry_delay`.
@@ -2221,6 +2205,22 @@ struct KvListReply {
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }
+}
+
+# One fire of a `[triggers] crons` schedule (`scheduled(controller)`).
+struct ScheduledController {
+  # The schedule that fired, normalized to single spaces (`0 3 * * MON`).
+  cron @0 :Text;
+  # Fire time, UTC unix milliseconds (always a whole minute). Retries of
+  # one fire keep it.
+  scheduledTime @1 :UInt64;
+  # Durable id of this fire, stable across retries; dedupe on it.
+  fireId @2 :Text;
+  # Failure attempt, starting at 1.
+  attempt @3 :UInt32;
+  # UTC unix milliseconds. Host fence/lease is authoritative; this hint must
+  # not outlive the fence.
+  deadlineUnixMs @4 :UInt64;
 }
 
 # --- rust-generated: end ---

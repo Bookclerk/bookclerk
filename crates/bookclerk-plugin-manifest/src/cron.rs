@@ -30,10 +30,14 @@ pub const MAX_CRON_SOURCE_BYTES: usize = bookclerk_plugin_abi::MAX_CRON_BYTES as
 /// Minutes in one day.
 const MINUTES_PER_DAY: i64 = 1440;
 
+/// Days in one 400-year Gregorian cycle, after which dates and weekdays repeat.
+const GREGORIAN_CYCLE_DAYS: i64 = 146_097;
+
 /// Days searched before a schedule is reported as never firing again.
 ///
-/// Nine years covers the longest gap a valid schedule can have (February 29
-/// across a skipped century leap year: 2096 to 2104 is eight years).
+/// [`CronSchedule::parse`] rejects schedules whose longest gap between firing
+/// days reaches this, so the search always finds the next fire. Nine years
+/// keeps plain February 29 schedules (2096 to 2104 is eight years).
 const SEARCH_DAYS: i64 = 366 * 9;
 
 /// One minute on the UTC timeline, counted from the Unix epoch.
@@ -245,15 +249,6 @@ fn parse_field(text: &str, spec: &FieldSpec) -> Result<u64, CronError> {
     Ok(bits)
 }
 
-/// Days in `month` (1-12) of a leap year: the most a month can have.
-fn max_days_in_month(month: u32) -> u32 {
-    match month {
-        2 => 29,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
-}
-
 impl CronSchedule {
     /// Parses and validates a five-field cron expression.
     ///
@@ -305,19 +300,24 @@ impl CronSchedule {
             dom_restricted: !fields[2].starts_with('*'),
             dow_restricted: !fields[4].starts_with('*'),
         };
-        // Only a day-of-month-only schedule can name days no chosen month has.
-        if schedule.dom_restricted && !schedule.dow_restricted {
-            let possible = (1..=12u32).any(|month| {
-                schedule.months & (1 << month) != 0
-                    && (1..=max_days_in_month(month))
-                        .any(|day| schedule.days_of_month & (1 << day) != 0)
-            });
-            if !possible {
+        // Calendars and weekdays repeat every 400 Gregorian years, so one
+        // cycle shows every gap between firing days. Reject schedules with
+        // no firing day, or with a gap the fire-time search can't cross
+        // (such as February 29 on a Sunday, which skips 40 years).
+        match schedule.longest_day_gap() {
+            None => {
                 return Err(err(format!(
-                    "cron `{}` names a day of month none of its months has, so it never fires",
+                    "cron `{}` matches no day, so it never fires",
                     schedule.source
-                )));
+                )))
             }
+            Some(gap) if gap >= SEARCH_DAYS => {
+                return Err(err(format!(
+                    "cron `{}` can go more than nine years without firing",
+                    schedule.source
+                )))
+            }
+            Some(_) => {}
         }
         Ok(schedule)
     }
@@ -328,6 +328,30 @@ impl CronSchedule {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.source
+    }
+
+    /// Longest run of days between two firing days, across one 400-year
+    /// Gregorian cycle and its wrap-around.
+    ///
+    /// # Returns
+    ///
+    /// The gap in days (1 when every day fires), or `None` when no day fires.
+    fn longest_day_gap(&self) -> Option<i64> {
+        let mut first = None;
+        let mut last: Option<i64> = None;
+        let mut longest = 0;
+        for day in 0..GREGORIAN_CYCLE_DAYS {
+            if !self.day_matches(day) {
+                continue;
+            }
+            if let Some(prev) = last {
+                longest = longest.max(day - prev);
+            }
+            first.get_or_insert(day);
+            last = Some(day);
+        }
+        let (first, last) = (first?, last?);
+        Some(longest.max(first + GREGORIAN_CYCLE_DAYS - last))
     }
 
     /// True when the day starting at `day` (days since the epoch) matches.
@@ -646,6 +670,8 @@ mod tests {
             "@daily",
             "0 0 30 2 *",
             "0 0 31 4,6,9,11 *",
+            // February 29 on a Sunday: 2088, then 2128.
+            "0 0 29 2 */7",
             "* * * FOO *",
             "* * * * JAN",
             "001 * * * *",
@@ -660,6 +686,18 @@ mod tests {
         }
         let long = format!("{} * * * *", "1,".repeat(70));
         assert!(CronSchedule::parse(&long).is_err());
+    }
+
+    #[test]
+    fn leap_day_schedules_within_the_search_are_kept() {
+        // Plain February 29 skips at most eight years (2096 to 2104).
+        let s = cron("0 0 29 2 *");
+        assert_eq!(
+            s.next_after(at(2097, 1, 1, 0, 0)),
+            Some(at(2104, 2, 29, 0, 0))
+        );
+        assert_eq!(s.longest_day_gap(), Some(2921));
+        assert_eq!(cron("* * * * *").longest_day_gap(), Some(1));
     }
 
     #[test]

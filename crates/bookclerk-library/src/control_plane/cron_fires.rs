@@ -19,7 +19,9 @@
 //!
 //! Missed fires coalesce. A cursor behind by several fire times claims only
 //! the newest one at or before now; a new cursor starts at the newest past
-//! fire, so installing or deploying a plugin never fires it at once.
+//! fire, so a new instance or a newly added schedule never fires at once.
+//! The cursor outlives an undeploy, so redeploying an instance that missed
+//! fires runs one late fire for the newest of them, as a restart does.
 //!
 //! Cursors are removed with their instance (`delete_plugin_instance`).
 

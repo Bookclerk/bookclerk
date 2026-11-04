@@ -126,6 +126,16 @@ impl ExternalIntegration {
                 retry_delay_secs: c.retry_delay,
             })
             .collect();
+        // Only schedules the operator granted tick; the session refuses the
+        // rest anyway, so claiming them would only queue failing fires.
+        let cron_schedules = plugin
+            .manifest
+            .triggers
+            .crons
+            .iter()
+            .filter(|cron| session.grant().allows_cron(cron.as_str()))
+            .cloned()
+            .collect();
         session.open(prepared.bindings).await?;
         Ok(Self {
             session,
@@ -137,7 +147,7 @@ impl ExternalIntegration {
             allow_credential_login,
             event_subscriptions,
             queue_subscriptions,
-            cron_schedules: plugin.manifest.triggers.crons.clone(),
+            cron_schedules,
             poll_cancel: Arc::new(AtomicBool::new(false)),
             poll_epoch: Arc::new(AtomicU64::new(0)),
             plugin_instance_id: None,

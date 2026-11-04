@@ -4,6 +4,8 @@
  * Used by `bookclerk-plugin check|fmt|package` and the sparse-workerd smoke path.
  */
 
+import { MAX_CRON_BYTES } from "../abi.js";
+
 /**
  * Parsed `plugin.toml` shape accepted by the TypeScript author tools.
  *
@@ -935,7 +937,7 @@ function isLeapYear(year: number): boolean {
 export const MAX_CRON_TRIGGERS = 8;
 
 /** Longest cron source in bytes (ABI `maxCronBytes`). */
-export const MAX_CRON_BYTES = 128;
+export { MAX_CRON_BYTES };
 
 /** One cron field item: `*`, a value or a range, optionally with `/step`. */
 const CRON_ITEM = /^(\*|[0-9A-Za-z]+(-[0-9A-Za-z]+)?)(\/[0-9]{1,2})?$/;
@@ -961,7 +963,11 @@ export function validateCrons(crons: unknown): void {
   }
   const seen = new Set<string>();
   for (const [i, raw] of crons.entries()) {
-    if (typeof raw !== "string" || raw.length > MAX_CRON_BYTES || !/^[\x20-\x7e\t]*$/.test(raw)) {
+    if (
+      typeof raw !== "string" ||
+      raw.length > MAX_CRON_BYTES ||
+      !/^[\x20-\x7e\t\n\f\r]*$/.test(raw)
+    ) {
       throw new Error(
         `plugin.toml: triggers.crons[${i}] must be an ASCII string of at most ${MAX_CRON_BYTES} bytes`,
       );

@@ -584,7 +584,14 @@ pub async fn run_plugin_scheduled(
     }
     .ok_or_else(|| anyhow::anyhow!("plugin instance {instance} is not running on this node"))?;
     if !integration.cron_schedules().contains(&cron) {
-        anyhow::bail!("plugin instance {instance} no longer declares cron `{cron}`");
+        // An upgrade removed the schedule, or consent no longer covers it,
+        // after this fire was queued: drop the fire instead of retrying it.
+        tracing::info!(
+            plugin_instance_id = %instance,
+            cron = %cron,
+            "cron fire dropped: the instance no longer runs this schedule"
+        );
+        return Ok(format!("scheduled `{cron}` dropped: no longer declared"));
     }
     let invocation = bookclerk_integrations::ScheduledInvocation {
         cron: cron.clone(),

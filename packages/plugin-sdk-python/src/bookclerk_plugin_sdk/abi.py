@@ -3595,26 +3595,6 @@ class QueueBatch(TypedDict):
     messages: list[QueueMessage]
 
 
-class ScheduledController(TypedDict):
-    """One fire of a `[triggers] crons` schedule (`scheduled(controller)`).
-
-    Attributes:
-        cron: The schedule that fired, normalized to single spaces (`0 3 * * MON`).
-        scheduledTime: Fire time, UTC unix milliseconds (always a whole minute). Retries
-            of one fire keep it.
-        fireId: Durable id of this fire, stable across retries; dedupe on it.
-        attempt: Failure attempt, starting at 1.
-        deadlineUnixMs: UTC unix milliseconds. Host fence/lease is authoritative; this
-            hint must not outlive the fence.
-    """
-
-    cron: str
-    scheduledTime: int
-    fireId: str
-    attempt: int
-    deadlineUnixMs: int
-
-
 class QueueRetry(TypedDict):
     """Redeliver a queue message later.
 
@@ -4000,6 +3980,26 @@ KvListReply = Union[
     KvListReplyErr,
 ]
 """Result union of `KvNamespace.list`."""
+
+
+class ScheduledController(TypedDict):
+    """One fire of a `[triggers] crons` schedule (`scheduled(controller)`).
+
+    Attributes:
+        cron: The schedule that fired, normalized to single spaces (`0 3 * * MON`).
+        scheduledTime: Fire time, UTC unix milliseconds (always a whole minute). Retries
+            of one fire keep it.
+        fireId: Durable id of this fire, stable across retries; dedupe on it.
+        attempt: Failure attempt, starting at 1.
+        deadlineUnixMs: UTC unix milliseconds. Host fence/lease is authoritative; this
+            hint must not outlive the fence.
+    """
+
+    cron: str
+    scheduledTime: int
+    fireId: str
+    attempt: int
+    deadlineUnixMs: int
 
 
 class DbValueNull(TypedDict):
@@ -5352,7 +5352,6 @@ __all__ = [
     "Invocation",
     "QueueMessage",
     "QueueBatch",
-    "ScheduledController",
     "QueueRetry",
     "QueueResultAck",
     "QueueResultRetry",
@@ -5385,6 +5384,7 @@ __all__ = [
     "KvListReplyOk",
     "KvListReplyErr",
     "KvListReply",
+    "ScheduledController",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",

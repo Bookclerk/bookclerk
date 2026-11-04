@@ -461,8 +461,9 @@ frozen `ScheduledController` (`cron`, `scheduled_time`, `fire_id`,
   [Job kinds](../internals/jobs.md#job-kinds)).
 - **Missed fires coalesce.** A cluster that was down through several fire
   times runs one late fire for the newest of them, with that time as
-  `scheduledTime`. A schedule seen for the first time waits for its next
-  fire.
+  `scheduledTime`. The same goes for an instance that was undeployed and
+  is deployed again. A schedule seen for the first time (a new instance,
+  or a schedule a new version adds) waits for its next fire.
 - **Overlap.** A fire that comes due while the previous fire of the same
   schedule is still queued or running is skipped, and the daemon logs a
   warning.

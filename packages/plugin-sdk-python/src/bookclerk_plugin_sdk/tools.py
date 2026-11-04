@@ -22,6 +22,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from ._abi import MAX_CRON_BYTES
 from .path_guard import (
     cli_user_path,
     copy_file_under,
@@ -1585,9 +1586,6 @@ def generate_types(plugin_dir: Path, out_file: Path | None = None) -> str:
 
 MAX_CRON_TRIGGERS = 8
 """Most ``[triggers] crons`` entries one manifest may declare."""
-
-MAX_CRON_BYTES = 128
-"""Longest cron source in bytes (ABI ``maxCronBytes``)."""
 
 _CRON_ITEM = re.compile(r"^(\*|[0-9A-Za-z]+(-[0-9A-Za-z]+)?)(/[0-9]{1,2})?$")
 

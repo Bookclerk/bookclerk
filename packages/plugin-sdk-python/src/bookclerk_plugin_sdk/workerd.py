@@ -1225,7 +1225,7 @@ class BookclerkEntrypoint(WorkerEntrypoint):
             return js(queue_batch_results(batch, err))
         return js(queue_batch_results(batch, None))
 
-    async def bookclerkScheduled(self, context=None, wire_controller=None):
+    async def bookclerkScheduled(self, context: Any = None, wire_controller: Any = None) -> None:
         """Adapter dispatch: run one cron fire through ``scheduled(controller)``.
 
         The handler receives a :class:`ScheduledController`. Returning

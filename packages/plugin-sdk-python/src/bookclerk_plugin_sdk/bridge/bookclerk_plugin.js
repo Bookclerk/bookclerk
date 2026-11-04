@@ -4343,28 +4343,6 @@ var QueueBatchCodec = {
     };
   }
 };
-var ScheduledControllerCodec = {
-  dataWords: 3,
-  pointerCount: 2,
-  write(s, v, caps) {
-    void caps;
-    s.setText(0, v.cron ?? "");
-    s.setUint64(0, BigInt(v.scheduledTime ?? 0));
-    s.setText(1, v.fireId ?? "");
-    s.setUint32(2, v.attempt ?? 0);
-    s.setUint64(2, BigInt(v.deadlineUnixMs ?? 0));
-  },
-  read(s, caps) {
-    void caps;
-    return {
-      cron: s.getText(0),
-      scheduledTime: Number(s.getUint64(0)),
-      fireId: s.getText(1),
-      attempt: s.getUint32(2),
-      deadlineUnixMs: Number(s.getUint64(2))
-    };
-  }
-};
 var QueueRetryCodec = {
   dataWords: 1,
   pointerCount: 1,
@@ -4460,6 +4438,28 @@ var QueueBatchReplyCodec = {
       default:
         throw unknownUnion("QueueBatchReply", disc);
     }
+  }
+};
+var ScheduledControllerCodec = {
+  dataWords: 3,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.cron ?? "");
+    s.setUint64(0, BigInt(v.scheduledTime ?? 0));
+    s.setText(1, v.fireId ?? "");
+    s.setUint32(2, v.attempt ?? 0);
+    s.setUint64(2, BigInt(v.deadlineUnixMs ?? 0));
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      cron: s.getText(0),
+      scheduledTime: Number(s.getUint64(0)),
+      fireId: s.getText(1),
+      attempt: s.getUint32(2),
+      deadlineUnixMs: Number(s.getUint64(2))
+    };
   }
 };
 var DbValueCodec = {

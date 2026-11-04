@@ -2324,26 +2324,6 @@ export interface QueueBatch {
   messages: QueueMessage[];
 }
 
-/** One fire of a `[triggers] crons` schedule (`scheduled(controller)`). */
-export interface ScheduledController {
-  /** The schedule that fired, normalized to single spaces (`0 3 * * MON`). */
-  cron: string;
-  /**
-   * Fire time, UTC unix milliseconds (always a whole minute). Retries of
-   * one fire keep it.
-   */
-  scheduledTime: number;
-  /** Durable id of this fire, stable across retries; dedupe on it. */
-  fireId: string;
-  /** Failure attempt, starting at 1. */
-  attempt: number;
-  /**
-   * UTC unix milliseconds. Host fence/lease is authoritative; this hint must
-   * not outlive the fence.
-   */
-  deadlineUnixMs: number;
-}
-
 /** Redeliver a queue message later. */
 export interface QueueRetry {
   /** Seconds before redelivery; zero applies the consumer's `retry_delay`. */
@@ -2479,6 +2459,26 @@ export interface KvListOk {
 export type KvListReply =
   | { kind: "ok"; value: KvListOk } // Success: one page of keys.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** One fire of a `[triggers] crons` schedule (`scheduled(controller)`). */
+export interface ScheduledController {
+  /** The schedule that fired, normalized to single spaces (`0 3 * * MON`). */
+  cron: string;
+  /**
+   * Fire time, UTC unix milliseconds (always a whole minute). Retries of
+   * one fire keep it.
+   */
+  scheduledTime: number;
+  /** Durable id of this fire, stable across retries; dedupe on it. */
+  fireId: string;
+  /** Failure attempt, starting at 1. */
+  attempt: number;
+  /**
+   * UTC unix milliseconds. Host fence/lease is authoritative; this hint must
+   * not outlive the fence.
+   */
+  deadlineUnixMs: number;
+}
 
 /** One typed SQL cell or bind parameter. */
 export type DbValue =
