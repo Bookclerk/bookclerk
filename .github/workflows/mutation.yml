@@ -118,6 +118,16 @@ jobs:
           shared-key: mutants
           cache-on-failure: true
 
+      # The mutant builds fill the target directory as the night goes on, and
+      # a runner whose disk fills up loses contact with GitHub, taking the
+      # log and every result with it. Remove preinstalled SDKs the job never
+      # uses to give it room.
+      - name: Free disk space
+        if: steps.diff.outputs.rust == 'true'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h / "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
+
       # The helpers and guests CI's `rust_test` check builds first (the jail,
       # the workerd front door, the pinned workerd, the platform guests), so
       # tests that launch them run instead of failing the baseline or
@@ -162,6 +172,10 @@ jobs:
       # `--in-place` mutates this checkout, which the runner throws away;
       # cargo-mutants restores each file after its mutant. The time limit
       # stops it with SIGINT, which still writes the lists of what it tested.
+      # A watchdog does the same when the disk or memory runs low: a runner
+      # that runs out loses contact with GitHub, and the job then fails with
+      # no log and no results, so the next run retries an ever larger range.
+      # It also logs the disk and memory left every 10 minutes.
       - name: Test the mutants
         id: mutants
         if: steps.diff.outputs.rust == 'true'
@@ -169,15 +183,51 @@ jobs:
           # Each mutant rebuilds only what it changed. Set on the step:
           # rust-cache exports CARGO_INCREMENTAL=0 for the rest of the job.
           CARGO_INCREMENTAL: "1"
+          # Stop below this much free disk (target directory) or available
+          # memory, in MiB. Memory must stay low for two checks in a row, so
+          # one test's peak does not stop the run.
+          MIN_FREE_DISK_MIB: "3072"
+          MIN_AVAILABLE_MEMORY_MIB: "768"
         run: |
           set +e
           timeout --signal=INT --kill-after=5m 240m \
-            cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --in-place --no-shuffle --output "$RUNNER_TEMP"
+            cargo mutants --workspace --in-diff "$RUNNER_TEMP/pr.diff" --in-place --no-shuffle --output "$RUNNER_TEMP" &
+          mutants=$!
+          reason=""
+          low_memory=0
+          checks=0
+          while kill -0 "$mutants" 2>/dev/null; do
+            sleep 15
+            disk=$(df --output=avail -BM "$GITHUB_WORKSPACE/target" 2>/dev/null | tail -1 | tr -dc 0-9)
+            memory=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo)
+            checks=$((checks + 1))
+            if [ $((checks % 40)) -eq 0 ]; then
+              echo "::notice::Watchdog: ${disk:-?} MiB disk free, ${memory:-?} MiB memory available"
+            fi
+            if [ -n "$disk" ] && [ "$disk" -lt "$MIN_FREE_DISK_MIB" ]; then
+              reason=low-disk
+            elif [ -n "$memory" ] && [ "$memory" -lt "$MIN_AVAILABLE_MEMORY_MIB" ]; then
+              low_memory=$((low_memory + 1))
+              if [ "$low_memory" -ge 2 ]; then reason=low-memory; fi
+            else
+              low_memory=0
+            fi
+            if [ -n "$reason" ]; then
+              echo "::warning::Stopping cargo-mutants: ${disk:-?} MiB disk free, ${memory:-?} MiB memory available ($reason)"
+              # timeout passes the signal on to cargo-mutants.
+              kill -INT "$mutants"
+              break
+            fi
+          done
+          wait "$mutants"
           code=$?
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          if [ "$code" -eq 124 ] || [ "$code" -eq 130 ] || [ "$code" -eq 137 ]; then
-            echo "stopped=true" >> "$GITHUB_OUTPUT"
+          if [ -n "$reason" ]; then
+            echo "stopped=$reason" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 124 ] || [ "$code" -eq 130 ] || [ "$code" -eq 137 ]; then
+            echo "stopped=time-limit" >> "$GITHUB_OUTPUT"
           fi
+          df -h "$GITHUB_WORKSPACE/target"
           exit 0
 
       - name: Report
@@ -199,7 +249,7 @@ jobs:
           fi
           mkdir -p "$RUNNER_TEMP/issue"
           args=(--out "$RUNNER_TEMP/mutants.out" --exit-code "${CODE:-1}" --widened "$RUNNER_TEMP/widened.txt" --sample "$RUNNER_TEMP/sample.json" --issue "$RUNNER_TEMP/issue/rust.md")
-          if [ "${STOPPED:-}" = "true" ]; then args+=(--stopped); fi
+          if [ -n "${STOPPED:-}" ]; then args+=(--stopped "$STOPPED"); fi
           python3 scripts/mutation_report.py "${args[@]}"
 
       - name: Upload the results

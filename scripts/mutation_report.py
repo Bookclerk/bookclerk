@@ -30,7 +30,7 @@ in them, so the tests of the code beside the data are still checked.
 ``mutation_report.py sample`` rewrites the diff to mark the lines of those
 files' mutants, all of them within a budget and an even sample past it.
 
-Usage: ``mutation_report.py --out DIR --exit-code N [--stopped] [--widened
+Usage: ``mutation_report.py --out DIR --exit-code N [--stopped [REASON]] [--widened
 FILE] [--sample FILE]`` from the repository root (``--summary FILE``
 defaults to ``$GITHUB_STEP_SUMMARY``); ``mutation_report.py widen --diff
 FILE --listed FILE`` prints the files to widen, one per line;
@@ -84,6 +84,26 @@ class Run(Enum):
     BASELINE_FAILED = "baseline failed"
     #: Any other exit: bad arguments, an unreadable diff or a crash.
     ERROR = "error"
+
+
+class Stop(Enum):
+    """Why the workflow stopped cargo-mutants before it tested every mutant."""
+
+    #: The run reached the workflow's time limit.
+    TIME_LIMIT = "time-limit"
+    #: The runner's disk was nearly full; a full disk kills the runner and
+    #: every result with it.
+    LOW_DISK = "low-disk"
+    #: The runner was nearly out of memory, which also kills the runner.
+    LOW_MEMORY = "low-memory"
+
+
+#: The note a stopped run's summary ends with, by why it stopped.
+STOP_NOTES = {
+    Stop.TIME_LIMIT: "The run reached its time limit, so some mutants were not tested.",
+    Stop.LOW_DISK: "The runner ran low on disk space, so the run stopped early and some mutants were not tested.",
+    Stop.LOW_MEMORY: "The runner ran low on memory, so the run stopped early and some mutants were not tested.",
+}
 
 
 #: cargo-mutants' documented exit codes.
@@ -357,24 +377,26 @@ def run_state(exit_code: int) -> Run:
     return EXIT_CODES.get(exit_code, Run.ERROR)
 
 
-def usable(run: Run, stopped: bool) -> bool:
+def usable(run: Run, stopped: Stop | None) -> bool:
     """Say whether a run tested the range it was given.
 
     The next daily run starts from the commit of the last successful one,
     so a run that failed before testing its mutants must fail the workflow,
     or the changes it should have tested would never be tested. A run the
     time limit stopped counts: what it tested stands, and retrying the same
-    range would stop at the same place.
+    range would stop at the same place. So does a run stopped because the
+    runner ran low on disk or memory: the same range would run out again.
 
     Args:
         run: How cargo-mutants ended.
-        stopped: Whether the workflow stopped it at its time limit.
+        stopped: Why the workflow stopped it, or ``None`` when it ran to
+            the end.
 
     Returns:
         ``False`` when the baseline failed or cargo-mutants exited with an
         error on its own.
     """
-    return stopped or run not in (Run.BASELINE_FAILED, Run.ERROR)
+    return stopped is not None or run not in (Run.BASELINE_FAILED, Run.ERROR)
 
 
 def read_results(out: Path) -> Results:
@@ -411,15 +433,15 @@ def _code(text: str) -> str:
 
 
 def render(
-    results: Results, run: Run, *, stopped: bool, widened: list[str] | None = None, sample: Sample | None = None
+    results: Results, run: Run, *, stopped: Stop | None, widened: list[str] | None = None, sample: Sample | None = None
 ) -> str:
     """Write the Markdown summary of a run.
 
     Args:
         results: The mutants by outcome.
         run: How the cargo-mutants process ended.
-        stopped: Whether the workflow stopped cargo-mutants at its time
-            limit, so later mutants were not tested.
+        stopped: Why the workflow stopped cargo-mutants before it tested
+            every mutant, or ``None`` when it ran to the end.
         widened: The files whose functions were mutated because the
             diff changed them outside any function; only those that yielded
             a mutant are named.
@@ -477,8 +499,8 @@ def render(
             lines += [f"- {_code(m)}" for m in missed[:MAX_LISTED]]
             if len(missed) > MAX_LISTED:
                 lines.append(f"- … and {len(missed) - MAX_LISTED} more (see the `mutants-rust` artifact).")
-    if stopped:
-        lines += ["", "> [!NOTE]", "> The run reached its time limit, so some mutants were not tested."]
+    if stopped is not None:
+        lines += ["", "> [!NOTE]", f"> {STOP_NOTES[stopped]}"]
     elif run is Run.ERROR and (results.tested or results.count(Outcome.UNVIABLE)):
         lines += [
             "",
@@ -585,7 +607,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--out", type=Path, required=True, help="the run's mutants.out directory")
     parser.add_argument("--exit-code", type=int, required=True, help="cargo-mutants' exit code")
-    parser.add_argument("--stopped", action="store_true", help="the run was stopped at its time limit")
+    parser.add_argument(
+        "--stopped",
+        nargs="?",
+        const=Stop.TIME_LIMIT.value,
+        choices=[stop.value for stop in Stop],
+        help="the workflow stopped the run: at its time limit (the default) or because the runner ran low on disk or memory",
+    )
     parser.add_argument("--widened", type=Path, help="files mutated whole, one per line (from widen)")
     parser.add_argument("--sample", type=Path, help="the sample record (from sample)")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""), help="file to append the summary to (none when empty)")
@@ -595,13 +623,14 @@ def main(argv: list[str] | None = None) -> int:
     sample = read_sample(args.sample.read_text(encoding="utf-8")) if args.sample and args.sample.is_file() else None
     results = read_results(args.out)
     run = run_state(args.exit_code)
-    markdown = render(results, run, stopped=args.stopped, widened=widened, sample=sample)
+    stopped = Stop(args.stopped) if args.stopped else None
+    markdown = render(results, run, stopped=stopped, widened=widened, sample=sample)
     sys.stdout.write(markdown)
     write_issue(args.issue, markdown, results)
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
             handle.write(markdown)
-    return 0 if usable(run, args.stopped) else 1
+    return 0 if usable(run, stopped) else 1
 
 
 if __name__ == "__main__":

@@ -1039,8 +1039,8 @@ Each run works like this:
 3. The job summary lists what was tested and what was missed. A run that
    did not test its range fails, so the next run covers the same changes:
    the baseline failed, the tool exited with an error, or it left no
-   results. A run stopped at its time limit still succeeds with what it
-   tested.
+   results. A run stopped at its time limit, or early because the runner
+   ran low on disk or memory, still succeeds with what it tested.
 4. When a mutant was missed, the reusable
    [`mutation-issue.yml`](../../.github/workflows/mutation-issue.yml)
    workflow files the summary as an issue titled `Missed mutants: <area>`
@@ -1088,7 +1088,14 @@ the starting point of the next scheduled one.
    the same confinement enforcement as the test job. Tests that launch a
    helper then run instead of skipping.
 4. Each mutant runs the tests of its own package under cargo-nextest.
-5. The run stops after 4 hours and reports what it tested so far.
+5. The run stops after 4 hours and reports what it tested so far. It
+   also stops early, the same way, when less than 3 GiB of disk is free or
+   less than 768 MiB of memory stays available for two checks 15 seconds
+   apart. A runner that runs out of either loses contact with GitHub, and
+   the job then fails with no log and no results, so the next run would
+   retry an even larger range. The job frees the preinstalled SDKs it never
+   uses before it builds, logs the disk and memory left every 10 minutes,
+   and the summary says why a run stopped early.
 
 The job summary shows the share of mutants the tests caught and lists the
 missed ones. The full results, with a log per mutant, are in the
