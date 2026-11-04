@@ -1338,6 +1338,10 @@ class ExecutionTests(unittest.TestCase):
         # Cancelled fails unless the stranded-job step vouched for it.
         self.assertTrue(any(x.startswith("macos: expected to run") for x in gate(art, stranded)))
         self.assertEqual(gate(art, stranded, frozenset({"macos"})), [])
+        # `needs` reports a job no runner took as `abandoned`.
+        stranded["macos"]["result"] = "abandoned"
+        self.assertTrue(any(x.startswith("macos: expected to run") for x in gate(art, stranded)))
+        self.assertEqual(gate(art, stranded, frozenset({"macos"})), [])
         # Only `cancelled` passes, and only for an OS leg job.
         for result in ("failure", "timed_out", "skipped"):
             with self.subTest(result=result):

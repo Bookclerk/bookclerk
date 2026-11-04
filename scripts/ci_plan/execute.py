@@ -1164,6 +1164,10 @@ def run_check(
 # gate
 
 
+# What ``needs.<job>.result`` reports for a job that never got a runner.
+STRANDED_RESULTS = frozenset({"cancelled", "abandoned"})
+
+
 def expected_jobs(artifact: Mapping[str, Any]) -> dict[str, bool]:
     """Whether each job ``CI Gate`` needs is expected to run.
 
@@ -1193,8 +1197,9 @@ def gate(
         stranded: ``OS_LEG_JOBS`` jobs that GitHub cancelled without ever
             giving them a runner, on a run that already retried them
             (``scripts/merge_queue_requeue.py --stranded-job``). Such a job
-            passes the gate as ``cancelled``; any other job, or any other
-            result, does not.
+            passes the gate as ``cancelled`` or ``abandoned`` (what
+            ``needs`` reports for a job no runner took); any other job, or
+            any other result, does not.
 
     Returns:
         One sentence per problem; empty when the gate passes.
@@ -1210,7 +1215,7 @@ def gate(
         result = (needs.get(job) or {}).get("result")
         if result is None:
             problems.append(f"{job}: not reported to the gate (missing from needs)")
-        elif want and result == "cancelled" and job in stranded and job in OS_LEG_JOBS:
+        elif want and result in STRANDED_RESULTS and job in stranded and job in OS_LEG_JOBS:
             continue
         elif want and result != "success":
             problems.append(f"{job}: expected to run, result {result}")

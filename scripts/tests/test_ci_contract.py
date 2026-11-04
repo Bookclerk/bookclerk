@@ -102,7 +102,10 @@ class WorkflowContractTests(unittest.TestCase):
     def test_gate_names_the_macos_job_for_its_stranded_step(self) -> None:
         steps = self.jobs["ci-gate"]["steps"]
         stranded = next(s for s in steps if s.get("id") == "stranded")
-        self.assertEqual(stranded["if"], "needs.macos.result == 'cancelled' && !inputs.private-head")
+        self.assertEqual(
+            stranded["if"],
+            """contains(fromJSON('["cancelled", "abandoned"]'), needs.macos.result) && !inputs.private-head""",
+        )
         self.assertIn(f'--stranded-job "{MACOS_JOB_NAME}"', stranded["run"])
         self.assertNotIn("uses", stranded)
         gate = next(s for s in steps if "ci-exec.py gate" in s.get("run", ""))

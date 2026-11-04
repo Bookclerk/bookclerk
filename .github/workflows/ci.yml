@@ -1351,9 +1351,11 @@ jobs:
       # been retried (a pull request run re-run once, a merge group
       # re-enqueued once), the gate lets the run pass without it
       # (docs/contributing/ci.md#macos-job). Reads the GitHub API only.
+      # `needs` reports such a job as `abandoned` (the jobs API says
+      # `cancelled`).
       - name: Check whether the macOS job never got a runner
         id: stranded
-        if: needs.macos.result == 'cancelled' && !inputs.private-head
+        if: contains(fromJSON('["cancelled", "abandoned"]'), needs.macos.result) && !inputs.private-head
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}

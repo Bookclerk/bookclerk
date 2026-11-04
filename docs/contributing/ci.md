@@ -1335,6 +1335,10 @@ the macOS checks are best effort:
 3. The gate prints a warning and a step-summary note that the macOS checks
    didn't run on that commit.
 
+`CI Gate` sees such a job as `abandoned` in `needs` (the jobs API reports
+it as `cancelled`), so it accepts either result for a job the step
+vouched for.
+
 A macOS job that ran and failed, or was cancelled after it started, always
 fails the gate. So does a stranded job on a `main` push or an OSV
 remediation run. The gate job reads the GitHub API with a read-only token
