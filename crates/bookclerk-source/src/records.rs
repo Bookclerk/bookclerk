@@ -1,0 +1,360 @@
+//! Builders and flat views for the structured bibliographic records that
+//! `ScanBook` and `CatalogHit` carry on the plugin ABI.
+//!
+//! # Audience
+//!
+//! Storefront guests that turn store payloads into credits, identifiers and
+//! series entries, and host code that still reads the flat `books` row view
+//! until the library schema stores works, expressions and editions
+//! (`docs/adr/library-data-model.md`).
+
+use bookclerk_plugin_abi as abi;
+
+pub use abi::{
+    Credit, CreditLevel, CreditRole, ExpressionKind, Identifier, IdentifierScheme, MediaKind,
+    SeriesEntry, WorkKind,
+};
+
+/// Separator the flat `books` row view uses between contributor names.
+pub const NAME_SEPARATOR: &str = ", ";
+
+/// Name suffixes that belong to the name before them when a display string
+/// is split on commas (`Martin Luther King, Jr.`).
+const NAME_SUFFIXES: &[&str] = &[
+    "jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "phd", "ph.d.", "md", "m.d.", "esq", "esq.",
+];
+
+/// One credit, or `None` when `name` is blank after trimming.
+///
+/// # Arguments
+///
+/// * `name` - contributor display name, one person or body.
+/// * `role` - what the contributor did; the level is the role's usual one.
+#[must_use]
+pub fn credit(name: &str, role: CreditRole) -> Option<Credit> {
+    let name = name.trim();
+    (!name.is_empty()).then(|| Credit {
+        name: name.to_string(),
+        role,
+        level: CreditLevel::RoleDefault,
+    })
+}
+
+/// Credits for a list of names that a store already returns one per entry,
+/// in billing order, skipping blank names.
+#[must_use]
+pub fn credits_from_names<I, S>(names: I, role: CreditRole) -> Vec<Credit>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    names
+        .into_iter()
+        .filter_map(|name| credit(name.as_ref(), role))
+        .collect()
+}
+
+/// Credits for a store's display string that lists several names in one
+/// field (`"Jane Doe, John Roe & Ann Poe"`).
+///
+/// Splits on `,`, `;`, `&` and the word `and`, and keeps a name suffix such
+/// as `Jr.` with the name before it. Prefer [`credits_from_names`] when the
+/// store returns a list.
+#[must_use]
+pub fn credits_from_display(display: Option<&str>, role: CreditRole) -> Vec<Credit> {
+    display
+        .map(split_display_names)
+        .map(|names| credits_from_names(names, role))
+        .unwrap_or_default()
+}
+
+/// Splits a display string of contributor names into one name per entry.
+///
+/// # Returns
+///
+/// The trimmed, non-empty names in the order they appear.
+#[must_use]
+pub fn split_display_names(display: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for part in display.split([',', ';', '&']) {
+        for piece in split_on_and(part) {
+            let piece = piece.trim();
+            if piece.is_empty() {
+                continue;
+            }
+            let is_suffix = NAME_SUFFIXES.contains(&piece.to_ascii_lowercase().as_str());
+            match names.last_mut() {
+                Some(previous) if is_suffix => {
+                    previous.push_str(NAME_SEPARATOR);
+                    previous.push_str(piece);
+                }
+                _ => names.push(piece.to_string()),
+            }
+        }
+    }
+    names
+}
+
+/// Splits on the standalone word `and`, matched without regard to case.
+fn split_on_and(part: &str) -> Vec<&str> {
+    let lower = part.to_ascii_lowercase();
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    let mut search = 0;
+    while let Some(found) = lower[search..].find(" and ") {
+        let at = search + found;
+        pieces.push(&part[start..at]);
+        start = at + " and ".len();
+        search = start;
+    }
+    pieces.push(&part[start..]);
+    pieces
+}
+
+/// One identifier, or `None` when `value` is blank after trimming.
+///
+/// # Arguments
+///
+/// * `scheme` - scheme the value belongs to.
+/// * `value` - the identifier as the store printed it.
+/// * `marketplace` - marketplace an ASIN is scoped to; ignored when blank.
+#[must_use]
+pub fn identifier(
+    scheme: IdentifierScheme,
+    value: &str,
+    marketplace: Option<&str>,
+) -> Option<Identifier> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| Identifier {
+        scheme,
+        value: value.to_string(),
+        marketplace: marketplace
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string),
+    })
+}
+
+/// A single-entry series list, or empty when `name` is missing or blank.
+#[must_use]
+pub fn series_entries(name: Option<&str>, position: Option<&str>) -> Vec<SeriesEntry> {
+    name.map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(|name| {
+            vec![SeriesEntry {
+                name: name.to_string(),
+                position: position
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string),
+                store_series_id: None,
+            }]
+        })
+        .unwrap_or_default()
+}
+
+/// Names credited with `role`, joined for the flat `books` row view.
+///
+/// # Returns
+///
+/// `None` when no credit has the role.
+#[must_use]
+pub fn joined_names(credits: &[Credit], role: CreditRole) -> Option<String> {
+    let names: Vec<&str> = credits
+        .iter()
+        .filter(|c| c.role == role)
+        .map(|c| c.name.as_str())
+        .collect();
+    (!names.is_empty()).then(|| names.join(NAME_SEPARATOR))
+}
+
+/// First identifier value in `scheme`, for the flat `books` row view.
+#[must_use]
+pub fn identifier_value(identifiers: &[Identifier], scheme: IdentifierScheme) -> Option<String> {
+    identifiers
+        .iter()
+        .find(|id| id.scheme == scheme)
+        .map(|id| id.value.clone())
+}
+
+/// The flat `books.content_kind` value for a work kind.
+///
+/// Drama has no flat kind of its own and reads as `book`.
+#[must_use]
+pub fn content_kind(kind: WorkKind) -> &'static str {
+    match kind {
+        WorkKind::Book | WorkKind::Drama => "book",
+        WorkKind::PodcastShow => "podcast",
+        WorkKind::PodcastEpisode => "episode",
+    }
+}
+
+/// The work kind for a store's own item-kind label (`episode`, `podcast`).
+///
+/// Labels a storefront uses for podcast shows (`podcast`, `parent`,
+/// `podcastparent`, `season`) read as [`WorkKind::PodcastShow`]; anything
+/// else is a book.
+#[must_use]
+pub fn work_kind_from_label(label: &str) -> WorkKind {
+    if bookclerk_library::is_episode(label) {
+        WorkKind::PodcastEpisode
+    } else if bookclerk_library::is_podcast_parent(label) {
+        WorkKind::PodcastShow
+    } else {
+        WorkKind::Book
+    }
+}
+
+/// Adds the credits of `fill` whose role `base` has none of, so a merge of
+/// two hits for one edition never overwrites the credits already known.
+pub fn fill_credits(base: &mut Vec<Credit>, fill: Vec<Credit>) {
+    let known: Vec<CreditRole> = base.iter().map(|c| c.role).collect();
+    base.extend(fill.into_iter().filter(|c| !known.contains(&c.role)));
+}
+
+/// Adds the identifiers of `fill` whose scheme `base` has none of.
+pub fn fill_identifiers(base: &mut Vec<Identifier>, fill: Vec<Identifier>) {
+    let known: Vec<IdentifierScheme> = base.iter().map(|id| id.scheme).collect();
+    base.extend(fill.into_iter().filter(|id| !known.contains(&id.scheme)));
+}
+
+/// Decodes HTML entities in credit and series names in place.
+pub(crate) fn decode_html_entities(credits: &mut [Credit], series: &mut [SeriesEntry]) {
+    for credit in credits {
+        bookclerk_library::decode_html_entities_in_place(&mut credit.name);
+    }
+    for entry in series {
+        bookclerk_library::decode_html_entities_in_place(&mut entry.name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_names_split_on_separators_and_keep_suffixes() {
+        assert_eq!(
+            split_display_names("Martin Luther King, Jr.; Jane Doe & John Roe and Ann Poe"),
+            vec!["Martin Luther King, Jr.", "Jane Doe", "John Roe", "Ann Poe"]
+        );
+        assert_eq!(split_display_names("  ,; "), Vec::<String>::new());
+        assert_eq!(
+            split_display_names("Brandon Sanderson"),
+            vec!["Brandon Sanderson"]
+        );
+        assert_eq!(
+            split_display_names("Penn AND Teller"),
+            vec!["Penn", "Teller"]
+        );
+    }
+
+    #[test]
+    fn blank_values_make_no_record() {
+        assert!(credit("  ", CreditRole::Author).is_none());
+        assert!(identifier(IdentifierScheme::Isbn, " ", None).is_none());
+        assert!(series_entries(Some(" "), Some("1")).is_empty());
+        assert!(series_entries(None, Some("1")).is_empty());
+        assert!(credits_from_display(None, CreditRole::Narrator).is_empty());
+    }
+
+    #[test]
+    fn records_trim_and_scope() {
+        let id = identifier(IdentifierScheme::Asin, " B0X ", Some(" us ")).expect("asin");
+        assert_eq!(id.value, "B0X");
+        assert_eq!(id.marketplace.as_deref(), Some("us"));
+        let global = identifier(IdentifierScheme::Isbn, "978", Some("")).expect("isbn");
+        assert_eq!(global.marketplace, None);
+        let entry = series_entries(Some(" Stormlight "), Some(" "));
+        assert_eq!(entry[0].name, "Stormlight");
+        assert_eq!(entry[0].position, None);
+    }
+
+    #[test]
+    fn flat_views_join_by_role_and_pick_by_scheme() {
+        let mut credits = credits_from_names(["A", " ", "B"], CreditRole::Author);
+        credits.extend(credits_from_display(Some("N"), CreditRole::Narrator));
+        assert_eq!(
+            joined_names(&credits, CreditRole::Author).as_deref(),
+            Some("A, B")
+        );
+        assert_eq!(
+            joined_names(&credits, CreditRole::Narrator).as_deref(),
+            Some("N")
+        );
+        assert_eq!(joined_names(&credits, CreditRole::Translator), None);
+        let ids: Vec<Identifier> = [
+            identifier(IdentifierScheme::Asin, "B1", None),
+            identifier(IdentifierScheme::Isbn, "978", None),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        assert_eq!(
+            identifier_value(&ids, IdentifierScheme::Isbn).as_deref(),
+            Some("978")
+        );
+        assert_eq!(
+            identifier_value(&ids, IdentifierScheme::OpenLibraryWork),
+            None
+        );
+    }
+
+    #[test]
+    fn fills_add_only_missing_roles_and_schemes() {
+        let mut base = credits_from_names(["A"], CreditRole::Author);
+        let mut fill = credits_from_names(["Other"], CreditRole::Author);
+        fill.extend(credits_from_names(["N"], CreditRole::Narrator));
+        fill_credits(&mut base, fill);
+        assert_eq!(
+            joined_names(&base, CreditRole::Author).as_deref(),
+            Some("A")
+        );
+        assert_eq!(
+            joined_names(&base, CreditRole::Narrator).as_deref(),
+            Some("N")
+        );
+        let mut ids: Vec<Identifier> = identifier(IdentifierScheme::Isbn, "1", None)
+            .into_iter()
+            .collect();
+        let more: Vec<Identifier> = [
+            identifier(IdentifierScheme::Isbn, "2", None),
+            identifier(IdentifierScheme::Asin, "B", None),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        fill_identifiers(&mut ids, more);
+        assert_eq!(
+            identifier_value(&ids, IdentifierScheme::Isbn).as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            identifier_value(&ids, IdentifierScheme::Asin).as_deref(),
+            Some("B")
+        );
+    }
+
+    #[test]
+    fn work_kinds_round_trip_through_the_flat_label() {
+        for kind in [
+            WorkKind::Book,
+            WorkKind::PodcastShow,
+            WorkKind::PodcastEpisode,
+        ] {
+            assert_eq!(work_kind_from_label(content_kind(kind)), kind);
+        }
+        assert_eq!(content_kind(WorkKind::Drama), "book");
+        assert_eq!(work_kind_from_label("season"), WorkKind::PodcastShow);
+        assert_eq!(work_kind_from_label("anything"), WorkKind::Book);
+    }
+
+    #[test]
+    fn html_entities_decode_in_names() {
+        let mut credits = credits_from_names(["O&#39;Brien"], CreditRole::Author);
+        let mut series = series_entries(Some("Memory&#39;s Blade"), None);
+        decode_html_entities(&mut credits, &mut series);
+        assert_eq!(credits[0].name, "O'Brien");
+        assert_eq!(series[0].name, "Memory's Blade");
+    }
+}

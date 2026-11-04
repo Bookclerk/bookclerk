@@ -1,6 +1,9 @@
 //! Library scan: paginate Chirp `currentUserAudiobooks` into [`SourceScope`].
 
-use bookclerk_library::{NewBook, SourceScope};
+use bookclerk_library::SourceScope;
+use bookclerk_plugin_sdk::ScanBook;
+use bookclerk_source::abi::{abridgement_from_flag, rfc3339, scan_book_to_new};
+use bookclerk_source::records::{self, CreditRole};
 use bookclerk_source::ScanSummary;
 use chrono::{DateTime, NaiveDate, Utc};
 
@@ -132,7 +135,7 @@ pub async fn collect_account_books(
     account_id: &str,
     marketplace: &str,
     page_size: u32,
-) -> Result<(Vec<NewBook>, u32)> {
+) -> Result<(Vec<ScanBook>, u32)> {
     let mut books = Vec::new();
     let mut pages = 0u32;
     let mut page = 1u32;
@@ -151,7 +154,7 @@ pub async fn collect_account_books(
             let Some(book) = item.audiobook.as_ref() else {
                 continue;
             };
-            books.push(audiobook_to_new_book(book, account_id, marketplace));
+            books.push(audiobook_to_scan_book(book, account_id, marketplace));
         }
         if items.len() < page_size as usize {
             break;
@@ -176,45 +179,43 @@ pub async fn scan_account_into_library(
 ) -> Result<(usize, u32)> {
     let (books, pages) = collect_account_books(client, account_id, marketplace, page_size).await?;
     let mut books_upserted = 0usize;
-    for book in &books {
-        library.upsert_book(book).await?;
+    for book in books {
+        library
+            .upsert_book(&scan_book_to_new("chirp", book))
+            .await?;
         books_upserted += 1;
     }
     Ok((books_upserted, pages))
 }
 
-/// Map a Chirp audiobook to a [`NewBook`] row.
+/// Map a Chirp audiobook to a structured scan row. Chirp returns one display
+/// string per role, so names are split with [`records::credits_from_display`].
 #[must_use]
-pub fn audiobook_to_new_book(book: &Audiobook, account_id: &str, marketplace: &str) -> NewBook {
+pub fn audiobook_to_scan_book(book: &Audiobook, account_id: &str, marketplace: &str) -> ScanBook {
     let length_minutes = book.duration_ms.map(|ms| (ms / 60_000) as i64);
     let published_at = book.released_on.as_deref().and_then(parse_chirp_date);
+    let mut credits =
+        records::credits_from_display(book.display_authors.as_deref(), CreditRole::Author);
+    credits.extend(records::credits_from_display(
+        book.display_narrators.as_deref(),
+        CreditRole::Narrator,
+    ));
 
-    NewBook {
-        plugin_key: String::new(),
-        uuid: None,
-        product_id: book.id.clone(),
-        source: String::from("chirp"),
+    ScanBook {
         account_id: account_id.to_string(),
-        asin: None,
-        isbn: None,
-        marketplace: marketplace.to_string(),
+        product_id: book.id.clone(),
         title: book
             .display_title
             .clone()
             .unwrap_or_else(|| book.id.clone()),
-        authors: book.display_authors.clone(),
-        narrators: book.display_narrators.clone(),
-        series: None,
-        series_index: None,
-        series_asin: None,
-        purchased_at: None,
+        marketplace: Some(marketplace.to_string()),
         publisher: book.publisher.clone(),
         length_minutes,
-        is_abridged: book.abridged.unwrap_or(false),
-        content_kind: String::from("book"),
-        categories: None,
         subtitle: book.sub_title.clone(),
-        published_at,
+        credits,
+        abridgement: abridgement_from_flag(book.abridged),
+        published_at: published_at.map(rfc3339),
+        ..ScanBook::default()
     }
 }
 

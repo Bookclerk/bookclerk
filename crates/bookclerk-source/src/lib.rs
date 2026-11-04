@@ -15,6 +15,7 @@ mod error;
 mod language;
 mod media;
 mod options;
+pub mod records;
 mod registry;
 mod traits;
 mod types;

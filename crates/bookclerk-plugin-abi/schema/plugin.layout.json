@@ -1296,7 +1296,7 @@
       "name": "CatalogHit",
       "file": "plugin.capnp",
       "dataWords": 5,
-      "pointerCount": 19,
+      "pointerCount": 17,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -1319,7 +1319,7 @@
           "offset": 1
         },
         {
-          "name": "authors",
+          "name": "url",
           "codeOrder": 2,
           "discriminantValue": null,
           "type": {
@@ -1328,7 +1328,7 @@
           "offset": 2
         },
         {
-          "name": "narrators",
+          "name": "coverUrl",
           "codeOrder": 3,
           "discriminantValue": null,
           "type": {
@@ -1337,7 +1337,7 @@
           "offset": 3
         },
         {
-          "name": "series",
+          "name": "origin",
           "codeOrder": 4,
           "discriminantValue": null,
           "type": {
@@ -1346,7 +1346,7 @@
           "offset": 4
         },
         {
-          "name": "seriesIndex",
+          "name": "subtitle",
           "codeOrder": 5,
           "discriminantValue": null,
           "type": {
@@ -1355,7 +1355,7 @@
           "offset": 5
         },
         {
-          "name": "asin",
+          "name": "description",
           "codeOrder": 6,
           "discriminantValue": null,
           "type": {
@@ -1364,7 +1364,7 @@
           "offset": 6
         },
         {
-          "name": "isbn",
+          "name": "publisher",
           "codeOrder": 7,
           "discriminantValue": null,
           "type": {
@@ -1373,62 +1373,8 @@
           "offset": 7
         },
         {
-          "name": "url",
-          "codeOrder": 8,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 8
-        },
-        {
-          "name": "coverUrl",
-          "codeOrder": 9,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 9
-        },
-        {
-          "name": "origin",
-          "codeOrder": 10,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 10
-        },
-        {
-          "name": "subtitle",
-          "codeOrder": 11,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 11
-        },
-        {
-          "name": "description",
-          "codeOrder": 12,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 12
-        },
-        {
-          "name": "publisher",
-          "codeOrder": 13,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 13
-        },
-        {
           "name": "lengthMinutes",
-          "codeOrder": 14,
+          "codeOrder": 8,
           "discriminantValue": null,
           "type": {
             "kind": "int64"
@@ -1437,34 +1383,34 @@
         },
         {
           "name": "publishedAt",
-          "codeOrder": 15,
+          "codeOrder": 9,
           "discriminantValue": null,
           "type": {
             "kind": "text"
           },
-          "offset": 14
+          "offset": 8
         },
         {
           "name": "categories",
-          "codeOrder": 16,
+          "codeOrder": 10,
           "discriminantValue": null,
           "type": {
             "kind": "text"
           },
-          "offset": 15
+          "offset": 9
         },
         {
           "name": "language",
-          "codeOrder": 17,
+          "codeOrder": 11,
           "discriminantValue": null,
           "type": {
             "kind": "text"
           },
-          "offset": 16
+          "offset": 10
         },
         {
           "name": "priceCents",
-          "codeOrder": 18,
+          "codeOrder": 12,
           "discriminantValue": null,
           "type": {
             "kind": "int64"
@@ -1473,25 +1419,25 @@
         },
         {
           "name": "currency",
-          "codeOrder": 19,
+          "codeOrder": 13,
           "discriminantValue": null,
           "type": {
             "kind": "text"
           },
-          "offset": 17
+          "offset": 11
         },
         {
           "name": "priceLabel",
-          "codeOrder": 20,
+          "codeOrder": 14,
           "discriminantValue": null,
           "type": {
             "kind": "text"
           },
-          "offset": 18
+          "offset": 12
         },
         {
           "name": "ratingOverall",
-          "codeOrder": 21,
+          "codeOrder": 15,
           "discriminantValue": null,
           "type": {
             "kind": "float64"
@@ -1500,7 +1446,7 @@
         },
         {
           "name": "ratingCount",
-          "codeOrder": 22,
+          "codeOrder": 16,
           "discriminantValue": null,
           "type": {
             "kind": "int64"
@@ -1509,11 +1455,89 @@
         },
         {
           "name": "abridgement",
-          "codeOrder": 23,
+          "codeOrder": 17,
           "discriminantValue": null,
           "type": {
             "kind": "enum",
             "name": "Abridgement"
+          },
+          "offset": 16
+        },
+        {
+          "name": "workKind",
+          "codeOrder": 18,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "WorkKind"
+          },
+          "offset": 17
+        },
+        {
+          "name": "expressionKind",
+          "codeOrder": 19,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "ExpressionKind"
+          },
+          "offset": 18
+        },
+        {
+          "name": "mediaKind",
+          "codeOrder": 20,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "MediaKind"
+          },
+          "offset": 19
+        },
+        {
+          "name": "identifiers",
+          "codeOrder": 21,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "Identifier"
+            }
+          },
+          "offset": 13
+        },
+        {
+          "name": "credits",
+          "codeOrder": 22,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "Credit"
+            }
+          },
+          "offset": 14
+        },
+        {
+          "name": "seriesEntries",
+          "codeOrder": 23,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "SeriesEntry"
+            }
+          },
+          "offset": 15
+        },
+        {
+          "name": "parentProductId",
+          "codeOrder": 24,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
           },
           "offset": 16
         }
@@ -2742,6 +2766,45 @@
             }
           },
           "offset": 9
+        }
+      ]
+    },
+    "Credit": {
+      "name": "Credit",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "role",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "CreditRole"
+          },
+          "offset": 0
+        },
+        {
+          "name": "level",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "CreditLevel"
+          },
+          "offset": 1
         }
       ]
     },
@@ -5558,6 +5621,44 @@
             "name": "ExecuteResultReply"
           },
           "offset": 0
+        }
+      ]
+    },
+    "Identifier": {
+      "name": "Identifier",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "scheme",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "IdentifierScheme"
+          },
+          "offset": 0
+        },
+        {
+          "name": "value",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "marketplace",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
         }
       ]
     },
@@ -9769,8 +9870,8 @@
     "ScanBook": {
       "name": "ScanBook",
       "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 13,
+      "dataWords": 2,
+      "pointerCount": 14,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -9811,7 +9912,7 @@
           "offset": 3
         },
         {
-          "name": "asin",
+          "name": "publisher",
           "codeOrder": 4,
           "discriminantValue": null,
           "type": {
@@ -9820,71 +9921,8 @@
           "offset": 4
         },
         {
-          "name": "isbn",
-          "codeOrder": 5,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 5
-        },
-        {
-          "name": "authors",
-          "codeOrder": 6,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 6
-        },
-        {
-          "name": "narrators",
-          "codeOrder": 7,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 7
-        },
-        {
-          "name": "series",
-          "codeOrder": 8,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 8
-        },
-        {
-          "name": "seriesIndex",
-          "codeOrder": 9,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 9
-        },
-        {
-          "name": "contentKind",
-          "codeOrder": 10,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 10
-        },
-        {
-          "name": "publisher",
-          "codeOrder": 11,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 11
-        },
-        {
           "name": "lengthMinutes",
-          "codeOrder": 12,
+          "codeOrder": 5,
           "discriminantValue": null,
           "type": {
             "kind": "int64"
@@ -9893,12 +9931,136 @@
         },
         {
           "name": "subtitle",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 5
+        },
+        {
+          "name": "workKind",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "WorkKind"
+          },
+          "offset": 4
+        },
+        {
+          "name": "expressionKind",
+          "codeOrder": 8,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "ExpressionKind"
+          },
+          "offset": 5
+        },
+        {
+          "name": "mediaKind",
+          "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "MediaKind"
+          },
+          "offset": 6
+        },
+        {
+          "name": "identifiers",
+          "codeOrder": 10,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "Identifier"
+            }
+          },
+          "offset": 6
+        },
+        {
+          "name": "credits",
+          "codeOrder": 11,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "Credit"
+            }
+          },
+          "offset": 7
+        },
+        {
+          "name": "seriesEntries",
+          "codeOrder": 12,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "SeriesEntry"
+            }
+          },
+          "offset": 8
+        },
+        {
+          "name": "parentProductId",
           "codeOrder": 13,
           "discriminantValue": null,
           "type": {
             "kind": "text"
           },
+          "offset": 9
+        },
+        {
+          "name": "language",
+          "codeOrder": 14,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 10
+        },
+        {
+          "name": "abridgement",
+          "codeOrder": 15,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "Abridgement"
+          },
+          "offset": 7
+        },
+        {
+          "name": "publishedAt",
+          "codeOrder": 16,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 11
+        },
+        {
+          "name": "purchasedAt",
+          "codeOrder": 17,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
           "offset": 12
+        },
+        {
+          "name": "categories",
+          "codeOrder": 18,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 13
         }
       ]
     },
@@ -10224,6 +10386,43 @@
         {
           "name": "language",
           "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "SeriesEntry": {
+      "name": "SeriesEntry",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "name",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "position",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "storeSeriesId",
+          "codeOrder": 2,
           "discriminantValue": null,
           "type": {
             "kind": "text"
@@ -10745,6 +10944,31 @@
         "path"
       ]
     },
+    "CreditLevel": {
+      "name": "CreditLevel",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "roleDefault",
+        "work",
+        "expression",
+        "edition"
+      ]
+    },
+    "CreditRole": {
+      "name": "CreditRole",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "author",
+        "narrator",
+        "translator",
+        "editor",
+        "illustrator",
+        "publisher",
+        "host",
+        "cast",
+        "adaptor"
+      ]
+    },
     "DbResultSelection": {
       "name": "DbResultSelection",
       "file": "plugin.capnp",
@@ -10787,6 +11011,27 @@
         "oidc"
       ]
     },
+    "ExpressionKind": {
+      "name": "ExpressionKind",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "narration",
+        "text",
+        "translation",
+        "dramatisation",
+        "podcastAudio"
+      ]
+    },
+    "IdentifierScheme": {
+      "name": "IdentifierScheme",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "isbn",
+        "asin",
+        "openLibraryEdition",
+        "openLibraryWork"
+      ]
+    },
     "IntegerArithKind": {
       "name": "IntegerArithKind",
       "file": "plugin.capnp",
@@ -10804,6 +11049,16 @@
         "atomicBatch",
         "nestedSavepoint",
         "consistentSnapshot"
+      ]
+    },
+    "MediaKind": {
+      "name": "MediaKind",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "audiobook",
+        "ebook",
+        "print",
+        "podcastAudio"
       ]
     },
     "PluginErrorCode": {
@@ -10843,6 +11098,16 @@
         "blob",
         "boolean",
         "null"
+      ]
+    },
+    "WorkKind": {
+      "name": "WorkKind",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "book",
+        "podcastShow",
+        "podcastEpisode",
+        "drama"
       ]
     }
   },

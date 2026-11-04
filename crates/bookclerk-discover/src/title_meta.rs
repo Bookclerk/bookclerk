@@ -296,15 +296,16 @@ impl TitleMeta {
 
     /// Copies a storefront [`CatalogHit`] (Libro HTML/JSON-LD) into a detail-panel payload.
     fn from_catalog_hit(hit: CatalogHit) -> Self {
+        let flat = crate::candidates::FlatCredits::of(&hit);
         Self {
-            asin: hit.asin.filter(|s| !s.is_empty()),
+            asin: flat.asin.filter(|s| !s.is_empty()),
             title: Some(hit.title).filter(|s| !s.is_empty()),
             subtitle: hit.subtitle,
-            authors: hit.authors,
-            narrators: hit.narrators,
-            series: hit.series,
-            series_index: hit.series_index,
-            isbn: hit.isbn,
+            authors: flat.authors,
+            narrators: flat.narrators,
+            series: flat.series,
+            series_index: flat.series_index,
+            isbn: flat.isbn,
             cover_url: hit.cover_url,
             description: hit.description,
             publisher: hit.publisher,

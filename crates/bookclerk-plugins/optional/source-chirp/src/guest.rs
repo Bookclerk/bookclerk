@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use bookclerk_library::NewBook;
+use bookclerk_plugin_sdk::ScanBook;
 use bookclerk_plugin_sdk::{
     FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch, ScanParams,
     ScanSummary, SourceAccount,
@@ -107,7 +107,7 @@ pub async fn guest_scan(
     credentials: &BTreeMap<String, Value>,
     account_filter: &[String],
     page_size: u32,
-) -> Result<(Vec<NewBook>, usize, u32)> {
+) -> Result<(Vec<ScanBook>, usize, u32)> {
     if credentials.is_empty() {
         return Err(ChirpError::no_accounts(
             "no Chirp credentials from host — run login first",

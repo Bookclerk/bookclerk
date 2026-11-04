@@ -1,6 +1,9 @@
 //! Library scan: fetch Libro.fm library pages and upsert via [`SourceScope`].
 
-use bookclerk_library::{NewBook, SourceScope};
+use bookclerk_library::SourceScope;
+use bookclerk_plugin_sdk::ScanBook;
+use bookclerk_source::abi::{abridgement_from_flag, rfc3339, scan_book_to_new};
+use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_source::ScanSummary;
 use chrono::{DateTime, NaiveDate, Utc};
 
@@ -125,7 +128,7 @@ pub async fn collect_account_books(
     client: &LibroClient,
     account_id: &str,
     marketplace: &str,
-) -> Result<(Vec<NewBook>, u32)> {
+) -> Result<(Vec<ScanBook>, u32)> {
     let mut books = Vec::new();
     let mut pages = 0u32;
     let mut page = 1u32;
@@ -146,7 +149,7 @@ pub async fn collect_account_books(
             {
                 continue;
             }
-            books.push(audiobook_to_new_book(book, account_id, marketplace));
+            books.push(audiobook_to_scan_book(book, account_id, marketplace));
         }
 
         let total = response.total_pages.max(1);
@@ -172,23 +175,27 @@ pub async fn scan_account_into_library(
 ) -> Result<(usize, u32)> {
     let (books, pages) = collect_account_books(client, account_id, marketplace).await?;
     let mut books_upserted = 0usize;
-    for book in &books {
-        library.upsert_book(book).await?;
+    for book in books {
+        library
+            .upsert_book(&scan_book_to_new("libro", book))
+            .await?;
         books_upserted += 1;
     }
     Ok((books_upserted, pages))
 }
 
-/// Map a Libro.fm audiobook JSON object to a [`NewBook`] row.
+/// Map a Libro.fm audiobook JSON object to a structured scan row.
 #[must_use]
-pub fn audiobook_to_new_book(book: &Audiobook, account_id: &str, marketplace: &str) -> NewBook {
-    let isbn = book.isbn.clone();
-    let authors = book.authors.as_ref().map(|a| a.join(", "));
-    let narrators = book
-        .audiobook_info
-        .as_ref()
-        .and_then(|i| i.narrators.as_ref())
-        .map(|n| n.join(", "));
+pub fn audiobook_to_scan_book(book: &Audiobook, account_id: &str, marketplace: &str) -> ScanBook {
+    let mut credits =
+        records::credits_from_names(book.authors.iter().flatten(), CreditRole::Author);
+    credits.extend(records::credits_from_names(
+        book.audiobook_info
+            .iter()
+            .filter_map(|i| i.narrators.as_ref())
+            .flatten(),
+        CreditRole::Narrator,
+    ));
     let length_minutes = book
         .audiobook_info
         .as_ref()
@@ -216,29 +223,24 @@ pub fn audiobook_to_new_book(book: &Audiobook, account_id: &str, marketplace: &s
         .and_then(|m| m.added_at.as_deref())
         .and_then(parse_libro_datetime);
 
-    NewBook {
-        plugin_key: String::new(),
-        uuid: None,
-        product_id: isbn.clone(),
-        source: String::from("libro"),
+    ScanBook {
         account_id: account_id.to_string(),
-        asin: None,
-        isbn: Some(isbn),
-        marketplace: marketplace.to_string(),
+        product_id: book.isbn.clone(),
         title: book.title.clone(),
-        authors,
-        narrators,
-        series: book.series.clone(),
-        series_index,
-        series_asin: None,
-        purchased_at,
+        marketplace: Some(marketplace.to_string()),
         publisher: book.publisher.clone(),
         length_minutes,
-        is_abridged: book.abridged.unwrap_or(false),
-        content_kind: String::from("book"),
-        categories: categories.filter(|s| !s.is_empty()),
         subtitle: book.subtitle.clone(),
-        published_at,
+        identifiers: records::identifier(IdentifierScheme::Isbn, &book.isbn, None)
+            .into_iter()
+            .collect(),
+        credits,
+        series_entries: records::series_entries(book.series.as_deref(), series_index.as_deref()),
+        abridgement: abridgement_from_flag(book.abridged),
+        published_at: published_at.map(rfc3339),
+        purchased_at: purchased_at.map(rfc3339),
+        categories: categories.filter(|s| !s.is_empty()),
+        ..ScanBook::default()
     }
 }
 

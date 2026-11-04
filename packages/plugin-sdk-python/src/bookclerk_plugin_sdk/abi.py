@@ -50,6 +50,50 @@ PortalAuthMode = Literal["unspecified", "password", "oauth"]
 CliArgKind = Literal["string", "bool", "int", "path"]
 """Value kind for a `CliArgSpec`."""
 
+WorkKind = Literal["book", "podcastShow", "podcastEpisode", "drama"]
+"""What kind of creative work a record describes (FRBR work). Ordinal 0 is
+the common case, so a guest that leaves it unset describes a book.
+"""
+
+ExpressionKind = Literal[
+    "narration",
+    "text",
+    "translation",
+    "dramatisation",
+    "podcastAudio",
+]
+"""How a work is realised (FRBR expression). Ordinal 0 is the common case
+for a storefront that sells audiobooks.
+"""
+
+MediaKind = Literal["audiobook", "ebook", "print", "podcastAudio"]
+"""Physical or digital form of an edition (FRBR manifestation). Only
+`audiobook` and `podcastAudio` editions are acquire candidates.
+"""
+
+IdentifierScheme = Literal["isbn", "asin", "openLibraryEdition", "openLibraryWork"]
+"""Scheme of an external identifier. The scheme fixes whether the id names a
+work or an edition, and whether it is strong (unique) or weak (shared).
+"""
+
+CreditRole = Literal[
+    "author",
+    "narrator",
+    "translator",
+    "editor",
+    "illustrator",
+    "publisher",
+    "host",
+    "cast",
+    "adaptor",
+]
+"""A contributor's responsibility for a work, expression or edition."""
+
+CreditLevel = Literal["roleDefault", "work", "expression", "edition"]
+"""Which level a credit attaches to. Ordinal 0 is the role's usual level, so
+a guest sets this only when a credit departs from it.
+"""
+
 CatalogSort = Literal["relevance", "popularity", "rating", "title", "author"]
 """Catalog search ordering."""
 
@@ -2584,9 +2628,54 @@ class ScanParams(TypedDict):
     credentials: list[AccountCredential]
 
 
+class Identifier(TypedDict):
+    """One external identifier a storefront or metadata provider reports.
+
+    Attributes:
+        scheme: Scheme the value belongs to; it decides the identifier's level.
+        value: The identifier as the source printed it; the host trims and normalises.
+        marketplace: Marketplace the id is scoped to (ASIN); absent for global schemes.
+            Omitted when absent (wire zero value).
+    """
+
+    scheme: IdentifierScheme
+    value: str
+    marketplace: NotRequired[str]
+
+
+class Credit(TypedDict):
+    """One credited contributor. Credits are listed in billing order.
+
+    Attributes:
+        name: Contributor display name as the source prints it, one person or body.
+        role: What the contributor did.
+        level: Level the credit attaches to.
+    """
+
+    name: str
+    role: CreditRole
+    level: CreditLevel
+
+
+class SeriesEntry(TypedDict):
+    """A work's place in one series.
+
+    Attributes:
+        name: Series name as the source prints it.
+        position: Position label as the source prints it (`1`, `2.5`, `1-3`). Omitted
+            when absent (wire zero value).
+        storeSeriesId: The store's own id for the series (an Audible series ASIN) when
+            known. Omitted when absent (wire zero value).
+    """
+
+    name: str
+    position: NotRequired[str]
+    storeSeriesId: NotRequired[str]
+
+
 class ScanBook(TypedDict):
-    """One library title returned by `ContentSource.scan`. The host upserts these
-    rows and forces `source` to the plugin id.
+    """One library title returned by `ContentSource.scan`. The host resolves it to
+    a work, expression and edition and forces `source` to the plugin id.
 
     Attributes:
         accountId: Account that owns this library entry.
@@ -2594,40 +2683,49 @@ class ScanBook(TypedDict):
         title: Primary title string.
         marketplace: Marketplace / region when known. Omitted when absent (wire zero
             value).
-        asin: Amazon ASIN when the storefront exposes one. Omitted when absent (wire
-            zero value).
-        isbn: ISBN when the storefront exposes one. Omitted when absent (wire zero
-            value).
-        authors: Comma- or guest-formatted author list. Omitted when absent (wire zero
-            value).
-        narrators: Comma- or guest-formatted narrator list. Omitted when absent (wire
-            zero value).
-        series: Series name when applicable. Omitted when absent (wire zero value).
-        seriesIndex: Series index / sequence label. Omitted when absent (wire zero
-            value).
-        contentKind: Content classification (e.g. `book` vs `episode`). Omitted when
-            absent (wire zero value).
         publisher: Publisher name when known. Omitted when absent (wire zero value).
         lengthMinutes: Runtime in whole minutes when known. Omitted when absent (wire
             zero value).
         subtitle: Subtitle when distinct from `title`. Omitted when absent (wire zero
             value).
+        workKind: Kind of work the title is.
+        expressionKind: How the work is realised in this edition.
+        mediaKind: Form of this edition.
+        identifiers: External identifiers (ISBN, ASIN, OpenLibrary ids).
+        credits: Credited contributors in billing order.
+        seriesEntries: Series the work belongs to.
+        parentProductId: Product id of the parent podcast show, for a podcast episode.
+            Omitted when absent (wire zero value).
+        language: Content language code when known. Omitted when absent (wire zero
+            value).
+        abridgement: Whether the edition is abridged when the storefront says so.
+        publishedAt: Publication date as RFC 3339 when known. Omitted when absent (wire
+            zero value).
+        purchasedAt: When the account bought or added the title, as RFC 3339, when
+            known. Omitted when absent (wire zero value).
+        categories: Category / genre labels as a single string when known. Omitted when
+            absent (wire zero value).
     """
 
     accountId: str
     productId: str
     title: str
     marketplace: NotRequired[str]
-    asin: NotRequired[str]
-    isbn: NotRequired[str]
-    authors: NotRequired[str]
-    narrators: NotRequired[str]
-    series: NotRequired[str]
-    seriesIndex: NotRequired[str]
-    contentKind: NotRequired[str]
     publisher: NotRequired[str]
     lengthMinutes: NotRequired[int]
     subtitle: NotRequired[str]
+    workKind: WorkKind
+    expressionKind: ExpressionKind
+    mediaKind: MediaKind
+    identifiers: list[Identifier]
+    credits: list[Credit]
+    seriesEntries: list[SeriesEntry]
+    parentProductId: NotRequired[str]
+    language: NotRequired[str]
+    abridgement: Abridgement
+    publishedAt: NotRequired[str]
+    purchasedAt: NotRequired[str]
+    categories: NotRequired[str]
 
 
 class ScanSummary(TypedDict):
@@ -3003,13 +3101,6 @@ class CatalogHit(TypedDict):
     Attributes:
         productId: Storefront product / SKU id.
         title: Primary title.
-        authors: Authors string when known. Omitted when absent (wire zero value).
-        narrators: Narrators string when known. Omitted when absent (wire zero value).
-        series: Series name when applicable. Omitted when absent (wire zero value).
-        seriesIndex: Series index / sequence label. Omitted when absent (wire zero
-            value).
-        asin: Amazon ASIN when known. Omitted when absent (wire zero value).
-        isbn: ISBN when known. Omitted when absent (wire zero value).
         url: Storefront product page URL. Omitted when absent (wire zero value).
         coverUrl: Cover image URL. Omitted when absent (wire zero value).
         origin: Hit origin label (plugin id or storefront name).
@@ -3036,16 +3127,18 @@ class CatalogHit(TypedDict):
         ratingCount: Number of ratings when known. Omitted when absent (wire zero
             value).
         abridgement: Whether the edition is abridged when the storefront says so.
+        workKind: Kind of work the hit is.
+        expressionKind: How the work is realised in this edition.
+        mediaKind: Form of this edition; print and ebook hits are never acquired.
+        identifiers: External identifiers (ISBN, ASIN, OpenLibrary ids).
+        credits: Credited contributors in billing order.
+        seriesEntries: Series the work belongs to.
+        parentProductId: Product id of the parent podcast show, for a podcast episode.
+            Omitted when absent (wire zero value).
     """
 
     productId: str
     title: str
-    authors: NotRequired[str]
-    narrators: NotRequired[str]
-    series: NotRequired[str]
-    seriesIndex: NotRequired[str]
-    asin: NotRequired[str]
-    isbn: NotRequired[str]
     url: NotRequired[str]
     coverUrl: NotRequired[str]
     origin: str
@@ -3062,6 +3155,13 @@ class CatalogHit(TypedDict):
     ratingOverall: NotRequired[float]
     ratingCount: NotRequired[int]
     abridgement: Abridgement
+    workKind: WorkKind
+    expressionKind: ExpressionKind
+    mediaKind: MediaKind
+    identifiers: list[Identifier]
+    credits: list[Credit]
+    seriesEntries: list[SeriesEntry]
+    parentProductId: NotRequired[str]
 
 
 class CatalogHits(TypedDict):
@@ -5087,6 +5187,12 @@ __all__ = [
     "Entrypoint",
     "PortalAuthMode",
     "CliArgKind",
+    "WorkKind",
+    "ExpressionKind",
+    "MediaKind",
+    "IdentifierScheme",
+    "CreditRole",
+    "CreditLevel",
     "CatalogSort",
     "CatalogField",
     "Abridgement",
@@ -5245,6 +5351,9 @@ __all__ = [
     "LoginStartReply",
     "AccountCredential",
     "ScanParams",
+    "Identifier",
+    "Credit",
+    "SeriesEntry",
     "ScanBook",
     "ScanSummary",
     "ScanReplyOk",
