@@ -148,10 +148,11 @@ pub async fn scan_library(
         .await?;
 
         let mut books_upserted = 0usize;
-        for book in books {
-            library
-                .upsert_book(&scan_book_to_new("graphicaudio", book))
-                .await?;
+        for new in books
+            .into_iter()
+            .filter_map(|book| scan_book_to_new("graphicaudio", book))
+        {
+            library.upsert_book(&new).await?;
             books_upserted += 1;
         }
 

@@ -137,10 +137,11 @@ pub async fn scan_account_into_library(
     )
     .await?;
     let count = books.len();
-    for book in books {
-        scope
-            .upsert_book(&scan_book_to_new("audible", book))
-            .await?;
+    for new in books
+        .into_iter()
+        .filter_map(|book| scan_book_to_new("audible", book))
+    {
+        scope.upsert_book(&new).await?;
     }
     Ok((count, pages))
 }
@@ -206,6 +207,7 @@ pub async fn collect_account_books(
                 .collect();
 
             let work_kind = records::work_kind_from_label(lib_model::item_kind(&item));
+            let (expression_kind, media_kind) = records::audio_kinds(work_kind);
             let subtitle = item
                 .get("subtitle")
                 .and_then(|v| v.as_str())
@@ -278,6 +280,8 @@ pub async fn collect_account_books(
                 length_minutes,
                 subtitle,
                 work_kind,
+                expression_kind,
+                media_kind,
                 identifiers,
                 credits,
                 series_entries,
@@ -287,7 +291,6 @@ pub async fn collect_account_books(
                 published_at: published_at.map(rfc3339),
                 purchased_at: purchased_at.map(rfc3339),
                 categories,
-                ..ScanBook::default()
             };
             books.push(book);
         }

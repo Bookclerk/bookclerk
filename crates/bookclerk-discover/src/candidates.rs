@@ -278,17 +278,19 @@ fn source_enabled(id: &str, opts: &CandidateFetchOptions) -> bool {
 /// Projects a catalog hit into a [`StorefrontCandidate`] (HTML entities decoded).
 pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCandidate {
     let hit = hit.decode_html_entities();
-    let flat = FlatCredits::of(&hit);
+    let (authors, narrators) = (hit.authors(), hit.narrators());
+    let (series, series_index) = (hit.series(), hit.series_index());
+    let (asin, isbn) = (hit.asin(), hit.isbn());
     StorefrontCandidate {
         source: source_id.to_string(),
         product_id: hit.product_id,
         title: hit.title,
-        authors: flat.authors,
-        narrators: flat.narrators,
-        series: flat.series,
-        series_index: flat.series_index,
-        asin: flat.asin,
-        isbn: flat.isbn,
+        authors,
+        narrators,
+        series,
+        series_index,
+        asin,
+        isbn,
         cover_url: hit.cover_url,
         seed_categories: None,
         origin: hit.origin,
@@ -308,37 +310,6 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
         rating_count: hit.rating_count,
         is_abridged: hit.is_abridged,
         audible_rank: None,
-    }
-}
-
-/// The flat contributor, series and identifier views of a hit, taken before
-/// its owned fields move into a candidate.
-pub(crate) struct FlatCredits {
-    /// Joined author names.
-    pub(crate) authors: Option<String>,
-    /// Joined narrator names.
-    pub(crate) narrators: Option<String>,
-    /// First series name.
-    pub(crate) series: Option<String>,
-    /// Position in the first series.
-    pub(crate) series_index: Option<String>,
-    /// First ASIN.
-    pub(crate) asin: Option<String>,
-    /// First ISBN.
-    pub(crate) isbn: Option<String>,
-}
-
-impl FlatCredits {
-    /// Reads the flat views of `hit`.
-    pub(crate) fn of(hit: &CatalogHit) -> Self {
-        Self {
-            authors: hit.authors(),
-            narrators: hit.narrators(),
-            series: hit.series(),
-            series_index: hit.series_index(),
-            asin: hit.asin(),
-            isbn: hit.isbn(),
-        }
     }
 }
 

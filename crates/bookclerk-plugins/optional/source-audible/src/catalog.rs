@@ -436,7 +436,14 @@ fn product_to_hit(p: CatalogProduct, origin: String) -> CatalogHit {
             ));
             credits
         },
-        series_entries: records::series_entries(p.series.as_deref(), p.series_sequence.as_deref()),
+        series_entries: {
+            let mut entries =
+                records::series_entries(p.series.as_deref(), p.series_sequence.as_deref());
+            if let Some(entry) = entries.first_mut() {
+                entry.store_series_id = p.series_asin.clone();
+            }
+            entries
+        },
         identifiers: records::identifier(IdentifierScheme::Asin, &p.asin, None)
             .into_iter()
             .collect(),

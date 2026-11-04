@@ -653,8 +653,8 @@ records. Both describe a title in structured fields, following the
 | `workKind` | `book` (the default), `podcastShow`, `podcastEpisode` or `drama` |
 | `expressionKind` | `narration` (the default), `text`, `translation`, `dramatisation` or `podcastAudio`. A full-cast production is a `dramatisation` |
 | `mediaKind` | `audiobook` (the default), `ebook`, `print` or `podcastAudio`. Ebook and print records show in Discover but are never acquired |
-| `identifiers` | `{ scheme, value, marketplace? }` entries. `scheme` is `isbn` (ISBN-10 or ISBN-13), `asin` (set `marketplace`), `openLibraryEdition` or `openLibraryWork` |
-| `credits` | `{ name, role, level }` entries in billing order, one person or body per entry. `role` is `author` (the default), `narrator`, `translator`, `editor`, `illustrator`, `publisher`, `host`, `cast` or `adaptor`. Leave `level` unset unless the credit sits somewhere unusual: by default authors and adaptors credit the work, narrators, translators, hosts and cast the expression, and editors, illustrators and publishers the edition |
+| `identifiers` | `{ scheme, value, marketplace? }` entries. `scheme` is `isbn` (ISBN-10 or ISBN-13), `asin` (set `marketplace`), `openLibraryEdition` or `openLibraryWork`. The host trims each value, upper-cases ASINs, and turns a valid ISBN-10 into its ISBN-13 |
+| `credits` | `{ name, role, level }` entries in billing order, one person or body per entry. `role` is `author` (the default), `narrator`, `translator`, `editor`, `illustrator`, `publisher`, `host`, `cast` or `adaptor`. Leave `level` as `roleDefault` (in TypeScript, unset) unless the credit sits somewhere unusual: by default authors and adaptors credit the work, narrators, translators, hosts and cast the expression, and editors, illustrators and publishers the edition |
 | `seriesEntries` | `{ name, position?, storeSeriesId? }` entries, one per series the work belongs to. `position` is the label as the store prints it (`1`, `2.5`, `1-3`) |
 | `parentProductId` | The show's product id, on a podcast episode |
 | `language`, `abridgement` | Content language, and `unknown` (the default), `unabridged` or `abridged` |
@@ -670,7 +670,10 @@ names, send one credit per name; split a display string such as
 > Until the library stores works, expressions and editions, the host maps
 > these records onto its current flat title row: names join by role, the
 > first ISBN and ASIN fill the identifier columns, and the first series
-> entry fills the series columns.
+> entry fills the series columns. An episode with no `storeSeriesId` is
+> filed under the show named by `parentProductId`. Ebook and print scan
+> records are not stored yet, since the flat row cannot keep them out of
+> acquire.
 
 ### Storage entrypoints
 

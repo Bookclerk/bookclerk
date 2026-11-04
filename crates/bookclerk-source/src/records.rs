@@ -168,13 +168,83 @@ pub fn joined_names(credits: &[Credit], role: CreditRole) -> Option<String> {
     (!names.is_empty()).then(|| names.join(NAME_SEPARATOR))
 }
 
-/// First identifier value in `scheme`, for the flat `books` row view.
+/// First non-blank identifier value in `scheme`, normalised, for the flat
+/// `books` row view.
+///
+/// Values are normalised with [`normalize_identifier`], so a guest that
+/// sends a padded, hyphenated ISBN-10 still fills the column with the
+/// ISBN-13 the library keys on.
 #[must_use]
 pub fn identifier_value(identifiers: &[Identifier], scheme: IdentifierScheme) -> Option<String> {
     identifiers
         .iter()
-        .find(|id| id.scheme == scheme)
-        .map(|id| id.value.clone())
+        .filter(|id| id.scheme == scheme)
+        .find_map(|id| normalize_identifier(scheme, &id.value))
+}
+
+/// The canonical form of an identifier value as a source printed it.
+///
+/// Every value is trimmed. ASINs are upper-cased. ISBNs lose spaces and
+/// hyphens, and a valid ISBN-10 becomes its ISBN-13; an ISBN of any other
+/// shape is kept as the stripped text, since rejecting it would lose data.
+///
+/// # Returns
+///
+/// `None` when the value is blank.
+#[must_use]
+pub fn normalize_identifier(scheme: IdentifierScheme, raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(match scheme {
+        IdentifierScheme::Asin => value.to_ascii_uppercase(),
+        IdentifierScheme::Isbn => normalize_isbn(value),
+        IdentifierScheme::OpenLibraryEdition | IdentifierScheme::OpenLibraryWork => {
+            value.to_string()
+        }
+    })
+}
+
+/// An ISBN without separators, as ISBN-13 when it is a valid ISBN-10.
+fn normalize_isbn(value: &str) -> String {
+    let compact: String = value
+        .chars()
+        .filter(|c| !matches!(c, '-' | ' ' | '\u{2010}'..='\u{2015}'))
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    isbn10_to_isbn13(&compact).unwrap_or(compact)
+}
+
+/// The ISBN-13 for a valid ISBN-10 (nine digits plus a digit or `X` check).
+///
+/// # Returns
+///
+/// `None` when `isbn10` is not a valid ISBN-10, check digit included.
+fn isbn10_to_isbn13(isbn10: &str) -> Option<String> {
+    let bytes = isbn10.as_bytes();
+    if bytes.len() != 10 {
+        return None;
+    }
+    let mut sum10 = 0u32;
+    for (weight, byte) in (1..=10u32).rev().zip(bytes) {
+        let digit = match byte {
+            b'0'..=b'9' => u32::from(byte - b'0'),
+            b'X' if weight == 1 => 10,
+            _ => return None,
+        };
+        sum10 += weight * digit;
+    }
+    if !sum10.is_multiple_of(11) {
+        return None;
+    }
+    let body = format!("978{}", &isbn10[..9]);
+    let sum13: u32 = body
+        .bytes()
+        .zip([1u32, 3].into_iter().cycle())
+        .map(|(byte, weight)| u32::from(byte - b'0') * weight)
+        .sum();
+    Some(format!("{body}{}", (10 - sum13 % 10) % 10))
 }
 
 /// The flat `books.content_kind` value for a work kind.
@@ -202,6 +272,19 @@ pub fn work_kind_from_label(label: &str) -> WorkKind {
         WorkKind::PodcastShow
     } else {
         WorkKind::Book
+    }
+}
+
+/// The expression and media kinds an audio storefront's item has, given its
+/// work kind: podcast shows and episodes are podcast audio, everything else
+/// is a narrated audiobook.
+#[must_use]
+pub fn audio_kinds(work: WorkKind) -> (ExpressionKind, MediaKind) {
+    match work {
+        WorkKind::PodcastShow | WorkKind::PodcastEpisode => {
+            (ExpressionKind::PodcastAudio, MediaKind::PodcastAudio)
+        }
+        WorkKind::Book | WorkKind::Drama => (ExpressionKind::Narration, MediaKind::Audiobook),
     }
 }
 
@@ -356,5 +439,70 @@ mod tests {
         decode_html_entities(&mut credits, &mut series);
         assert_eq!(credits[0].name, "O'Brien");
         assert_eq!(series[0].name, "Memory's Blade");
+    }
+
+    #[test]
+    fn identifier_values_are_normalised() {
+        let ids = vec![
+            Identifier {
+                scheme: IdentifierScheme::Isbn,
+                value: "   ".into(),
+                marketplace: None,
+            },
+            Identifier {
+                scheme: IdentifierScheme::Isbn,
+                value: " 0-14-044913-2 ".into(),
+                marketplace: None,
+            },
+            Identifier {
+                scheme: IdentifierScheme::Asin,
+                value: " b00abc1234".into(),
+                marketplace: None,
+            },
+        ];
+        assert_eq!(
+            identifier_value(&ids, IdentifierScheme::Isbn).as_deref(),
+            Some("9780140449136")
+        );
+        assert_eq!(
+            identifier_value(&ids, IdentifierScheme::Asin).as_deref(),
+            Some("B00ABC1234")
+        );
+        assert_eq!(
+            identifier_value(&ids, IdentifierScheme::OpenLibraryWork),
+            None
+        );
+    }
+
+    #[test]
+    fn isbn_normalisation_keeps_what_it_cannot_convert() {
+        let isbn = |raw| normalize_identifier(IdentifierScheme::Isbn, raw);
+        assert_eq!(isbn("978-0-14-044913-6").as_deref(), Some("9780140449136"));
+        assert_eq!(isbn("080442957x").as_deref(), Some("9780804429573"));
+        // A bad check digit is not converted.
+        assert_eq!(isbn("0140449137").as_deref(), Some("0140449137"));
+        assert_eq!(isbn("12345").as_deref(), Some("12345"));
+        assert_eq!(isbn("01404491X6").as_deref(), Some("01404491X6"));
+        assert_eq!(isbn(" "), None);
+        assert_eq!(
+            normalize_identifier(IdentifierScheme::OpenLibraryEdition, " OL1M ").as_deref(),
+            Some("OL1M")
+        );
+    }
+
+    #[test]
+    fn podcasts_are_podcast_audio() {
+        for work in [WorkKind::PodcastShow, WorkKind::PodcastEpisode] {
+            assert_eq!(
+                audio_kinds(work),
+                (ExpressionKind::PodcastAudio, MediaKind::PodcastAudio)
+            );
+        }
+        for work in [WorkKind::Book, WorkKind::Drama] {
+            assert_eq!(
+                audio_kinds(work),
+                (ExpressionKind::Narration, MediaKind::Audiobook)
+            );
+        }
     }
 }

@@ -179,10 +179,11 @@ pub async fn scan_account_into_library(
 ) -> Result<(usize, u32)> {
     let (books, pages) = collect_account_books(client, account_id, marketplace, page_size).await?;
     let mut books_upserted = 0usize;
-    for book in books {
-        library
-            .upsert_book(&scan_book_to_new("chirp", book))
-            .await?;
+    for new in books
+        .into_iter()
+        .filter_map(|book| scan_book_to_new("chirp", book))
+    {
+        library.upsert_book(&new).await?;
         books_upserted += 1;
     }
     Ok((books_upserted, pages))

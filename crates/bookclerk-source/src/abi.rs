@@ -496,13 +496,33 @@ impl DownloadOptions {
 /// on write.
 ///
 /// Credits join by role, the first ISBN and ASIN fill the identifier
-/// columns, the first series entry fills the series columns, and the work
-/// kind becomes `content_kind`.
+/// columns (normalised), the first series entry fills the series columns,
+/// and the work kind becomes `content_kind`. An episode with no store
+/// series id names its show through `parent_product_id`, which fills
+/// `series_asin` so the episode is filed under the show.
+///
+/// # Returns
+///
+/// `None` for an ebook or print edition: the flat table has no way to keep
+/// them out of acquire, so they are not stored until the library keeps
+/// editions.
 #[must_use]
-pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> NewBook {
+pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> Option<NewBook> {
     use crate::records::{self, CreditRole, IdentifierScheme};
+    match book.media_kind {
+        abi::MediaKind::Audiobook | abi::MediaKind::PodcastAudio => {}
+        abi::MediaKind::Ebook | abi::MediaKind::Print => return None,
+    }
     let series = book.series_entries.into_iter().next();
-    NewBook {
+    let series_asin = series
+        .as_ref()
+        .and_then(|entry| entry.store_series_id.clone())
+        .or_else(|| {
+            (book.work_kind == abi::WorkKind::PodcastEpisode)
+                .then_some(book.parent_product_id)
+                .flatten()
+        });
+    Some(NewBook {
         uuid: None,
         plugin_key: String::new(),
         source: plugin_id.to_string(),
@@ -514,9 +534,7 @@ pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> NewBook {
         authors: records::joined_names(&book.credits, CreditRole::Author),
         narrators: records::joined_names(&book.credits, CreditRole::Narrator),
         series_index: series.as_ref().and_then(|entry| entry.position.clone()),
-        series_asin: series
-            .as_ref()
-            .and_then(|entry| entry.store_series_id.clone()),
+        series_asin,
         series: series.map(|entry| entry.name),
         purchased_at: book.purchased_at.as_deref().and_then(parse_rfc3339),
         publisher: book.publisher,
@@ -527,7 +545,7 @@ pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> NewBook {
         subtitle: book.subtitle,
         published_at: book.published_at.as_deref().and_then(parse_rfc3339),
         product_id: book.product_id,
-    }
+    })
 }
 
 /// RFC 3339 wire timestamp as UTC; `None` when it does not parse.
@@ -538,9 +556,12 @@ fn parse_rfc3339(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 }
 
 /// RFC 3339 wire form of a host timestamp, for `ScanBook` date fields.
+///
+/// Sub-second precision is kept when the timestamp has it, so a round
+/// trip through the wire form returns the same instant.
 #[must_use]
 pub fn rfc3339(at: chrono::DateTime<chrono::Utc>) -> String {
-    at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
 }
 
 /// Builds a guest scan summary from the books a scan produced.
@@ -689,7 +710,7 @@ mod tests {
             title: "T".into(),
             ..abi::ScanBook::default()
         };
-        let new = scan_book_to_new("echo", book);
+        let new = scan_book_to_new("echo", book).expect("audiobook row");
         assert_eq!(new.source, "echo");
         assert_eq!(new.marketplace, "us");
         assert_eq!(new.content_kind, "book");
@@ -707,7 +728,7 @@ mod tests {
             marketplace: Some("uk".into()),
             identifiers: [
                 records::identifier(IdentifierScheme::Asin, "B0ASIN", Some("uk")),
-                records::identifier(IdentifierScheme::Isbn, "9780000000001", None),
+                records::identifier(IdentifierScheme::Isbn, "0-14-044913-2", None),
             ]
             .into_iter()
             .flatten()
@@ -725,11 +746,11 @@ mod tests {
             categories: Some("Fantasy".into()),
             ..abi::ScanBook::default()
         };
-        let new = scan_book_to_new("echo", book);
+        let new = scan_book_to_new("echo", book).expect("audiobook row");
         assert_eq!(new.authors.as_deref(), Some("A One, A Two"));
         assert_eq!(new.narrators.as_deref(), Some("N One"));
         assert_eq!(new.asin.as_deref(), Some("B0ASIN"));
-        assert_eq!(new.isbn.as_deref(), Some("9780000000001"));
+        assert_eq!(new.isbn.as_deref(), Some("9780140449136"));
         assert_eq!(new.series.as_deref(), Some("S"));
         assert_eq!(new.series_index.as_deref(), Some("2"));
         assert_eq!(new.series_asin.as_deref(), Some("B0SERIES"));
@@ -742,6 +763,59 @@ mod tests {
         );
         assert_eq!(new.purchased_at, None);
         assert_eq!(new.categories.as_deref(), Some("Fantasy"));
+    }
+
+    #[test]
+    fn scan_book_skips_editions_that_are_never_acquired() {
+        for media_kind in [abi::MediaKind::Ebook, abi::MediaKind::Print] {
+            let book = abi::ScanBook {
+                product_id: "p".into(),
+                media_kind,
+                ..abi::ScanBook::default()
+            };
+            assert!(scan_book_to_new("echo", book).is_none());
+        }
+        let podcast = abi::ScanBook {
+            product_id: "p".into(),
+            media_kind: abi::MediaKind::PodcastAudio,
+            ..abi::ScanBook::default()
+        };
+        assert!(scan_book_to_new("echo", podcast).is_some());
+    }
+
+    #[test]
+    fn episode_parent_fills_the_series_id_only_when_none_is_given() {
+        let episode = |series_entries| abi::ScanBook {
+            product_id: "ep".into(),
+            work_kind: abi::WorkKind::PodcastEpisode,
+            parent_product_id: Some("B0SHOW".into()),
+            series_entries,
+            ..abi::ScanBook::default()
+        };
+        let new = scan_book_to_new("echo", episode(Vec::new())).expect("episode row");
+        assert_eq!(new.series_asin.as_deref(), Some("B0SHOW"));
+        let named = vec![abi::SeriesEntry {
+            name: "Show".into(),
+            position: None,
+            store_series_id: Some("B0OTHER".into()),
+        }];
+        let new = scan_book_to_new("echo", episode(named)).expect("episode row");
+        assert_eq!(new.series_asin.as_deref(), Some("B0OTHER"));
+        let book = abi::ScanBook {
+            product_id: "b".into(),
+            parent_product_id: Some("B0SHOW".into()),
+            ..abi::ScanBook::default()
+        };
+        let new = scan_book_to_new("echo", book).expect("book row");
+        assert_eq!(new.series_asin, None);
+    }
+
+    #[test]
+    fn rfc3339_keeps_sub_second_precision() {
+        let at = parse_rfc3339("2023-01-01T12:34:56.789Z").expect("valid timestamp");
+        assert_eq!(rfc3339(at), "2023-01-01T12:34:56.789Z");
+        let whole = parse_rfc3339("2023-01-01T12:34:56Z").expect("valid timestamp");
+        assert_eq!(rfc3339(whole), "2023-01-01T12:34:56Z");
     }
 
     #[test]

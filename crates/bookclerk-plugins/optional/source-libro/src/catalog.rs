@@ -4,7 +4,7 @@
 //! This crate intentionally does **not** depend on `bookclerk-enrich`.
 
 use bookclerk_plugin_sdk::http::{Client as HttpClient, RequestBuilder};
-use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
+use bookclerk_source::records::{self, CreditRole, IdentifierScheme, SeriesEntry};
 use bookclerk_source::{
     CatalogHit, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts, SourcePurchaseHint,
 };
@@ -99,6 +99,30 @@ fn non_empty_opt(s: &Option<String>) -> bool {
     s.as_deref().map(str::trim).is_some_and(|v| !v.is_empty())
 }
 
+/// Takes `fill`'s series when `base` has none, and otherwise fills a missing
+/// position or store id on each of `base`'s entries from `fill`'s entry of
+/// the same name.
+fn fill_series_entries(base: &mut Vec<SeriesEntry>, fill: Vec<SeriesEntry>) {
+    if base.is_empty() {
+        *base = fill;
+        return;
+    }
+    for entry in base.iter_mut() {
+        let Some(other) = fill
+            .iter()
+            .find(|other| other.name.trim().eq_ignore_ascii_case(entry.name.trim()))
+        else {
+            continue;
+        };
+        if entry.position.is_none() {
+            entry.position.clone_from(&other.position);
+        }
+        if entry.store_series_id.is_none() {
+            entry.store_series_id.clone_from(&other.store_series_id);
+        }
+    }
+}
+
 /// Copies missing bibliographic fields from `fill` onto `base` without overwriting set values.
 fn merge_catalog_hits(mut base: CatalogHit, fill: CatalogHit) -> CatalogHit {
     if base.title.trim().is_empty() {
@@ -106,9 +130,7 @@ fn merge_catalog_hits(mut base: CatalogHit, fill: CatalogHit) -> CatalogHit {
     }
     records::fill_credits(&mut base.credits, fill.credits);
     records::fill_identifiers(&mut base.identifiers, fill.identifiers);
-    if base.series_entries.is_empty() {
-        base.series_entries = fill.series_entries;
-    }
+    fill_series_entries(&mut base.series_entries, fill.series_entries);
     fill_opt(&mut base.url, fill.url);
     fill_opt(&mut base.cover_url, fill.cover_url);
     fill_opt(&mut base.subtitle, fill.subtitle);
@@ -1742,5 +1764,78 @@ mod tests {
         let priced = parse_libro_html_prices(html).unwrap();
         assert_eq!(priced.list_cents, Some(1995));
         assert_eq!(priced.member_cents, Some(1499));
+    }
+
+    #[test]
+    fn merge_fills_only_what_the_base_hit_lacks() {
+        let base = CatalogHit {
+            product_id: "9780000000001".into(),
+            title: "Rufus".into(),
+            credits: records::credits_from_names(["Base Author"], CreditRole::Author),
+            series_entries: records::series_entries(Some("Rufus"), None),
+            publisher: Some("Base House".into()),
+            ..CatalogHit::default()
+        };
+        let mut credits = records::credits_from_names(["Other Author"], CreditRole::Author);
+        credits.extend(records::credits_from_names(
+            ["Reader"],
+            CreditRole::Narrator,
+        ));
+        let fill = CatalogHit {
+            product_id: "ignored".into(),
+            title: "Ignored".into(),
+            credits,
+            identifiers: records::identifier(IdentifierScheme::Isbn, "9780000000001", None)
+                .into_iter()
+                .collect(),
+            series_entries: vec![SeriesEntry {
+                name: "rufus".into(),
+                position: Some("1".into()),
+                store_series_id: Some("rufus-series".into()),
+            }],
+            publisher: Some("Other House".into()),
+            description: Some("Blurb".into()),
+            length_minutes: Some(90),
+            price_cents: Some(1499),
+            rating_overall: Some(4.5),
+            rating_count: Some(12),
+            is_abridged: Some(false),
+            ..CatalogHit::default()
+        };
+        let merged = merge_catalog_hits(base, fill);
+        assert_eq!(merged.title, "Rufus");
+        assert_eq!(merged.product_id, "9780000000001");
+        assert_eq!(merged.authors().as_deref(), Some("Base Author"));
+        assert_eq!(merged.narrators().as_deref(), Some("Reader"));
+        assert_eq!(merged.isbn().as_deref(), Some("9780000000001"));
+        assert_eq!(merged.series().as_deref(), Some("Rufus"));
+        assert_eq!(merged.series_index().as_deref(), Some("1"));
+        assert_eq!(
+            merged.series_entries[0].store_series_id.as_deref(),
+            Some("rufus-series")
+        );
+        assert_eq!(merged.publisher.as_deref(), Some("Base House"));
+        assert_eq!(merged.description.as_deref(), Some("Blurb"));
+        assert_eq!(merged.length_minutes, Some(90));
+        assert_eq!(merged.price_cents, Some(1499));
+        assert_eq!(merged.rating_count, Some(12));
+        assert_eq!(merged.is_abridged, Some(false));
+    }
+
+    #[test]
+    fn merge_takes_the_fill_series_when_the_base_has_none() {
+        let base = CatalogHit {
+            product_id: "p".into(),
+            ..CatalogHit::default()
+        };
+        let fill = CatalogHit {
+            title: "Filled".into(),
+            series_entries: records::series_entries(Some("Saga"), Some("3")),
+            ..CatalogHit::default()
+        };
+        let merged = merge_catalog_hits(base, fill);
+        assert_eq!(merged.title, "Filled");
+        assert_eq!(merged.series().as_deref(), Some("Saga"));
+        assert_eq!(merged.series_index().as_deref(), Some("3"));
     }
 }
