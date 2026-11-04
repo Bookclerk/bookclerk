@@ -222,6 +222,17 @@ function bindingMessage(manifest) {
       process.exit(1);
     }
   }
+  for (const registry of ["storefront", "storage", "databaseAdapter"]) {
+    const message = bindingMessage({
+      ...cronOnly,
+      entrypoints: [registry],
+      triggers: { crons: ["0 0 * * *"] },
+    });
+    if (!message.includes("cannot be combined")) {
+      console.error("FAIL crons beside", registry, "->", message || "(accepted)");
+      process.exit(1);
+    }
+  }
 }
 const duplicateKv = bindingMessage({
   ...bindingBase,

@@ -232,6 +232,9 @@ crons = ["*/30 * * * *", "0 3 * * MON-FRI"]    # scheduled(controller), UTC
   install; a schedule that can never fire (such as `0 0 30 2 *`) is
   rejected. The grammar and the delivery rules are in
   [Scheduled triggers](abi.md#scheduled-triggers).
+- A plugin with `crons` cannot also declare the `storefront`, `storage` or
+  `databaseAdapter` entrypoint, because schedules fire only on integration
+  deployments. Put the schedule in a separate integration plugin.
 - Each schedule is part of the consent request, as a `cron:<schedule>`
   token.
 

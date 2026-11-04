@@ -649,6 +649,14 @@ def _validate_surface(m: dict[str, Any]) -> None:
             "`[[queues.consumers]]`, `[triggers].jobs`, or `[triggers].crons`"
         )
     _validate_crons(crons)
+    if crons:
+        # Crons fire only on integration deployments (host ``validate``).
+        for registry in ("storefront", "storage", "databaseAdapter"):
+            if registry in entrypoints:
+                raise ValueError(
+                    f"plugin.toml: `[triggers].crons` cannot be combined with the `{registry}` "
+                    "entrypoint; put the schedule in a separate integration plugin"
+                )
     _validate_queues(m)
     _validate_kv_namespaces(m)
     for consumer in consumers:

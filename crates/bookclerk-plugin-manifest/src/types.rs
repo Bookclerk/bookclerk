@@ -1684,6 +1684,24 @@ impl PluginManifest {
                 }
             }
         }
+        // Crons fire through the integration registry, and a deployment
+        // spawns a storefront, storage or database adapter in its own
+        // registry instead, so a schedule there would never fire.
+        if self.runs_crons() {
+            for entrypoint in [
+                Entrypoint::Storefront,
+                Entrypoint::Storage,
+                Entrypoint::DatabaseAdapter,
+            ] {
+                if self.has_entrypoint(entrypoint) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: `[triggers].crons` cannot be combined with the `{}` \
+                         entrypoint; put the schedule in a separate integration plugin",
+                        entrypoint.wire_name()
+                    )));
+                }
+            }
+        }
         if self.triggers.crons.len() > MAX_CRON_TRIGGERS {
             return Err(Error::message(format!(
                 "plugin.toml: triggers.crons has {} entries; at most {MAX_CRON_TRIGGERS} are allowed",
@@ -2067,6 +2085,29 @@ mode = "deny"
         let too_many =
             with_triggers(&format!("crons = [{}]", many.join(", "))).expect_err("too many");
         assert!(too_many.to_string().contains("at most"), "{too_many}");
+    }
+
+    #[test]
+    fn cron_triggers_are_rejected_beside_a_registry_entrypoint() {
+        for entrypoint in ["storefront", "storage", "databaseAdapter"] {
+            let err = PluginManifest::parse(&format!(
+                "api_version = 3\nid = \"echo\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
+                 entrypoints = [\"{entrypoint}\"]\n[triggers]\ncrons = [\"0 0 * * *\"]\n\
+                 [capabilities.network]\nmode = \"deny\"\n"
+            ))
+            .expect_err(entrypoint);
+            assert!(
+                err.to_string().contains("cannot be combined"),
+                "{entrypoint}: {err}"
+            );
+        }
+        let cli = PluginManifest::parse(
+            "api_version = 3\nid = \"echo\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
+             entrypoints = [\"cli\"]\n[triggers]\ncrons = [\"0 0 * * *\"]\n\
+             [capabilities.network]\nmode = \"deny\"\n",
+        )
+        .expect("cli with crons stays an integration");
+        assert_eq!(cli.families(), vec![PluginFamily::Integration]);
     }
 
     #[test]

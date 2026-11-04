@@ -614,6 +614,16 @@ function validateSurface(m: Manifest): void {
     );
   }
   validateCrons(crons);
+  if (Array.isArray(crons) && crons.length > 0) {
+    // Crons fire only on integration deployments (host `validate`).
+    for (const registry of ["storefront", "storage", "databaseAdapter"]) {
+      if ((entrypoints as readonly string[]).includes(registry)) {
+        throw new Error(
+          `plugin.toml: \`[triggers].crons\` cannot be combined with the \`${registry}\` entrypoint; put the schedule in a separate integration plugin`,
+        );
+      }
+    }
+  }
   validateQueues(m);
   validateKvNamespaces(m);
   for (const consumer of consumers) {
