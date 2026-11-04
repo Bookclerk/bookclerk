@@ -306,10 +306,13 @@ versions.
 - Every URL is slash-free: `<path>` is the file's path without `.md`, a
   directory's `README.md` is `<dir>` and the docs home is `/docs` (or
   `/docs/v/<ref>`). The slash spelling (`<dir>/`) and old `.html` URLs
-  redirect permanently (301). `<dir>/index` redirects to `<dir>` too (and
-  `<dir>/index.md` to `<dir>/README.md`): the docs build names every folder's
-  entry page `README.md`, and a tree published before it did still has
-  `<dir>/index.md`, which `<dir>` then serves. Because `x.md` and `x/README.md`
+  redirect permanently (301). A doc's Markdown copy is its URL plus `.md`
+  (`/docs/plugins.md` for `plugins/README.md`; the home's is
+  `/docs/README.md`), and `<dir>/README.md` redirects there. `index` is an
+  ordinary page name (TypeDoc's root module used to be `index.md` beside the
+  SDK's `README.md`), but the docs build no longer writes one: once a
+  `<dir>/index` or `<dir>/index.md` URL names no doc, it redirects
+  permanently to `<dir>` or `<dir>.md`, where crate pages moved. Because `x.md` and `x/README.md`
   would share `/docs/x`, `docs.test.ts` checks no two docs do; the
   lookup tries the spelling the sidebar lists first. Website pages follow
   the same rule: `/download/` and `/download.html` move to `/download`

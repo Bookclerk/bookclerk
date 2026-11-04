@@ -10,6 +10,7 @@ import { PAGES } from "./build.ts";
 import {
   acceptWeights,
   docsTarget,
+  formerEntryUrl,
   DOCS_RAW_BASE,
   handle,
   htmlPath,
@@ -58,6 +59,10 @@ const DOCS: Readonly<Record<string, string>> = Object.fromEntries(
 const GENERATED: Readonly<Record<string, string>> = {
   "api/rust/demo/README.md":
     "# Crate `demo`\n\nA demo crate. See [the SDK](../../typescript/README.md) and [`Thing`](#thing).\n\n## Thing\n",
+  // TypeDoc's root module as publishes before it was named plugin-sdk wrote
+  // it: a page of its own beside the folder's README.
+  "api/typescript/README.md": "# TypeScript SDK\n\nThe overview.\n",
+  "api/typescript/index.md": "# index\n\nThe root module.\n",
   // A crate page as publishes before entry pages were READMEs named it.
   "api/rust/legacy/index.md": "# Crate `legacy`\n\nAn older publish.\n",
   "api/web/README.md":
@@ -254,34 +259,40 @@ test("docsTarget reads versions and paths", () => {
     kind: "redirect",
     location: "/docs/api/web",
   });
-  assert.deepEqual(docsTarget("/docs/api/rust/x/index", versions), {
-    kind: "redirect",
-    location: "/docs/api/rust/x",
-  });
-  assert.deepEqual(docsTarget("/docs/index", versions), { kind: "redirect", location: "/docs" });
-  // One hop, and never from a page to a Markdown copy.
-  assert.deepEqual(docsTarget("/docs/a.html/index", versions), {
-    kind: "redirect",
-    location: "/docs/a",
-  });
-  assert.deepEqual(docsTarget("/docs/x/index/index", versions), {
-    kind: "redirect",
-    location: "/docs/x",
-  });
-  assert.deepEqual(docsTarget("/docs/a.md/index", versions), { kind: "missing" });
-  assert.deepEqual(docsTarget("/docs/api/rust/x/index.md", versions), {
-    kind: "redirect",
-    location: "/docs/api/rust/x/README.md",
-  });
+  // A folder's Markdown copy sits beside its page; the home's is README.md.
   assert.deepEqual(docsTarget("/docs/api/rust/x/README.md", versions), {
+    kind: "redirect",
+    location: "/docs/api/rust/x.md",
+  });
+  assert.deepEqual(docsTarget("/docs/v/v0.2.0/api/README.md", versions), {
+    kind: "redirect",
+    location: "/docs/api.md",
+  });
+  assert.deepEqual(docsTarget("/docs/api.md", versions), {
     kind: "markdown",
     version: latest,
-    keys: ["api/rust/x/README", "api/rust/x/index"],
+    keys: ["api", "api/README"],
   });
-  assert.deepEqual(docsTarget("/docs/v/main/api/index", versions), {
-    kind: "redirect",
-    location: "/docs/v/main/api",
+  assert.deepEqual(docsTarget("/docs/README.md", versions), {
+    kind: "markdown",
+    version: latest,
+    keys: ["README"],
   });
+  // `/index` is an ordinary path here; a miss moves it to its folder.
+  assert.deepEqual(docsTarget("/docs/api/rust/x/index", versions), {
+    kind: "page",
+    version: latest,
+    keys: ["api/rust/x/index", "api/rust/x/index/README", "api/rust/x/index/index"],
+  });
+  assert.equal(formerEntryUrl("/docs/api/rust/x/index", versions), "/docs/api/rust/x");
+  assert.equal(formerEntryUrl("/docs/api/rust/x/index.md", versions), "/docs/api/rust/x.md");
+  assert.equal(formerEntryUrl("/docs/v/main/index", versions), "/docs/v/main");
+  assert.equal(formerEntryUrl("/docs/v/main/index.md", versions), "/docs/v/main/README.md");
+  assert.equal(formerEntryUrl("/docs/index.md", versions), "/docs/README.md");
+  assert.equal(formerEntryUrl("/docs/v/v0.2.0/index.md", versions), "/docs/README.md");
+  assert.equal(formerEntryUrl("/docs/a.html/index", versions), "/docs/a");
+  assert.equal(formerEntryUrl("/docs/v/nope/index", versions), null);
+  assert.equal(formerEntryUrl("/docs/api/rust/x", versions), null);
   assert.deepEqual(docsTarget("/docs/a.html/index.html", versions), {
     kind: "redirect",
     location: "/docs/a",
@@ -309,7 +320,7 @@ test("docsTarget reads versions and paths", () => {
   assert.deepEqual(docsTarget("/docs/plugins.md", versions), {
     kind: "markdown",
     version: latest,
-    keys: ["plugins"],
+    keys: ["plugins", "plugins/README"],
   });
   assert.deepEqual(docsTarget("/docs/v/main/sql-contract/v1", versions), {
     kind: "page",
@@ -442,7 +453,7 @@ test("a Markdown request for a page gets its Markdown version", async () => {
 });
 
 test("the Markdown version links to the site's own Markdown copies", async () => {
-  const body = await (await get("/docs/plugins/README.md", "*/*")).text();
+  const body = await (await get("/docs/plugins.md", "*/*")).text();
   assert.ok(body.includes("](/docs/"));
   assert.doesNotMatch(
     body,
@@ -450,7 +461,7 @@ test("the Markdown version links to the site's own Markdown copies", async () =>
     "no link points at the docs repository's raw files",
   );
   assert.ok(!/\]\((?!https?:|\/|#|mailto:)[^)]*\.md/.test(body));
-  const main = await (await get("/docs/v/main/plugins/README.md", "*/*")).text();
+  const main = await (await get("/docs/v/main/plugins.md", "*/*")).text();
   assert.ok(main.includes("](/docs/v/main/"));
 });
 
@@ -564,7 +575,7 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   assert.equal(res.headers.get("X-Robots-Tag"), null);
   assert.equal(
     res.headers.get("Link"),
-    '<https://bookclerk.app/docs/plugins/README.md>; rel="alternate"; type="text/markdown"',
+    '<https://bookclerk.app/docs/plugins.md>; rel="alternate"; type="text/markdown"',
   );
   const html = await res.text();
   assert.match(html, /^<!doctype html>/);
@@ -603,12 +614,9 @@ test("a browser gets the doc in the site's page, with its version and sidebar", 
   );
   assert.match(
     html,
-    /<button type="button" class="doc-action doc-copy-markdown" data-markdown="\/docs\/plugins\/README.md" hidden>/,
+    /<button type="button" class="doc-action doc-copy-markdown" data-markdown="\/docs\/plugins.md" hidden>/,
   );
-  assert.match(
-    html,
-    /<a class="doc-action" href="\/docs\/plugins\/README.md" type="text\/markdown">/,
-  );
+  assert.match(html, /<a class="doc-action" href="\/docs\/plugins.md" type="text\/markdown">/);
   assert.equal(
     (ld["@graph"][0] as { dateModified?: string } | undefined)?.dateModified,
     "2026-10-26T23:30:05Z",
@@ -852,38 +860,48 @@ test("a Markdown request does not read the dates file", async () => {
 test("a folder's entry page is served at the folder and never at /index", async () => {
   const dir = await get("/docs/api/rust/demo", BROWSER);
   assert.equal(dir.status, 200);
+  assert.equal(
+    dir.headers.get("Link"),
+    '<https://bookclerk.app/docs/api/rust/demo.md>; rel="alternate"; type="text/markdown"',
+  );
   assert.match(
     await dir.text(),
     /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/api\/rust\/demo">/,
   );
-  for (const path of [
-    "/docs/api/rust/demo/index",
-    "/docs/api/rust/demo/index.html",
-    "/docs/v/v0.2.0/api/rust/demo/index",
-  ]) {
+  const markdown = await get("/docs/api/rust/demo.md", BROWSER);
+  assert.equal(markdown.status, 200);
+  assert.match(await markdown.text(), /^# Crate `demo`/);
+  for (const [path, location] of [
+    ["/docs/api/rust/demo/index", "/docs/api/rust/demo"],
+    ["/docs/api/rust/demo/index.html", "/docs/api/rust/demo"],
+    ["/docs/api/rust/demo/index.md", "/docs/api/rust/demo.md"],
+    ["/docs/api/rust/demo/README.md", "/docs/api/rust/demo.md"],
+  ] as const) {
     const old = await get(path, BROWSER);
     assert.equal(old.status, 301, path);
-    assert.equal(old.headers.get("Location"), "https://bookclerk.app/docs/api/rust/demo", path);
+    assert.equal(old.headers.get("Location"), `https://bookclerk.app${location}`, path);
   }
-  // A tree published before entry pages were READMEs still has index.md:
-  // its folder URL serves it without a redirect.
-  const legacy = await get("/docs/api/rust/legacy", BROWSER);
+  // A tree published before entry pages were READMEs keeps index.md as an
+  // ordinary page, beside the folder's README when it has one.
+  const legacy = await get("/docs/api/rust/legacy/index", BROWSER);
   assert.equal(legacy.status, 200);
-  // Its Markdown copy is linked at the README's URL, which serves it.
-  assert.equal(
-    legacy.headers.get("Link"),
-    '<https://bookclerk.app/docs/api/rust/legacy/README.md>; rel="alternate"; type="text/markdown"',
-  );
   assert.match(
     await legacy.text(),
-    /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/api\/rust\/legacy">/,
+    /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/api\/rust\/legacy\/index">/,
   );
-  const legacyMarkdown = await get("/docs/api/rust/legacy/README.md", BROWSER);
+  const folder = await get("/docs/api/rust/legacy", BROWSER);
+  assert.equal(folder.status, 301);
+  assert.equal(folder.headers.get("Location"), "https://bookclerk.app/docs/api/rust/legacy/index");
+  // Beside a README, index.md stays its own page and copy.
+  assert.match(await (await get("/docs/api/typescript", BROWSER)).text(), /The overview\./);
+  assert.match(
+    await (await get("/docs/api/typescript/index", BROWSER)).text(),
+    /The root module\./,
+  );
+  assert.match(await (await get("/docs/api/typescript/index.md", BROWSER)).text(), /^# index/);
+  const legacyMarkdown = await get("/docs/api/rust/legacy/index.md", BROWSER);
   assert.equal(legacyMarkdown.status, 200);
   assert.match(await legacyMarkdown.text(), /^# Crate `legacy`/);
-  const legacyIndex = await get("/docs/api/rust/legacy/index", BROWSER);
-  assert.equal(legacyIndex.status, 301);
-  assert.equal(legacyIndex.headers.get("Location"), "https://bookclerk.app/docs/api/rust/legacy");
 });
 
 test("raw HTML in a doc is shown as text", async () => {

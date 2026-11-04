@@ -518,10 +518,10 @@ comments (`<!-- markdownlint-disable-line … -->`,
 and the rest) are left out of its pages' prose, since they matter to the
 `lint` check alone; code spans and fenced code keep them. The `api/` index lists the
 plugin SDKs first (TypeScript, Python, Rust), then the web API, then the
-Rust crates and the web UI library. No page is named `index.md`, and the
-build fails if one is: the site serves a folder's `README.md` at the
-folder's own URL, while an `index.md` would add a second URL ending in
-`/index` for the same folder.
+Rust crates and the web UI library. No page is named `index.md` or sits in
+a folder named `index`, and the build fails if one does: the site serves a
+folder's `README.md` at the folder's own URL, and moves the `/index` URLs
+earlier trees used for crate pages to their folder.
 
 - **TypeScript**: TypeDoc's Markdown theme for `@bookclerk/plugin-sdk` and
   `ui/src/lib` (`typedoc-plugin-markdown`, a dev dependency of both). One

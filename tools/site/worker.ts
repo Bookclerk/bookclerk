@@ -336,8 +336,8 @@ export type DocsTarget =
  * (the first) is served without the prefix, so its prefixed URLs redirect.
  * A path may name a directory (`api` → `api/README`); the slash form
  * (`api/`) is looked up too, and the caller redirects it to the page's
- * slash-free URL. A path ending in `/index` redirects to its folder, where
- * the folder's entry page is served. `.html` paths left from the static site redirect to the page. Other dots are part of the
+ * slash-free URL. A folder's Markdown copy is `<dir>.md`, like its page,
+ * so `<dir>/README.md` redirects there. `.html` paths left from the static site redirect to the page. Other dots are part of the
  * name (`api/python/bookclerk_plugin_sdk.workerd`); the docs publish only
  * Markdown, so a path like `x.svg` is looked up as `x.svg.md` and not found.
  *
@@ -367,20 +367,17 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
   if (!DOC_REST_RE.test(rest)) return { kind: "missing" };
   if (rest === SEARCH_INDEX) return { kind: "search", version };
   const last = rest.slice(rest.lastIndexOf("/") + 1);
-  if (last === "index.md") {
-    // A folder's Markdown copy is its README's, like its page.
-    return {
-      kind: "redirect",
-      location: `${version.base}${rest.slice(0, -"index.md".length)}README.md`,
-    };
+  if (last === "README.md" && rest !== "README.md") {
+    // A folder's Markdown copy sits beside its page: `api/README.md` → `api.md`.
+    const location = `${version.base}${rest.slice(0, -"/README.md".length)}.md`;
+    const next = docsTarget(location, versions);
+    return next.kind === "redirect" ? next : { kind: "redirect", location };
   }
-  if (last === "README.md") {
-    // Trees published before entry pages were READMEs named them index.
-    const dir = rest.slice(0, -"README.md".length);
-    return { kind: "markdown", version, keys: [`${dir}README`, `${dir}index`] };
+  if (last.endsWith(".md")) {
+    const page = rest.slice(0, -".md".length);
+    const keys: [string, ...string[]] = page === "README" ? [page] : [page, `${page}/README`];
+    return { kind: "markdown", version, keys };
   }
-  if (last.endsWith(".md"))
-    return { kind: "markdown", version, keys: [rest.slice(0, -".md".length)] };
   if (last.endsWith(".html")) {
     const page =
       last === "index.html" ? rest.slice(0, -"index.html".length) : rest.slice(0, -".html".length);
@@ -389,21 +386,42 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
     const next = docsTarget(location, versions);
     return next.kind === "redirect" ? next : { kind: "redirect", location };
   }
-  if (last === "index") {
-    // The folder URL serves the entry page; `/index` is never canonical.
-    const location = (version.base + rest.slice(0, -"index".length)).replace(/\/$/, "");
-    // Straight to the final URL (`a.html/index` lands on `a.html`); a
-    // folder ending in `.md` is not a page, so it is not sent to a copy.
-    const next = docsTarget(location, versions);
-    if (next.kind === "markdown") return { kind: "missing" };
-    return next.kind === "redirect" ? next : { kind: "redirect", location };
-  }
   if (rest === "" || rest.endsWith("/")) {
     const keys: [string, ...string[]] = [`${rest}README`, `${rest}index`];
     if (rest !== "") keys.push(rest.slice(0, -1));
     return { kind: "page", version, keys };
   }
   return { kind: "page", version, keys: [rest, `${rest}/README`, `${rest}/index`] };
+}
+
+/**
+ * Where a former entry-page URL (`<dir>/index`, `<dir>/index.md`) now
+ * lives, for a request that found no doc under that path.
+ *
+ * Generated references named folder pages `index.md` before they were
+ * `README.md`; a tree that still has one keeps serving it at its own URL,
+ * so this applies only once the lookup missed.
+ *
+ * @param pathname - The request path, starting with `/docs`.
+ * @param versions - Every docs version, the default first.
+ * @returns The folder's page (`<dir>`) or Markdown copy (`<dir>.md`), or
+ *   null when the path is not a former entry page.
+ */
+export function formerEntryUrl(pathname: string, versions: readonly DocsVersion[]): string | null {
+  let location: string;
+  if (pathname.endsWith("/index")) location = pathname.slice(0, -"/index".length);
+  else if (pathname.endsWith("/index.md")) {
+    const dir = pathname.slice(0, -"/index.md".length);
+    const moved = docsTarget(dir, versions);
+    const folder = moved.kind === "redirect" ? moved.location : dir;
+    const home = docsTarget(folder, versions);
+    // The docs home's copy is README.md: `/docs.md` would sit outside the docs.
+    const isHome = home.kind === "page" && home.keys[0] === "README";
+    location = isHome ? `${folder}/README.md` : `${folder}.md`;
+  } else return null;
+  const next = docsTarget(location, versions);
+  if (next.kind === "redirect") return next.location;
+  return next.kind === "page" || next.kind === "markdown" ? location : null;
 }
 
 /**
@@ -730,6 +748,10 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
     );
   }
   if (key === null || source === null) {
+    // Crate pages were `<dir>/index` before the docs build named them
+    // README; their old URLs move to the folder for good.
+    const folder = formerEntryUrl(url.pathname, deps.shell.versions);
+    if (folder !== null) return redirect(url, folder);
     // The home page itself missing would send the reader in a loop.
     const home =
       target.kind === "markdown"

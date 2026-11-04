@@ -530,7 +530,7 @@ test("crawler and agent files list the site", () => {
 
     const llms = site.page("llms.txt");
     assert.ok(llms.startsWith("# Bookclerk\n\n> "));
-    assert.match(llms, /^- \[[^\]]+\]\(https:\/\/bookclerk.app\/docs\/plugins\/README.md\): \S/m);
+    assert.match(llms, /^- \[[^\]]+\]\(https:\/\/bookclerk.app\/docs\/plugins.md\): \S/m);
     assert.match(llms, /^## Optional$/m);
     assert.ok(llms.includes("unstable development version"));
     assert.ok(llms.includes("https://bookclerk.app/security.md"));
@@ -540,10 +540,10 @@ test("crawler and agent files list the site", () => {
     assert.doesNotMatch(llms.slice(0, llms.indexOf("\n## ")), /\n#/);
     assert.match(
       llms,
-      /^- \[Rust plugin SDK\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/bookclerk_plugin_sdk\/README.md\)$/m,
+      /^- \[Rust plugin SDK\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/bookclerk_plugin_sdk.md\)$/m,
     );
     const full = site.page("llms-full.txt");
-    assert.ok(full.includes("Source: https://bookclerk.app/docs/plugins/README.md"));
+    assert.ok(full.includes("Source: https://bookclerk.app/docs/plugins.md"));
     // Links in the combined file point at the site, never at bare .md paths.
     assert.ok(full.includes("](/docs/"));
     assert.ok(!/\]\((?!https?:|\/|#|mailto:)[^)]*\.md/.test(full));

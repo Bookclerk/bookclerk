@@ -263,33 +263,26 @@ function keyDir(key: string): string {
  * @param base - URL prefix of the docs version, ending in `/`.
  * @returns `<base><key>`, with no trailing slash: the index is `<base>`
  *   without its slash (`/docs`), and a nested README maps to its directory
- *   (`api/README` → `<base>api`). A folder's `index` page maps to the
- *   folder the same way (`api/rust/x/index` → `<base>api/rust/x`), so no
- *   URL ends in `/index`; the docs build names entry pages `README`, and
- *   this covers trees published before it did.
+ *   (`api/README` → `<base>api`).
  */
 export function docUrl(key: string, base = "/docs/"): string {
-  if (key === "README" || key === "index") return base.slice(0, -1);
-  for (const entry of ["/README", "/index"]) {
-    if (key.endsWith(entry)) return base + key.slice(0, -entry.length);
-  }
+  if (key === "README") return base.slice(0, -1);
+  if (key.endsWith("/README")) return base + key.slice(0, -"/README".length);
   return base + key;
 }
 
 /**
- * The site URL of a doc's Markdown copy.
+ * The site URL of a doc's Markdown copy: its page's URL plus `.md`.
  *
  * @param key - Docs path without `.md`.
  * @param base - URL prefix of the docs version, ending in `/`.
- * @returns `<base><key>.md`; the index is `<base>README.md`, and a
- *   folder's `index` page is `<base><dir>/README.md`.
+ * @returns `<base><key>.md`, with a nested README at its directory's
+ *   (`api/README` → `<base>api.md`); the index is `<base>README.md`, since
+ *   `/docs.md` would sit outside the docs.
  */
 export function docMarkdownUrl(key: string, base = "/docs/"): string {
-  // A folder's index page, from a tree published before entry pages were
-  // READMEs, is read at its README's URL; `index.md` URLs redirect there.
-  if (key === "index") return `${base}README.md`;
-  if (key.endsWith("/index")) return `${base}${key.slice(0, -"index".length)}README.md`;
-  return `${base}${key}.md`;
+  if (key === "README") return `${base}README.md`;
+  return `${docUrl(key, base)}.md`;
 }
 
 /**
