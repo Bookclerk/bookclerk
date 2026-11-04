@@ -534,6 +534,7 @@ pub fn resolve(
             .or_else(|| stored_holding.and_then(|h| h.purchased_at.clone())),
     };
     let holding_is_new = stored_holding.is_none();
+    let holding_changed = stored_holding.is_some_and(|stored| *stored != holding_row);
 
     let mut events = Vec::new();
     if listing_is_new || relinked {
@@ -569,6 +570,7 @@ pub fn resolve(
         series,
         holding: holding_row,
         holding_is_new,
+        holding_changed,
         conflicts,
         events,
     }

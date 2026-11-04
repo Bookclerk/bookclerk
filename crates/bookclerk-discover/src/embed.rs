@@ -217,6 +217,9 @@ pub fn text_for_work(work: &WorkRecord) -> String {
     if !work.credits.is_empty() {
         parts.push(work.credits.join(", "));
     }
+    if !work.narrators.is_empty() {
+        parts.push(work.narrators.join(", "));
+    }
     if !work.series.is_empty() {
         parts.push(work.series.join(", "));
     }

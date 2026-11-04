@@ -382,3 +382,37 @@ fn random_inputs_keep_every_invariant() {
         }
     }
 }
+
+#[test]
+fn a_pin_to_a_removed_edition_is_ignored() {
+    let mut c = MemoryCatalog::default();
+    let a = record(&mut c, &dune("audible", "B001"), "a1");
+    c.overrides.push(Override::PinListing {
+        listing: a.listing.key.clone(),
+        edition_id: "edition-that-was-removed".into(),
+    });
+    let again = record(&mut c, &dune("audible", "B001"), "a1");
+    assert_eq!(again.link, LinkReason::Listing);
+    assert_eq!(again.listing.edition_id, a.listing.edition_id);
+    assert!(again.is_noop());
+}
+
+#[test]
+fn a_holding_that_gains_a_purchase_date_is_not_a_noop() {
+    let mut c = MemoryCatalog::default();
+    let listing = Listing::from_draft(&dune("audible", "B001")).unwrap();
+    c.record(&listing, &holding("a1")).unwrap();
+    let dated = HoldingDraft {
+        purchased_at: Some("2024-01-01T00:00:00+00:00".into()),
+        ..holding("a1")
+    };
+    let plan = c.record(&listing, &dated).unwrap();
+    assert!(plan.holding_changed);
+    assert!(!plan.is_noop());
+    assert!(c.record(&listing, &dated).unwrap().is_noop());
+    let loan = HoldingDraft {
+        entitlement: Entitlement::Loan,
+        ..dated
+    };
+    assert!(c.record(&listing, &loan).unwrap().holding_changed);
+}

@@ -90,11 +90,21 @@ pub fn credit_level(level: abi::CreditLevel) -> Option<resolve::Level> {
     }
 }
 
+/// HTML-entity-decoded copy of a human-readable scan field.
+///
+/// Storefronts such as Libro.fm send `O&#39;Brien`; the flat row decodes
+/// it on write, so the listing must too or its match keys would differ
+/// from the ones derived from the flat row.
+fn decode(raw: &str) -> String {
+    bookclerk_library::decode_html_entities(raw)
+}
+
 /// The listing draft a storefront's scan record describes.
 ///
 /// The plugin key is left blank: the host sets it from the plugin it ran,
 /// never from the record. A publisher named only in `publisher` becomes a
-/// publisher credit.
+/// publisher credit. Human-readable text is HTML-entity decoded, as the
+/// flat row is.
 ///
 /// # Arguments
 ///
@@ -108,14 +118,14 @@ pub fn scan_book_draft(book: &abi::ScanBook) -> resolve::ListingDraft {
     let mut credits: Vec<(String, resolve::CreditRole, Option<resolve::Level>)> = book
         .credits
         .iter()
-        .map(|c| (c.name.clone(), credit_role(c.role), credit_level(c.level)))
+        .map(|c| (decode(&c.name), credit_role(c.role), credit_level(c.level)))
         .collect();
     let has_publisher = credits
         .iter()
         .any(|(_, role, _)| *role == resolve::CreditRole::Publisher);
     if let Some(publisher) = book.publisher.as_ref().filter(|p| !p.trim().is_empty()) {
         if !has_publisher {
-            credits.push((publisher.clone(), resolve::CreditRole::Publisher, None));
+            credits.push((decode(publisher), resolve::CreditRole::Publisher, None));
         }
     }
     resolve::ListingDraft {
@@ -127,11 +137,11 @@ pub fn scan_book_draft(book: &abi::ScanBook) -> resolve::ListingDraft {
         media_kind: Some(media_kind(book.media_kind)),
         language: book.language.clone(),
         abridgement: Some(abridgement(book.abridgement)),
-        title: book.title.clone(),
-        subtitle: book.subtitle.clone(),
+        title: decode(&book.title),
+        subtitle: book.subtitle.as_deref().map(decode),
         published_at: book.published_at.clone(),
         duration_minutes: book.length_minutes,
-        categories: book.categories.clone(),
+        categories: book.categories.as_deref().map(decode),
         identifiers: book
             .identifiers
             .iter()
@@ -147,7 +157,7 @@ pub fn scan_book_draft(book: &abi::ScanBook) -> resolve::ListingDraft {
         series: book
             .series_entries
             .iter()
-            .map(|s| (s.name.clone(), s.position.clone()))
+            .map(|s| (decode(&s.name), s.position.clone()))
             .collect(),
         parent_product_id: book.parent_product_id.clone(),
     }
@@ -214,5 +224,33 @@ mod tests {
         assert_eq!(draft.identifiers[0].0, resolve::IdentifierScheme::Asin);
         assert_eq!(draft.series[0].1.as_deref(), Some("1"));
         assert!(draft.plugin_key.is_empty());
+    }
+
+    #[test]
+    fn scan_drafts_decode_html_entities_like_the_flat_row() {
+        let book = abi::ScanBook {
+            account_id: "a1".into(),
+            product_id: "9780000000001".into(),
+            title: "O&#39;Brien&#39;s War".into(),
+            subtitle: Some("Tom &amp; Jerry".into()),
+            publisher: Some("Smith &amp; Sons".into()),
+            credits: vec![abi::Credit {
+                name: "Fl&eacute;ur".into(),
+                role: abi::CreditRole::Author,
+                level: abi::CreditLevel::RoleDefault,
+            }],
+            series_entries: vec![abi::SeriesEntry {
+                name: "Kings &amp; Queens".into(),
+                position: None,
+                store_series_id: None,
+            }],
+            ..abi::ScanBook::default()
+        };
+        let draft = scan_book_draft(&book);
+        assert_eq!(draft.title, "O'Brien's War");
+        assert_eq!(draft.subtitle.as_deref(), Some("Tom & Jerry"));
+        assert_eq!(draft.credits[0].0, "Fl\u{e9}ur");
+        assert_eq!(draft.credits[1].0, "Smith & Sons");
+        assert_eq!(draft.series[0].0, "Kings & Queens");
     }
 }

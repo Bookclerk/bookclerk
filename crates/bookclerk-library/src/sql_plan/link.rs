@@ -8,8 +8,12 @@
 //!   owner (another writer that got there first makes them no-ops);
 //! - identifiers, the listing and the holding are written only when the
 //!   edition they reference exists;
+//! - a stored listing is refreshed only while it still sells the edition
+//!   the plan was made from;
 //! - conflicts and events are written only when the listing now sells the
 //!   planned edition, which is also the batch's `ok` / `retry` outcome.
+//!   Events also ignore a dedup-key clash, which a concurrent batch for the
+//!   same holding can cause between its `NOT EXISTS` check and insert.
 
 use bookclerk_plugin_abi::{DbType, DbValue};
 
@@ -201,19 +205,32 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             ],
         ));
     } else {
+        let mut binds = vec![
+            j_str(&p.edition_id),
+            j_str(&p.title),
+            j_opt_str(p.categories.as_deref()),
+            j_str(now),
+            j_str(now),
+            j_str(&p.listing_id),
+            j_str(&p.edition_id),
+        ];
+        // Only refresh the listing while it still sells the edition the
+        // plan was made from; a concurrent relink turns this into a no-op
+        // and the outcome into `retry`.
+        let still_stored = match &p.stored_edition_id {
+            Some(stored) => {
+                binds.push(j_str(stored));
+                " AND edition_id = ?"
+            }
+            None => "",
+        };
         out.push(sql(
-            "UPDATE store_listings SET edition_id = ?, title = ?, \
-             categories = COALESCE(?, categories), observed_at = ?, updated_at = ? \
-             WHERE id = ? AND EXISTS (SELECT 1 FROM editions WHERE id = ?)",
-            vec![
-                j_str(&p.edition_id),
-                j_str(&p.title),
-                j_opt_str(p.categories.as_deref()),
-                j_str(now),
-                j_str(now),
-                j_str(&p.listing_id),
-                j_str(&p.edition_id),
-            ],
+            &format!(
+                "UPDATE store_listings SET edition_id = ?, title = ?, \
+                 categories = COALESCE(?, categories), observed_at = ?, updated_at = ? \
+                 WHERE id = ? AND EXISTS (SELECT 1 FROM editions WHERE id = ?){still_stored}"
+            ),
+            binds,
         ));
     }
     let mut binds = vec![
@@ -284,7 +301,7 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
         binds.extend(linked_binds.clone());
         out.push(sql(
             &format!(
-                "INSERT INTO domain_events (\
+                "INSERT OR IGNORE INTO domain_events (\
                     id, event_type, schema_version, occurred_at, account_id, source, \
                     correlation_id, causation_id, dedup_key, payload, ordering_key, \
                     dispatch_state, created_at, wake_pending\

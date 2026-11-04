@@ -189,7 +189,8 @@ impl Snapshot {
     }
 
     /// Checks that every edition and work the snapshot refers to is
-    /// included, with each edition's expression and work.
+    /// included, with each edition's expression and work. A pin whose
+    /// edition is gone is ignored, as [`crate::resolve()`] ignores it.
     ///
     /// # Returns
     ///
@@ -207,7 +208,12 @@ impl Snapshot {
                     .map(|r| r.edition_id.as_str()),
             )
             .chain(self.overrides.iter().filter_map(|o| match o {
-                Override::PinListing { edition_id, .. } => Some(edition_id.as_str()),
+                // A pin to an edition that no longer exists is stale, not a
+                // broken reference: `resolve` skips it, so only a present
+                // pinned edition must bring its expression and work.
+                Override::PinListing { edition_id, .. } => {
+                    self.edition(edition_id).map(|e| e.id.as_str())
+                }
                 Override::IsolateWork { .. } => None,
             }));
         for id in edition_ids {
@@ -376,6 +382,8 @@ pub struct Plan {
     pub holding: HoldingRow,
     /// True when the holding is new.
     pub holding_is_new: bool,
+    /// True when a stored holding's entitlement or purchase date changes.
+    pub holding_changed: bool,
     /// Decisions left to an Administrator.
     pub conflicts: Vec<Conflict>,
     /// Events to publish.
@@ -384,11 +392,13 @@ pub struct Plan {
 
 impl Plan {
     /// True when applying the plan would change nothing but timestamps:
-    /// no new rows, no metadata change, no conflict and no event.
+    /// no new rows, no metadata or holding change, no conflict and no
+    /// event.
     #[must_use]
     pub fn is_noop(&self) -> bool {
         !self.listing_is_new
             && !self.holding_is_new
+            && !self.holding_changed
             && self.new_work.is_none()
             && self.new_expression.is_none()
             && self.new_edition.is_none()

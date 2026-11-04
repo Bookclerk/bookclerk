@@ -672,6 +672,8 @@ pub struct WorkRecord {
     pub parent_work_id: Option<String>,
     /// Names credited on the work itself (authors, …), in billing order.
     pub credits: Vec<String>,
+    /// Narrators credited on the work's expressions, each named once.
+    pub narrators: Vec<String>,
     /// Names of the series the work belongs to.
     pub series: Vec<String>,
     /// Blurb / synopsis text (may contain HTML).

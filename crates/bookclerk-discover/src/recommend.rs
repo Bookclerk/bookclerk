@@ -744,6 +744,7 @@ async fn build_taste_profile(
     let mut liked_narrators: HashMap<String, f64> = HashMap::new();
     let mut liked_categories: HashMap<String, f64> = HashMap::new();
     let mut seed_work_ids: HashSet<String> = HashSet::new();
+    let mut seed_book_uuids: Vec<String> = Vec::new();
     let mut listening_engagement_by_uuid: HashMap<String, f64> = HashMap::new();
 
     for book in books {
@@ -764,9 +765,7 @@ async fn build_taste_profile(
         if weight <= 0.0 {
             continue;
         }
-        if let Ok(Some(wid)) = library.work_id_for_book(&book.uuid).await {
-            seed_work_ids.insert(wid);
-        }
+        seed_book_uuids.push(book.uuid.clone());
         if let Some(authors) = &book.authors {
             for a in split_tokens_display(authors) {
                 *liked_authors.entry(a.to_lowercase()).or_default() += weight;
@@ -782,6 +781,12 @@ async fn build_taste_profile(
                 *liked_categories.entry(c.to_lowercase()).or_default() += weight;
             }
         }
+    }
+
+    // One bulk lookup for every liked title's work; a failed read only
+    // loses the embedding seeds, as a failed per-title lookup did.
+    if let Ok(works) = library.work_ids_for_books(&seed_book_uuids).await {
+        seed_work_ids.extend(works.into_values());
     }
 
     for row in listening {

@@ -3935,17 +3935,18 @@ impl LibraryStore {
     /// The listing is derived from the flat row ([`listing_from_book`]);
     /// a scan that has the plugin's structured record uses
     /// [`Self::upsert_scanned_title`] instead. A row that fails listing
-    /// validation is still stored, and the listing is skipped with a warning.
+    /// validation, or whose listing cannot be resolved, is still stored,
+    /// and the listing is skipped with a warning.
     ///
     /// # Errors
     ///
-    /// Returns an error when a read or write fails.
+    /// Returns an error when the flat row cannot be read or written.
     pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
         let record = self.upsert_book_row(book).await?;
         match listing_from_book(book) {
             Ok(listing) => {
-                self.record_listing(&listing, &holding_from_book(book))
-                    .await?;
+                self.record_listing_after_row(&listing, &holding_from_book(book))
+                    .await;
             }
             Err(err) => tracing::warn!(
                 product_id = %book.product_id,
@@ -3966,7 +3967,8 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// Returns an error when a read or write fails.
+    /// Returns an error when the flat row cannot be read or written; a
+    /// listing that cannot be resolved is logged, not returned.
     pub async fn upsert_scanned_title(&self, title: &ScannedTitle) -> Result<BookRecord> {
         let Some(listing) = &title.listing else {
             return self.upsert_book(&title.book).await;
@@ -3974,9 +3976,32 @@ impl LibraryStore {
         let record = self.upsert_book_row(&title.book).await?;
         let mut listing = listing.clone();
         listing.key.plugin_key.clone_from(&title.book.plugin_key);
-        self.record_listing(&listing, &holding_from_book(&title.book))
-            .await?;
+        self.record_listing_after_row(&listing, &holding_from_book(&title.book))
+            .await;
         Ok(record)
+    }
+
+    /// Records a title's listing once its flat row is stored, logging a
+    /// failure rather than returning it.
+    ///
+    /// The flat row is already committed and is what acquire and the UI
+    /// read until the library model replaces it, so one title that cannot
+    /// be resolved (other writers kept racing it, or a stored row is
+    /// inconsistent) must not stop the rest of a scan. The next scan
+    /// resolves the listing again.
+    async fn record_listing_after_row(
+        &self,
+        listing: &bookclerk_resolve::Listing,
+        holding: &bookclerk_resolve::HoldingDraft,
+    ) {
+        if let Err(err) = self.record_listing(listing, holding).await {
+            tracing::warn!(
+                product_id = %listing.key.product_id,
+                plugin_key = %listing.key.plugin_key,
+                error = %err,
+                "library title stored but not resolved into the library model; the next scan retries"
+            );
+        }
     }
 
     /// Insert on first sight; on `(source, account_id, product_id)` conflict,

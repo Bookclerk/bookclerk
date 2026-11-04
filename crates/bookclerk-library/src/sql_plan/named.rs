@@ -926,6 +926,7 @@ fn status_to_bump_sql(status_sql: &str) -> String {
             WHEN '{conflict}' THEN 7 \
             WHEN '{duplicate}' THEN 8 \
             WHEN '{queue_full}' THEN 9 \
+            WHEN '{retry}' THEN 10 \
             ELSE 0 END",
         ok = atomic_status::OK,
         empty = atomic_status::EMPTY,
@@ -936,6 +937,7 @@ fn status_to_bump_sql(status_sql: &str) -> String {
         conflict = atomic_status::IDEMPOTENCY_CONFLICT,
         duplicate = atomic_status::DUPLICATE,
         queue_full = atomic_status::QUEUE_FULL,
+        retry = atomic_status::RETRY,
     )
 }
 
@@ -952,6 +954,7 @@ fn bump_to_status_sql(bump_sql: &str) -> String {
             WHEN 7 THEN '{conflict}' \
             WHEN 8 THEN '{duplicate}' \
             WHEN 9 THEN '{queue_full}' \
+            WHEN 10 THEN '{retry}' \
             ELSE '{claim_invalid}' END",
         ok = atomic_status::OK,
         empty = atomic_status::EMPTY,
@@ -962,6 +965,7 @@ fn bump_to_status_sql(bump_sql: &str) -> String {
         conflict = atomic_status::IDEMPOTENCY_CONFLICT,
         duplicate = atomic_status::DUPLICATE,
         queue_full = atomic_status::QUEUE_FULL,
+        retry = atomic_status::RETRY,
     )
 }
 

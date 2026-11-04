@@ -163,6 +163,11 @@ pub struct ListingLinkParams {
     pub categories: Option<String>,
     /// The edition the listing reaches.
     pub edition_id: String,
+    /// The edition a stored listing sold when the plan was made; the
+    /// refresh only applies while it still does, so a concurrent relink
+    /// makes the batch answer `retry` instead of being overwritten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stored_edition_id: Option<String>,
     /// Strong keys that must still be unowned for a new edition to be
     /// created; another writer taking one makes the batch answer `retry`.
     #[serde(default)]

@@ -100,7 +100,10 @@ pub async fn migrate_library_backend(
     copy!(users, "users");
     copy!(accounts, "accounts");
     copy!(portal_identities, "portal_identities");
-    copy!(works, "works");
+    // Shows before their episodes (`works.parent_work_id`).
+    summary
+        .tables
+        .insert("works".into(), copy_works(source, &txn).await?);
     copy!(work_identifiers, "work_identifiers");
     copy!(expressions, "expressions");
     copy!(editions, "editions");
@@ -153,6 +156,28 @@ where
     for model in models {
         let active: E::ActiveModel = model.into();
         E::insert(active)
+            .exec(dest)
+            .await
+            .map_err(LibraryError::Orm)?;
+    }
+    Ok(count)
+}
+
+/// Copies `works` parents first, so an engine that checks the
+/// self-referencing `parent_work_id` key on every insert accepts each row.
+///
+/// Only shows are parents and they have no parent of their own, so one
+/// pass that puts parentless works first is enough.
+async fn copy_works(source: &DatabaseConnection, dest: &impl ConnectionTrait) -> Result<usize> {
+    let mut models = works::Entity::find()
+        .all(source)
+        .await
+        .map_err(LibraryError::Orm)?;
+    models.sort_by_key(|m| m.parent_work_id.is_some());
+    let count = models.len();
+    for model in models {
+        let active: works::ActiveModel = model.into();
+        works::Entity::insert(active)
             .exec(dest)
             .await
             .map_err(LibraryError::Orm)?;
@@ -220,4 +245,86 @@ async fn dry_run_counts(
     count!(jobs, "jobs");
     count!(job_temp_paths, "job_temp_paths");
     Ok(tables)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, IntoActiveModel};
+
+    /// A work row with `id`, `kind` and no parent.
+    fn work(id: &str, kind: &str) -> works::ActiveModel {
+        works::ActiveModel {
+            id: Set(id.into()),
+            kind: Set(kind.into()),
+            title: Set(id.into()),
+            match_key: Set(id.into()),
+            parent_work_id: Set(None),
+            description: Set(None),
+            subjects: Set(None),
+            categories: Set(None),
+            cover_url: Set(None),
+            created_at: Set("2026-01-01T00:00:00Z".into()),
+            updated_at: Set("2026-01-01T00:00:00Z".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn episodes_stored_before_their_show_still_copy() {
+        let source = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap();
+        let dest = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap();
+        // The episode's row comes first in storage order, then gains its
+        // parent once the show exists.
+        work("w_episode", "podcast_episode")
+            .insert(&source)
+            .await
+            .unwrap();
+        work("w_show", "podcast_show")
+            .insert(&source)
+            .await
+            .unwrap();
+        let mut episode = works::Entity::find_by_id("w_episode")
+            .one(&source)
+            .await
+            .unwrap()
+            .unwrap()
+            .into_active_model();
+        episode.parent_work_id = Set(Some("w_show".into()));
+        episode.update(&source).await.unwrap();
+
+        let opts = BackendMigrateOptions {
+            dry_run: false,
+            force: false,
+        };
+        let summary = migrate_library_backend(&source, &dest, &opts)
+            .await
+            .unwrap();
+        assert_eq!(summary.tables["works"], 2);
+        let copied = works::Entity::find_by_id("w_episode")
+            .one(&dest)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(copied.parent_work_id.as_deref(), Some("w_show"));
+
+        let dry = migrate_library_backend(
+            &source,
+            &dest,
+            &BackendMigrateOptions {
+                dry_run: true,
+                force: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(dry.dry_run);
+        assert_eq!(dry.tables["store_listings"], 0);
+        assert!(migrate_library_backend(&source, &dest, &opts)
+            .await
+            .is_err());
+    }
 }
