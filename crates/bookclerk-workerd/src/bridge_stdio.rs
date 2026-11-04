@@ -32,11 +32,12 @@ use bookclerk_plugin_abi::{
     serve_plugin_stdio, Bindings, ByteRange, ContentSource, ContentSourceClient, CopyResult,
     Database, DatabaseClient, Destination, DestinationClient, Entrypoint, Entrypoints,
     EventConsumer, EventConsumerClient, ExtensibleConfig, GuestDatabase, HostBindings, Invocation,
-    JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions, ListPage, ObjectMetadata,
-    Oidc, OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli, PluginCliClient,
-    PluginClient, PluginDescribe, PluginMigration, PluginWorker, PutResult, QueueConsumer,
-    QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient, WriteOptions,
-    MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataProvider,
+    MetadataProviderClient, ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints,
+    PluginCapabilities, PluginCli, PluginCliClient, PluginClient, PluginDescribe, PluginMigration,
+    PluginWorker, PutResult, QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary,
+    RemoteLibraryClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
+    PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -131,6 +132,7 @@ impl WorkerdRoot {
             Entrypoint::RemoteLibrary,
             Entrypoint::Cli,
             Entrypoint::Oidc,
+            Entrypoint::Metadata,
         ] {
             if self.exports(entrypoint) {
                 out.push(entrypoint.wire_name());
@@ -350,6 +352,9 @@ impl WorkerdRoot {
         if self.exports(Entrypoint::Cli) {
             exported.cli = Some(Box::new(PluginCliClient::new(invoke.typed())));
         }
+        if self.exports(Entrypoint::Metadata) {
+            exported.metadata = Some(Box::new(MetadataProviderClient::new(invoke.typed())));
+        }
         if self.runs_jobs() {
             exported.job_runner = Some(Box::new(InvokeJobRunner {
                 http: self.http.clone(),
@@ -376,6 +381,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         cli,
         oidc,
         queue_consumer,
+        metadata,
     } = opened;
     Entrypoints {
         event_consumer: event_consumer
@@ -405,6 +411,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         oidc: oidc
             .filter(|_| allow(Entrypoint::Oidc.wire_name()))
             .map(|c| Box::new(c) as Box<dyn Oidc>),
+        metadata: metadata
+            .filter(|_| allow(Entrypoint::Metadata.wire_name()))
+            .map(|c| Box::new(c) as Box<dyn MetadataProvider>),
     }
 }
 

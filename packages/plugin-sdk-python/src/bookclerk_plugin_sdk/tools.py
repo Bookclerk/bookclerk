@@ -618,6 +618,7 @@ ENTRYPOINT_NAMES: tuple[str, ...] = (
     "remoteLibrary",
     "cli",
     "oidc",
+    "metadata",
 )
 """Entrypoint wire names accepted in ``entrypoints``."""
 
@@ -791,6 +792,7 @@ ENTRYPOINT_EXPORT_CLASSES: dict[str, str] = {
     "remoteLibrary": "RemoteLibrary",
     "cli": "Cli",
     "oidc": "Oidc",
+    "metadata": "Metadata",
 }
 """Exported class name the launcher binds for each ``entrypoints`` wire name."""
 
@@ -820,7 +822,7 @@ def check_main_module_source(
             f"{main_name}: `BookclerkPlugin` was removed in api_version 3; extend "
             f"`{base}` (default class with event()/job() triggers) and define "
             "named entrypoint classes (Storefront, Storage, RemoteLibrary, "
-            "DatabaseAdapter, Cli, Oidc)"
+            "DatabaseAdapter, Cli, Oidc, Metadata)"
         )
     if language == "python":
         if "bookclerk_plugin_sdk" not in src and base not in src:

@@ -375,7 +375,7 @@ pub struct PluginGrant {
     /// Display / CLI alias from `plugin.toml` (not security authoritative).
     pub plugin_id: String,
     /// Approved named entrypoints (wire names: `storefront`, `storage`,
-    /// `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`).
+    /// `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`).
     #[serde(default)]
     pub entrypoints: BTreeSet<String>,
     /// Approved event types the plugin may publish through its events binding.

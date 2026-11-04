@@ -83,6 +83,9 @@ pub enum Entrypoint {
     Cli,
     /// OIDC bridge: relying-party client templates and `authenticateUser`.
     Oidc,
+    /// Metadata provider: `lookup`, `search` and `chapters`
+    /// (`MetadataProvider`).
+    Metadata,
 }
 
 impl Entrypoint {
@@ -96,6 +99,7 @@ impl Entrypoint {
             Self::RemoteLibrary => "remoteLibrary",
             Self::Cli => "cli",
             Self::Oidc => "oidc",
+            Self::Metadata => "metadata",
         }
     }
 
@@ -109,6 +113,7 @@ impl Entrypoint {
             "remoteLibrary" => Some(Self::RemoteLibrary),
             "cli" => Some(Self::Cli),
             "oidc" => Some(Self::Oidc),
+            "metadata" => Some(Self::Metadata),
             _ => None,
         }
     }
@@ -123,6 +128,7 @@ impl From<Entrypoint> for plugin_capnp::Entrypoint {
             Entrypoint::RemoteLibrary => Self::RemoteLibrary,
             Entrypoint::Cli => Self::Cli,
             Entrypoint::Oidc => Self::Oidc,
+            Entrypoint::Metadata => Self::Metadata,
         }
     }
 }
@@ -136,6 +142,7 @@ impl From<plugin_capnp::Entrypoint> for Entrypoint {
             plugin_capnp::Entrypoint::RemoteLibrary => Self::RemoteLibrary,
             plugin_capnp::Entrypoint::Cli => Self::Cli,
             plugin_capnp::Entrypoint::Oidc => Self::Oidc,
+            plugin_capnp::Entrypoint::Metadata => Self::Metadata,
         }
     }
 }
@@ -2259,6 +2266,195 @@ pub struct KvListOk {
     /// Cursor for the next page; empty when `listComplete`.
     #[serde(default)]
     pub cursor: String,
+}
+
+/// Params of `MetadataProvider.lookup`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataLookupParams {
+    /// Identifiers naming the wanted edition or work; never empty. A provider
+    /// ignores schemes it does not serve.
+    #[serde(default)]
+    pub identifiers: Vec<Identifier>,
+    /// Marketplace to answer for (`us`, `uk`, ...) when the provider is
+    /// regional.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace: Option<String>,
+    /// Most records to return; the provider picks a small default when absent.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// Params of `MetadataProvider.search`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataSearchParams {
+    /// Title to match; never empty.
+    #[serde(default)]
+    pub title: String,
+    /// Author display name to narrow the match when known.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// Preferred content language code when known.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Marketplace to answer for when the provider is regional.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace: Option<String>,
+    /// Most records to return; the provider picks a small default when absent.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// Params of `MetadataProvider.chapters`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataChaptersParams {
+    /// Identifiers of one edition (an ASIN for Audnexus); never empty.
+    #[serde(default)]
+    pub identifiers: Vec<Identifier>,
+    /// Marketplace to answer for when the provider is regional.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace: Option<String>,
+}
+
+/// One edition as a metadata provider describes it: the same structured
+/// fields as `CatalogHit`, without store pricing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataRecord {
+    /// Primary title.
+    #[serde(default)]
+    pub title: String,
+    /// Subtitle when distinct from `title`.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    /// Long description / blurb when known.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Cover image URL.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_url: Option<String>,
+    /// The provider's page for this record.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Publisher name when known.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    /// Runtime in whole minutes when known.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_minutes: Option<i64>,
+    /// Publication date string as the provider prints it.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+    /// Category / genre labels as a single string when known.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub categories: Option<String>,
+    /// Content language code when known.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Whether the edition is abridged when the provider says so.
+    #[serde(default)]
+    pub abridgement: Abridgement,
+    /// Kind of work the record describes.
+    #[serde(default)]
+    pub work_kind: WorkKind,
+    /// How the work is realised in this edition.
+    #[serde(default)]
+    pub expression_kind: ExpressionKind,
+    /// Form of this edition.
+    #[serde(default)]
+    pub media_kind: MediaKind,
+    /// External identifiers (ISBN, ASIN, OpenLibrary ids).
+    #[serde(default)]
+    pub identifiers: Vec<Identifier>,
+    /// Credited contributors in billing order.
+    #[serde(default)]
+    pub credits: Vec<Credit>,
+    /// Series the work belongs to.
+    #[serde(default)]
+    pub series_entries: Vec<SeriesEntry>,
+    /// Aggregate rating when the provider publishes one.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_overall: Option<f64>,
+    /// Number of ratings behind `ratingOverall` when known.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_count: Option<i64>,
+}
+
+/// Success payload of `MetadataProvider.lookup` / `search`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataRecords {
+    /// Records in the provider's relevance order; empty when nothing matched.
+    #[serde(default)]
+    pub records: Vec<MetadataRecord>,
+}
+
+/// One chapter in a provider's chapter layout. Chapters are listed in
+/// pre-order: a chapter with `depth` n + 1 is nested under the nearest
+/// earlier chapter with `depth` n.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataChapter {
+    /// Chapter title.
+    #[serde(default)]
+    pub title: String,
+    /// Start offset in milliseconds from the beginning of the title.
+    #[serde(default)]
+    pub start_ms: u64,
+    /// Length in milliseconds when known.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_ms: Option<u64>,
+    /// Nesting depth; 0 for a top-level chapter.
+    #[serde(default)]
+    pub depth: u32,
+}
+
+/// Success payload of `MetadataProvider.chapters`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataChapters {
+    /// False when the provider has no chapter layout for the edition.
+    #[serde(default)]
+    pub found: bool,
+    /// Chapters in pre-order; empty when not `found`.
+    #[serde(default)]
+    pub chapters: Vec<MetadataChapter>,
+    /// Length of the store's spoken brand intro in milliseconds when known.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brand_intro_ms: Option<u64>,
+    /// Length of the store's spoken brand outro in milliseconds when known.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brand_outro_ms: Option<u64>,
+    /// Total runtime the layout was measured against, in milliseconds.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_ms: Option<u64>,
+    /// Whether the provider marks the offsets as exact rather than estimated.
+    #[serde(default)]
+    pub accurate: bool,
 }
 
 /// Encode a [`EventConsumerSpec`] onto a Cap'n Proto builder.
@@ -5455,9 +5651,436 @@ pub fn read_kv_list_reply(
     }
 }
 
+/// Encode a [`MetadataLookupParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_lookup_params(
+    mut b: plugin_capnp::metadata_lookup_params::Builder<'_>,
+    v: &MetadataLookupParams,
+) -> capnp::Result<()> {
+    {
+        let mut items = b
+            .reborrow()
+            .init_identifiers(list_len(v.identifiers.len())?);
+        for (i, item) in v.identifiers.iter().enumerate() {
+            write_identifier(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    if let Some(value) = &v.marketplace {
+        b.set_marketplace(value);
+    }
+    if let Some(value) = v.limit {
+        b.set_limit(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`MetadataLookupParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_lookup_params(
+    r: plugin_capnp::metadata_lookup_params::Reader<'_>,
+) -> capnp::Result<MetadataLookupParams> {
+    Ok(MetadataLookupParams {
+        identifiers: r
+            .get_identifiers()?
+            .iter()
+            .map(|item| read_identifier(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        marketplace: opt_text(r.get_marketplace()?)?,
+        limit: opt_num(r.get_limit()),
+    })
+}
+
+/// Encode a [`MetadataSearchParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_search_params(
+    mut b: plugin_capnp::metadata_search_params::Builder<'_>,
+    v: &MetadataSearchParams,
+) -> capnp::Result<()> {
+    b.set_title(&v.title);
+    if let Some(value) = &v.author {
+        b.set_author(value);
+    }
+    if let Some(value) = &v.language {
+        b.set_language(value);
+    }
+    if let Some(value) = &v.marketplace {
+        b.set_marketplace(value);
+    }
+    if let Some(value) = v.limit {
+        b.set_limit(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`MetadataSearchParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_search_params(
+    r: plugin_capnp::metadata_search_params::Reader<'_>,
+) -> capnp::Result<MetadataSearchParams> {
+    Ok(MetadataSearchParams {
+        title: r.get_title()?.to_string()?,
+        author: opt_text(r.get_author()?)?,
+        language: opt_text(r.get_language()?)?,
+        marketplace: opt_text(r.get_marketplace()?)?,
+        limit: opt_num(r.get_limit()),
+    })
+}
+
+/// Encode a [`MetadataChaptersParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_chapters_params(
+    mut b: plugin_capnp::metadata_chapters_params::Builder<'_>,
+    v: &MetadataChaptersParams,
+) -> capnp::Result<()> {
+    {
+        let mut items = b
+            .reborrow()
+            .init_identifiers(list_len(v.identifiers.len())?);
+        for (i, item) in v.identifiers.iter().enumerate() {
+            write_identifier(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    if let Some(value) = &v.marketplace {
+        b.set_marketplace(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`MetadataChaptersParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_chapters_params(
+    r: plugin_capnp::metadata_chapters_params::Reader<'_>,
+) -> capnp::Result<MetadataChaptersParams> {
+    Ok(MetadataChaptersParams {
+        identifiers: r
+            .get_identifiers()?
+            .iter()
+            .map(|item| read_identifier(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        marketplace: opt_text(r.get_marketplace()?)?,
+    })
+}
+
+/// Encode a [`MetadataRecord`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_record(
+    mut b: plugin_capnp::metadata_record::Builder<'_>,
+    v: &MetadataRecord,
+) -> capnp::Result<()> {
+    b.set_title(&v.title);
+    if let Some(value) = &v.subtitle {
+        b.set_subtitle(value);
+    }
+    if let Some(value) = &v.description {
+        b.set_description(value);
+    }
+    if let Some(value) = &v.cover_url {
+        b.set_cover_url(value);
+    }
+    if let Some(value) = &v.url {
+        b.set_url(value);
+    }
+    if let Some(value) = &v.publisher {
+        b.set_publisher(value);
+    }
+    if let Some(value) = v.length_minutes {
+        b.set_length_minutes(value);
+    }
+    if let Some(value) = &v.published_at {
+        b.set_published_at(value);
+    }
+    if let Some(value) = &v.categories {
+        b.set_categories(value);
+    }
+    if let Some(value) = &v.language {
+        b.set_language(value);
+    }
+    b.set_abridgement(v.abridgement.into());
+    b.set_work_kind(v.work_kind.into());
+    b.set_expression_kind(v.expression_kind.into());
+    b.set_media_kind(v.media_kind.into());
+    {
+        let mut items = b
+            .reborrow()
+            .init_identifiers(list_len(v.identifiers.len())?);
+        for (i, item) in v.identifiers.iter().enumerate() {
+            write_identifier(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    {
+        let mut items = b.reborrow().init_credits(list_len(v.credits.len())?);
+        for (i, item) in v.credits.iter().enumerate() {
+            write_credit(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    {
+        let mut items = b
+            .reborrow()
+            .init_series_entries(list_len(v.series_entries.len())?);
+        for (i, item) in v.series_entries.iter().enumerate() {
+            write_series_entry(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    if let Some(value) = v.rating_overall {
+        b.set_rating_overall(value);
+    }
+    if let Some(value) = v.rating_count {
+        b.set_rating_count(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`MetadataRecord`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_record(
+    r: plugin_capnp::metadata_record::Reader<'_>,
+) -> capnp::Result<MetadataRecord> {
+    Ok(MetadataRecord {
+        title: r.get_title()?.to_string()?,
+        subtitle: opt_text(r.get_subtitle()?)?,
+        description: opt_text(r.get_description()?)?,
+        cover_url: opt_text(r.get_cover_url()?)?,
+        url: opt_text(r.get_url()?)?,
+        publisher: opt_text(r.get_publisher()?)?,
+        length_minutes: opt_num(r.get_length_minutes()),
+        published_at: opt_text(r.get_published_at()?)?,
+        categories: opt_text(r.get_categories()?)?,
+        language: opt_text(r.get_language()?)?,
+        abridgement: r.get_abridgement()?.into(),
+        work_kind: r.get_work_kind()?.into(),
+        expression_kind: r.get_expression_kind()?.into(),
+        media_kind: r.get_media_kind()?.into(),
+        identifiers: r
+            .get_identifiers()?
+            .iter()
+            .map(|item| read_identifier(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        credits: r
+            .get_credits()?
+            .iter()
+            .map(|item| read_credit(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        series_entries: r
+            .get_series_entries()?
+            .iter()
+            .map(|item| read_series_entry(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        rating_overall: opt_num(r.get_rating_overall()),
+        rating_count: opt_num(r.get_rating_count()),
+    })
+}
+
+/// Encode a [`MetadataRecords`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_records(
+    mut b: plugin_capnp::metadata_records::Builder<'_>,
+    v: &MetadataRecords,
+) -> capnp::Result<()> {
+    {
+        let mut items = b.reborrow().init_records(list_len(v.records.len())?);
+        for (i, item) in v.records.iter().enumerate() {
+            write_metadata_record(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`MetadataRecords`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_records(
+    r: plugin_capnp::metadata_records::Reader<'_>,
+) -> capnp::Result<MetadataRecords> {
+    Ok(MetadataRecords {
+        records: r
+            .get_records()?
+            .iter()
+            .map(|item| read_metadata_record(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+    })
+}
+
+/// Encode a `MetadataRecordsReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_metadata_records_reply(
+    b: plugin_capnp::metadata_records_reply::Builder<'_>,
+    v: &Result<MetadataRecords, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_metadata_records(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `MetadataRecordsReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_metadata_records_reply(
+    r: plugin_capnp::metadata_records_reply::Reader<'_>,
+) -> capnp::Result<Result<MetadataRecords, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::metadata_records_reply::Ok(ok) => Ok(Ok(read_metadata_records(ok?)?)),
+        plugin_capnp::metadata_records_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`MetadataChapter`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_chapter(
+    mut b: plugin_capnp::metadata_chapter::Builder<'_>,
+    v: &MetadataChapter,
+) -> capnp::Result<()> {
+    b.set_title(&v.title);
+    b.set_start_ms(v.start_ms);
+    if let Some(value) = v.length_ms {
+        b.set_length_ms(value);
+    }
+    b.set_depth(v.depth);
+    Ok(())
+}
+
+/// Decode a [`MetadataChapter`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_chapter(
+    r: plugin_capnp::metadata_chapter::Reader<'_>,
+) -> capnp::Result<MetadataChapter> {
+    Ok(MetadataChapter {
+        title: r.get_title()?.to_string()?,
+        start_ms: r.get_start_ms(),
+        length_ms: opt_num(r.get_length_ms()),
+        depth: r.get_depth(),
+    })
+}
+
+/// Encode a [`MetadataChapters`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_metadata_chapters(
+    mut b: plugin_capnp::metadata_chapters::Builder<'_>,
+    v: &MetadataChapters,
+) -> capnp::Result<()> {
+    b.set_found(v.found);
+    {
+        let mut items = b.reborrow().init_chapters(list_len(v.chapters.len())?);
+        for (i, item) in v.chapters.iter().enumerate() {
+            write_metadata_chapter(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    if let Some(value) = v.brand_intro_ms {
+        b.set_brand_intro_ms(value);
+    }
+    if let Some(value) = v.brand_outro_ms {
+        b.set_brand_outro_ms(value);
+    }
+    if let Some(value) = v.runtime_ms {
+        b.set_runtime_ms(value);
+    }
+    b.set_accurate(v.accurate);
+    Ok(())
+}
+
+/// Decode a [`MetadataChapters`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_metadata_chapters(
+    r: plugin_capnp::metadata_chapters::Reader<'_>,
+) -> capnp::Result<MetadataChapters> {
+    Ok(MetadataChapters {
+        found: r.get_found(),
+        chapters: r
+            .get_chapters()?
+            .iter()
+            .map(|item| read_metadata_chapter(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        brand_intro_ms: opt_num(r.get_brand_intro_ms()),
+        brand_outro_ms: opt_num(r.get_brand_outro_ms()),
+        runtime_ms: opt_num(r.get_runtime_ms()),
+        accurate: r.get_accurate(),
+    })
+}
+
+/// Encode a `MetadataChaptersReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_metadata_chapters_reply(
+    b: plugin_capnp::metadata_chapters_reply::Builder<'_>,
+    v: &Result<MetadataChapters, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_metadata_chapters(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `MetadataChaptersReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_metadata_chapters_reply(
+    r: plugin_capnp::metadata_chapters_reply::Reader<'_>,
+) -> capnp::Result<Result<MetadataChapters, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::metadata_chapters_reply::Ok(ok) => Ok(Ok(read_metadata_chapters(ok?)?)),
+        plugin_capnp::metadata_chapters_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 86;
+pub const READ_ANY_COUNT: u8 = 95;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -5849,6 +6472,51 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
         85 => {
             let _ =
                 read_kv_list_reply(reader.get_root::<plugin_capnp::kv_list_reply::Reader<'_>>()?)?;
+        }
+        86 => {
+            let _ = read_metadata_lookup_params(
+                reader.get_root::<plugin_capnp::metadata_lookup_params::Reader<'_>>()?,
+            )?;
+        }
+        87 => {
+            let _ = read_metadata_search_params(
+                reader.get_root::<plugin_capnp::metadata_search_params::Reader<'_>>()?,
+            )?;
+        }
+        88 => {
+            let _ = read_metadata_chapters_params(
+                reader.get_root::<plugin_capnp::metadata_chapters_params::Reader<'_>>()?,
+            )?;
+        }
+        89 => {
+            let _ = read_metadata_record(
+                reader.get_root::<plugin_capnp::metadata_record::Reader<'_>>()?,
+            )?;
+        }
+        90 => {
+            let _ = read_metadata_records(
+                reader.get_root::<plugin_capnp::metadata_records::Reader<'_>>()?,
+            )?;
+        }
+        91 => {
+            let _ = read_metadata_records_reply(
+                reader.get_root::<plugin_capnp::metadata_records_reply::Reader<'_>>()?,
+            )?;
+        }
+        92 => {
+            let _ = read_metadata_chapter(
+                reader.get_root::<plugin_capnp::metadata_chapter::Reader<'_>>()?,
+            )?;
+        }
+        93 => {
+            let _ = read_metadata_chapters(
+                reader.get_root::<plugin_capnp::metadata_chapters::Reader<'_>>()?,
+            )?;
+        }
+        94 => {
+            let _ = read_metadata_chapters_reply(
+                reader.get_root::<plugin_capnp::metadata_chapters_reply::Reader<'_>>()?,
+            )?;
         }
         _ => {
             return Err(capnp::Error::failed(format!(
@@ -9534,6 +10202,400 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
                         "round trip changed the decoded KvListReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        86 => {
+            let first = read_metadata_lookup_params(
+                reader.get_root::<plugin_capnp::metadata_lookup_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_lookup_params(
+                message.init_root::<plugin_capnp::metadata_lookup_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_lookup_params(
+                    again.get_root::<plugin_capnp::metadata_lookup_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_lookup_params(
+                    message.init_root::<plugin_capnp::metadata_lookup_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataLookupParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        87 => {
+            let first = read_metadata_search_params(
+                reader.get_root::<plugin_capnp::metadata_search_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_search_params(
+                message.init_root::<plugin_capnp::metadata_search_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_search_params(
+                    again.get_root::<plugin_capnp::metadata_search_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_search_params(
+                    message.init_root::<plugin_capnp::metadata_search_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataSearchParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        88 => {
+            let first = read_metadata_chapters_params(
+                reader.get_root::<plugin_capnp::metadata_chapters_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_chapters_params(
+                message.init_root::<plugin_capnp::metadata_chapters_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_chapters_params(
+                    again.get_root::<plugin_capnp::metadata_chapters_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_chapters_params(
+                    message.init_root::<plugin_capnp::metadata_chapters_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataChaptersParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        89 => {
+            let first = read_metadata_record(
+                reader.get_root::<plugin_capnp::metadata_record::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_record(
+                message.init_root::<plugin_capnp::metadata_record::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_record(again.get_root::<plugin_capnp::metadata_record::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_record(
+                    message.init_root::<plugin_capnp::metadata_record::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataRecord value".to_string(),
+                    ));
+                }
+            }
+        }
+        90 => {
+            let first = read_metadata_records(
+                reader.get_root::<plugin_capnp::metadata_records::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_records(
+                message.init_root::<plugin_capnp::metadata_records::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_records(
+                    again.get_root::<plugin_capnp::metadata_records::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_records(
+                    message.init_root::<plugin_capnp::metadata_records::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataRecords value".to_string(),
+                    ));
+                }
+            }
+        }
+        91 => {
+            let first = read_metadata_records_reply(
+                reader.get_root::<plugin_capnp::metadata_records_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_records_reply(
+                message.init_root::<plugin_capnp::metadata_records_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_records_reply(
+                    again.get_root::<plugin_capnp::metadata_records_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_records_reply(
+                    message.init_root::<plugin_capnp::metadata_records_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataRecordsReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        92 => {
+            let first = read_metadata_chapter(
+                reader.get_root::<plugin_capnp::metadata_chapter::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_chapter(
+                message.init_root::<plugin_capnp::metadata_chapter::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_chapter(
+                    again.get_root::<plugin_capnp::metadata_chapter::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_chapter(
+                    message.init_root::<plugin_capnp::metadata_chapter::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataChapter value".to_string(),
+                    ));
+                }
+            }
+        }
+        93 => {
+            let first = read_metadata_chapters(
+                reader.get_root::<plugin_capnp::metadata_chapters::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_chapters(
+                message.init_root::<plugin_capnp::metadata_chapters::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_chapters(
+                    again.get_root::<plugin_capnp::metadata_chapters::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_chapters(
+                    message.init_root::<plugin_capnp::metadata_chapters::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataChapters value".to_string(),
+                    ));
+                }
+            }
+        }
+        94 => {
+            let first = read_metadata_chapters_reply(
+                reader.get_root::<plugin_capnp::metadata_chapters_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_metadata_chapters_reply(
+                message.init_root::<plugin_capnp::metadata_chapters_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_metadata_chapters_reply(
+                    again.get_root::<plugin_capnp::metadata_chapters_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_metadata_chapters_reply(
+                    message.init_root::<plugin_capnp::metadata_chapters_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded MetadataChaptersReply value".to_string(),
                     ));
                 }
             }

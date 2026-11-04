@@ -48,7 +48,7 @@ Authors write a Workers-shaped module:
   - plus an optional `describe()` refinement.
 - Every named entrypoint in `entrypoints = [...]` is an exported class
   with the matching name, extending its base: `Storefront`, `Storage`,
-  `RemoteLibrary`, `DatabaseAdapter`, `Cli` or `Oidc`.
+  `RemoteLibrary`, `DatabaseAdapter`, `Cli`, `Oidc` or `Metadata`.
 - Native guests implement the Rust `PluginWorker`
   (`describe` / `open(invocation, bindings) -> Entrypoints`) and call
   `serve`. On native guests, `serve` is the stdin/stdout Cap'n Proto

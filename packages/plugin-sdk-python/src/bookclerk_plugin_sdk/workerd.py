@@ -9,7 +9,7 @@ The default export is a module-level ``Default`` class extending
 :class:`BookclerkEntrypoint` with optional ``event(batch)`` / ``job(job)``
 triggers. Named entrypoints from ``plugin.toml`` ``entrypoints`` are module-level
 classes named after the wire name (``Storefront``, ``Storage``, ``RemoteLibrary``,
-``DatabaseAdapter``, ``Cli``, ``Oidc``) extending the matching ``*Entrypoint``
+``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``) extending the matching ``*Entrypoint``
 base. The launcher's adapter isolate reaches them only through the
 ``bookclerk*`` dispatch methods; authors neither call nor override those.
 
@@ -101,6 +101,7 @@ __all__ = [
     "GuestDatabase",
     "JobController",
     "KvNamespace",
+    "MetadataEntrypoint",
     "NamedEntrypoint",
     "OidcEntrypoint",
     "PluginError",
@@ -1581,6 +1582,31 @@ class OidcEntrypoint(NamedEntrypoint):
     async def authenticateUser(self, _params: abi.AuthenticateUserParams):
         """Verify remote credentials on behalf of the host (``ExternalUser``)."""
         raise _unsupported("authenticateUser")
+
+
+class MetadataEntrypoint(NamedEntrypoint):
+    """``metadata`` entrypoint: bibliographic lookups against a public catalog.
+
+    Records describe editions; the host decides identity.
+    """
+
+    bookclerk_methods = ("health", "lookup", "search", "chapters")
+
+    async def health(self):
+        """Liveness / readiness probe (``HealthOk``)."""
+        return {"ok": True, "detail": ""}
+
+    async def lookup(self, _params: abi.MetadataLookupParams):
+        """Records for the editions the identifiers name (list of ``MetadataRecord``)."""
+        raise _unsupported("lookup")
+
+    async def search(self, _params: abi.MetadataSearchParams):
+        """Records matching a title and author (list of ``MetadataRecord``)."""
+        raise _unsupported("search")
+
+    async def chapters(self, _params: abi.MetadataChaptersParams):
+        """Chapter layout of one edition (``MetadataChapters``)."""
+        raise _unsupported("chapters")
 
 
 # ---------------------------------------------------------------------------

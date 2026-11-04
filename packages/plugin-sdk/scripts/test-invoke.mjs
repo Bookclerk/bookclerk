@@ -36,6 +36,7 @@ const {
   BookclerkEntrypoint,
   CliEntrypoint,
   DatabaseAdapterEntrypoint,
+  MetadataEntrypoint,
   PluginError,
   StorageEntrypoint,
   StorefrontEntrypoint,
@@ -193,6 +194,40 @@ class Cli extends CliEntrypoint {
   }
 }
 
+class Metadata extends MetadataEntrypoint {
+  async lookup(params) {
+    const isbn = params.identifiers.find((id) => id.scheme === "isbn");
+    if (!isbn) return [];
+    return [
+      {
+        title: "Dune",
+        mediaKind: "print",
+        identifiers: [
+          { scheme: "isbn", value: isbn.value },
+          { scheme: "openLibraryWork", value: "OL893415W" },
+        ],
+        credits: [{ name: "Frank Herbert", role: "author" }],
+        seriesEntries: [{ name: "Dune", position: "1" }],
+      },
+    ];
+  }
+  async search(params) {
+    return [{ title: `${params.title} by ${params.author ?? "anyone"}` }];
+  }
+  async chapters(params) {
+    if (params.identifiers[0]?.value !== "B002V1OF70") return { found: false, chapters: [] };
+    return {
+      found: true,
+      accurate: true,
+      brandIntroMs: 2000,
+      chapters: [
+        { title: "Book One", startMs: 0, depth: 0 },
+        { title: "Chapter 1", startMs: 2000, lengthMs: 60000, depth: 1 },
+      ],
+    };
+  }
+}
+
 // --- Granted channel fake -------------------------------------------------
 
 const granted = {
@@ -280,6 +315,7 @@ const env = {
   PLUGIN_STORAGE: new Storage({}, {}),
   PLUGIN_DATABASE_ADAPTER: new DatabaseAdapter({}, {}),
   PLUGIN_CLI: new Cli({}, {}),
+  PLUGIN_METADATA: new Metadata({}, {}),
   GRANTED: granted,
   BRIDGE_TOKEN: "t",
 };
@@ -872,6 +908,78 @@ const jobParams = (commandType) => ({
   );
   assert.equal(schema.kind, "ok");
   assert.equal(schema.value.commands[0].name, "ping");
+}
+
+// --- MetadataProvider -----------------------------------------------------
+
+{
+  const health = decodeReply(
+    await invoke("MetadataProvider", "health", W.MetadataProviderHealthParamsCodec, {}),
+    W.MetadataProviderHealthResultsCodec,
+  );
+  assert.equal(health.kind, "ok");
+  assert.equal(health.value.ok, true);
+
+  const found = decodeReply(
+    await invoke("MetadataProvider", "lookup", W.MetadataProviderLookupParamsCodec, {
+      params: { identifiers: [{ scheme: "isbn", value: "9780441172719" }] },
+    }),
+    W.MetadataProviderLookupResultsCodec,
+  );
+  assert.equal(found.kind, "ok");
+  assert.equal(found.value.records.length, 1);
+  const [record] = found.value.records;
+  assert.equal(record.title, "Dune");
+  assert.equal(record.mediaKind, "print");
+  assert.deepEqual(
+    record.identifiers.map((id) => id.scheme),
+    ["isbn", "openLibraryWork"],
+  );
+  assert.equal(record.credits[0].name, "Frank Herbert");
+  assert.equal(record.seriesEntries[0].position, "1");
+
+  const none = decodeReply(
+    await invoke("MetadataProvider", "lookup", W.MetadataProviderLookupParamsCodec, {
+      params: { identifiers: [{ scheme: "asin", value: "B000000000" }] },
+    }),
+    W.MetadataProviderLookupResultsCodec,
+  );
+  assert.equal(none.kind, "ok");
+  assert.deepEqual(none.value.records, []);
+
+  const searched = decodeReply(
+    await invoke("MetadataProvider", "search", W.MetadataProviderSearchParamsCodec, {
+      params: { title: "Dune", author: "Herbert" },
+    }),
+    W.MetadataProviderSearchResultsCodec,
+  );
+  assert.equal(searched.value.records[0].title, "Dune by Herbert");
+
+  const chapters = decodeReply(
+    await invoke("MetadataProvider", "chapters", W.MetadataProviderChaptersParamsCodec, {
+      params: { identifiers: [{ scheme: "asin", value: "B002V1OF70" }] },
+    }),
+    W.MetadataProviderChaptersResultsCodec,
+  );
+  assert.equal(chapters.kind, "ok");
+  assert.equal(chapters.value.found, true);
+  assert.equal(chapters.value.accurate, true);
+  assert.equal(chapters.value.brandIntroMs, 2000);
+  assert.deepEqual(
+    chapters.value.chapters.map((c) => [c.title, c.depth]),
+    [
+      ["Book One", 0],
+      ["Chapter 1", 1],
+    ],
+  );
+
+  const missing = decodeReply(
+    await invoke("MetadataProvider", "chapters", W.MetadataProviderChaptersParamsCodec, {
+      params: { identifiers: [{ scheme: "asin", value: "B000000000" }] },
+    }),
+    W.MetadataProviderChaptersResultsCodec,
+  );
+  assert.equal(missing.value.found, false);
 }
 
 // --- Transport failures ---------------------------------------------------

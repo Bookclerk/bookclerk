@@ -4526,6 +4526,384 @@ var QueueBatchReplyCodec = {
     }
   }
 };
+var MetadataLookupParamsCodec = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.identifiers ?? [];
+      const items = s.initStructList(0, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        IdentifierCodec.write(items[i], list[i], caps);
+      }
+    }
+    if (v.marketplace !== void 0) {
+      s.setText(1, v.marketplace ?? "");
+    }
+    if (v.limit !== void 0) {
+      s.setUint32(0, v.limit ?? 0);
+    }
+  },
+  read(s, caps) {
+    const out = {
+      identifiers: s.getStructList(0, 1, 2).map((item) => IdentifierCodec.read(item, caps))
+    };
+    const marketplaceValue = s.getText(1);
+    if (!(marketplaceValue === "")) {
+      out.marketplace = marketplaceValue;
+    }
+    const limitValue = s.getUint32(0);
+    if (!(limitValue === 0)) {
+      out.limit = limitValue;
+    }
+    return out;
+  }
+};
+var MetadataSearchParamsCodec = {
+  dataWords: 1,
+  pointerCount: 4,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.title ?? "");
+    if (v.author !== void 0) {
+      s.setText(1, v.author ?? "");
+    }
+    if (v.language !== void 0) {
+      s.setText(2, v.language ?? "");
+    }
+    if (v.marketplace !== void 0) {
+      s.setText(3, v.marketplace ?? "");
+    }
+    if (v.limit !== void 0) {
+      s.setUint32(0, v.limit ?? 0);
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      title: s.getText(0)
+    };
+    const authorValue = s.getText(1);
+    if (!(authorValue === "")) {
+      out.author = authorValue;
+    }
+    const languageValue = s.getText(2);
+    if (!(languageValue === "")) {
+      out.language = languageValue;
+    }
+    const marketplaceValue = s.getText(3);
+    if (!(marketplaceValue === "")) {
+      out.marketplace = marketplaceValue;
+    }
+    const limitValue = s.getUint32(0);
+    if (!(limitValue === 0)) {
+      out.limit = limitValue;
+    }
+    return out;
+  }
+};
+var MetadataChaptersParamsCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.identifiers ?? [];
+      const items = s.initStructList(0, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        IdentifierCodec.write(items[i], list[i], caps);
+      }
+    }
+    if (v.marketplace !== void 0) {
+      s.setText(1, v.marketplace ?? "");
+    }
+  },
+  read(s, caps) {
+    const out = {
+      identifiers: s.getStructList(0, 1, 2).map((item) => IdentifierCodec.read(item, caps))
+    };
+    const marketplaceValue = s.getText(1);
+    if (!(marketplaceValue === "")) {
+      out.marketplace = marketplaceValue;
+    }
+    return out;
+  }
+};
+var MetadataRecordCodec = {
+  dataWords: 4,
+  pointerCount: 12,
+  write(s, v, caps) {
+    s.setText(0, v.title ?? "");
+    if (v.subtitle !== void 0) {
+      s.setText(1, v.subtitle ?? "");
+    }
+    if (v.description !== void 0) {
+      s.setText(2, v.description ?? "");
+    }
+    if (v.coverUrl !== void 0) {
+      s.setText(3, v.coverUrl ?? "");
+    }
+    if (v.url !== void 0) {
+      s.setText(4, v.url ?? "");
+    }
+    if (v.publisher !== void 0) {
+      s.setText(5, v.publisher ?? "");
+    }
+    if (v.lengthMinutes !== void 0) {
+      s.setInt64(0, v.lengthMinutes ?? 0);
+    }
+    if (v.publishedAt !== void 0) {
+      s.setText(6, v.publishedAt ?? "");
+    }
+    if (v.categories !== void 0) {
+      s.setText(7, v.categories ?? "");
+    }
+    if (v.language !== void 0) {
+      s.setText(8, v.language ?? "");
+    }
+    s.setUint16(4, ord(ABRIDGEMENTS, v.abridgement ?? ABRIDGEMENTS[0], "Abridgement"));
+    s.setUint16(5, ord(WORK_KINDS, v.workKind ?? WORK_KINDS[0], "WorkKind"));
+    s.setUint16(6, ord(EXPRESSION_KINDS, v.expressionKind ?? EXPRESSION_KINDS[0], "ExpressionKind"));
+    s.setUint16(7, ord(MEDIA_KINDS, v.mediaKind ?? MEDIA_KINDS[0], "MediaKind"));
+    {
+      const list = v.identifiers ?? [];
+      const items = s.initStructList(9, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        IdentifierCodec.write(items[i], list[i], caps);
+      }
+    }
+    {
+      const list = v.credits ?? [];
+      const items = s.initStructList(10, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        CreditCodec.write(items[i], list[i], caps);
+      }
+    }
+    {
+      const list = v.seriesEntries ?? [];
+      const items = s.initStructList(11, list.length, 0, 3);
+      for (let i = 0; i < items.length; i++) {
+        SeriesEntryCodec.write(items[i], list[i], caps);
+      }
+    }
+    if (v.ratingOverall !== void 0) {
+      s.setFloat64(2, v.ratingOverall ?? 0);
+    }
+    if (v.ratingCount !== void 0) {
+      s.setInt64(3, v.ratingCount ?? 0);
+    }
+  },
+  read(s, caps) {
+    const out = {
+      title: s.getText(0),
+      abridgement: fromOrd(ABRIDGEMENTS, s.getUint16(4), "Abridgement"),
+      workKind: fromOrd(WORK_KINDS, s.getUint16(5), "WorkKind"),
+      expressionKind: fromOrd(EXPRESSION_KINDS, s.getUint16(6), "ExpressionKind"),
+      mediaKind: fromOrd(MEDIA_KINDS, s.getUint16(7), "MediaKind"),
+      identifiers: s.getStructList(9, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
+      credits: s.getStructList(10, 1, 1).map((item) => CreditCodec.read(item, caps)),
+      seriesEntries: s.getStructList(11, 0, 3).map((item) => SeriesEntryCodec.read(item, caps))
+    };
+    const subtitleValue = s.getText(1);
+    if (!(subtitleValue === "")) {
+      out.subtitle = subtitleValue;
+    }
+    const descriptionValue = s.getText(2);
+    if (!(descriptionValue === "")) {
+      out.description = descriptionValue;
+    }
+    const coverUrlValue = s.getText(3);
+    if (!(coverUrlValue === "")) {
+      out.coverUrl = coverUrlValue;
+    }
+    const urlValue = s.getText(4);
+    if (!(urlValue === "")) {
+      out.url = urlValue;
+    }
+    const publisherValue = s.getText(5);
+    if (!(publisherValue === "")) {
+      out.publisher = publisherValue;
+    }
+    const lengthMinutesValue = s.getInt64(0);
+    if (!(lengthMinutesValue === 0n)) {
+      out.lengthMinutes = lengthMinutesValue;
+    }
+    const publishedAtValue = s.getText(6);
+    if (!(publishedAtValue === "")) {
+      out.publishedAt = publishedAtValue;
+    }
+    const categoriesValue = s.getText(7);
+    if (!(categoriesValue === "")) {
+      out.categories = categoriesValue;
+    }
+    const languageValue = s.getText(8);
+    if (!(languageValue === "")) {
+      out.language = languageValue;
+    }
+    const ratingOverallValue = s.getFloat64(2);
+    if (!(ratingOverallValue === 0)) {
+      out.ratingOverall = ratingOverallValue;
+    }
+    const ratingCountValue = s.getInt64(3);
+    if (!(ratingCountValue === 0n)) {
+      out.ratingCount = ratingCountValue;
+    }
+    return out;
+  }
+};
+var MetadataRecordsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.records ?? [];
+      const items = s.initStructList(0, list.length, 4, 12);
+      for (let i = 0; i < items.length; i++) {
+        MetadataRecordCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      records: s.getStructList(0, 4, 12).map((item) => MetadataRecordCodec.read(item, caps))
+    };
+  }
+};
+var MetadataRecordsReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MetadataRecordsCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MetadataRecordsReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MetadataRecordsCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("MetadataRecordsReply", disc);
+    }
+  }
+};
+var MetadataChapterCodec = {
+  dataWords: 3,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.title ?? "");
+    s.setUint64(0, BigInt(v.startMs ?? 0));
+    if (v.lengthMs !== void 0) {
+      s.setUint64(1, BigInt(v.lengthMs ?? 0));
+    }
+    s.setUint32(4, v.depth ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      title: s.getText(0),
+      startMs: Number(s.getUint64(0)),
+      depth: s.getUint32(4)
+    };
+    const lengthMsValue = Number(s.getUint64(1));
+    if (!(lengthMsValue === 0)) {
+      out.lengthMs = lengthMsValue;
+    }
+    return out;
+  }
+};
+var MetadataChaptersCodec = {
+  dataWords: 4,
+  pointerCount: 1,
+  write(s, v, caps) {
+    s.setBool(0, v.found ?? false);
+    {
+      const list = v.chapters ?? [];
+      const items = s.initStructList(0, list.length, 3, 1);
+      for (let i = 0; i < items.length; i++) {
+        MetadataChapterCodec.write(items[i], list[i], caps);
+      }
+    }
+    if (v.brandIntroMs !== void 0) {
+      s.setUint64(1, BigInt(v.brandIntroMs ?? 0));
+    }
+    if (v.brandOutroMs !== void 0) {
+      s.setUint64(2, BigInt(v.brandOutroMs ?? 0));
+    }
+    if (v.runtimeMs !== void 0) {
+      s.setUint64(3, BigInt(v.runtimeMs ?? 0));
+    }
+    s.setBool(1, v.accurate ?? false);
+  },
+  read(s, caps) {
+    const out = {
+      found: s.getBool(0),
+      chapters: s.getStructList(0, 3, 1).map((item) => MetadataChapterCodec.read(item, caps)),
+      accurate: s.getBool(1)
+    };
+    const brandIntroMsValue = Number(s.getUint64(1));
+    if (!(brandIntroMsValue === 0)) {
+      out.brandIntroMs = brandIntroMsValue;
+    }
+    const brandOutroMsValue = Number(s.getUint64(2));
+    if (!(brandOutroMsValue === 0)) {
+      out.brandOutroMs = brandOutroMsValue;
+    }
+    const runtimeMsValue = Number(s.getUint64(3));
+    if (!(runtimeMsValue === 0)) {
+      out.runtimeMs = runtimeMsValue;
+    }
+    return out;
+  }
+};
+var MetadataChaptersReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MetadataChaptersCodec.write(s.initStruct(0, 4, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MetadataChaptersReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MetadataChaptersCodec.read(s.getStruct(0, 4, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("MetadataChaptersReply", disc);
+    }
+  }
+};
 var DbValueCodec = {
   dataWords: 2,
   pointerCount: 1,
@@ -6447,6 +6825,118 @@ var OidcAuthenticateUserResultsCodec = {
     };
   }
 };
+var MetadataProviderHealthParamsCodec = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  }
+};
+var MetadataProviderHealthResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: HealthReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var MetadataProviderLookupParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      MetadataLookupParamsCodec.write(s.initStruct(0, 1, 2), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: MetadataLookupParamsCodec.read(s.getStruct(0, 1, 2), caps)
+    };
+  }
+};
+var MetadataProviderLookupResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MetadataRecordsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MetadataRecordsReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var MetadataProviderSearchParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      MetadataSearchParamsCodec.write(s.initStruct(0, 1, 4), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: MetadataSearchParamsCodec.read(s.getStruct(0, 1, 4), caps)
+    };
+  }
+};
+var MetadataProviderSearchResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MetadataRecordsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MetadataRecordsReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var MetadataProviderChaptersParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      MetadataChaptersParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: MetadataChaptersParamsCodec.read(s.getStruct(0, 0, 2), caps)
+    };
+  }
+};
+var MetadataProviderChaptersResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MetadataChaptersReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MetadataChaptersReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var DatabaseOpenSessionParamsCodec = {
   dataWords: 0,
   pointerCount: 0,
@@ -7123,6 +7613,12 @@ var METHODS = {
   Oidc: {
     clients: withoutParams("oidc", "clients", OidcClientsParamsCodec, OidcClientsResultsCodec, (value) => okValue({ clients: asList(value) })),
     authenticateUser: withParams("oidc", "authenticateUser", OidcAuthenticateUserParamsCodec, OidcAuthenticateUserResultsCodec, okPass)
+  },
+  MetadataProvider: {
+    health: withoutParams("metadata", "health", MetadataProviderHealthParamsCodec, MetadataProviderHealthResultsCodec, okHealth),
+    lookup: withParams("metadata", "lookup", MetadataProviderLookupParamsCodec, MetadataProviderLookupResultsCodec, (value) => okValue({ records: asList(value) })),
+    search: withParams("metadata", "search", MetadataProviderSearchParamsCodec, MetadataProviderSearchResultsCodec, (value) => okValue({ records: asList(value) })),
+    chapters: withParams("metadata", "chapters", MetadataProviderChaptersParamsCodec, MetadataProviderChaptersResultsCodec, okPass)
   },
   Database: {
     openSession: spec({
@@ -8665,13 +9161,52 @@ var OidcEntrypoint = class extends NamedEntrypoint {
     return Promise.reject(unsupported("authenticateUser"));
   }
 };
+var MetadataEntrypoint = class extends NamedEntrypoint {
+  static bookclerkMethods = Object.freeze(["health", "lookup", "search", "chapters"]);
+  /**
+   * Reports whether the provider can answer.
+   *
+   * @returns Health flag plus detail.
+   */
+  health() {
+    return Promise.resolve({ ok: true, detail: "" });
+  }
+  /**
+   * Records for the editions the identifiers name.
+   *
+   * @param _params - Identifiers, marketplace and result cap.
+   * @returns Records in relevance order (`[]` when nothing matched).
+   */
+  lookup(_params) {
+    return Promise.reject(unsupported("lookup"));
+  }
+  /**
+   * Records matching a title and, optionally, an author.
+   *
+   * @param _params - Title, author, language, marketplace and result cap.
+   * @returns Records in relevance order (`[]` when nothing matched).
+   */
+  search(_params) {
+    return Promise.reject(unsupported("search"));
+  }
+  /**
+   * Chapter layout of one edition.
+   *
+   * @param _params - Identifiers of the edition.
+   * @returns The layout, or `{ found: false }` when the provider has none.
+   */
+  chapters(_params) {
+    return Promise.reject(unsupported("chapters"));
+  }
+};
 var ENTRYPOINT_BINDINGS = Object.freeze({
   storefront: "PLUGIN_STOREFRONT",
   storage: "PLUGIN_STORAGE",
   databaseAdapter: "PLUGIN_DATABASE_ADAPTER",
   remoteLibrary: "PLUGIN_REMOTE_LIBRARY",
   cli: "PLUGIN_CLI",
-  oidc: "PLUGIN_OIDC"
+  oidc: "PLUGIN_OIDC",
+  metadata: "PLUGIN_METADATA"
 });
 var ENTRYPOINT_CLASSES = Object.freeze({
   storefront: "Storefront",
@@ -8679,7 +9214,8 @@ var ENTRYPOINT_CLASSES = Object.freeze({
   databaseAdapter: "DatabaseAdapter",
   remoteLibrary: "RemoteLibrary",
   cli: "Cli",
-  oidc: "Oidc"
+  oidc: "Oidc",
+  metadata: "Metadata"
 });
 function exactLengthBody(body, expected) {
   if (body == null || expected == null || !Number.isFinite(expected)) {

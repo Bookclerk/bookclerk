@@ -130,6 +130,10 @@ fn fuzz_corpus_abi_roundtrip_is_identity() {
 const SCAN_SUMMARY_SELECTOR: u8 = 29;
 /// See [`SCAN_SUMMARY_SELECTOR`].
 const CATALOG_HITS_SELECTOR: u8 = 46;
+/// See [`SCAN_SUMMARY_SELECTOR`].
+const METADATA_RECORDS_SELECTOR: u8 = 90;
+/// See [`SCAN_SUMMARY_SELECTOR`].
+const METADATA_CHAPTERS_SELECTOR: u8 = 93;
 
 /// A scan summary with every structured book record filled.
 fn structured_scan_summary() -> bookclerk_plugin_abi::ScanSummary {
@@ -216,6 +220,94 @@ fn structured_catalog_hits() -> bookclerk_plugin_abi::CatalogHits {
     }
 }
 
+/// Metadata provider records for an audiobook edition and its print edition.
+fn structured_metadata_records() -> bookclerk_plugin_abi::MetadataRecords {
+    use bookclerk_plugin_abi::{
+        Abridgement, Credit, CreditLevel, CreditRole, ExpressionKind, Identifier, IdentifierScheme,
+        MediaKind, MetadataRecord, MetadataRecords, SeriesEntry,
+    };
+    MetadataRecords {
+        records: vec![
+            MetadataRecord {
+                title: "Dune".into(),
+                cover_url: Some("https://covers.openlibrary.org/b/id/1-L.jpg".into()),
+                length_minutes: Some(1263),
+                language: Some("en".into()),
+                abridgement: Abridgement::Unabridged,
+                identifiers: vec![Identifier {
+                    scheme: IdentifierScheme::Asin,
+                    value: "B002V1OF70".into(),
+                    marketplace: Some("us".into()),
+                }],
+                credits: vec![
+                    Credit {
+                        name: "Frank Herbert".into(),
+                        role: CreditRole::Author,
+                        level: CreditLevel::RoleDefault,
+                    },
+                    Credit {
+                        name: "Scott Brick".into(),
+                        role: CreditRole::Narrator,
+                        level: CreditLevel::Expression,
+                    },
+                ],
+                series_entries: vec![SeriesEntry {
+                    name: "Dune".into(),
+                    position: Some("1".into()),
+                    store_series_id: None,
+                }],
+                rating_overall: Some(4.5),
+                rating_count: Some(1200),
+                ..MetadataRecord::default()
+            },
+            MetadataRecord {
+                title: "Dune".into(),
+                expression_kind: ExpressionKind::Text,
+                media_kind: MediaKind::Print,
+                identifiers: vec![
+                    Identifier {
+                        scheme: IdentifierScheme::Isbn,
+                        value: "9780441172719".into(),
+                        marketplace: None,
+                    },
+                    Identifier {
+                        scheme: IdentifierScheme::OpenLibraryWork,
+                        value: "OL893415W".into(),
+                        marketplace: None,
+                    },
+                ],
+                ..MetadataRecord::default()
+            },
+        ],
+    }
+}
+
+/// A nested chapter layout with brand intro and outro lengths.
+fn structured_metadata_chapters() -> bookclerk_plugin_abi::MetadataChapters {
+    use bookclerk_plugin_abi::{MetadataChapter, MetadataChapters};
+    MetadataChapters {
+        found: true,
+        chapters: vec![
+            MetadataChapter {
+                title: "Book One".into(),
+                start_ms: 0,
+                length_ms: None,
+                depth: 0,
+            },
+            MetadataChapter {
+                title: "Chapter 1".into(),
+                start_ms: 2_000,
+                length_ms: Some(60_000),
+                depth: 1,
+            },
+        ],
+        brand_intro_ms: Some(2_000),
+        brand_outro_ms: Some(5_000),
+        runtime_ms: Some(75_780_000),
+        accurate: true,
+    }
+}
+
 /// Unpacked single-segment message bytes for one root struct.
 // Test helper: a failed encode is the test failing.
 #[allow(clippy::expect_used)]
@@ -236,7 +328,10 @@ where
 #[allow(clippy::expect_used)]
 #[test]
 fn structured_book_record_seeds_are_current() {
-    use bookclerk_plugin_abi::{plugin_capnp, write_catalog_hits, write_scan_summary};
+    use bookclerk_plugin_abi::{
+        plugin_capnp, write_catalog_hits, write_metadata_chapters, write_metadata_records,
+        write_scan_summary,
+    };
 
     let scan = message_bytes(|m| {
         write_scan_summary(
@@ -251,6 +346,20 @@ fn structured_book_record_seeds_are_current() {
             &structured_catalog_hits(),
         )
         .expect("write catalog hits");
+    });
+    let records = message_bytes(|m| {
+        write_metadata_records(
+            m.init_root::<plugin_capnp::metadata_records::Builder<'_>>(),
+            &structured_metadata_records(),
+        )
+        .expect("write metadata records");
+    });
+    let chapters = message_bytes(|m| {
+        write_metadata_chapters(
+            m.init_root::<plugin_capnp::metadata_chapters::Builder<'_>>(),
+            &structured_metadata_chapters(),
+        )
+        .expect("write metadata chapters");
     });
     let reader = |bytes: &[u8]| {
         capnp::serialize::read_message(
@@ -279,10 +388,40 @@ fn structured_book_record_seeds_are_current() {
         .expect("decode catalog hits"),
         structured_catalog_hits()
     );
+    let records_message = reader(&records);
+    assert_eq!(
+        bookclerk_plugin_abi::read_metadata_records(
+            records_message
+                .get_root::<plugin_capnp::metadata_records::Reader<'_>>()
+                .expect("records root")
+        )
+        .expect("decode metadata records"),
+        structured_metadata_records()
+    );
+    let chapters_message = reader(&chapters);
+    assert_eq!(
+        bookclerk_plugin_abi::read_metadata_chapters(
+            chapters_message
+                .get_root::<plugin_capnp::metadata_chapters::Reader<'_>>()
+                .expect("chapters root")
+        )
+        .expect("decode metadata chapters"),
+        structured_metadata_chapters()
+    );
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus");
     for (name, selector, bytes) in [
         ("structured_scan_summary.bin", SCAN_SUMMARY_SELECTOR, &scan),
         ("structured_catalog_hits.bin", CATALOG_HITS_SELECTOR, &hits),
+        (
+            "structured_metadata_records.bin",
+            METADATA_RECORDS_SELECTOR,
+            &records,
+        ),
+        (
+            "structured_metadata_chapters.bin",
+            METADATA_CHAPTERS_SELECTOR,
+            &chapters,
+        ),
     ] {
         bookclerk_plugin_abi::roundtrip_any_message(selector, bytes)
             .unwrap_or_else(|_| panic!("{name} does not round-trip at selector {selector}"));

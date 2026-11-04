@@ -29,7 +29,7 @@ export type Manifest = {
   args?: string[];
   /**
    * Named entrypoints the guest exports (`storefront`, `storage`,
-   * `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`). Triggers for the
+   * `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`). Triggers for the
    * default entrypoint live under `[triggers]` / `[[events.consumers]]`.
    */
   entrypoints?: string[];
@@ -389,6 +389,7 @@ export const ENTRYPOINT_NAMES = [
   "remoteLibrary",
   "cli",
   "oidc",
+  "metadata",
 ] as const;
 
 const LOGO_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"] as const;

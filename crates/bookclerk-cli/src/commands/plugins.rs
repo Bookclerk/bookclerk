@@ -1356,6 +1356,12 @@ async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<Str
             .await?;
         probed = true;
     }
+    if session.has_entrypoint(Entrypoint::Metadata) {
+        let _ = session
+            .metadata(|provider| async move { provider.health().await })
+            .await?;
+        probed = true;
+    }
     if session.has_entrypoint(Entrypoint::DatabaseAdapter) {
         probe_database(&session, config, &plugin).await?;
         probed = true;

@@ -36,7 +36,7 @@
       "description": "Named capabilities this plugin exports from PluginWorker.open.",
       "items": {
         "type": "string",
-        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc"]
+        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata"]
       }
     },
     "workerd": { "$ref": "#/$defs/WorkerdRuntime" },

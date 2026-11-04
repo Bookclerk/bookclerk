@@ -458,6 +458,9 @@ def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("queueConsumer") is not None:
         if v["queueConsumer"] is not None:
             s.set_cap(8, caps.export_cap(v["queueConsumer"]))
+    if v.get("metadata") is not None:
+        if v["metadata"] is not None:
+            s.set_cap(9, caps.export_cap(v["metadata"]))
 
 
 def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
@@ -490,18 +493,21 @@ def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
     queue_consumer = caps.import_cap(s.get_cap_index(8))
     if not (queue_consumer is None):
         out["queueConsumer"] = queue_consumer
+    metadata = caps.import_cap(s.get_cap_index(9))
+    if not (metadata is None):
+        out["metadata"] = metadata
     return out
 
 
-_entrypoints_codec = _Codec(0, 9, _write_entrypoints, _read_entrypoints)
-"""Wire codec for ``Entrypoints`` (0 data words, 9 pointers)."""
+_entrypoints_codec = _Codec(0, 10, _write_entrypoints, _read_entrypoints)
+"""Wire codec for ``Entrypoints`` (0 data words, 10 pointers)."""
 
 
 def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _entrypoints_codec.write(s.init_struct(0, 0, 9), v["value"], caps)
+        _entrypoints_codec.write(s.init_struct(0, 0, 10), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
@@ -512,7 +518,7 @@ def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_entrypoints_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 9), caps)}
+        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 10), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
     raise ValueError(f"unknown EntrypointsReply union member: {disc}")
@@ -3618,6 +3624,306 @@ _kv_list_reply_codec = _Codec(1, 1, _write_kv_list_reply, _read_kv_list_reply)
 """Wire codec for ``KvListReply`` (1 data words, 1 pointers)."""
 
 
+def _write_metadata_lookup_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["identifiers"]), 1, 2)
+    for item, elem in zip(items, v["identifiers"], strict=True):
+        _identifier_codec.write(item, elem, caps)
+    if v.get("marketplace") is not None:
+        s.set_text(1, v["marketplace"])
+    if v.get("limit") is not None:
+        s.set_u32(0, v["limit"])
+
+
+def _read_metadata_lookup_params(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "identifiers": [_identifier_codec.read(item, caps) for item in s.get_struct_list(0, 1, 2)],
+    }
+    marketplace = s.get_text(1)
+    if not (marketplace == ""):
+        out["marketplace"] = marketplace
+    limit = s.get_u32(0)
+    if not (limit == 0):
+        out["limit"] = limit
+    return out
+
+
+_metadata_lookup_params_codec = _Codec(1, 2, _write_metadata_lookup_params, _read_metadata_lookup_params)
+"""Wire codec for ``MetadataLookupParams`` (1 data words, 2 pointers)."""
+
+
+def _write_metadata_search_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["title"])
+    if v.get("author") is not None:
+        s.set_text(1, v["author"])
+    if v.get("language") is not None:
+        s.set_text(2, v["language"])
+    if v.get("marketplace") is not None:
+        s.set_text(3, v["marketplace"])
+    if v.get("limit") is not None:
+        s.set_u32(0, v["limit"])
+
+
+def _read_metadata_search_params(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "title": s.get_text(0),
+    }
+    author = s.get_text(1)
+    if not (author == ""):
+        out["author"] = author
+    language = s.get_text(2)
+    if not (language == ""):
+        out["language"] = language
+    marketplace = s.get_text(3)
+    if not (marketplace == ""):
+        out["marketplace"] = marketplace
+    limit = s.get_u32(0)
+    if not (limit == 0):
+        out["limit"] = limit
+    return out
+
+
+_metadata_search_params_codec = _Codec(1, 4, _write_metadata_search_params, _read_metadata_search_params)
+"""Wire codec for ``MetadataSearchParams`` (1 data words, 4 pointers)."""
+
+
+def _write_metadata_chapters_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["identifiers"]), 1, 2)
+    for item, elem in zip(items, v["identifiers"], strict=True):
+        _identifier_codec.write(item, elem, caps)
+    if v.get("marketplace") is not None:
+        s.set_text(1, v["marketplace"])
+
+
+def _read_metadata_chapters_params(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "identifiers": [_identifier_codec.read(item, caps) for item in s.get_struct_list(0, 1, 2)],
+    }
+    marketplace = s.get_text(1)
+    if not (marketplace == ""):
+        out["marketplace"] = marketplace
+    return out
+
+
+_metadata_chapters_params_codec = _Codec(0, 2, _write_metadata_chapters_params, _read_metadata_chapters_params)
+"""Wire codec for ``MetadataChaptersParams`` (0 data words, 2 pointers)."""
+
+
+def _write_metadata_record(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["title"])
+    if v.get("subtitle") is not None:
+        s.set_text(1, v["subtitle"])
+    if v.get("description") is not None:
+        s.set_text(2, v["description"])
+    if v.get("coverUrl") is not None:
+        s.set_text(3, v["coverUrl"])
+    if v.get("url") is not None:
+        s.set_text(4, v["url"])
+    if v.get("publisher") is not None:
+        s.set_text(5, v["publisher"])
+    if v.get("lengthMinutes") is not None:
+        s.set_i64(0, v["lengthMinutes"])
+    if v.get("publishedAt") is not None:
+        s.set_text(6, v["publishedAt"])
+    if v.get("categories") is not None:
+        s.set_text(7, v["categories"])
+    if v.get("language") is not None:
+        s.set_text(8, v["language"])
+    s.set_u16(4, _ord(A.ABRIDGEMENTS, v["abridgement"], "Abridgement"))
+    s.set_u16(5, _ord(A.WORK_KINDS, v["workKind"], "WorkKind"))
+    s.set_u16(6, _ord(A.EXPRESSION_KINDS, v["expressionKind"], "ExpressionKind"))
+    s.set_u16(7, _ord(A.MEDIA_KINDS, v["mediaKind"], "MediaKind"))
+    items = s.init_struct_list(9, len(v["identifiers"]), 1, 2)
+    for item, elem in zip(items, v["identifiers"], strict=True):
+        _identifier_codec.write(item, elem, caps)
+    items = s.init_struct_list(10, len(v["credits"]), 1, 1)
+    for item, elem in zip(items, v["credits"], strict=True):
+        _credit_codec.write(item, elem, caps)
+    items = s.init_struct_list(11, len(v["seriesEntries"]), 0, 3)
+    for item, elem in zip(items, v["seriesEntries"], strict=True):
+        _series_entry_codec.write(item, elem, caps)
+    if v.get("ratingOverall") is not None:
+        s.set_f64(2, v["ratingOverall"])
+    if v.get("ratingCount") is not None:
+        s.set_i64(3, v["ratingCount"])
+
+
+def _read_metadata_record(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "title": s.get_text(0),
+        "abridgement": _from_ord(A.ABRIDGEMENTS, s.get_u16(4), "Abridgement"),
+        "workKind": _from_ord(A.WORK_KINDS, s.get_u16(5), "WorkKind"),
+        "expressionKind": _from_ord(A.EXPRESSION_KINDS, s.get_u16(6), "ExpressionKind"),
+        "mediaKind": _from_ord(A.MEDIA_KINDS, s.get_u16(7), "MediaKind"),
+        "identifiers": [_identifier_codec.read(item, caps) for item in s.get_struct_list(9, 1, 2)],
+        "credits": [_credit_codec.read(item, caps) for item in s.get_struct_list(10, 1, 1)],
+        "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(11, 0, 3)],
+    }
+    subtitle = s.get_text(1)
+    if not (subtitle == ""):
+        out["subtitle"] = subtitle
+    description = s.get_text(2)
+    if not (description == ""):
+        out["description"] = description
+    cover_url = s.get_text(3)
+    if not (cover_url == ""):
+        out["coverUrl"] = cover_url
+    url = s.get_text(4)
+    if not (url == ""):
+        out["url"] = url
+    publisher = s.get_text(5)
+    if not (publisher == ""):
+        out["publisher"] = publisher
+    length_minutes = s.get_i64(0)
+    if not (length_minutes == 0):
+        out["lengthMinutes"] = length_minutes
+    published_at = s.get_text(6)
+    if not (published_at == ""):
+        out["publishedAt"] = published_at
+    categories = s.get_text(7)
+    if not (categories == ""):
+        out["categories"] = categories
+    language = s.get_text(8)
+    if not (language == ""):
+        out["language"] = language
+    rating_overall = s.get_f64(2)
+    if not (rating_overall == 0):
+        out["ratingOverall"] = rating_overall
+    rating_count = s.get_i64(3)
+    if not (rating_count == 0):
+        out["ratingCount"] = rating_count
+    return out
+
+
+_metadata_record_codec = _Codec(4, 12, _write_metadata_record, _read_metadata_record)
+"""Wire codec for ``MetadataRecord`` (4 data words, 12 pointers)."""
+
+
+def _write_metadata_records(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["records"]), 4, 12)
+    for item, elem in zip(items, v["records"], strict=True):
+        _metadata_record_codec.write(item, elem, caps)
+
+
+def _read_metadata_records(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "records": [_metadata_record_codec.read(item, caps) for item in s.get_struct_list(0, 4, 12)],
+    }
+
+
+_metadata_records_codec = _Codec(0, 1, _write_metadata_records, _read_metadata_records)
+"""Wire codec for ``MetadataRecords`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_records_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _metadata_records_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown MetadataRecordsReply union member: {kind}")
+
+
+def _read_metadata_records_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _metadata_records_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown MetadataRecordsReply union member: {disc}")
+
+
+_metadata_records_reply_codec = _Codec(1, 1, _write_metadata_records_reply, _read_metadata_records_reply)
+"""Wire codec for ``MetadataRecordsReply`` (1 data words, 1 pointers)."""
+
+
+def _write_metadata_chapter(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["title"])
+    s.set_u64(0, v["startMs"])
+    if v.get("lengthMs") is not None:
+        s.set_u64(1, v["lengthMs"])
+    s.set_u32(4, v["depth"])
+
+
+def _read_metadata_chapter(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "title": s.get_text(0),
+        "startMs": s.get_u64(0),
+        "depth": s.get_u32(4),
+    }
+    length_ms = s.get_u64(1)
+    if not (length_ms == 0):
+        out["lengthMs"] = length_ms
+    return out
+
+
+_metadata_chapter_codec = _Codec(3, 1, _write_metadata_chapter, _read_metadata_chapter)
+"""Wire codec for ``MetadataChapter`` (3 data words, 1 pointers)."""
+
+
+def _write_metadata_chapters(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["found"])
+    items = s.init_struct_list(0, len(v["chapters"]), 3, 1)
+    for item, elem in zip(items, v["chapters"], strict=True):
+        _metadata_chapter_codec.write(item, elem, caps)
+    if v.get("brandIntroMs") is not None:
+        s.set_u64(1, v["brandIntroMs"])
+    if v.get("brandOutroMs") is not None:
+        s.set_u64(2, v["brandOutroMs"])
+    if v.get("runtimeMs") is not None:
+        s.set_u64(3, v["runtimeMs"])
+    s.set_bool(1, v["accurate"])
+
+
+def _read_metadata_chapters(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "found": s.get_bool(0),
+        "chapters": [_metadata_chapter_codec.read(item, caps) for item in s.get_struct_list(0, 3, 1)],
+        "accurate": s.get_bool(1),
+    }
+    brand_intro_ms = s.get_u64(1)
+    if not (brand_intro_ms == 0):
+        out["brandIntroMs"] = brand_intro_ms
+    brand_outro_ms = s.get_u64(2)
+    if not (brand_outro_ms == 0):
+        out["brandOutroMs"] = brand_outro_ms
+    runtime_ms = s.get_u64(3)
+    if not (runtime_ms == 0):
+        out["runtimeMs"] = runtime_ms
+    return out
+
+
+_metadata_chapters_codec = _Codec(4, 1, _write_metadata_chapters, _read_metadata_chapters)
+"""Wire codec for ``MetadataChapters`` (4 data words, 1 pointers)."""
+
+
+def _write_metadata_chapters_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _metadata_chapters_codec.write(s.init_struct(0, 4, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown MetadataChaptersReply union member: {kind}")
+
+
+def _read_metadata_chapters_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _metadata_chapters_codec.read(s.get_struct(0, 4, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown MetadataChaptersReply union member: {disc}")
+
+
+_metadata_chapters_reply_codec = _Codec(1, 1, _write_metadata_chapters_reply, _read_metadata_chapters_reply)
+"""Wire codec for ``MetadataChaptersReply`` (1 data words, 1 pointers)."""
+
+
 def _write_db_value(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "null":
@@ -5801,6 +6107,116 @@ def _read_oidc_authenticate_user_results(s: _StructReader, caps: _CapTable) -> A
 
 _oidc_authenticate_user_results_codec = _Codec(0, 1, _write_oidc_authenticate_user_results, _read_oidc_authenticate_user_results)
 """Wire codec for ``OidcAuthenticateUserResults`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_provider_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    pass
+
+
+def _read_metadata_provider_health_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {}
+
+
+_metadata_provider_health_params_codec = _Codec(0, 0, _write_metadata_provider_health_params, _read_metadata_provider_health_params)
+"""Wire codec for ``MetadataProviderHealthParams`` (0 data words, 0 pointers)."""
+
+
+def _write_metadata_provider_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_metadata_provider_health_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _health_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_metadata_provider_health_results_codec = _Codec(0, 1, _write_metadata_provider_health_results, _read_metadata_provider_health_results)
+"""Wire codec for ``MetadataProviderHealthResults`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_provider_lookup_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _metadata_lookup_params_codec.write(s.init_struct(0, 1, 2), v["params"], caps)
+
+
+def _read_metadata_provider_lookup_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _metadata_lookup_params_codec.read(s.get_struct(0, 1, 2), caps),
+    }
+
+
+_metadata_provider_lookup_params_codec = _Codec(0, 1, _write_metadata_provider_lookup_params, _read_metadata_provider_lookup_params)
+"""Wire codec for ``MetadataProviderLookupParams`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_provider_lookup_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _metadata_records_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_metadata_provider_lookup_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _metadata_records_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_metadata_provider_lookup_results_codec = _Codec(0, 1, _write_metadata_provider_lookup_results, _read_metadata_provider_lookup_results)
+"""Wire codec for ``MetadataProviderLookupResults`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_provider_search_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _metadata_search_params_codec.write(s.init_struct(0, 1, 4), v["params"], caps)
+
+
+def _read_metadata_provider_search_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _metadata_search_params_codec.read(s.get_struct(0, 1, 4), caps),
+    }
+
+
+_metadata_provider_search_params_codec = _Codec(0, 1, _write_metadata_provider_search_params, _read_metadata_provider_search_params)
+"""Wire codec for ``MetadataProviderSearchParams`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_provider_search_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _metadata_records_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_metadata_provider_search_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _metadata_records_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_metadata_provider_search_results_codec = _Codec(0, 1, _write_metadata_provider_search_results, _read_metadata_provider_search_results)
+"""Wire codec for ``MetadataProviderSearchResults`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_provider_chapters_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _metadata_chapters_params_codec.write(s.init_struct(0, 0, 2), v["params"], caps)
+
+
+def _read_metadata_provider_chapters_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _metadata_chapters_params_codec.read(s.get_struct(0, 0, 2), caps),
+    }
+
+
+_metadata_provider_chapters_params_codec = _Codec(0, 1, _write_metadata_provider_chapters_params, _read_metadata_provider_chapters_params)
+"""Wire codec for ``MetadataProviderChaptersParams`` (0 data words, 1 pointers)."""
+
+
+def _write_metadata_provider_chapters_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _metadata_chapters_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_metadata_provider_chapters_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _metadata_chapters_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_metadata_provider_chapters_results_codec = _Codec(0, 1, _write_metadata_provider_chapters_results, _read_metadata_provider_chapters_results)
+"""Wire codec for ``MetadataProviderChaptersResults`` (0 data words, 1 pointers)."""
 
 
 def _write_database_open_session_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

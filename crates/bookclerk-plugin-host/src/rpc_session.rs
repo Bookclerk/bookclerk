@@ -75,6 +75,18 @@ type RemoteLibraryCall = Box<
         + Send,
 >;
 
+/// Type-erased typed metadata call executed on the vat thread against the
+/// opened `metadata` entrypoint (or the open / missing error).
+type MetadataCall = Box<
+    dyn FnOnce(
+            std::result::Result<
+                Box<dyn bookclerk_plugin_sdk::MetadataProvider>,
+                bookclerk_plugin_sdk::PluginError,
+            >,
+        ) -> LocalBoxFuture<'static, ()>
+        + Send,
+>;
+
 /// `!Send` boxed future pinned for the vat's `LocalSet`.
 type LocalBoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 
@@ -162,6 +174,11 @@ enum Work {
     Storefront {
         /// Typed call; replies through the sender it captured.
         call: ContentSourceCall,
+    },
+    /// One typed `metadata` method on the opened primary entrypoints.
+    Metadata {
+        /// Typed call; replies through the sender it captured.
+        call: MetadataCall,
     },
     /// One typed `remoteLibrary` method on the opened primary entrypoints.
     RemoteLibrary {
@@ -1228,6 +1245,39 @@ impl PluginSession {
         });
         self.tx
             .send(Work::Storefront { call: erased })
+            .map_err(|_| PluginError::unavailable("plugin vat thread closed"))?;
+        rx.await
+            .map_err(|_| PluginError::unavailable("plugin vat thread dropped reply"))?
+    }
+
+    /// One typed `metadata` method on the opened primary entrypoints.
+    ///
+    /// `call` runs on the vat thread; its output crosses back to the caller's
+    /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `metadata` or the
+    /// method fails.
+    pub async fn metadata<T, F, Fut>(&self, call: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::MetadataProvider>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        let (reply, rx) = oneshot::channel::<Result<T>>();
+        let erased: MetadataCall = Box::new(move |stub| {
+            Box::pin(async move {
+                let out = match stub {
+                    Ok(stub) => call(stub).await.map_err(map_abi),
+                    Err(err) => Err(map_abi(err)),
+                };
+                let _ = reply.send(out);
+            })
+        });
+        self.tx
+            .send(Work::Metadata { call: erased })
             .map_err(|_| PluginError::unavailable("plugin vat thread closed"))?;
         rx.await
             .map_err(|_| PluginError::unavailable("plugin vat thread dropped reply"))?
@@ -2976,6 +3026,35 @@ fn vat_thread(
                                     .map(|stub| {
                                         Box::new(stub)
                                             as Box<dyn bookclerk_plugin_sdk::ContentSource>
+                                    })
+                                    .map_err(host_err_to_abi);
+                                    call(stub).await;
+                                    Ok(())
+                                },
+                            )
+                            .await;
+                        }
+                        Work::Metadata { call } => {
+                            let _ = with_session(
+                                &session_cancel,
+                                &mut child,
+                                &mut guest,
+                                async {
+                                    let stub = primary_entrypoints(
+                                        &client,
+                                        &account_id,
+                                        &mut primary,
+                                        None,
+                                    )
+                                    .await
+                                    .and_then(|eps| {
+                                        eps.metadata
+                                            .clone()
+                                            .ok_or_else(|| missing_entrypoint("metadata"))
+                                    })
+                                    .map(|stub| {
+                                        Box::new(stub)
+                                            as Box<dyn bookclerk_plugin_sdk::MetadataProvider>
                                     })
                                     .map_err(host_err_to_abi);
                                     call(stub).await;

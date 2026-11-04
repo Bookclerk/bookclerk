@@ -4064,7 +4064,7 @@
       "name": "Entrypoints",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 9,
+      "pointerCount": 10,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -4157,6 +4157,16 @@
             "name": "QueueConsumer"
           },
           "offset": 8
+        },
+        {
+          "name": "metadata",
+          "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "MetadataProvider"
+          },
+          "offset": 9
         }
       ]
     },
@@ -7153,6 +7163,677 @@
             "kind": "text"
           },
           "offset": 1
+        }
+      ]
+    },
+    "MetadataChapter": {
+      "name": "MetadataChapter",
+      "file": "plugin.capnp",
+      "dataWords": 3,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "title",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "startMs",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 0
+        },
+        {
+          "name": "lengthMs",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        },
+        {
+          "name": "depth",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 4
+        }
+      ]
+    },
+    "MetadataChapters": {
+      "name": "MetadataChapters",
+      "file": "plugin.capnp",
+      "dataWords": 4,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "found",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "chapters",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "MetadataChapter"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "brandIntroMs",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        },
+        {
+          "name": "brandOutroMs",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 2
+        },
+        {
+          "name": "runtimeMs",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 3
+        },
+        {
+          "name": "accurate",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "MetadataChaptersParams": {
+      "name": "MetadataChaptersParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "identifiers",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "Identifier"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "marketplace",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "MetadataChaptersReply": {
+      "name": "MetadataChaptersReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataChapters"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataLookupParams": {
+      "name": "MetadataLookupParams",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "identifiers",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "Identifier"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "marketplace",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "limit",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataProvider.chapters$Params": {
+      "name": "MetadataProvider.chapters$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataChaptersParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataProvider.chapters$Results": {
+      "name": "MetadataProvider.chapters$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataChaptersReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataProvider.health$Params": {
+      "name": "MetadataProvider.health$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "MetadataProvider.health$Results": {
+      "name": "MetadataProvider.health$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "HealthReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataProvider.lookup$Params": {
+      "name": "MetadataProvider.lookup$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataLookupParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataProvider.lookup$Results": {
+      "name": "MetadataProvider.lookup$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataRecordsReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataProvider.search$Params": {
+      "name": "MetadataProvider.search$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataSearchParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataProvider.search$Results": {
+      "name": "MetadataProvider.search$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataRecordsReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataRecord": {
+      "name": "MetadataRecord",
+      "file": "plugin.capnp",
+      "dataWords": 4,
+      "pointerCount": 12,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "title",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "subtitle",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "description",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "coverUrl",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        },
+        {
+          "name": "url",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 4
+        },
+        {
+          "name": "publisher",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 5
+        },
+        {
+          "name": "lengthMinutes",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "int64"
+          },
+          "offset": 0
+        },
+        {
+          "name": "publishedAt",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 6
+        },
+        {
+          "name": "categories",
+          "codeOrder": 8,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 7
+        },
+        {
+          "name": "language",
+          "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 8
+        },
+        {
+          "name": "abridgement",
+          "codeOrder": 10,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "Abridgement"
+          },
+          "offset": 4
+        },
+        {
+          "name": "workKind",
+          "codeOrder": 11,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "WorkKind"
+          },
+          "offset": 5
+        },
+        {
+          "name": "expressionKind",
+          "codeOrder": 12,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "ExpressionKind"
+          },
+          "offset": 6
+        },
+        {
+          "name": "mediaKind",
+          "codeOrder": 13,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "MediaKind"
+          },
+          "offset": 7
+        },
+        {
+          "name": "identifiers",
+          "codeOrder": 14,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "Identifier"
+            }
+          },
+          "offset": 9
+        },
+        {
+          "name": "credits",
+          "codeOrder": 15,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "Credit"
+            }
+          },
+          "offset": 10
+        },
+        {
+          "name": "seriesEntries",
+          "codeOrder": 16,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "SeriesEntry"
+            }
+          },
+          "offset": 11
+        },
+        {
+          "name": "ratingOverall",
+          "codeOrder": 17,
+          "discriminantValue": null,
+          "type": {
+            "kind": "float64"
+          },
+          "offset": 2
+        },
+        {
+          "name": "ratingCount",
+          "codeOrder": 18,
+          "discriminantValue": null,
+          "type": {
+            "kind": "int64"
+          },
+          "offset": 3
+        }
+      ]
+    },
+    "MetadataRecords": {
+      "name": "MetadataRecords",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "records",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "MetadataRecord"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataRecordsReply": {
+      "name": "MetadataRecordsReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "MetadataRecords"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MetadataSearchParams": {
+      "name": "MetadataSearchParams",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 4,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "title",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "author",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "language",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "marketplace",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        },
+        {
+          "name": "limit",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
         }
       ]
     },
@@ -11008,7 +11689,8 @@
         "databaseAdapter",
         "remoteLibrary",
         "cli",
-        "oidc"
+        "oidc",
+        "metadata"
       ]
     },
     "ExpressionKind": {
@@ -11523,6 +12205,36 @@
           "ordinal": 3,
           "params": "KvNamespace.list$Params",
           "results": "KvNamespace.list$Results"
+        }
+      ]
+    },
+    "MetadataProvider": {
+      "name": "MetadataProvider",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "health",
+          "ordinal": 0,
+          "params": "MetadataProvider.health$Params",
+          "results": "MetadataProvider.health$Results"
+        },
+        {
+          "name": "lookup",
+          "ordinal": 1,
+          "params": "MetadataProvider.lookup$Params",
+          "results": "MetadataProvider.lookup$Results"
+        },
+        {
+          "name": "search",
+          "ordinal": 2,
+          "params": "MetadataProvider.search$Params",
+          "results": "MetadataProvider.search$Results"
+        },
+        {
+          "name": "chapters",
+          "ordinal": 3,
+          "params": "MetadataProvider.chapters$Params",
+          "results": "MetadataProvider.chapters$Results"
         }
       ]
     },

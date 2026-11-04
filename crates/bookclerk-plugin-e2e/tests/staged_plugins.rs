@@ -189,6 +189,14 @@ async fn staged_first_party_plugins_describe() {
                 .await
                 .ok()
                 .and_then(Result::ok)
+            } else if session.has_entrypoint(Entrypoint::Metadata) {
+                tokio::time::timeout(
+                    STAGED_RPC_TIMEOUT,
+                    session.metadata(|stub| async move { stub.health().await }),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
             } else {
                 None
             };

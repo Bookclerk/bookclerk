@@ -358,6 +358,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   queueConsumer?: QueueConsumer | null;
+  /**
+   * `metadata` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  metadata?: MetadataProvider | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -1159,6 +1164,43 @@ export interface Oidc {
    * @returns {@link ExternalUserReply}
    */
   authenticateUser(params: AuthenticateUserParams): Promise<ExternalUserReply>;
+}
+
+/**
+ * `metadata` entrypoint: bibliographic lookups against a public catalog
+ * (OpenLibrary, Audnexus, ...). A provider describes what it finds as
+ * edition records; the host decides identity and never trusts a record to
+ * name an existing library row. Network access is limited to the domains the
+ * manifest's `[capabilities.network]` declares.
+ */
+export interface MetadataProvider {
+  /**
+   * Liveness / readiness probe.
+   *
+   * @returns {@link HealthReply}
+   */
+  health(): Promise<HealthReply>;
+  /**
+   * Records for the editions the given identifiers name.
+   *
+   * @param params - Identifiers to resolve and a result cap.
+   * @returns {@link MetadataRecordsReply}
+   */
+  lookup(params: MetadataLookupParams): Promise<MetadataRecordsReply>;
+  /**
+   * Records matching a title and, optionally, an author.
+   *
+   * @param params - Title, author, language and a result cap.
+   * @returns {@link MetadataRecordsReply}
+   */
+  search(params: MetadataSearchParams): Promise<MetadataRecordsReply>;
+  /**
+   * Chapter layout of the edition the given identifiers name.
+   *
+   * @param params - Identifiers of one edition.
+   * @returns {@link MetadataChaptersReply}
+   */
+  chapters(params: MetadataChaptersParams): Promise<MetadataChaptersReply>;
 }
 
 /**
@@ -2474,6 +2516,201 @@ export interface KvListOk {
 /** Result union of `KvNamespace.list`. */
 export type KvListReply =
   | { kind: "ok"; value: KvListOk } // Success: one page of keys.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Params of `MetadataProvider.lookup`. */
+export interface MetadataLookupParams {
+  /**
+   * Identifiers naming the wanted edition or work; never empty. A provider
+   * ignores schemes it does not serve.
+   */
+  identifiers: Identifier[];
+  /**
+   * Marketplace to answer for (`us`, `uk`, ...) when the provider is
+   * regional.
+   * Omitted when absent (wire zero value).
+   */
+  marketplace?: string;
+  /**
+   * Most records to return; the provider picks a small default when absent.
+   * Omitted when absent (wire zero value).
+   */
+  limit?: number;
+}
+
+/** Params of `MetadataProvider.search`. */
+export interface MetadataSearchParams {
+  /** Title to match; never empty. */
+  title: string;
+  /**
+   * Author display name to narrow the match when known.
+   * Omitted when absent (wire zero value).
+   */
+  author?: string;
+  /**
+   * Preferred content language code when known.
+   * Omitted when absent (wire zero value).
+   */
+  language?: string;
+  /**
+   * Marketplace to answer for when the provider is regional.
+   * Omitted when absent (wire zero value).
+   */
+  marketplace?: string;
+  /**
+   * Most records to return; the provider picks a small default when absent.
+   * Omitted when absent (wire zero value).
+   */
+  limit?: number;
+}
+
+/** Params of `MetadataProvider.chapters`. */
+export interface MetadataChaptersParams {
+  /** Identifiers of one edition (an ASIN for Audnexus); never empty. */
+  identifiers: Identifier[];
+  /**
+   * Marketplace to answer for when the provider is regional.
+   * Omitted when absent (wire zero value).
+   */
+  marketplace?: string;
+}
+
+/**
+ * One edition as a metadata provider describes it: the same structured
+ * fields as `CatalogHit`, without store pricing.
+ */
+export interface MetadataRecord {
+  /** Primary title. */
+  title: string;
+  /**
+   * Subtitle when distinct from `title`.
+   * Omitted when absent (wire zero value).
+   */
+  subtitle?: string;
+  /**
+   * Long description / blurb when known.
+   * Omitted when absent (wire zero value).
+   */
+  description?: string;
+  /**
+   * Cover image URL.
+   * Omitted when absent (wire zero value).
+   */
+  coverUrl?: string;
+  /**
+   * The provider's page for this record.
+   * Omitted when absent (wire zero value).
+   */
+  url?: string;
+  /**
+   * Publisher name when known.
+   * Omitted when absent (wire zero value).
+   */
+  publisher?: string;
+  /**
+   * Runtime in whole minutes when known.
+   * Omitted when absent (wire zero value).
+   */
+  lengthMinutes?: bigint;
+  /**
+   * Publication date string as the provider prints it.
+   * Omitted when absent (wire zero value).
+   */
+  publishedAt?: string;
+  /**
+   * Category / genre labels as a single string when known.
+   * Omitted when absent (wire zero value).
+   */
+  categories?: string;
+  /**
+   * Content language code when known.
+   * Omitted when absent (wire zero value).
+   */
+  language?: string;
+  /** Whether the edition is abridged when the provider says so. */
+  abridgement: Abridgement;
+  /** Kind of work the record describes. */
+  workKind: WorkKind;
+  /** How the work is realised in this edition. */
+  expressionKind: ExpressionKind;
+  /** Form of this edition. */
+  mediaKind: MediaKind;
+  /** External identifiers (ISBN, ASIN, OpenLibrary ids). */
+  identifiers: Identifier[];
+  /** Credited contributors in billing order. */
+  credits: Credit[];
+  /** Series the work belongs to. */
+  seriesEntries: SeriesEntry[];
+  /**
+   * Aggregate rating when the provider publishes one.
+   * Omitted when absent (wire zero value).
+   */
+  ratingOverall?: number;
+  /**
+   * Number of ratings behind `ratingOverall` when known.
+   * Omitted when absent (wire zero value).
+   */
+  ratingCount?: bigint;
+}
+
+/** Success payload of `MetadataProvider.lookup` / `search`. */
+export interface MetadataRecords {
+  /** Records in the provider's relevance order; empty when nothing matched. */
+  records: MetadataRecord[];
+}
+
+/** Result union of `MetadataProvider.lookup` / `search`. */
+export type MetadataRecordsReply =
+  | { kind: "ok"; value: MetadataRecords } // Success: matching records.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/**
+ * One chapter in a provider's chapter layout. Chapters are listed in
+ * pre-order: a chapter with `depth` n + 1 is nested under the nearest
+ * earlier chapter with `depth` n.
+ */
+export interface MetadataChapter {
+  /** Chapter title. */
+  title: string;
+  /** Start offset in milliseconds from the beginning of the title. */
+  startMs: number;
+  /**
+   * Length in milliseconds when known.
+   * Omitted when absent (wire zero value).
+   */
+  lengthMs?: number;
+  /** Nesting depth; 0 for a top-level chapter. */
+  depth: number;
+}
+
+/** Success payload of `MetadataProvider.chapters`. */
+export interface MetadataChapters {
+  /** False when the provider has no chapter layout for the edition. */
+  found: boolean;
+  /** Chapters in pre-order; empty when not `found`. */
+  chapters: MetadataChapter[];
+  /**
+   * Length of the store's spoken brand intro in milliseconds when known.
+   * Omitted when absent (wire zero value).
+   */
+  brandIntroMs?: number;
+  /**
+   * Length of the store's spoken brand outro in milliseconds when known.
+   * Omitted when absent (wire zero value).
+   */
+  brandOutroMs?: number;
+  /**
+   * Total runtime the layout was measured against, in milliseconds.
+   * Omitted when absent (wire zero value).
+   */
+  runtimeMs?: number;
+  /** Whether the provider marks the offsets as exact rather than estimated. */
+  accurate: boolean;
+}
+
+/** Result union of `MetadataProvider.chapters`. */
+export type MetadataChaptersReply =
+  | { kind: "ok"; value: MetadataChapters } // Success: chapter layout or not-found marker.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /** One typed SQL cell or bind parameter. */

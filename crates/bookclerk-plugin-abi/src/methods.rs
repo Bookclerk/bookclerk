@@ -1,7 +1,8 @@
 //! Role capability method names (camelCase on the wire).
 //!
 //! Each submodule exposes a single [`NAME`](health::NAME) constant equal to
-//! the corresponding `ContentSource` / `RemoteLibrary` / `Oidc` / `Cli` /
+//! the corresponding `ContentSource` / `RemoteLibrary` / `Oidc` /
+//! `MetadataProvider` / `Cli` /
 //! `EventConsumer` / `EventPublisher` / `QueueConsumer` / `QueueProducer` /
 //! `PluginWorker` method in
 //! `schema/plugin.capnp`. Prefer these constants over string literals when
@@ -44,6 +45,9 @@ pub const METHOD_NAMES: &[&str] = &[
     list_accounts::NAME,
     catalog_detail::NAME,
     revoke_account::NAME,
+    lookup::NAME,
+    search::NAME,
+    chapters::NAME,
     put::NAME,
     get::NAME,
     exists::NAME,
@@ -157,6 +161,32 @@ pub mod sync_listening {
 pub mod authenticate_user {
     /// Wire method name `"authenticateUser"`.
     pub const NAME: &str = "authenticateUser";
+}
+
+/// Edition records for a set of identifiers (Cap'n Proto
+/// `MetadataProvider.lookup`).
+///
+/// Params: [`crate::MetadataLookupParams`]. Result: [`crate::MetadataRecords`].
+pub mod lookup {
+    /// Wire method name `"lookup"`.
+    pub const NAME: &str = "lookup";
+}
+
+/// Edition records matching a title and author (Cap'n Proto
+/// `MetadataProvider.search`).
+///
+/// Params: [`crate::MetadataSearchParams`]. Result: [`crate::MetadataRecords`].
+pub mod search {
+    /// Wire method name `"search"`.
+    pub const NAME: &str = "search";
+}
+
+/// Chapter layout of one edition (Cap'n Proto `MetadataProvider.chapters`).
+///
+/// Params: [`crate::MetadataChaptersParams`]. Result: [`crate::MetadataChapters`].
+pub mod chapters {
+    /// Wire method name `"chapters"`.
+    pub const NAME: &str = "chapters";
 }
 
 /// Plugin-provided OIDC client templates (Cap'n Proto `Oidc.clients`).

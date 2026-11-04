@@ -80,7 +80,7 @@ export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];
  *
  * Ordinal-ordered `Entrypoint` wire names (index = Cap'n Proto ordinal).
  */
-export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc"] as const;
+export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata"] as const;
 
 /** Union of `ENTRYPOINTS` wire names. */
 export type Entrypoint = (typeof ENTRYPOINTS)[number];

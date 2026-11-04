@@ -157,6 +157,11 @@ const INTERFACES: &[InterfaceEntry] = &[
         ],
     },
     InterfaceEntry {
+        id: <plugin_capnp::metadata_provider::Client as HasTypeId>::TYPE_ID,
+        name: "MetadataProvider",
+        methods: &["health", "lookup", "search", "chapters"],
+    },
+    InterfaceEntry {
         id: <plugin_capnp::event_consumer::Client as HasTypeId>::TYPE_ID,
         name: "EventConsumer",
         methods: &["event"],
