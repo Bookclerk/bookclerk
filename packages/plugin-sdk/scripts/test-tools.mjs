@@ -305,4 +305,37 @@ try {
   }
 }
 console.log("ok materialize rejects disk-only python even with both flags");
+{
+  const { healthInterfaces, requireHealthy } = await import("../dist/sparse-workerd/smoke.js");
+  const probed = healthInterfaces(["cli", "metadata", "storefront"]);
+  if (JSON.stringify(probed) !== JSON.stringify(["ContentSource", "MetadataProvider"])) {
+    console.error("FAIL smoke probes every health entrypoint", probed);
+    process.exit(1);
+  }
+  if (healthInterfaces(["cli"]).length !== 0) {
+    console.error("FAIL smoke probes no health for a cli-only plugin");
+    process.exit(1);
+  }
+  const ready = { ok: true, detail: "" };
+  if (requireHealthy("MetadataProvider", ready) !== ready) {
+    console.error("FAIL requireHealthy returns a ready reply");
+    process.exit(1);
+  }
+  for (const [reply, expected] of [
+    [{ ok: false, detail: "catalog down" }, "not ready: catalog down"],
+    [{ ok: false, detail: "" }, "not ready: no detail"],
+  ]) {
+    try {
+      requireHealthy("MetadataProvider", reply);
+      console.error("FAIL requireHealthy accepted a not-ready reply");
+      process.exit(1);
+    } catch (err) {
+      if (!String(err && err.message).includes(expected)) {
+        console.error("FAIL requireHealthy message", err);
+        process.exit(1);
+      }
+    }
+  }
+  console.log("ok smoke probes every health entrypoint and fails when not ready");
+}
 console.log("tools conformance passed");

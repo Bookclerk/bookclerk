@@ -4741,6 +4741,11 @@ mod tests {
                 .identifiers
                 .iter()
                 .filter(|id| id.scheme == crate::IdentifierScheme::Isbn)
+                .take(
+                    params
+                        .limit
+                        .map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX)),
+                )
                 .map(|id| MetadataRecord {
                     title: "Dune".into(),
                     media_kind: crate::MediaKind::Print,
@@ -4757,6 +4762,9 @@ mod tests {
         async fn search(&self, params: MetadataSearchParams) -> Result<Vec<MetadataRecord>> {
             Ok(vec![MetadataRecord {
                 title: format!("{} / {}", params.title, params.author.unwrap_or_default()),
+                language: params.language,
+                url: params.marketplace,
+                length_minutes: params.limit,
                 ..MetadataRecord::default()
             }])
         }
@@ -4767,7 +4775,10 @@ mod tests {
                 found: known,
                 chapters: if known {
                     vec![crate::MetadataChapter {
-                        title: "Opening Credits".into(),
+                        title: format!(
+                            "Opening Credits ({})",
+                            params.marketplace.unwrap_or_default()
+                        ),
                         start_ms: 0,
                         length_ms: Some(2_000),
                         depth: 0,
@@ -5759,9 +5770,13 @@ mod tests {
                     value: "9780441172719".into(),
                     marketplace: None,
                 };
+                let other_isbn = Identifier {
+                    value: "9780441013593".into(),
+                    ..isbn.clone()
+                };
                 let records = metadata
                     .lookup(MetadataLookupParams {
-                        identifiers: vec![isbn.clone()],
+                        identifiers: vec![isbn.clone(), other_isbn],
                         limit: Some(1),
                         ..MetadataLookupParams::default()
                     })
@@ -5783,11 +5798,17 @@ mod tests {
                     .search(MetadataSearchParams {
                         title: "Dune".into(),
                         author: Some("Herbert".into()),
-                        ..MetadataSearchParams::default()
+                        language: Some("en".into()),
+                        marketplace: Some("uk".into()),
+                        limit: Some(5),
                     })
                     .await
                     .expect("search");
                 assert_eq!(found[0].title, "Dune / Herbert");
+                // Every optional param crosses the wire: the provider echoes them.
+                assert_eq!(found[0].language.as_deref(), Some("en"));
+                assert_eq!(found[0].url.as_deref(), Some("uk"));
+                assert_eq!(found[0].length_minutes, Some(5));
 
                 let asin = |value: &str| MetadataChaptersParams {
                     identifiers: vec![Identifier {
@@ -5802,7 +5823,7 @@ mod tests {
                     .await
                     .expect("chapters");
                 assert!(chapters.found && chapters.accurate);
-                assert_eq!(chapters.chapters[0].title, "Opening Credits");
+                assert_eq!(chapters.chapters[0].title, "Opening Credits (us)");
                 assert_eq!(chapters.chapters[0].length_ms, Some(2_000));
                 let missing = metadata
                     .chapters(asin("B000000000"))

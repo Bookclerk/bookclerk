@@ -309,6 +309,24 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
                 await getattr(metadata, method)({})
             self.assertEqual(ctx.exception.code, "unsupported")
 
+    async def test_metadata_dispatch_uses_overrides(self) -> None:
+        class Metadata(MetadataEntrypoint):
+            async def lookup(self, params: object) -> list[dict]:
+                return [{"title": "Dune", "params": params}]
+
+            async def chapters(self, _params: object) -> dict:
+                return {"found": False, "chapters": [], "accurate": False}
+
+        metadata = Metadata()
+        records = await metadata.bookclerkInvoke({}, "lookup", {"limit": 1})
+        self.assertEqual(records, [{"title": "Dune", "params": {"limit": 1}}])
+        chapters = await metadata.bookclerkInvoke({}, "chapters", {})
+        self.assertFalse(chapters["found"])
+        self.assertEqual((await metadata.bookclerkInvoke({}, "health"))["ok"], True)
+        with self.assertRaises(PluginError) as ctx:
+            await metadata.bookclerkInvoke({}, "search", {"title": "Dune"})
+        self.assertEqual(ctx.exception.code, "unsupported")
+
     async def test_open_session_unsupported_by_default(self) -> None:
         with self.assertRaises(PluginError) as ctx:
             await DatabaseAdapterEntrypoint().bookclerkInvoke({}, "openSession")

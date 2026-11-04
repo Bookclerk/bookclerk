@@ -1653,19 +1653,19 @@ class MetadataEntrypoint(NamedEntrypoint):
 
     bookclerk_methods = ("health", "lookup", "search", "chapters")
 
-    async def health(self):
+    async def health(self) -> abi.HealthOk:
         """Liveness / readiness probe (``HealthOk``)."""
         return {"ok": True, "detail": ""}
 
-    async def lookup(self, _params: abi.MetadataLookupParams):
+    async def lookup(self, _params: abi.MetadataLookupParams) -> list[abi.MetadataRecord]:
         """Records for the editions the identifiers name (list of ``MetadataRecord``)."""
         raise _unsupported("lookup")
 
-    async def search(self, _params: abi.MetadataSearchParams):
+    async def search(self, _params: abi.MetadataSearchParams) -> list[abi.MetadataRecord]:
         """Records matching a title and author (list of ``MetadataRecord``)."""
         raise _unsupported("search")
 
-    async def chapters(self, _params: abi.MetadataChaptersParams):
+    async def chapters(self, _params: abi.MetadataChaptersParams) -> abi.MetadataChapters:
         """Chapter layout of one edition (``MetadataChapters``)."""
         raise _unsupported("chapters")
 

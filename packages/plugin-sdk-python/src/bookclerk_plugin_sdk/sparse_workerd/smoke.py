@@ -67,22 +67,38 @@ _HEALTH_INTERFACES: tuple[tuple[str, str], ...] = (
 )
 
 
-def _health_iface(entrypoints: list[Any]) -> str | None:
-    """Interface to probe for ``health``, from a manifest's entrypoints.
+def _health_ifaces(entrypoints: list[Any]) -> list[str]:
+    """Interfaces to probe for ``health``, from a manifest's entrypoints.
 
     Args:
         entrypoints: The manifest's ``entrypoints`` list.
 
     Returns:
-        The first interface in ``_HEALTH_INTERFACES`` order whose entrypoint
-        the plugin exports, or ``None`` when none has a health probe (the
-        default entrypoint's event / job triggers have none).
+        Every interface in ``_HEALTH_INTERFACES`` order whose entrypoint the
+        plugin exports; empty when none has a health probe (the default
+        entrypoint's event / job triggers have none).
     """
     names = {str(e) for e in entrypoints}
-    for entrypoint, iface in _HEALTH_INTERFACES:
-        if entrypoint in names:
-            return iface
-    return None
+    return [iface for entrypoint, iface in _HEALTH_INTERFACES if entrypoint in names]
+
+
+def _require_healthy(iface: str, health: Any) -> Any:
+    """Return a ``HealthOk`` reply, or raise when it reports not ready.
+
+    Args:
+        iface: Interface the reply came from, for the error message.
+        health: The decoded ``HealthOk`` dict.
+
+    Returns:
+        ``health`` unchanged when its ``ok`` is true.
+
+    Raises:
+        RuntimeError: When ``ok`` is false, with the guest's detail.
+    """
+    if not (health or {}).get("ok"):
+        detail = (health or {}).get("detail") or "no detail"
+        raise RuntimeError(f"{iface}.health reported not ready: {detail}")
+    return health
 
 
 def _health_codecs(iface: str) -> tuple[Any, Any]:
@@ -266,8 +282,10 @@ def run_smoke(plugin_dir: Path) -> str:
         # `health` is a method of the storefront, remoteLibrary and metadata
         # entrypoints; the default entrypoint (event/job triggers) has no
         # health probe.
-        health_iface = _health_iface(manifest.get("entrypoints") or [])
-        health = _invoke_health(base, health_iface, bridge_token) if health_iface else None
+        health = {
+            iface: _require_healthy(iface, _invoke_health(base, iface, bridge_token))
+            for iface in _health_ifaces(manifest.get("entrypoints") or [])
+        }
         detail = {
             "plugin": manifest["id"],
             "listen": listen_addr,

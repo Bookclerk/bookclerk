@@ -241,6 +241,24 @@ fn health_result(ok: bookclerk_plugin_sdk::HealthOk) -> Result<()> {
     }
 }
 
+/// Folds the health reports of every probed entrypoint into one status.
+///
+/// No reports (an event, job, OIDC, or CLI-only integration) is healthy.
+///
+/// # Returns
+///
+/// `ok` when every report is ok, and the non-empty details joined with
+/// `; ` (`None` when there are none).
+fn combine_health(reports: Vec<bookclerk_plugin_sdk::HealthOk>) -> (bool, Option<String>) {
+    let ok = reports.iter().all(|report| report.ok);
+    let details: Vec<String> = reports
+        .into_iter()
+        .map(|report| report.detail)
+        .filter(|detail| !detail.is_empty())
+        .collect();
+    (ok, (!details.is_empty()).then(|| details.join("; ")))
+}
+
 #[async_trait]
 impl Integration for ExternalIntegration {
     fn id(&self) -> &str {
@@ -416,29 +434,29 @@ impl Integration for ExternalIntegration {
     }
 
     async fn health(&self) -> bookclerk_integrations::Result<IntegrationHealth> {
-        if !self
+        let mut reports = Vec::new();
+        if self
             .session
             .has_entrypoint(crate::Entrypoint::RemoteLibrary)
         {
-            return Ok(IntegrationHealth {
-                id: self.id().to_string(),
-                enabled: self.enabled,
-                ok: true,
-                detail: None,
-            });
+            reports.push(
+                self.int_call(|stub| async move { stub.health().await })
+                    .await?,
+            );
         }
-        let dto = self
-            .int_call(|stub| async move { stub.health().await })
-            .await?;
+        if self.session.has_entrypoint(crate::Entrypoint::Metadata) {
+            reports.push(
+                self.session
+                    .metadata(|provider| async move { provider.health().await })
+                    .await?,
+            );
+        }
+        let (ok, detail) = combine_health(reports);
         Ok(IntegrationHealth {
             id: self.id().to_string(),
             enabled: self.enabled,
-            ok: dto.ok,
-            detail: if dto.detail.is_empty() {
-                None
-            } else {
-                Some(dto.detail)
-            },
+            ok,
+            detail,
         })
     }
 
@@ -616,6 +634,23 @@ mod tests {
     use super::*;
     use bookclerk_plugin_catalog::{PluginKey, PluginProvenance};
     use bookclerk_plugin_manifest::PluginManifest;
+
+    #[test]
+    fn combine_health_requires_every_report_ok() {
+        let health = |ok: bool, detail: &str| bookclerk_plugin_sdk::HealthOk {
+            ok,
+            detail: detail.to_string(),
+        };
+        assert_eq!(combine_health(Vec::new()), (true, None));
+        assert_eq!(combine_health(vec![health(true, "")]), (true, None));
+        assert_eq!(
+            combine_health(vec![
+                health(true, "library ok"),
+                health(false, "catalog down")
+            ]),
+            (false, Some("library ok; catalog down".to_string()))
+        );
+    }
 
     #[test]
     fn health_result_maps_not_ok_to_the_guest_detail() {
