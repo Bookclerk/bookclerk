@@ -604,10 +604,6 @@ must stay inside the tree, or the build fails.
 last changed, in UTC to the second (`YYYY-MM-DDTHH:MM:SSZ`). The website
 shows it as "Last updated", in the reader's own time zone.
 
-- Files and entries published before instants were written hold a date
-  alone (`YYYY-MM-DD`, UTC). The site and the next publish still read them,
-  and the site shows such a date as it is.
-
 - It is the author date of the newest commit that changed the page's
   content. A pure move (a rename git sees as unchanged) is followed back to
   the old path rather than counted. Author dates survive history rewrites
@@ -619,6 +615,9 @@ shows it as "Last updated", in the reader's own time zone.
   pages, since only it can compare them with the docs repository. A page
   whose content is unchanged there keeps its previous date, and a new or
   changed one gets the publish time.
+- Files and entries published before instants were written hold a date
+  alone (`YYYY-MM-DD`, UTC). The site and the next publish still read them,
+  and the site shows such a date as it is.
 
 ### Jobs and safety
 

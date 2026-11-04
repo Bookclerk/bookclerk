@@ -512,6 +512,7 @@ test("page dates may carry a UTC time to the second, shown in UTC until site.js 
   assert.equal(utcDate(day), "2026-10-26");
   assert.equal(formatDate(instant), "Oct 26, 2026");
   assert.equal(formatUtcTime(instant), "Oct 26, 2026, 23:30 UTC");
+  assert.equal(formatUtcTime(day), null);
   assert.equal(
     timeHtml(instant),
     '<time datetime="2026-10-26T23:30:05Z" data-local-date title="Oct 26, 2026, 23:30 UTC">Oct 26, 2026</time>',

@@ -214,10 +214,12 @@ export function formatDate(date: PageDate): string {
  * Writes a page date's full UTC time for the date's tooltip, which readers
  * without JavaScript see: `Oct 26, 2026, 14:05 UTC`.
  *
- * @param date - The date, which must carry a time (see hasTime).
- * @returns The text, made only of letters, digits, spaces, `,` and `:`.
+ * @param date - The date.
+ * @returns The text, made only of letters, digits, spaces, `,` and `:`, or
+ *   null for a date alone, which names no time.
  */
-export function formatUtcTime(date: PageDate): string {
+export function formatUtcTime(date: PageDate): string | null {
+  if (!hasTime(date)) return null;
   return `${formatDate(date)}, ${date.slice(ISO_DATE_LENGTH + 1, ISO_DATE_LENGTH + 6)} UTC`;
 }
 

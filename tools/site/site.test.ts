@@ -233,9 +233,9 @@ function localize(times: FakeTime[], timeZone: string, intl?: unknown): void {
 test("page dates show the reader's own date and time", () => {
   // 23:30 UTC on Oct 26 is already Oct 27 in Tokyo, still Oct 26 in Los Angeles.
   for (const [zone, date, full] of [
-    ["Asia/Tokyo", "Oct 27, 2026", /^Oct 27, 2026, 8:30\sAM$/],
-    ["America/Los_Angeles", "Oct 26, 2026", /^Oct 26, 2026, 4:30\sPM$/],
-    ["UTC", "Oct 26, 2026", /^Oct 26, 2026, 11:30\sPM$/],
+    ["Asia/Tokyo", "Oct 27, 2026", /^Oct 27, 2026, 8:30\sAM GMT\+9$/],
+    ["America/Los_Angeles", "Oct 26, 2026", /^Oct 26, 2026, 4:30\sPM PDT$/],
+    ["UTC", "Oct 26, 2026", /^Oct 26, 2026, 11:30\sPM UTC$/],
   ] as const) {
     const time = fakeTime("2026-10-26T23:30:05Z", "Oct 26, 2026");
     localize([time], zone);

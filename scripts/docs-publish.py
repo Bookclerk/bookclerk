@@ -635,8 +635,10 @@ def date_generated_pages(
 
     Raises:
         PublishError: The built ``last-updated.json`` is not the document
-            ``docs-markdown.py`` writes.
+            ``docs-markdown.py`` writes, or ``published`` is not a page date.
     """
+    if len(published) != len("YYYY-MM-DDTHH:MM:SSZ") or not is_date(published):
+        raise PublishError(f"publish time {published!r} is not YYYY-MM-DDTHH:MM:SSZ")
     built = next((f for f in files if f.path == LAST_UPDATED_FILE), None)
     if built is None:
         return files

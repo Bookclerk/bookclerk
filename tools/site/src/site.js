@@ -62,7 +62,7 @@
 // UTC, so pages read the same without JavaScript. A <time data-local-date>
 // carries the instant it names (`YYYY-MM-DDTHH:MM:SSZ`); this rewrites its
 // text to the date in the browser's time zone, in the page's language, and
-// its tooltip to the full local time. Nothing is stored or sent: the time
+// its tooltip to the full local time with its zone. Nothing is stored or sent: the time
 // zone is only read by Intl, here.
 (() => {
   "use strict";
@@ -80,7 +80,16 @@
   let full;
   try {
     day = new Intl.DateTimeFormat(locale, { dateStyle: "medium" });
-    full = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" });
+    // The tooltip names the zone (`GMT+9`, `PST`), since the page's other
+    // copies of the date (Markdown, sitemaps) are in UTC.
+    full = new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    });
   } catch {
     // A browser without dateStyle keeps the UTC date.
     return;

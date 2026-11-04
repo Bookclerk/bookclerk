@@ -30,7 +30,7 @@ import {
 import type { ApiRouteGroup, HttpMethod } from "./api-reference.ts";
 import { diagram, drawable, PAGE_DIAGRAM_COUNT_MAX, PAGE_DIAGRAM_MAX } from "./diagram.ts";
 import { highlight } from "./highlight.ts";
-import { formatDate, formatUtcTime, hasTime } from "./last-updated.ts";
+import { formatDate, formatUtcTime } from "./last-updated.ts";
 import type { PageDate } from "./last-updated.ts";
 
 /** One sidebar group: its heading and the docs it lists, by key. */
@@ -1354,7 +1354,8 @@ function icon(paths: string): string {
  *   spaces and `,:-TZ` only, so nothing needs escaping.
  */
 export function timeHtml(date: PageDate): string {
-  const local = hasTime(date) ? ` data-local-date title="${formatUtcTime(date)}"` : "";
+  const utc = formatUtcTime(date);
+  const local = utc === null ? "" : ` data-local-date title="${utc}"`;
   return `<time datetime="${date}"${local}>${formatDate(date)}</time>`;
 }
 

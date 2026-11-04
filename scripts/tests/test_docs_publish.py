@@ -377,12 +377,12 @@ class PublishTest(unittest.TestCase):
     def test_generated_pages_keep_their_date_until_they_change(self) -> None:
         built = json.dumps({"version": 1, "pages": {"README": "2026-10-20"}}, indent=1) + "\n"
         tree = {"README.md": "# Docs\n", "api/README.md": "# API\n", "api/rust/a.md": "A\n", dp.LAST_UPDATED_FILE: built}
-        dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_A, published="2026-10-27")
-        self.assertEqual(self.dates(), {"README": "2026-10-20", "api/README": "2026-10-27", "api/rust/a": "2026-10-27"})
+        dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_A, published="2026-10-27T09:00:00Z")
+        self.assertEqual(self.dates(), {"README": "2026-10-20", "api/README": "2026-10-27T09:00:00Z", "api/rust/a": "2026-10-27T09:00:00Z"})
 
         # Rebuilt identically a day later: no new commit, dates kept.
         head = self.gh.refs["heads/main"]
-        summary = dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_B, published="2026-10-28")
+        summary = dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_B, published="2026-10-28T09:00:00Z")
         self.assertIn("no changes", summary)
         self.assertEqual(self.gh.refs["heads/main"], head)
 
@@ -390,12 +390,11 @@ class PublishTest(unittest.TestCase):
         tree["api/rust/a.md"] = "A, changed\n"
         tree["api/rust/b.md"] = "B\n"
         dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_C, published="2026-10-29T08:30:05Z")
-        # Dates-only entries from earlier publishes are kept as they are.
         self.assertEqual(
             self.dates(),
             {
                 "README": "2026-10-20",
-                "api/README": "2026-10-27",
+                "api/README": "2026-10-27T09:00:00Z",
                 "api/rust/a": "2026-10-29T08:30:05Z",
                 "api/rust/b": "2026-10-29T08:30:05Z",
             },
@@ -403,19 +402,25 @@ class PublishTest(unittest.TestCase):
 
     def test_a_release_beside_main_dates_its_generated_pages_too(self) -> None:
         built = json.dumps({"version": 1, "pages": {}}, indent=1) + "\n"
-        dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built}), SRC, SHA_A, published="2026-10-27")
+        dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built}), SRC, SHA_A, published="2026-10-27T09:00:00Z")
         files = self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built})
-        dp.publish_release(self.repo, "main", files, SRC, SHA_B, "v1.0.0", published="2026-11-01")
-        self.assertEqual(self.dates("tags/v1.0.0"), {"api/x": "2026-10-27"})
+        dp.publish_release(self.repo, "main", files, SRC, SHA_B, "v1.0.0", published="2026-11-01T09:00:00Z")
+        self.assertEqual(self.dates("tags/v1.0.0"), {"api/x": "2026-10-27T09:00:00Z"})
 
     def test_a_tree_without_dates_is_published_without_them(self) -> None:
-        dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n"}), SRC, SHA_A, published="2026-10-27")
+        dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n"}), SRC, SHA_A, published="2026-10-27T09:00:00Z")
         self.assertNotIn(dp.LAST_UPDATED_FILE, self.gh.files("heads/main"))
+
+    def test_a_malformed_publish_time_is_refused(self) -> None:
+        built = json.dumps({"version": 1, "pages": {}}, indent=1) + "\n"
+        for bad in ("2026-10-27", "2026-10-27 09:00", "now", "2026-10-27T09:00:00+00:00"):
+            with self.subTest(bad=bad), self.assertRaises(dp.PublishError):
+                dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built}), SRC, SHA_A, published=bad)
 
     def test_a_malformed_built_dates_file_is_refused(self) -> None:
         for bad in ("{", "[]", '{"version": 2, "pages": {}}', '{"version": 1, "pages": []}'):
             with self.subTest(bad=bad), self.assertRaises(dp.PublishError):
-                dp.publish_main(self.repo, "main", self.write({dp.LAST_UPDATED_FILE: bad}), SRC, SHA_A, published="2026-10-27")
+                dp.publish_main(self.repo, "main", self.write({dp.LAST_UPDATED_FILE: bad}), SRC, SHA_A, published="2026-10-27T09:00:00Z")
 
     def test_chunks_split_large_trees(self) -> None:
         entries = [{"path": f"f{i}.md", "content": "x" * 50} for i in range(10)]
