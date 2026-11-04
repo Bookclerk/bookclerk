@@ -101,6 +101,48 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
   }
 }
 
+// Shared logo and compatibility-date cases: the Rust and Python checkers
+// read the same files and must agree on every result and error message.
+{
+  const { validateLogo, validateAuthorCompatibilityDate } =
+    await import("../dist/tools/validate.js");
+  const logoCases = JSON.parse(fs.readFileSync(path.join(fixtures, "logo-cases.json"), "utf8"));
+  for (const c of logoCases) {
+    let got;
+    try {
+      const v = validateLogo(c.input);
+      got = { [v.kind]: v.value };
+    } catch (err) {
+      got = { error: err.message };
+    }
+    const { input, ...want } = c;
+    if (JSON.stringify(got) !== JSON.stringify(want)) {
+      console.error(`FAIL logo ${JSON.stringify(input)}: got ${JSON.stringify(got)}`);
+      process.exit(1);
+    }
+  }
+  console.log(`ok ${logoCases.length} shared logo cases`);
+  const dates = JSON.parse(fs.readFileSync(path.join(fixtures, "compat-date-cases.json"), "utf8"));
+  for (const [list, ok] of [
+    [dates.valid, true],
+    [dates.invalid, false],
+  ]) {
+    for (const d of list) {
+      let accepted = true;
+      try {
+        validateAuthorCompatibilityDate(d);
+      } catch {
+        accepted = false;
+      }
+      if (accepted !== ok) {
+        console.error(`FAIL compatibility_date ${JSON.stringify(d)}: accepted=${accepted}`);
+        process.exit(1);
+      }
+    }
+  }
+  console.log("ok shared compatibility dates");
+}
+
 const { parse } = await import("smol-toml");
 const { materializeConfig } = await import("../dist/sparse-workerd/config.js");
 const conflictDir = path.join(fixtures, "invalid-module-path");

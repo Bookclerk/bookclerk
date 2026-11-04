@@ -490,13 +490,11 @@ def _validate_parsed_url(parsed: Any, original: str) -> tuple[str, str]:
         raise ValueError(
             f"plugin.toml: `logo` URL must use http:// or https:// (got scheme `{scheme}`)"
         )
-    # Match Rust `url::Url`: reject non-empty username, or any userinfo
-    # password field (including empty). Empty username alone (`https://@host`)
-    # is allowed. Use netloc rather than ParseResult's credential attribute.
-    username = parsed.username or ""
-    userinfo = parsed.netloc.rsplit("@", 1)[0] if "@" in parsed.netloc else ""
-    if username or ":" in userinfo:
-        raise ValueError("plugin.toml: `logo` URL must not include userinfo (userinfo@host)")
+    # Match Rust `url::Url` and the WHATWG URL parser: reject a non-empty
+    # username or password. Empty userinfo (`https://@host`, `https://:@host`)
+    # is allowed, as both parsers drop it.
+    if parsed.username or parsed.password:
+        raise ValueError("plugin.toml: `logo` URL must not include userinfo (user:pass@host)")
     host = (parsed.hostname or "").strip()
     if not host or host in {".", ".."}:
         raise ValueError("plugin.toml: `logo` URL is missing a host")
