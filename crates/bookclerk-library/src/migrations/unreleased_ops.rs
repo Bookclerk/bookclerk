@@ -1225,4 +1225,18 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_branch_titles_node ON branch_titles(node_id, state)",
     ),
+    // Last claimed fire per plugin cron schedule (`control_plane::cron_fires`).
+    // `claim` is the token of the batch that last moved the cursor; the job
+    // insert in that batch selects only while the token is still there.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS plugin_cron_cursors (
+        plugin_instance_id TEXT NOT NULL,
+        cron TEXT NOT NULL,
+        last_fire_ms INTEGER NOT NULL,
+        claim TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_instance_id, cron),
+        FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id)
+    )",
+    ),
 ];
