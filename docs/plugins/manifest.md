@@ -237,6 +237,12 @@ crons = ["*/30 * * * *", "0 3 * * MON-FRI"]    # scheduled(controller), UTC
   deployments. Put the schedule in a separate integration plugin.
 - Each schedule is part of the consent request, as a `cron:<schedule>`
   token.
+- `jobs` beside a `storefront`, `storage` or `databaseAdapter` entrypoint
+  don't make the plugin an integration: the plugin stays in that
+  entrypoint's handler family, and its jobs run on that session. The
+  host's one job type today, `stream_copy`, runs this way on a storage
+  plugin's destination. A plugin without one of those entrypoints that
+  declares `jobs` is an integration.
 
 ## Logo
 

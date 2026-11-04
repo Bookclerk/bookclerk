@@ -24,6 +24,17 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 7] = [
     Entrypoint::Metadata,
 ];
 
+/// Entrypoints the host loads into their own registry (sources,
+/// destinations, database adapters) rather than the integration registry.
+///
+/// Crons are rejected beside these, and job triggers beside them stay on
+/// that registry's session instead of making the plugin an integration.
+pub const REGISTRY_ENTRYPOINTS: [Entrypoint; 3] = [
+    Entrypoint::Storefront,
+    Entrypoint::Storage,
+    Entrypoint::DatabaseAdapter,
+];
+
 /// Handler family an [`Entrypoint`] belongs to.
 ///
 /// # Returns
@@ -1172,6 +1183,14 @@ impl PluginManifest {
         !self.triggers.crons.is_empty()
     }
 
+    /// True when the plugin declares one of the [`REGISTRY_ENTRYPOINTS`].
+    #[must_use]
+    pub fn has_registry_entrypoint(&self) -> bool {
+        REGISTRY_ENTRYPOINTS
+            .into_iter()
+            .any(|entrypoint| self.has_entrypoint(entrypoint))
+    }
+
     /// True when the plugin declares any publishable event type.
     #[must_use]
     pub fn produces_events(&self) -> bool {
@@ -1218,8 +1237,15 @@ impl PluginManifest {
     ///
     /// A plugin joins the `Source` / `Output` / `Database` families through
     /// the matching named entrypoint and the `Integration` family through
-    /// event consumers, queue consumers, job triggers, `RemoteLibrary`,
-    /// `Cli`, `Oidc`, or `Metadata`.
+    /// event consumers, queue consumers, crons, `RemoteLibrary`, `Cli`,
+    /// `Oidc`, or `Metadata`.
+    ///
+    /// Job triggers make a plugin an integration only when it has no
+    /// `storefront`, `storage` or `databaseAdapter` entrypoint. Beside one of
+    /// those, jobs run on that entrypoint's session (the host's `stream_copy`
+    /// job runs on the storage guest's destination session), so the plugin
+    /// stays in that one family and a deployment registers it there instead
+    /// of as an integration.
     ///
     /// # Returns
     ///
@@ -1235,15 +1261,12 @@ impl PluginManifest {
                 PluginFamily::Integration => {
                     self.consumes_events()
                         || self.consumes_queues()
-                        || self.runs_jobs()
+                        || (self.runs_jobs() && !self.has_registry_entrypoint())
                         || self.runs_crons()
                         || self.has_entrypoint(Entrypoint::RemoteLibrary)
                         || self.has_entrypoint(Entrypoint::Oidc)
                         || self.has_entrypoint(Entrypoint::Metadata)
-                        || (self.has_entrypoint(Entrypoint::Cli)
-                            && !self.has_entrypoint(Entrypoint::Storefront)
-                            && !self.has_entrypoint(Entrypoint::Storage)
-                            && !self.has_entrypoint(Entrypoint::DatabaseAdapter))
+                        || (self.has_entrypoint(Entrypoint::Cli) && !self.has_registry_entrypoint())
                 }
             };
             if member {
@@ -1700,11 +1723,7 @@ impl PluginManifest {
         // spawns a storefront, storage or database adapter in its own
         // registry instead, so a schedule there would never fire.
         if self.runs_crons() {
-            for entrypoint in [
-                Entrypoint::Storefront,
-                Entrypoint::Storage,
-                Entrypoint::DatabaseAdapter,
-            ] {
+            for entrypoint in REGISTRY_ENTRYPOINTS {
                 if self.has_entrypoint(entrypoint) {
                     return Err(Error::message(format!(
                         "plugin.toml: `[triggers].crons` cannot be combined with the `{}` \
@@ -2114,6 +2133,64 @@ mode = "deny"
         let too_many =
             with_triggers(&format!("crons = [{}]", many.join(", "))).expect_err("too many");
         assert!(too_many.to_string().contains("at most"), "{too_many}");
+    }
+
+    #[test]
+    fn job_triggers_keep_a_registry_plugin_in_its_own_family() {
+        let manifest = |entrypoints: &str| {
+            PluginManifest::parse(&format!(
+                "api_version = 3\nid = \"echo\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
+                 entrypoints = [{entrypoints}]\n[triggers]\njobs = [\"stream_copy\"]\n\
+                 [capabilities.network]\nmode = \"deny\"\n"
+            ))
+            .expect(entrypoints)
+        };
+        let storage = manifest("\"storage\"");
+        assert!(storage.runs_jobs() && storage.has_registry_entrypoint());
+        assert_eq!(storage.families(), vec![PluginFamily::Output]);
+        assert_eq!(
+            manifest("\"storefront\", \"cli\"").families(),
+            vec![PluginFamily::Source]
+        );
+        assert_eq!(
+            manifest("\"databaseAdapter\"").families(),
+            vec![PluginFamily::Database]
+        );
+        // Without a registry entrypoint, jobs still make an integration.
+        assert_eq!(manifest("").families(), vec![PluginFamily::Integration]);
+        let cli = manifest("\"cli\"");
+        assert!(!cli.has_registry_entrypoint());
+        assert_eq!(cli.families(), vec![PluginFamily::Integration]);
+        // Event consumers still add the integration family beside storage.
+        let consumer = PluginManifest::parse(
+            "api_version = 3\nid = \"echo\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
+             entrypoints = [\"storage\"]\n[triggers]\njobs = [\"stream_copy\"]\n\
+             [[events.consumers]]\ntype = \"book_acquired\"\nschema_versions = [1]\n\
+             [capabilities.network]\nmode = \"deny\"\n",
+        )
+        .expect("storage with an event consumer");
+        assert_eq!(
+            consumer.families(),
+            vec![PluginFamily::Output, PluginFamily::Integration]
+        );
+    }
+
+    #[test]
+    fn first_party_destinations_are_output_only() {
+        for (path, text) in [
+            (
+                "local",
+                include_str!("../../bookclerk-plugins/platform/destination-local/plugin.toml"),
+            ),
+            (
+                "s3",
+                include_str!("../../bookclerk-plugins/optional/destination-s3/plugin.toml"),
+            ),
+        ] {
+            let manifest = PluginManifest::parse(text).expect(path);
+            assert!(manifest.runs_jobs(), "{path} declares stream_copy");
+            assert_eq!(manifest.families(), vec![PluginFamily::Output], "{path}");
+        }
     }
 
     #[test]
