@@ -74,9 +74,10 @@ pub struct ScoreInput<'a> {
 /// - **Exact ISBN** (normalized digits): boost by closing
 ///   `ISBN_MATCH_GAP_CLOSE` of the remaining gap to 1.0 (not a forced accept)
 ///
-/// When the query title is an ASIN (see [`is_asin_title`]), returns `1.0`:
-/// the candidate was fetched by that ASIN. A plain ten-letter title such as
-/// `Foundation` is not an ASIN and is scored like any other title.
+/// When the query title (without its subtitle) is an ASIN (see
+/// [`is_asin_title`]), returns `1.0`: the lookup fetched the candidate by
+/// that ASIN. A plain ten-letter title such as `Foundation` is not an ASIN
+/// and is scored like any other title.
 ///
 /// # Arguments
 ///
@@ -88,10 +89,12 @@ pub struct ScoreInput<'a> {
 /// `f64` result.
 #[must_use]
 pub fn calculate_match_confidence(book: &ScoreInput<'_>, query: &MatchQuery<'_>) -> f64 {
-    let query_title = composed_title(query.title, query.subtitle);
-    if is_asin_title(&query_title) {
+    // Same input as the lookup's ASIN branch, so a fetched-by-ASIN candidate
+    // is accepted even when the row also carries a subtitle.
+    if is_asin_title(query.title) {
         return 1.0;
     }
+    let query_title = composed_title(query.title, query.subtitle);
 
     let duration_score = match (query.duration_minutes, book.duration_minutes) {
         (Some(lib_mins), Some(book_mins)) => {
@@ -579,13 +582,16 @@ pub fn is_valid_asin(s: &str) -> bool {
 #[must_use]
 pub fn is_asin_title(title: &str) -> bool {
     let id = title.trim().to_ascii_uppercase();
-    if !is_valid_asin(&id) {
+    let Ok(bytes) = <&[u8; 10]>::try_from(id.as_bytes()) else {
+        return false;
+    };
+    let [first, second, .., check] = *bytes;
+    if !bytes.iter().all(u8::is_ascii_alphanumeric) {
         return false;
     }
-    let bytes = id.as_bytes();
-    let audible_id = id.starts_with("B0");
-    let isbn10 = bytes[..9].iter().all(u8::is_ascii_digit)
-        && (bytes[9].is_ascii_digit() || bytes[9] == b'X');
+    let audible_id = first == b'B' && second == b'0';
+    let isbn10 =
+        bytes[..9].iter().all(u8::is_ascii_digit) && (check.is_ascii_digit() || check == b'X');
     audible_id || isbn10
 }
 
@@ -735,6 +741,21 @@ mod tests {
     }
 
     #[test]
+    fn asin_title_with_subtitle_is_still_perfect() {
+        let book = ScoreInput {
+            title: "Anything",
+            subtitle: None,
+            author: None,
+            narrator: None,
+            isbn: None,
+            duration_minutes: None,
+        };
+        let mut q = query("B005WWT30E", None, None);
+        q.subtitle = Some("A Novel");
+        assert_eq!(calculate_match_confidence(&book, &q), 1.0);
+    }
+
+    #[test]
     fn asin_title_requires_asin_shape() {
         assert!(is_asin_title("B005WWT30E"));
         assert!(is_asin_title("b0abcdefgh"));
@@ -748,6 +769,9 @@ mod tests {
         assert!(!is_asin_title("10941007Y5"));
         assert!(!is_asin_title("109410076Y"));
         assert!(!is_asin_title("B005WWT30"));
+        assert!(!is_asin_title("B005-WWT30"));
+        assert!(!is_asin_title("1094100765X"));
+        assert!(!is_asin_title("Ébauchées!"));
         assert!(!is_asin_title(""));
     }
 
