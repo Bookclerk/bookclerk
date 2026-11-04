@@ -36,6 +36,7 @@ implementations. Each SDK must accept the `valid-*` trees and reject
 | `invalid-kv-namespace/` | `check` fails (`namespace` outside `[a-z0-9][a-z0-9._-]*`) |
 | `invalid-producer-host-event/` | `check` fails (`[[events.producers]] type = "book_acquired"` is host-emitted) |
 | `valid-queues/` | `check` ok (`[[queues.producers]]` send binding plus a `[[queues.consumers]]` trigger with a dead-letter queue) |
+| `fmt-full/` | `fmt` rewrites `plugin.toml` (every manifest section, keys out of order) to exactly `plugin.fmt.toml`, the Rust formatter's output; `fmt --check` accepts the gold and refuses the source |
 
 Language-specific helpers (`sync-embed`, Python workerd flags) are covered in
 each SDK's own tests against the Echo examples.
