@@ -600,8 +600,13 @@ must stay inside the tree, or the build fails.
 
 ### Last updated dates
 
-`last-updated.json` at the root holds the date (UTC, `YYYY-MM-DD`) each
-page of `docs/` last changed, which the website shows as "Last updated".
+`last-updated.json` at the root holds the instant each page of `docs/`
+last changed, in UTC to the second (`YYYY-MM-DDTHH:MM:SSZ`). The website
+shows it as "Last updated", in the reader's own time zone.
+
+- Files and entries published before instants were written hold a date
+  alone (`YYYY-MM-DD`, UTC). The site and the next publish still read them,
+  and the site shows such a date as it is.
 
 - It is the author date of the newest commit that changed the page's
   content. A pure move (a rename git sees as unchanged) is followed back to
@@ -613,7 +618,7 @@ page of `docs/` last changed, which the website shows as "Last updated".
 - The build dates only `docs/`. `docs-publish.py` adds the generated `api/`
   pages, since only it can compare them with the docs repository. A page
   whose content is unchanged there keeps its previous date, and a new or
-  changed one gets the publish date.
+  changed one gets the publish time.
 
 ### Jobs and safety
 

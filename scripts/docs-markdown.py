@@ -431,8 +431,9 @@ def page_dates(log: str, pages: set[str]) -> dict[str, str]:
         pages: Repository paths of the pages to date (``docs/x.md``).
 
     Returns:
-        ``YYYY-MM-DD`` (UTC, from the author date) by repository path, for
-        each page some commit touched.
+        ``YYYY-MM-DDTHH:MM:SSZ`` (the author date, in UTC) by repository
+        path, for each page some commit touched. The site shows it in the
+        reader's own time zone.
 
     Raises:
         BuildError: A line is not one ``git log`` writes, or names a path
@@ -485,7 +486,7 @@ def page_dates(log: str, pages: set[str]) -> dict[str, str]:
                 del names[fields[1]]
         else:
             raise BuildError(f"git log: unexpected status line {line!r}")
-    return {page: datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y-%m-%d") for page, stamp in dates.items()}
+    return {page: datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") for page, stamp in dates.items()}
 
 
 def git_docs_log(repo: Path) -> str:
@@ -535,7 +536,7 @@ def git_docs_log(repo: Path) -> str:
 
 
 def write_last_updated(out: Path, log: str) -> int:
-    """Write :data:`LAST_UPDATED_FILE`: the date each copied page last changed.
+    """Write :data:`LAST_UPDATED_FILE`: when each copied page last changed.
 
     The site shows it as "Last updated". Only pages copied from ``docs/`` are
     dated here; ``docs-publish.py`` adds the generated ``api/`` pages, which
