@@ -4064,7 +4064,7 @@
       "name": "Entrypoints",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 10,
+      "pointerCount": 11,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -4159,14 +4159,24 @@
           "offset": 8
         },
         {
-          "name": "metadata",
+          "name": "scheduledHandler",
           "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "ScheduledHandler"
+          },
+          "offset": 9
+        },
+        {
+          "name": "metadata",
+          "codeOrder": 10,
           "discriminantValue": null,
           "type": {
             "kind": "interface",
             "name": "MetadataProvider"
           },
-          "offset": 9
+          "offset": 10
         }
       ]
     },
@@ -8473,7 +8483,7 @@
       "name": "PluginCapabilities",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 8,
+      "pointerCount": 9,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -8574,6 +8584,18 @@
             }
           },
           "offset": 7
+        },
+        {
+          "name": "crons",
+          "codeOrder": 8,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 8
         }
       ]
     },
@@ -10924,6 +10946,101 @@
         }
       ]
     },
+    "ScheduledController": {
+      "name": "ScheduledController",
+      "file": "plugin.capnp",
+      "dataWords": 3,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "cron",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "scheduledTime",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 0
+        },
+        {
+          "name": "fireId",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "attempt",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 2
+        },
+        {
+          "name": "deadlineUnixMs",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "ScheduledHandler.scheduled$Params": {
+      "name": "ScheduledHandler.scheduled$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "controller",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ScheduledController"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "ScheduledHandler.scheduled$Results": {
+      "name": "ScheduledHandler.scheduled$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "SchemaAction": {
       "name": "SchemaAction",
       "file": "plugin.capnp",
@@ -12394,6 +12511,18 @@
         }
       ]
     },
+    "ScheduledHandler": {
+      "name": "ScheduledHandler",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "scheduled",
+          "ordinal": 0,
+          "params": "ScheduledHandler.scheduled$Params",
+          "results": "ScheduledHandler.scheduled$Results"
+        }
+      ]
+    },
     "Source": {
       "name": "Source",
       "file": "plugin.capnp",
@@ -12437,6 +12566,11 @@
       "name": "maxConfigPayloadBytes",
       "file": "plugin.capnp",
       "value": 65536
+    },
+    "maxCronBytes": {
+      "name": "maxCronBytes",
+      "file": "plugin.capnp",
+      "value": 128
     },
     "maxEventPayloadBytes": {
       "name": "maxEventPayloadBytes",

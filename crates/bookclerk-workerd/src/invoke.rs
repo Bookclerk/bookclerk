@@ -172,6 +172,11 @@ const INTERFACES: &[InterfaceEntry] = &[
         methods: &["queue"],
     },
     InterfaceEntry {
+        id: <plugin_capnp::scheduled_handler::Client as HasTypeId>::TYPE_ID,
+        name: "ScheduledHandler",
+        methods: &["scheduled"],
+    },
+    InterfaceEntry {
         id: <plugin_capnp::queue_producer::Client as HasTypeId>::TYPE_ID,
         name: "QueueProducer",
         methods: &["send", "sendBatch"],

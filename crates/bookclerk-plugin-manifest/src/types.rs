@@ -395,14 +395,22 @@ pub const DEFAULT_EVENTS_BINDING: &str = "EVENTS";
 /// Binding name the host uses for operator config (`[vars]`).
 pub const CONFIG_BINDING: &str = "CONFIG";
 
+/// Most `[triggers] crons` entries one manifest may declare.
+pub const MAX_CRON_TRIGGERS: usize = 8;
+
 /// `[triggers]` — handlers on the default entrypoint the host invokes.
 ///
-/// Mirrors `wrangler.jsonc` `triggers`; Bookclerk's triggers are durable
-/// commands (`job(controller)`) rather than crons. Event triggers live under
-/// `[[events.consumers]]`.
+/// Mirrors `wrangler.jsonc` `triggers`: `crons` are Workers-style
+/// `scheduled(controller)` triggers, and `jobs` are durable commands
+/// (`job(controller)`). Event triggers live under `[[events.consumers]]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct TriggersManifest {
+    /// Five-field UTC cron schedules the default entrypoint's
+    /// `scheduled(controller)` handles (`*/30 * * * *`). At most
+    /// [`MAX_CRON_TRIGGERS`], no duplicates. Empty means no cron trigger.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crons: Vec<crate::cron::CronSchedule>,
     /// Command types the default entrypoint's `job(controller)` handles
     /// (snake_case, e.g. `stream_copy`). Empty means no job trigger.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -412,7 +420,7 @@ pub struct TriggersManifest {
 impl TriggersManifest {
     /// True when no trigger is declared (omit `[triggers]`).
     fn is_default(&self) -> bool {
-        self.jobs.is_empty()
+        self.jobs.is_empty() && self.crons.is_empty()
     }
 }
 
@@ -1150,6 +1158,13 @@ impl PluginManifest {
         !self.triggers.jobs.is_empty()
     }
 
+    /// True when the default entrypoint has a `scheduled(controller)`
+    /// trigger (`[triggers] crons`).
+    #[must_use]
+    pub fn runs_crons(&self) -> bool {
+        !self.triggers.crons.is_empty()
+    }
+
     /// True when the plugin declares any publishable event type.
     #[must_use]
     pub fn produces_events(&self) -> bool {
@@ -1214,6 +1229,7 @@ impl PluginManifest {
                     self.consumes_events()
                         || self.consumes_queues()
                         || self.runs_jobs()
+                        || self.runs_crons()
                         || self.has_entrypoint(Entrypoint::RemoteLibrary)
                         || self.has_entrypoint(Entrypoint::Oidc)
                         || self.has_entrypoint(Entrypoint::Metadata)
@@ -1285,6 +1301,12 @@ impl PluginManifest {
                 .collect(),
             produces: self.producer_types(),
             jobs: self.triggers.jobs.clone(),
+            crons: self
+                .triggers
+                .crons
+                .iter()
+                .map(|c| c.as_str().to_owned())
+                .collect(),
             databases: self.databases.iter().map(|d| d.binding.clone()).collect(),
             bindings: self.binding_names(),
             queue_consumers: self.queue_consumer_names(),
@@ -1559,10 +1581,11 @@ impl PluginManifest {
             && !self.consumes_events()
             && !self.consumes_queues()
             && !self.runs_jobs()
+            && !self.runs_crons()
         {
             return Err(Error::message(
                 "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, \
-                 `[[queues.consumers]]`, or `[triggers].jobs`",
+                 `[[queues.consumers]]`, `[triggers].jobs`, or `[triggers].crons`",
             ));
         }
         {
@@ -1662,6 +1685,40 @@ impl PluginManifest {
                 if table != "events.producers" && !seen.insert(name) {
                     return Err(Error::message(format!(
                         "plugin.toml: [{table}][{index}] binding collides with another binding"
+                    )));
+                }
+            }
+        }
+        // Crons fire through the integration registry, and a deployment
+        // spawns a storefront, storage or database adapter in its own
+        // registry instead, so a schedule there would never fire.
+        if self.runs_crons() {
+            for entrypoint in [
+                Entrypoint::Storefront,
+                Entrypoint::Storage,
+                Entrypoint::DatabaseAdapter,
+            ] {
+                if self.has_entrypoint(entrypoint) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: `[triggers].crons` cannot be combined with the `{}` \
+                         entrypoint; put the schedule in a separate integration plugin",
+                        entrypoint.wire_name()
+                    )));
+                }
+            }
+        }
+        if self.triggers.crons.len() > MAX_CRON_TRIGGERS {
+            return Err(Error::message(format!(
+                "plugin.toml: triggers.crons has {} entries; at most {MAX_CRON_TRIGGERS} are allowed",
+                self.triggers.crons.len()
+            )));
+        }
+        {
+            let mut seen = std::collections::HashSet::new();
+            for (i, cron) in self.triggers.crons.iter().enumerate() {
+                if !seen.insert(cron.as_str()) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: triggers.crons[{i}] `{cron}` is duplicated"
                     )));
                 }
             }
@@ -2012,6 +2069,67 @@ mode = "deny"
         .unwrap();
         assert!(jobs_only.runs_jobs());
         assert_eq!(jobs_only.families(), vec![PluginFamily::Integration]);
+    }
+
+    /// Minimal manifest with `triggers` spliced in as its `[triggers]` body.
+    ///
+    /// # Errors
+    ///
+    /// Returns the parse or validation error for `triggers`.
+    fn with_triggers(triggers: &str) -> Result<PluginManifest> {
+        PluginManifest::parse(&format!(
+            "api_version = 3\nid = \"echo\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
+             [triggers]\n{triggers}\n[capabilities.network]\nmode = \"deny\"\n"
+        ))
+    }
+
+    #[test]
+    fn cron_triggers_parse_validate_and_format() {
+        let m = with_triggers(r#"crons = ["*/30 * * * *", "0  3 * * MON"]"#).unwrap();
+        assert!(m.runs_crons());
+        assert!(!m.runs_jobs());
+        assert_eq!(m.families(), vec![PluginFamily::Integration]);
+        assert_eq!(
+            m.capabilities().crons,
+            vec!["*/30 * * * *".to_owned(), "0 3 * * MON".to_owned()]
+        );
+        let formatted = crate::format_manifest(&m).unwrap();
+        assert!(formatted.contains("0 3 * * MON"), "{formatted}");
+        assert_eq!(crate::parse(&formatted).unwrap(), m);
+
+        let bad = with_triggers(r#"crons = ["* * * *"]"#).expect_err("four fields");
+        assert!(bad.to_string().contains("5 fields"), "{bad}");
+        let dup = with_triggers(r#"crons = ["0 0 * * *", "0  0 * * *"]"#).expect_err("dup");
+        assert!(dup.to_string().contains("duplicated"), "{dup}");
+        let many: Vec<String> = (0..=MAX_CRON_TRIGGERS)
+            .map(|i| format!("\"{i} * * * *\""))
+            .collect();
+        let too_many =
+            with_triggers(&format!("crons = [{}]", many.join(", "))).expect_err("too many");
+        assert!(too_many.to_string().contains("at most"), "{too_many}");
+    }
+
+    #[test]
+    fn cron_triggers_are_rejected_beside_a_registry_entrypoint() {
+        for entrypoint in ["storefront", "storage", "databaseAdapter"] {
+            let err = PluginManifest::parse(&format!(
+                "api_version = 3\nid = \"echo\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
+                 entrypoints = [\"{entrypoint}\"]\n[triggers]\ncrons = [\"0 0 * * *\"]\n\
+                 [capabilities.network]\nmode = \"deny\"\n"
+            ))
+            .expect_err(entrypoint);
+            assert!(
+                err.to_string().contains("cannot be combined"),
+                "{entrypoint}: {err}"
+            );
+        }
+        let cli = PluginManifest::parse(
+            "api_version = 3\nid = \"echo\"\nruntime = \"native\"\ncommand = \"./echo\"\n\
+             entrypoints = [\"cli\"]\n[triggers]\ncrons = [\"0 0 * * *\"]\n\
+             [capabilities.network]\nmode = \"deny\"\n",
+        )
+        .expect("cli with crons stays an integration");
+        assert_eq!(cli.families(), vec![PluginFamily::Integration]);
     }
 
     #[test]

@@ -216,6 +216,28 @@ The isolate runs at that applied date.
   `[[events.producers]]`, which are the bindings of the host's own
   `core.events` queue.
 
+### `[triggers]`
+
+`[triggers]` declares handlers on the default export that the host calls
+itself:
+
+```toml
+[triggers]
+jobs = ["copy"]                                # job(controller) command types
+crons = ["*/30 * * * *", "0 3 * * MON-FRI"]    # scheduled(controller), UTC
+```
+
+- `crons` holds at most 8 unique five-field cron schedules, read in UTC.
+  `plugin check` checks their shape, and the host parses them fully at
+  install; a schedule that can never fire (such as `0 0 30 2 *`) is
+  rejected. The grammar and the delivery rules are in
+  [Scheduled triggers](abi.md#scheduled-triggers).
+- A plugin with `crons` cannot also declare the `storefront`, `storage` or
+  `databaseAdapter` entrypoint, because schedules fire only on integration
+  deployments. Put the schedule in a separate integration plugin.
+- Each schedule is part of the consent request, as a `cron:<schedule>`
+  token.
+
 ## Logo
 
 An optional top-level `logo` sets the Settings favicon. It is either:

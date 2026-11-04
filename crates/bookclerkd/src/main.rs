@@ -14,6 +14,7 @@ mod api;
 mod auth;
 mod cluster_link;
 mod config_authority;
+mod cron_worker;
 mod csrf;
 mod event_worker;
 mod heartbeat;
@@ -305,6 +306,7 @@ async fn main() -> anyhow::Result<()> {
     cluster_link::spawn_cluster_links(state.clone());
     placement::spawn_placement_scheduler(state.clone());
     maintenance::spawn_maintenance(state.clone());
+    cron_worker::spawn_cron_worker(state.clone());
     requirements_sweep::spawn_requirements_sweep(state.clone());
     spawn_scheduler(state.clone());
     spawn_config_reload_signals(state.clone());

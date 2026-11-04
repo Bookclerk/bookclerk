@@ -195,6 +195,15 @@ enum Work {
         /// Reply channel.
         reply: oneshot::Sender<Result<Vec<bookclerk_plugin_abi::QueueResult>>>,
     },
+    /// One `[triggers] crons` fire for the `scheduled(controller)` trigger.
+    RunScheduled {
+        /// The fire.
+        controller: bookclerk_plugin_abi::ScheduledController,
+        /// Abort flag (job fence loss or operator cancel).
+        cancel: Arc<AtomicBool>,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<()>>,
+    },
     CliDescribe {
         reply: oneshot::Sender<Result<bookclerk_plugin_sdk::CliSchema>>,
     },
@@ -1399,6 +1408,33 @@ impl PluginSession {
         }
         self.call(|reply| Work::DeliverQueue {
             batch,
+            cancel,
+            reply,
+        })
+        .await
+    }
+
+    /// Runs one cron fire through the guest's `scheduled(controller)`
+    /// trigger, aborted when `cancel` is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the grant does not cover the cron, the
+    /// guest did not export a scheduled handler, the handler fails, or the
+    /// fire is cancelled.
+    pub async fn run_scheduled(
+        &self,
+        controller: bookclerk_plugin_abi::ScheduledController,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<()> {
+        if !self.grant.allows_cron(&controller.cron) {
+            return Err(PluginError::message(format!(
+                "plugin grant does not authorize cron `{}`",
+                controller.cron
+            )));
+        }
+        self.call(|reply| Work::RunScheduled {
+            controller,
             cancel,
             reply,
         })
@@ -3194,6 +3230,49 @@ fn vat_thread(
                                                 ))
                                             }
                                             out = bookclerk_plugin_abi::QueueConsumer::queue(&consumer, batch) => out.map_err(map_abi),
+                                        },
+                                    }
+                                } => result,
+                            };
+                            let _ = reply.send(out);
+                        }
+                        Work::RunScheduled {
+                            controller,
+                            cancel,
+                            reply,
+                        } => {
+                            let out = tokio::select! {
+                                biased;
+                                () = wait_flag(Arc::clone(&session_cancel)) => {
+                                    Err(crate::authority::fenced_error())
+                                }
+                                () = sibling_exit(&mut child, &mut guest) => {
+                                    Err(PluginError::unavailable("plugin process exited"))
+                                }
+                                result = async {
+                                    let handler = primary_entrypoints(
+                                        &client,
+                                        &account_id,
+                                        &mut primary,
+                                        None,
+                                    )
+                                    .await
+                                    .and_then(|eps| {
+                                        eps.scheduled_handler
+                                            .clone()
+                                            .ok_or_else(|| missing_entrypoint("scheduledHandler"))
+                                    });
+                                    match handler {
+                                        Err(err) => Err(err),
+                                        Ok(handler) => tokio::select! {
+                                            biased;
+                                            () = wait_flag(Arc::clone(&cancel)) => {
+                                                Err(PluginError::from_abi(
+                                                    Some("cancelled"),
+                                                    "fence lost",
+                                                ))
+                                            }
+                                            out = bookclerk_plugin_abi::ScheduledHandler::scheduled(&handler, controller) => out.map_err(map_abi),
                                         },
                                     }
                                 } => result,

@@ -40,6 +40,8 @@ pub struct ExternalIntegration {
     event_subscriptions: Vec<EventSubscription>,
     /// `[[queues.consumers]]` rows from `plugin.toml`.
     queue_subscriptions: Vec<QueueSubscription>,
+    /// `[triggers] crons` schedules from `plugin.toml`.
+    cron_schedules: Vec<bookclerk_plugin_manifest::CronSchedule>,
     /// Cancels the host-side `event_poll` loop from [`Self::start`].
     poll_cancel: Arc<AtomicBool>,
     /// Bumped on each [`Self::start`]/[`Self::stop`] so a superseded poll loop exits.
@@ -124,6 +126,16 @@ impl ExternalIntegration {
                 retry_delay_secs: c.retry_delay,
             })
             .collect();
+        // Only schedules the operator granted tick; the session refuses the
+        // rest anyway, so claiming them would only queue failing fires.
+        let cron_schedules = plugin
+            .manifest
+            .triggers
+            .crons
+            .iter()
+            .filter(|cron| session.grant().allows_cron(cron.as_str()))
+            .cloned()
+            .collect();
         session.open(prepared.bindings).await?;
         Ok(Self {
             session,
@@ -135,6 +147,7 @@ impl ExternalIntegration {
             allow_credential_login,
             event_subscriptions,
             queue_subscriptions,
+            cron_schedules,
             poll_cancel: Arc::new(AtomicBool::new(false)),
             poll_epoch: Arc::new(AtomicU64::new(0)),
             plugin_instance_id: None,
@@ -352,6 +365,41 @@ impl Integration for ExternalIntegration {
 
     fn queue_subscriptions(&self) -> Vec<QueueSubscription> {
         self.queue_subscriptions.clone()
+    }
+
+    fn cron_schedules(&self) -> Vec<bookclerk_plugin_manifest::CronSchedule> {
+        self.cron_schedules.clone()
+    }
+
+    async fn run_scheduled_cancelable(
+        &self,
+        invocation: bookclerk_integrations::ScheduledInvocation,
+        cancel: Arc<AtomicBool>,
+    ) -> bookclerk_integrations::Result<()> {
+        if !self.cron_schedules.contains(&invocation.cron) {
+            return Err(bookclerk_integrations::IntegrationError::message(format!(
+                "plugin declares no cron `{}`",
+                invocation.cron
+            )));
+        }
+        let scheduled_time = u64::try_from(invocation.scheduled_time_ms).map_err(|_| {
+            bookclerk_integrations::IntegrationError::message(
+                "cron fire time is before the Unix epoch",
+            )
+        })?;
+        self.session
+            .run_scheduled(
+                bookclerk_plugin_abi::ScheduledController {
+                    cron: invocation.cron.as_str().to_string(),
+                    scheduled_time,
+                    fire_id: invocation.job_id,
+                    attempt: invocation.attempt,
+                    deadline_unix_ms: invocation.deadline_unix_ms,
+                },
+                cancel,
+            )
+            .await?;
+        Ok(())
     }
 
     async fn deliver_queue_batch_cancelable(

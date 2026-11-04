@@ -465,6 +465,8 @@ class Entrypoints(TypedDict):
         oidc: `oidc` entrypoint. Null when the guest does not export this capability.
         queueConsumer: `[[queues.consumers]]` trigger: `queue(batch)` handler. Null when
             the guest does not export this capability.
+        scheduledHandler: `[triggers] crons` trigger: `scheduled(controller)` handler.
+            Null when the guest does not export this capability.
         metadata: `metadata` entrypoint. Null when the guest does not export this
             capability.
     """
@@ -478,6 +480,7 @@ class Entrypoints(TypedDict):
     cli: NotRequired[PluginCli | None]
     oidc: NotRequired[Oidc | None]
     queueConsumer: NotRequired[QueueConsumer | None]
+    scheduledHandler: NotRequired[ScheduledHandler | None]
     metadata: NotRequired[MetadataProvider | None]
 
 
@@ -1692,6 +1695,25 @@ class NamedDatabase(TypedDict):
     database: NotRequired[GuestDatabase | None]
 
 
+class ScheduledHandler(Protocol):
+    """`[triggers] crons` handler (`Entrypoints.scheduledHandler`), the Workers
+    `scheduled(controller)` trigger. Each fire is delivered at least once;
+    a fire that throws is retried with backoff, keeping `scheduledTime` and
+    `fireId`, so handlers dedupe on `fireId`.
+    """
+
+    async def scheduled(self, controller: ScheduledController) -> EmptyReply:
+        """Run one cron fire to completion.
+
+        Args:
+            controller: The fire being delivered.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+
 class QueueConsumer(Protocol):
     """`[[queues.consumers]]` handler (`Entrypoints.queueConsumer`). Delivery is
     at-least-once; consumers must be idempotent on `QueueMessage.id`.
@@ -2169,6 +2191,9 @@ class PluginCapabilities(TypedDict):
         queueConsumers: Queues the default entrypoint consumes (`queue(batch)` trigger).
         queueProducers: Queues the guest may send to through its `[[queues.producers]]`
             bindings.
+        crons: Five-field UTC cron schedules the default entrypoint handles
+            (`scheduled(controller)` trigger, `[triggers] crons`), normalized to single
+            spaces.
     """
 
     entrypoints: list[Entrypoint]
@@ -2179,6 +2204,7 @@ class PluginCapabilities(TypedDict):
     bindings: list[str]
     queueConsumers: list[str]
     queueProducers: list[str]
+    crons: list[str]
 
 
 class Brand(TypedDict):
@@ -4111,6 +4137,26 @@ KvListReply = Union[
 """Result union of `KvNamespace.list`."""
 
 
+class ScheduledController(TypedDict):
+    """One fire of a `[triggers] crons` schedule (`scheduled(controller)`).
+
+    Attributes:
+        cron: The schedule that fired, normalized to single spaces (`0 3 * * MON`).
+        scheduledTime: Fire time, UTC unix milliseconds (always a whole minute). Retries
+            of one fire keep it.
+        fireId: Durable id of this fire, stable across retries; dedupe on it.
+        attempt: Failure attempt, starting at 1.
+        deadlineUnixMs: UTC unix milliseconds. Host fence/lease is authoritative; this
+            hint must not outlive the fence.
+    """
+
+    cron: str
+    scheduledTime: int
+    fireId: str
+    attempt: int
+    deadlineUnixMs: int
+
+
 class MetadataLookupParams(TypedDict):
     """Params of `MetadataProvider.lookup`.
 
@@ -5591,6 +5637,7 @@ __all__ = [
     "EventConsumer",
     "EventPublisher",
     "NamedDatabase",
+    "ScheduledHandler",
     "QueueConsumer",
     "QueueProducer",
     "NamedQueue",
@@ -5731,6 +5778,7 @@ __all__ = [
     "KvListReplyOk",
     "KvListReplyErr",
     "KvListReply",
+    "ScheduledController",
     "MetadataLookupParams",
     "MetadataSearchParams",
     "MetadataChaptersParams",

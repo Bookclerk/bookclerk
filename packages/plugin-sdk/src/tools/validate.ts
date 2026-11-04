@@ -4,6 +4,8 @@
  * Used by `bookclerk-plugin check|fmt|package` and the sparse-workerd smoke path.
  */
 
+import { MAX_CRON_BYTES } from "../abi.js";
+
 /**
  * Parsed `plugin.toml` shape accepted by the TypeScript author tools.
  *
@@ -56,8 +58,8 @@ export type Manifest = {
    * omitted or empty, `name` is the source in the modules directory.
    */
   modules?: Array<{ name: string; path?: string; type?: string }>;
-  /** `[triggers]` — command types the default entrypoint's `job(controller)` runs. */
-  triggers?: { jobs?: string[] };
+  /** `[triggers]` — `jobs` command types for `job(controller)` and `crons` schedules for `scheduled(controller)`. */
+  triggers?: { jobs?: string[]; crons?: string[] };
   /** `[events]` — consumer triggers and producer publish grants. */
   events?: {
     /** `[[events.consumers]]` rows delivered to `event(batch)`. */
@@ -600,15 +602,28 @@ function validateSurface(m: Manifest): void {
   const consumers = m.events?.consumers ?? [];
   const queueConsumers = m.queues?.consumers ?? [];
   const jobs = m.triggers?.jobs ?? [];
+  const crons = m.triggers?.crons ?? [];
   if (
     entrypoints.length === 0 &&
     consumers.length === 0 &&
     queueConsumers.length === 0 &&
-    jobs.length === 0
+    jobs.length === 0 &&
+    crons.length === 0
   ) {
     throw new Error(
-      "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, `[[queues.consumers]]`, or `[triggers].jobs`",
+      "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, `[[queues.consumers]]`, `[triggers].jobs`, or `[triggers].crons`",
     );
+  }
+  validateCrons(crons);
+  if (Array.isArray(crons) && crons.length > 0) {
+    // Crons fire only on integration deployments (host `validate`).
+    for (const registry of ["storefront", "storage", "databaseAdapter"]) {
+      if ((entrypoints as readonly string[]).includes(registry)) {
+        throw new Error(
+          `plugin.toml: \`[triggers].crons\` cannot be combined with the \`${registry}\` entrypoint; put the schedule in a separate integration plugin`,
+        );
+      }
+    }
   }
   validateQueues(m);
   validateKvNamespaces(m);
@@ -927,4 +942,65 @@ function daysInMonth(year: number, month: number): number | null {
 
 function isLeapYear(year: number): boolean {
   return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+/** Most `[triggers] crons` entries one manifest may declare (host `MAX_CRON_TRIGGERS`). */
+export const MAX_CRON_TRIGGERS = 8;
+
+/** Longest cron source in bytes (ABI `maxCronBytes`). */
+export { MAX_CRON_BYTES };
+
+/** One cron field item: `*`, a value or a range, optionally with `/step`. */
+const CRON_ITEM = /^(\*|[0-9A-Za-z]+(-[0-9A-Za-z]+)?)(\/[0-9]{1,2})?$/;
+
+/**
+ * Checks the shape of `[triggers] crons`: at most {@link MAX_CRON_TRIGGERS}
+ * ASCII entries of five fields, each a comma list of `*`, values, ranges and
+ * `/step`, with no duplicates once whitespace is normalized. Value ranges,
+ * names and never-firing schedules are checked by the host when the package
+ * is installed (`CronSchedule::parse`).
+ *
+ * @param crons - The `crons` array as parsed from TOML.
+ * @throws Error naming the first entry that is malformed.
+ */
+export function validateCrons(crons: unknown): void {
+  if (!Array.isArray(crons)) {
+    throw new Error("plugin.toml: triggers.crons must be an array of strings");
+  }
+  if (crons.length > MAX_CRON_TRIGGERS) {
+    throw new Error(
+      `plugin.toml: triggers.crons has ${crons.length} entries; at most ${MAX_CRON_TRIGGERS} are allowed`,
+    );
+  }
+  const seen = new Set<string>();
+  for (const [i, raw] of crons.entries()) {
+    if (
+      typeof raw !== "string" ||
+      raw.length > MAX_CRON_BYTES ||
+      !/^[\x20-\x7e\t\n\f\r]*$/.test(raw)
+    ) {
+      throw new Error(
+        `plugin.toml: triggers.crons[${i}] must be an ASCII string of at most ${MAX_CRON_BYTES} bytes`,
+      );
+    }
+    const fields = raw
+      .trim()
+      .split(/\s+/)
+      .filter((f) => f.length > 0);
+    if (fields.length !== 5) {
+      throw new Error(
+        `plugin.toml: triggers.crons[${i}] \`${raw}\` needs 5 fields (minute hour day-of-month month day-of-week)`,
+      );
+    }
+    for (const field of fields) {
+      if (!field.split(",").every((item) => CRON_ITEM.test(item))) {
+        throw new Error(`plugin.toml: triggers.crons[${i}] field \`${field}\` is not valid cron`);
+      }
+    }
+    const normalized = fields.join(" ");
+    if (seen.has(normalized)) {
+      throw new Error(`plugin.toml: triggers.crons[${i}] \`${normalized}\` is duplicated`);
+    }
+    seen.add(normalized);
+  }
 }

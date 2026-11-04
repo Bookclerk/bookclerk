@@ -336,6 +336,13 @@ pub async fn delete_plugin_instance(
     }
     bookclerk_db_exec::execute_canonical(
         store.db(),
+        "DELETE FROM plugin_cron_cursors WHERE plugin_instance_id = ?",
+        [id.as_str().into()],
+    )
+    .await
+    .map_err(LibraryError::Orm)?;
+    bookclerk_db_exec::execute_canonical(
+        store.db(),
         "DELETE FROM plugin_instance_defaults WHERE plugin_instance_id = ?",
         [id.as_str().into()],
     )

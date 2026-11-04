@@ -165,6 +165,18 @@ pub trait QueueConsumer {
     async fn queue(&self, batch: crate::QueueBatch) -> Result<Vec<crate::QueueResult>>;
 }
 
+/// `[triggers] crons` handler ([`Entrypoints::scheduled_handler`]), the
+/// Workers `scheduled(controller)` trigger.
+///
+/// Each fire is delivered at least once: an error is retried with backoff,
+/// keeping [`ScheduledController::fire_id`](crate::ScheduledController::fire_id)
+/// and `scheduled_time`, so dedupe on the fire id.
+#[async_trait::async_trait(?Send)]
+pub trait ScheduledHandler {
+    /// Runs one cron fire to completion.
+    async fn scheduled(&self, controller: crate::ScheduledController) -> Result<()>;
+}
+
 /// Queue producer binding: host-served send into the queue a
 /// `[[queues.producers]]` row names ([`Bindings::queues`]).
 #[async_trait::async_trait(?Send)]
@@ -662,6 +674,8 @@ pub struct Entrypoints {
     pub oidc: Option<Box<dyn Oidc>>,
     /// `[[queues.consumers]]` trigger.
     pub queue_consumer: Option<Box<dyn QueueConsumer>>,
+    /// `[triggers] crons` trigger.
+    pub scheduled_handler: Option<Box<dyn ScheduledHandler>>,
     /// `metadata` entrypoint.
     pub metadata: Option<Box<dyn MetadataProvider>>,
 }

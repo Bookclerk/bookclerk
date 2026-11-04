@@ -639,6 +639,19 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       ok: (value) => okValue({ results: asList<QueueOutcome>(value).map(queueResult) }),
     }),
   },
+  ScheduledHandler: {
+    scheduled: spec<
+      W.ScheduledHandlerScheduledParams,
+      W.ScheduledHandlerScheduledResults["result"]
+    >({
+      params: W.ScheduledHandlerScheduledParamsCodec,
+      results: W.ScheduledHandlerScheduledResultsCodec,
+      stub: "author",
+      call: (s, p, cx) =>
+        (s as AuthorStub).bookclerkScheduled(cx.host.bindContext(cx.ctx), p.controller ?? {}),
+      ok: okEmpty,
+    }),
+  },
   JobRunner: {
     job: spec<W.JobRunnerJobParams, W.JobRunnerJobResults["result"]>({
       params: W.JobRunnerJobParamsCodec,

@@ -17,6 +17,7 @@ hex = "0.4"
 bookclerk-config.workspace = true
 bookclerk-library.workspace = true
 bookclerk-plugin-abi.workspace = true
+bookclerk-plugin-manifest.workspace = true
 bookclerk-source.workspace = true
 rand = "0.10"
 serde.workspace = true

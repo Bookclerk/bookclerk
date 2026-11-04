@@ -182,6 +182,9 @@ impl JobTransport for InProcessJobTransport {
                 )
                 .await
             }
+            JobKind::PluginScheduled => {
+                crate::jobs::run_plugin_scheduled(&self.state, &cmd.payload, Some(&ctx)).await
+            }
             JobKind::Invalid => anyhow::bail!("invalid_job"),
         }
     }

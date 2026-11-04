@@ -176,10 +176,13 @@ export function formatManifest(m: Manifest): string {
     }
   }
 
-  if (m.triggers?.jobs?.length) {
+  const jobs = m.triggers?.jobs ?? [];
+  const crons = m.triggers?.crons ?? [];
+  if (jobs.length > 0 || crons.length > 0) {
     lines.push("");
     lines.push("[triggers]");
-    lines.push(`jobs = ${emitStringArray(m.triggers.jobs)}`);
+    if (jobs.length > 0) lines.push(`jobs = ${emitStringArray(jobs)}`);
+    if (crons.length > 0) lines.push(`crons = ${emitStringArray(crons)}`);
   }
 
   for (const consumer of m.events?.consumers ?? []) {

@@ -105,6 +105,7 @@ import type {
   ScanLibraryParams,
   ScanParams,
   ScanSummary,
+  ScheduledController,
   SearchCatalogParams,
   SourceAccount,
 } from "./generated.js";
@@ -1514,6 +1515,14 @@ export class BookclerkEntrypoint<
   queue?(batch: QueueBatch): Promise<void> | void;
 
   /**
+   * `[triggers] crons` trigger, the Workers `scheduled(controller)`: run one
+   * cron fire. Return to complete; throw to have the host retry the same
+   * fire (same `scheduledTime` and `fireId`) with backoff. Fires are
+   * delivered at least once, so dedupe on `controller.fireId`.
+   */
+  scheduled?(controller: Readonly<ScheduledController>): Promise<void> | void;
+
+  /**
    * `[triggers] jobs` trigger: run one durable job. Return to complete,
    * throw to reject, or call `job.suspend()` / `job.retryLater()`.
    */
@@ -1589,6 +1598,25 @@ export class BookclerkEntrypoint<
     } catch (err) {
       return queueBatchResults(batch, err ?? new Error("queue handler failed"));
     }
+  }
+
+  /**
+   * Adapter dispatch for the `scheduled(controller)` trigger.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `ScheduledController`.
+   * @returns Resolves when the author's handler completes.
+   * @internal
+   */
+  async bookclerkScheduled(
+    context: GrantedContext,
+    wire: Partial<ScheduledController>,
+  ): Promise<void> {
+    if (typeof this.scheduled !== "function") {
+      throw unsupported("scheduled");
+    }
+    applyInvocationEnv(this, context);
+    await this.scheduled(scheduledControllerOf(wire));
   }
 
   /**
@@ -2302,6 +2330,7 @@ export type AuthorStub = Pick<
   | "bookclerkDescribe"
   | "bookclerkEvent"
   | "bookclerkQueue"
+  | "bookclerkScheduled"
   | "bookclerkJob"
   | "bookclerkDatabaseMigrations"
   | "bookclerkShutdown"
@@ -3055,18 +3084,40 @@ export function wrapPluginFromNative() {
 
 /** Wire names of the trigger families the launcher may ask `openInvocation` about. */
 export const TRIGGER_FAMILIES: Readonly<
-  Record<"eventConsumer" | "queueConsumer" | "jobRunner", string>
+  Record<"eventConsumer" | "queueConsumer" | "scheduledHandler" | "jobRunner", string>
 > = Object.freeze({
   eventConsumer: "eventConsumer",
   queueConsumer: "queueConsumer",
+  scheduledHandler: "scheduledHandler",
   jobRunner: "jobRunner",
 });
+
+/**
+ * Frozen author view of one wire `ScheduledController`, with every field
+ * present and typed.
+ *
+ * @param wire - Decoded wire struct (fields may be missing).
+ * @returns The controller the author's `scheduled()` receives.
+ */
+export function scheduledControllerOf(
+  wire: Partial<ScheduledController> | null | undefined,
+): Readonly<ScheduledController> {
+  const w = wire && typeof wire === "object" ? wire : {};
+  return Object.freeze({
+    cron: String(w.cron ?? ""),
+    scheduledTime: Number(w.scheduledTime ?? 0) || 0,
+    fireId: String(w.fireId ?? ""),
+    attempt: Number(w.attempt ?? 0) || 0,
+    deadlineUnixMs: Number(w.deadlineUnixMs ?? 0) || 0,
+  });
+}
 
 /**
  * Filters requested entrypoint / trigger family names against the manifest
  * capabilities: named entrypoints must be declared in `entrypoints`,
  * `eventConsumer` needs a non-empty `consumes`, `queueConsumer` needs a
- * non-empty `queueConsumers`, and `jobRunner` needs `jobs` or the `storage`
+ * non-empty `queueConsumers`, `scheduledHandler` needs a non-empty `crons`,
+ * and `jobRunner` needs `jobs` or the `storage`
  * entrypoint (storage guests run the host `stream_copy` job). Unknown names
  * and a missing manifest fail closed.
  *
@@ -3085,6 +3136,7 @@ export function allowedEntrypointFamilies(
     ? capabilities.queueConsumers
     : [];
   const jobs = Array.isArray(capabilities.jobs) ? capabilities.jobs : [];
+  const crons = Array.isArray(capabilities.crons) ? capabilities.crons : [];
   const exportsStorage = entrypoints.includes("storage");
   const out: string[] = [];
   for (const name of requested) {
@@ -3093,6 +3145,8 @@ export function allowedEntrypointFamilies(
       if (consumes.length > 0) out.push(name);
     } else if (name === TRIGGER_FAMILIES.queueConsumer) {
       if (queueConsumers.length > 0) out.push(name);
+    } else if (name === TRIGGER_FAMILIES.scheduledHandler) {
+      if (crons.length > 0) out.push(name);
     } else if (name === TRIGGER_FAMILIES.jobRunner) {
       if (jobs.length > 0 || exportsStorage) out.push(name);
     } else if (name in ENTRYPOINT_BINDINGS && entrypoints.includes(name as EntrypointName)) {

@@ -19,6 +19,8 @@ pub const MAX_KV_VALUE_BYTES: u32 = crate::plugin_capnp::MAX_KV_VALUE_BYTES;
 
 /// Longest `KvNamespace` key in UTF-8 bytes.
 pub const MAX_KV_KEY_BYTES: u32 = crate::plugin_capnp::MAX_KV_KEY_BYTES;
+/// Longest `[triggers] crons` source in bytes (`ScheduledController.cron`).
+pub const MAX_CRON_BYTES: u32 = crate::plugin_capnp::MAX_CRON_BYTES;
 
 /// Largest `KvNamespace` metadata JSON text in bytes.
 pub const MAX_KV_METADATA_BYTES: u32 = crate::plugin_capnp::MAX_KV_METADATA_BYTES;

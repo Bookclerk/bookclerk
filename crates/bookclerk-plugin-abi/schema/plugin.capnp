@@ -46,6 +46,8 @@ const maxListPage :UInt32 = 256;
 const maxCheckpointBytes :UInt32 = 65536;
 # Maximum plugin / account identifier length (bytes).
 const maxIdentifierBytes :UInt32 = 64;
+# Maximum `[triggers] crons` source length (bytes), as in `ScheduledController.cron`.
+const maxCronBytes :UInt32 = 128;
 # Maximum granted config payload size (bytes).
 const maxConfigPayloadBytes :UInt32 = 65536;
 # Maximum decoded size of a domain-event scalar payload (not a stream).
@@ -330,8 +332,10 @@ struct Entrypoints {
   oidc @7 :Oidc;
   # `[[queues.consumers]]` trigger: `queue(batch)` handler.
   queueConsumer @8 :QueueConsumer;
+  # `[triggers] crons` trigger: `scheduled(controller)` handler.
+  scheduledHandler @9 :ScheduledHandler;
   # `metadata` entrypoint.
-  metadata @9 :MetadataProvider;
+  metadata @10 :MetadataProvider;
 }
 
 # Result union of `PluginWorker.open`.
@@ -843,6 +847,17 @@ struct NamedDatabase {
   database @1 :GuestDatabase;
 }
 
+# `[triggers] crons` handler (`Entrypoints.scheduledHandler`), the Workers
+# `scheduled(controller)` trigger. Each fire is delivered at least once;
+# a fire that throws is retried with backoff, keeping `scheduledTime` and
+# `fireId`, so handlers dedupe on `fireId`.
+interface ScheduledHandler {
+  # Run one cron fire to completion.
+  scheduled @0 (
+      controller :ScheduledController  # The fire being delivered.
+  ) -> (result :EmptyReply);
+}
+
 # `[[queues.consumers]]` handler (`Entrypoints.queueConsumer`). Delivery is
 # at-least-once; consumers must be idempotent on `QueueMessage.id`.
 interface QueueConsumer {
@@ -1136,6 +1151,10 @@ struct PluginCapabilities {
   queueConsumers @6 :List(Text);
   # Queues the guest may send to through its `[[queues.producers]]` bindings.
   queueProducers @7 :List(Text);
+  # Five-field UTC cron schedules the default entrypoint handles
+  # (`scheduled(controller)` trigger, `[triggers] crons`), normalized to
+  # single spaces.
+  crons @8 :List(Text);
 }
 
 # Portal Accounts connect mode for storefronts.
@@ -2350,6 +2369,22 @@ struct KvListReply {
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }
+}
+
+# One fire of a `[triggers] crons` schedule (`scheduled(controller)`).
+struct ScheduledController {
+  # The schedule that fired, normalized to single spaces (`0 3 * * MON`).
+  cron @0 :Text;
+  # Fire time, UTC unix milliseconds (always a whole minute). Retries of
+  # one fire keep it.
+  scheduledTime @1 :UInt64;
+  # Durable id of this fire, stable across retries; dedupe on it.
+  fireId @2 :Text;
+  # Failure attempt, starting at 1.
+  attempt @3 :UInt32;
+  # UTC unix milliseconds. Host fence/lease is authoritative; this hint must
+  # not outlive the fence.
+  deadlineUnixMs @4 :UInt64;
 }
 
 # Params of `MetadataProvider.lookup`.

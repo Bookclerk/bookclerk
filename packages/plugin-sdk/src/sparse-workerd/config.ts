@@ -133,6 +133,7 @@ export function manifestCapabilities(m: Manifest): {
   bindings: string[];
   queueConsumers: string[];
   queueProducers: string[];
+  crons: string[];
 } {
   const bindings: string[] = [];
   if (m.vars !== undefined) bindings.push("CONFIG");
@@ -164,6 +165,8 @@ export function manifestCapabilities(m: Manifest): {
     bindings,
     queueConsumers: (m.queues?.consumers ?? []).map((c) => c.queue),
     queueProducers,
+    // Normalized like the host's `CronSchedule` (fields joined by one space).
+    crons: (m.triggers?.crons ?? []).map((c) => String(c).trim().split(/\s+/).join(" ")),
   };
 }
 

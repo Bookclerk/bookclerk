@@ -229,7 +229,7 @@ pub use features::{
 };
 pub use jobs::{read_all, stream_copy_keys, StreamCopyHandler, StreamCopySpec};
 pub use limits::{
-    ScalarLimits, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES,
+    ScalarLimits, MAX_CRON_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES,
     MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
     MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES,
     MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
@@ -239,7 +239,7 @@ pub use roles::{
     Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
     JobController, JobRunner, KvNamespace, MetadataProvider, NamedKvBinding, NamedQueueBinding,
     NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer,
-    ReadResult, RemoteLibrary, Source,
+    ReadResult, RemoteLibrary, ScheduledHandler, Source,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
@@ -248,8 +248,8 @@ pub use rpc::{
     serve_plugin_stdio, ContentSourceClient, DatabaseClient, DestinationClient, DestinationServer,
     EventConsumerClient, EventPublisherClient, HostBindings, JobRunnerClient, KvNamespaceClient,
     MetadataProviderClient, OidcClient, OpenedEntrypoints, PluginCliClient, PluginClient,
-    PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient, SourceClient,
-    SourceServer,
+    PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
+    ScheduledHandlerClient, SourceClient, SourceServer,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,

@@ -90,7 +90,13 @@ paths = ["fuzz/corpus/granted_http/**"]
 
 [[test_input]]
 package = "bookclerk-plugin-manifest"
-paths = ["fuzz/corpus/egress_policy/**", "fuzz/corpus/plugin_manifest/**"]
+# The cron oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/egress_policy/**",
+    "fuzz/corpus/plugin_manifest/**",
+    "fuzz/corpus/cron_schedule/**",
+    "fuzz/oracles/cron_schedule.rs",
+]
 
 [[test_input]]
 package = "bookclerk-cli"

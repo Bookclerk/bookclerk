@@ -367,6 +367,24 @@ export interface EventPublisherPublishResults {
 }
 
 /**
+ * Params envelope of `ScheduledHandler.scheduled`.
+ *
+ * @internal
+ */
+export interface ScheduledHandlerScheduledParams {
+  controller: T.ScheduledController;
+}
+
+/**
+ * Results envelope of `ScheduledHandler.scheduled`.
+ *
+ * @internal
+ */
+export interface ScheduledHandlerScheduledResults {
+  result: T.EmptyReply;
+}
+
+/**
  * Params envelope of `QueueConsumer.queue`.
  *
  * @internal
@@ -1598,7 +1616,7 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
       ScalarLimitsCodec.write(s.initStruct(3, 2, 0), v.scalarLimits, caps);
     }
     if (v.capabilities != null) {
-      PluginCapabilitiesCodec.write(s.initStruct(4, 0, 8), v.capabilities, caps);
+      PluginCapabilitiesCodec.write(s.initStruct(4, 0, 9), v.capabilities, caps);
     }
     s.setUint16(2, ord(A.PORTAL_AUTH_MODES, v.portalAuthMode ?? A.PORTAL_AUTH_MODES[0]!, "PortalAuthMode"));
     if (v.passwordEnvVar !== undefined) {
@@ -1627,7 +1645,7 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
       displayName: s.getText(1),
       rpcFeatures: s.getTextList(2),
       scalarLimits: ScalarLimitsCodec.read(s.getStruct(3, 2, 0), caps),
-      capabilities: PluginCapabilitiesCodec.read(s.getStruct(4, 0, 8), caps),
+      capabilities: PluginCapabilitiesCodec.read(s.getStruct(4, 0, 9), caps),
       portalAuthMode: fromOrd(A.PORTAL_AUTH_MODES, s.getUint16(2), "PortalAuthMode"),
       aliases: s.getTextList(6),
       sortKey: s.getUint32(2),
@@ -1837,13 +1855,13 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
 };
 
 /**
- * Wire codec for `Entrypoints` (0 data words, 10 pointers).
+ * Wire codec for `Entrypoints` (0 data words, 11 pointers).
  *
  * @internal
  */
 export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
   dataWords: 0,
-  pointerCount: 10,
+  pointerCount: 11,
   write(s, v, caps) {
     if (v.eventConsumer != null) {
       s.setCap(0, caps.exportCap(v.eventConsumer));
@@ -1872,8 +1890,11 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (v.queueConsumer != null) {
       s.setCap(8, caps.exportCap(v.queueConsumer));
     }
+    if (v.scheduledHandler != null) {
+      s.setCap(9, caps.exportCap(v.scheduledHandler));
+    }
     if (v.metadata != null) {
-      s.setCap(9, caps.exportCap(v.metadata));
+      s.setCap(10, caps.exportCap(v.metadata));
     }
   },
   read(s, caps) {
@@ -1915,7 +1936,11 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (!(queueConsumerValue == null)) {
       out.queueConsumer = queueConsumerValue;
     }
-    const metadataValue = caps.importCap(s.getCapIndex(9)) as T.MetadataProvider;
+    const scheduledHandlerValue = caps.importCap(s.getCapIndex(9)) as T.ScheduledHandler;
+    if (!(scheduledHandlerValue == null)) {
+      out.scheduledHandler = scheduledHandlerValue;
+    }
+    const metadataValue = caps.importCap(s.getCapIndex(10)) as T.MetadataProvider;
     if (!(metadataValue == null)) {
       out.metadata = metadataValue;
     }
@@ -1936,7 +1961,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          EntrypointsCodec.write(s.initStruct(0, 0, 10), v.value, caps);
+          EntrypointsCodec.write(s.initStruct(0, 0, 11), v.value, caps);
         }
         break;
       case "err":
@@ -1953,7 +1978,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 10), caps) };
+        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 11), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
       default:
@@ -3248,13 +3273,13 @@ export const EventConsumerSpecCodec: StructCodec<T.EventConsumerSpec> = {
 };
 
 /**
- * Wire codec for `PluginCapabilities` (0 data words, 8 pointers).
+ * Wire codec for `PluginCapabilities` (0 data words, 9 pointers).
  *
  * @internal
  */
 export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
   dataWords: 0,
-  pointerCount: 8,
+  pointerCount: 9,
   write(s, v, caps) {
     s.setUint16List(0, (v.entrypoints ?? []).map((v) => ord(A.ENTRYPOINTS, v, "Entrypoint")));
     {
@@ -3270,6 +3295,7 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
     s.setTextList(5, v.bindings ?? []);
     s.setTextList(6, v.queueConsumers ?? []);
     s.setTextList(7, v.queueProducers ?? []);
+    s.setTextList(8, v.crons ?? []);
   },
   read(s, caps) {
     return {
@@ -3281,6 +3307,7 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
       bindings: s.getTextList(5),
       queueConsumers: s.getTextList(6),
       queueProducers: s.getTextList(7),
+      crons: s.getTextList(8),
     };
   },
 };
@@ -6359,6 +6386,34 @@ export const KvListReplyCodec: StructCodec<T.KvListReply> = {
 };
 
 /**
+ * Wire codec for `ScheduledController` (3 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const ScheduledControllerCodec: StructCodec<T.ScheduledController> = {
+  dataWords: 3,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.cron ?? "");
+    s.setUint64(0, BigInt(v.scheduledTime ?? 0));
+    s.setText(1, v.fireId ?? "");
+    s.setUint32(2, v.attempt ?? 0);
+    s.setUint64(2, BigInt(v.deadlineUnixMs ?? 0));
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      cron: s.getText(0),
+      scheduledTime: Number(s.getUint64(0)),
+      fireId: s.getText(1),
+      attempt: s.getUint32(2),
+      deadlineUnixMs: Number(s.getUint64(2)),
+    };
+  },
+};
+
+/**
  * Wire codec for `MetadataLookupParams` (1 data words, 2 pointers).
  *
  * @internal
@@ -8641,6 +8696,46 @@ export const EventPublisherPublishResultsCodec: StructCodec<EventPublisherPublis
   read(s, caps) {
     return {
       result: PublishReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `ScheduledHandler.scheduled` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ScheduledHandlerScheduledParamsCodec: StructCodec<ScheduledHandlerScheduledParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.controller != null) {
+      ScheduledControllerCodec.write(s.initStruct(0, 3, 2), v.controller, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      controller: ScheduledControllerCodec.read(s.getStruct(0, 3, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `ScheduledHandler.scheduled` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ScheduledHandlerScheduledResultsCodec: StructCodec<ScheduledHandlerScheduledResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

@@ -131,9 +131,9 @@ const SCAN_SUMMARY_SELECTOR: u8 = 29;
 /// See [`SCAN_SUMMARY_SELECTOR`].
 const CATALOG_HITS_SELECTOR: u8 = 46;
 /// See [`SCAN_SUMMARY_SELECTOR`].
-const METADATA_RECORDS_SELECTOR: u8 = 90;
+const METADATA_RECORDS_SELECTOR: u8 = 91;
 /// See [`SCAN_SUMMARY_SELECTOR`].
-const METADATA_CHAPTERS_SELECTOR: u8 = 93;
+const METADATA_CHAPTERS_SELECTOR: u8 = 94;
 
 /// A scan summary with every structured book record filled.
 fn structured_scan_summary() -> bookclerk_plugin_abi::ScanSummary {

@@ -195,3 +195,15 @@ fn fuzz_corpus_egress_policy_holds_invariants() {
     }
     assert!(parsed > 0, "no egress_policy seed parsed");
 }
+
+/// The `cron_schedule` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/cron_schedule.rs"]
+mod cron_oracle;
+
+#[test]
+fn fuzz_corpus_cron_schedule_replays() {
+    for path in corpus_files("cron_schedule") {
+        let bytes = std::fs::read(&path).expect("read");
+        cron_oracle::check(&bytes);
+    }
+}

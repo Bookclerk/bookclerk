@@ -106,10 +106,10 @@ pub use bundled_platform::install_bundled_platform_plugins;
 pub use callback_proxy::CallbackProxy;
 pub use consent::{
     active_processes_for, canonical_event_filter, consent_request, consent_request_alias,
-    consent_summary, consumers_cover, cores_to_percent, database_binding_name, effective_cpu_cores,
-    effective_cpu_rate_percent, effective_disk_budget_bytes, effective_disk_mib,
-    effective_extra_processes, effective_grant, effective_memory_mib, format_cpu_cores,
-    grant_covers, grant_has_binding, grant_revision, grant_within_ceiling,
+    consent_summary, consumers_cover, cores_to_percent, cron_grant, database_binding_name,
+    effective_cpu_cores, effective_cpu_rate_percent, effective_disk_budget_bytes,
+    effective_disk_mib, effective_extra_processes, effective_grant, effective_memory_mib,
+    format_cpu_cores, grant_covers, grant_has_binding, grant_revision, grant_within_ceiling,
     granted_consumers_from_manifest, granted_database_bindings, granted_jobs_from_manifest,
     granted_queue_consumers, host_cpu_cores_max, host_cpu_rate_max, host_overlay_config_digest,
     inject_workerd_grant_env, is_platform_envelope, jail_process_overhead, network_compatible,

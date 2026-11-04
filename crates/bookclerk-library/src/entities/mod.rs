@@ -43,6 +43,7 @@ pub mod oidc_rp_states;
 pub mod operator_sessions;
 pub mod pending_joins;
 pub mod plugin_artifacts;
+pub mod plugin_cron_cursors;
 pub mod plugin_deployment_observations;
 pub mod plugin_deployments;
 pub mod plugin_installs;
