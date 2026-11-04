@@ -48,3 +48,6 @@
 "false"
 "\"\""
 "[]"
+"[triggers]"
+"crons = [\"*/30 * * * *\"]"
+"jobs = [\"stream_copy\"]"

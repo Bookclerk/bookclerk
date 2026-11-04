@@ -45,6 +45,7 @@ const {
   jobOutcomeFor,
   jsonPayload,
   queueBatchResults,
+  scheduledControllerOf,
 } = await import(join(dist, "plugin.js"));
 
 const enc = new TextEncoder();
@@ -325,6 +326,54 @@ function wireQueueMessage(overrides = {}) {
   ]);
 }
 
+// --- BookclerkEntrypoint.bookclerkScheduled -------------------------------
+
+{
+  const seen = [];
+  class Plugin extends BookclerkEntrypoint {
+    async scheduled(controller) {
+      seen.push(controller, this.env.FIXED);
+    }
+  }
+  const context = {
+    invocation: {
+      id: "inv-s",
+      accountId: "",
+      deadlineUnixMs: 0,
+      correlationId: "",
+      causationId: "",
+    },
+  };
+  await new Plugin({}, { FIXED: 1 }).bookclerkScheduled(context, {
+    cron: "0 3 * * MON",
+    scheduledTime: 120_000,
+    fireId: "fire-1",
+    attempt: 1,
+    deadlineUnixMs: 180_000,
+  });
+  assert.deepEqual(seen, [
+    {
+      cron: "0 3 * * MON",
+      scheduledTime: 120_000,
+      fireId: "fire-1",
+      attempt: 1,
+      deadlineUnixMs: 180_000,
+    },
+    1,
+  ]);
+  assert.deepEqual(scheduledControllerOf(undefined), {
+    cron: "",
+    scheduledTime: 0,
+    fireId: "",
+    attempt: 0,
+    deadlineUnixMs: 0,
+  });
+  await assert.rejects(
+    () => new BookclerkEntrypoint({}, {}).bookclerkScheduled(context, {}),
+    (err) => err instanceof PluginError && err.wireCode === "unsupported",
+  );
+}
+
 // --- JobController + jobOutcomeFor ----------------------------------------
 
 const jobInvocation = {
@@ -552,6 +601,21 @@ for (const [label, mod] of [
     ]),
     ["cli"],
     `${label}: no queue consumers nulls queueConsumer`,
+  );
+  assert.deepEqual(
+    allowedEntrypointFamilies({ entrypoints: [], consumes: [], jobs: [], crons: ["0 3 * * *"] }, [
+      "scheduledHandler",
+      "jobRunner",
+    ]),
+    ["scheduledHandler"],
+    `${label}: scheduledHandler requires [triggers] crons`,
+  );
+  assert.deepEqual(
+    allowedEntrypointFamilies({ entrypoints: ["cli"], consumes: [], jobs: [] }, [
+      "scheduledHandler",
+    ]),
+    [],
+    `${label}: no crons nulls scheduledHandler`,
   );
 
   const Adapter = wrapPluginFromNative();

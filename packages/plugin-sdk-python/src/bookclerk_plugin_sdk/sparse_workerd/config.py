@@ -118,6 +118,8 @@ def manifest_capabilities(m: dict[str, Any]) -> dict[str, Any]:
         "bindings": bindings,
         "queueConsumers": [str(c.get("queue")) for c in queues.get("consumers") or []],
         "queueProducers": queue_producers,
+        # Normalized like the host's `CronSchedule` (fields joined by one space).
+        "crons": [" ".join(str(c).split()) for c in ((m.get("triggers") or {}).get("crons") or [])],
     }
 
 

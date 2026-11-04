@@ -4526,6 +4526,28 @@ var QueueBatchReplyCodec = {
     }
   }
 };
+var ScheduledControllerCodec = {
+  dataWords: 3,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.cron ?? "");
+    s.setUint64(0, BigInt(v.scheduledTime ?? 0));
+    s.setText(1, v.fireId ?? "");
+    s.setUint32(2, v.attempt ?? 0);
+    s.setUint64(2, BigInt(v.deadlineUnixMs ?? 0));
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      cron: s.getText(0),
+      scheduledTime: Number(s.getUint64(0)),
+      fireId: s.getText(1),
+      attempt: s.getUint32(2),
+      deadlineUnixMs: Number(s.getUint64(2))
+    };
+  }
+};
 var DbValueCodec = {
   dataWords: 2,
   pointerCount: 1,
@@ -5716,6 +5738,34 @@ var EventConsumerEventResultsCodec = {
   read(s, caps) {
     return {
       result: EventBatchReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var ScheduledHandlerScheduledParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.controller != null) {
+      ScheduledControllerCodec.write(s.initStruct(0, 3, 2), v.controller, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      controller: ScheduledControllerCodec.read(s.getStruct(0, 3, 2), caps)
+    };
+  }
+};
+var ScheduledHandlerScheduledResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
     };
   }
 };
@@ -7098,6 +7148,15 @@ var METHODS = {
       ok: (value) => okValue({ results: asList(value).map(queueResult) })
     })
   },
+  ScheduledHandler: {
+    scheduled: spec({
+      params: ScheduledHandlerScheduledParamsCodec,
+      results: ScheduledHandlerScheduledResultsCodec,
+      stub: "author",
+      call: (s, p, cx) => s.bookclerkScheduled(cx.host.bindContext(cx.ctx), p.controller ?? {}),
+      ok: okEmpty
+    })
+  },
   JobRunner: {
     job: spec({
       params: JobRunnerJobParamsCodec,
@@ -8144,6 +8203,21 @@ var BookclerkEntrypoint = class extends WorkerEntrypoint {
     } catch (err) {
       return queueBatchResults(batch, err ?? new Error("queue handler failed"));
     }
+  }
+  /**
+   * Adapter dispatch for the `scheduled(controller)` trigger.
+   *
+   * @param context - Granted bindings for this invocation.
+   * @param wire - Wire `ScheduledController`.
+   * @returns Resolves when the author's handler completes.
+   * @internal
+   */
+  async bookclerkScheduled(context, wire) {
+    if (typeof this.scheduled !== "function") {
+      throw unsupported("scheduled");
+    }
+    applyInvocationEnv(this, context);
+    await this.scheduled(scheduledControllerOf(wire));
   }
   /**
    * Adapter dispatch for the `job(controller)` trigger.
@@ -9208,8 +9282,19 @@ function wrapPluginFromNative() {
 var TRIGGER_FAMILIES = Object.freeze({
   eventConsumer: "eventConsumer",
   queueConsumer: "queueConsumer",
+  scheduledHandler: "scheduledHandler",
   jobRunner: "jobRunner"
 });
+function scheduledControllerOf(wire) {
+  const w = wire && typeof wire === "object" ? wire : {};
+  return Object.freeze({
+    cron: String(w.cron ?? ""),
+    scheduledTime: Number(w.scheduledTime ?? 0) || 0,
+    fireId: String(w.fireId ?? ""),
+    attempt: Number(w.attempt ?? 0) || 0,
+    deadlineUnixMs: Number(w.deadlineUnixMs ?? 0) || 0
+  });
+}
 function allowedEntrypointFamilies(capabilities, requested) {
   if (!capabilities || typeof capabilities !== "object")
     return [];
@@ -9217,6 +9302,7 @@ function allowedEntrypointFamilies(capabilities, requested) {
   const consumes = Array.isArray(capabilities.consumes) ? capabilities.consumes : [];
   const queueConsumers = Array.isArray(capabilities.queueConsumers) ? capabilities.queueConsumers : [];
   const jobs = Array.isArray(capabilities.jobs) ? capabilities.jobs : [];
+  const crons = Array.isArray(capabilities.crons) ? capabilities.crons : [];
   const exportsStorage = entrypoints.includes("storage");
   const out = [];
   for (const name of requested) {
@@ -9227,6 +9313,9 @@ function allowedEntrypointFamilies(capabilities, requested) {
         out.push(name);
     } else if (name === TRIGGER_FAMILIES.queueConsumer) {
       if (queueConsumers.length > 0)
+        out.push(name);
+    } else if (name === TRIGGER_FAMILIES.scheduledHandler) {
+      if (crons.length > 0)
         out.push(name);
     } else if (name === TRIGGER_FAMILIES.jobRunner) {
       if (jobs.length > 0 || exportsStorage)

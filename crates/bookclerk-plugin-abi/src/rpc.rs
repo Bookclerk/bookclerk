@@ -64,7 +64,7 @@ use crate::plugin_capnp::{
     plugin_migration_op, plugin_migrations_ok, plugin_migrations_reply, plugin_worker,
     progress_sink, pull_reply, put_reply, queue_consumer as queue_consumer_capnp,
     queue_producer as queue_producer_capnp, remote_library as remote_library_capnp,
-    source as source_capnp, write_options,
+    scheduled_handler as scheduled_handler_capnp, source as source_capnp, write_options,
 };
 #[cfg(feature = "host")]
 use crate::plugin_host_capnp::host_adapter_database_session as host_adapter_database_session_capnp;
@@ -73,7 +73,7 @@ use crate::roles::{
     Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
     JobController, JobRunner, KvNamespace, NamedKvBinding, NamedQueueBinding, NeverCancel, Oidc,
     PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary,
-    Source,
+    ScheduledHandler, Source,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, HealthOk, JobCheckpoint, JobInvocation, JobOutcome,
@@ -1615,6 +1615,11 @@ fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u
             inner: Arc::from(x),
         }));
     }
+    if let Some(x) = eps.scheduled_handler {
+        b.set_scheduled_handler(capnp_rpc::new_client(ScheduledHandlerServer {
+            inner: Arc::from(x),
+        }));
+    }
 }
 
 /// Encode plugin OIDC client templates into a Cap'n Proto `oidcClients` ok payload.
@@ -2407,6 +2412,29 @@ impl queue_consumer_capnp::Server for QueueConsumerServer {
     }
 }
 
+/// Guest-side server for the `[triggers] crons` trigger.
+struct ScheduledHandlerServer {
+    /// The guest's handler.
+    inner: Arc<dyn ScheduledHandler>,
+}
+
+impl scheduled_handler_capnp::Server for ScheduledHandlerServer {
+    async fn scheduled(
+        self: Rc<Self>,
+        params: scheduled_handler_capnp::ScheduledParams,
+        mut results: scheduled_handler_capnp::ScheduledResults,
+    ) -> capnp::Result<()> {
+        let controller =
+            crate::generated::read_scheduled_controller(params.get()?.get_controller()?)?;
+        let mut result = results.get().init_result();
+        match self.inner.scheduled(controller).await {
+            Ok(()) => result.set_ok(()),
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
+    }
+}
+
 /// Host-side server for a [`QueueProducer`] handed to a guest on
 /// `Bindings.queues`.
 struct QueueProducerServer {
@@ -3033,6 +3061,8 @@ pub struct OpenedEntrypoints {
     pub oidc: Option<OidcClient>,
     /// `[[queues.consumers]]` trigger.
     pub queue_consumer: Option<QueueConsumerClient>,
+    /// `[triggers] crons` trigger.
+    pub scheduled_handler: Option<ScheduledHandlerClient>,
 }
 
 /// Host bootstrap client for a plugin vat.
@@ -3249,6 +3279,13 @@ impl PluginClient {
             queue_consumer: if eps.has_queue_consumer() {
                 Some(QueueConsumerClient {
                     client: eps.get_queue_consumer()?,
+                })
+            } else {
+                None
+            },
+            scheduled_handler: if eps.has_scheduled_handler() {
+                Some(ScheduledHandlerClient {
+                    client: eps.get_scheduled_handler()?,
                 })
             } else {
                 None
@@ -3758,6 +3795,48 @@ impl EventPublisher for EventPublisherClient {
         write_plugin_event(req.get().init_event(), &event).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_publish_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+}
+
+/// Cap'n Proto client for [`ScheduledHandler`] (host → guest cron fire).
+#[derive(Clone)]
+pub struct ScheduledHandlerClient {
+    /// Typed capability.
+    client: scheduled_handler_capnp::Client,
+}
+
+impl ScheduledHandlerClient {
+    /// Wraps a `ScheduledHandler` capability client (any transport that
+    /// yields one, including the bookclerk-workerd `/invoke` hook).
+    #[must_use]
+    pub fn new(client: scheduled_handler_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl ScheduledHandler for ScheduledHandlerClient {
+    async fn scheduled(&self, controller: crate::ScheduledController) -> Result<()> {
+        if controller.cron.len() > crate::MAX_CRON_BYTES as usize {
+            return Err(PluginError::payload_too_large(format!(
+                "cron of {} bytes exceeds {}",
+                controller.cron.len(),
+                crate::MAX_CRON_BYTES
+            )));
+        }
+        let mut req = self.client.scheduled_request();
+        crate::generated::write_scheduled_controller(req.get().init_controller(), &controller)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let result = reply
+            .get()
+            .map_err(from_capnp)?
+            .get_result()
+            .map_err(from_capnp)?;
+        match result.which().map_err(from_capnp)? {
+            empty_reply::Ok(()) => Ok(()),
+            empty_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
+        }
     }
 }
 
@@ -4846,6 +4925,105 @@ mod tests {
             }
             Ok(crate::QueueSendOk { message_ids: ids })
         }
+    }
+
+    /// Guest whose `scheduled` handler records each fire and fails one cron.
+    struct CronPlugin;
+
+    #[async_trait::async_trait(?Send)]
+    impl PluginWorker for CronPlugin {
+        async fn describe(&self) -> Result<PluginDescribe> {
+            Ok(PluginDescribe {
+                api_version: PRODUCT_API_VERSION,
+                id: "cron_test".into(),
+                capabilities: PluginCapabilities {
+                    crons: vec!["*/30 * * * *".into()],
+                    ..PluginCapabilities::default()
+                },
+                rpc_features: vec![FEATURE_SCALAR_LIMITS.into()],
+                scalar_limits: ScalarLimits::default().into(),
+                ..PluginDescribe::default()
+            })
+        }
+
+        async fn open(&self, _invocation: Invocation, _bindings: Bindings) -> Result<Entrypoints> {
+            Ok(Entrypoints {
+                scheduled_handler: Some(Box::new(CronEcho)),
+                ..Entrypoints::default()
+            })
+        }
+    }
+
+    /// Accepts `*/30 * * * *` fires at a whole minute, rejects anything else.
+    struct CronEcho;
+
+    #[async_trait::async_trait(?Send)]
+    impl ScheduledHandler for CronEcho {
+        async fn scheduled(&self, controller: crate::ScheduledController) -> Result<()> {
+            if controller.cron != "*/30 * * * *" {
+                return Err(PluginError::invalid_params(format!(
+                    "unexpected cron {}",
+                    controller.cron
+                )));
+            }
+            if !controller.scheduled_time.is_multiple_of(60_000) || controller.fire_id.is_empty() {
+                return Err(PluginError::internal("fire is not a whole minute"));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn scheduled_handler_round_trips_fires_and_errors() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let (client_r, server_w) = tokio::io::duplex(64 * 1024);
+            let (server_r, client_w) = tokio::io::duplex(64 * 1024);
+            tokio::task::spawn_local(async move {
+                let _ = serve_plugin(Arc::new(CronPlugin), server_r, server_w, 64 * 1024).await;
+            });
+            let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
+            tokio::task::spawn_local(rpc);
+            let describe = client.describe().await.expect("describe");
+            assert_eq!(describe.capabilities.crons, vec!["*/30 * * * *".to_owned()]);
+            let opened = client
+                .open(
+                    &Invocation {
+                        id: "cron".into(),
+                        ..Invocation::default()
+                    },
+                    HostBindings::default(),
+                )
+                .await
+                .expect("open");
+            assert!(opened.queue_consumer.is_none());
+            let handler = opened.scheduled_handler.expect("scheduledHandler");
+            let fire = |cron: &str, at: u64| crate::ScheduledController {
+                cron: cron.into(),
+                scheduled_time: at,
+                fire_id: "plugin_scheduled-1".into(),
+                attempt: 1,
+                deadline_unix_ms: at + 60_000,
+            };
+            handler
+                .scheduled(fire("*/30 * * * *", 1_800_000))
+                .await
+                .expect("fire ok");
+            let err = handler
+                .scheduled(fire("0 0 * * *", 1_800_000))
+                .await
+                .expect_err("wrong cron");
+            assert_eq!(err.code, crate::PluginErrorCode::InvalidParams);
+            let too_long = handler
+                .scheduled(fire(&"1".repeat(crate::MAX_CRON_BYTES as usize + 1), 0))
+                .await
+                .expect_err("cron too long");
+            assert_eq!(too_long.code, crate::PluginErrorCode::PayloadTooLarge);
+        });
     }
 
     #[test]

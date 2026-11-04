@@ -1346,6 +1346,10 @@ pub enum JobKind {
     IntegrationScan,
     /// ABI `JobRunner` stream-copy vertical slice (`plugin_copy`).
     PluginCopy,
+    /// One fire of a plugin's `[triggers] crons` schedule
+    /// (`plugin_scheduled`), delivered to its `scheduled(controller)`
+    /// handler on a node that runs the instance.
+    PluginScheduled,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,
 }
@@ -1360,6 +1364,7 @@ impl JobKind {
             Self::ListenSync => "listen_sync",
             Self::IntegrationScan => "integration_scan",
             Self::PluginCopy => "plugin_copy",
+            Self::PluginScheduled => "plugin_scheduled",
             Self::Invalid => "invalid",
         }
     }
@@ -1373,6 +1378,7 @@ impl JobKind {
             "listen_sync" => Some(Self::ListenSync),
             "integration_scan" => Some(Self::IntegrationScan),
             "plugin_copy" => Some(Self::PluginCopy),
+            "plugin_scheduled" => Some(Self::PluginScheduled),
             "invalid" => Some(Self::Invalid),
             _ => None,
         }
@@ -1432,6 +1438,12 @@ impl JobKind {
                 let to = payload.dest_key.as_deref().unwrap_or("-");
                 format!("plugin_copy:plugin={plugin}:from={from}:to={to}")
             }
+            // One active fire per schedule: a fire that comes due while the
+            // previous one is still queued or running is skipped.
+            Self::PluginScheduled => plugin_scheduled_dedup_key(
+                payload.plugin_instance_id.as_deref().unwrap_or("-"),
+                payload.cron.as_deref().unwrap_or("-"),
+            ),
             Self::Invalid => "invalid".into(),
         }
     }
@@ -1642,6 +1654,21 @@ pub struct JobPayload {
     /// node does not fail queued work (`control_plane::sweep_job_requirements`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requires_unsettled_since_ms: Option<i64>,
+    /// For [`JobKind::PluginScheduled`]: the normalized `[triggers] crons`
+    /// schedule that fired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    /// For [`JobKind::PluginScheduled`]: the fire time the handler sees as
+    /// `scheduledTime`, in Unix milliseconds (always a whole UTC minute).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_time_ms: Option<i64>,
+}
+
+/// Dedup key of a [`JobKind::PluginScheduled`] fire: one active fire per
+/// `(instance, cron)`.
+#[must_use]
+pub fn plugin_scheduled_dedup_key(plugin_instance_id: &str, cron: &str) -> String {
+    format!("plugin_scheduled:instance={plugin_instance_id}:cron={cron}")
 }
 
 /// Default envelope version for missing `v` on well-formed legacy rows.
@@ -1668,6 +1695,8 @@ impl Default for JobPayload {
             resume_pending: false,
             pdf_only: false,
             requires_unsettled_since_ms: None,
+            cron: None,
+            scheduled_time_ms: None,
         }
     }
 }

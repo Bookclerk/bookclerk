@@ -38,6 +38,7 @@ pub use tickets::{
 };
 pub use traits::{
     EventSubscription, Integration, IntegrationContext, ProvidedOidcClient, QueueSubscription,
+    ScheduledInvocation,
 };
 pub use types::{
     ExternalUser, IntegrationHealth, ListeningProgressSnapshot, SyncListeningProviderResult,

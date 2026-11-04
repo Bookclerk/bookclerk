@@ -258,7 +258,7 @@ def _write_plugin_describe(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(1, v["displayName"])
     s.set_text_list(2, v["rpcFeatures"])
     _scalar_limits_codec.write(s.init_struct(3, 2, 0), v["scalarLimits"], caps)
-    _plugin_capabilities_codec.write(s.init_struct(4, 0, 8), v["capabilities"], caps)
+    _plugin_capabilities_codec.write(s.init_struct(4, 0, 9), v["capabilities"], caps)
     s.set_u16(2, _ord(A.PORTAL_AUTH_MODES, v["portalAuthMode"], "PortalAuthMode"))
     if v.get("passwordEnvVar") is not None:
         s.set_text(5, v["passwordEnvVar"])
@@ -278,7 +278,7 @@ def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
         "displayName": s.get_text(1),
         "rpcFeatures": s.get_text_list(2),
         "scalarLimits": _scalar_limits_codec.read(s.get_struct(3, 2, 0), caps),
-        "capabilities": _plugin_capabilities_codec.read(s.get_struct(4, 0, 8), caps),
+        "capabilities": _plugin_capabilities_codec.read(s.get_struct(4, 0, 9), caps),
         "portalAuthMode": _from_ord(A.PORTAL_AUTH_MODES, s.get_u16(2), "PortalAuthMode"),
         "aliases": s.get_text_list(6),
         "sortKey": s.get_u32(2),
@@ -458,6 +458,9 @@ def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("queueConsumer") is not None:
         if v["queueConsumer"] is not None:
             s.set_cap(8, caps.export_cap(v["queueConsumer"]))
+    if v.get("scheduledHandler") is not None:
+        if v["scheduledHandler"] is not None:
+            s.set_cap(9, caps.export_cap(v["scheduledHandler"]))
 
 
 def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
@@ -490,18 +493,21 @@ def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
     queue_consumer = caps.import_cap(s.get_cap_index(8))
     if not (queue_consumer is None):
         out["queueConsumer"] = queue_consumer
+    scheduled_handler = caps.import_cap(s.get_cap_index(9))
+    if not (scheduled_handler is None):
+        out["scheduledHandler"] = scheduled_handler
     return out
 
 
-_entrypoints_codec = _Codec(0, 9, _write_entrypoints, _read_entrypoints)
-"""Wire codec for ``Entrypoints`` (0 data words, 9 pointers)."""
+_entrypoints_codec = _Codec(0, 10, _write_entrypoints, _read_entrypoints)
+"""Wire codec for ``Entrypoints`` (0 data words, 10 pointers)."""
 
 
 def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _entrypoints_codec.write(s.init_struct(0, 0, 9), v["value"], caps)
+        _entrypoints_codec.write(s.init_struct(0, 0, 10), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
@@ -512,7 +518,7 @@ def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_entrypoints_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 9), caps)}
+        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 10), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
     raise ValueError(f"unknown EntrypointsReply union member: {disc}")
@@ -1434,6 +1440,7 @@ def _write_plugin_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> None
     s.set_text_list(5, v["bindings"])
     s.set_text_list(6, v["queueConsumers"])
     s.set_text_list(7, v["queueProducers"])
+    s.set_text_list(8, v["crons"])
 
 
 def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
@@ -1446,11 +1453,12 @@ def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
         "bindings": s.get_text_list(5),
         "queueConsumers": s.get_text_list(6),
         "queueProducers": s.get_text_list(7),
+        "crons": s.get_text_list(8),
     }
 
 
-_plugin_capabilities_codec = _Codec(0, 8, _write_plugin_capabilities, _read_plugin_capabilities)
-"""Wire codec for ``PluginCapabilities`` (0 data words, 8 pointers)."""
+_plugin_capabilities_codec = _Codec(0, 9, _write_plugin_capabilities, _read_plugin_capabilities)
+"""Wire codec for ``PluginCapabilities`` (0 data words, 9 pointers)."""
 
 
 def _write_brand(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -3618,6 +3626,28 @@ _kv_list_reply_codec = _Codec(1, 1, _write_kv_list_reply, _read_kv_list_reply)
 """Wire codec for ``KvListReply`` (1 data words, 1 pointers)."""
 
 
+def _write_scheduled_controller(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["cron"])
+    s.set_u64(0, v["scheduledTime"])
+    s.set_text(1, v["fireId"])
+    s.set_u32(2, v["attempt"])
+    s.set_u64(2, v["deadlineUnixMs"])
+
+
+def _read_scheduled_controller(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "cron": s.get_text(0),
+        "scheduledTime": s.get_u64(0),
+        "fireId": s.get_text(1),
+        "attempt": s.get_u32(2),
+        "deadlineUnixMs": s.get_u64(2),
+    }
+
+
+_scheduled_controller_codec = _Codec(3, 2, _write_scheduled_controller, _read_scheduled_controller)
+"""Wire codec for ``ScheduledController`` (3 data words, 2 pointers)."""
+
+
 def _write_db_value(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "null":
@@ -4919,6 +4949,34 @@ def _read_event_publisher_publish_results(s: _StructReader, caps: _CapTable) -> 
 
 _event_publisher_publish_results_codec = _Codec(0, 1, _write_event_publisher_publish_results, _read_event_publisher_publish_results)
 """Wire codec for ``EventPublisherPublishResults`` (0 data words, 1 pointers)."""
+
+
+def _write_scheduled_handler_scheduled_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _scheduled_controller_codec.write(s.init_struct(0, 3, 2), v["controller"], caps)
+
+
+def _read_scheduled_handler_scheduled_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "controller": _scheduled_controller_codec.read(s.get_struct(0, 3, 2), caps),
+    }
+
+
+_scheduled_handler_scheduled_params_codec = _Codec(0, 1, _write_scheduled_handler_scheduled_params, _read_scheduled_handler_scheduled_params)
+"""Wire codec for ``ScheduledHandlerScheduledParams`` (0 data words, 1 pointers)."""
+
+
+def _write_scheduled_handler_scheduled_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_scheduled_handler_scheduled_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_scheduled_handler_scheduled_results_codec = _Codec(0, 1, _write_scheduled_handler_scheduled_results, _read_scheduled_handler_scheduled_results)
+"""Wire codec for ``ScheduledHandlerScheduledResults`` (0 data words, 1 pointers)."""
 
 
 def _write_queue_consumer_queue_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

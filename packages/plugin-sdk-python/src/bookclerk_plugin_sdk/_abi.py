@@ -24,6 +24,9 @@ MAX_CHECKPOINT_BYTES: int = 65536
 MAX_IDENTIFIER_BYTES: int = 64
 """Maximum plugin / account identifier length (bytes)."""
 
+MAX_CRON_BYTES: int = 128
+"""Maximum `[triggers] crons` source length (bytes), as in `ScheduledController.cron`."""
+
 MAX_CONFIG_PAYLOAD_BYTES: int = 65536
 """Maximum granted config payload size (bytes)."""
 
@@ -190,6 +193,7 @@ __all__ = [
     "MAX_LIST_PAGE",
     "MAX_CHECKPOINT_BYTES",
     "MAX_IDENTIFIER_BYTES",
+    "MAX_CRON_BYTES",
     "MAX_CONFIG_PAYLOAD_BYTES",
     "MAX_EVENT_PAYLOAD_BYTES",
     "MAX_KV_VALUE_BYTES",

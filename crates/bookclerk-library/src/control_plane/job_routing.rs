@@ -409,6 +409,35 @@ async fn deployed_somewhere(store: &LibraryStore, instance: &PluginInstanceId) -
         .any(|deployment| deployment.desired.runs()))
 }
 
+/// True when a node trusted with every job has a running deployment of
+/// `instance`.
+///
+/// Instance-pinned jobs reach only such nodes: an owner node, or a Host
+/// whose owner is privileged ([`super::trust::job_trusted`]). A deployment
+/// whose node has no `nodes` row is this install's own and counts as
+/// trusted. An unparsable id is deployed nowhere.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn deployed_on_trusted_node(store: &LibraryStore, instance: &str) -> Result<bool> {
+    let Ok(instance) = PluginInstanceId::parse(instance) else {
+        return Ok(false);
+    };
+    for deployment in list_deployments_for_instance(store, &instance).await? {
+        if !deployment.desired.runs() {
+            continue;
+        }
+        let trust =
+            super::trust::node_trust(store, &deployment.node_id, super::trust::Claimant::Local)
+                .await?;
+        if trust == super::trust::NodeTrust::All {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// True when `node_id` can run a job that requires `requires`.
 ///
 /// Each instance needs a deployment on the node that should run and an

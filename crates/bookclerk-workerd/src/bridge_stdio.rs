@@ -35,8 +35,9 @@ use bookclerk_plugin_abi::{
     JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions, ListPage, ObjectMetadata,
     Oidc, OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli, PluginCliClient,
     PluginClient, PluginDescribe, PluginMigration, PluginWorker, PutResult, QueueConsumer,
-    QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient, WriteOptions,
-    MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient, ScheduledHandler,
+    ScheduledHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
+    PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -97,6 +98,8 @@ struct WorkerdRoot {
 const FAMILY_EVENT_CONSUMER: &str = "eventConsumer";
 /// Wire name of the `[[queues.consumers]]` trigger family on `/open`.
 const FAMILY_QUEUE_CONSUMER: &str = "queueConsumer";
+/// Wire name of the `[triggers] crons` trigger family on `/open`.
+const FAMILY_SCHEDULED_HANDLER: &str = "scheduledHandler";
 /// Wire name of the `[triggers] jobs` family on `/open`.
 const FAMILY_JOB_RUNNER: &str = "jobRunner";
 
@@ -120,6 +123,9 @@ impl WorkerdRoot {
         }
         if !self.capabilities.queue_consumers.is_empty() {
             out.push(FAMILY_QUEUE_CONSUMER);
+        }
+        if !self.capabilities.crons.is_empty() {
+            out.push(FAMILY_SCHEDULED_HANDLER);
         }
         if self.runs_jobs() {
             out.push(FAMILY_JOB_RUNNER);
@@ -344,6 +350,10 @@ impl WorkerdRoot {
         if !self.capabilities.queue_consumers.is_empty() {
             exported.queue_consumer = Some(Box::new(QueueConsumerClient::new(invoke.typed())));
         }
+        if !self.capabilities.crons.is_empty() {
+            exported.scheduled_handler =
+                Some(Box::new(ScheduledHandlerClient::new(invoke.typed())));
+        }
         if self.exports(Entrypoint::Oidc) {
             exported.oidc = Some(Box::new(OidcClient::new(invoke.typed())));
         }
@@ -376,6 +386,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         cli,
         oidc,
         queue_consumer,
+        scheduled_handler,
     } = opened;
     Entrypoints {
         event_consumer: event_consumer
@@ -384,6 +395,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         queue_consumer: queue_consumer
             .filter(|_| allow(FAMILY_QUEUE_CONSUMER))
             .map(|c| Box::new(c) as Box<dyn QueueConsumer>),
+        scheduled_handler: scheduled_handler
+            .filter(|_| allow(FAMILY_SCHEDULED_HANDLER))
+            .map(|c| Box::new(c) as Box<dyn ScheduledHandler>),
         job_runner: job_runner
             .filter(|_| allow(FAMILY_JOB_RUNNER))
             .map(|c| Box::new(c) as Box<dyn JobRunner>),

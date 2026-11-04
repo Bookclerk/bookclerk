@@ -52,9 +52,14 @@ const enc = new TextEncoder();
 
 // --- Author isolate stand-ins --------------------------------------------
 
-const calls = { event: 0, queue: 0, queueSends: [], storefront: [] };
+const calls = { event: 0, queue: 0, queueSends: [], storefront: [], scheduled: [] };
 
 class Plugin extends BookclerkEntrypoint {
+  async scheduled(controller) {
+    calls.scheduled.push(controller);
+    if (controller.cron === "0 0 * * *") throw new Error("nightly failed");
+  }
+
   async queue(batch) {
     calls.queue += 1;
     const sent = await this.env.NOTIFY.send({ seen: batch.queue }, { delaySeconds: 3 });
@@ -544,6 +549,35 @@ function decodeReply(reply, resultsCodec, caps) {
       { kind: "retry", value: { retryAtUnixMs: 0, reason: "again" } },
     ],
   });
+}
+
+// --- ScheduledHandler: one author call per fire; a throw is a typed error ----
+
+{
+  const fire = (cron) => ({
+    cron,
+    scheduledTime: 1_800_000,
+    fireId: "plugin_scheduled-1",
+    attempt: 2,
+    deadlineUnixMs: 1_860_000,
+  });
+  const ok = decodeReply(
+    await invoke("ScheduledHandler", "scheduled", W.ScheduledHandlerScheduledParamsCodec, {
+      controller: fire("*/30 * * * *"),
+    }),
+    W.ScheduledHandlerScheduledResultsCodec,
+  );
+  assert.equal(ok.kind, "ok");
+  assert.deepEqual(calls.scheduled[0], fire("*/30 * * * *"));
+  assert.ok(Object.isFrozen(calls.scheduled[0]), "the controller is read-only");
+  const failed = decodeReply(
+    await invoke("ScheduledHandler", "scheduled", W.ScheduledHandlerScheduledParamsCodec, {
+      controller: fire("0 0 * * *"),
+    }),
+    W.ScheduledHandlerScheduledResultsCodec,
+  );
+  assert.equal(failed.kind, "err");
+  assert.match(String(failed.value.message), /nightly failed/);
 }
 
 // --- QueueConsumer: one author call per batch; env.<QUEUE> sends via GRANTED --

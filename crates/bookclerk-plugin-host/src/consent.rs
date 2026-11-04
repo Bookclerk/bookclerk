@@ -189,6 +189,17 @@ pub const QUEUE_PRODUCER_BINDING_PREFIX: &str = "queue:";
 /// (`queue_consumer:<queue>`): the host may deliver that queue to the plugin.
 pub const QUEUE_CONSUMER_BINDING_PREFIX: &str = "queue_consumer:";
 
+/// Grant `bindings` entry prefix for one `[triggers] crons` schedule
+/// (`cron:<normalized cron>`): the host may fire that schedule's
+/// `scheduled(controller)` trigger.
+pub const CRON_BINDING_PREFIX: &str = "cron:";
+
+/// Grant token for firing the normalized cron schedule `cron`.
+#[must_use]
+pub fn cron_grant(cron: &str) -> String {
+    format!("{CRON_BINDING_PREFIX}{cron}")
+}
+
 /// Grant token for sending through the `[[queues.producers]]` binding `binding`.
 #[must_use]
 pub fn queue_producer_grant(binding: &str) -> String {
@@ -491,6 +502,14 @@ impl PluginGrant {
     #[must_use]
     pub fn allows_queue_consumer(&self, queue: &str) -> bool {
         grant_has_binding(self, &queue_consumer_grant(queue))
+    }
+
+    /// True when this grant authorizes firing the normalized cron `cron`.
+    #[must_use]
+    pub fn allows_cron(&self, cron: &str) -> bool {
+        // Exact match: cron tokens are case-sensitive, unlike host bindings.
+        let token = cron_grant(cron);
+        self.bindings.iter().any(|binding| *binding == token)
     }
 
     /// True when this grant authorizes sending through the queue producer
@@ -882,6 +901,9 @@ pub fn consent_request_alias(manifest: &PluginManifest) -> PluginGrant {
     }
     for consumer in &manifest.queues.consumers {
         bindings.insert(queue_consumer_grant(&consumer.queue));
+    }
+    for cron in &manifest.triggers.crons {
+        bindings.insert(cron_grant(cron.as_str()));
     }
     let flags = manifest
         .workerd
@@ -1653,6 +1675,14 @@ pub fn validate_approved_grant(
             }
             continue;
         }
+        if binding.starts_with(CRON_BINDING_PREFIX) {
+            if !baseline.bindings.contains(binding) {
+                return Err(PluginError::message(format!(
+                    "grant cron `{binding}` is not declared by plugin.toml"
+                )));
+            }
+            continue;
+        }
         if !KNOWN_HOST_BINDINGS
             .iter()
             .any(|known| binding.eq_ignore_ascii_case(known))
@@ -1698,8 +1728,9 @@ pub fn validate_approved_grant(
         .bindings
         .iter()
         .map(|b| {
-            if database_binding_name(b).is_some() {
-                // Preserve the case-sensitive binding name after the prefix.
+            if database_binding_name(b).is_some() || b.starts_with(CRON_BINDING_PREFIX) {
+                // Preserve the case-sensitive binding name or cron source
+                // (`MON` stays `MON`) after the prefix.
                 return b.clone();
             }
             KNOWN_HOST_BINDINGS
@@ -2557,6 +2588,14 @@ pub fn validate_described_capabilities(
             )));
         }
         require_binding(grant, &queue_consumer_grant(queue))?;
+    }
+    for cron in &described.crons {
+        if !declared.crons.contains(cron) {
+            return Err(PluginError::message(format!(
+                "plugin `{id}` describe() declares cron `{cron}` not declared in plugin.toml"
+            )));
+        }
+        require_binding(grant, &cron_grant(cron))?;
     }
     for queue in &described.queue_producers {
         if !declared.queue_producers.contains(queue) {
@@ -4541,6 +4580,85 @@ type = "demo_pinged"
         .unwrap_err()
         .to_string();
         assert!(err.contains("grant lacks event producer"), "{err}");
+    }
+
+    #[test]
+    fn cron_grants_follow_the_manifest_and_describe_cannot_widen_them() {
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "demo"
+runtime = "native"
+command = "./demo"
+
+[capabilities.network]
+mode = "deny"
+
+[triggers]
+crons = ["*/30  * * * *", "0 3 * * MON"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(cron_grant("0 * * * *"), "cron:0 * * * *");
+        let grant = consent_request_alias(&manifest);
+        assert!(
+            grant.bindings.contains("cron:*/30 * * * *"),
+            "{:?}",
+            grant.bindings
+        );
+        assert!(grant.allows_cron("*/30 * * * *"));
+        assert!(!grant.allows_cron("0 * * * *"));
+
+        let described = manifest.capabilities();
+        assert_eq!(
+            described.crons,
+            vec!["*/30 * * * *".to_string(), "0 3 * * MON".to_string()]
+        );
+        validate_described_capabilities(&manifest, &grant, &described, PortalAuthMode::Unspecified)
+            .unwrap();
+
+        let mut widened = described.clone();
+        widened.crons.push("0 * * * *".into());
+        let err = validate_described_capabilities(
+            &manifest,
+            &grant,
+            &widened,
+            PortalAuthMode::Unspecified,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("declares cron `0 * * * *` not declared"),
+            "{err}"
+        );
+
+        // An operator override that keeps (or drops) the declared cron is
+        // accepted; one naming an undeclared cron is not.
+        let approved = validate_approved_grant(&grant, &grant).unwrap();
+        assert!(
+            approved.bindings.contains("cron:0 3 * * MON"),
+            "named crons keep their case: {:?}",
+            approved.bindings
+        );
+        assert!(effective_grant(&approved, &grant).allows_cron("0 3 * * MON"));
+        assert!(!effective_grant(&approved, &grant).allows_cron("0 3 * * mon"));
+        let mut other = grant.clone();
+        other.bindings.insert(cron_grant("0 * * * *"));
+        let err = validate_approved_grant(&other, &grant)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not declared by plugin.toml"), "{err}");
+
+        let mut narrowed = grant.clone();
+        narrowed.bindings.clear();
+        validate_approved_grant(&narrowed, &grant).unwrap();
+        assert!(validate_described_capabilities(
+            &manifest,
+            &narrowed,
+            &described,
+            PortalAuthMode::Unspecified,
+        )
+        .is_err());
     }
 
     #[test]
