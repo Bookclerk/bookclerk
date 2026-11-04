@@ -223,6 +223,10 @@ const okHits = (value: unknown) => okValue({ hits: asList<CatalogHit>(value) });
 /**
  * Wraps a metadata provider's `lookup` / `search` return as `MetadataRecords`.
  * Anything but an array is an author bug, not an empty answer.
+ *
+ * @param value - The author method's return value.
+ * @returns The `ok` arm carrying the records.
+ * @throws {PluginError} `internal` when `value` is not an array.
  */
 const okRecords = (value: unknown) => {
   if (!Array.isArray(value)) {
