@@ -1836,6 +1836,7 @@ code.inline {
   width: 16px;
   height: 16px;
   background-color: currentColor;
+  -webkit-mask: url("/link-icon.svg") center / contain no-repeat;
   mask: url("/link-icon.svg") center / contain no-repeat;
 }
 @media (forced-colors: active) {

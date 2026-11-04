@@ -65,6 +65,9 @@ test("doc URLs, in the default version and under a version prefix", () => {
   assert.equal(docUrl("api/rust/demo/index"), "/docs/api/rust/demo");
   assert.equal(docUrl("index", "/docs/v/main/"), "/docs/v/main");
   assert.equal(docUrl("api/indexes"), "/docs/api/indexes");
+  assert.equal(docMarkdownUrl("api/rust/demo/index"), "/docs/api/rust/demo/README.md");
+  assert.equal(docMarkdownUrl("index", "/docs/v/main/"), "/docs/v/main/README.md");
+  assert.equal(docMarkdownUrl("api/indexes"), "/docs/api/indexes.md");
   assert.equal(docMarkdownUrl("README", "/docs/v/v0.1.0/"), "/docs/v/v0.1.0/README.md");
 });
 

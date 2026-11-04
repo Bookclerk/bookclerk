@@ -374,10 +374,10 @@ class TreeTest(unittest.TestCase):
 
     def test_index_pages_are_found_anywhere_in_the_tree(self) -> None:
         out = self.base / "out"
-        for rel in ("README.md", "api/rust/a/README.md", "api/rust/b/index.md", "api/typescript/index.md", "api/ui/indexes.md"):
+        for rel in ("README.md", "api/rust/a/README.md", "api/rust/b/index.md", "api/typescript/index.md", "api/typescript/index/README.md", "api/ui/indexes.md", "api/ui/index.txt"):
             (out / rel).parent.mkdir(parents=True, exist_ok=True)
             (out / rel).write_text("# x\n")
-        self.assertEqual(dm.index_pages(out), ["api/rust/b/index.md", "api/typescript/index.md"])
+        self.assertEqual(dm.index_pages(out), ["api/rust/b/index.md", "api/typescript/index.md", "api/typescript/index/README.md"])
 
 
 # Unix times of 2025-10-01 and 2025-10-02, 12:00 UTC.

@@ -281,9 +281,14 @@ export function docUrl(key: string, base = "/docs/"): string {
  *
  * @param key - Docs path without `.md`.
  * @param base - URL prefix of the docs version, ending in `/`.
- * @returns `<base><key>.md`; the index is `<base>README.md`.
+ * @returns `<base><key>.md`; the index is `<base>README.md`, and a
+ *   folder's `index` page is `<base><dir>/README.md`.
  */
 export function docMarkdownUrl(key: string, base = "/docs/"): string {
+  // A folder's index page, from a tree published before entry pages were
+  // READMEs, is read at its README's URL; `index.md` URLs redirect there.
+  if (key === "index") return `${base}README.md`;
+  if (key.endsWith("/index")) return `${base}${key.slice(0, -"index".length)}README.md`;
   return `${base}${key}.md`;
 }
 

@@ -392,7 +392,11 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
   if (last === "index") {
     // The folder URL serves the entry page; `/index` is never canonical.
     const location = (version.base + rest.slice(0, -"index".length)).replace(/\/$/, "");
-    return { kind: "redirect", location };
+    // Straight to the final URL (`a.html/index` lands on `a.html`); a
+    // folder ending in `.md` is not a page, so it is not sent to a copy.
+    const next = docsTarget(location, versions);
+    if (next.kind === "markdown") return { kind: "missing" };
+    return next.kind === "redirect" ? next : { kind: "redirect", location };
   }
   if (rest === "" || rest.endsWith("/")) {
     const keys: [string, ...string[]] = [`${rest}README`, `${rest}index`];

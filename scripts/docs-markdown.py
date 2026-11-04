@@ -945,20 +945,26 @@ def write_api_index(api_out: Path) -> None:
 
 
 def index_pages(out: Path) -> list[str]:
-    """Find pages named ``index.md``, which the site would serve at ``…/index``.
+    """Find pages the site could only serve at a URL ending in ``/index``.
 
     The site serves a folder's ``README.md`` at the folder's own URL
-    (``/docs/api/rust/<crate>``), but an ``index.md`` at a URL ending in
-    ``/index``: a second, non-canonical spelling of a folder page. Generated
-    references name their landing pages ``README.md`` instead.
+    (``/docs/api/rust/<crate>``) and redirects every ``…/index`` URL to its
+    folder, so a page named ``index.md``, or any page inside a folder named
+    ``index``, cannot be reached. Generated references name their landing
+    pages ``README.md`` instead.
 
     Args:
         out: The output root.
 
     Returns:
-        The path of each ``index.md`` under the root, relative to it.
+        The path of each such page under the root, relative to it.
     """
-    return sorted(str(p.relative_to(out)) for p in out.rglob("index.md"))
+    found = []
+    for page in out.rglob("*.md"):
+        rel = page.relative_to(out)
+        if rel.name == "index.md" or "index" in rel.parts[:-1]:
+            found.append(str(rel))
+    return sorted(found)
 
 
 def broken_links(out: Path) -> list[str]:
@@ -1076,7 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
             raise BuildError(f"{len(broken)} broken relative links in the API reference")
         indexes = index_pages(out)
         if indexes:
-            raise BuildError(f"pages named index.md (name them README.md): {', '.join(indexes[:20])}")
+            raise BuildError(f"pages at URLs ending in /index (name them README.md): {', '.join(indexes[:20])}")
         files = sum(1 for p in out.rglob("*") if p.is_file())
         print(f"==> wrote {files} files under {out}")
     except BuildError as err:

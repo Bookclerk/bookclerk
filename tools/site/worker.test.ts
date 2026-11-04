@@ -259,6 +259,16 @@ test("docsTarget reads versions and paths", () => {
     location: "/docs/api/rust/x",
   });
   assert.deepEqual(docsTarget("/docs/index", versions), { kind: "redirect", location: "/docs" });
+  // One hop, and never from a page to a Markdown copy.
+  assert.deepEqual(docsTarget("/docs/a.html/index", versions), {
+    kind: "redirect",
+    location: "/docs/a",
+  });
+  assert.deepEqual(docsTarget("/docs/x/index/index", versions), {
+    kind: "redirect",
+    location: "/docs/x",
+  });
+  assert.deepEqual(docsTarget("/docs/a.md/index", versions), { kind: "missing" });
   assert.deepEqual(docsTarget("/docs/api/rust/x/index.md", versions), {
     kind: "redirect",
     location: "/docs/api/rust/x/README.md",
@@ -859,6 +869,11 @@ test("a folder's entry page is served at the folder and never at /index", async 
   // its folder URL serves it without a redirect.
   const legacy = await get("/docs/api/rust/legacy", BROWSER);
   assert.equal(legacy.status, 200);
+  // Its Markdown copy is linked at the README's URL, which serves it.
+  assert.equal(
+    legacy.headers.get("Link"),
+    '<https://bookclerk.app/docs/api/rust/legacy/README.md>; rel="alternate"; type="text/markdown"',
+  );
   assert.match(
     await legacy.text(),
     /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/api\/rust\/legacy">/,
