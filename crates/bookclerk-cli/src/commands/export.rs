@@ -48,6 +48,50 @@ pub fn export_json(path: &Path, books: &[BookRecord]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Writes a `library export-state` document as pretty JSON.
+///
+/// # Arguments
+///
+/// * `path` - Destination file.
+/// * `doc` - The exported state.
+/// * `force` - Replace `path` when it exists; otherwise an existing file is
+///   an error, so an earlier export is never overwritten by accident.
+///
+/// # Errors
+///
+/// Returns an error when the file exists (without `force`), or when it cannot
+/// be created or written.
+pub fn write_title_state(
+    path: &Path,
+    doc: &bookclerk_library::TitleStateExport,
+    force: bool,
+) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    let text = serde_json::to_string_pretty(doc)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    let mut file = options.open(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            anyhow::anyhow!(
+                "{} already exists; pass --force to replace it",
+                path.display()
+            )
+        } else {
+            anyhow::Error::new(e).context(format!("create {}", path.display()))
+        }
+    })?;
+    file.write_all(text.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(())
+}
+
 /// Writes library rows to an `.xlsx` workbook with the same columns as CSV.
 pub fn export_xlsx(path: &Path, books: &[BookRecord]) -> anyhow::Result<()> {
     let mut workbook = Workbook::new();
@@ -114,4 +158,51 @@ pub async fn load_books(
     account: Option<&str>,
 ) -> anyhow::Result<Vec<BookRecord>> {
     Ok(store.list_books(account).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bookclerk_library::{TitleStateExport, TITLE_STATE_FORMAT, TITLE_STATE_VERSION};
+    use chrono::TimeZone;
+
+    /// An empty export document.
+    fn doc() -> TitleStateExport {
+        TitleStateExport {
+            format: TITLE_STATE_FORMAT.to_string(),
+            version: TITLE_STATE_VERSION,
+            exported_at: chrono::Utc.with_ymd_and_hms(2026, 11, 4, 3, 0, 0).unwrap(),
+            titles: vec![],
+            ignored: vec![],
+            listening_links: vec![],
+            request_links: vec![],
+        }
+    }
+
+    #[test]
+    fn title_state_is_written_once_unless_forced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        write_title_state(&path, &doc(), false).unwrap();
+        let back: TitleStateExport =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back, doc());
+
+        let err = write_title_state(&path, &doc(), false).unwrap_err();
+        assert!(err.to_string().contains("--force"), "{err}");
+
+        std::fs::write(&path, "x".repeat(4096)).unwrap();
+        write_title_state(&path, &doc(), true).unwrap();
+        let back: TitleStateExport =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back, doc());
+    }
+
+    #[test]
+    fn title_state_reports_an_unwritable_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("state.json");
+        let err = write_title_state(&path, &doc(), false).unwrap_err();
+        assert!(err.to_string().contains("create"), "{err}");
+    }
 }

@@ -7260,6 +7260,11 @@ pub use title_files::{TitleFile, ACQUIRE_WRITER};
 pub(crate) mod job_queue;
 
 mod books_page;
+mod title_state;
+pub use title_state::{
+    IgnoredTitle, ListeningLink, ListingKey, RequestLink, TitleState, TitleStateExport,
+    TITLE_STATE_FORMAT, TITLE_STATE_VERSION,
+};
 mod lock_retry;
 pub use books_page::{BookPage, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT};
 

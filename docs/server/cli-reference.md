@@ -63,6 +63,7 @@ Commands:
 - [`bookclerk library get-license`](#bookclerk-library-get-license): Fetch a content license for an ASIN
 - [`bookclerk library search`](#bookclerk-library-search): Search the library index
 - [`bookclerk library export`](#bookclerk-library-export): Export library rows as CSV / JSON / XLSX (alias of `export library`)
+- [`bookclerk library export-state`](#bookclerk-library-export-state): Write the user state on every title (tags, ratings, finished flags, ignored titles, and the links from listening progress and title requests) to a JSON file, keyed by store listing so it can be restored after the library's title tables are rebuilt
 - [`bookclerk library list`](#bookclerk-library-list): List books in the local library DB
 - [`bookclerk library convert`](#bookclerk-library-convert): Convert acquired m4b/m4a to mp3
 - [`bookclerk library filters`](#bookclerk-library-filters): Manage saved quick filters
@@ -248,6 +249,19 @@ Options:
 - `--json`: Write JSON
 - `--xlsx`: Write XLSX
 - `--account <ACCOUNT>`: Limit the export to this account id, stem, or nickname
+
+### `bookclerk library export-state`
+
+Write the user state on every title (tags, ratings, finished flags, ignored titles, and the links from listening progress and title requests) to a JSON file, keyed by store listing so it can be restored after the library's title tables are rebuilt
+
+```text
+bookclerk library export-state [OPTIONS] --path <PATH>
+```
+
+Options:
+
+- `-p, --path <PATH>`: Output JSON file path (required)
+- `--force`: Replace the file when it already exists
 
 ### `bookclerk library list`
 

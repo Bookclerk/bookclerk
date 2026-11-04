@@ -155,9 +155,11 @@ pub use store::{
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source, set_dispatch_chunk_for_test, wishlist_identities_match, BookPage,
-    CatalogEnrichmentFields, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,
-    NewTitleRequestSource, NewWork, SavedFilterRecord, TitleFile, UserBookFields, WishlistIdentity,
-    ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
+    CatalogEnrichmentFields, IgnoredTitle, LibraryStore, ListeningLink, ListingKey, NewBook,
+    NewListeningProgress, NewTitleRequest, NewTitleRequestSource, NewWork, RequestLink,
+    SavedFilterRecord, TitleFile, TitleState, TitleStateExport, UserBookFields, WishlistIdentity,
+    ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT, TITLE_STATE_FORMAT,
+    TITLE_STATE_VERSION,
 };
 pub use text::{
     decode_html_entities, decode_html_entities_cow, decode_html_entities_in_place,

@@ -11,7 +11,9 @@ use bookclerk_source::{source_scope, DownloadOptions, FetchOptions};
 use bookclerk_storage::StorageBackend;
 use clap::Subcommand;
 
-use crate::commands::export::{export_csv, export_json, export_xlsx, filter_books, load_books};
+use crate::commands::export::{
+    export_csv, export_json, export_xlsx, filter_books, load_books, write_title_state,
+};
 use crate::commands::queued;
 use crate::format_out;
 use crate::progress::BatchProgress;
@@ -199,6 +201,18 @@ pub enum LibraryCommand {
         #[arg(long)]
         /// Limit the export to this account id, stem, or nickname.
         account: Option<String>,
+    },
+    /// Write the user state on every title (tags, ratings, finished flags,
+    /// ignored titles, and the links from listening progress and title
+    /// requests) to a JSON file, keyed by store listing so it can be
+    /// restored after the library's title tables are rebuilt.
+    ExportState {
+        /// Output JSON file path.
+        #[arg(short, long)]
+        path: std::path::PathBuf,
+        /// Replace the file when it already exists.
+        #[arg(long)]
+        force: bool,
     },
     /// List books in the local library DB.
     List {
@@ -624,6 +638,19 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                 export_csv(&path, &books)?;
             }
             println!("exported {} book(s) to {}", books.len(), path.display());
+            Ok(())
+        }
+        LibraryCommand::ExportState { path, force } => {
+            let doc = store.export_title_state(chrono::Utc::now()).await?;
+            write_title_state(&path, &doc, force)?;
+            println!(
+                "exported state for {} title(s), {} ignored, {} listening and {} request link(s) to {}",
+                doc.titles.len(),
+                doc.ignored.len(),
+                doc.listening_links.len(),
+                doc.request_links.len(),
+                path.display()
+            );
             Ok(())
         }
         LibraryCommand::Convert {

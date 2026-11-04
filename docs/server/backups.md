@@ -99,6 +99,18 @@ the database (cargo reset --yes)`, rather than reshape the library. See
    bookclerk export libation --path ./LibationFilesOut --force
    ```
 
+4. Optionally, save what only Bookclerk knows about your titles: tags,
+   ratings, finished flags, ignored titles, and which title each listening
+   progress row and title request points at:
+
+   ```sh
+   bookclerk library export-state --path ./title-state.json
+   ```
+
+   The file names each title by its store, account and product id, not by
+   a Bookclerk id, so a later build can match it after a rescan. It
+   refuses to overwrite an existing file unless you pass `--force`.
+
 > [!CAUTION]
 > Without `master.key` (and its password), sealed store sign-ins can't be
 > read back.
