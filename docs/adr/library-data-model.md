@@ -163,7 +163,13 @@ expression and a work:
    author credits only, reusing `bookclerk-enrich`'s text normalisation but
    not `calculate_match_confidence`: that score includes recording signals
    (duration, narrator) and treats any ten-character alphanumeric title as an
-   ASIN.
+   ASIN. A matcher hit joins the work only when exactly one work matches,
+   its kind is the same, and nothing contradicts it: no work identifier of
+   the same scheme with another value and no different position in the same
+   series. Several candidates, or one that is contradicted, make a new work
+   and record the candidates for an Administrator, who can merge them with
+   an override. A wrong automatic merge is undone the same way, by an
+   override that splits the work.
 4. `resolution_overrides` win over every automatic step.
 
 Resolution runs on guest-supplied identifiers and credits, so it is an
@@ -171,7 +177,8 @@ untrusted-input boundary. It ships with a `cargo-fuzz` target, a seed corpus
 and a replay test, with an oracle that checks: one strong identifier never
 maps to two editions, a weak identifier alone never merges two editions with
 incompatible expressions or media kinds, editions with conflicting strong
-identifiers are never merged, and resolving the same input twice changes
+identifiers are never merged, works of different kinds are never merged,
+and resolving the same input twice changes
 nothing
 ([fuzzing ADR](untrusted-input-fuzzing.md)).
 
@@ -212,10 +219,18 @@ it.
 
 ### 6. Events instead of rebuild passes
 
-The resolver publishes `edition.linked`, `holding.added`, `holding.removed`
-and `edition_files.written` on the `core.events` outbox. Integrations
-(Audiobookshelf), embeddings and discover subscribe to them. The batch
-`rebuild_works_from_library()` pass is removed.
+The resolver publishes these on the `core.events` outbox:
+
+- `edition.linked` when a listing joins an edition, new or existing;
+- `edition.updated` when a rescan or a metadata lookup changes an existing
+  edition's or its work's metadata (title, cover, credits, series, media
+  kind) without linking anything new;
+- `holding.added` and `holding.removed`;
+- `edition_files.written`.
+
+Integrations (Audiobookshelf), embeddings, discover and the search index
+subscribe to them, so a metadata-only change refreshes them as a new link
+does. The batch `rebuild_works_from_library()` pass is removed.
 
 ### 7. Moving existing libraries: rebuild the title tables, rescan, restore state
 
@@ -236,7 +251,11 @@ users and plugin configuration. Instead only the title tables are rebuilt:
    fails closed as [schema versioning](schema-versioning.md) requires. It
    drops the old title tables, creates the new ones and records the new
    checksum in one step. Every other table (users, accounts, sealed secrets,
-   plugin configuration, nodes, jobs) is kept, as is everything on disk.
+   plugin configuration, nodes, jobs) is kept, as is everything on disk. The
+   same step clears each branch's catalog sync state on `nodes`
+   (`catalog_cursor`, `catalog_pass_started_at` and `catalog_full_pass_at`),
+   so every branch sends its whole catalog on its next session instead of
+   resuming from a cursor into tables that no longer exist.
 3. A rescan of each account fills listings, holdings and the bibliographic
    tables.
 4. Storage matching re-links files already at each destination into
