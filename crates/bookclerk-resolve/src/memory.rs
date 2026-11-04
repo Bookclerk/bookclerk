@@ -308,6 +308,12 @@ impl MemoryCatalog {
             };
             *current = update.clone();
         }
+        if let Some(update) = &plan.expression_update {
+            let Some(current) = self.expressions.get_mut(&update.id) else {
+                return fail(format!("updated expression {} missing", update.id));
+            };
+            *current = update.clone();
+        }
         for row in &plan.edition_identifiers {
             if !self.editions.contains_key(&row.edition_id) {
                 return fail(format!("edition {} missing", row.edition_id));

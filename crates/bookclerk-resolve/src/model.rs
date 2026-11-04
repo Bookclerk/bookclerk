@@ -398,6 +398,9 @@ pub struct Plan {
     pub new_edition: Option<EditionRow>,
     /// New metadata for an existing edition a rescan changed.
     pub edition_update: Option<EditionRow>,
+    /// The stored expression of an existing edition with the language,
+    /// abridgement or performer key it lacked filled from the listing.
+    pub expression_update: Option<ExpressionRow>,
     /// The show link a stored, show-less episode work gains.
     pub work_parent: Option<WorkParent>,
     /// The matcher key a stored work without one gains.
@@ -436,6 +439,7 @@ impl Plan {
             && self.new_expression.is_none()
             && self.new_edition.is_none()
             && self.edition_update.is_none()
+            && self.expression_update.is_none()
             && self.work_parent.is_none()
             && self.work_match_key.is_none()
             && self.edition_identifiers.is_empty()

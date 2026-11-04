@@ -525,6 +525,39 @@ pub fn resolve(
         }),
         LinkReason::New => None,
     };
+    // The same fill-only rule for the edition's expression: what an
+    // earlier scan did not know (language, abridgement, performers)
+    // becomes known, so later listings can pass `expression_compatible`.
+    // A listing of another expression kind fills nothing.
+    let expression_update = match link {
+        LinkReason::Listing
+        | LinkReason::Pinned
+        | LinkReason::StrongIdentifier
+        | LinkReason::WeakIdentifier => snapshot
+            .edition(&edition_id)
+            .and_then(|edition| snapshot.expression(&edition.expression_id))
+            .filter(|current| current.kind == listing.expression_kind)
+            .and_then(|current| {
+                let updated = ExpressionRow {
+                    language: current
+                        .language
+                        .clone()
+                        .or_else(|| listing.language.clone()),
+                    abridgement: match current.abridgement {
+                        Abridgement::Unknown => listing.abridgement,
+                        Abridgement::Unabridged | Abridgement::Abridged => current.abridgement,
+                    },
+                    credit_key: if current.credit_key.is_empty() {
+                        listing.expression_credit_key()
+                    } else {
+                        current.credit_key.clone()
+                    },
+                    ..current.clone()
+                };
+                (updated != *current).then_some(updated)
+            }),
+        LinkReason::New => None,
+    };
 
     let (listing_row, listing_is_new, relinked) = match stored {
         Some(row) => (
@@ -624,7 +657,7 @@ pub fn resolve(
             listing_id: listing_row.id.clone(),
         });
     }
-    if edition_update.is_some() {
+    if edition_update.is_some() || expression_update.is_some() {
         events.push(Event::EditionUpdated {
             edition_id: edition_id.clone(),
         });
@@ -645,6 +678,7 @@ pub fn resolve(
         new_expression,
         new_edition,
         edition_update,
+        expression_update,
         work_parent,
         work_match_key,
         edition_identifiers,

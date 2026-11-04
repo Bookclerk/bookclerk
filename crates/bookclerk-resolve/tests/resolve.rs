@@ -623,3 +623,42 @@ fn two_values_of_one_strong_scheme_record_a_conflict_on_first_sight() {
         edition_ids: vec![plan.listing.edition_id.clone()],
     }));
 }
+
+#[test]
+fn a_rescan_fills_what_the_expression_did_not_know() {
+    let mut c = MemoryCatalog::default();
+    // First seen without a narrator, language or abridgement.
+    let mut bare = with_id(dune("libro", "L1"), IdentifierScheme::Isbn, "9780140449136");
+    bare.credits.truncate(1);
+    bare.language = None;
+    bare.abridgement = None;
+    let a = record(&mut c, &bare, "l1");
+    assert!(a.expression_update.is_none());
+
+    // A rescan of the same listing learns them; the expression is filled.
+    let full = with_id(dune("libro", "L1"), IdentifierScheme::Isbn, "9780140449136");
+    let b = record(&mut c, &full, "l1");
+    let filled = b.expression_update.clone().unwrap();
+    assert_eq!(filled.language.as_deref(), Some("en"));
+    assert_eq!(filled.abridgement, Abridgement::Unabridged);
+    assert_eq!(filled.credit_key, "narrator:scott brick");
+    assert!(b
+        .events
+        .iter()
+        .any(|e| matches!(e, Event::EditionUpdated { .. })));
+    assert!(record(&mut c, &full, "l1").is_noop());
+
+    // Another store's listing with that ISBN now joins the edition.
+    let other = record(
+        &mut c,
+        &with_id(dune("chirp", "C1"), IdentifierScheme::Isbn, "9780140449136"),
+        "c1",
+    );
+    assert_eq!(other.link, LinkReason::WeakIdentifier);
+    assert_eq!(other.listing.edition_id, a.listing.edition_id);
+
+    // Known values are never overwritten by a disagreeing rescan.
+    let mut abridged = full.clone();
+    abridged.abridgement = Some(Abridgement::Abridged);
+    assert!(record(&mut c, &abridged, "l1").expression_update.is_none());
+}

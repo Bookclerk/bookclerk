@@ -288,6 +288,29 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             binds,
         ));
     }
+    if let Some(fill) = &p.expression_fill {
+        let mut binds = vec![
+            j_opt_str(fill.language.as_deref()),
+            j_str(&fill.abridgement),
+            j_str(&fill.abridgement),
+            j_str(&fill.credit_key),
+            j_str(&fill.credit_key),
+            j_str(now),
+            j_str(&fill.expression_id),
+            j_str(&fill.kind),
+        ];
+        binds.extend(unchanged_binds.clone());
+        out.push(sql(
+            &format!(
+                "UPDATE expressions SET language = COALESCE(language, ?), \
+                 abridgement = CASE WHEN abridgement = 'unknown' AND ? <> 'unknown' THEN ? ELSE abridgement END, \
+                 credit_key = CASE WHEN credit_key = '' AND ? <> '' THEN ? ELSE credit_key END, \
+                 updated_at = ? \
+                 WHERE id = ? AND kind = ? AND {unchanged}"
+            ),
+            binds,
+        ));
+    }
     if let Some(link) = &p.work_parent {
         let mut binds = vec![
             j_str(&link.parent_work_id),

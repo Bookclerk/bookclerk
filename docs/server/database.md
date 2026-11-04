@@ -678,7 +678,10 @@ its titles' description, subjects, categories and cover where it has none
 yet, and an episode stored before its show is linked to the show once the
 show has been scanned. A work first stored from a listing that named no
 author gains its matching key once a listing names one, so other stores'
-listings of the same book can find it.
+listings of the same book can find it. Likewise, an expression first
+stored without a language, an abridgement or a narrator gains them from a
+later scan that names them, so another store's listing with the same ISBN
+can join its edition; values already known are never overwritten.
 
 - The `jobs` table is the durable daemon queue (see
   [Jobs](../internals/jobs.md)).

@@ -25,8 +25,8 @@ use crate::entities::{
 use crate::error::{LibraryError, Result};
 use crate::library_link::{
     ContributorRow, CreditBatchParams, CreditRow, LinkConflictRow, LinkEditionFill, LinkEditionRow,
-    LinkEvent, LinkExpressionRow, LinkIdentifierRow, LinkWorkIdentifierRow, LinkWorkMatchKey,
-    LinkWorkParent, LinkWorkRow, ListingLinkParams, SeriesEntryRow, SeriesRow,
+    LinkEvent, LinkExpressionFill, LinkExpressionRow, LinkIdentifierRow, LinkWorkIdentifierRow,
+    LinkWorkMatchKey, LinkWorkParent, LinkWorkRow, ListingLinkParams, SeriesEntryRow, SeriesRow,
 };
 use crate::models::WorkRecord;
 
@@ -346,6 +346,13 @@ fn link_params(
             subtitle: e.subtitle.clone(),
             published_at: e.published_at.clone(),
             duration_minutes: e.duration_minutes,
+        }),
+        expression_fill: plan.expression_update.as_ref().map(|x| LinkExpressionFill {
+            expression_id: x.id.clone(),
+            kind: x.kind.as_str().to_string(),
+            language: x.language.clone(),
+            abridgement: x.abridgement.as_str().to_string(),
+            credit_key: x.credit_key.clone(),
         }),
         work_parent: plan.work_parent.as_ref().map(|link| LinkWorkParent {
             work_id: link.work_id.clone(),
@@ -2336,6 +2343,46 @@ mod store_tests {
             .unwrap();
         assert_eq!(other.work_reason, Some(resolve::WorkReason::Matcher));
         assert!(other.new_work.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_rescan_fills_what_the_expression_did_not_know() {
+        let store = store().await;
+        let mut bare = dune("libro", "L1");
+        bare.credits.truncate(1);
+        bare.language = None;
+        bare.abridgement = None;
+        let first = store
+            .record_listing(
+                &resolve::Listing::from_draft(&bare).unwrap(),
+                &account("l1"),
+            )
+            .await
+            .unwrap();
+        let expression = first.new_expression.unwrap().id;
+
+        let full = resolve::Listing::from_draft(&dune("libro", "L1")).unwrap();
+        let filled = store.record_listing(&full, &account("l1")).await.unwrap();
+        assert!(filled.expression_update.is_some());
+        let stored = expressions::Entity::find_by_id(expression)
+            .one(&store.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.language.as_deref(), Some("en"));
+        assert_eq!(stored.abridgement, "unabridged");
+        assert_eq!(stored.credit_key, "narrator:scott brick");
+
+        // Another store's listing with the same ISBN now joins the edition.
+        let other = store
+            .record_listing(
+                &resolve::Listing::from_draft(&dune("chirp", "C1")).unwrap(),
+                &account("c1"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(other.link, resolve::LinkReason::WeakIdentifier);
+        assert_eq!(other.listing.edition_id, first.listing.edition_id);
     }
 
     #[tokio::test]

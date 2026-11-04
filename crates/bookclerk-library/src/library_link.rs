@@ -110,6 +110,26 @@ pub struct LinkEditionFill {
     pub duration_minutes: Option<i64>,
 }
 
+/// Fields a listing fills on a stored expression that lacks them.
+///
+/// Each value is written only where the stored one is unknown: a NULL
+/// language, an `unknown` abridgement or an empty performer key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkExpressionFill {
+    /// The stored expression to fill.
+    pub expression_id: String,
+    /// Stored expression kind; a row of another kind is left alone.
+    pub kind: String,
+    /// BCP 47 language tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Stored abridgement (`unknown` fills nothing).
+    pub abridgement: String,
+    /// Normalised performer credit key (empty fills nothing).
+    pub credit_key: String,
+}
+
 /// An `edition_identifiers` row to attach.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -209,6 +229,9 @@ pub struct ListingLinkParams {
     /// Fields to fill on a stored edition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edition_fill: Option<LinkEditionFill>,
+    /// Fields to fill on the stored edition's expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression_fill: Option<LinkExpressionFill>,
     /// A show link for a stored episode work that has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_parent: Option<LinkWorkParent>,
