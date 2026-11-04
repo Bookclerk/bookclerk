@@ -257,6 +257,18 @@ impl MemoryCatalog {
             }
             self.works.insert(work.id.clone(), work.clone());
         }
+        if let Some(link) = &plan.work_parent {
+            if !self.works.contains_key(&link.parent_work_id) {
+                return fail(format!("parent work {} missing", link.parent_work_id));
+            }
+            match self.works.get_mut(&link.work_id) {
+                Some(work) if work.parent_work_id.is_none() => {
+                    work.parent_work_id = Some(link.parent_work_id.clone());
+                }
+                Some(_) => return fail(format!("work {} already has a show", link.work_id)),
+                None => return fail(format!("work {} missing", link.work_id)),
+            }
+        }
         if let Some(expression) = &plan.new_expression {
             if !self.works.contains_key(&expression.work_id) {
                 return fail(format!("work {} missing", expression.work_id));

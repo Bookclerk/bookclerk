@@ -24,8 +24,8 @@ use crate::kinds::{Abridgement, ExpressionKind, Level, Strength, WorkKind};
 use crate::listing::{HoldingDraft, Listing};
 use crate::model::{
     Conflict, CreditWrite, EditionIdentifierRow, EditionRow, Event, ExpressionRow, HoldingRow,
-    LinkReason, ListingRow, Override, Plan, SeriesWrite, Snapshot, WorkIdentifierRow, WorkReason,
-    WorkRow,
+    LinkReason, ListingRow, Override, Plan, SeriesWrite, Snapshot, WorkIdentifierRow, WorkParent,
+    WorkReason, WorkRow,
 };
 
 /// The kind of row a new id is minted for.
@@ -536,6 +536,27 @@ pub fn resolve(
     let holding_is_new = stored_holding.is_none();
     let holding_changed = stored_holding.is_some_and(|stored| *stored != holding_row);
 
+    // An episode first seen before its show is stored without one; link it
+    // once the show's listing has been resolved.
+    let work_parent = if listing.work_kind == WorkKind::PodcastEpisode && new_work.is_none() {
+        let show = snapshot
+            .parent_listing
+            .as_ref()
+            .filter(|row| Some(&row.key) == listing.parent_key().as_ref())
+            .and_then(|row| snapshot.work_of_edition(&row.edition_id))
+            .filter(|w| w.kind == WorkKind::PodcastShow);
+        snapshot
+            .work(&work_id)
+            .filter(|w| w.kind == WorkKind::PodcastEpisode && w.parent_work_id.is_none())
+            .zip(show)
+            .map(|(episode, show)| WorkParent {
+                work_id: episode.id.clone(),
+                parent_work_id: show.id.clone(),
+            })
+    } else {
+        None
+    };
+
     let mut events = Vec::new();
     if listing_is_new || relinked {
         events.push(Event::EditionLinked {
@@ -564,6 +585,7 @@ pub fn resolve(
         new_expression,
         new_edition,
         edition_update,
+        work_parent,
         edition_identifiers,
         work_identifiers,
         credits,

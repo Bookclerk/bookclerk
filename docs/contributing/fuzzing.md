@@ -81,7 +81,8 @@ only that. The others check:
   identifiers naming different editions are never merged and the conflict
   is recorded; a work found by identifier or text match has the listing's
   kind, and an episode's work shares its show. Resolving any listing
-  again changes nothing. The oracle is
+  again changes nothing, except that an episode recorded before its show
+  gains the show once. The oracle is
   `bookclerk_resolve::fuzzing::run_case`, replayed from `bookclerk-resolve`.
 
 ## Boundaries outside the Rust workspace

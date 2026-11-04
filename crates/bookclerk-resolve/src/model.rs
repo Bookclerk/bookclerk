@@ -155,7 +155,12 @@ pub struct Snapshot {
     pub overrides: Vec<Override>,
     /// The holder's stored holding of the listing.
     pub holding: Option<HoldingRow>,
-    /// Included works, expressions and editions that have at least one credit.
+    /// Included works, expressions and editions whose credits are complete.
+    ///
+    /// A store that writes credits in several batches must commit each
+    /// target's first-billed credit (position 0) last and count only
+    /// targets that have it, so a partial write is finished on the next
+    /// scan rather than taken as complete.
     pub credited: Vec<(Level, String)>,
     /// Included works that have at least one series entry.
     pub works_with_series: Vec<String>,
@@ -341,6 +346,16 @@ pub struct CreditWrite {
     pub position: u32,
 }
 
+/// A show link for a stored episode work that was created before its
+/// show was known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkParent {
+    /// The episode work.
+    pub work_id: String,
+    /// The show work it belongs to.
+    pub parent_work_id: String,
+}
+
 /// A series entry to write on a new work.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SeriesWrite {
@@ -369,6 +384,8 @@ pub struct Plan {
     pub new_edition: Option<EditionRow>,
     /// New metadata for an existing edition a rescan changed.
     pub edition_update: Option<EditionRow>,
+    /// The show link a stored, show-less episode work gains.
+    pub work_parent: Option<WorkParent>,
     /// Edition identifiers to attach.
     pub edition_identifiers: Vec<EditionIdentifierRow>,
     /// Work identifiers to attach.
@@ -403,6 +420,7 @@ impl Plan {
             && self.new_expression.is_none()
             && self.new_edition.is_none()
             && self.edition_update.is_none()
+            && self.work_parent.is_none()
             && self.edition_identifiers.is_empty()
             && self.work_identifiers.is_empty()
             && self.credits.is_empty()

@@ -416,3 +416,40 @@ fn a_holding_that_gains_a_purchase_date_is_not_a_noop() {
     };
     assert!(c.record(&listing, &loan).unwrap().holding_changed);
 }
+
+#[test]
+fn an_episode_seen_before_its_show_gains_it_later() {
+    let mut c = MemoryCatalog::default();
+    let show = ListingDraft {
+        plugin_key: "audible".into(),
+        product_id: "S1".into(),
+        title: "Show".into(),
+        work_kind: Some(WorkKind::PodcastShow),
+        expression_kind: Some(ExpressionKind::PodcastAudio),
+        media_kind: Some(MediaKind::PodcastAudio),
+        credits: vec![("Host Person".into(), CreditRole::Author, None)],
+        ..ListingDraft::default()
+    };
+    let episode = ListingDraft {
+        product_id: "E1".into(),
+        title: "Trailer".into(),
+        work_kind: Some(WorkKind::PodcastEpisode),
+        parent_product_id: Some("S1".into()),
+        ..show.clone()
+    };
+    let first = record(&mut c, &episode, "a1");
+    assert!(first.new_work.unwrap().parent_work_id.is_none());
+    let show_plan = record(&mut c, &show, "a1");
+    let linked = record(&mut c, &episode, "a1");
+    let link = linked.work_parent.clone().unwrap();
+    assert_eq!(link.parent_work_id, show_plan.new_work.unwrap().id);
+    assert!(!linked.is_noop());
+    assert_eq!(
+        c.work_of_edition(&linked.listing.edition_id)
+            .unwrap()
+            .parent_work_id
+            .as_deref(),
+        Some(link.parent_work_id.as_str())
+    );
+    assert!(record(&mut c, &episode, "a1").is_noop());
+}

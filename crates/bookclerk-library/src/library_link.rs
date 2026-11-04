@@ -70,6 +70,16 @@ pub struct LinkEditionRow {
     pub duration_minutes: Option<i64>,
 }
 
+/// The show a stored, show-less episode work gains.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkWorkParent {
+    /// The episode work.
+    pub work_id: String,
+    /// The show work.
+    pub parent_work_id: String,
+}
+
 /// Fields a listing fills on a stored edition that lacks them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -184,6 +194,9 @@ pub struct ListingLinkParams {
     /// Fields to fill on a stored edition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edition_fill: Option<LinkEditionFill>,
+    /// A show link for a stored episode work that has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_parent: Option<LinkWorkParent>,
     /// Edition identifiers to attach.
     #[serde(default)]
     pub edition_identifiers: Vec<LinkIdentifierRow>,

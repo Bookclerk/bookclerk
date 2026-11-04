@@ -670,7 +670,10 @@ Every stored title is resolved into these tables in one guarded batch
 (`linkListing`); a batch that lost a race answers `retry` and the title is
 resolved again, up to three times. A title that still cannot be resolved
 keeps its `books` row, is logged as a warning, and is resolved again on
-the next scan, so one title never stops the rest of a scan.
+the next scan, so one title never stops the rest of a scan. A work takes
+its titles' description, subjects, categories and cover where it has none
+yet, and an episode stored before its show is linked to the show once the
+show has been scanned.
 
 - The `jobs` table is the durable daemon queue (see
   [Jobs](../internals/jobs.md)).

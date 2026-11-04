@@ -35,7 +35,7 @@ use crate::models::{
     UserRole, UserStatus,
 };
 use crate::wishlist_merge::apply_merged_sources;
-use library_model::{holding_from_book, listing_from_book};
+use library_model::{holding_from_book, listing_from_book, WorkEnrichment};
 
 /// Handle to the Bookclerk library database.
 ///
@@ -3945,7 +3945,7 @@ impl LibraryStore {
         let record = self.upsert_book_row(book).await?;
         match listing_from_book(book) {
             Ok(listing) => {
-                self.record_listing_after_row(&listing, &holding_from_book(book))
+                self.record_listing_after_row(&listing, &holding_from_book(book), &record)
                     .await;
             }
             Err(err) => tracing::warn!(
@@ -3976,7 +3976,7 @@ impl LibraryStore {
         let record = self.upsert_book_row(&title.book).await?;
         let mut listing = listing.clone();
         listing.key.plugin_key.clone_from(&title.book.plugin_key);
-        self.record_listing_after_row(&listing, &holding_from_book(&title.book))
+        self.record_listing_after_row(&listing, &holding_from_book(&title.book), &record)
             .await;
         Ok(record)
     }
@@ -3989,12 +3989,23 @@ impl LibraryStore {
     /// be resolved (other writers kept racing it, or a stored row is
     /// inconsistent) must not stop the rest of a scan. The next scan
     /// resolves the listing again.
+    ///
+    /// The work the listing reaches also takes the row's description,
+    /// subjects, categories and cover where it has none yet.
     async fn record_listing_after_row(
         &self,
         listing: &bookclerk_resolve::Listing,
         holding: &bookclerk_resolve::HoldingDraft,
+        record: &BookRecord,
     ) {
-        if let Err(err) = self.record_listing(listing, holding).await {
+        let result = match self.record_listing(listing, holding).await {
+            Ok(plan) => {
+                self.fill_work_from_book(&plan.listing.edition_id, &WorkEnrichment::of_book(record))
+                    .await
+            }
+            Err(err) => Err(err),
+        };
+        if let Err(err) = result {
             tracing::warn!(
                 product_id = %listing.key.product_id,
                 plugin_key = %listing.key.plugin_key,
@@ -4764,7 +4775,17 @@ impl LibraryStore {
             am.enrich_updated_at = Set(Some(v.to_rfc3339()));
         }
         am.updated_at = Set(now_str());
-        am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        let updated = am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        // The title's work takes the enrichment where it has none yet.
+        if let Some(edition_id) = self.edition_id_for_book(&updated).await? {
+            let fill = WorkEnrichment {
+                description: updated.description,
+                subjects: updated.subjects,
+                categories: updated.categories,
+                cover_url: updated.cover_url,
+            };
+            self.fill_work_from_book(&edition_id, &fill).await?;
+        }
         Ok(())
     }
 

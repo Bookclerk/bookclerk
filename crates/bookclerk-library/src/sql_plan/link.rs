@@ -155,6 +155,19 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             ],
         ));
     }
+    if let Some(link) = &p.work_parent {
+        out.push(sql(
+            "UPDATE works SET parent_work_id = ?, updated_at = ? \
+             WHERE id = ? AND kind = 'podcast_episode' AND parent_work_id IS NULL \
+               AND EXISTS (SELECT 1 FROM works p WHERE p.id = ? AND p.kind = 'podcast_show')",
+            vec![
+                j_str(&link.parent_work_id),
+                j_str(now),
+                j_str(&link.work_id),
+                j_str(&link.parent_work_id),
+            ],
+        ));
+    }
     for id in &p.edition_identifiers {
         out.push(sql(
             "INSERT OR IGNORE INTO edition_identifiers \

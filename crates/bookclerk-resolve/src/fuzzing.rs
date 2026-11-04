@@ -24,7 +24,7 @@ use crate::kinds::{
 };
 use crate::listing::{Holder, HoldingDraft, Listing, ListingDraft};
 use crate::memory::MemoryCatalog;
-use crate::model::{Conflict, LinkReason, WorkReason};
+use crate::model::{Conflict, LinkReason, Plan, WorkReason};
 
 /// Most listings decoded from one input.
 const MAX_LISTINGS: usize = 64;
@@ -332,11 +332,24 @@ pub fn run_case(data: &[u8]) -> Result<usize, String> {
         }
         recorded += 1;
     }
-    // Every earlier listing still resolves to a plan that changes nothing.
+    // Every earlier listing still resolves to a plan that changes nothing,
+    // except that an episode recorded before its show now gains the show
+    // (once; the rescan after that changes nothing).
     for link in catalog.links.clone() {
-        let plan = catalog
+        let mut plan = catalog
             .record(&link.listing, &link.holding)
             .map_err(|err| err.to_string())?;
+        let only_late_show = plan.work_parent.is_some()
+            && Plan {
+                work_parent: None,
+                ..plan.clone()
+            }
+            .is_noop();
+        if only_late_show {
+            plan = catalog
+                .record(&link.listing, &link.holding)
+                .map_err(|err| err.to_string())?;
+        }
         if !plan.is_noop() {
             return Err(format!(
                 "rescanning {:?} changed {plan:?}",

@@ -245,14 +245,7 @@ pub async fn enrich_books_from_openlibrary_with(
         if let Some(work_id) = library.work_id_for_book(&book.uuid).await? {
             if let Some(b) = library.get_book_by_uuid(&book.uuid).await? {
                 library
-                    .set_work_enrichment(
-                        &work_id,
-                        &bookclerk_library::WorkEnrichment {
-                            description: b.description,
-                            subjects: b.subjects,
-                            cover_url: b.cover_url,
-                        },
-                    )
+                    .set_work_enrichment(&work_id, &bookclerk_library::WorkEnrichment::of_book(&b))
                     .await?;
             }
             // Open Library names works `/works/OL…W`; only the id is stored.

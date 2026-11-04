@@ -24,8 +24,8 @@ use crate::entities::{
 use crate::error::{LibraryError, Result};
 use crate::library_link::{
     ContributorRow, CreditBatchParams, CreditRow, LinkConflictRow, LinkEditionFill, LinkEditionRow,
-    LinkEvent, LinkExpressionRow, LinkIdentifierRow, LinkWorkIdentifierRow, LinkWorkRow,
-    ListingLinkParams, SeriesEntryRow, SeriesRow,
+    LinkEvent, LinkExpressionRow, LinkIdentifierRow, LinkWorkIdentifierRow, LinkWorkParent,
+    LinkWorkRow, ListingLinkParams, SeriesEntryRow, SeriesRow,
 };
 use crate::models::WorkRecord;
 
@@ -283,6 +283,10 @@ fn link_params(
             published_at: e.published_at.clone(),
             duration_minutes: e.duration_minutes,
         }),
+        work_parent: plan.work_parent.as_ref().map(|link| LinkWorkParent {
+            work_id: link.work_id.clone(),
+            parent_work_id: link.parent_work_id.clone(),
+        }),
         edition_identifiers: plan
             .edition_identifiers
             .iter()
@@ -321,7 +325,11 @@ fn link_params(
 fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     let mut batches = Vec::new();
     let mut batch = CreditBatchParams::default();
-    for write in &plan.credits {
+    // Highest billing positions first, so each target's first-billed credit
+    // (the snapshot's "credited" marker) is committed after the rest of it.
+    let mut writes: Vec<&resolve::CreditWrite> = plan.credits.iter().collect();
+    writes.sort_by_key(|w| std::cmp::Reverse(w.position));
+    for write in writes {
         if batch.statement_count() + 2 > CREDIT_BATCH_STATEMENTS {
             batches.push(std::mem::take(&mut batch));
         }
@@ -790,9 +798,14 @@ impl LibraryStore {
             if ids.is_empty() {
                 continue;
             }
+            // A target counts as credited once its first-billed credit is
+            // stored: `credit_batches` writes it last, so a credit write
+            // that stopped part-way leaves the target uncredited and the
+            // next scan finishes it.
             let targets = credits::Entity::find()
                 .filter(credits::Column::TargetKind.eq(level.as_str()))
                 .filter(credits::Column::TargetId.is_in(ids.iter().cloned()))
+                .filter(credits::Column::Position.eq(0))
                 .select_only()
                 .column(credits::Column::TargetId)
                 .distinct()
@@ -1200,9 +1213,83 @@ impl LibraryStore {
         am.description = Set(enrichment.description.clone().or(existing.description));
         am.subjects = Set(enrichment.subjects.clone().or(existing.subjects));
         am.cover_url = Set(enrichment.cover_url.clone().or(existing.cover_url));
+        am.categories = Set(enrichment.categories.clone().or(existing.categories));
         am.updated_at = Set(now_str());
         am.update(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(())
+    }
+
+    /// Fills the work an edition belongs to from a library title's
+    /// metadata, only where the work has none yet; a work an enricher
+    /// already described keeps its own values.
+    ///
+    /// # Arguments
+    ///
+    /// * `edition_id` - An edition of the work.
+    /// * `fill` - The title's description, subjects, categories and cover.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read or write fails.
+    pub(crate) async fn fill_work_from_book(
+        &self,
+        edition_id: &str,
+        fill: &WorkEnrichment,
+    ) -> Result<()> {
+        use sea_orm::{ActiveModelTrait, ActiveValue::Set};
+        if fill.is_empty() {
+            return Ok(());
+        }
+        let Some(work_id) = self
+            .works_of_editions(BTreeSet::from([edition_id.to_string()]))
+            .await?
+            .remove(edition_id)
+        else {
+            return Ok(());
+        };
+        let Some(work) = works::Entity::find_by_id(work_id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(());
+        };
+        let missing = |stored: &Option<String>, offered: &Option<String>| {
+            stored.is_none() && offered.is_some()
+        };
+        if !(missing(&work.description, &fill.description)
+            || missing(&work.subjects, &fill.subjects)
+            || missing(&work.categories, &fill.categories)
+            || missing(&work.cover_url, &fill.cover_url))
+        {
+            return Ok(());
+        }
+        let mut am: works::ActiveModel = work.clone().into();
+        am.description = Set(work.description.or_else(|| fill.description.clone()));
+        am.subjects = Set(work.subjects.or_else(|| fill.subjects.clone()));
+        am.categories = Set(work.categories.or_else(|| fill.categories.clone()));
+        am.cover_url = Set(work.cover_url.or_else(|| fill.cover_url.clone()));
+        am.updated_at = Set(now_str());
+        am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// The edition a library title's listing reaches, if it is resolved.
+    pub(crate) async fn edition_id_for_book(
+        &self,
+        book: &crate::entities::books::Model,
+    ) -> Result<Option<String>> {
+        Ok(store_listings::Entity::find()
+            .filter(store_listings::Column::PluginKey.eq(book.plugin_key.as_str()))
+            .filter(
+                store_listings::Column::Marketplace
+                    .eq(resolve::stored_marketplace(&book.marketplace).as_str()),
+            )
+            .filter(store_listings::Column::ProductId.eq(book.product_id.as_str()))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(|l| l.edition_id))
     }
 
     /// Attaches a work-level identifier enrichment found (an OpenLibrary
@@ -1255,8 +1342,32 @@ pub struct WorkEnrichment {
     pub description: Option<String>,
     /// Subject tags (serialized).
     pub subjects: Option<String>,
+    /// Category labels (serialized).
+    pub categories: Option<String>,
     /// HTTPS cover URL.
     pub cover_url: Option<String>,
+}
+
+impl WorkEnrichment {
+    /// The fields a library title offers its work.
+    #[must_use]
+    pub fn of_book(book: &crate::models::BookRecord) -> Self {
+        Self {
+            description: book.description.clone(),
+            subjects: book.subjects.clone(),
+            categories: book.categories.clone(),
+            cover_url: book.cover_url.clone(),
+        }
+    }
+
+    /// True when no field is set.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.description.is_none()
+            && self.subjects.is_none()
+            && self.categories.is_none()
+            && self.cover_url.is_none()
+    }
 }
 
 #[cfg(test)]
@@ -1432,6 +1543,149 @@ mod store_tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn works_take_their_titles_metadata_where_they_have_none() {
+        let store = store().await;
+        store
+            .upsert_account("audible", "a1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let mut book = NewBook::minimal("B00X", "a1", "US", "Dune");
+        book.authors = Some("Frank Herbert".into());
+        book.categories = Some("Science Fiction".into());
+        let record = store.upsert_book(&book).await.unwrap();
+        let work_id = store.work_id_for_book(&record.uuid).await.unwrap().unwrap();
+        let work = store.get_work(&work_id).await.unwrap().unwrap();
+        assert_eq!(work.categories.as_deref(), Some("Science Fiction"));
+        assert!(work.description.is_none());
+
+        store
+            .update_catalog_enrichment(
+                &record.uuid,
+                &crate::CatalogEnrichmentFields {
+                    description: Some("Spice.".into()),
+                    cover_url: Some("https://covers.example/dune.jpg".into()),
+                    ..crate::CatalogEnrichmentFields::default()
+                },
+            )
+            .await
+            .unwrap();
+        let work = store.get_work(&work_id).await.unwrap().unwrap();
+        assert_eq!(work.description.as_deref(), Some("Spice."));
+        assert_eq!(
+            work.cover_url.as_deref(),
+            Some("https://covers.example/dune.jpg")
+        );
+
+        // A work that already has a value keeps it.
+        store
+            .update_catalog_enrichment(
+                &record.uuid,
+                &crate::CatalogEnrichmentFields {
+                    description: Some("Other.".into()),
+                    ..crate::CatalogEnrichmentFields::default()
+                },
+            )
+            .await
+            .unwrap();
+        let work = store.get_work(&work_id).await.unwrap().unwrap();
+        assert_eq!(work.description.as_deref(), Some("Spice."));
+    }
+
+    #[tokio::test]
+    async fn a_credit_write_that_stopped_part_way_is_finished_next_scan() {
+        let store = store().await;
+        let mut draft = dune("audible", "B001");
+        draft.credits = (0..40)
+            .map(|i| (format!("Cast Member {i}"), resolve::CreditRole::Cast, None))
+            .collect();
+        let listing = resolve::Listing::from_draft(&draft).unwrap();
+        let holder = resolve::Holder::Account("a1".into());
+        let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        assert_eq!(
+            store
+                .run_link_listing(link_params(&listing, &plan, &snapshot))
+                .await
+                .unwrap(),
+            atomic_status::OK
+        );
+        let batches = credit_batches(&plan);
+        assert!(batches.len() > 1);
+        // The first-billed credit is in the last batch.
+        assert!(batches
+            .last()
+            .unwrap()
+            .credits
+            .iter()
+            .any(|c| c.position == 0));
+        // Only the first batch commits before the writer stops.
+        store
+            .run_write_credits(batches.into_iter().next().unwrap())
+            .await
+            .unwrap();
+        let partial = credits::Entity::find().count(&store.db).await.unwrap();
+        assert!(partial < 40);
+
+        let again = store
+            .record_listing(&listing, &account("a1"))
+            .await
+            .unwrap();
+        assert!(!again.credits.is_empty());
+        assert_eq!(credits::Entity::find().count(&store.db).await.unwrap(), 40);
+        assert!(store
+            .record_listing(&listing, &account("a1"))
+            .await
+            .unwrap()
+            .is_noop());
+    }
+
+    #[tokio::test]
+    async fn an_episode_stored_before_its_show_gains_it() {
+        let store = store().await;
+        let show = resolve::ListingDraft {
+            product_id: "S1".into(),
+            title: "Show".into(),
+            work_kind: Some(resolve::WorkKind::PodcastShow),
+            expression_kind: Some(resolve::ExpressionKind::PodcastAudio),
+            media_kind: Some(resolve::MediaKind::PodcastAudio),
+            identifiers: Vec::new(),
+            series: Vec::new(),
+            ..dune("audible", "S1")
+        };
+        let episode = resolve::ListingDraft {
+            product_id: "E1".into(),
+            title: "Trailer".into(),
+            work_kind: Some(resolve::WorkKind::PodcastEpisode),
+            parent_product_id: Some("S1".into()),
+            ..show.clone()
+        };
+        let episode = resolve::Listing::from_draft(&episode).unwrap();
+        let first = store
+            .record_listing(&episode, &account("a1"))
+            .await
+            .unwrap();
+        let episode_work = first.new_work.unwrap().id;
+        let show_plan = store
+            .record_listing(
+                &resolve::Listing::from_draft(&show).unwrap(),
+                &account("a1"),
+            )
+            .await
+            .unwrap();
+        let linked = store
+            .record_listing(&episode, &account("a1"))
+            .await
+            .unwrap();
+        assert!(linked.work_parent.is_some());
+        let work = works::Entity::find_by_id(episode_work)
+            .one(&store.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(work.parent_work_id, Some(show_plan.new_work.unwrap().id));
     }
 
     #[tokio::test]
