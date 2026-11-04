@@ -72,11 +72,14 @@ pub fn credits_from_display(display: Option<&str>, role: CreditRole) -> Vec<Cred
 ///
 /// # Returns
 ///
-/// The trimmed, non-empty names in the order they appear.
+/// The trimmed, non-empty names in the order they appear. HTML entities
+/// are decoded first, so `O&#39;Brien` stays one name.
 #[must_use]
 pub fn split_display_names(display: &str) -> Vec<String> {
+    let mut decoded = display.to_string();
+    bookclerk_library::decode_html_entities_in_place(&mut decoded);
     let mut names: Vec<String> = Vec::new();
-    for part in display.split([',', ';', '&']) {
+    for part in decoded.split([',', ';', '&']) {
         for piece in split_on_and(part) {
             let piece = piece.trim();
             if piece.is_empty() {
@@ -504,5 +507,13 @@ mod tests {
                 (ExpressionKind::Narration, MediaKind::Audiobook)
             );
         }
+    }
+
+    #[test]
+    fn html_entities_are_decoded_before_splitting() {
+        assert_eq!(
+            split_display_names("Tim O&#39;Brien &amp; Jane Doe"),
+            vec!["Tim O'Brien".to_string(), "Jane Doe".to_string()]
+        );
     }
 }
