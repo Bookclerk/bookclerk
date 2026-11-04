@@ -50,7 +50,7 @@ function query(url: string): URLSearchParams {
 
 test("VERSION matches plugin.toml", () => {
   const manifest = readFileSync(new URL("../plugin.toml", import.meta.url), "utf8");
-  assert.match(manifest, new RegExp(`^version = "${VERSION.replace(/\./g, "\\.")}"$`, "m"));
+  assert.ok(manifest.split(/\r?\n/).includes(`version = "${VERSION}"`));
 });
 
 test("clampLimit defaults, floors and caps", () => {

@@ -44,7 +44,7 @@ const US = { asin: "B002V0QK4C", region: "us" } as const;
 
 test("VERSION matches plugin.toml", () => {
   const manifest = readFileSync(new URL("../plugin.toml", import.meta.url), "utf8");
-  assert.match(manifest, new RegExp(`^version = "${VERSION.replace(/\./g, "\\.")}"$`, "m"));
+  assert.ok(manifest.split(/\r?\n/).includes(`version = "${VERSION}"`));
 });
 
 test("normalizeRegion maps gb to uk and unknown markets to us", () => {
