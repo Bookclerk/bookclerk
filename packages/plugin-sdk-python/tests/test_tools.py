@@ -2,6 +2,7 @@ import json
 import shutil
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1334,3 +1335,29 @@ def test_compatibility_date_rejects_shared_invalid(date_text: str) -> None:
         match=r"^plugin\.toml: workerd\.compatibility_date must be a calendar YYYY-MM-DD$",
     ):
         validate_author_compatibility_date(date_text)
+
+
+MANIFEST_CASES = json.loads((FIXTURES / "manifest-cases.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", MANIFEST_CASES["cases"], ids=lambda c: c["name"])
+def test_validate_manifest_matches_shared_cases(case: dict[str, Any]) -> None:
+    import tomllib
+
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    text = (
+        MANIFEST_CASES["prelude"]
+        + case.get("top", MANIFEST_CASES["top"])
+        + "\n"
+        + case.get("base_tables", MANIFEST_CASES["base_tables"])
+        + "\n"
+        + case.get("tables", "")
+    )
+    manifest = tomllib.loads(text)
+    if case["error"] is None:
+        validate_manifest(manifest)
+    else:
+        with pytest.raises(ValueError) as err:
+            validate_manifest(manifest)
+        assert str(err.value) == case["error"]

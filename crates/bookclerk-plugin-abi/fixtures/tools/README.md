@@ -39,6 +39,7 @@ implementations. Each SDK must accept the `valid-*` trees and reject
 | `fmt-full/` | `fmt` rewrites `plugin.toml` (every manifest section, keys out of order) to exactly `plugin.fmt.toml`, the Rust formatter's output; `fmt --check` accepts the gold and refuses the source |
 | `logo-cases.json` | `logo` values with the classification (`remote` / `embedded` and the normalized value) or the exact error every SDK's checker must give |
 | `compat-date-cases.json` | `workerd.compatibility_date` values every SDK must accept (`valid`) or refuse (`invalid`) |
+| `manifest-cases.json` | Manifest validation cases, each breaking at most one rule: `prelude` + (`top` or the case's own) + (`base_tables` or the case's own) + the case's `tables` is the manifest, and `error` is the exact message every SDK's checker gives (`null` when it is accepted) |
 
 Language-specific helpers (`sync-embed`, Python workerd flags) are covered in
 each SDK's own tests against the Echo examples.

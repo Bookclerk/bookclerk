@@ -584,12 +584,14 @@ def validate_manifest(m: dict[str, Any]) -> None:
         if domains:
             raise ValueError(
                 'plugin.toml: capabilities.network.domains is only valid for runtime = "workerd" '
-                "(native outbound is coarse jail networking with no hostname filter — omit domains)"
+                "(native guests use capabilities.network.tcp for mediated connect(); omit domains)"
             )
     elif runtime == "workerd":
         w = m.get("workerd")
         if not isinstance(w, dict):
-            raise ValueError('plugin.toml: `[workerd]` is required when runtime = "workerd"')
+            raise ValueError(
+                'plugin.toml: `[workerd]` / runtime.workerd is required when runtime = "workerd"'
+            )
         compat = w.get("compatibility_date")
         if not isinstance(compat, str) or not compat.strip():
             raise ValueError("plugin.toml: workerd.compatibility_date is required")
@@ -621,6 +623,8 @@ ENTRYPOINT_NAMES: tuple[str, ...] = (
 """Entrypoint wire names accepted in ``entrypoints``."""
 
 _DATABASE_BINDING_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_EVENT_TYPE_RE = re.compile(r"^[a-z][a-z0-9_]*\Z")
+"""Event type grammar: snake_case, mirroring Rust ``is_snake_case_type``."""
 
 
 def _validate_surface(m: dict[str, Any]) -> None:
@@ -657,13 +661,29 @@ def _validate_surface(m: dict[str, Any]) -> None:
                 )
     _validate_queues(m)
     _validate_kv_namespaces(m)
-    for consumer in consumers:
-        if not str(consumer.get("type") or "").strip():
-            raise ValueError("plugin.toml: [[events.consumers]] `type` is required")
+    for index, consumer in enumerate(consumers):
+        event_type = str(consumer.get("type") or "")
+        if not event_type.strip():
+            raise ValueError(f"plugin.toml: events.consumers[{index}].type is required")
+        if not _EVENT_TYPE_RE.match(event_type):
+            raise ValueError(
+                f"plugin.toml: events.consumers[{index}].type `{event_type}` must be "
+                "snake_case `[a-z][a-z0-9_]*`"
+            )
+    produced: set[str] = set()
     for index, producer in enumerate(events.get("producers") or []):
-        if not str(producer.get("type") or "").strip():
-            raise ValueError("plugin.toml: [[events.producers]] `type` is required")
-        if producer.get("type") in HOST_EVENT_TYPES:
+        event_type = str(producer.get("type") or "")
+        if not _EVENT_TYPE_RE.match(event_type):
+            raise ValueError(
+                f"plugin.toml: events.producers[{index}].type `{event_type}` must be "
+                "snake_case `[a-z][a-z0-9_]*`"
+            )
+        if event_type in produced:
+            raise ValueError(
+                f"plugin.toml: events.producers[{index}].type `{event_type}` is duplicated"
+            )
+        produced.add(event_type)
+        if event_type in HOST_EVENT_TYPES:
             raise ValueError(
                 f"plugin.toml: events.producers[{index}].type `{producer.get('type')}` is emitted "
                 "by the host (after a source's acquire handler returns); plugins may consume it "
