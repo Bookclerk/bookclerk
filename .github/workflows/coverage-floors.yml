@@ -166,7 +166,9 @@ jobs:
             scripts/coverage_areas.toml
 
       # Runs even when the branch was already up to date, so a run whose
-      # earlier `gh pr merge --auto` failed gets another try.
+      # earlier `gh pr merge --auto` failed gets another try. GitHub's API
+      # sometimes answers a 5xx; a single failed call left the pull request
+      # without auto-merge, so the call gets four attempts (2, 4, 8 s apart).
       - name: Enable auto-merge
         if: steps.ratchet.outputs.raise == 'true'
         env:
@@ -178,4 +180,14 @@ jobs:
             echo "No open coverage floors pull request."
             exit 0
           fi
-          gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --auto --squash
+          for delay in 2 4 8 0; do
+            if gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --auto --squash; then
+              exit 0
+            fi
+            if [[ "$delay" -eq 0 ]]; then
+              echo "::error title=Coverage floors::Could not enable auto-merge on #$pr after 4 attempts."
+              exit 1
+            fi
+            echo "Enabling auto-merge failed; trying again in ${delay}s."
+            sleep "$delay"
+          done
