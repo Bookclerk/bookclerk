@@ -112,6 +112,49 @@ shared table and never calls a plugin's client.
 API coverage notes:
 [`crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md`](../../crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md).
 
+## Open Library and Audnexus
+
+Two optional **metadata providers** ship as plugins: `openlibrary`
+(book records from [Open Library](https://openlibrary.org)) and `audnexus`
+(audiobook records and chapter layouts from [Audnexus](https://audnex.us)).
+They describe what those public catalogs say about a book; they never
+change your library on their own.
+
+| Plugin | Answers | Reaches |
+| --- | --- | --- |
+| `openlibrary` | Lookups by Open Library edition id, work id or ISBN; searches by title and author | `openlibrary.org` |
+| `audnexus` | Lookups and chapter layouts by ASIN | `api.audnex.us` |
+
+> [!NOTE]
+> Bookclerk doesn't call these plugins yet. Discover and enrichment still
+> use the lookups built into Bookclerk until the library stores works and
+> editions; then they switch to these plugins and the built-in lookups are
+> removed ([#614](https://github.com/Bookclerk/bookclerk/issues/614)).
+
+To turn one on:
+
+1. Approve its network access:
+
+   ```sh
+   bookclerk plugins approve openlibrary --yes
+   ```
+
+2. For Open Library, set a contact address. Open Library asks API users to
+   identify themselves, so it can reach you before it limits heavy use:
+
+   ```sh
+   bookclerk plugins config set openlibrary contact_email you@example.com
+   ```
+
+3. Deploy it:
+
+   ```sh
+   bookclerk plugins deploy openlibrary
+   ```
+
+Each call makes at most one request to Open Library, or one per ASIN (up
+to five) to Audnexus. Their health checks make no request at all.
+
 ## Claim tickets and Accounts
 
 A **claim ticket** links a person to their identity in another app. With

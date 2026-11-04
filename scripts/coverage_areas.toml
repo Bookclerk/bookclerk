@@ -81,3 +81,11 @@ root = "."
 paths = ["packages/plugin-sdk-python/src/"]
 suffixes = [".py"]
 floor = 74
+
+[areas.workerd-guests]
+report = "workerd-guests/lcov.info"
+test_results = "workerd-guests/junit.xml"
+root = "."
+paths = ["crates/bookclerk-plugins/"]
+suffixes = [".ts"]
+floor = 97

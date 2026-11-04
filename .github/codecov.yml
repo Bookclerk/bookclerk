@@ -74,6 +74,8 @@ flag_management:
       paths: [tools/diagnostics-collector/]
     - name: python-sdk
       paths: [packages/plugin-sdk-python/src/]
+    - name: workerd-guests
+      paths: [crates/bookclerk-plugins/]
 
 # Components: coverage of parts of the code that cut across flags, each with
 # its own figure on the dashboard and in the comment. They are views only;

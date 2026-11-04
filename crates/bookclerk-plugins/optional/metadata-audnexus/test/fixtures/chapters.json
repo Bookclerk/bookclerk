@@ -1,0 +1,35 @@
+{
+  "asin": "B002V0QK4C",
+  "brandIntroDurationMs": 3970,
+  "brandOutroDurationMs": 4945,
+  "chapters": [
+    {
+      "lengthMs": 24481,
+      "startOffsetMs": 0,
+      "startOffsetSec": 0,
+      "title": "Opening Credits"
+    },
+    {
+      "lengthMs": 917551,
+      "startOffsetMs": 24481,
+      "startOffsetSec": 24,
+      "title": "Chapter 1"
+    },
+    {
+      "lengthMs": 1925073,
+      "startOffsetMs": 942032,
+      "startOffsetSec": 942,
+      "title": "Chapter 2"
+    },
+    {
+      "lengthMs": 2504086,
+      "startOffsetMs": 2867105,
+      "startOffsetSec": 2867,
+      "title": "Chapter 3"
+    }
+  ],
+  "isAccurate": true,
+  "region": "us",
+  "runtimeLengthMs": 122790390,
+  "runtimeLengthSec": 122790
+}

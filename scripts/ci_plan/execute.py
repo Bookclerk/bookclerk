@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -336,6 +337,7 @@ def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
         plan.selected("lint")
         or plan.selected("ui")
         or plan.selected("plugin_sdk_abi")
+        or plan.selected("workerd_guests")
         or (plan.selected("api_docs") and (docs.get("all") or docs.get("typescript") or docs.get("ui")))
     )
     # uv installs the Python SDK and its pdoc extra from uv.lock.
@@ -471,6 +473,89 @@ def _coverage_report(area: str) -> Path | None:
     report = Path(root) / area / "lcov.info"
     report.parent.mkdir(parents=True, exist_ok=True)
     return report
+
+
+def workerd_guest_dirs(workspace: Path) -> list[Path]:
+    """First-party workerd guests that carry their own TypeScript build.
+
+    A guest qualifies when it sits under ``crates/bookclerk-plugins/<tier>/``,
+    its ``plugin.toml`` says ``runtime = "workerd"`` and it has a
+    ``package.json``.
+
+    Args:
+        workspace: The repository root.
+
+    Returns:
+        The guest directories, sorted.
+    """
+    out: list[Path] = []
+    for manifest in sorted((workspace / "crates" / "bookclerk-plugins").glob("*/*/plugin.toml")):
+        try:
+            runtime = tomllib.loads(manifest.read_text(encoding="utf-8")).get("runtime")
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ExecError(f"cannot parse {manifest}: {exc}") from exc
+        if runtime == "workerd" and (manifest.parent / "package.json").is_file():
+            out.append(manifest.parent)
+    return out
+
+
+def _workerd_guest_commands(ctx: "Context") -> list[Command]:
+    """Type-check, rebuild and test every first-party workerd guest.
+
+    The guests type-check against the TypeScript SDK, so it is built first.
+    Each guest's shipped ``modules/`` is emitted from ``src/`` by its build;
+    a committed tree that differs from a fresh build is drift. The unit tests
+    of all guests run in one ``node --test`` from the repository root, so one
+    LCOV report covers them.
+
+    Args:
+        ctx: Paths and platform facts.
+
+    Returns:
+        The commands, in order.
+    """
+    sdk = str(ctx.workspace / "packages" / "plugin-sdk")
+    cmds = [
+        Command("npm ci (plugin-sdk)", ["npm", "ci"], cwd=sdk),
+        Command("npm run build (plugin-sdk)", ["npm", "run", "build"], cwd=sdk),
+    ]
+    dirs = workerd_guest_dirs(ctx.workspace)
+    for guest in dirs:
+        rel = guest.relative_to(ctx.workspace).as_posix()
+        cmds += [
+            Command(f"npm ci ({rel})", ["npm", "ci"], cwd=str(guest)),
+            Command(f"tsc ({rel})", ["npm", "run", "typecheck"], cwd=str(guest)),
+            Command(f"npm run build ({rel})", ["npm", "run", "build"], cwd=str(guest)),
+            Command(f"modules drift ({rel})", ["git", "diff", "--exit-code", "--", "modules"], cwd=str(guest)),
+        ]
+    if not dirs:
+        return cmds
+    report = _coverage_report("workerd-guests")
+    reporters = ["--test-reporter=spec", "--test-reporter-destination=stdout"]
+    if report:
+        reporters += [
+            "--test-reporter=lcov",
+            f"--test-reporter-destination={report}",
+            "--test-reporter=junit",
+            f"--test-reporter-destination={report.parent / 'junit.xml'}",
+        ]
+    tests = [f"{guest.relative_to(ctx.workspace).as_posix()}/test/**/*.test.ts" for guest in dirs]
+    cmds.append(
+        Command(
+            "node --test (workerd guests)",
+            [
+                "node",
+                "--test",
+                "--experimental-test-module-mocks",
+                "--experimental-test-coverage",
+                "--test-coverage-include=crates/bookclerk-plugins/*/*/src/**",
+                *reporters,
+                *tests,
+            ],
+            cwd=str(ctx.workspace),
+        )
+    )
+    return cmds
 
 
 def _bundle_dir(bundle: str) -> Path | None:
@@ -659,6 +744,8 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("ruff format", [py, "-m", "ruff", "format", "--check", "packages/plugin-sdk-python"]),
             Command("pytest", [py, "-m", "pytest", "packages/plugin-sdk-python/tests", "-q", *cov], env=src),
         ]
+    if check == "workerd_guests":
+        return _workerd_guest_commands(ctx)
     if check == "site_test":
         site = str(ctx.workspace / "tools" / "site")
         return [

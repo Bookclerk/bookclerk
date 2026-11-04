@@ -262,6 +262,7 @@ JOB_CHECKS: dict[str, tuple[str, ...]] = {
         "ui",
         "plugin_sdk_abi",
         "python_sdk",
+        "workerd_guests",
         "author_surface",
         "fmt",
         "clippy",
@@ -299,7 +300,7 @@ ALL_CHECKS = tuple(CHECK_JOB)
 STEP_GATED_JOBS = ("check", "release", "site")
 
 # Checks in the ``check`` (lint and docs) job that need no Cargo toolchain.
-NON_CARGO_CHECKS = frozenset({"lint", "ui", "python_sdk"})
+NON_CARGO_CHECKS = frozenset({"lint", "ui", "python_sdk", "workerd_guests"})
 
 PREREQ_ORDER = ("build", "ensure_workerd", "install_platform", "stage_plugins")
 
@@ -581,6 +582,19 @@ def package_index_from_metadata(meta: Mapping[str, Any]) -> PackageIndex:
     )
 
 
+def _guest_dir(path: str) -> str:
+    """The guest directory ``path`` would sit in, by the tier layouts.
+
+    ``examples/plugins-<name>/...`` and
+    ``crates/bookclerk-plugins/<tier>/<name>/...``; any other path yields a
+    prefix no guest has.
+    """
+    parts = path.split("/")
+    if parts[:2] == ["crates", "bookclerk-plugins"]:
+        return "/".join(parts[:4])
+    return "/".join(parts[:2])
+
+
 def discover_guests(workspace_root: str | Path, index: PackageIndex) -> dict[str, Guest]:
     """First-party guests by manifest id (platform, optional, examples)."""
     root = Path(workspace_root)
@@ -756,6 +770,7 @@ class _Surfaces:
         self.windows_cluster: list[str] = []
         self.envelope: list[str] = []
         self.fixture_checks: dict[str, list[str]] = {}
+        self.workerd_guests: list[str] = []
 
 
 def build_plan(
@@ -897,11 +912,12 @@ def build_plan(
         elif path.endswith(LINT_SUFFIXES) and path.rsplit("/", 1)[-1] not in LINT_SKIPPED_NAMES:
             # Also classified with its owner; Prettier or markdownlint reads it.
             surf.lint.append(path)
-        if pkg is None and path.startswith("examples/plugins-"):
-            guest_dir = "/".join(path.split("/")[:2])
-            guest = guest_by_dir.get(guest_dir)
+        if pkg is None:
+            guest = guest_by_dir.get(_guest_dir(path))
             if guest is not None:
                 surf.e2e_ids.setdefault(guest.id, f"guest files {path}")
+                if guest.tier != "example" and guest.runtime == "workerd":
+                    surf.workerd_guests.append(path)
                 classified = True
         if any(glob_match(path, p) for p in rel.e2e_full_paths):
             surf.e2e_full.append(path)
@@ -1025,6 +1041,10 @@ def _select_checks(
     if abi_why:
         _select(plan, "plugin_sdk_abi", abi_why)
         _select(plan, "python_sdk", abi_why)
+    # First-party workerd guests type-check against the TypeScript SDK.
+    guests_why = [f"path {p}" for p in surf.workerd_guests + surf.ts_sdk]
+    if guests_why and any(g.tier != "example" and g.runtime == "workerd" for g in guest_map.values()):
+        _select(plan, "workerd_guests", guests_why)
     for check, paths in surf.fixture_checks.items():
         _select(plan, check, [f"shared fixture {p}" for p in paths])
     if surf.lint:
