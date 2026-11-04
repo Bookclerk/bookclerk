@@ -112,7 +112,9 @@ test("other errors pass through unchanged", async () => {
       status: 200,
       ok: true,
       headers: new Headers(),
-      arrayBuffer: () => Promise.reject(new RangeError("unexpected")),
+      body: {
+        getReader: () => ({ read: () => Promise.reject(new RangeError("unexpected")) }),
+      },
     }) as unknown as Response;
   await assert.rejects(metadata.search({ title: "Dune" }), RangeError);
 });

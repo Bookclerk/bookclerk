@@ -46,6 +46,7 @@ fuzz/
 **/tests/fixtures/
 scripts/tests/ci_plan_fixtures/
 tools/site/fuzz/*/
+crates/bookclerk-plugins/optional/metadata-*/fuzz/
 
 # Ignored by the Workers' own .gitignore files.
 tools/*/.wrangler/

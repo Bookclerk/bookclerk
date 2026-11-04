@@ -6,7 +6,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { MAX_BODY_BYTES, lookup, search, type ClientOptions, type Fetch } from "../src/client.ts";
+import {
+  MAX_BODY_BYTES,
+  lookup,
+  readCapped,
+  search,
+  type ClientOptions,
+  type Fetch,
+} from "../src/client.ts";
 import { ProviderFailure } from "../src/openlibrary.ts";
 
 /** One request the scripted `fetch` saw. */
@@ -50,6 +57,29 @@ async function rejectsWith(
     assert.match(err.message, message);
     return true;
   });
+}
+
+/**
+ * A chunked body that never ends, counting how many chunks were pulled.
+ *
+ * @returns The stream and a reader of its state.
+ */
+function endless(): {
+  body: ReadableStream<Uint8Array>;
+  state: { pulled: number; cancelled: boolean };
+} {
+  const state = { pulled: 0, cancelled: false };
+  const chunk = new Uint8Array(64 * 1024).fill(0x20);
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      state.pulled++;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { body, state };
 }
 
 const HOBBIT = readFileSync(new URL("fixtures/search-isbn.json", import.meta.url), "utf8");
@@ -132,4 +162,16 @@ test("an oversized body is refused before and after reading", async () => {
   await rejectsWith(search(declared.options, { title: "Hobbit" }), "unavailable", /too large/);
   const actual = scripted(() => new Response(" ".repeat(MAX_BODY_BYTES + 1)));
   await rejectsWith(search(actual.options, { title: "Hobbit" }), "unavailable", /too large/);
+});
+
+test("a body without a length is cut off at the cap", async () => {
+  const { body, state } = endless();
+  const chunked = scripted(() => new Response(body));
+  await rejectsWith(search(chunked.options, { title: "Hobbit" }), "unavailable", /too large/);
+  assert.equal(state.cancelled, true);
+  assert.ok(state.pulled * 64 * 1024 <= MAX_BODY_BYTES + 2 * 64 * 1024);
+});
+
+test("readCapped reads a missing body as empty", async () => {
+  assert.deepEqual(await readCapped(new Response(null), 10), new Uint8Array());
 });

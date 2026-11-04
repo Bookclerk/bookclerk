@@ -11,6 +11,42 @@ export const REQUEST_TIMEOUT_MS = 15_000;
 /** Largest response body read, in bytes; a long layout is far smaller. */
 export const MAX_BODY_BYTES = 4 * 1024 * 1024;
 /**
+ * Reads a response body, stopping as soon as it passes `max` bytes.
+ *
+ * The body is consumed chunk by chunk and the stream is cancelled once the
+ * cap is passed, so a body without `Content-Length` (a chunked response)
+ * never buffers more than `max` bytes plus one chunk.
+ *
+ * @param response - The response to read.
+ * @param max - Most bytes accepted.
+ * @returns The body, or `undefined` when it is larger than `max`.
+ */
+export async function readCapped(response, max) {
+    const reader = response.body?.getReader();
+    if (reader === undefined)
+        return new Uint8Array();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done)
+            break;
+        total += value.byteLength;
+        if (total > max) {
+            await reader.cancel();
+            return undefined;
+        }
+        chunks.push(value);
+    }
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const chunk of chunks) {
+        out.set(chunk, at);
+        at += chunk.byteLength;
+    }
+    return out;
+}
+/**
  * GETs `url` and parses its JSON body.
  *
  * @param options - How to reach Audnexus.
@@ -44,8 +80,8 @@ export async function getJson(options, url) {
     if (declared > MAX_BODY_BYTES) {
         throw new ProviderFailure("unavailable", "Audnexus sent a response that is too large");
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > MAX_BODY_BYTES) {
+    const bytes = await readCapped(response, MAX_BODY_BYTES);
+    if (bytes === undefined) {
         throw new ProviderFailure("unavailable", "Audnexus sent a response that is too large");
     }
     try {

@@ -210,8 +210,15 @@ export function userAgent(version, contactEmail) {
     const contact = ok ? `${email}; ` : "";
     return `Bookclerk-OpenLibrary/${version} (${contact}https://bookclerk.app)`;
 }
+/** A UTF-16 surrogate with no partner: a high one not followed by a low one, or a low one not preceded by a high one. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 /**
- * Returns `value` when it is a non-blank string, trimmed and capped.
+ * Returns `value` when it is a non-blank string, trimmed, well-formed and
+ * capped.
+ *
+ * A lone surrogate becomes U+FFFD, and the cap at `MAX_TEXT` UTF-16 code
+ * units never splits a surrogate pair, so the text always encodes to UTF-8
+ * unchanged.
  *
  * @param value - Untrusted JSON value.
  * @returns The text, or `undefined`.
@@ -219,8 +226,14 @@ export function userAgent(version, contactEmail) {
 function text(value) {
     if (typeof value !== "string")
         return undefined;
-    const trimmed = value.trim();
-    return trimmed === "" ? undefined : trimmed.slice(0, MAX_TEXT);
+    const trimmed = value.replace(LONE_SURROGATE, "\uFFFD").trim();
+    if (trimmed === "")
+        return undefined;
+    if (trimmed.length <= MAX_TEXT)
+        return trimmed;
+    const cut = trimmed.slice(0, MAX_TEXT);
+    const last = cut.charCodeAt(MAX_TEXT - 1);
+    return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 /**
  * Returns the non-blank strings of `value` when it is an array, capped.
@@ -242,6 +255,23 @@ function texts(value, max) {
         }
     }
     return out;
+}
+/**
+ * Joins names with `; `, keeping only the leading names that fit in
+ * `MAX_TEXT` code units together.
+ *
+ * @param names - Names, each already within `MAX_TEXT`.
+ * @returns The joined names, or `undefined` when there are none.
+ */
+function joinCapped(names) {
+    let out = "";
+    for (const name of names) {
+        const next = out === "" ? name : `${out}; ${name}`;
+        if (next.length > MAX_TEXT)
+            break;
+        out = next;
+    }
+    return out === "" ? undefined : out;
 }
 /**
  * Returns `value` when it is a finite number in `min..=max`.
@@ -353,9 +383,9 @@ export function recordFromDoc(doc) {
         (year !== undefined && Number.isInteger(year) ? String(year) : undefined);
     if (published !== undefined)
         record.publishedAt = published;
-    const subjects = texts(d.subject, MAX_SUBJECTS);
-    if (subjects.length > 0)
-        record.categories = subjects.join("; ");
+    const categories = joinCapped(texts(d.subject, MAX_SUBJECTS));
+    if (categories !== undefined)
+        record.categories = categories;
     const language = texts(ed?.language, 1)[0];
     if (language !== undefined)
         record.language = language;

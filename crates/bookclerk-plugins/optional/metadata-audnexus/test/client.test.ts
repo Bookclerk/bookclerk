@@ -12,6 +12,7 @@ import {
   chapters,
   getJson,
   lookup,
+  readCapped,
   type ClientOptions,
   type Fetch,
 } from "../src/client.ts";
@@ -61,6 +62,29 @@ async function rejectsWith(
 
 const BOOK = readFileSync(new URL("fixtures/book.json", import.meta.url), "utf8");
 const CHAPTERS = readFileSync(new URL("fixtures/chapters.json", import.meta.url), "utf8");
+/**
+ * A chunked body that never ends, counting how many chunks were pulled.
+ *
+ * @returns The stream and a reader of its state.
+ */
+function endless(): {
+  body: ReadableStream<Uint8Array>;
+  state: { pulled: number; cancelled: boolean };
+} {
+  const state = { pulled: 0, cancelled: false };
+  const chunk = new Uint8Array(64 * 1024).fill(0x20);
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      state.pulled++;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { body, state };
+}
+
 const BOOK_URL = "https://api.audnex.us/books/B002V0QK4C?region=us";
 const CHAPTERS_URL = "https://api.audnex.us/books/B002V0QK4C/chapters?region=us";
 
@@ -153,4 +177,16 @@ test("bodies that are not JSON or too large are unavailable", async () => {
   await rejectsWith(getJson(declared.options, BOOK_URL), "unavailable", /too large/);
   const actual = scripted({ [BOOK_URL]: () => new Response(" ".repeat(MAX_BODY_BYTES + 1)) });
   await rejectsWith(getJson(actual.options, BOOK_URL), "unavailable", /too large/);
+});
+
+test("a body without a length is cut off at the cap", async () => {
+  const { body, state } = endless();
+  const chunked = scripted({ [BOOK_URL]: () => new Response(body) });
+  await rejectsWith(getJson(chunked.options, BOOK_URL), "unavailable", /too large/);
+  assert.equal(state.cancelled, true);
+  assert.ok(state.pulled * 64 * 1024 <= MAX_BODY_BYTES + 2 * 64 * 1024);
+});
+
+test("readCapped reads a missing body as empty", async () => {
+  assert.deepEqual(await readCapped(new Response(null), 10), new Uint8Array());
 });
