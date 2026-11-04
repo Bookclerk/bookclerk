@@ -31,7 +31,7 @@ use super::trust::{
 };
 use crate::error::Result;
 use crate::models::JobKind;
-use crate::store::{LibraryStore, NewBook};
+use crate::store::{LibraryStore, ScannedTitle};
 
 /// Most rows one results batch may carry.
 pub const MAX_SCAN_RESULT_ROWS: usize = 200;
@@ -68,8 +68,9 @@ pub async fn accept_scan_results(
     job_id: &str,
     generation: i64,
     plugin_key: &str,
-    books: Vec<NewBook>,
+    books: Vec<impl Into<ScannedTitle>>,
 ) -> Result<ScanAccept> {
+    let books: Vec<ScannedTitle> = books.into_iter().map(Into::into).collect();
     if books.len() > MAX_SCAN_RESULT_ROWS {
         return Ok(ScanAccept::Refused("batch_too_large"));
     }
@@ -102,7 +103,7 @@ pub async fn accept_scan_results(
     // Every row is checked before any is written.
     let mut sources = std::collections::BTreeMap::new();
     let mut seen_accounts = BTreeSet::new();
-    for book in &books {
+    for book in books.iter().map(|t| &t.book) {
         if book.product_id.trim().is_empty() || book.account_id.trim().is_empty() {
             return Ok(ScanAccept::Refused("invalid_row"));
         }
@@ -124,7 +125,8 @@ pub async fn accept_scan_results(
         }
     }
     let mut upserted = 0u64;
-    for mut book in books {
+    for mut title in books {
+        let book = &mut title.book;
         // Authority is confirmed again right before each row is written, so
         // a lease lost or trust withdrawn mid-batch stops the rest of it.
         match still_authorized(store, node_id, &fence).await? {
@@ -140,7 +142,7 @@ pub async fn accept_scan_results(
         book.uuid = None;
         store
             .scope(plugin_key, source.as_str())
-            .upsert_book(&book)
+            .upsert_scanned_title(&title)
             .await?;
         upserted += 1;
     }

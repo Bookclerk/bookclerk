@@ -83,6 +83,93 @@ run(["check", path.join(fixtures, "invalid-kv-namespace")], false, "namespace");
 run(["check", path.join(fixtures, "valid-queues")], true);
 run(["fmt", "--check", path.join(fixtures, "valid-workerd/plugin.fmt.toml")], true);
 run(["fmt", "--check", path.join(fixtures, "valid-native/plugin.fmt.toml")], true);
+run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.fmt.toml")], true);
+run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
+// `fmt` rewrites every manifest section to the Rust formatter's gold.
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fmt-full-"));
+  try {
+    const target = path.join(dir, "plugin.toml");
+    fs.copyFileSync(path.join(fixtures, "fmt-full/plugin.toml"), target);
+    run(["fmt", target], true, "wrote");
+    const gold = fs.readFileSync(path.join(fixtures, "fmt-full/plugin.fmt.toml"), "utf8");
+    if (fs.readFileSync(target, "utf8") !== gold) {
+      throw new Error("FAIL fmt-full: fmt output differs from plugin.fmt.toml");
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Shared logo and compatibility-date cases: the Rust and Python checkers
+// read the same files and must agree on every result and error message.
+{
+  const { validateLogo, validateAuthorCompatibilityDate } =
+    await import("../dist/tools/validate.js");
+  const logoCases = JSON.parse(fs.readFileSync(path.join(fixtures, "logo-cases.json"), "utf8"));
+  for (const c of logoCases) {
+    let got;
+    try {
+      const v = validateLogo(c.input);
+      got = { [v.kind]: v.value };
+    } catch (err) {
+      got = { error: err.message };
+    }
+    const { input, ...want } = c;
+    if (JSON.stringify(got) !== JSON.stringify(want)) {
+      console.error(`FAIL logo ${JSON.stringify(input)}: got ${JSON.stringify(got)}`);
+      process.exit(1);
+    }
+  }
+  console.log(`ok ${logoCases.length} shared logo cases`);
+  const dates = JSON.parse(fs.readFileSync(path.join(fixtures, "compat-date-cases.json"), "utf8"));
+  for (const [list, ok] of [
+    [dates.valid, true],
+    [dates.invalid, false],
+  ]) {
+    for (const d of list) {
+      let accepted = true;
+      try {
+        validateAuthorCompatibilityDate(d);
+      } catch {
+        accepted = false;
+      }
+      if (accepted !== ok) {
+        console.error(`FAIL compatibility_date ${JSON.stringify(d)}: accepted=${accepted}`);
+        process.exit(1);
+      }
+    }
+  }
+  console.log("ok shared compatibility dates");
+}
+
+// Shared manifest validation cases: each manifest is accepted, or refused with
+// the exact message the Rust and Python checkers give.
+{
+  const { parse } = await import("smol-toml");
+  const { validateManifest } = await import("../dist/tools/validate.js");
+  const doc = JSON.parse(fs.readFileSync(path.join(fixtures, "manifest-cases.json"), "utf8"));
+  for (const c of doc.cases) {
+    const text =
+      doc.prelude +
+      (c.top ?? doc.top) +
+      "\n" +
+      (c.base_tables ?? doc.base_tables) +
+      "\n" +
+      (c.tables ?? "");
+    let got = null;
+    try {
+      validateManifest(parse(text));
+    } catch (err) {
+      got = err.message;
+    }
+    if (got !== c.error) {
+      console.error(`FAIL manifest case ${JSON.stringify(c.name)}: got ${JSON.stringify(got)}`);
+      process.exit(1);
+    }
+  }
+  console.log(`ok ${doc.cases.length} shared manifest cases`);
+}
 
 const { parse } = await import("smol-toml");
 const { materializeConfig } = await import("../dist/sparse-workerd/config.js");
@@ -305,4 +392,37 @@ try {
   }
 }
 console.log("ok materialize rejects disk-only python even with both flags");
+{
+  const { healthInterfaces, requireHealthy } = await import("../dist/sparse-workerd/smoke.js");
+  const probed = healthInterfaces(["cli", "metadata", "storefront"]);
+  if (JSON.stringify(probed) !== JSON.stringify(["ContentSource", "MetadataProvider"])) {
+    console.error("FAIL smoke probes every health entrypoint", probed);
+    process.exit(1);
+  }
+  if (healthInterfaces(["cli"]).length !== 0) {
+    console.error("FAIL smoke probes no health for a cli-only plugin");
+    process.exit(1);
+  }
+  const ready = { ok: true, detail: "" };
+  if (requireHealthy("MetadataProvider", ready) !== ready) {
+    console.error("FAIL requireHealthy returns a ready reply");
+    process.exit(1);
+  }
+  for (const [reply, expected] of [
+    [{ ok: false, detail: "catalog down" }, "not ready: catalog down"],
+    [{ ok: false, detail: "" }, "not ready: no detail"],
+  ]) {
+    try {
+      requireHealthy("MetadataProvider", reply);
+      console.error("FAIL requireHealthy accepted a not-ready reply");
+      process.exit(1);
+    } catch (err) {
+      if (!String(err && err.message).includes(expected)) {
+        console.error("FAIL requireHealthy message", err);
+        process.exit(1);
+      }
+    }
+  }
+  console.log("ok smoke probes every health entrypoint and fails when not ready");
+}
 console.log("tools conformance passed");

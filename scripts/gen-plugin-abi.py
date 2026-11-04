@@ -226,6 +226,7 @@ def check_method_names() -> list[str]:
         "ContentSource",
         "RemoteLibrary",
         "Oidc",
+        "MetadataProvider",
         "PluginCli",
         "EventConsumer",
         "EventPublisher",

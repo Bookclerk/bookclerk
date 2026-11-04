@@ -336,8 +336,7 @@ bookclerk discover [OPTIONS] <COMMAND>
 
 Commands:
 
-- [`bookclerk discover recommend`](#bookclerk-discover-recommend): Rebuild works graph, optionally enrich + embed, then print recommendations
-- [`bookclerk discover rebuild-works`](#bookclerk-discover-rebuild-works): Rebuild the works graph from ownership rows
+- [`bookclerk discover recommend`](#bookclerk-discover-recommend): Optionally enrich + embed works, then print recommendations
 - [`bookclerk discover enrich-openlibrary`](#bookclerk-discover-enrich-openlibrary): Run Open Library enrichment for metadata gaps
 - [`bookclerk discover embed`](#bookclerk-discover-embed): Embed dirty works
 - [`bookclerk discover sync-listening`](#bookclerk-discover-sync-listening): Sync listening progress from all capable integrations into the library DB
@@ -345,7 +344,7 @@ Commands:
 
 ### `bookclerk discover recommend`
 
-Rebuild works graph, optionally enrich + embed, then print recommendations
+Optionally enrich + embed works, then print recommendations
 
 ```text
 bookclerk discover recommend [OPTIONS]
@@ -358,14 +357,6 @@ Options:
 - `--user <USER>`: Filter listening signals to one external user id (any listening integration)
 - `--no-listening`: Ignore listening_progress entirely (owned-library taste only)
 - `--listening-provider <ID>`: Only use listening rows from these integration ids (repeatable)
-
-### `bookclerk discover rebuild-works`
-
-Rebuild the works graph from ownership rows
-
-```text
-bookclerk discover rebuild-works [OPTIONS]
-```
 
 ### `bookclerk discover enrich-openlibrary`
 

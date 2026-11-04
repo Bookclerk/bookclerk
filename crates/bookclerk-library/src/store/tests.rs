@@ -8,6 +8,34 @@ use crate::{AtomicTxnBackend, InProcessSqliteAtomic};
 use sea_orm::{ActiveModelTrait, ConnectionTrait, EntityTrait};
 use std::sync::Arc;
 
+/// Marks every pending outbox event dispatched with no subscribers.
+async fn dispatch_pending(store: &LibraryStore) {
+    while let Some(event) = store.next_undispatched_event().await.unwrap() {
+        store
+            .dispatch_event_deliveries(&event.id, &[], &Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+    }
+}
+
+/// Dispatches pending events until one of `event_type` is next, and returns it.
+async fn next_event_of(store: &LibraryStore, event_type: &str) -> crate::DomainEventRecord {
+    loop {
+        let event = store
+            .next_undispatched_event()
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("no pending {event_type} event"));
+        if event.event_type == event_type {
+            return event;
+        }
+        store
+            .dispatch_event_deliveries(&event.id, &[], &Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+    }
+}
+
 #[tokio::test]
 async fn account_and_book_roundtrip() {
     let store = LibraryStore::from_connection(
@@ -66,7 +94,7 @@ async fn account_and_book_roundtrip() {
         .unwrap()
         .unwrap();
     assert_eq!(by_uuid.product_id, "B00TEST");
-    let pending = store.next_undispatched_event().await.unwrap().unwrap();
+    let pending = next_event_of(&store, "book_acquired").await;
     assert_eq!(pending.event_type, "book_acquired");
     assert_eq!(pending.ordering_key, updated.uuid);
     assert_eq!(pending.dedup_key, format!("book_acquired:{}", updated.uuid));
@@ -4604,6 +4632,7 @@ async fn acquire_status_and_outbox_commit_together() {
         .upsert_book(&NewBook::minimal("B00EVT", "user-1", "us", "Event Book"))
         .await
         .unwrap();
+    dispatch_pending(&store).await;
     super::event_outbox::inject_event_publish_failures(1);
     let err = store
         .set_acquire_status(

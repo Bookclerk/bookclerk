@@ -250,40 +250,189 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_links_account_exclusive ON account_links(plugin_key, account_id)",
     ),
+    // The library data model (docs/adr/library-data-model.md): FRBR works,
+    // expressions and editions (manifestations), the store listings that
+    // sell editions and the holdings that own listings. The CHECK lists are
+    // the stored spellings of `bookclerk_resolve::kinds`
+    // (`library_model_checks_match_the_resolver_enums`).
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS works (
         id TEXT PRIMARY KEY,
-        canonical_asin TEXT,
-        canonical_isbn TEXT,
+        kind TEXT NOT NULL CHECK (kind IN ('book', 'podcast_show', 'podcast_episode', 'drama')),
         title TEXT NOT NULL,
-        authors TEXT,
-        narrators TEXT,
+        match_key TEXT NOT NULL DEFAULT '',
+        parent_work_id TEXT REFERENCES works(id) ON DELETE SET NULL,
         description TEXT,
         subjects TEXT,
         categories TEXT,
-        language TEXT,
-        series TEXT,
-        series_index TEXT,
         cover_url TEXT,
-        openlibrary_id TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )",
     ),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_asin ON works(canonical_asin)"),
-    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_isbn ON works(canonical_isbn)"),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_match ON works(match_key)"),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_parent ON works(parent_work_id)"),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_title ON works(title)"),
     MigrationOp::Schema(
-        r"CREATE TABLE IF NOT EXISTS work_editions (
-        work_id TEXT NOT NULL,
-        book_uuid TEXT NOT NULL UNIQUE,
+        r"CREATE TABLE IF NOT EXISTS work_identifiers (
+        scheme TEXT NOT NULL CHECK (scheme IN ('isbn', 'asin', 'openlibrary_edition', 'openlibrary_work')),
+        value TEXT NOT NULL,
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
         created_at TEXT NOT NULL,
-        PRIMARY KEY (work_id, book_uuid),
-        FOREIGN KEY(work_id) REFERENCES works(id) ON DELETE CASCADE
+        PRIMARY KEY (scheme, value)
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_work_editions_book ON work_editions(book_uuid)",
+        r"CREATE INDEX IF NOT EXISTS idx_work_identifiers_work ON work_identifiers(work_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS expressions (
+        id TEXT PRIMARY KEY,
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('narration', 'text', 'translation', 'dramatisation', 'podcast_audio')),
+        language TEXT,
+        abridgement TEXT NOT NULL CHECK (abridgement IN ('unknown', 'unabridged', 'abridged')),
+        credit_key TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_expressions_work ON expressions(work_id)"),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS editions (
+        id TEXT PRIMARY KEY,
+        expression_id TEXT NOT NULL REFERENCES expressions(id) ON DELETE CASCADE,
+        media_kind TEXT NOT NULL CHECK (media_kind IN ('audiobook', 'ebook', 'print', 'podcast_audio')),
+        title TEXT NOT NULL,
+        subtitle TEXT,
+        published_at TEXT,
+        duration_minutes INTEGER,
+        cover_url TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_editions_expression ON editions(expression_id)",
+    ),
+    // `strong_key` is set for strong schemes only; NULLs never conflict, so
+    // a strong identifier names one edition while a weak one (an ISBN) can
+    // sit on several.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS edition_identifiers (
+        edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        scheme TEXT NOT NULL CHECK (scheme IN ('isbn', 'asin', 'openlibrary_edition', 'openlibrary_work')),
+        value TEXT NOT NULL,
+        marketplace TEXT NOT NULL DEFAULT '',
+        strength TEXT NOT NULL CHECK (strength IN ('strong', 'weak')),
+        strong_key TEXT UNIQUE,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (edition_id, scheme, value, marketplace)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_edition_identifiers_value ON edition_identifiers(scheme, value, marketplace)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS contributors (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        sort_name TEXT NOT NULL,
+        name_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS credits (
+        target_kind TEXT NOT NULL CHECK (target_kind IN ('work', 'expression', 'edition')),
+        target_id TEXT NOT NULL,
+        contributor_id TEXT NOT NULL REFERENCES contributors(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('author', 'narrator', 'translator', 'editor', 'illustrator', 'publisher', 'host', 'cast', 'adaptor')),
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (target_kind, target_id, contributor_id, role)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_credits_contributor ON credits(contributor_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS series (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        name_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS series_entries (
+        series_id TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        position TEXT,
+        sort_position REAL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (series_id, work_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_series_entries_work ON series_entries(work_id)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS store_listings (
+        id TEXT PRIMARY KEY,
+        plugin_key TEXT NOT NULL,
+        marketplace TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        categories TEXT,
+        observed_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(plugin_key, marketplace, product_id)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_store_listings_edition ON store_listings(edition_id)",
+    ),
+    // `holder` is `account:<account_id>` (an account of the listing's
+    // plugin) or `node:<node_id>` (a branch library).
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS holdings (
+        listing_id TEXT NOT NULL REFERENCES store_listings(id) ON DELETE CASCADE,
+        holder TEXT NOT NULL,
+        entitlement TEXT NOT NULL CHECK (entitlement IN ('purchase', 'plus', 'loan', 'free')),
+        purchased_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (listing_id, holder)
+    )",
+    ),
+    MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_holdings_holder ON holdings(holder)"),
+    // An Administrator's decision the resolver obeys: pin a listing to an
+    // edition, or keep the work matcher away from a work it split.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS resolution_overrides (
+        subject_kind TEXT NOT NULL CHECK (subject_kind IN ('listing', 'work')),
+        subject_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK (action IN ('pin_edition', 'isolate')),
+        target_id TEXT,
+        created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (subject_kind, subject_id)
+    )",
+    ),
+    // What the resolver could not decide, for an Administrator: the
+    // conflict's kind and the JSON array of edition or work ids involved.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS resolution_conflicts (
+        listing_id TEXT NOT NULL REFERENCES store_listings(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('strong_identifiers', 'work_identifiers', 'ambiguous_work', 'work_kind_mismatch')),
+        subject_ids TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (listing_id, kind, subject_ids)
+    )",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS listening_progress (
@@ -1240,3 +1389,81 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::{MigrationOp, UNRELEASED_OPS};
+    use bookclerk_resolve::kinds::sql_check_list;
+    use bookclerk_resolve::{
+        Abridgement, CreditRole, Entitlement, ExpressionKind, IdentifierScheme, Level, MediaKind,
+        Strength, WorkKind,
+    };
+
+    /// The `CREATE TABLE` statement for `table`.
+    fn table_ddl(table: &str) -> &'static str {
+        let head = format!("CREATE TABLE IF NOT EXISTS {table} (");
+        UNRELEASED_OPS
+            .iter()
+            .find_map(|op| match op {
+                MigrationOp::Schema(sql) if sql.starts_with(&head) => Some(*sql),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no DDL for {table}"))
+    }
+
+    /// Asserts `table.column` checks exactly `values`.
+    fn assert_check(table: &str, column: &str, values: impl IntoIterator<Item = &'static str>) {
+        let expected = format!("{column} IN ({})", sql_check_list(values));
+        assert!(
+            table_ddl(table).contains(&expected),
+            "{table}.{column} does not check `{expected}`"
+        );
+    }
+
+    #[test]
+    fn library_model_checks_match_the_resolver_kinds() {
+        assert_check("works", "kind", WorkKind::ALL.iter().map(|k| k.as_str()));
+        assert_check(
+            "expressions",
+            "kind",
+            ExpressionKind::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "expressions",
+            "abridgement",
+            Abridgement::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "editions",
+            "media_kind",
+            MediaKind::ALL.iter().map(|k| k.as_str()),
+        );
+        for table in ["work_identifiers", "edition_identifiers"] {
+            assert_check(
+                table,
+                "scheme",
+                IdentifierScheme::ALL.iter().map(|k| k.as_str()),
+            );
+        }
+        assert_check(
+            "edition_identifiers",
+            "strength",
+            Strength::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "credits",
+            "target_kind",
+            Level::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "credits",
+            "role",
+            CreditRole::ALL.iter().map(|k| k.as_str()),
+        );
+        assert_check(
+            "holdings",
+            "entitlement",
+            Entitlement::ALL.iter().map(|k| k.as_str()),
+        );
+    }
+}

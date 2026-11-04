@@ -19,6 +19,7 @@ on:
       - "crates/bookclerk-plugin-manifest/**"
       - "crates/bookclerk-workerd/**"
       - "crates/bookclerk-plugin-sdk/**"
+      - "crates/bookclerk-resolve/**"
       - ".clusterfuzzlite/**"
       - ".github/workflows/cflite-*.yml"
   workflow_dispatch:

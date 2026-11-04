@@ -662,37 +662,31 @@ pub struct BookRecord {
 /// Canonical work spanning one or more ownership rows / editions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkRecord {
-    /// Surrogate primary key assigned by the database.
+    /// Work id (UUID).
     pub id: String,
-    /// Preferred ASIN representing this canonical work.
-    pub canonical_asin: Option<String>,
-    /// Preferred ISBN representing this canonical work.
-    pub canonical_isbn: Option<String>,
-    /// Display title of the work or edition.
+    /// Stored work kind (`book`, `podcast_show`, `podcast_episode`, `drama`).
+    pub kind: String,
+    /// Display title.
     pub title: String,
-    /// Comma-separated or JSON author list from the storefront.
-    pub authors: Option<String>,
-    /// Comma-separated or JSON narrator list when present.
-    pub narrators: Option<String>,
+    /// The show a podcast episode belongs to.
+    pub parent_work_id: Option<String>,
+    /// Names credited on the work itself (authors, …), in billing order.
+    pub credits: Vec<String>,
+    /// Narrators credited on the work's expressions, each named once.
+    pub narrators: Vec<String>,
+    /// Names of the series the work belongs to.
+    pub series: Vec<String>,
     /// Blurb / synopsis text (may contain HTML).
     pub description: Option<String>,
     /// Subject / topic tags from enrichment (serialized).
     pub subjects: Option<String>,
-    /// Storefront category / genre path list (serialized).
+    /// Store category / genre path list (serialized).
     pub categories: Option<String>,
-    /// BCP-47 or storefront language code when known.
-    pub language: Option<String>,
-    /// Series name when the title belongs to a series.
-    pub series: Option<String>,
-    /// Position within the series (storefront string form).
-    pub series_index: Option<String>,
     /// HTTPS URL for cover art when known.
     pub cover_url: Option<String>,
-    /// Open Library work/edition id when enrichment found one.
-    pub openlibrary_id: Option<String>,
-    /// RFC 3339 timestamp when the row was inserted.
+    /// When the row was inserted.
     pub created_at: DateTime<Utc>,
-    /// RFC 3339 timestamp when the row was last modified.
+    /// When the row was last modified.
     pub updated_at: DateTime<Utc>,
 }
 

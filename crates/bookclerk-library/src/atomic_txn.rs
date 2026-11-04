@@ -129,6 +129,15 @@ pub trait AtomicTxnBackend: Send + Sync {
         mark_dispatched: bool,
     ) -> Result<u32>;
 
+    /// Write one resolved listing as one guarded batch.
+    ///
+    /// Returns the batch status: `ok`, or `retry` when another writer
+    /// changed the rows the plan was resolved against.
+    async fn link_listing(&self, params: crate::library_link::ListingLinkParams) -> Result<String>;
+
+    /// Write one batch of contributors, credits, series and series entries.
+    async fn write_credits(&self, params: crate::library_link::CreditBatchParams) -> Result<()>;
+
     /// CAS-claim one pending delivery after the host has filtered eligibility.
     #[allow(clippy::too_many_arguments)]
     async fn claim_event_delivery(

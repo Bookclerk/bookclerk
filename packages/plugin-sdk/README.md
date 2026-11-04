@@ -28,6 +28,7 @@ its base:
 | `entrypoints = ["databaseAdapter"]` | `DatabaseAdapter` | `DatabaseAdapterEntrypoint` |
 | `entrypoints = ["cli"]` | `Cli` | `CliEntrypoint` |
 | `entrypoints = ["oidc"]` | `Oidc` | `OidcEntrypoint` |
+| `entrypoints = ["metadata"]` | `Metadata` | `MetadataEntrypoint` |
 
 ```ts
 import {

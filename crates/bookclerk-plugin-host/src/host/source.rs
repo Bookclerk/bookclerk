@@ -28,7 +28,7 @@ use bookclerk_library::SourceScope;
 use bookclerk_plugin_sdk::{ExtensibleConfig, PRODUCT_API_VERSION};
 use bookclerk_source::abi::{
     self as source_abi, account_credentials, credentials_from_bytes, credentials_to_bytes,
-    expand_candidates_params, scan_book_to_new, scan_summary_from_abi, DEFAULT_EXTERNAL_SORT_KEY,
+    expand_candidates_params, scan_summary_from_abi, scanned_title, DEFAULT_EXTERNAL_SORT_KEY,
     DEFAULT_LIST_DEALS_LIMIT,
 };
 use bookclerk_source::{
@@ -528,11 +528,11 @@ impl ContentSource for ExternalSource {
             .await?;
         let mut upserted = 0usize;
         for book in &summary.books {
-            let Some(new) = scan_book_to_new(self.id(), book.clone()) else {
+            let Some(title) = scanned_title(self.id(), book.clone()) else {
                 continue;
             };
             scope
-                .upsert_book(&new)
+                .upsert_scanned_title(&title)
                 .await
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
             upserted += 1;

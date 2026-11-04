@@ -817,8 +817,10 @@ that run's coverage and runs `scripts/coverage_gate.py --ratchet`:
 
 When a floor rises, the workflow opens a `ci/coverage-floors` pull request
 with the automation App and turns on auto-merge, so the merge queue lands
-it once its checks pass. While that pull request is open, later rises
-update it rather than opening another. Floors move in whole points, so most
+it once its checks pass. Turning on auto-merge gets four attempts, because
+GitHub's API sometimes fails a single call. If all four fail, the run fails,
+and the next merge to `main` tries again. While that pull request is open,
+later rises update it rather than opening another. Floors move in whole points, so most
 merges change nothing and the run ends after a few seconds. To run it by
 hand, use **Run workflow** on the Actions tab; it then reads the latest
 successful merge group run, whose coverage artifacts are kept for seven

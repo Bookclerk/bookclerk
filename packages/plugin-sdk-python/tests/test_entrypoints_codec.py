@@ -33,6 +33,7 @@ ALL = (
     "remoteLibrary",
     "cli",
     "oidc",
+    "metadata",
 )
 
 

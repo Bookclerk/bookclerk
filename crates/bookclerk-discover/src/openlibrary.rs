@@ -242,33 +242,21 @@ pub async fn enrich_books_from_openlibrary_with(
             )
             .await?;
 
-        if let (Some(ol), Some(work_id)) =
-            (openlibrary_id, library.work_id_for_book(&book.uuid).await?)
-        {
-            if let Some(work) = library.get_work(&work_id).await? {
-                let mut nw = bookclerk_library::NewWork {
-                    id: Some(work.id),
-                    canonical_asin: work.canonical_asin,
-                    canonical_isbn: work.canonical_isbn,
-                    title: work.title,
-                    authors: work.authors,
-                    narrators: work.narrators,
-                    description: work.description,
-                    subjects: work.subjects,
-                    categories: work.categories,
-                    language: work.language,
-                    series: work.series,
-                    series_index: work.series_index,
-                    cover_url: work.cover_url,
-                    openlibrary_id: Some(ol),
-                };
-                if let Some(b) = library.get_book_by_uuid(&book.uuid).await? {
-                    nw.description = b.description.or(nw.description);
-                    nw.subjects = b.subjects.or(nw.subjects);
-                    nw.language = b.language.or(nw.language);
-                    nw.cover_url = b.cover_url.or(nw.cover_url);
-                }
-                library.upsert_work(&nw).await?;
+        if let Some(work_id) = library.work_id_for_book(&book.uuid).await? {
+            if let Some(b) = library.get_book_by_uuid(&book.uuid).await? {
+                library
+                    .set_work_enrichment(&work_id, &bookclerk_library::WorkEnrichment::of_book(&b))
+                    .await?;
+            }
+            // Open Library names works `/works/OL…W`; only the id is stored.
+            if let Some(ol) = openlibrary_id.as_deref().and_then(|k| k.rsplit('/').next()) {
+                library
+                    .add_work_identifier(
+                        &work_id,
+                        bookclerk_resolve::IdentifierScheme::OpenLibraryWork,
+                        ol,
+                    )
+                    .await?;
             }
         }
 

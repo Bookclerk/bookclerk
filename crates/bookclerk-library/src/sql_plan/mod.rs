@@ -14,6 +14,7 @@ mod exec;
 mod guest_receipt;
 pub mod host_ir;
 mod interpret;
+mod link;
 mod named;
 mod reply;
 mod slots;

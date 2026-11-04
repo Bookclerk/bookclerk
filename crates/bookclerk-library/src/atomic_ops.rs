@@ -28,6 +28,8 @@ pub mod atomic_status {
     pub const DUPLICATE: &str = "duplicate";
     /// Job admit refused because the pending+running cap was reached.
     pub const QUEUE_FULL: &str = "queueFull";
+    /// Another writer changed the rows a listing link read; resolve again.
+    pub const RETRY: &str = "retry";
 }
 
 /// Named atomic library operation compiled by the host into a generic plan.
@@ -288,6 +290,14 @@ pub enum DbAtomicParams {
         #[serde(default = "default_claim_max_in_flight")]
         max_in_flight: i64,
     },
+    /// Write one resolved store listing: new work, expression and edition,
+    /// identifiers, the listing, its holding, conflicts and events.
+    ///
+    /// Answers `retry` when another writer stored the listing or claimed a
+    /// strong identifier first.
+    LinkListing(Box<crate::library_link::ListingLinkParams>),
+    /// Write contributors, credits, series and series entries (idempotent).
+    WriteCredits(Box<crate::library_link::CreditBatchParams>),
 }
 
 /// Serde default: one in-flight event delivery per (plugin, class).

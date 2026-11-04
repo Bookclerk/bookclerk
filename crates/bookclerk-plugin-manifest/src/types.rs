@@ -14,13 +14,14 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Every entrypoint in declaration order (mirrors the Cap'n Proto enum).
-pub const ALL_ENTRYPOINTS: [Entrypoint; 6] = [
+pub const ALL_ENTRYPOINTS: [Entrypoint; 7] = [
     Entrypoint::Storefront,
     Entrypoint::Storage,
     Entrypoint::DatabaseAdapter,
     Entrypoint::RemoteLibrary,
     Entrypoint::Cli,
     Entrypoint::Oidc,
+    Entrypoint::Metadata,
 ];
 
 /// Entrypoints the host loads into their own registry (sources,
@@ -46,7 +47,9 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
         Entrypoint::Storefront => PluginFamily::Source,
         Entrypoint::Storage => PluginFamily::Output,
         Entrypoint::DatabaseAdapter => PluginFamily::Database,
-        Entrypoint::RemoteLibrary | Entrypoint::Cli | Entrypoint::Oidc => PluginFamily::Integration,
+        Entrypoint::RemoteLibrary | Entrypoint::Cli | Entrypoint::Oidc | Entrypoint::Metadata => {
+            PluginFamily::Integration
+        }
     }
 }
 
@@ -61,7 +64,8 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
 pub enum PluginFamily {
     /// Storefront / library source (`Storefront` entrypoint).
     Source,
-    /// Event consumer, job runner, remote library, CLI, or OIDC bridge.
+    /// Event consumer, job runner, remote library, CLI, OIDC bridge, or
+    /// metadata provider.
     Integration,
     /// Destination / output backend (`Storage` entrypoint).
     Output,
@@ -527,9 +531,16 @@ impl EventsManifest {
 ///
 /// `book_acquired` is written by the host's acquire pipeline in the same
 /// transaction as the library row once a source plugin's acquire handler
-/// returns; the source never publishes it. Plugins consume these types but
-/// cannot declare them under `[[events.producers]]`.
-pub const HOST_EVENT_TYPES: [&str; 1] = ["book_acquired"];
+/// returns; the source never publishes it. `edition_linked`,
+/// `edition_updated` and `holding_added` are written by the library model
+/// resolver in the same batch as the listing they describe. Plugins consume
+/// these types but cannot declare them under `[[events.producers]]`.
+pub const HOST_EVENT_TYPES: [&str; 4] = [
+    "book_acquired",
+    "edition_linked",
+    "edition_updated",
+    "holding_added",
+];
 
 /// True when `event_type` is in [`HOST_EVENT_TYPES`].
 #[must_use]
@@ -1226,8 +1237,8 @@ impl PluginManifest {
     ///
     /// A plugin joins the `Source` / `Output` / `Database` families through
     /// the matching named entrypoint and the `Integration` family through
-    /// event consumers, queue consumers, crons, `RemoteLibrary`, `Cli`, or
-    /// `Oidc`.
+    /// event consumers, queue consumers, crons, `RemoteLibrary`, `Cli`,
+    /// `Oidc`, or `Metadata`.
     ///
     /// Job triggers make a plugin an integration only when it has no
     /// `storefront`, `storage` or `databaseAdapter` entrypoint. Beside one of
@@ -1254,6 +1265,7 @@ impl PluginManifest {
                         || self.runs_crons()
                         || self.has_entrypoint(Entrypoint::RemoteLibrary)
                         || self.has_entrypoint(Entrypoint::Oidc)
+                        || self.has_entrypoint(Entrypoint::Metadata)
                         || (self.has_entrypoint(Entrypoint::Cli) && !self.has_registry_entrypoint())
                 }
             };
@@ -1893,6 +1905,23 @@ pub enum JailNetworkNeed {
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_entrypoint_maps_to_its_family() {
+        let families: Vec<PluginFamily> = ALL_ENTRYPOINTS.map(entrypoint_family).to_vec();
+        assert_eq!(
+            families,
+            vec![
+                PluginFamily::Source,
+                PluginFamily::Output,
+                PluginFamily::Database,
+                PluginFamily::Integration,
+                PluginFamily::Integration,
+                PluginFamily::Integration,
+                PluginFamily::Integration,
+            ]
+        );
+    }
 
     /// Minimal v3 native manifest body; callers append tables.
     fn native(extra: &str) -> String {

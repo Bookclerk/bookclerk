@@ -110,3 +110,10 @@ boundary = "Generated Cap'n Proto read_* / write_* codec pairs"
 input_from = "guest"
 side = "host"
 artifacts = ["bookclerk", "rust-sdk"]
+
+[targets.library_resolve]
+crate = "bookclerk-resolve"
+boundary = "Store listings resolved into works, expressions and editions"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]

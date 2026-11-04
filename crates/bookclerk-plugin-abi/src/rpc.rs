@@ -25,22 +25,27 @@ use crate::generated::{
     read_database_adapter_config, read_diagnose_reply, read_event_poll_reply,
     read_expand_candidates_params, read_external_user_reply, read_fetch_title_params,
     read_fetch_title_reply, read_invocation, read_list_deals_params, read_login_complete_params,
-    read_login_params, read_login_reply, read_login_start_reply, read_plugin_event,
-    read_publish_reply, read_purchase_hint_params, read_purchase_hint_reply,
-    read_revoke_account_params, read_scan_library_params, read_scan_params, read_scan_reply,
-    read_search_catalog_params, read_source_accounts_reply, read_sync_listening_reply,
-    write_authenticate_user_params, write_brand, write_catalog_detail_params,
-    write_catalog_detail_reply, write_catalog_hits_reply, write_cli_invoke_params,
-    write_cli_invoke_reply, write_cli_schema, write_cli_schema_reply, write_config_option,
-    write_database_adapter_config, write_diagnose_reply, write_event_poll_reply,
-    write_expand_candidates_params, write_external_user_reply, write_fetch_title_params,
-    write_fetch_title_reply, write_invocation, write_list_deals_params,
+    read_login_params, read_login_reply, read_login_start_reply, read_metadata_chapters_params,
+    read_metadata_chapters_reply, read_metadata_lookup_params, read_metadata_records_reply,
+    read_metadata_search_params, read_plugin_event, read_publish_reply, read_purchase_hint_params,
+    read_purchase_hint_reply, read_revoke_account_params, read_scan_library_params,
+    read_scan_params, read_scan_reply, read_search_catalog_params, read_source_accounts_reply,
+    read_sync_listening_reply, write_authenticate_user_params, write_brand,
+    write_catalog_detail_params, write_catalog_detail_reply, write_catalog_hits_reply,
+    write_cli_invoke_params, write_cli_invoke_reply, write_cli_schema, write_cli_schema_reply,
+    write_config_option, write_database_adapter_config, write_diagnose_reply,
+    write_event_poll_reply, write_expand_candidates_params, write_external_user_reply,
+    write_fetch_title_params, write_fetch_title_reply, write_invocation, write_list_deals_params,
     write_login_complete_params, write_login_params, write_login_reply, write_login_start_reply,
-    write_plugin_event, write_publish_reply, write_purchase_hint_params, write_purchase_hint_reply,
+    write_metadata_chapters_params, write_metadata_chapters_reply, write_metadata_lookup_params,
+    write_metadata_records_reply, write_metadata_search_params, write_plugin_event,
+    write_publish_reply, write_purchase_hint_params, write_purchase_hint_reply,
     write_revoke_account_params, write_scan_library_params, write_scan_params, write_scan_reply,
     write_search_catalog_params, write_source_accounts_reply, write_sync_listening_reply,
-    CatalogDetail, CatalogHits, DiagnoseResult, EventPollResult, Invocation, PluginEvent,
-    PublishOk, PurchaseHintResult, SourceAccounts, SyncListeningResult,
+    CatalogDetail, CatalogHits, DiagnoseResult, EventPollResult, Invocation, MetadataChapters,
+    MetadataChaptersParams, MetadataLookupParams, MetadataRecord, MetadataRecords,
+    MetadataSearchParams, PluginEvent, PublishOk, PurchaseHintResult, SourceAccounts,
+    SyncListeningResult,
 };
 #[cfg(feature = "host")]
 use crate::host_roles::HostAdapterDatabaseSession;
@@ -59,21 +64,22 @@ use crate::plugin_capnp::{
     event_result as event_result_capnp, get_reply, guest_database as guest_database_capnp,
     handle_reply, head_reply, health_reply, job_invocation, job_outcome,
     job_runner as job_runner_capnp, kv_namespace as kv_namespace_capnp, list_reply,
-    object_metadata, oidc as oidc_capnp, oidc_client_template, oidc_clients_reply, open_reply,
-    plugin_cli as plugin_cli_capnp, plugin_describe, plugin_error, plugin_migration,
-    plugin_migration_op, plugin_migrations_ok, plugin_migrations_reply, plugin_worker,
-    progress_sink, pull_reply, put_reply, queue_consumer as queue_consumer_capnp,
-    queue_producer as queue_producer_capnp, remote_library as remote_library_capnp,
-    scheduled_handler as scheduled_handler_capnp, source as source_capnp, write_options,
+    metadata_provider as metadata_provider_capnp, object_metadata, oidc as oidc_capnp,
+    oidc_client_template, oidc_clients_reply, open_reply, plugin_cli as plugin_cli_capnp,
+    plugin_describe, plugin_error, plugin_migration, plugin_migration_op, plugin_migrations_ok,
+    plugin_migrations_reply, plugin_worker, progress_sink, pull_reply, put_reply,
+    queue_consumer as queue_consumer_capnp, queue_producer as queue_producer_capnp,
+    remote_library as remote_library_capnp, scheduled_handler as scheduled_handler_capnp,
+    source as source_capnp, write_options,
 };
 #[cfg(feature = "host")]
 use crate::plugin_host_capnp::host_adapter_database_session as host_adapter_database_session_capnp;
 use crate::roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
     Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
-    JobController, JobRunner, KvNamespace, NamedKvBinding, NamedQueueBinding, NeverCancel, Oidc,
-    PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary,
-    ScheduledHandler, Source,
+    JobController, JobRunner, KvNamespace, MetadataProvider, NamedKvBinding, NamedQueueBinding,
+    NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer,
+    ReadResult, RemoteLibrary, ScheduledHandler, Source,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, HealthOk, JobCheckpoint, JobInvocation, JobOutcome,
@@ -1620,6 +1626,11 @@ fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u
             inner: Arc::from(x),
         }));
     }
+    if let Some(x) = eps.metadata {
+        b.set_metadata(capnp_rpc::new_client(MetadataProviderServer {
+            inner: Arc::from(x),
+        }));
+    }
 }
 
 /// Encode plugin OIDC client templates into a Cap'n Proto `oidcClients` ok payload.
@@ -2223,6 +2234,61 @@ impl remote_library_capnp::Server for RemoteLibraryServer {
             .await
             .map(|users| EventPollResult { users });
         write_event_poll_reply(results.get().init_result(), &outcome)
+    }
+}
+
+/// Serves a guest's [`MetadataProvider`] as the Cap'n Proto `MetadataProvider`.
+struct MetadataProviderServer {
+    /// The guest implementation every method forwards to.
+    inner: Arc<dyn MetadataProvider>,
+}
+
+impl metadata_provider_capnp::Server for MetadataProviderServer {
+    async fn health(
+        self: Rc<Self>,
+        _params: metadata_provider_capnp::HealthParams,
+        mut results: metadata_provider_capnp::HealthResults,
+    ) -> capnp::Result<()> {
+        write_health_reply(results.get().init_result(), self.inner.health().await);
+        Ok(())
+    }
+
+    async fn lookup(
+        self: Rc<Self>,
+        params: metadata_provider_capnp::LookupParams,
+        mut results: metadata_provider_capnp::LookupResults,
+    ) -> capnp::Result<()> {
+        let params = read_metadata_lookup_params(params.get()?.get_params()?)?;
+        let outcome = self
+            .inner
+            .lookup(params)
+            .await
+            .map(|records| MetadataRecords { records });
+        write_metadata_records_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn search(
+        self: Rc<Self>,
+        params: metadata_provider_capnp::SearchParams,
+        mut results: metadata_provider_capnp::SearchResults,
+    ) -> capnp::Result<()> {
+        let params = read_metadata_search_params(params.get()?.get_params()?)?;
+        let outcome = self
+            .inner
+            .search(params)
+            .await
+            .map(|records| MetadataRecords { records });
+        write_metadata_records_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn chapters(
+        self: Rc<Self>,
+        params: metadata_provider_capnp::ChaptersParams,
+        mut results: metadata_provider_capnp::ChaptersResults,
+    ) -> capnp::Result<()> {
+        let params = read_metadata_chapters_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.chapters(params).await;
+        write_metadata_chapters_reply(results.get().init_result(), &outcome)
     }
 }
 
@@ -3063,6 +3129,8 @@ pub struct OpenedEntrypoints {
     pub queue_consumer: Option<QueueConsumerClient>,
     /// `[triggers] crons` trigger.
     pub scheduled_handler: Option<ScheduledHandlerClient>,
+    /// `metadata` entrypoint.
+    pub metadata: Option<MetadataProviderClient>,
 }
 
 /// Host bootstrap client for a plugin vat.
@@ -3286,6 +3354,13 @@ impl PluginClient {
             scheduled_handler: if eps.has_scheduled_handler() {
                 Some(ScheduledHandlerClient {
                     client: eps.get_scheduled_handler()?,
+                })
+            } else {
+                None
+            },
+            metadata: if eps.has_metadata() {
+                Some(MetadataProviderClient {
+                    client: eps.get_metadata()?,
                 })
             } else {
                 None
@@ -3532,6 +3607,53 @@ impl RemoteLibrary for RemoteLibraryClient {
         read_event_poll_reply(reply_result!(reply))
             .map_err(from_capnp)?
             .map(|ok| ok.users)
+    }
+}
+
+/// Cap'n Proto client for [`MetadataProvider`].
+#[derive(Clone)]
+pub struct MetadataProviderClient {
+    /// The guest's `MetadataProvider` capability.
+    client: metadata_provider_capnp::Client,
+}
+
+impl MetadataProviderClient {
+    /// Wraps a `MetadataProvider` capability client (any transport that yields
+    /// one, including the bookclerk-workerd `/invoke` hook).
+    #[must_use]
+    pub fn new(client: metadata_provider_capnp::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl MetadataProvider for MetadataProviderClient {
+    async fn health(&self) -> Result<HealthOk> {
+        let req = self.client.health_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_health_reply(reply_result!(reply))
+    }
+    async fn lookup(&self, params: MetadataLookupParams) -> Result<Vec<MetadataRecord>> {
+        let mut req = self.client.lookup_request();
+        write_metadata_lookup_params(req.get().init_params(), &params).map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_metadata_records_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.records)
+    }
+    async fn search(&self, params: MetadataSearchParams) -> Result<Vec<MetadataRecord>> {
+        let mut req = self.client.search_request();
+        write_metadata_search_params(req.get().init_params(), &params).map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_metadata_records_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.records)
+    }
+    async fn chapters(&self, params: MetadataChaptersParams) -> Result<MetadataChapters> {
+        let mut req = self.client.chapters_request();
+        write_metadata_chapters_params(req.get().init_params(), &params).map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_metadata_chapters_reply(reply_result!(reply)).map_err(from_capnp)?
     }
 }
 
@@ -4553,7 +4675,7 @@ mod tests {
                 api_version: PRODUCT_API_VERSION,
                 id: "native_test".into(),
                 capabilities: PluginCapabilities {
-                    entrypoints: vec![Entrypoint::Storage, Entrypoint::Oidc],
+                    entrypoints: vec![Entrypoint::Storage, Entrypoint::Oidc, Entrypoint::Metadata],
                     ..PluginCapabilities::default()
                 },
                 display_name: None,
@@ -4567,6 +4689,7 @@ mod tests {
             Ok(Entrypoints {
                 storage: Some(Box::new(DestClone(Arc::clone(&self.dest)))),
                 oidc: Some(Box::new(TestOidc)),
+                metadata: Some(Box::new(TestMetadata)),
                 ..Entrypoints::default()
             })
         }
@@ -4602,6 +4725,70 @@ mod tests {
                 issue_refresh_token: true,
                 origin_config_key: "integrations.audiobookshelf.base_url".into(),
             }])
+        }
+    }
+
+    /// Metadata provider that answers one ISBN, one title and one ASIN.
+    struct TestMetadata;
+
+    #[async_trait::async_trait(?Send)]
+    impl MetadataProvider for TestMetadata {
+        async fn lookup(&self, params: MetadataLookupParams) -> Result<Vec<MetadataRecord>> {
+            if params.identifiers.is_empty() {
+                return Err(PluginError::invalid_params("identifiers must not be empty"));
+            }
+            Ok(params
+                .identifiers
+                .iter()
+                .filter(|id| id.scheme == crate::IdentifierScheme::Isbn)
+                .take(
+                    params
+                        .limit
+                        .map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX)),
+                )
+                .map(|id| MetadataRecord {
+                    title: "Dune".into(),
+                    media_kind: crate::MediaKind::Print,
+                    identifiers: vec![id.clone()],
+                    credits: vec![crate::Credit {
+                        name: "Frank Herbert".into(),
+                        ..crate::Credit::default()
+                    }],
+                    ..MetadataRecord::default()
+                })
+                .collect())
+        }
+
+        async fn search(&self, params: MetadataSearchParams) -> Result<Vec<MetadataRecord>> {
+            Ok(vec![MetadataRecord {
+                title: format!("{} / {}", params.title, params.author.unwrap_or_default()),
+                language: params.language,
+                url: params.marketplace,
+                length_minutes: params.limit,
+                ..MetadataRecord::default()
+            }])
+        }
+
+        async fn chapters(&self, params: MetadataChaptersParams) -> Result<MetadataChapters> {
+            let known = params.identifiers.iter().any(|id| id.value == "B002V1OF70");
+            Ok(MetadataChapters {
+                found: known,
+                chapters: if known {
+                    vec![crate::MetadataChapter {
+                        title: format!(
+                            "Opening Credits ({})",
+                            params.marketplace.unwrap_or_default()
+                        ),
+                        start_ms: 0,
+                        length_ms: Some(2_000),
+                        depth: 0,
+                    }]
+                } else {
+                    Vec::new()
+                },
+                accurate: known,
+                ..MetadataChapters::default()
+            })
         }
     }
 
@@ -5550,6 +5737,136 @@ mod tests {
                 assert_eq!(clients[0].scopes_or_default(), vec!["openid", "profile"]);
             })
             .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn metadata_provider_roundtrip() {
+        use crate::{Identifier, IdentifierScheme};
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (client_end, server_end) = duplex(64 * 1024);
+                let (server_r, server_w) = tokio::io::split(server_end);
+                let (client_r, client_w) = tokio::io::split(client_end);
+                let plugin = Arc::new(TestPlugin {
+                    dest: Arc::new(MemDest {
+                        store: Mutex::new(HashMap::new()),
+                    }),
+                    migrations: None,
+                });
+                tokio::task::spawn_local(async move {
+                    let _ = serve_plugin(plugin, server_r, server_w, 64 * 1024).await;
+                });
+                let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
+                tokio::task::spawn_local(rpc);
+                let opened = open_default(&client).await;
+                let metadata = opened.metadata.expect("metadata exported");
+
+                let health = metadata.health().await.expect("health");
+                assert!(health.ok);
+
+                let isbn = Identifier {
+                    scheme: IdentifierScheme::Isbn,
+                    value: "9780441172719".into(),
+                    marketplace: None,
+                };
+                let other_isbn = Identifier {
+                    value: "9780441013593".into(),
+                    ..isbn.clone()
+                };
+                let records = metadata
+                    .lookup(MetadataLookupParams {
+                        identifiers: vec![isbn.clone(), other_isbn],
+                        limit: Some(1),
+                        ..MetadataLookupParams::default()
+                    })
+                    .await
+                    .expect("lookup");
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].title, "Dune");
+                assert_eq!(records[0].media_kind, crate::MediaKind::Print);
+                assert_eq!(records[0].identifiers, vec![isbn]);
+                assert_eq!(records[0].credits[0].name, "Frank Herbert");
+
+                let err = metadata
+                    .lookup(MetadataLookupParams::default())
+                    .await
+                    .expect_err("empty identifiers are refused");
+                assert_eq!(err.code, crate::PluginErrorCode::InvalidParams);
+
+                let found = metadata
+                    .search(MetadataSearchParams {
+                        title: "Dune".into(),
+                        author: Some("Herbert".into()),
+                        language: Some("en".into()),
+                        marketplace: Some("uk".into()),
+                        limit: Some(5),
+                    })
+                    .await
+                    .expect("search");
+                assert_eq!(found[0].title, "Dune / Herbert");
+                // Every optional param crosses the wire: the provider echoes them.
+                assert_eq!(found[0].language.as_deref(), Some("en"));
+                assert_eq!(found[0].url.as_deref(), Some("uk"));
+                assert_eq!(found[0].length_minutes, Some(5));
+
+                let asin = |value: &str| MetadataChaptersParams {
+                    identifiers: vec![Identifier {
+                        scheme: IdentifierScheme::Asin,
+                        value: value.into(),
+                        marketplace: Some("us".into()),
+                    }],
+                    marketplace: Some("us".into()),
+                };
+                let chapters = metadata
+                    .chapters(asin("B002V1OF70"))
+                    .await
+                    .expect("chapters");
+                assert!(chapters.found && chapters.accurate);
+                assert_eq!(chapters.chapters[0].title, "Opening Credits (us)");
+                assert_eq!(chapters.chapters[0].length_ms, Some(2_000));
+                let missing = metadata
+                    .chapters(asin("B000000000"))
+                    .await
+                    .expect("chapters");
+                assert!(!missing.found);
+                assert!(missing.chapters.is_empty());
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn metadata_provider_defaults_are_unsupported() {
+        struct Bare;
+        impl MetadataProvider for Bare {}
+        let bare = Bare;
+        assert!(bare.health().await.expect("health").ok);
+        for err in [
+            bare.lookup(MetadataLookupParams::default())
+                .await
+                .expect_err("lookup"),
+            bare.search(MetadataSearchParams::default())
+                .await
+                .expect_err("search"),
+        ] {
+            assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
+        }
+        let err = bare
+            .chapters(MetadataChaptersParams::default())
+            .await
+            .expect_err("chapters");
+        assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
+
+        // The same defaults through a local capability and the typed client.
+        let client = MetadataProviderClient::new(capnp_rpc::new_client(MetadataProviderServer {
+            inner: Arc::new(Bare),
+        }));
+        assert!(client.health().await.expect("health over capnp").ok);
+        let err = client
+            .lookup(MetadataLookupParams::default())
+            .await
+            .expect_err("lookup over capnp");
+        assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
     }
 
     #[tokio::test(flavor = "current_thread")]

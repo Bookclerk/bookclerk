@@ -1,0 +1,138 @@
+[
+  {
+    "input": "https://example.com/logo.png",
+    "remote": "https://example.com/logo.png"
+  },
+  {
+    "input": "  http://example.com/x  ",
+    "remote": "http://example.com/x"
+  },
+  {
+    "input": "HTTPS://Example.com/a.png",
+    "remote": "HTTPS://Example.com/a.png"
+  },
+  {
+    "input": "https://@example.com/a.png",
+    "remote": "https://@example.com/a.png"
+  },
+  {
+    "input": "https://127.0.0.1/a.png",
+    "remote": "https://127.0.0.1/a.png"
+  },
+  {
+    "input": "https://[::1]/a.png",
+    "remote": "https://[::1]/a.png"
+  },
+  {
+    "input": "assets/logo.png",
+    "embedded": "assets/logo.png"
+  },
+  {
+    "input": "./assets//logo.PNG",
+    "embedded": "assets/logo.PNG"
+  },
+  {
+    "input": "assets\\logo.svg",
+    "embedded": "assets/logo.svg"
+  },
+  {
+    "input": "a.jpg",
+    "embedded": "a.jpg"
+  },
+  {
+    "input": "a.jpeg",
+    "embedded": "a.jpeg"
+  },
+  {
+    "input": "a.gif",
+    "embedded": "a.gif"
+  },
+  {
+    "input": "a.webp",
+    "embedded": "a.webp"
+  },
+  {
+    "input": "a.ico",
+    "embedded": "a.ico"
+  },
+  {
+    "input": "",
+    "error": "plugin.toml: `logo` must not be empty (omit the key instead)"
+  },
+  {
+    "input": "   ",
+    "error": "plugin.toml: `logo` must not be empty (omit the key instead)"
+  },
+  {
+    "input": "a\u0000.png",
+    "error": "plugin.toml: `logo` must not contain NUL"
+  },
+  {
+    "input": "ftp://example.com/a.png",
+    "error": "plugin.toml: `logo` URL must use http:// or https:// (got scheme `ftp`)"
+  },
+  {
+    "input": "javascript:alert(1)",
+    "error": "plugin.toml: `logo` URL must use http:// or https:// (got scheme `javascript`)"
+  },
+  {
+    "input": "https://user@example.com/a.png",
+    "error": "plugin.toml: `logo` URL must not include userinfo (user:pass@host)"
+  },
+  {
+    "input": "https://user:pw@example.com/a.png",
+    "error": "plugin.toml: `logo` URL must not include userinfo (user:pass@host)"
+  },
+  {
+    "input": "https://:pw@example.com/a.png",
+    "error": "plugin.toml: `logo` URL must not include userinfo (user:pass@host)"
+  },
+  {
+    "input": "https://:@example.com/a.png",
+    "remote": "https://:@example.com/a.png"
+  },
+  {
+    "input": "https://./a.png",
+    "error": "plugin.toml: `logo` URL is missing a host"
+  },
+  {
+    "input": "https://../a.png",
+    "error": "plugin.toml: `logo` URL is missing a host"
+  },
+  {
+    "input": "/abs/logo.png",
+    "error": "plugin.toml: embedded `logo` must be a relative path under the plugin root"
+  },
+  {
+    "input": "~/logo.png",
+    "error": "plugin.toml: embedded `logo` must be a relative path under the plugin root"
+  },
+  {
+    "input": "C:/logo.png",
+    "error": "plugin.toml: `logo` URL must use http:// or https:// (got scheme `c`)"
+  },
+  {
+    "input": "1:logo.png",
+    "error": "plugin.toml: embedded `logo` must be a relative path (no drive letter)"
+  },
+  {
+    "input": "\\\\server\\share\\logo.png",
+    "error": "plugin.toml: embedded `logo` must be a relative path under the plugin root"
+  },
+  {
+    "input": "assets/../logo.png",
+    "error": "plugin.toml: embedded `logo` must not contain `..` segments"
+  },
+  {
+    "input": "./",
+    "error": "plugin.toml: embedded `logo` path is empty after normalization"
+  },
+  {
+    "input": "logo.txt",
+    "error": "plugin.toml: embedded `logo` must end with one of .png, .jpg, .jpeg, .gif, .webp, .svg, .ico"
+  },
+  {
+    "input": "logo",
+    "error": "plugin.toml: embedded `logo` must end with one of .png, .jpg, .jpeg, .gif, .webp, .svg, .ico"
+  }
+]

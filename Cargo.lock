@@ -1656,6 +1656,7 @@ dependencies = [
  "bookclerk-enrich",
  "bookclerk-library",
  "bookclerk-plugin-database-sqlite",
+ "bookclerk-resolve",
  "bookclerk-source",
  "chrono",
  "fastembed",
@@ -1681,13 +1682,13 @@ dependencies = [
  "bookclerk-library",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
+ "bookclerk-resolve",
  "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
- "unicode-normalization",
 ]
 
 [[package]]
@@ -1744,6 +1745,7 @@ dependencies = [
  "bookclerk-node-proto",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-database-sqlite",
+ "bookclerk-resolve",
  "bookclerk-sandbox",
  "chacha20poly1305 0.11.0",
  "chrono",
@@ -2303,6 +2305,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-resolve"
+version = "0.1.0"
+dependencies = [
+ "unicode-normalization",
+]
+
+[[package]]
 name = "bookclerk-sandbox"
 version = "0.1.0"
 dependencies = [
@@ -2344,6 +2353,7 @@ dependencies = [
  "bookclerk-library",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-database-sqlite",
+ "bookclerk-resolve",
  "chrono",
  "infer",
  "mime_guess",

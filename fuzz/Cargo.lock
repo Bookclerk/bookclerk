@@ -353,6 +353,7 @@ dependencies = [
  "bookclerk-plugin-abi",
  "bookclerk-plugin-manifest",
  "bookclerk-plugin-sdk",
+ "bookclerk-resolve",
  "bookclerk-workerd",
  "httparse",
  "libfuzzer-sys",
@@ -420,6 +421,13 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "bookclerk-resolve"
+version = "0.1.0"
+dependencies = [
+ "unicode-normalization",
 ]
 
 [[package]]
