@@ -4436,6 +4436,37 @@ mod tests {
     use super::*;
     use crate::{DbPlanStatementKind, DbResultSelection};
 
+    #[test]
+    fn opaque_tokens_hide_parens_and_commas_like_sqlite() {
+        let end = |sql: &str| opaque_token_end(sql.as_bytes(), 0);
+        assert_eq!(end("-- ) ,\nx"), Some(7));
+        assert_eq!(end("-- ) ,"), Some(6));
+        assert_eq!(end("/* ) */x"), Some(7));
+        assert_eq!(end("/* ) "), Some(5));
+        assert_eq!(end("'a'')'x"), Some(6));
+        assert_eq!(end("\"a\"\")\"x"), Some(6));
+        assert_eq!(end("`a``)`x"), Some(6));
+        assert_eq!(end("[a)]x"), Some(4));
+        assert_eq!(end("[a)"), Some(3));
+        assert_eq!(end("x"), None);
+        assert_eq!(opaque_token_end(b"x", 5), None);
+
+        assert_eq!(balanced_inner("(a -- )\n)b"), Some("a -- )\n"));
+        assert_eq!(balanced_inner("(a /* ) */)"), Some("a /* ) */"));
+        assert_eq!(
+            balanced_inner("(\"x)\" [y)] `z)`)"),
+            Some("\"x)\" [y)] `z)`")
+        );
+        assert_eq!(balanced_inner("(a -- )"), None);
+        assert_eq!(balanced_inner("(')"), None);
+        assert_eq!(balanced_inner("a)"), None);
+
+        assert_eq!(
+            split_top_level_commas("a -- ,\n, b /* , */, (c, d), 'e,f', \"g,h\""),
+            vec!["a -- ,\n", " b /* , */", " (c, d)", " 'e,f'", " \"g,h\""]
+        );
+    }
+
     fn json_object_n_pairs(n: usize) -> String {
         let args: Vec<String> = (0..n)
             .flat_map(|i| [format!("'k{i:02}'"), format!("'v{i:02}'")])
