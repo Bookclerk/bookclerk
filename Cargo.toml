@@ -52,8 +52,15 @@ default-members = [
 ]
 # Vendored fork is a path dep only — do not fmt/clippy/test it as a workspace member
 # (upstream tests need fixtures we do not ship). Non-Cargo examples are discovered
-# by bookclerk-dev staging, not as workspace members.
-exclude = ["third_party/audible-rs", "fuzz"]
+# by bookclerk-dev staging, not as workspace members. First-party workerd
+# TypeScript guests sit in the plugin trees above but have no Cargo.toml, so
+# each is excluded from the member globs by name.
+exclude = [
+    "third_party/audible-rs",
+    "fuzz",
+    "crates/bookclerk-plugins/optional/metadata-audnexus",
+    "crates/bookclerk-plugins/optional/metadata-openlibrary",
+]
 
 [workspace.package]
 version = "0.1.0"

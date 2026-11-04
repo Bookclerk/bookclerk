@@ -1,0 +1,23 @@
+{
+  "numFound": 3,
+  "docs": [
+    {
+      "key": "/works/OL27482W",
+      "title": "The Hobbit",
+      "author_name": ["J.R.R. Tolkien"],
+      "first_sentence": "In a hole in the ground there lived a hobbit.",
+      "cover_i": 14627509,
+      "first_publish_year": 1937
+    },
+    {
+      "key": "/works/OL9999999W",
+      "title": "A Field Guide to Middle-earth",
+      "author_name": ["Somebody Else"]
+    },
+    {
+      "key": "/works/OL262758W",
+      "title": "The Annotated Hobbit",
+      "author_name": ["J.R.R. Tolkien", "Douglas A. Anderson"]
+    }
+  ]
+}

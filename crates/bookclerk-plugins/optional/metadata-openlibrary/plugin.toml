@@ -1,0 +1,52 @@
+api_version = 3
+id = "openlibrary"
+name = "Open Library"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["metadata"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 10000
+# One `search.json` request per call.
+subrequests = 5
+
+# Emitted from `src/` by `npm run build`; CI fails when they drift.
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "client.js"
+path = "client.js"
+type = "js"
+
+[[modules]]
+name = "openlibrary.js"
+path = "openlibrary.js"
+type = "js"
+
+[[modules]]
+name = "version.js"
+path = "version.js"
+type = "js"
+
+[capabilities.network]
+mode = "outbound"
+# Covers are linked, not fetched, so only the API host is needed.
+domains = ["openlibrary.org"]
+
+[vars]
+
+[[settings]]
+key = "contact_email"
+label = "Contact email"
+type = "string"
+description = "Sent in the User-Agent, as Open Library asks of API users. It lets them contact you before blocking heavy use."

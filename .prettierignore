@@ -23,6 +23,8 @@ crates/bookclerkd/openapi-3.0.json
 crates/bookclerk-plugin-abi/schema/
 crates/bookclerk-plugin-manifest/schema/
 examples/plugins-echo-workerd-rust/modules/pkg/
+crates/bookclerk-plugins/optional/metadata-audnexus/modules/
+crates/bookclerk-plugins/optional/metadata-openlibrary/modules/
 packages/plugin-sdk/src/generated.ts
 packages/plugin-sdk/src/generated-wire.ts
 packages/plugin-sdk/src/abi.ts
@@ -44,6 +46,7 @@ fuzz/
 **/tests/fixtures/
 scripts/tests/ci_plan_fixtures/
 tools/site/fuzz/*/
+crates/bookclerk-plugins/optional/metadata-*/fuzz/
 
 # Ignored by the Workers' own .gitignore files.
 tools/*/.wrangler/

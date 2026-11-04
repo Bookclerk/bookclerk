@@ -213,6 +213,7 @@ paths):
 | A declared `fixture` | The checks declared for that fixture |
 | A declared `test_guests` executable | The launching package's tests re-run, with no propagation |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | The UI, SDK ABI and API-doc checks |
+| A first-party workerd guest without a Cargo package (`crates/bookclerk-plugins/<tier>/<name>/`) | Its type-check, build and tests (`workerd_guests`) and its staged E2E. `packages/plugin-sdk/` also selects `workerd_guests`, because the guests type-check against it |
 | `docs/**` | The website tests (`site_test`) |
 | `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |
 | `tools/diagnostics-collector/**` | The collector's tests (`collector_test`) |
@@ -298,7 +299,7 @@ test step excludes it (`--exclude bookclerk-plugin-e2e` on the full suite).
   `examples/plugins-*/plugin.toml`), host discovery, registry or install
   preflight, or the full suite.
 - **Subsets.** Each compiled-affected guest package adds its id. Changed
-  non-Cargo example guests add theirs. The workerd SDK runtime embed adds
+  non-Cargo guests (examples and first-party workerd guests) add theirs. The workerd SDK runtime embed adds
   every workerd-runtime guest. Shared host runtime changes add the
   `runtime_smoke` guests (native Rust, workerd TS, workerd Python).
 - **Combination.** Full wins over subsets, subsets are unioned, and
@@ -348,7 +349,7 @@ when a step matches no test. Name such tests `postgres_*`.
 | Job | Runs when | Checks |
 | --- | --- | --- |
 | `plan` | Always | Planner, executor, contract and guardrail tests; DB isolation and docs lints; `resolve`; the `ci-plan` artifact |
-| `fmt / clippy / docs` | Any of its checks is selected | `lint`, `ui`, `plugin_sdk_abi`, `python_sdk`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
+| `fmt / clippy / docs` | Any of its checks is selected | `lint`, `ui`, `plugin_sdk_abi`, `python_sdk`, `workerd_guests`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
 | `unit + integration tests` | `rust_test` is selected | nextest over the affected packages (the workspace on the full suite), custom-harness targets, feature test runs, bench and example builds |
 | `staged plugin installation (e2e)` | `e2e` is selected | Builds, installs and stages the guests in scope, then the `bookclerk-plugin-e2e` staged targets |
 | `release build + small-VPS envelope (<lto> LTO)` | A shipped binary (hosts, helpers, platform guests) is compiled-affected (`release`), or an `[envelope].paths` input changed, an `[envelope].packages` member is compiled-affected, or the full suite (`envelope`) | Each selected check as its own step; see [Release build](#release-build) and [Small-VPS envelope](#small-vps-envelope) |
@@ -781,6 +782,7 @@ extra test run:
 | `rust` | `test` (`rust_test`) | [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov), source-based LLVM coverage |
 | `site`, `collector`, `demo` | Workers (`site_test`, `collector_test`, `demo_test`) | Vitest V8 coverage (`npm run coverage`) |
 | `python-sdk` | `fmt / clippy / docs` (`python_sdk`) | pytest-cov |
+| `workerd-guests` | `fmt / clippy / docs` (`workerd_guests`) | Node's test runner coverage (`node --test --experimental-test-coverage`) |
 
 How a run gets there:
 
@@ -974,6 +976,7 @@ comment and, from merge group runs, finds tests that are flaky on `main`.
   custom-harness tests write no report.
 - The Workers: Vitest's `junit` reporter, next to the coverage run.
 - The Python SDK: pytest's `--junitxml`.
+- The first-party workerd guests: Node's `junit` test reporter.
 
 The test jobs upload their artifacts even when tests fail, so failures reach
 Codecov. Like the coverage reports, the JUnit reports come from the pull

@@ -620,6 +620,40 @@ inputs live in `tools/demo/src/routes.ts`, `src/inputs.ts` and
   key and printable, deduplicated, bounded hostnames, and keys only when
   both are printable.
 
+### Metadata provider guests
+
+The `openlibrary` and `audnexus` guests parse upstream JSON inside the
+jailed isolate. What reaches the host is the Cap'n Proto reply that
+`abi_decode` and `abi_roundtrip` already cover, so these parsers guard the
+records each guest returns. Each guest's `test/fuzz.test.ts` replays its
+corpora under `fuzz/` and runs seeded mutation fuzzing, on the parsed JSON
+tree and on its text, in `npm test` (the `workerd_guests` check).
+`FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
+
+- **Open Library search results** (`recordsFromSearch` in
+  `crates/bookclerk-plugins/optional/metadata-openlibrary/src/openlibrary.ts`),
+  under a lookup and a title search. Corpus `fuzz/search_response/`.
+  Oracle: a body is refused exactly when it is not an object or its `docs`
+  is not a list. Records stay within the limit, each work and edition id
+  appears in the body, ISBNs have the ISBN shape, the URL names the edition
+  or else the work, and covers are Open Library cover URLs. Credits are
+  distinct authors, and lists stay within their caps. Every string is
+  non-empty, well-formed UTF-16 and at most `MAX_TEXT` long, and the
+  mapping is deterministic.
+- **Audnexus books** (`recordFromBook` in
+  `crates/bookclerk-plugins/optional/metadata-audnexus/src/audnexus.ts`).
+  Corpus `fuzz/book/`. Oracle: a record exactly when the body has a
+  ten-character ASIN and a non-blank title, and the ASIN is the first
+  identifier with the asked region. Credits are distinct per role and
+  capped. At most two series entries. Dates are `YYYY-MM-DD`, covers are
+  `https://`, lengths and ratings are in range, and the same string rules
+  as Open Library apply.
+- **Audnexus chapter layouts** (`chaptersFromBody`). Corpus
+  `fuzz/chapters/`. Oracle: the chapters' starts and depths equal an
+  explicit-stack pre-order walk of the body, down to `MAX_DEPTH` and up to
+  `MAX_CHAPTERS`. `found` exactly when that walk finds any. Durations are
+  positive safe integers.
+
 ## Still to add
 
 These are tracked in the fuzzing ADR's follow-ups:

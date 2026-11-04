@@ -163,9 +163,27 @@ export type {
   CliSchema,
   CliInvokeParams,
   CliInvokeResult,
+  Credit,
   ExtensibleConfig,
   HealthOk,
+  Identifier,
+  MetadataChapter,
+  MetadataChapters,
+  MetadataChaptersParams,
+  MetadataLookupParams,
+  MetadataRecord,
+  MetadataSearchParams,
+  SeriesEntry,
 } from "./generated.js";
+export type {
+  Abridgement,
+  CreditLevel,
+  CreditRole,
+  ExpressionKind,
+  IdentifierScheme,
+  MediaKind,
+  WorkKind,
+} from "./abi.js";
 export {
   canonicalExecuteRequestHash,
   createDatabaseBinding,

@@ -807,11 +807,15 @@ export class Metadata extends MetadataEntrypoint<Env> {
 }
 ```
 
+For a complete provider, see the first-party `openlibrary` and `audnexus`
+plugins under `crates/bookclerk-plugins/optional/` (`metadata-openlibrary`
+and `metadata-audnexus`).
+
 > [!NOTE]
 > The host does not call metadata providers yet. Discover and enrichment
 > still use the built-in OpenLibrary and Audnexus lookups until the library
-> stores works and editions; then they move to first-party metadata plugins
-> and the built-in lookups are removed
+> stores works and editions; then they move to the first-party metadata
+> plugins and the built-in lookups are removed
 > ([#614](https://github.com/Bookclerk/bookclerk/issues/614)).
 
 ### Storage entrypoints
