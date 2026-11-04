@@ -632,7 +632,7 @@ function validateSurface(m: Manifest): void {
   validateQueues(m);
   validateKvNamespaces(m);
   for (const [i, consumer] of consumers.entries()) {
-    const type = String(consumer.type ?? "");
+    const type = typeof consumer.type === "string" ? consumer.type : "";
     if (!type.trim()) {
       throw new Error(`plugin.toml: events.consumers[${i}].type is required`);
     }
@@ -644,7 +644,7 @@ function validateSurface(m: Manifest): void {
   }
   const produced = new Set<string>();
   for (const [i, producer] of (m.events?.producers ?? []).entries()) {
-    const type = String(producer.type ?? "");
+    const type = typeof producer.type === "string" ? producer.type : "";
     if (!EVENT_TYPE_RE.test(type)) {
       throw new Error(
         `plugin.toml: events.producers[${i}].type \`${type}\` must be snake_case \`[a-z][a-z0-9_]*\``,

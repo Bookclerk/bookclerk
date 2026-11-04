@@ -28,6 +28,11 @@
       "error": "plugin.toml: queues.producers[0].queue `` must be `[a-z0-9][a-z0-9._-]*` and at most 63 chars"
     },
     {
+      "name": "producer queue 63 chars",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n",
+      "error": null
+    },
+    {
       "name": "producer queue 64 chars",
       "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n",
       "error": "plugin.toml: queues.producers[0].queue `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` must be `[a-z0-9][a-z0-9._-]*` and at most 63 chars"
@@ -194,6 +199,12 @@
       "error": "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, `[[queues.consumers]]`, `[triggers].jobs`, or `[triggers].crons`"
     },
     {
+      "name": "producers only, no entrypoints",
+      "top": "runtime = \"workerd\"\nentrypoints = []\n",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"jobs\"\n[[events.producers]]\ntype = \"thing_done\"\n",
+      "error": "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, `[[queues.consumers]]`, `[triggers].jobs`, or `[triggers].crons`"
+    },
+    {
       "name": "duplicate entrypoint",
       "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"cli\"]\n",
       "error": "plugin.toml: entrypoints entry `cli` is duplicated"
@@ -297,9 +308,20 @@
       "error": null
     },
     {
+      "name": "native tcp grant",
+      "top": "runtime = \"native\"\ncommand = \"bin/x\"\nentrypoints = [\"cli\"]\n",
+      "base_tables": "[capabilities.network]\nmode = \"outbound\"\n\n[[capabilities.network.tcp]]\nhost = \"api.example.com\"\nports = [443]\n",
+      "error": null
+    },
+    {
       "name": "workerd outbound without domains",
       "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\n",
       "error": "plugin.toml: capabilities.network.domains is required when runtime = \"workerd\" and mode = \"outbound\""
+    },
+    {
+      "name": "workerd outbound with domains",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"api.example.com\"]\n",
+      "error": null
     },
     {
       "name": "workerd table missing",
