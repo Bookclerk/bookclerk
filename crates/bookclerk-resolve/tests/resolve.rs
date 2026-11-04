@@ -453,3 +453,24 @@ fn an_episode_seen_before_its_show_gains_it_later() {
     );
     assert!(record(&mut c, &episode, "a1").is_noop());
 }
+
+#[test]
+fn swapped_roles_make_a_different_expression() {
+    let mut c = MemoryCatalog::default();
+    let roles = |product: &str, narrator: &str, translator: &str| ListingDraft {
+        credits: vec![
+            ("Frank Herbert".into(), CreditRole::Author, None),
+            (narrator.into(), CreditRole::Narrator, None),
+            (translator.into(), CreditRole::Translator, None),
+        ],
+        ..dune("audible", product)
+    };
+    let a = record(&mut c, &roles("B001", "Alice Reader", "Bob Writer"), "a1");
+    let b = record(&mut c, &roles("B002", "Bob Writer", "Alice Reader"), "a1");
+    assert_eq!(b.work_reason, Some(WorkReason::Matcher));
+    assert!(b.new_expression.is_some());
+    assert_ne!(
+        a.new_expression.unwrap().credit_key,
+        b.new_expression.unwrap().credit_key
+    );
+}

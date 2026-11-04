@@ -10,6 +10,8 @@
 //!   edition they reference exists;
 //! - a stored listing is refreshed only while it still sells the edition
 //!   the plan was made from;
+//! - identifiers and the listing never join an edition that another
+//!   writer gave a different value of one of the plan's strong schemes;
 //! - conflicts and events are written only when the listing now sells the
 //!   planned edition, which is also the batch's `ok` / `retry` outcome.
 //!   Events also ignore a dedup-key clash, which a concurrent batch for the
@@ -62,6 +64,39 @@ fn creation_gate(p: &ListingLinkParams) -> (String, Vec<DbValue>) {
     (parts.join(" AND "), binds)
 }
 
+/// The predicate "the edition already holds another value of one of the
+/// plan's strong schemes", with its binds.
+///
+/// Another writer can attach a different ASIN (say) to the edition this
+/// plan joined by a weak identifier between the snapshot and this batch;
+/// the plan's identifiers and listing must then not join it, and the batch
+/// answers `retry` so the resolver sees the clash.
+fn strong_clash(p: &ListingLinkParams) -> (String, Vec<DbValue>) {
+    let strong: Vec<_> = p
+        .edition_identifiers
+        .iter()
+        .filter(|id| id.strong_key.is_some())
+        .collect();
+    if strong.is_empty() {
+        return ("1 = 0".to_string(), Vec::new());
+    }
+    let mut parts = Vec::new();
+    let mut binds = Vec::new();
+    for id in strong {
+        parts.push(
+            "EXISTS (SELECT 1 FROM edition_identifiers WHERE edition_id = ? AND scheme = ? \
+             AND marketplace = ? AND strong_key IS NOT NULL AND value <> ?)",
+        );
+        binds.extend([
+            j_str(&p.edition_id),
+            j_str(&id.scheme),
+            j_str(&id.marketplace),
+            j_str(&id.value),
+        ]);
+    }
+    (format!("({})", parts.join(" OR ")), binds)
+}
+
 /// The predicate "the listing sells the planned edition", with its binds.
 fn linked(p: &ListingLinkParams) -> (&'static str, Vec<DbValue>) {
     (
@@ -75,6 +110,7 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
     let mut out = Vec::new();
     let (gate, gate_binds) = creation_gate(p);
     let (is_linked, linked_binds) = linked(p);
+    let (clash, clash_binds) = strong_clash(p);
 
     if let Some(w) = &p.new_work {
         let mut binds = vec![
@@ -169,20 +205,25 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
         ));
     }
     for id in &p.edition_identifiers {
+        let mut binds = vec![
+            j_str(&p.edition_id),
+            j_str(&id.scheme),
+            j_str(&id.value),
+            j_str(&id.marketplace),
+            j_str(&id.strength),
+            j_opt_str(id.strong_key.as_deref()),
+            j_str(now),
+            j_str(&p.edition_id),
+        ];
+        binds.extend(clash_binds.clone());
         out.push(sql(
-            "INSERT OR IGNORE INTO edition_identifiers \
-             (edition_id, scheme, value, marketplace, strength, strong_key, created_at) \
-             SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?)",
-            vec![
-                j_str(&p.edition_id),
-                j_str(&id.scheme),
-                j_str(&id.value),
-                j_str(&id.marketplace),
-                j_str(&id.strength),
-                j_opt_str(id.strong_key.as_deref()),
-                j_str(now),
-                j_str(&p.edition_id),
-            ],
+            &format!(
+                "INSERT OR IGNORE INTO edition_identifiers \
+                 (edition_id, scheme, value, marketplace, strength, strong_key, created_at) \
+                 SELECT ?, ?, ?, ?, ?, ?, ? \
+                 WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) AND NOT {clash}"
+            ),
+            binds,
         ));
     }
     for id in &p.work_identifiers {
@@ -199,23 +240,28 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
         ));
     }
     if p.listing_is_new {
+        let mut binds = vec![
+            j_str(&p.listing_id),
+            j_str(&p.plugin_key),
+            j_str(&p.marketplace),
+            j_str(&p.product_id),
+            j_str(&p.edition_id),
+            j_str(&p.title),
+            j_opt_str(p.categories.as_deref()),
+            j_str(now),
+            j_str(now),
+            j_str(now),
+            j_str(&p.edition_id),
+        ];
+        binds.extend(clash_binds.clone());
         out.push(sql(
-            "INSERT OR IGNORE INTO store_listings \
-             (id, plugin_key, marketplace, product_id, edition_id, title, categories, observed_at, created_at, updated_at) \
-             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?)",
-            vec![
-                j_str(&p.listing_id),
-                j_str(&p.plugin_key),
-                j_str(&p.marketplace),
-                j_str(&p.product_id),
-                j_str(&p.edition_id),
-                j_str(&p.title),
-                j_opt_str(p.categories.as_deref()),
-                j_str(now),
-                j_str(now),
-                j_str(now),
-                j_str(&p.edition_id),
-            ],
+            &format!(
+                "INSERT OR IGNORE INTO store_listings \
+                 (id, plugin_key, marketplace, product_id, edition_id, title, categories, observed_at, created_at, updated_at) \
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
+                 WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) AND NOT {clash}"
+            ),
+            binds,
         ));
     } else {
         let mut binds = vec![
@@ -237,11 +283,13 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             }
             None => "",
         };
+        binds.extend(clash_binds);
         out.push(sql(
             &format!(
                 "UPDATE store_listings SET edition_id = ?, title = ?, \
                  categories = COALESCE(?, categories), observed_at = ?, updated_at = ? \
-                 WHERE id = ? AND EXISTS (SELECT 1 FROM editions WHERE id = ?){still_stored}"
+                 WHERE id = ? AND EXISTS (SELECT 1 FROM editions WHERE id = ?){still_stored} \
+                 AND NOT {clash}"
             ),
             binds,
         ));

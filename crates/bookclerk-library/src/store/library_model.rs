@@ -1803,6 +1803,71 @@ mod store_tests {
     }
 
     #[tokio::test]
+    async fn a_weak_join_answers_retry_when_another_writer_gave_the_edition_another_asin() {
+        use sea_orm::{ActiveModelTrait, ActiveValue::Set};
+        let store = store().await;
+        // An ISBN-only edition.
+        let isbn_only = store
+            .record_listing(
+                &resolve::Listing::from_draft(&dune("libro", "L1")).unwrap(),
+                &account("a1"),
+            )
+            .await
+            .unwrap();
+        let edition = isbn_only.listing.edition_id.clone();
+        // A listing with the ISBN and an ASIN plans to join it weakly.
+        let mut with_asin = dune("audible", "B000000001");
+        with_asin
+            .identifiers
+            .push((resolve::IdentifierScheme::Asin, "B000000001".into(), None));
+        let listing = resolve::Listing::from_draft(&with_asin).unwrap();
+        let holder = resolve::Holder::Account("a1".into());
+        let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        assert_eq!(plan.link, resolve::LinkReason::WeakIdentifier);
+        assert_eq!(plan.listing.edition_id, edition);
+
+        // Meanwhile another writer attaches a different ASIN to it.
+        let other =
+            resolve::IdentifierKey::new(resolve::IdentifierScheme::Asin, "B000000002", None, "us")
+                .unwrap();
+        edition_identifiers::ActiveModel {
+            edition_id: Set(edition.clone()),
+            scheme: Set(other.scheme.as_str().into()),
+            value: Set(other.value.clone()),
+            marketplace: Set(other.marketplace.clone()),
+            strength: Set(other.strength().as_str().into()),
+            strong_key: Set(other.strong_key()),
+            created_at: Set(now_str()),
+        }
+        .insert(&store.db)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            store
+                .run_link_listing(link_params(&listing, &plan, &snapshot))
+                .await
+                .unwrap(),
+            atomic_status::RETRY
+        );
+        let asins_on_edition = edition_identifiers::Entity::find()
+            .filter(edition_identifiers::Column::EditionId.eq(edition.as_str()))
+            .filter(edition_identifiers::Column::Scheme.eq("asin"))
+            .count(&store.db)
+            .await
+            .unwrap();
+        assert_eq!(asins_on_edition, 1);
+
+        // Resolving again keeps the two ASINs apart.
+        let again = store
+            .record_listing(&listing, &account("a1"))
+            .await
+            .unwrap();
+        assert_ne!(again.listing.edition_id, edition);
+    }
+
+    #[tokio::test]
     async fn a_pin_to_a_removed_edition_does_not_block_the_listing() {
         use sea_orm::{ActiveModelTrait, ActiveValue::Set};
         let store = store().await;

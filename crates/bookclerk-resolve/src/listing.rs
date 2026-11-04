@@ -432,10 +432,19 @@ impl Listing {
         )
     }
 
-    /// The expression's credit key: sorted, cleaned names of its credits.
+    /// The expression's credit key: its credits as sorted, cleaned
+    /// `role:name` pairs, so two realisations whose people swap roles
+    /// (narrator and translator, say) never compare equal.
     #[must_use]
     pub fn expression_credit_key(&self) -> String {
-        name_set_key(self.credits_at(Level::Expression).map(|c| c.name.as_str()))
+        let set: BTreeSet<String> = self
+            .credits_at(Level::Expression)
+            .filter_map(|c| {
+                let name = clean_author(&c.name);
+                (!name.is_empty()).then(|| format!("{}:{name}", c.role.as_str()))
+            })
+            .collect();
+        set.into_iter().collect::<Vec<_>>().join("\u{1e}")
     }
 }
 
@@ -516,7 +525,7 @@ mod tests {
         // Only an episode keeps its parent.
         assert_eq!(l.parent_product_id, None);
         assert_eq!(l.work_match_key(), "dune\u{1f}frank herbert");
-        assert_eq!(l.expression_credit_key(), "scott brick");
+        assert_eq!(l.expression_credit_key(), "narrator:scott brick");
     }
 
     #[test]
