@@ -88,5 +88,6 @@ Build and agent conventions for this repository live in
 - [Untrusted-input fuzzing](adr/untrusted-input-fuzzing.md): every untrusted boundary ships a fuzz target
 - [Security advisory automation](adr/security-advisory-automation.md): draft advisories for shipped code
 - [Logging and tracing](adr/observability.md): trace everything, keep TRACE for diagnostics, show each output its own level
+- [Library data model](adr/library-data-model.md): FRBR works, expressions and editions, holdings and edition files
 - [Web API contract checks](adr/web-api-contract-checks.md): the document is checked against examples in tests and against real responses in CI
 - [Project licensing](adr/licensing.md): AGPL for the project, MIT OR Apache-2.0 for the plugin SDKs, a CLA and a trademark policy
