@@ -10,8 +10,9 @@
 //!   edition they reference exists;
 //! - a stored listing is refreshed only while it still sells the edition
 //!   the plan was made from;
-//! - identifiers and the listing never join an edition that another
-//!   writer gave a different value of one of the plan's strong schemes;
+//! - identifiers and the listing never join an edition when another
+//!   writer gave it a different value of one of the plan's strong schemes,
+//!   or gave one of the plan's strong identifiers to another edition;
 //! - conflicts and events are written only when the listing now sells the
 //!   planned edition, which is also the batch's `ok` / `retry` outcome.
 //!   Events also ignore a dedup-key clash, which a concurrent batch for the
@@ -64,13 +65,13 @@ fn creation_gate(p: &ListingLinkParams) -> (String, Vec<DbValue>) {
     (parts.join(" AND "), binds)
 }
 
-/// The predicate "the edition already holds another value of one of the
-/// plan's strong schemes", with its binds.
+/// The predicate "since the snapshot, the edition gained another value of
+/// one of the plan's strong schemes, or another edition claimed one of the
+/// plan's strong identifiers", with its binds.
 ///
-/// Another writer can attach a different ASIN (say) to the edition this
-/// plan joined by a weak identifier between the snapshot and this batch;
-/// the plan's identifiers and listing must then not join it, and the batch
-/// answers `retry` so the resolver sees the clash.
+/// Either change by another writer between the snapshot and this batch
+/// means the plan's identifiers and listing must not join the edition; the
+/// batch answers `retry` so the resolver sees the new state.
 fn strong_clash(p: &ListingLinkParams) -> (String, Vec<DbValue>) {
     let strong: Vec<_> = p
         .edition_identifiers
@@ -93,6 +94,12 @@ fn strong_clash(p: &ListingLinkParams) -> (String, Vec<DbValue>) {
             j_str(&id.marketplace),
             j_str(&id.value),
         ]);
+        // The plan only attaches strong identifiers no edition owned when
+        // it was made; another edition claiming one since is a clash too.
+        parts.push(
+            "EXISTS (SELECT 1 FROM edition_identifiers WHERE strong_key = ? AND edition_id <> ?)",
+        );
+        binds.extend([j_opt_str(id.strong_key.as_deref()), j_str(&p.edition_id)]);
     }
     (format!("({})", parts.join(" OR ")), binds)
 }
