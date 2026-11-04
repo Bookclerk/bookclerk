@@ -36,7 +36,7 @@ pub use listing::{
 };
 pub use model::{
     Conflict, CreditWrite, EditionIdentifierRow, EditionRow, Event, ExpressionRow, HoldingRow,
-    LinkReason, ListingRow, Override, Plan, SeriesWrite, Snapshot, WorkIdentifierRow, WorkParent,
-    WorkReason, WorkRow,
+    LinkReason, ListingRow, Override, Plan, SeriesWrite, Snapshot, WorkIdentifierRow, WorkMatchKey,
+    WorkParent, WorkReason, WorkRow,
 };
 pub use resolve::{resolve, EntityKind, IdSource};

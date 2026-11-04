@@ -356,6 +356,20 @@ pub struct WorkParent {
     pub parent_work_id: String,
 }
 
+/// A matcher key for a stored work created before its listing named an
+/// author, so the work had none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkMatchKey {
+    /// The work, whose stored key is empty.
+    pub work_id: String,
+    /// Its kind; only works of the same kind compete for a key.
+    pub kind: WorkKind,
+    /// Its show, for an episode; episodes only compete within one show.
+    pub parent_work_id: Option<String>,
+    /// The key it gains ([`crate::listing::work_match_key`]).
+    pub match_key: String,
+}
+
 /// A series entry to write on a new work.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SeriesWrite {
@@ -386,6 +400,8 @@ pub struct Plan {
     pub edition_update: Option<EditionRow>,
     /// The show link a stored, show-less episode work gains.
     pub work_parent: Option<WorkParent>,
+    /// The matcher key a stored work without one gains.
+    pub work_match_key: Option<WorkMatchKey>,
     /// Edition identifiers to attach.
     pub edition_identifiers: Vec<EditionIdentifierRow>,
     /// Work identifiers to attach.
@@ -421,6 +437,7 @@ impl Plan {
             && self.new_edition.is_none()
             && self.edition_update.is_none()
             && self.work_parent.is_none()
+            && self.work_match_key.is_none()
             && self.edition_identifiers.is_empty()
             && self.work_identifiers.is_empty()
             && self.credits.is_empty()

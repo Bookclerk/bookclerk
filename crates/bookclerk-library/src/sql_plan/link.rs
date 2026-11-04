@@ -258,6 +258,34 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             ],
         ));
     }
+    if let Some(fill) = &p.work_match_key {
+        let mut binds = vec![
+            j_str(&fill.match_key),
+            j_str(now),
+            j_str(&fill.work_id),
+            j_str(&fill.match_key),
+            j_str(&fill.kind),
+            j_str(&fill.work_id),
+        ];
+        // Episodes only compete for a key within their show.
+        let same_show = match (&fill.parent_work_id, fill.kind.as_str()) {
+            (Some(parent), _) => {
+                binds.push(j_str(parent));
+                " AND o.parent_work_id = ?"
+            }
+            (None, "podcast_episode") => " AND o.parent_work_id IS NULL",
+            (None, _) => "",
+        };
+        out.push(sql(
+            &format!(
+                "UPDATE works SET match_key = ?, updated_at = ? \
+                 WHERE id = ? AND match_key = '' \
+                   AND NOT EXISTS (SELECT 1 FROM works o WHERE o.match_key = ? \
+                   AND o.kind = ? AND o.id <> ?{same_show})"
+            ),
+            binds,
+        ));
+    }
     for id in &p.edition_identifiers {
         let mut binds = vec![
             j_str(&p.edition_id),

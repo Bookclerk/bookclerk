@@ -80,6 +80,21 @@ pub struct LinkWorkParent {
     pub parent_work_id: String,
 }
 
+/// The matcher key a stored work without one gains.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkWorkMatchKey {
+    /// The work, whose stored key is empty.
+    pub work_id: String,
+    /// Its stored kind; only works of this kind compete for the key.
+    pub kind: String,
+    /// Its show, for an episode; episodes only compete within one show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_work_id: Option<String>,
+    /// The key it gains.
+    pub match_key: String,
+}
+
 /// Fields a listing fills on a stored edition that lacks them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -197,6 +212,9 @@ pub struct ListingLinkParams {
     /// A show link for a stored episode work that has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_parent: Option<LinkWorkParent>,
+    /// A matcher key for a stored work that has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_match_key: Option<LinkWorkMatchKey>,
     /// Edition identifiers to attach.
     #[serde(default)]
     pub edition_identifiers: Vec<LinkIdentifierRow>,

@@ -25,13 +25,50 @@ use crate::entities::{
 use crate::error::{LibraryError, Result};
 use crate::library_link::{
     ContributorRow, CreditBatchParams, CreditRow, LinkConflictRow, LinkEditionFill, LinkEditionRow,
-    LinkEvent, LinkExpressionRow, LinkIdentifierRow, LinkWorkIdentifierRow, LinkWorkParent,
-    LinkWorkRow, ListingLinkParams, SeriesEntryRow, SeriesRow,
+    LinkEvent, LinkExpressionRow, LinkIdentifierRow, LinkWorkIdentifierRow, LinkWorkMatchKey,
+    LinkWorkParent, LinkWorkRow, ListingLinkParams, SeriesEntryRow, SeriesRow,
 };
 use crate::models::WorkRecord;
 
-/// Most ids bound in one `IN (...)` lookup, under every backend's bind cap.
+/// Most ids bound in one `IN (...)` lookup, under D1's bind cap.
 const LOOKUP_CHUNK: usize = 90;
+
+/// Binds a lookup keeps free for its predicates besides the `IN (...)`
+/// list (at most a kind, a role or action, and a position today).
+const LOOKUP_RESERVED_BINDS: usize = 8;
+
+/// Ids bound per `IN (...)` lookup on a backend that accepts `max_binds`
+/// binds per statement: [`LOOKUP_CHUNK`], or fewer on a smaller backend,
+/// leaving [`LOOKUP_RESERVED_BINDS`] for the other predicates.
+fn lookup_chunk(max_binds: u32) -> usize {
+    usize::try_from(max_binds)
+        .unwrap_or(LOOKUP_CHUNK)
+        .saturating_sub(LOOKUP_RESERVED_BINDS)
+        .clamp(1, LOOKUP_CHUNK)
+}
+
+/// Rows of `E` that `query` selects for each chunk of at most `chunk`
+/// of `ids`, so no lookup binds more than the backend accepts.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Orm`] when a read fails.
+async fn find_chunked<E, F>(
+    db: &sea_orm::DatabaseConnection,
+    chunk: usize,
+    ids: &[String],
+    query: F,
+) -> Result<Vec<E::Model>>
+where
+    E: EntityTrait,
+    F: Fn(&[String]) -> sea_orm::Select<E>,
+{
+    let mut out = Vec::new();
+    for part in ids.chunks(chunk.max(1)) {
+        out.extend(query(part).all(db).await.map_err(LibraryError::Orm)?);
+    }
+    Ok(out)
+}
 
 /// Times a listing is resolved again after a `retry` before giving up.
 const LINK_ATTEMPTS: usize = 3;
@@ -314,6 +351,12 @@ fn link_params(
             work_id: link.work_id.clone(),
             parent_work_id: link.parent_work_id.clone(),
         }),
+        work_match_key: plan.work_match_key.as_ref().map(|fill| LinkWorkMatchKey {
+            work_id: fill.work_id.clone(),
+            kind: fill.kind.as_str().to_string(),
+            parent_work_id: fill.parent_work_id.clone(),
+            match_key: fill.match_key.clone(),
+        }),
         edition_identifiers: plan
             .edition_identifiers
             .iter()
@@ -518,6 +561,11 @@ pub fn holding_from_book(book: &NewBook) -> resolve::HoldingDraft {
 }
 
 impl LibraryStore {
+    /// Ids bound per `IN (...)` lookup on this store's backend.
+    fn lookup_chunk(&self) -> usize {
+        lookup_chunk(self.max_binds)
+    }
+
     /// Resolves `listing` into the library and records `holding` of it.
     ///
     /// # Arguments
@@ -621,6 +669,7 @@ impl LibraryStore {
         holder: &resolve::Holder,
     ) -> Result<(resolve::Snapshot, Option<store_listings::Model>)> {
         let db = &self.db;
+        let chunk = self.lookup_chunk();
         let find_listing = |key: &resolve::ListingKey| {
             store_listings::Entity::find()
                 .filter(store_listings::Column::PluginKey.eq(key.plugin_key.as_str()))
@@ -661,9 +710,10 @@ impl LibraryStore {
         // Identifier rows sharing one of the listing's edition identifiers.
         let keys: Vec<&resolve::IdentifierKey> = listing.edition_identifiers().collect();
         let mut identifier_rows = BTreeSet::new();
-        if !keys.is_empty() {
+        // Each key binds a scheme, a value and a marketplace.
+        for part in keys.chunks((chunk / 3).max(1)) {
             let mut any = Condition::any();
-            for key in &keys {
+            for key in part {
                 any = any.add(
                     Condition::all()
                         .add(edition_identifiers::Column::Scheme.eq(key.scheme.as_str()))
@@ -690,31 +740,30 @@ impl LibraryStore {
         }));
         edition_ids.extend(identifier_rows.iter().map(|r| r.edition_id.clone()));
 
+        let edition_list: Vec<String> = edition_ids.iter().cloned().collect();
         let mut editions_found = Vec::new();
-        if !edition_ids.is_empty() {
-            for m in editions::Entity::find()
-                .filter(editions::Column::Id.is_in(edition_ids.iter().cloned()))
-                .all(db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                editions_found.push(edition_row(m)?);
-            }
-            for m in edition_identifiers::Entity::find()
-                .filter(edition_identifiers::Column::EditionId.is_in(edition_ids.iter().cloned()))
-                .all(db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                identifier_rows.insert(edition_identifier_row(m)?);
-            }
+        for m in find_chunked(db, chunk, &edition_list, |part| {
+            editions::Entity::find().filter(editions::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?
+        {
+            editions_found.push(edition_row(m)?);
+        }
+        for m in find_chunked(db, chunk, &edition_list, |part| {
+            edition_identifiers::Entity::find()
+                .filter(edition_identifiers::Column::EditionId.is_in(part.iter().cloned()))
+        })
+        .await?
+        {
+            identifier_rows.insert(edition_identifier_row(m)?);
         }
 
         let mut work_identifier_rows = Vec::new();
         let work_keys: Vec<&resolve::IdentifierKey> = listing.work_identifiers().collect();
-        if !work_keys.is_empty() {
+        // Each key binds a scheme and a value.
+        for part in work_keys.chunks((chunk / 2).max(1)) {
             let mut any = Condition::any();
-            for key in &work_keys {
+            for key in part {
                 any = any.add(
                     Condition::all()
                         .add(work_identifiers::Column::Scheme.eq(key.scheme.as_str()))
@@ -742,20 +791,19 @@ impl LibraryStore {
             }
         }
 
-        let expression_ids: BTreeSet<String> = editions_found
+        let expression_ids: Vec<String> = editions_found
             .iter()
             .map(|e| e.expression_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
         let mut expressions_found = Vec::new();
-        if !expression_ids.is_empty() {
-            for m in expressions::Entity::find()
-                .filter(expressions::Column::Id.is_in(expression_ids.iter().cloned()))
-                .all(db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                expressions_found.push(expression_row(m)?);
-            }
+        for m in find_chunked(db, chunk, &expression_ids, |part| {
+            expressions::Entity::find().filter(expressions::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?
+        {
+            expressions_found.push(expression_row(m)?);
         }
 
         let mut work_ids: BTreeSet<String> = expressions_found
@@ -777,33 +825,33 @@ impl LibraryStore {
             work_ids.extend(matched);
         }
 
+        let work_list: Vec<String> = work_ids.iter().cloned().collect();
         let mut works_found = Vec::new();
-        if !work_ids.is_empty() {
-            for m in works::Entity::find()
-                .filter(works::Column::Id.is_in(work_ids.iter().cloned()))
-                .all(db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                works_found.push(work_row(&m)?);
+        for m in find_chunked(db, chunk, &work_list, |part| {
+            works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
+        })
+        .await?
+        {
+            works_found.push(work_row(&m)?);
+        }
+        for m in find_chunked(db, chunk, &work_list, |part| {
+            expressions::Entity::find()
+                .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
+        })
+        .await?
+        {
+            if !expressions_found.iter().any(|x| x.id == m.id) {
+                expressions_found.push(expression_row(m)?);
             }
-            for m in expressions::Entity::find()
-                .filter(expressions::Column::WorkId.is_in(work_ids.iter().cloned()))
-                .all(db)
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                if !expressions_found.iter().any(|x| x.id == m.id) {
-                    expressions_found.push(expression_row(m)?);
-                }
-            }
-            let isolated = resolution_overrides::Entity::find()
-                .filter(resolution_overrides::Column::SubjectKind.eq("work"))
-                .filter(resolution_overrides::Column::Action.eq("isolate"))
-                .filter(resolution_overrides::Column::SubjectId.is_in(work_ids.iter().cloned()))
-                .all(db)
-                .await
-                .map_err(LibraryError::Orm)?;
+        }
+        {
+            let isolated = find_chunked(db, chunk, &work_list, |part| {
+                resolution_overrides::Entity::find()
+                    .filter(resolution_overrides::Column::SubjectKind.eq("work"))
+                    .filter(resolution_overrides::Column::Action.eq("isolate"))
+                    .filter(resolution_overrides::Column::SubjectId.is_in(part.iter().cloned()))
+            })
+            .await?;
             overrides.extend(
                 isolated
                     .into_iter()
@@ -835,47 +883,41 @@ impl LibraryStore {
             None => None,
         };
 
-        let all_expression_ids: BTreeSet<String> =
-            expressions_found.iter().map(|x| x.id.clone()).collect();
+        let all_expression_ids: Vec<String> = expressions_found
+            .iter()
+            .map(|x| x.id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         let mut credited = BTreeSet::new();
         for (level, ids) in [
-            (resolve::Level::Work, &work_ids),
+            (resolve::Level::Work, &work_list),
             (resolve::Level::Expression, &all_expression_ids),
-            (resolve::Level::Edition, &edition_ids),
+            (resolve::Level::Edition, &edition_list),
         ] {
-            if ids.is_empty() {
-                continue;
-            }
             // A target counts as credited once its first-billed credit is
             // stored: `credit_batches` writes it last, so a credit write
             // that stopped part-way leaves the target uncredited and the
             // next scan finishes it.
-            let targets = credits::Entity::find()
-                .filter(credits::Column::TargetKind.eq(level.as_str()))
-                .filter(credits::Column::TargetId.is_in(ids.iter().cloned()))
-                .filter(credits::Column::Position.eq(0))
-                .select_only()
-                .column(credits::Column::TargetId)
-                .distinct()
-                .into_tuple::<String>()
-                .all(db)
-                .await
-                .map_err(LibraryError::Orm)?;
-            credited.extend(targets.into_iter().map(|id| (level, id)));
+            let firsts = find_chunked(db, chunk, ids, |part| {
+                credits::Entity::find()
+                    .filter(credits::Column::TargetKind.eq(level.as_str()))
+                    .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
+                    .filter(credits::Column::Position.eq(0))
+            })
+            .await?;
+            credited.extend(firsts.into_iter().map(|c| (level, c.target_id)));
         }
-        let works_with_series = if work_ids.is_empty() {
-            Vec::new()
-        } else {
+        let works_with_series: Vec<String> = find_chunked(db, chunk, &work_list, |part| {
             series_entries::Entity::find()
-                .filter(series_entries::Column::WorkId.is_in(work_ids.iter().cloned()))
-                .select_only()
-                .column(series_entries::Column::WorkId)
-                .distinct()
-                .into_tuple::<String>()
-                .all(db)
-                .await
-                .map_err(LibraryError::Orm)?
-        };
+                .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
+        })
+        .await?
+        .into_iter()
+        .map(|e| e.work_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
 
         let snapshot = resolve::Snapshot {
             listing: stored,
@@ -940,7 +982,7 @@ impl LibraryStore {
         let ids: Vec<String> = works.iter().map(|w| w.id.clone()).collect();
         let mut work_credits = Vec::new();
         let mut entries = Vec::new();
-        for chunk in ids.chunks(usize::try_from(self.max_binds).unwrap_or(100).clamp(1, 90)) {
+        for chunk in ids.chunks(self.lookup_chunk()) {
             work_credits.extend(
                 credits::Entity::find()
                     .filter(credits::Column::TargetKind.eq(resolve::Level::Work.as_str()))
@@ -960,7 +1002,7 @@ impl LibraryStore {
         }
         // Narrators are credited on expressions, not on the work.
         let mut expression_work: BTreeMap<String, String> = BTreeMap::new();
-        for chunk in ids.chunks(90) {
+        for chunk in ids.chunks(self.lookup_chunk()) {
             expression_work.extend(
                 expressions::Entity::find()
                     .filter(expressions::Column::WorkId.is_in(chunk.iter().cloned()))
@@ -973,7 +1015,7 @@ impl LibraryStore {
         }
         let expression_ids: Vec<String> = expression_work.keys().cloned().collect();
         let mut narrator_credits = Vec::new();
-        for chunk in expression_ids.chunks(90) {
+        for chunk in expression_ids.chunks(self.lookup_chunk()) {
             narrator_credits.extend(
                 credits::Entity::find()
                     .filter(credits::Column::TargetKind.eq(resolve::Level::Expression.as_str()))
@@ -993,7 +1035,7 @@ impl LibraryStore {
         let series_ids: BTreeSet<String> = entries.iter().map(|e| e.series_id.clone()).collect();
         let mut names: BTreeMap<String, String> = BTreeMap::new();
         let contributor_ids: Vec<String> = contributor_ids.into_iter().collect();
-        for chunk in contributor_ids.chunks(90) {
+        for chunk in contributor_ids.chunks(self.lookup_chunk()) {
             names.extend(
                 contributors::Entity::find()
                     .filter(contributors::Column::Id.is_in(chunk.iter().cloned()))
@@ -1005,7 +1047,7 @@ impl LibraryStore {
             );
         }
         let series_ids: Vec<String> = series_ids.into_iter().collect();
-        for chunk in series_ids.chunks(90) {
+        for chunk in series_ids.chunks(self.lookup_chunk()) {
             names.extend(
                 series::Entity::find()
                     .filter(series::Column::Id.is_in(chunk.iter().cloned()))
@@ -1083,7 +1125,7 @@ impl LibraryStore {
         use std::collections::BTreeMap;
 
         let mut books_found = Vec::new();
-        for chunk in book_uuids.chunks(LOOKUP_CHUNK) {
+        for chunk in book_uuids.chunks(self.lookup_chunk()) {
             books_found.extend(
                 books::Entity::find()
                     .filter(books::Column::Uuid.is_in(chunk.iter().cloned()))
@@ -1099,7 +1141,7 @@ impl LibraryStore {
             .into_iter()
             .collect();
         let mut edition_of: BTreeMap<(String, String, String), String> = BTreeMap::new();
-        for chunk in product_ids.chunks(LOOKUP_CHUNK) {
+        for chunk in product_ids.chunks(self.lookup_chunk()) {
             for l in store_listings::Entity::find()
                 .filter(store_listings::Column::ProductId.is_in(chunk.iter().cloned()))
                 .all(&self.db)
@@ -1134,7 +1176,7 @@ impl LibraryStore {
         use std::collections::BTreeMap;
         let edition_ids: Vec<String> = edition_ids.into_iter().collect();
         let mut expression_of = BTreeMap::new();
-        for chunk in edition_ids.chunks(LOOKUP_CHUNK) {
+        for chunk in edition_ids.chunks(self.lookup_chunk()) {
             for e in editions::Entity::find()
                 .filter(editions::Column::Id.is_in(chunk.iter().cloned()))
                 .all(&self.db)
@@ -1151,7 +1193,7 @@ impl LibraryStore {
             .into_iter()
             .collect();
         let mut work_of_expression = BTreeMap::new();
-        for chunk in expression_ids.chunks(LOOKUP_CHUNK) {
+        for chunk in expression_ids.chunks(self.lookup_chunk()) {
             for x in expressions::Entity::find()
                 .filter(expressions::Column::Id.is_in(chunk.iter().cloned()))
                 .all(&self.db)
@@ -1187,22 +1229,23 @@ impl LibraryStore {
         if expression_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let edition_ids: Vec<String> = editions::Entity::find()
-            .filter(editions::Column::ExpressionId.is_in(expression_ids))
-            .select_only()
-            .column(editions::Column::Id)
-            .into_tuple::<String>()
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let chunk = self.lookup_chunk();
+        let edition_ids: Vec<String> = find_chunked(&self.db, chunk, &expression_ids, |part| {
+            editions::Entity::find()
+                .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
+        })
+        .await?
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
         if edition_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let listings = store_listings::Entity::find()
-            .filter(store_listings::Column::EditionId.is_in(edition_ids))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let listings = find_chunked(&self.db, chunk, &edition_ids, |part| {
+            store_listings::Entity::find()
+                .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
+        })
+        .await?;
         let keys: BTreeSet<(String, String, String)> = listings
             .into_iter()
             .map(|l| (l.plugin_key, l.marketplace, l.product_id))
@@ -1214,7 +1257,7 @@ impl LibraryStore {
             .into_iter()
             .collect();
         let mut uuids = BTreeSet::new();
-        for chunk in product_ids.chunks(LOOKUP_CHUNK) {
+        for chunk in product_ids.chunks(self.lookup_chunk()) {
             for b in books::Entity::find()
                 .filter(books::Column::ProductId.is_in(chunk.iter().cloned()))
                 .all(&self.db)
@@ -2094,6 +2137,108 @@ mod store_tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].work_id, other_work);
         assert_eq!(works::Entity::find().all(&store.db).await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn lookups_leave_room_under_the_bind_cap() {
+        assert_eq!(lookup_chunk(100), LOOKUP_CHUNK);
+        assert_eq!(lookup_chunk(32), 24);
+        assert_eq!(lookup_chunk(1), 1);
+        assert_eq!(lookup_chunk(u32::MAX), LOOKUP_CHUNK);
+    }
+
+    #[tokio::test]
+    async fn a_work_with_more_expressions_than_one_lookup_binds_still_resolves() {
+        let store = store()
+            .await
+            .with_max_binds(bookclerk_plugin_abi::HOST_MIN_BINDS);
+        let chunk = store.lookup_chunk();
+        let mut work = None;
+        for i in 0..=chunk + 2 {
+            let mut draft = dune("libro", &format!("L{i}"));
+            draft.identifiers.clear();
+            draft.credits = vec![
+                ("Frank Herbert".into(), resolve::CreditRole::Author, None),
+                (format!("Narrator {i}"), resolve::CreditRole::Narrator, None),
+            ];
+            let plan = store
+                .record_listing(
+                    &resolve::Listing::from_draft(&draft).unwrap(),
+                    &account("a1"),
+                )
+                .await
+                .unwrap();
+            assert!(plan.new_expression.is_some());
+            let id = plan.new_work.map(|w| w.id);
+            if work.is_none() {
+                work = id;
+            } else {
+                assert!(id.is_none());
+            }
+        }
+        let expressions = expressions::Entity::find().all(&store.db).await.unwrap();
+        assert!(expressions.len() > chunk);
+        assert_eq!(works::Entity::find().all(&store.db).await.unwrap().len(), 1);
+        let again = resolve::Listing::from_draft(&{
+            let mut draft = dune("libro", "L0");
+            draft.identifiers.clear();
+            draft.credits = vec![
+                ("Frank Herbert".into(), resolve::CreditRole::Author, None),
+                ("Narrator 0".into(), resolve::CreditRole::Narrator, None),
+            ];
+            draft
+        })
+        .unwrap();
+        assert!(store
+            .record_listing(&again, &account("a1"))
+            .await
+            .unwrap()
+            .is_noop());
+    }
+
+    #[tokio::test]
+    async fn a_work_stored_without_an_author_gains_its_match_key() {
+        let store = store().await;
+        let mut anonymous = dune("audible", "B001");
+        anonymous.identifiers.clear();
+        anonymous.credits.clear();
+        let first = store
+            .record_listing(
+                &resolve::Listing::from_draft(&anonymous).unwrap(),
+                &account("a1"),
+            )
+            .await
+            .unwrap();
+        let work = first.new_work.unwrap().id;
+
+        let mut named = dune("audible", "B001");
+        named.identifiers.clear();
+        let named = store
+            .record_listing(
+                &resolve::Listing::from_draft(&named).unwrap(),
+                &account("a1"),
+            )
+            .await
+            .unwrap();
+        assert!(named.work_match_key.is_some());
+        let stored = works::Entity::find_by_id(work.clone())
+            .one(&store.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.match_key, "dune\u{1f}frank herbert");
+
+        let mut other = dune("libro", "L1");
+        other.identifiers.clear();
+        let other = store
+            .record_listing(
+                &resolve::Listing::from_draft(&other).unwrap(),
+                &account("a1"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(other.work_reason, Some(resolve::WorkReason::Matcher));
+        assert!(other.new_work.is_none());
     }
 
     #[tokio::test]

@@ -269,6 +269,15 @@ impl MemoryCatalog {
                 None => return fail(format!("work {} missing", link.work_id)),
             }
         }
+        if let Some(fill) = &plan.work_match_key {
+            match self.works.get_mut(&fill.work_id) {
+                Some(work) if work.match_key.is_empty() => {
+                    work.match_key = fill.match_key.clone();
+                }
+                Some(_) => return fail(format!("work {} already has a key", fill.work_id)),
+                None => return fail(format!("work {} missing", fill.work_id)),
+            }
+        }
         if let Some(expression) = &plan.new_expression {
             if !self.works.contains_key(&expression.work_id) {
                 return fail(format!("work {} missing", expression.work_id));

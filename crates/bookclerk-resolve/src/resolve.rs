@@ -24,8 +24,8 @@ use crate::kinds::{Abridgement, ExpressionKind, Level, Strength, WorkKind};
 use crate::listing::{HoldingDraft, Listing};
 use crate::model::{
     Conflict, CreditWrite, EditionIdentifierRow, EditionRow, Event, ExpressionRow, HoldingRow,
-    LinkReason, ListingRow, Override, Plan, SeriesWrite, Snapshot, WorkIdentifierRow, WorkParent,
-    WorkReason, WorkRow,
+    LinkReason, ListingRow, Override, Plan, SeriesWrite, Snapshot, WorkIdentifierRow, WorkMatchKey,
+    WorkParent, WorkReason, WorkRow,
 };
 
 /// The kind of row a new id is minted for.
@@ -557,6 +557,38 @@ pub fn resolve(
         None
     };
 
+    // A work first stored from a listing without an author has no matcher
+    // key; it gains one from a later listing that names the author, unless
+    // another work already holds that key.
+    let work_match_key = if new_work.is_none() {
+        let key = listing.work_match_key();
+        snapshot
+            .work(&work_id)
+            .filter(|w| w.match_key.is_empty() && w.kind == listing.work_kind && !key.is_empty())
+            .filter(|w| {
+                !snapshot.works.iter().any(|other| {
+                    other.id != w.id
+                        && other.match_key == key
+                        && other.kind == w.kind
+                        && match w.kind {
+                            WorkKind::PodcastEpisode => other.parent_work_id == w.parent_work_id,
+                            WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => true,
+                        }
+                })
+            })
+            .map(|w| WorkMatchKey {
+                work_id: w.id.clone(),
+                kind: w.kind,
+                parent_work_id: match w.kind {
+                    WorkKind::PodcastEpisode => w.parent_work_id.clone(),
+                    WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => None,
+                },
+                match_key: key,
+            })
+    } else {
+        None
+    };
+
     let mut events = Vec::new();
     if listing_is_new || relinked {
         events.push(Event::EditionLinked {
@@ -586,6 +618,7 @@ pub fn resolve(
         new_edition,
         edition_update,
         work_parent,
+        work_match_key,
         edition_identifiers,
         work_identifiers,
         credits,

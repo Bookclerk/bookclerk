@@ -474,3 +474,44 @@ fn swapped_roles_make_a_different_expression() {
         b.new_expression.unwrap().credit_key
     );
 }
+
+#[test]
+fn a_work_stored_without_an_author_gains_its_match_key_later() {
+    let mut c = MemoryCatalog::default();
+    let anonymous = ListingDraft {
+        credits: Vec::new(),
+        ..dune("audible", "B001")
+    };
+    let first = record(&mut c, &anonymous, "a1");
+    let work = first.new_work.unwrap();
+    assert!(work.match_key.is_empty());
+
+    let named = record(&mut c, &dune("audible", "B001"), "a1");
+    let fill = named.work_match_key.clone().unwrap();
+    assert_eq!(fill.work_id, work.id);
+    assert_eq!(fill.match_key, "dune\u{1f}frank herbert");
+    assert!(!named.is_noop());
+    assert!(record(&mut c, &dune("audible", "B001"), "a1").is_noop());
+
+    // Another store's listing of the same book now finds the work.
+    let other = record(&mut c, &dune("libro", "L1"), "a1");
+    assert_eq!(other.work_reason, Some(WorkReason::Matcher));
+    assert_eq!(work_of(&c, &other.listing.edition_id), work.id);
+}
+
+#[test]
+fn a_match_key_another_work_holds_is_not_copied() {
+    let mut c = MemoryCatalog::default();
+    let anonymous = ListingDraft {
+        credits: Vec::new(),
+        ..dune("audible", "B001")
+    };
+    let first = record(&mut c, &anonymous, "a1");
+    let named = record(&mut c, &dune("libro", "L1"), "a1");
+    assert_ne!(
+        work_of(&c, &named.listing.edition_id),
+        work_of(&c, &first.listing.edition_id)
+    );
+    let again = record(&mut c, &dune("audible", "B001"), "a1");
+    assert!(again.work_match_key.is_none());
+}
