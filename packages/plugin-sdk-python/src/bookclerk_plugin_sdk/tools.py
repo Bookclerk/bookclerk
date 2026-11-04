@@ -1118,11 +1118,16 @@ def format_manifest(m: dict[str, Any]) -> str:
             lines.append(f"path = {_esc(path)}")
         lines.append(f"type = {_esc(str(mod.get('type') or 'js'))}")
 
-    jobs = list((m.get("triggers") or {}).get("jobs") or [])
-    if jobs:
+    triggers = m.get("triggers") or {}
+    jobs = list(triggers.get("jobs") or [])
+    crons = list(triggers.get("crons") or [])
+    if jobs or crons:
         lines.append("")
         lines.append("[triggers]")
-        lines.append(f"jobs = {_string_array([str(j) for j in jobs])}")
+        if jobs:
+            lines.append(f"jobs = {_string_array([str(j) for j in jobs])}")
+        if crons:
+            lines.append(f"crons = {_string_array([str(c) for c in crons])}")
 
     events = m.get("events") or {}
     for consumer in events.get("consumers") or []:

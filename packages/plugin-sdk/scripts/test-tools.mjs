@@ -137,6 +137,26 @@ if (keptQueueParts !== 3) {
   console.error("FAIL queues formatter dropped a producer or consumer row", keptQueueParts);
   process.exit(1);
 }
+for (const triggers of [
+  { crons: ["*/30 * * * *", "0 3 * * MON"] },
+  { jobs: ["echo.sync"], crons: ["0 0 * * *"] },
+]) {
+  const roundTrip = parse(
+    formatManifest({
+      api_version: 3,
+      id: "echo",
+      runtime: "native",
+      command: "./echo",
+      triggers,
+      capabilities: { network: { mode: "deny" } },
+    }),
+  );
+  if (JSON.stringify(roundTrip.triggers) !== JSON.stringify(triggers)) {
+    console.error("FAIL formatter changed [triggers]", JSON.stringify(roundTrip.triggers));
+    process.exit(1);
+  }
+}
+console.log("ok formatter keeps cron and job triggers");
 const { validateManifest } = await import("../dist/tools/validate.js");
 let unquotedDateRejected = false;
 try {

@@ -312,6 +312,29 @@ def test_kv_rows_format_and_type():
     assert "sync.cursors" in stub
 
 
+@pytest.mark.parametrize(
+    "triggers",
+    [
+        {"crons": ["*/30 * * * *", "0 3 * * MON"]},
+        {"jobs": ["echo.sync"], "crons": ["0 0 * * *"]},
+    ],
+)
+def test_format_keeps_cron_and_job_triggers(triggers: dict[str, list[str]]) -> None:
+    import tomllib
+
+    rendered = format_manifest(
+        {
+            "api_version": 3,
+            "id": "echo",
+            "runtime": "native",
+            "command": "./echo",
+            "triggers": triggers,
+            "capabilities": {"network": {"mode": "deny"}},
+        }
+    )
+    assert tomllib.loads(rendered)["triggers"] == triggers
+
+
 def test_format_keeps_queues_declaration():
     text = (FIXTURES / "valid-queues" / "plugin.toml").read_text(encoding="utf-8")
     import tomllib
