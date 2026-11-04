@@ -3521,17 +3521,24 @@ fn collect_from_aliases(
 }
 
 /// True when the next keyword ends a FROM clause, so a later top-level comma
-/// belongs to a select, group, order or returning list instead of naming
-/// another table.
+/// belongs to a select, group, order, window or returning list instead of
+/// naming another table.
+///
+/// Only keywords SQLite reserves count here. A keyword SQLite also accepts as
+/// a column name (`OFFSET`, `WINDOW`, `DO`, …) could otherwise end the clause
+/// from inside a join condition such as `ON offset`, hiding the next FROM
+/// item again (#616). `OFFSET` never directly follows a FROM clause, and
+/// `WINDOW` ends it only when a window definition (`WINDOW name AS`) follows.
 fn ends_from_clause(scan: &mut Scan<'_>) -> bool {
+    if starts_window_clause(*scan) {
+        return true;
+    }
     [
         "WHERE",
         "GROUP",
         "HAVING",
-        "WINDOW",
         "ORDER",
         "LIMIT",
-        "OFFSET",
         "UNION",
         "EXCEPT",
         "INTERSECT",
@@ -3542,6 +3549,14 @@ fn ends_from_clause(scan: &mut Scan<'_>) -> bool {
     ]
     .iter()
     .any(|kw| scan.peek_kw(kw))
+}
+
+/// True when `scan` is at `WINDOW <name> AS`, the start of a window clause,
+/// rather than at a column that happens to be named `window`.
+///
+/// Takes the scanner by value so peeking never consumes input.
+fn starts_window_clause(mut scan: Scan<'_>) -> bool {
+    scan.take_kw("WINDOW") && scan.read_ident().is_some() && scan.take_kw("AS")
 }
 
 /// Second pass: column/function refs after FROM aliases are known.
@@ -5321,6 +5336,12 @@ mod tests {
             "SELECT token FROM books b JOIN books c USING (id), host_secrets hob",
             "SELECT token FROM books b JOIN books c, host_secrets hob",
             "SELECT token FROM books b LEFT JOIN books c ON c.id = b.id, host_secrets",
+            // `OFFSET` and `WINDOW` are also valid column names, so they must
+            // not end the FROM clause from inside a join condition.
+            "WITH x(offset) AS (SELECT 1) \
+             SELECT token FROM books b JOIN x ON offset, host_secrets hob",
+            "WITH x(window) AS (SELECT 1) \
+             SELECT token FROM books b JOIN x ON window, host_secrets hob",
         ] {
             let refs = parse_guest_sql_refs(sql).unwrap();
             assert!(
@@ -5350,6 +5371,15 @@ mod tests {
         let refs = parse_guest_sql_refs(
             "SELECT b.title, a.name FROM books b JOIN authors a ON a.id = b.author_id \
              WHERE b.id > 0 GROUP BY b.title, a.name ORDER BY b.title, a.name",
+        )
+        .unwrap();
+        assert_eq!(
+            refs.tables,
+            vec!["authors".to_string(), "books".to_string()]
+        );
+        let refs = parse_guest_sql_refs(
+            "SELECT b.title, a.name FROM books b JOIN authors a ON a.id = b.author_id \
+             WINDOW w AS (ORDER BY b.title), v AS (ORDER BY a.name)",
         )
         .unwrap();
         assert_eq!(
