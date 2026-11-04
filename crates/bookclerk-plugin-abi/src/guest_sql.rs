@@ -5389,6 +5389,60 @@ mod tests {
     }
 
     #[test]
+    fn proof_auth_sees_past_a_paren_inside_a_comment() {
+        // A `)` inside a `--` comment closed the typed checker's group, and
+        // the `/*` after it swallowed the rest of the statement, so the
+        // FROM, JOIN and any later call went unproven while the engine ran
+        // them.
+        let mut env = SqlTypeEnv::new();
+        apply_schema_sql_to_env(
+            &mut env,
+            "CREATE TABLE IF NOT EXISTS books (id INTEGER, title TEXT)",
+        );
+        apply_schema_sql_to_env(
+            &mut env,
+            "CREATE TABLE IF NOT EXISTS secrets (id INTEGER, token TEXT)",
+        );
+        let typed = GuestSqlPolicy::allow_tables(["books"]).with_sql_types(env.clone());
+        for (sql, denied) in [
+            ("SELECT(1--)/*\n)FROM secrets JOIN books", "secrets"),
+            (
+                "SELECT(b.id--)/*\n)FROM books b JOIN secrets s ON s.token = b.title",
+                "secrets",
+            ),
+            (
+                "SELECT(1--)/*\n), load_extension('x') FROM books",
+                "load_extension",
+            ),
+            ("SELECT(id--)/*\n)FROM b JOIN books", "b"),
+        ] {
+            let err =
+                authorize_guest_sql_policy(&req(sql, vec![], DbResultSelection::Rows, 1), &typed)
+                    .unwrap_err();
+            assert!(err.to_string().contains(denied), "{sql}: {err}");
+        }
+        let owned = GuestSqlPolicy::binding_owned().with_sql_types(env);
+        for sql in [
+            "SELECT(1--)/*\n)FROM bookclerk_receipts JOIN books",
+            "SELECT(1--)/*\n), load_extension('x') FROM books",
+        ] {
+            authorize_guest_sql_policy(&req(sql, vec![], DbResultSelection::Rows, 1), &owned)
+                .unwrap_err();
+        }
+        // Parentheses and commas inside comments and quotes are still text.
+        authorize_guest_sql_policy(
+            &req(
+                "SELECT (id -- ) ,\n) FROM books WHERE title = ')' /* ( , */",
+                vec![],
+                DbResultSelection::Rows,
+                1,
+            ),
+            &typed,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn proof_auth_rejects_star_under_column_restriction() {
         let mut env = SqlTypeEnv::new();
         apply_schema_sql_to_env(

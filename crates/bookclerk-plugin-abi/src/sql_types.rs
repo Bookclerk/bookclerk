@@ -4076,71 +4076,125 @@ fn read_ident(s: &str) -> Option<(String, &str)> {
     Some((s[..n].to_ascii_lowercase(), &s[n..]))
 }
 
+/// End of the comment, string literal or quoted identifier that starts at
+/// `i`, or `None` when none starts there.
+///
+/// Mirrors SQLite's tokenizer so a parenthesis or comma inside one is never
+/// structure: `--` runs to the end of the line, `/* … */` to its closer (or
+/// the end of the text, as SQLite accepts), `'…'`, `"…"` and `` `…` `` honor
+/// doubled quotes, and `[…]` runs to the first `]`. An unterminated literal
+/// or identifier runs to the end of the text, so a caller looking for a
+/// closing parenthesis finds none and fails closed.
+///
+/// # Arguments
+///
+/// * `bytes` - The SQL text being scanned.
+/// * `i` - Byte offset to look at; at or past the end yields `None`.
+///
+/// # Returns
+///
+/// The byte offset just past the opaque token, at most `bytes.len()`.
+fn opaque_token_end(bytes: &[u8], i: usize) -> Option<usize> {
+    let rest = bytes.get(i..)?;
+    if rest.starts_with(b"--") {
+        return Some(
+            rest.iter()
+                .position(|&b| b == b'\n')
+                .map_or(bytes.len(), |p| i + p + 1),
+        );
+    }
+    if rest.starts_with(b"/*") {
+        return Some(
+            rest[2..]
+                .windows(2)
+                .position(|w| w == b"*/")
+                .map_or(bytes.len(), |p| i + 2 + p + 2),
+        );
+    }
+    let close = match rest.first()? {
+        b'\'' => b'\'',
+        b'"' => b'"',
+        b'`' => b'`',
+        b'[' => b']',
+        _ => return None,
+    };
+    let mut j = i + 1;
+    while j < bytes.len() {
+        if bytes[j] == close {
+            if close != b']' && bytes.get(j + 1) == Some(&close) {
+                j += 2;
+                continue;
+            }
+            return Some(j + 1);
+        }
+        j += 1;
+    }
+    Some(bytes.len())
+}
+
+/// The text between the parenthesis that opens `s` and its matching closer.
+///
+/// Parentheses inside comments, string literals and quoted identifiers are
+/// skipped ([`opaque_token_end`]), as SQLite skips them; otherwise
+/// `(id--)…` would close inside the comment and the typed checker would
+/// prove a different statement than the engine runs (#616).
+///
+/// # Returns
+///
+/// `None` when `s` does not start with `(` or the parenthesis never closes.
 fn balanced_inner(s: &str) -> Option<&str> {
     if !s.starts_with('(') {
         return None;
     }
+    let bytes = s.as_bytes();
     let mut depth = 0i32;
     let mut i = 0;
-    while i < s.len() {
-        let b = s.as_bytes()[i];
-        if b == b'\'' {
-            i += 1;
-            while i < s.len() {
-                if s.as_bytes()[i] == b'\'' {
-                    if s.as_bytes().get(i + 1) == Some(&b'\'') {
-                        i += 2;
-                        continue;
-                    }
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
+    while i < bytes.len() {
+        if let Some(end) = opaque_token_end(bytes, i) {
+            i = end;
             continue;
         }
-        if b == b'(' {
-            depth += 1;
-        } else if b == b')' {
-            depth -= 1;
-            if depth == 0 {
-                return Some(&s[1..i]);
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[1..i]);
+                }
             }
+            _ => {}
         }
         i += 1;
     }
     None
 }
 
+/// Splits `s` at commas outside parentheses, comments, string literals and
+/// quoted identifiers.
+///
+/// # Returns
+///
+/// The pieces between top-level commas, untrimmed; one piece when there is
+/// no top-level comma.
 fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let bytes = s.as_bytes();
     let mut out = Vec::new();
     let mut start = 0;
     let mut depth = 0i32;
     let mut i = 0;
-    while i < s.len() {
-        let b = s.as_bytes()[i];
-        if b == b'\'' {
-            i += 1;
-            while i < s.len() {
-                if s.as_bytes()[i] == b'\'' {
-                    if s.as_bytes().get(i + 1) == Some(&b'\'') {
-                        i += 2;
-                        continue;
-                    }
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
+    while i < bytes.len() {
+        if let Some(end) = opaque_token_end(bytes, i) {
+            i = end;
             continue;
         }
-        if b == b'(' {
-            depth += 1;
-        } else if b == b')' {
-            depth -= 1;
-        } else if b == b',' && depth == 0 {
-            out.push(&s[start..i]);
-            start = i + 1;
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b',' if depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
         }
         i += 1;
     }
