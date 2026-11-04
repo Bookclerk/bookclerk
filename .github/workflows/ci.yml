@@ -158,9 +158,13 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ci-venv"
           "$RUNNER_TEMP/ci-venv/bin/pip" install --require-hashes -r scripts/tests/requirements.txt
 
+      # The scripts under test append to $GITHUB_STEP_SUMMARY by default;
+      # their tests' runs are not this job's results, so none reach its
+      # summary (the Web API contract report belongs to CI Gate alone).
       - name: Planner, executor and workflow-contract tests
         run: |
           set -euo pipefail
+          unset GITHUB_STEP_SUMMARY
           PY="$RUNNER_TEMP/ci-venv/bin/python"
           "$PY" scripts/tests/test_ci_plan.py
           "$PY" scripts/tests/test_ci_relations.py
