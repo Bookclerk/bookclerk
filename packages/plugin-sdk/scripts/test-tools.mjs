@@ -143,6 +143,34 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
   console.log("ok shared compatibility dates");
 }
 
+// Shared manifest validation cases: each manifest is accepted, or refused with
+// the exact message the Rust and Python checkers give.
+{
+  const { parse } = await import("smol-toml");
+  const { validateManifest } = await import("../dist/tools/validate.js");
+  const doc = JSON.parse(fs.readFileSync(path.join(fixtures, "manifest-cases.json"), "utf8"));
+  for (const c of doc.cases) {
+    const text =
+      doc.prelude +
+      (c.top ?? doc.top) +
+      "\n" +
+      (c.base_tables ?? doc.base_tables) +
+      "\n" +
+      (c.tables ?? "");
+    let got = null;
+    try {
+      validateManifest(parse(text));
+    } catch (err) {
+      got = err.message;
+    }
+    if (got !== c.error) {
+      console.error(`FAIL manifest case ${JSON.stringify(c.name)}: got ${JSON.stringify(got)}`);
+      process.exit(1);
+    }
+  }
+  console.log(`ok ${doc.cases.length} shared manifest cases`);
+}
+
 const { parse } = await import("smol-toml");
 const { materializeConfig } = await import("../dist/sparse-workerd/config.js");
 const conflictDir = path.join(fixtures, "invalid-module-path");

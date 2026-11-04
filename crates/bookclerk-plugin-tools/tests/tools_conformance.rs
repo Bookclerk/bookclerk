@@ -429,3 +429,32 @@ fn compatibility_dates_match_shared_cases() {
         }
     }
 }
+
+/// Every manifest in `manifest-cases.json` is accepted, or refused with the
+/// exact message the case names. The Python and TypeScript checkers read the
+/// same file, so the three agree on the rules and their wording.
+#[test]
+fn validate_manifest_matches_shared_cases() {
+    let doc = shared_cases("manifest-cases.json");
+    let part = |case: &serde_json::Value, key: &str| -> String {
+        case.get(key)
+            .or_else(|| doc.get(key))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let prelude = doc["prelude"].as_str().expect("prelude");
+    for case in doc["cases"].as_array().expect("an array of cases") {
+        let text = format!(
+            "{prelude}{}\n{}\n{}",
+            part(case, "top"),
+            part(case, "base_tables"),
+            case["tables"].as_str().unwrap_or_default()
+        );
+        let got = match bookclerk_plugin_tools::load_manifest(&text) {
+            Ok(_) => serde_json::Value::Null,
+            Err(err) => err.to_string().into(),
+        };
+        assert_eq!(got, case["error"], "{}", case["name"]);
+    }
+}

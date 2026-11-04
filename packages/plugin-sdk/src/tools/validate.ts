@@ -183,7 +183,7 @@ function validateQueueName(field: string, name: unknown): void {
   }
   if (RESERVED_QUEUE_PREFIXES.some((prefix) => text.startsWith(prefix))) {
     throw new Error(
-      `plugin.toml: ${field} \`${text}\` uses a host-reserved prefix (\`core.\`, \`host.\`)`,
+      `plugin.toml: ${field} \`${text}\` uses a host-reserved prefix (\`core.\`, \`node.\`)`,
     );
   }
 }
@@ -194,6 +194,9 @@ function validateQueueName(field: string, name: unknown): void {
  * them but cannot declare them under `[[events.producers]]`.
  */
 export const HOST_EVENT_TYPES: ReadonlySet<string> = new Set(["book_acquired"]);
+
+/** Event type grammar: snake_case `[a-z][a-z0-9_]*`, as the host checks it. */
+const EVENT_TYPE_RE = /^[a-z][a-z0-9_]*$/;
 
 /** Largest `max_value_bytes` a `[[kv_namespaces]]` row may declare (1 MiB). */
 export const MAX_KV_NAMESPACE_VALUE_BYTES = 1_048_576;
@@ -548,12 +551,14 @@ export function validateManifest(m: Manifest): void {
     }
     if (m.capabilities?.network?.domains && m.capabilities.network.domains.length > 0) {
       throw new Error(
-        'plugin.toml: capabilities.network.domains is only valid for runtime = "workerd" (native outbound is coarse jail networking with no hostname filter — omit domains)',
+        'plugin.toml: capabilities.network.domains is only valid for runtime = "workerd" (native guests use capabilities.network.tcp for mediated connect(); omit domains)',
       );
     }
   } else if (runtime === "workerd") {
     if (!m.workerd) {
-      throw new Error('plugin.toml: `[workerd]` is required when runtime = "workerd"');
+      throw new Error(
+        'plugin.toml: `[workerd]` / runtime.workerd is required when runtime = "workerd"',
+      );
     }
     if (typeof m.workerd.compatibility_date !== "string" || !m.workerd.compatibility_date.trim()) {
       throw new Error("plugin.toml: workerd.compatibility_date is required");
@@ -626,15 +631,29 @@ function validateSurface(m: Manifest): void {
   }
   validateQueues(m);
   validateKvNamespaces(m);
-  for (const consumer of consumers) {
-    if (!consumer.type || !String(consumer.type).trim()) {
-      throw new Error("plugin.toml: [[events.consumers]] `type` is required");
+  for (const [i, consumer] of consumers.entries()) {
+    const type = typeof consumer.type === "string" ? consumer.type : "";
+    if (!type.trim()) {
+      throw new Error(`plugin.toml: events.consumers[${i}].type is required`);
+    }
+    if (!EVENT_TYPE_RE.test(type)) {
+      throw new Error(
+        `plugin.toml: events.consumers[${i}].type \`${type}\` must be snake_case \`[a-z][a-z0-9_]*\``,
+      );
     }
   }
+  const produced = new Set<string>();
   for (const [i, producer] of (m.events?.producers ?? []).entries()) {
-    if (!producer.type || !String(producer.type).trim()) {
-      throw new Error("plugin.toml: [[events.producers]] `type` is required");
+    const type = typeof producer.type === "string" ? producer.type : "";
+    if (!EVENT_TYPE_RE.test(type)) {
+      throw new Error(
+        `plugin.toml: events.producers[${i}].type \`${type}\` must be snake_case \`[a-z][a-z0-9_]*\``,
+      );
     }
+    if (produced.has(type)) {
+      throw new Error(`plugin.toml: events.producers[${i}].type \`${type}\` is duplicated`);
+    }
+    produced.add(type);
     if (HOST_EVENT_TYPES.has(producer.type)) {
       throw new Error(
         `plugin.toml: events.producers[${i}].type \`${producer.type}\` is emitted by the host ` +

@@ -1,0 +1,406 @@
+{
+  "prelude": "api_version = 3\nid = \"shared_cases\"\nversion = \"0.1.0\"\n",
+  "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+  "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"deny\"\n",
+  "cases": [
+    {
+      "name": "base manifest is valid",
+      "error": null
+    },
+    {
+      "name": "queue producer and consumer",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"jobs\"\n[[queues.consumers]]\nqueue = \"jobs\"\nmax_retries = 5\ndead_letter_queue = \"jobs-dlq\"\n",
+      "error": null
+    },
+    {
+      "name": "producer queue upper case",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"Jobs\"\n",
+      "error": "plugin.toml: queues.producers[0].queue `Jobs` must be `[a-z0-9][a-z0-9._-]*` and at most 63 chars"
+    },
+    {
+      "name": "producer queue starts with dot",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \".jobs\"\n",
+      "error": "plugin.toml: queues.producers[0].queue `.jobs` must be `[a-z0-9][a-z0-9._-]*` and at most 63 chars"
+    },
+    {
+      "name": "producer queue empty",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"\"\n",
+      "error": "plugin.toml: queues.producers[0].queue `` must be `[a-z0-9][a-z0-9._-]*` and at most 63 chars"
+    },
+    {
+      "name": "producer queue 63 chars",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n",
+      "error": null
+    },
+    {
+      "name": "producer queue 64 chars",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n",
+      "error": "plugin.toml: queues.producers[0].queue `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` must be `[a-z0-9][a-z0-9._-]*` and at most 63 chars"
+    },
+    {
+      "name": "producer queue 65 chars",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n",
+      "error": "plugin.toml: queues.producers[0].queue `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` must be `[a-z0-9][a-z0-9._-]*` and at most 63 chars"
+    },
+    {
+      "name": "producer queue core prefix",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"core.jobs\"\n",
+      "error": "plugin.toml: queues.producers[0].queue `core.jobs` uses a host-reserved prefix (`core.`, `node.`)"
+    },
+    {
+      "name": "producer queue node prefix",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"node.jobs\"\n",
+      "error": "plugin.toml: queues.producers[0].queue `node.jobs` uses a host-reserved prefix (`core.`, `node.`)"
+    },
+    {
+      "name": "producer queue punctuation",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"0a._-z\"\n",
+      "error": null
+    },
+    {
+      "name": "producer binding lower case",
+      "tables": "[[queues.producers]]\nbinding = \"my_queue\"\nqueue = \"jobs\"\n",
+      "error": "plugin.toml: [queues.producers][0] binding must be `[A-Z][A-Z0-9_]*`"
+    },
+    {
+      "name": "producer binding reserved",
+      "tables": "[[queues.producers]]\nbinding = \"CONFIG\"\nqueue = \"jobs\"\n",
+      "error": "plugin.toml: [queues.producers][0] binding collides with another binding"
+    },
+    {
+      "name": "producer binding EVENTS",
+      "tables": "[[queues.producers]]\nbinding = \"EVENTS\"\nqueue = \"jobs\"\n",
+      "error": "plugin.toml: [queues.producers][0] binding collides with another binding"
+    },
+    {
+      "name": "producer binding twice",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"jobs\"\n[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"other\"\n",
+      "error": "plugin.toml: [queues.producers][1] binding collides with another binding"
+    },
+    {
+      "name": "second producer bad",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"jobs\"\n[[queues.producers]]\nbinding = \"OTHER\"\nqueue = \"Bad\"\n",
+      "error": "plugin.toml: queues.producers[1].queue `Bad` must be `[a-z0-9][a-z0-9._-]*` and at most 63 chars"
+    },
+    {
+      "name": "consumer queue bad",
+      "tables": "[[queues.consumers]]\nqueue = \"Jobs\"\n",
+      "error": "plugin.toml: queues.consumers[0].queue `Jobs` must be `[a-z0-9][a-z0-9._-]*` and at most 63 chars"
+    },
+    {
+      "name": "consumer queue reserved",
+      "tables": "[[queues.consumers]]\nqueue = \"core.x\"\n",
+      "error": "plugin.toml: queues.consumers[0].queue `core.x` uses a host-reserved prefix (`core.`, `node.`)"
+    },
+    {
+      "name": "consumer duplicated",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\n[[queues.consumers]]\nqueue = \"jobs\"\n",
+      "error": "plugin.toml: queues.consumers[1].queue `jobs` is duplicated"
+    },
+    {
+      "name": "consumer batch size 0",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_batch_size = 0\n",
+      "error": "plugin.toml: queues.consumers[0].max_batch_size must be 1..=100"
+    },
+    {
+      "name": "consumer batch size 1",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_batch_size = 1\n",
+      "error": null
+    },
+    {
+      "name": "consumer batch size 100",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_batch_size = 100\n",
+      "error": null
+    },
+    {
+      "name": "consumer batch size 101",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_batch_size = 101\n",
+      "error": "plugin.toml: queues.consumers[0].max_batch_size must be 1..=100"
+    },
+    {
+      "name": "consumer batch timeout 0",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_batch_timeout = 0\n",
+      "error": null
+    },
+    {
+      "name": "consumer batch timeout 60",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_batch_timeout = 60\n",
+      "error": null
+    },
+    {
+      "name": "consumer batch timeout 61",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_batch_timeout = 61\n",
+      "error": "plugin.toml: queues.consumers[0].max_batch_timeout must be at most 60 seconds"
+    },
+    {
+      "name": "consumer retries 0",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_retries = 0\n",
+      "error": null
+    },
+    {
+      "name": "consumer retries 100",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_retries = 100\n",
+      "error": null
+    },
+    {
+      "name": "consumer retries 101",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_retries = 101\n",
+      "error": "plugin.toml: queues.consumers[0].max_retries must be at most 100"
+    },
+    {
+      "name": "consumer retry delay 43200",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nretry_delay = 43200\n",
+      "error": null
+    },
+    {
+      "name": "consumer retry delay 43201",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nretry_delay = 43201\n",
+      "error": "plugin.toml: queues.consumers[0].retry_delay must be at most 43200 seconds"
+    },
+    {
+      "name": "consumer concurrency 0",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_concurrency = 0\n",
+      "error": "plugin.toml: queues.consumers[0].max_concurrency must be at least 1"
+    },
+    {
+      "name": "consumer concurrency 1",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\nmax_concurrency = 1\n",
+      "error": null
+    },
+    {
+      "name": "consumer dead letter bad",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\ndead_letter_queue = \"DLQ\"\n",
+      "error": "plugin.toml: queues.consumers[0].dead_letter_queue `DLQ` must be `[a-z0-9][a-z0-9._-]*` and at most 63 chars"
+    },
+    {
+      "name": "consumer dead letter reserved",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\ndead_letter_queue = \"node.dlq\"\n",
+      "error": "plugin.toml: queues.consumers[0].dead_letter_queue `node.dlq` uses a host-reserved prefix (`core.`, `node.`)"
+    },
+    {
+      "name": "consumer dead letter same",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\ndead_letter_queue = \"jobs\"\n",
+      "error": "plugin.toml: queues.consumers[0].dead_letter_queue must differ from the consumed queue"
+    },
+    {
+      "name": "second consumer bad",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\n[[queues.consumers]]\nqueue = \"other\"\nmax_retries = 101\n",
+      "error": "plugin.toml: queues.consumers[1].max_retries must be at most 100"
+    },
+    {
+      "name": "consumer only, no entrypoints",
+      "top": "runtime = \"workerd\"\nentrypoints = []\n",
+      "tables": "[[queues.consumers]]\nqueue = \"jobs\"\n",
+      "error": null
+    },
+    {
+      "name": "nothing declared",
+      "top": "runtime = \"workerd\"\nentrypoints = []\n",
+      "error": "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, `[[queues.consumers]]`, `[triggers].jobs`, or `[triggers].crons`"
+    },
+    {
+      "name": "producers only, no entrypoints",
+      "top": "runtime = \"workerd\"\nentrypoints = []\n",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"jobs\"\n[[events.producers]]\ntype = \"thing_done\"\n",
+      "error": "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, `[[queues.consumers]]`, `[triggers].jobs`, or `[triggers].crons`"
+    },
+    {
+      "name": "duplicate entrypoint",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"cli\"]\n",
+      "error": "plugin.toml: entrypoints entry `cli` is duplicated"
+    },
+    {
+      "name": "duplicate entrypoint before queue error",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"cli\"]\n",
+      "tables": "[[queues.consumers]]\nqueue = \"Bad\"\n",
+      "error": "plugin.toml: entrypoints entry `cli` is duplicated"
+    },
+    {
+      "name": "database binding bad",
+      "tables": "[[databases]]\nbinding = \"bad\"\n",
+      "error": "plugin.toml: [[databases]] binding `bad` must be `[A-Z][A-Z0-9_]*` and at most 32 chars"
+    },
+    {
+      "name": "database binding too long",
+      "tables": "[[databases]]\nbinding = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\n",
+      "error": "plugin.toml: [[databases]] binding `AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` must be `[A-Z][A-Z0-9_]*` and at most 32 chars"
+    },
+    {
+      "name": "database binding 32 chars",
+      "tables": "[[databases]]\nbinding = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\n",
+      "error": null
+    },
+    {
+      "name": "database binding duplicated",
+      "tables": "[[databases]]\nbinding = \"DB\"\n[[databases]]\nbinding = \"DB\"\n",
+      "error": "plugin.toml: [[databases]] binding `DB` is duplicated"
+    },
+    {
+      "name": "producer binding collides with database",
+      "tables": "[[databases]]\nbinding = \"DB\"\n[[queues.producers]]\nbinding = \"DB\"\nqueue = \"jobs\"\n",
+      "error": "plugin.toml: [queues.producers][0] binding collides with another binding"
+    },
+    {
+      "name": "kv binding collides with producer",
+      "tables": "[[queues.producers]]\nbinding = \"STORE\"\nqueue = \"jobs\"\n[[kv_namespaces]]\nbinding = \"STORE\"\n",
+      "error": "plugin.toml: [queues.producers][0] binding collides with another binding"
+    },
+    {
+      "name": "events consumer type blank",
+      "tables": "[[events.consumers]]\ntype = \" \"\n",
+      "error": "plugin.toml: events.consumers[0].type is required"
+    },
+    {
+      "name": "events producer type blank",
+      "tables": "[[events.producers]]\ntype = \"\"\n",
+      "error": "plugin.toml: events.producers[0].type `` must be snake_case `[a-z][a-z0-9_]*`"
+    },
+    {
+      "name": "events producer host type",
+      "tables": "[[events.producers]]\ntype = \"book_acquired\"\n",
+      "error": "plugin.toml: events.producers[0].type `book_acquired` is emitted by the host (after a source's acquire handler returns); plugins may consume it but not publish it"
+    },
+    {
+      "name": "events producer binding CONFIG",
+      "tables": "[[events.producers]]\ntype = \"thing_done\"\nbinding = \"CONFIG\"\n",
+      "error": "plugin.toml: [events.producers][0] binding collides with another binding"
+    },
+    {
+      "name": "cli table without entrypoint",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storage\"]\n",
+      "tables": "[cli]\n",
+      "error": "plugin.toml: `[cli]` requires `\"cli\"` in `entrypoints`"
+    },
+    {
+      "name": "crons with storefront",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storefront\"]\n",
+      "tables": "[triggers]\ncrons = [\"0 * * * *\"]\n",
+      "error": "plugin.toml: `[triggers].crons` cannot be combined with the `storefront` entrypoint; put the schedule in a separate integration plugin"
+    },
+    {
+      "name": "crons with storage",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"storage\"]\n",
+      "tables": "[triggers]\ncrons = [\"0 * * * *\"]\n",
+      "error": "plugin.toml: `[triggers].crons` cannot be combined with the `storage` entrypoint; put the schedule in a separate integration plugin"
+    },
+    {
+      "name": "crons with cli",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[triggers]\ncrons = [\"0 * * * *\"]\n",
+      "error": null
+    },
+    {
+      "name": "native without command",
+      "top": "runtime = \"native\"\nentrypoints = [\"cli\"]\n",
+      "base_tables": "[capabilities.network]\nmode = \"deny\"\n",
+      "error": "plugin.toml: `command` is required when runtime = \"native\""
+    },
+    {
+      "name": "native with domains",
+      "top": "runtime = \"native\"\ncommand = \"bin/x\"\nentrypoints = [\"cli\"]\n",
+      "base_tables": "[capabilities.network]\nmode = \"outbound\"\ndomains = [\"example.com\"]\n",
+      "error": "plugin.toml: capabilities.network.domains is only valid for runtime = \"workerd\" (native guests use capabilities.network.tcp for mediated connect(); omit domains)"
+    },
+    {
+      "name": "native ok",
+      "top": "runtime = \"native\"\ncommand = \"bin/x\"\nentrypoints = [\"cli\"]\n",
+      "base_tables": "[capabilities.network]\nmode = \"deny\"\n",
+      "error": null
+    },
+    {
+      "name": "native tcp grant",
+      "top": "runtime = \"native\"\ncommand = \"bin/x\"\nentrypoints = [\"cli\"]\n",
+      "base_tables": "[capabilities.network]\nmode = \"outbound\"\n\n[[capabilities.network.tcp]]\nhost = \"api.example.com\"\nports = [443]\n",
+      "error": null
+    },
+    {
+      "name": "workerd outbound without domains",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\n",
+      "error": "plugin.toml: capabilities.network.domains is required when runtime = \"workerd\" and mode = \"outbound\""
+    },
+    {
+      "name": "workerd outbound with domains",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"api.example.com\"]\n",
+      "error": null
+    },
+    {
+      "name": "workerd table missing",
+      "base_tables": "[capabilities.network]\nmode = \"deny\"\n",
+      "error": "plugin.toml: `[workerd]` / runtime.workerd is required when runtime = \"workerd\""
+    },
+    {
+      "name": "workerd main module blank",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \" \"\n\n[capabilities.network]\nmode = \"deny\"\n",
+      "error": "plugin.toml: workerd.main_module is required"
+    },
+    {
+      "name": "workerd compatibility date blank",
+      "base_tables": "[workerd]\ncompatibility_date = \" \"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"deny\"\n",
+      "error": "plugin.toml: workerd.compatibility_date is required"
+    },
+    {
+      "name": "producer queue host prefix is free",
+      "tables": "[[queues.producers]]\nbinding = \"MY_QUEUE\"\nqueue = \"host.jobs\"\n",
+      "error": null
+    },
+    {
+      "name": "events consumer type grammar",
+      "tables": "[[events.consumers]]\ntype = \"Thing_done\"\n",
+      "error": "plugin.toml: events.consumers[0].type `Thing_done` must be snake_case `[a-z][a-z0-9_]*`"
+    },
+    {
+      "name": "events consumer type digit first",
+      "tables": "[[events.consumers]]\ntype = \"1thing\"\n",
+      "error": "plugin.toml: events.consumers[0].type `1thing` must be snake_case `[a-z][a-z0-9_]*`"
+    },
+    {
+      "name": "events consumer ok",
+      "tables": "[[events.consumers]]\ntype = \"thing_done2\"\n",
+      "error": null
+    },
+    {
+      "name": "events consumer only, no entrypoints",
+      "top": "runtime = \"workerd\"\nentrypoints = []\n",
+      "tables": "[[events.consumers]]\ntype = \"thing_done\"\n",
+      "error": null
+    },
+    {
+      "name": "events producer type grammar",
+      "tables": "[[events.producers]]\ntype = \"thing-done\"\n",
+      "error": "plugin.toml: events.producers[0].type `thing-done` must be snake_case `[a-z][a-z0-9_]*`"
+    },
+    {
+      "name": "events producer duplicated",
+      "tables": "[[events.producers]]\ntype = \"thing_done\"\n[[events.producers]]\ntype = \"thing_done\"\nbinding = \"MORE\"\n",
+      "error": "plugin.toml: events.producers[1].type `thing_done` is duplicated"
+    },
+    {
+      "name": "events producer ok",
+      "tables": "[[events.producers]]\ntype = \"thing_done\"\n",
+      "error": null
+    },
+    {
+      "name": "oidc clients without entrypoint",
+      "tables": "[[oidc.clients]]\nclient_id = \"c\"\ncallback_path = \"/cb\"\norigin_config_key = \"origin\"\n",
+      "error": "plugin.toml: `[[oidc.clients]]` requires `\"oidc\"` in `entrypoints`"
+    },
+    {
+      "name": "jobs only, no entrypoints",
+      "top": "runtime = \"workerd\"\nentrypoints = []\n",
+      "tables": "[triggers]\njobs = [\"sync\"]\n",
+      "error": null
+    },
+    {
+      "name": "crons only, no entrypoints",
+      "top": "runtime = \"workerd\"\nentrypoints = []\n",
+      "tables": "[triggers]\ncrons = [\"0 * * * *\"]\n",
+      "error": null
+    },
+    {
+      "name": "crons with database adapter",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"databaseAdapter\"]\n",
+      "tables": "[triggers]\ncrons = [\"0 * * * *\"]\n",
+      "error": "plugin.toml: `[triggers].crons` cannot be combined with the `databaseAdapter` entrypoint; put the schedule in a separate integration plugin"
+    }
+  ]
+}
