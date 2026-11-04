@@ -2751,15 +2751,14 @@ mod tests {
                 .responses(ResponsesBuilder::new().response("403", response).build())
                 .build();
             add_enrollment_refusal(&mut op, false);
-            let Some(utoipa::openapi::RefOr::T(response)) = op.responses.responses.get("403")
-            else {
-                panic!("no 403");
-            };
-            let Some(utoipa::openapi::RefOr::T(content)) = response.content.get("application/json")
-            else {
-                panic!("no JSON body");
-            };
-            let mut names: Vec<String> = content.examples.keys().cloned().collect();
+            let op = serde_json::to_value(&op).unwrap();
+            let mut names: Vec<String> = op["responses"]["403"]["content"]["application/json"]
+                ["examples"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
             names.sort();
             names
         };
