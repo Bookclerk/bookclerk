@@ -5329,7 +5329,10 @@ mod tests {
                 refs.tables
             );
             assert!(
-                !refs.columns.iter().any(|(_, c)| c == "host_secrets" || c == "hob"),
+                !refs
+                    .columns
+                    .iter()
+                    .any(|(_, c)| c == "host_secrets" || c == "hob"),
                 "{sql}: {:?}",
                 refs.columns
             );
@@ -5349,7 +5352,10 @@ mod tests {
              WHERE b.id > 0 GROUP BY b.title, a.name ORDER BY b.title, a.name",
         )
         .unwrap();
-        assert_eq!(refs.tables, vec!["authors".to_string(), "books".to_string()]);
+        assert_eq!(
+            refs.tables,
+            vec!["authors".to_string(), "books".to_string()]
+        );
     }
 
     #[test]
