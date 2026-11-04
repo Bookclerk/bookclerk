@@ -3815,7 +3815,11 @@ fn collect_one_expr_atom(
             // subquery or expression, never a call, so leave it to the loop.
             return Ok(());
         }
-        if scan.take_byte(b'(') {
+        if scan.peek_byte(b'(') {
+            // Leave the argument list to the loop, which walks it as a nested
+            // group: a comma between arguments is then never top level, so
+            // the FROM-clause tracking cannot mistake it for another FROM
+            // item (`ON coalesce(b.id, c.secret) = b.id`).
             refs.functions.push(ident);
             return Ok(());
         }
@@ -3828,7 +3832,8 @@ fn collect_one_expr_atom(
             let col = scan
                 .read_ident()
                 .ok_or_else(|| unresolved("qualified column"))?;
-            if scan.take_byte(b'(') {
+            if scan.peek_byte(b'(') {
+                // As above: the loop walks the argument list as a group.
                 if !sql_keyword(&col) {
                     refs.functions.push(col);
                 }
@@ -5364,6 +5369,36 @@ mod tests {
             .unwrap_err();
             assert!(err.to_string().contains("host_secrets"), "{sql}: {err}");
         }
+    }
+
+    #[test]
+    fn lexical_refs_keep_call_argument_commas_inside_a_join_condition() {
+        // A comma between call arguments in a join condition is not a FROM
+        // item: the column after it must still be collected and authorized.
+        let sql = "SELECT b.id FROM books b JOIN books c ON coalesce(b.id, c.secret) = b.id";
+        let refs = parse_guest_sql_refs(sql).unwrap();
+        assert!(
+            refs.columns
+                .iter()
+                .any(|(t, c)| t.as_deref() == Some("books") && c == "secret"),
+            "{:?}",
+            refs.columns
+        );
+        assert_eq!(refs.functions, vec!["coalesce".to_string()]);
+        let err = authorize_guest_sql_policy(
+            &req(sql, vec![], DbResultSelection::Rows, 1),
+            &GuestSqlPolicy::allow_tables(["books"]).restrict_columns("books", ["id"]),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("secret"), "{err}");
+        let refs =
+            parse_guest_sql_refs("SELECT b.id FROM books b JOIN books c ON b.lower(c.x, c.y) = 1")
+                .unwrap();
+        assert!(
+            refs.columns.iter().any(|(_, c)| c == "y"),
+            "{:?}",
+            refs.columns
+        );
     }
 
     #[test]

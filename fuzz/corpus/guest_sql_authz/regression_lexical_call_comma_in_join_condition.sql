@@ -1,0 +1,1 @@
+1SELECT b.id FROM books b JOIN books c ON coalesce(b.id, c.note) = b.id
