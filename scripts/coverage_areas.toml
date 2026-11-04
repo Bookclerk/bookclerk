@@ -80,4 +80,4 @@ test_results = "python-sdk/junit.xml"
 root = "."
 paths = ["packages/plugin-sdk-python/src/"]
 suffixes = [".py"]
-floor = 74
+floor = 75
