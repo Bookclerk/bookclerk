@@ -62,28 +62,41 @@ fn creation_gate(p: &ListingLinkParams) -> (String, Vec<DbValue>) {
         ));
         binds.extend(p.gate_strong_keys.iter().map(|k| j_str(k)));
     }
+    // The plan only attaches work identifiers no work owned when it was
+    // made; one claimed since means the new rows would split the work.
+    for id in &p.work_identifiers {
+        parts.push(
+            "NOT EXISTS (SELECT 1 FROM work_identifiers WHERE scheme = ? AND value = ?)"
+                .to_string(),
+        );
+        binds.extend([j_str(&id.scheme), j_str(&id.value)]);
+    }
     (parts.join(" AND "), binds)
 }
 
 /// The predicate "since the snapshot, the edition gained another value of
-/// one of the plan's strong schemes, or another edition claimed one of the
-/// plan's strong identifiers", with its binds.
+/// one of the plan's strong schemes, another edition claimed one of the
+/// plan's strong identifiers, or another work claimed one of the plan's
+/// work identifiers", with its binds.
 ///
-/// Either change by another writer between the snapshot and this batch
-/// means the plan's identifiers and listing must not join the edition; the
-/// batch answers `retry` so the resolver sees the new state.
+/// Any of these changes by another writer between the snapshot and this
+/// batch means the plan's identifiers and listing must not be attached;
+/// the batch answers `retry` so the resolver sees the new state.
 fn strong_clash(p: &ListingLinkParams) -> (String, Vec<DbValue>) {
-    let strong: Vec<_> = p
+    let mut parts = Vec::new();
+    let mut binds = Vec::new();
+    for id in &p.work_identifiers {
+        parts.push(
+            "EXISTS (SELECT 1 FROM work_identifiers WHERE scheme = ? AND value = ? \
+             AND work_id <> ?)",
+        );
+        binds.extend([j_str(&id.scheme), j_str(&id.value), j_str(&p.work_id)]);
+    }
+    for id in p
         .edition_identifiers
         .iter()
         .filter(|id| id.strong_key.is_some())
-        .collect();
-    if strong.is_empty() {
-        return ("1 = 0".to_string(), Vec::new());
-    }
-    let mut parts = Vec::new();
-    let mut binds = Vec::new();
-    for id in strong {
+    {
         parts.push(
             "EXISTS (SELECT 1 FROM edition_identifiers WHERE edition_id = ? AND scheme = ? \
              AND marketplace = ? AND strong_key IS NOT NULL AND value <> ?)",
@@ -100,6 +113,9 @@ fn strong_clash(p: &ListingLinkParams) -> (String, Vec<DbValue>) {
             "EXISTS (SELECT 1 FROM edition_identifiers WHERE strong_key = ? AND edition_id <> ?)",
         );
         binds.extend([j_opt_str(id.strong_key.as_deref()), j_str(&p.edition_id)]);
+    }
+    if parts.is_empty() {
+        return ("1 = 0".to_string(), Vec::new());
     }
     (format!("({})", parts.join(" OR ")), binds)
 }
@@ -234,16 +250,21 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
         ));
     }
     for id in &p.work_identifiers {
+        let mut binds = vec![
+            j_str(&id.scheme),
+            j_str(&id.value),
+            j_str(&p.work_id),
+            j_str(now),
+            j_str(&p.work_id),
+        ];
+        binds.extend(clash_binds.clone());
         out.push(sql(
-            "INSERT OR IGNORE INTO work_identifiers (scheme, value, work_id, created_at) \
-             SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)",
-            vec![
-                j_str(&id.scheme),
-                j_str(&id.value),
-                j_str(&p.work_id),
-                j_str(now),
-                j_str(&p.work_id),
-            ],
+            &format!(
+                "INSERT OR IGNORE INTO work_identifiers (scheme, value, work_id, created_at) \
+                 SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM works WHERE id = ?) \
+                 AND NOT {clash}"
+            ),
+            binds,
         ));
     }
     if p.listing_is_new {

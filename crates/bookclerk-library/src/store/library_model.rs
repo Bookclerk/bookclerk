@@ -1984,6 +1984,69 @@ mod store_tests {
     }
 
     #[tokio::test]
+    async fn a_new_work_answers_retry_when_another_work_claimed_its_work_identifier() {
+        let store = store().await;
+        let mut other = dune("audible", "B000000002");
+        other.title = "Dune Messiah".into();
+        other.identifiers = vec![(resolve::IdentifierScheme::Asin, "B000000002".into(), None)];
+        let other = store
+            .record_listing(
+                &resolve::Listing::from_draft(&other).unwrap(),
+                &account("a1"),
+            )
+            .await
+            .unwrap();
+        let other_work = other.new_work.unwrap().id;
+
+        let mut draft = dune("audible", "B000000001");
+        draft.identifiers = vec![
+            (resolve::IdentifierScheme::Asin, "B000000001".into(), None),
+            (
+                resolve::IdentifierScheme::OpenLibraryWork,
+                "OL1W".into(),
+                None,
+            ),
+        ];
+        let listing = resolve::Listing::from_draft(&draft).unwrap();
+        let holder = resolve::Holder::Account("a1".into());
+        let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        assert!(plan.new_work.is_some());
+        assert_eq!(plan.work_identifiers.len(), 1);
+
+        // Meanwhile another writer gives the other work the same work ID.
+        store
+            .add_work_identifier(
+                &other_work,
+                resolve::IdentifierScheme::OpenLibraryWork,
+                "OL1W",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .run_link_listing(link_params(&listing, &plan, &snapshot))
+                .await
+                .unwrap(),
+            atomic_status::RETRY
+        );
+        assert_eq!(works::Entity::find().all(&store.db).await.unwrap().len(), 1);
+        let again = store
+            .record_listing(&listing, &account("a1"))
+            .await
+            .unwrap();
+        assert!(again.new_work.is_none());
+        let rows = work_identifiers::Entity::find()
+            .all(&store.db)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].work_id, other_work);
+        assert_eq!(works::Entity::find().all(&store.db).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn a_rescan_refreshes_changed_store_metadata() {
         let store = store().await;
         let listing = resolve::Listing::from_draft(&dune("audible", "B001")).unwrap();
