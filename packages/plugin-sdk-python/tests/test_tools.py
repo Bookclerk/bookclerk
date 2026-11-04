@@ -1027,6 +1027,8 @@ def test_validate_accepts_and_rejects_cron_triggers():
     validate_manifest({**base, "triggers": {"crons": ["*/30 * * * *", "0 3 * * MON-FRI"]}})
     with pytest.raises(ValueError, match="array of strings"):
         validate_manifest({**base, "triggers": {"crons": "* * * * *"}})
+    with pytest.raises(ValueError, match="array of strings"):
+        validate_manifest({**base, "entrypoints": ["cli"], "triggers": {"crons": False}})
     with pytest.raises(ValueError, match="at most"):
         validate_manifest(
             {

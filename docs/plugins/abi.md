@@ -449,8 +449,9 @@ frozen `ScheduledController` (`cron`, `scheduled_time`, `fire_id`,
   lists and `/step`; months and weekdays also take `JAN`–`DEC` and
   `SUN`–`SAT`, and `7` is Sunday. When both day fields are restricted, a
   day matching either one fires, as in Vixie cron. `L`, `W`, `#`, `@daily`
-  style macros, seconds and schedules that can never fire are rejected. A
-  manifest declares at most 8 schedules of at most 128 bytes each
+  style macros and seconds are rejected, and so are schedules that never
+  fire or can go nine years without firing (such as `0 0 29 2 */7`,
+  February 29 on a Sunday). A manifest declares at most 8 schedules of at most 128 bytes each
   (`MAX_CRON_BYTES`).
 - **One fire per instance.** Each fire runs once per deployed plugin
   instance, cluster-wide. Every daemon checks its schedules every 15

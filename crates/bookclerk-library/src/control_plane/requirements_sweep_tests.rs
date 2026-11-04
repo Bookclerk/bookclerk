@@ -486,6 +486,50 @@ async fn unrouted_scans_are_not_rewritten(store_a: LibraryStore, _store_b: Libra
     assert_eq!(after.lease_generation, before.lease_generation);
 }
 
+/// A cron fire whose instance is undeployed is held through the grace
+/// period, then failed rather than left claimable by any node.
+async fn undeployed_cron_fire_fails_after_grace(store_a: LibraryStore, store_b: LibraryStore) {
+    let instance = create_plugin_instance(&store_a, &operator(), LOCAL_KEY, "")
+        .await
+        .unwrap();
+    set_desired(&store_a, &instance.id, "node-a", DesiredState::Present).await;
+    let cron = "0 * * * *";
+    let cursor = ensure_cron_cursor(&store_a, instance.id.as_str(), cron, 0)
+        .await
+        .unwrap();
+    let CronFireClaim::Claimed { job_id: Some(job) } = claim_cron_fire(
+        &store_a,
+        instance.id.as_str(),
+        cron,
+        cursor.last_fire_ms,
+        3_600_000,
+    )
+    .await
+    .unwrap() else {
+        panic!("expected an admitted fire");
+    };
+    set_desired(&store_b, &instance.id, "node-a", DesiredState::Absent).await;
+
+    let start = Utc::now();
+    assert_eq!(sweep(&store_a, start).await.unsettled, 1);
+    let held = store_b.get_job(&job).await.unwrap().unwrap();
+    assert_eq!(held.payload.requires, vec![instance.id.to_string()]);
+    let expired = start + chrono::Duration::from_std(GRACE).unwrap() + chrono::Duration::seconds(1);
+    let report = sweep(&store_b, expired).await;
+    assert_eq!(report.failed, 1, "{report:?}");
+    let failed = store_a.get_job(&job).await.unwrap().unwrap();
+    assert_eq!(failed.state, JobState::Failed);
+    assert_eq!(failed.error_kind.as_deref(), Some(UNROUTABLE_ERROR_KIND));
+    assert!(
+        failed
+            .error_message
+            .as_deref()
+            .is_some_and(|e| e.contains("deployed on no node")),
+        "{:?}",
+        failed.error_message
+    );
+}
+
 macro_rules! twin {
     ($scenario:ident, $sqlite:ident, $postgres:ident) => {
         #[tokio::test]
@@ -544,4 +588,9 @@ twin!(
     claim_after_rewrite_uses_the_evaluated_generation,
     sqlite_claim_after_rewrite_uses_the_evaluated_generation,
     postgres_claim_after_rewrite_uses_the_evaluated_generation
+);
+twin!(
+    undeployed_cron_fire_fails_after_grace,
+    sqlite_undeployed_cron_fire_fails_after_grace,
+    postgres_undeployed_cron_fire_fails_after_grace
 );

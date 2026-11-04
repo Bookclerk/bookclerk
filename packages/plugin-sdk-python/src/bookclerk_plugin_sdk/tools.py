@@ -642,7 +642,7 @@ def _validate_surface(m: dict[str, Any]) -> None:
     consumers = list(events.get("consumers") or [])
     queue_consumers = list((m.get("queues") or {}).get("consumers") or [])
     jobs = list((m.get("triggers") or {}).get("jobs") or [])
-    crons = (m.get("triggers") or {}).get("crons") or []
+    crons = (m.get("triggers") or {}).get("crons", [])
     if not entrypoints and not consumers and not queue_consumers and not jobs and not crons:
         raise ValueError(
             "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, "

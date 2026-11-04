@@ -182,6 +182,15 @@ async fn sweep_one(
         resolved.insert(cache_key, (desired.clone(), routable));
         (desired, routable)
     };
+    // A cron fire belongs to its instance: once that instance is deployed
+    // nowhere, any other node would only fail it, so it is unroutable.
+    let orphaned_fire = job.kind == JobKind::PluginScheduled
+        && job
+            .payload
+            .plugin_instance_id
+            .as_ref()
+            .is_some_and(|pinned| !desired.contains(pinned));
+    let routable = routable && !orphaned_fire;
     let drops = current.iter().any(|id| !desired.contains(id));
     let since = job.payload.requires_unsettled_since_ms;
 
@@ -242,11 +251,22 @@ async fn sweep_one(
         }
         return Ok(());
     }
-    let reason = format!(
-        "{} for over {} minutes",
-        no_common_node_message(job.kind, &desired),
-        grace_ms / 60_000
-    );
+    let reason = if orphaned_fire {
+        format!(
+            "plugin instance {} has been deployed on no node for over {} minutes",
+            job.payload
+                .plugin_instance_id
+                .as_deref()
+                .unwrap_or_default(),
+            grace_ms / 60_000
+        )
+    } else {
+        format!(
+            "{} for over {} minutes",
+            no_common_node_message(job.kind, &desired),
+            grace_ms / 60_000
+        )
+    };
     if store
         .fail_pending_job(
             &job.id,

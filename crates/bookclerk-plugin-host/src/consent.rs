@@ -1673,6 +1673,14 @@ pub fn validate_approved_grant(
             }
             continue;
         }
+        if binding.starts_with(CRON_BINDING_PREFIX) {
+            if !baseline.bindings.contains(binding) {
+                return Err(PluginError::message(format!(
+                    "grant cron `{binding}` is not declared by plugin.toml"
+                )));
+            }
+            continue;
+        }
         if !KNOWN_HOST_BINDINGS
             .iter()
             .any(|known| binding.eq_ignore_ascii_case(known))
@@ -4618,8 +4626,19 @@ crons = ["*/30  * * * *"]
             "{err}"
         );
 
+        // An operator override that keeps (or drops) the declared cron is
+        // accepted; one naming an undeclared cron is not.
+        validate_approved_grant(&grant, &grant).unwrap();
+        let mut other = grant.clone();
+        other.bindings.insert(cron_grant("0 * * * *"));
+        let err = validate_approved_grant(&other, &grant)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not declared by plugin.toml"), "{err}");
+
         let mut narrowed = grant.clone();
         narrowed.bindings.clear();
+        validate_approved_grant(&narrowed, &grant).unwrap();
         assert!(validate_described_capabilities(
             &manifest,
             &narrowed,
