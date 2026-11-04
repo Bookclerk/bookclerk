@@ -32,7 +32,7 @@ export class Storefront extends StorefrontEntrypoint {
 
   async searchCatalog(params) {
     return [
-      { productId: `hit:${params.query}:${params.limit}:${params.page}`, title: params.query, authors: "A. Author" },
+      { productId: `hit:${params.query}:${params.limit}:${params.page}`, title: params.query, credits: [{ name: "A. Author", role: "author" }] },
     ];
   }
 
