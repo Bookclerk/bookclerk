@@ -3493,18 +3493,55 @@ fn collect_from_aliases(
     ctes: &[String],
     aliases: &mut std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
+    let mut in_from = false;
     while !scan_at_end(scan) {
         if scan.take_kw("FROM") {
             parse_table_refs(scan, refs, ctes, aliases)?;
+            in_from = true;
             continue;
         }
         if take_join_kw(scan) {
             parse_one_table_ref(scan, refs, ctes, aliases)?;
+            in_from = true;
             continue;
+        }
+        if in_from {
+            if ends_from_clause(scan) {
+                in_from = false;
+            } else if scan.take_byte(b',') {
+                // A top-level comma after `JOIN … ON <expr>` (or `USING (…)`)
+                // starts another FROM item, never part of the join condition.
+                parse_one_table_ref(scan, refs, ctes, aliases)?;
+                continue;
+            }
         }
         skip_one_expr_atom(scan, refs, ctes, aliases)?;
     }
     Ok(())
+}
+
+/// True when the next keyword ends a FROM clause, so a later top-level comma
+/// belongs to a select, group, order or returning list instead of naming
+/// another table.
+fn ends_from_clause(scan: &mut Scan<'_>) -> bool {
+    [
+        "WHERE",
+        "GROUP",
+        "HAVING",
+        "WINDOW",
+        "ORDER",
+        "LIMIT",
+        "OFFSET",
+        "UNION",
+        "EXCEPT",
+        "INTERSECT",
+        "RETURNING",
+        "SET",
+        "VALUES",
+        "SELECT",
+    ]
+    .iter()
+    .any(|kw| scan.peek_kw(kw))
 }
 
 /// Second pass: column/function refs after FROM aliases are known.
@@ -3519,12 +3556,25 @@ fn collect_expr_atoms_with_aliases(
     ctes: &[String],
     aliases: &std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
+    let mut in_from = false;
     while !scan_at_end(scan) {
         if scan.take_kw("FROM") {
             skip_table_refs(scan)?;
+            in_from = true;
             continue;
         }
+        if in_from {
+            if ends_from_clause(scan) {
+                in_from = false;
+            } else if scan.take_byte(b',') {
+                // Mirrors `collect_from_aliases`: the first pass collected
+                // this FROM item as a table, so it is not a column.
+                skip_one_table_ref(scan)?;
+                continue;
+            }
+        }
         if take_join_kw(scan) {
+            in_from = true;
             skip_one_table_ref(scan)?;
             if scan.take_kw("ON") {
                 continue;
@@ -5259,6 +5309,47 @@ mod tests {
             &GuestSqlPolicy::host_authoritative(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn lexical_refs_see_a_table_after_a_join_condition() {
+        // #616: a top-level comma after `JOIN … ON <expr>` or `USING (…)`
+        // starts another FROM item; it must be collected as a table, not
+        // read as columns of the join condition.
+        for sql in [
+            "SELECT token FROM books b JOIN books c ON c.id = b.id, host_secrets hob",
+            "SELECT token FROM books b JOIN books c USING (id), host_secrets hob",
+            "SELECT token FROM books b JOIN books c, host_secrets hob",
+            "SELECT token FROM books b LEFT JOIN books c ON c.id = b.id, host_secrets",
+        ] {
+            let refs = parse_guest_sql_refs(sql).unwrap();
+            assert!(
+                refs.tables.iter().any(|t| t == "host_secrets"),
+                "{sql}: {:?}",
+                refs.tables
+            );
+            assert!(
+                !refs.columns.iter().any(|(_, c)| c == "host_secrets" || c == "hob"),
+                "{sql}: {:?}",
+                refs.columns
+            );
+            let err = authorize_guest_sql_policy(
+                &req(sql, vec![], DbResultSelection::Rows, 1),
+                &GuestSqlPolicy::allow_tables(["books"]),
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("host_secrets"), "{sql}: {err}");
+        }
+    }
+
+    #[test]
+    fn lexical_refs_keep_list_commas_after_the_from_clause() {
+        let refs = parse_guest_sql_refs(
+            "SELECT b.title, a.name FROM books b JOIN authors a ON a.id = b.author_id \
+             WHERE b.id > 0 GROUP BY b.title, a.name ORDER BY b.title, a.name",
+        )
+        .unwrap();
+        assert_eq!(refs.tables, vec!["authors".to_string(), "books".to_string()]);
     }
 
     #[test]
