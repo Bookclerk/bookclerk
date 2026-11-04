@@ -1300,6 +1300,29 @@ With a queue required, "require branches to be up to date" no longer
 matters. The queue tests each entry against the current `main`, stacked on
 the entries ahead of it.
 
+### macOS runner label
+
+The macOS jobs (`confinement`, `native-gateway` and `tray`) run on
+`macos-15`, not `macos-latest`. Since 2 November 2026, GitHub has often
+failed to give `macos-latest` jobs (the `macos-26-arm64` image) a runner,
+with no GitHub Status incident. Merge groups failed on most attempts. The
+`macos-15` label uses a separate pool of runners, which is the workaround
+other projects reported.
+
+The pin has costs:
+
+- CI tests on macOS 15 rather than macOS 26. Both images are Apple
+  silicon (arm64), so the build target doesn't change.
+- When GitHub retires `macos-15`, the pin has to move to a newer label.
+
+`test_macos_jobs_use_the_pinned_label` in
+[`scripts/tests/test_ci_contract.py`](../../scripts/tests/test_ci_contract.py)
+fails if a CI job uses any other macOS label. To move back to
+`macos-latest` once GitHub fixes the problem, change `MACOS_RUNNER` there
+and the three matrices in `ci.yml` together. The
+[re-enqueue](#merge-queue-re-enqueue) recovery doesn't depend on the label,
+so it still catches the occasional job that never gets a runner.
+
 ### Merge-queue re-enqueue
 
 Hosted runners, most often macOS arm64, sometimes never pick up a

@@ -37,6 +37,9 @@ RUN_CHECK = re.compile(r"ci-exec\.py run ([a-z0-9_]+)\b")
 FAIL_FAST_JOB = "merge-queue-fail-fast"
 # Checks out the OSV remediation workflow's sealed lockfile bump.
 PRIVATE_HEAD_ACTION = "./.github/actions/osv-remediation-head"
+# The macOS runner label every macOS CI job uses. `macos-latest` (macOS 26)
+# jobs kept going unassigned; see docs/contributing/ci.md#macos-runner-label.
+MACOS_RUNNER = "macos-15"
 
 
 def _load() -> dict:
@@ -66,6 +69,17 @@ class WorkflowContractTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.wf = _load()
         cls.jobs = cls.wf["jobs"]
+
+    def test_macos_jobs_use_the_pinned_label(self) -> None:
+        macos = {
+            (name, label)
+            for name, job in self.jobs.items()
+            for label in job.get("strategy", {}).get("matrix", {}).get("os", [])
+            + [job.get("runs-on", "")]
+            if isinstance(label, str) and label.startswith("macos")
+        }
+        self.assertTrue(macos, "CI has no macOS job")
+        self.assertEqual({label for _, label in macos}, {MACOS_RUNNER}, sorted(macos))
 
     def test_emitted_outputs_match_plan_job_outputs(self) -> None:
         from ci_plan.execute import job_outputs
@@ -172,7 +186,7 @@ class WorkflowContractTests(unittest.TestCase):
         job = self.jobs["native-gateway"]
         self.assertEqual(job["runs-on"], "${{ matrix.os }}")
         self.assertIs(job["strategy"]["fail-fast"], False)
-        self.assertEqual(job["strategy"]["matrix"], {"os": ["ubuntu-latest", "macos-latest", "windows-latest"]})
+        self.assertEqual(job["strategy"]["matrix"], {"os": ["ubuntu-latest", MACOS_RUNNER, "windows-latest"]})
         steps = job["steps"]
         capnp = {s.get("if") for s in steps if "capnp" in s.get("run", "") and "ci-exec.py" not in s.get("run", "")}
         self.assertEqual(
