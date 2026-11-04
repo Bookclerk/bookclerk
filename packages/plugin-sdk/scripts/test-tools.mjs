@@ -171,6 +171,27 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
   console.log(`ok ${doc.cases.length} shared manifest cases`);
 }
 
+// Shared main-module cases: the author-model check gives the Rust and Python
+// result and message for every source.
+{
+  const { checkMainModuleSource } = await import("../dist/tools/check.js");
+  const cases = JSON.parse(fs.readFileSync(path.join(fixtures, "main-module-cases.json"), "utf8"));
+  for (const c of cases) {
+    const main = c.language === "js" ? "index.js" : "main.py";
+    let got = null;
+    try {
+      checkMainModuleSource(main, c.src, c.entrypoints, c.language);
+    } catch (err) {
+      got = err.message;
+    }
+    if (got !== c.error) {
+      console.error(`FAIL main module case ${JSON.stringify(c.name)}: got ${JSON.stringify(got)}`);
+      process.exit(1);
+    }
+  }
+  console.log(`ok ${cases.length} shared main module cases`);
+}
+
 const { parse } = await import("smol-toml");
 const { materializeConfig } = await import("../dist/sparse-workerd/config.js");
 const conflictDir = path.join(fixtures, "invalid-module-path");

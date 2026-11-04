@@ -273,7 +273,10 @@ fn js_exports_class(src: &str, class: &str) -> bool {
     while let Some(pos) = src[from..].find("export") {
         let after = &src[from + pos + "export".len()..];
         let trimmed = after.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("class") {
+        let class_rest = trimmed.strip_prefix("class").filter(|rest| {
+            after.starts_with(char::is_whitespace) && rest.starts_with(char::is_whitespace)
+        });
+        if let Some(rest) = class_rest {
             let rest = rest.trim_start();
             if rest.starts_with(class)
                 && !rest[class.len()..]
@@ -295,12 +298,15 @@ fn js_exports_class(src: &str, class: &str) -> bool {
     false
 }
 
-/// True when a Python module defines `class Cls(` at column zero.
+/// True when a Python module defines `class Cls(` at column zero, with any
+/// spaces or tabs after `class` and before the parenthesis.
 fn py_defines_class(src: &str, class: &str) -> bool {
+    const BLANK: [char; 2] = [' ', '\t'];
     src.lines().any(|line| {
-        line.strip_prefix("class ")
-            .and_then(|rest| rest.strip_prefix(class))
-            .is_some_and(|rest| rest.trim_start().starts_with('('))
+        line.strip_prefix("class")
+            .filter(|rest| rest.starts_with(BLANK))
+            .and_then(|rest| rest.trim_start_matches(BLANK).strip_prefix(class))
+            .is_some_and(|rest| rest.trim_start_matches(BLANK).starts_with('('))
     })
 }
 
@@ -345,15 +351,6 @@ pub fn check_main_module_source(
                      (or \"@bookclerk/plugin-sdk\")"
                 )));
             }
-            if src.contains("WorkerEntrypoint")
-                && !src.contains(BASE)
-                && !src.contains("Entrypoint")
-            {
-                return Err(SdkError::message(format!(
-                    "{main_name}: subclass {BASE} from \"@bookclerk/plugin-sdk/workerd\", \
-                     not bare WorkerEntrypoint"
-                )));
-            }
         }
         MainModuleLanguage::Python => {
             let uses_package = src.contains("bookclerk_plugin_sdk") || src.contains(BASE);
@@ -363,6 +360,15 @@ pub fn check_main_module_source(
                 )));
             }
         }
+    }
+    // Any other `…Entrypoint` name (the SDK base or a named entrypoint base)
+    // means the module builds on the SDK rather than on the runtime's class.
+    if src.contains("WorkerEntrypoint")
+        && !src.replace("WorkerEntrypoint", "").contains("Entrypoint")
+    {
+        return Err(SdkError::message(format!(
+            "{main_name}: subclass {BASE}, not bare WorkerEntrypoint"
+        )));
     }
     for entrypoint in entrypoints {
         let class = entrypoint_export_class(*entrypoint);

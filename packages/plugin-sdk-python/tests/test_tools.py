@@ -1361,3 +1361,20 @@ def test_validate_manifest_matches_shared_cases(case: dict[str, Any]) -> None:
         with pytest.raises(ValueError) as err:
             validate_manifest(manifest)
         assert str(err.value) == case["error"]
+
+
+MAIN_MODULE_CASES = json.loads((FIXTURES / "main-module-cases.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", MAIN_MODULE_CASES, ids=lambda c: c["name"])
+def test_check_main_module_source_matches_shared_cases(case: dict[str, Any]) -> None:
+    from bookclerk_plugin_sdk.tools import check_main_module_source
+
+    main = "index.js" if case["language"] == "js" else "main.py"
+    args = (main, case["src"], case["entrypoints"], case["language"])
+    if case["error"] is None:
+        check_main_module_source(*args)
+    else:
+        with pytest.raises(ValueError) as err:
+            check_main_module_source(*args)
+        assert str(err.value) == case["error"]

@@ -40,6 +40,7 @@ implementations. Each SDK must accept the `valid-*` trees and reject
 | `logo-cases.json` | `logo` values with the classification (`remote` / `embedded` and the normalized value) or the exact error every SDK's checker must give |
 | `compat-date-cases.json` | `workerd.compatibility_date` values every SDK must accept (`valid`) or refuse (`invalid`) |
 | `manifest-cases.json` | Manifest validation cases, each breaking at most one rule: `prelude` + (`top` or the case's own) + (`base_tables` or the case's own) + the case's `tables` is the manifest, and `error` is the exact message every SDK's checker gives (`null` when it is accepted) |
+| `main-module-cases.json` | workerd main-module sources (`language` `js` or `python`, the manifest's `entrypoints`) with the exact error every SDK's author-model check gives (`null` when accepted); the module is named `index.js` or `main.py` in the message |
 
 Language-specific helpers (`sync-embed`, Python workerd flags) are covered in
 each SDK's own tests against the Echo examples.
