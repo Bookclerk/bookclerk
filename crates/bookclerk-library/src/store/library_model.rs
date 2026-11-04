@@ -11,6 +11,7 @@
 use std::collections::BTreeSet;
 
 use bookclerk_resolve as resolve;
+use chrono::Utc;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -38,6 +39,9 @@ const LINK_ATTEMPTS: usize = 3;
 /// Most inserts in one credit batch, inside every engine's statement cap
 /// with room for the receipt statements.
 const CREDIT_BATCH_STATEMENTS: usize = 30;
+
+// One listing's series (a series row and an entry each) fit in one batch.
+const _: () = assert!(2 * resolve::listing::MAX_SERIES <= CREDIT_BATCH_STATEMENTS);
 
 /// Fresh UUIDs for new rows.
 struct UuidIds;
@@ -223,6 +227,29 @@ fn link_event(listing: &resolve::Listing, event: &resolve::Event) -> LinkEvent {
     }
 }
 
+/// How long a stored listing's `observed_at` may lag before a rescan that
+/// changes nothing else still writes it.
+const OBSERVED_REFRESH: chrono::TimeDelta = chrono::TimeDelta::hours(24);
+
+/// True when a rescan of an otherwise unchanged listing must still write
+/// it: the store changed its title or categories, or `observed_at` is
+/// older than [`OBSERVED_REFRESH`] (or unreadable).
+fn listing_needs_refresh(
+    row: &store_listings::Model,
+    listing: &resolve::Listing,
+    now: chrono::DateTime<Utc>,
+) -> bool {
+    let stale = chrono::DateTime::parse_from_rfc3339(&row.observed_at).map_or(true, |seen| {
+        now.signed_duration_since(seen) > OBSERVED_REFRESH
+    });
+    row.title != listing.title
+        || listing
+            .categories
+            .as_ref()
+            .is_some_and(|c| row.categories.as_ref() != Some(c))
+        || stale
+}
+
 /// The batch parameters for `plan`.
 fn link_params(
     listing: &resolve::Listing,
@@ -351,10 +378,14 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
             position: i64::from(write.position),
         });
     }
+    // A work's series go in one batch: the snapshot treats any stored entry
+    // as the whole set, so they must never be part-written.
+    if batch.statement_count() > 0
+        && batch.statement_count() + 2 * plan.series.len() > CREDIT_BATCH_STATEMENTS
+    {
+        batches.push(std::mem::take(&mut batch));
+    }
     for write in &plan.series {
-        if batch.statement_count() + 2 > CREDIT_BATCH_STATEMENTS {
-            batches.push(std::mem::take(&mut batch));
-        }
         let name_key = write.entry.name_key();
         let series_id = derived_id("ser", &name_key);
         if !batch.series.iter().any(|s| s.id == series_id) {
@@ -509,7 +540,9 @@ impl LibraryStore {
         holding: &resolve::HoldingDraft,
     ) -> Result<resolve::Plan> {
         for _ in 0..LINK_ATTEMPTS {
-            let snapshot = self.listing_snapshot(listing, &holding.holder).await?;
+            let (snapshot, stored_row) = self
+                .listing_snapshot_and_row(listing, &holding.holder)
+                .await?;
             if let Some(missing) = snapshot.is_closed() {
                 return Err(LibraryError::Other(anyhow::anyhow!(
                     "library rows for listing {} reference a missing {missing}",
@@ -517,7 +550,10 @@ impl LibraryStore {
                 )));
             }
             let plan = resolve::resolve(listing, holding, &snapshot, &mut UuidIds);
-            if !plan.is_noop() || !plan.conflicts.is_empty() {
+            let refresh = stored_row
+                .as_ref()
+                .is_some_and(|row| listing_needs_refresh(row, listing, Utc::now()));
+            if !plan.is_noop() || !plan.conflicts.is_empty() || refresh {
                 let params = link_params(listing, &plan, &snapshot);
                 if self.run_link_listing(params).await? != atomic_status::OK {
                     continue;
@@ -567,11 +603,23 @@ impl LibraryStore {
 
     /// Reads the stored rows that bear on `listing`, as the resolver's
     /// [`resolve::Snapshot`] contract describes.
+    #[cfg(test)]
     async fn listing_snapshot(
         &self,
         listing: &resolve::Listing,
         holder: &resolve::Holder,
     ) -> Result<resolve::Snapshot> {
+        Ok(self.listing_snapshot_and_row(listing, holder).await?.0)
+    }
+
+    /// [`Self::listing_snapshot`], plus the stored listing row itself, whose
+    /// store metadata (title, categories, `observed_at`) the resolver does
+    /// not see.
+    async fn listing_snapshot_and_row(
+        &self,
+        listing: &resolve::Listing,
+        holder: &resolve::Holder,
+    ) -> Result<(resolve::Snapshot, Option<store_listings::Model>)> {
         let db = &self.db;
         let find_listing = |key: &resolve::ListingKey| {
             store_listings::Entity::find()
@@ -579,11 +627,11 @@ impl LibraryStore {
                 .filter(store_listings::Column::Marketplace.eq(key.marketplace.as_str()))
                 .filter(store_listings::Column::ProductId.eq(key.product_id.as_str()))
         };
-        let stored = find_listing(&listing.key)
+        let stored_row = find_listing(&listing.key)
             .one(db)
             .await
-            .map_err(LibraryError::Orm)?
-            .map(listing_row);
+            .map_err(LibraryError::Orm)?;
+        let stored = stored_row.clone().map(listing_row);
         let parent = match listing.parent_key() {
             Some(key) => find_listing(&key)
                 .one(db)
@@ -829,7 +877,7 @@ impl LibraryStore {
                 .map_err(LibraryError::Orm)?
         };
 
-        Ok(resolve::Snapshot {
+        let snapshot = resolve::Snapshot {
             listing: stored,
             parent_listing: parent,
             edition_identifiers: identifier_rows.into_iter().collect(),
@@ -841,7 +889,8 @@ impl LibraryStore {
             holding,
             credited: credited.into_iter().collect(),
             works_with_series,
-        })
+        };
+        Ok((snapshot, stored_row))
     }
 
     /// Loads a work by id, with its work-level credits and series.
@@ -1935,6 +1984,45 @@ mod store_tests {
     }
 
     #[tokio::test]
+    async fn a_rescan_refreshes_changed_store_metadata() {
+        let store = store().await;
+        let listing = resolve::Listing::from_draft(&dune("audible", "B001")).unwrap();
+        let first = store
+            .record_listing(&listing, &account("a1"))
+            .await
+            .unwrap();
+        let mut renamed = dune("audible", "B001");
+        renamed.title = "Dune (Unabridged)".into();
+        renamed.categories = Some("Science Fiction".into());
+        let renamed = resolve::Listing::from_draft(&renamed).unwrap();
+        store
+            .record_listing(&renamed, &account("a1"))
+            .await
+            .unwrap();
+        let row = store_listings::Entity::find_by_id(first.listing.id.clone())
+            .one(&store.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.title, "Dune (Unabridged)");
+        assert_eq!(row.categories.as_deref(), Some("Science Fiction"));
+
+        // An unchanged rescan only writes once `observed_at` is a day old.
+        let now = Utc::now();
+        assert!(!listing_needs_refresh(&row, &renamed, now));
+        assert!(listing_needs_refresh(
+            &row,
+            &renamed,
+            now + chrono::TimeDelta::hours(25)
+        ));
+        let unreadable = store_listings::Model {
+            observed_at: "not a time".into(),
+            ..row
+        };
+        assert!(listing_needs_refresh(&unreadable, &renamed, now));
+    }
+
+    #[tokio::test]
     async fn a_pin_to_a_removed_edition_does_not_block_the_listing() {
         use sea_orm::{ActiveModelTrait, ActiveValue::Set};
         let store = store().await;
@@ -2015,6 +2103,37 @@ mod store_tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].work_id, work);
+    }
+
+    #[test]
+    fn a_works_series_are_written_in_one_batch() {
+        let mut draft = dune("audible", "B001");
+        draft.credits = (0..20)
+            .map(|i| (format!("Cast Member {i}"), resolve::CreditRole::Cast, None))
+            .collect();
+        draft.series = (0..resolve::listing::MAX_SERIES)
+            .map(|i| (format!("Series {i}"), Some(i.to_string())))
+            .collect();
+        let listing = resolve::Listing::from_draft(&draft).unwrap();
+        let plan = resolve::resolve(
+            &listing,
+            &account("a1"),
+            &resolve::Snapshot::default(),
+            &mut UuidIds,
+        );
+        let batches = credit_batches(&plan);
+        let with_series: Vec<_> = batches
+            .iter()
+            .filter(|b| !b.series_entries.is_empty())
+            .collect();
+        assert_eq!(with_series.len(), 1);
+        assert_eq!(
+            with_series[0].series_entries.len(),
+            resolve::listing::MAX_SERIES
+        );
+        assert!(batches
+            .iter()
+            .all(|b| b.statement_count() <= CREDIT_BATCH_STATEMENTS));
     }
 
     #[test]

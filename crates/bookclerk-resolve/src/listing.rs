@@ -36,8 +36,10 @@ pub const MAX_TEXT_BYTES: usize = 4096;
 pub const MAX_IDENTIFIERS: usize = 12;
 /// Most credits one listing may carry.
 pub const MAX_CREDITS: usize = 128;
-/// Most series entries one listing may carry.
-pub const MAX_SERIES: usize = 16;
+/// Most series entries one listing may carry; small enough that a work's
+/// series and series entries are written in one credit batch, so they are
+/// never left part-written.
+pub const MAX_SERIES: usize = 12;
 
 /// What a store sells, keyed the way `store_listings` is.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
