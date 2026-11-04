@@ -1311,8 +1311,8 @@ of this repository's macOS jobs ran at the same time. One job per run asks
 for one macOS runner instead of three.
 
 The job runs when any of the three jobs is planned. It runs each planned
-check as its own step, and a step still runs after an earlier one failed,
-so one round shows every failure. It saves the macOS `debug` cache on
+check as its own step once setup succeeded, and a check still runs after
+an earlier check failed, so one round shows every failure. It saves the macOS `debug` cache on
 `main`, as `native-gateway` does on Windows. In `OS_LEG_JOBS` in
 [`scripts/ci_plan/plan.py`](../../scripts/ci_plan/plan.py), `CI Gate`
 expects the job whenever it expects any of the three.
@@ -1327,17 +1327,18 @@ the macOS checks are best effort:
 2. If the macOS job gets no runner again, `CI Gate` passes without it. A
    step in `CI Gate` runs
    `scripts/merge_queue_requeue.py --stranded-job` to check that the job
-   was cancelled with no runner and no step, that it carries the
-   not-acquired annotation, and that the run is a pull request run on
-   attempt 2 or later, or a merge group whose pull request has entered the
-   queue at least twice on its current head.
+   was cancelled with no runner and no step and carries the not-acquired
+   annotation, and that the same happened on the try before: the previous
+   attempt of a pull request run, or the pull request's previous merge
+   group, when it has entered the queue at least twice on its current
+   head. A first miss after a retry for another reason still fails.
 3. The gate prints a warning and a step-summary note that the macOS checks
    didn't run on that commit.
 
 A macOS job that ran and failed, or was cancelled after it started, always
 fails the gate. So does a stranded job on a `main` push or an OSV
 remediation run. The gate job reads the GitHub API with a read-only token
-(`actions`, `checks`, `issues` and `pull-requests`).
+(`actions`, `checks` and `issues`).
 
 ### Merge-queue re-enqueue
 

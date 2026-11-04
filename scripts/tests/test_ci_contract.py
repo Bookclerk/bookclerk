@@ -91,7 +91,13 @@ class WorkflowContractTests(unittest.TestCase):
         for step in runs:
             owner = CHECK_JOB[RUN_CHECK.search(step["run"]).group(1)]
             # Each leg runs when its owner is planned, after a failed leg too.
-            self.assertEqual(step["if"], f"${{{{ !cancelled() && needs.plan.outputs.job_{owner.replace('-', '_')} == 'true' }}}}")
+            want = f"!cancelled() && steps.setup.outcome == 'success' && needs.plan.outputs.job_{owner.replace('-', '_')} == 'true'"
+            self.assertEqual(step["if"], "${{ " + want + " }}")
+        # The setup marker follows every setup step and precedes every leg.
+        ids = [s.get("id") for s in job["steps"]]
+        setup = ids.index("setup")
+        self.assertNotIn("if", job["steps"][setup])
+        self.assertLess(setup, job["steps"].index(runs[0]))
 
     def test_gate_names_the_macos_job_for_its_stranded_step(self) -> None:
         steps = self.jobs["ci-gate"]["steps"]
@@ -388,7 +394,7 @@ class WorkflowContractTests(unittest.TestCase):
                 # Read-only, for the stranded-job step.
                 self.assertEqual(
                     other["permissions"],
-                    {"contents": "read", "actions": "read", "checks": "read", "issues": "read", "pull-requests": "read"},
+                    {"contents": "read", "actions": "read", "checks": "read", "issues": "read"},
                 )
             elif name != FAIL_FAST_JOB:
                 self.assertNotIn("permissions", other, name)

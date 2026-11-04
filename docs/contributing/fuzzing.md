@@ -247,7 +247,8 @@ The tests live in `scripts/tests/`, and each corpus beside them.
 
 - **Missing-runner recovery** (`queued_pr`, `pr_run_attempt`,
   `run_lineage`, `newer_run`, `stranded_jobs`, `not_acquired`, `pr_head`,
-  `enqueues_since_head`, `gate_run`, `stranded_job` and `gate_passed` in
+  `enqueues_since_head`, `gate_run`, `stranded_job`, `gate_passed` and
+  `previous_queue_run` in
   `scripts/merge_queue_requeue.py`). It reads GitHub API responses about
   a failed merge-group or pull request run, not pull request content, so
   it isn't an untrusted boundary. Its output decides whether a pull
@@ -278,8 +279,11 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     `merge_group` run of `ci.yml` in this repository with a non-empty head
     branch; a job is stranded only when exactly one job has its name (or
     `<caller> / <name>`) and it completed `cancelled` with no runner and
-    no steps; and the gate passed only when a job named `CI Gate` (or
-    `<caller> / CI Gate`) succeeded.
+    no steps; the gate passed only when a job named `CI Gate` (or
+    `<caller> / CI Gate`) succeeded; and a pull request's previous merge
+    group is the queue-branch run for that pull request with the largest
+    `run_number` below the current one, in a listing whose every entry has
+    an integer `id` and `run_number` and a string head branch.
 
 - **Mutation testing start commit** (`choose` in
   `scripts/mutation_base.py`). The nightly mutation workflows read the

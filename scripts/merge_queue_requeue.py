@@ -49,11 +49,13 @@ been retried:
 
 - the job ``NAME`` of the run's current attempt was cancelled without a
   runner or a step and carries the not-acquired annotation;
-- for a ``pull_request`` run, this is attempt 2 or later (the ``rerun``
-  job above re-ran it once);
+- for a ``pull_request`` run, this is attempt 2 or later and the same job
+  was stranded the same way on the attempt before (the ``rerun`` job
+  above re-ran it once);
 - for a ``merge_group`` run, the pull request already entered the queue at
-  least ``MIN_ENQUEUES_TO_PASS_STRANDED`` times on its current head (the
-  re-enqueue above retried it once).
+  least ``MIN_ENQUEUES_TO_PASS_STRANDED`` times on its current head and
+  the same job was stranded the same way in its previous merge-group run
+  (the re-enqueue above retried it once).
 
 Any other run (a ``main`` push, an OSV remediation run) never passes a
 stranded job.
@@ -184,7 +186,7 @@ def queued_pr(raw: bytes, repo: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def gate_run(raw: bytes, repo: str) -> tuple[str, str] | None:
+def gate_run(raw: bytes, repo: str) -> tuple[str, str, int] | None:
     """Reads the event and head branch of the CI run ``CI Gate`` belongs to.
 
     Args:
@@ -192,10 +194,11 @@ def gate_run(raw: bytes, repo: str) -> tuple[str, str] | None:
         repo: ``OWNER/NAME`` of this repository.
 
     Returns:
-        ``(event, head branch)`` when the run is a ``pull_request`` or
-        ``merge_group`` run of ``CI_WORKFLOW_PATH`` in ``repo`` with a
-        non-empty head branch; otherwise None. The run is still in
-        progress, since ``CI Gate`` is one of its jobs.
+        ``(event, head branch, run_number)`` when the run is a
+        ``pull_request`` or ``merge_group`` run of ``CI_WORKFLOW_PATH`` in
+        ``repo`` with a non-empty head branch and a ``run_number`` of at
+        least 1; otherwise None. The run is still in progress, since
+        ``CI Gate`` is one of its jobs.
     """
     run = _load(raw)
     if not isinstance(run, dict):
@@ -203,6 +206,7 @@ def gate_run(raw: bytes, repo: str) -> tuple[str, str] | None:
     base = run.get("repository")
     event = run.get("event")
     branch = run.get("head_branch")
+    number = run.get("run_number")
     if (
         event not in ("pull_request", "merge_group")
         or run.get("path") != CI_WORKFLOW_PATH
@@ -210,9 +214,11 @@ def gate_run(raw: bytes, repo: str) -> tuple[str, str] | None:
         or base.get("full_name") != repo
         or not isinstance(branch, str)
         or not branch
+        or not _is_int(number)
+        or number < 1
     ):
         return None
-    return event, branch
+    return event, branch, number
 
 
 def stranded_job(raw: bytes, name: str) -> int | None:
@@ -239,22 +245,50 @@ def stranded_job(raw: bytes, name: str) -> int | None:
         job_name = job.get("name")
         if not isinstance(job_name, str):
             return None
-        if job_name == name or job_name.endswith(" / " + name):
+        if _named(job_name, name):
             found.append(job)
     if len(found) != 1:
         return None
     job = found[0]
     job_id = job.get("id")
-    steps = job.get("steps")
-    if (
-        not _is_int(job_id)
-        or job.get("status") != "completed"
-        or job.get("conclusion") != "cancelled"
-        or job.get("runner_name")
-        or not (steps is None or steps == [])
-    ):
+    if not _is_int(job_id) or job.get("status") != "completed" or not _never_ran(job):
         return None
     return job_id
+
+
+def previous_queue_run(raw: bytes, pr: int, run_number: int) -> int | None:
+    """Finds the latest earlier merge-group CI run for one pull request.
+
+    Args:
+        raw: The JSON body of ``GET /repos/{repo}/actions/workflows/{file}/runs``
+            filtered to ``merge_group`` runs.
+        pr: The pull request the current merge group tests.
+        run_number: The current run's ``run_number``.
+
+    Returns:
+        The id of the run with the largest ``run_number`` below
+        ``run_number`` whose head branch is a queue branch for ``pr``;
+        None when there is none or the body is not a run listing.
+    """
+    body = _load(raw)
+    runs = body.get("workflow_runs") if isinstance(body, dict) else None
+    if not isinstance(runs, list):
+        return None
+    best: tuple[int, int] | None = None
+    for run in runs:
+        if not isinstance(run, dict):
+            return None
+        number = run.get("run_number")
+        run_id = run.get("id")
+        branch = run.get("head_branch")
+        if not _is_int(number) or not _is_int(run_id) or not isinstance(branch, str):
+            return None
+        match = QUEUE_BRANCH_RE.fullmatch(branch)
+        if match is None or int(match.group(1)) != pr or number >= run_number:
+            continue
+        if best is None or number > best[0]:
+            best = (number, run_id)
+    return best[1] if best is not None else None
 
 
 def pr_run_attempt(raw: bytes, repo: str) -> int | None:
@@ -349,6 +383,33 @@ def newer_run(raw: bytes, head_repo: str, run_number: int) -> bool | None:
     return newer
 
 
+def _named(job_name: str, name: str) -> bool:
+    """Whether a job's name is ``name``, also behind a caller's prefix.
+
+    Args:
+        job_name: The name the jobs listing shows; a called run prefixes it
+            with ``<caller> / ``.
+        name: The job's own name.
+
+    Returns:
+        True for ``name`` and ``<caller> / name``.
+    """
+    return job_name == name or job_name.endswith(" / " + name)
+
+
+def _never_ran(job: dict) -> bool:
+    """Whether a listed job was cancelled before it got a runner.
+
+    Args:
+        job: One entry of a jobs listing.
+
+    Returns:
+        True when it concluded ``cancelled`` with no runner and no steps.
+    """
+    steps = job.get("steps")
+    return job.get("conclusion") == "cancelled" and not job.get("runner_name") and (steps is None or steps == [])
+
+
 def _is_follower(name: str) -> bool:
     """Whether a job is one that only reports or reacts to other jobs.
 
@@ -358,7 +419,7 @@ def _is_follower(name: str) -> bool:
     Returns:
         True for ``CI Gate`` and ``merge-queue fail-fast``.
     """
-    return any(name == job or name.endswith(" / " + job) for job in FOLLOWER_JOBS)
+    return any(_named(name, job) for job in FOLLOWER_JOBS)
 
 
 def stranded_jobs(raw: bytes) -> list[int] | None:
@@ -389,8 +450,7 @@ def stranded_jobs(raw: bytes) -> list[int] | None:
             return None
         if conclusion in ("success", "skipped") or _is_follower(name):
             continue
-        steps = job.get("steps")
-        if conclusion == "cancelled" and not job.get("runner_name") and (steps is None or steps == []):
+        if _never_ran(job):
             stranded.append(job_id)
             continue
         return None
@@ -415,7 +475,7 @@ def gate_passed(raw: bytes) -> bool:
     return any(
         isinstance(job, dict)
         and isinstance(job.get("name"), str)
-        and (job["name"] == "CI Gate" or job["name"].endswith(" / CI Gate"))
+        and _named(job["name"], "CI Gate")
         and job.get("conclusion") == "success"
         for job in jobs
     )
@@ -616,6 +676,30 @@ def decide(repo: str, run_id: int, gh: Gh) -> tuple[tuple[int, str] | None, str]
     return (pr, head), f"#{pr} left the queue only because GitHub never gave run {run_id} a runner; enqueueing it again."
 
 
+def _stranded_with_annotation(repo: str, jobs_url: str, name: str, gh: Gh) -> int | None:
+    """Reads a jobs listing and returns the job ``name`` if it never got a runner.
+
+    Args:
+        repo: ``OWNER/NAME`` of this repository.
+        jobs_url: The jobs listing to read, relative to the API root.
+        name: The job's name.
+        gh: Runs ``gh``.
+
+    Returns:
+        The job's id when it was cancelled with no runner and no step and
+        carries GitHub's not-acquired annotation; otherwise None.
+
+    Raises:
+        subprocess.CalledProcessError: When a GitHub API call fails.
+    """
+    job_id = stranded_job(gh(["api", jobs_url]), name)
+    if job_id is None:
+        return None
+    if not not_acquired(gh(["api", f"repos/{repo}/check-runs/{job_id}/annotations"])):
+        return None
+    return job_id
+
+
 def decide_stranded(repo: str, run_id: int, attempt: int, name: str, gh: Gh) -> tuple[bool, str]:
     """Decides whether a stranded OS leg job may pass ``CI Gate``.
 
@@ -627,8 +711,10 @@ def decide_stranded(repo: str, run_id: int, attempt: int, name: str, gh: Gh) -> 
         gh: Runs ``gh`` (``run_gh`` outside tests).
 
     Returns:
-        ``(True, reason)`` when the job never got a runner and was already
-        retried once, else ``(False, reason)``; ``reason`` is one sentence.
+        ``(True, reason)`` when the job never got a runner now and also
+        never got one on the try before (the previous attempt of a pull
+        request run, or the pull request's previous merge group on the
+        same head), else ``(False, reason)``; ``reason`` is one sentence.
     """
     if attempt < 1:
         return False, f"run {run_id} has no attempt {attempt}."
@@ -636,16 +722,16 @@ def decide_stranded(repo: str, run_id: int, attempt: int, name: str, gh: Gh) -> 
         context = gate_run(gh(["api", f"repos/{repo}/actions/runs/{run_id}"]), repo)
         if context is None:
             return False, f"run {run_id} is not a pull request or merge-group CI run of {repo}."
-        event, branch = context
-        jobs = gh(["api", f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"])
-        job_id = stranded_job(jobs, name)
-        if job_id is None:
-            return False, f"{name} in run {run_id} ran, is missing, or was cancelled after it started."
-        if not not_acquired(gh(["api", f"repos/{repo}/check-runs/{job_id}/annotations"])):
-            return False, f"{name} in run {run_id} was cancelled without GitHub's not-acquired annotation."
+        event, branch, number = context
+        now = f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"
+        if _stranded_with_annotation(repo, now, name, gh) is None:
+            return False, f"{name} in run {run_id} ran, is missing, or was cancelled without GitHub's not-acquired annotation."
         if event == "pull_request":
             if attempt < MIN_PR_ATTEMPT_TO_PASS_STRANDED:
                 return False, f"{name} never got a runner on attempt {attempt}; it is re-run once first."
+            before = f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt - 1}/jobs?per_page=100"
+            if _stranded_with_annotation(repo, before, name, gh) is None:
+                return False, f"{name} got a runner on attempt {attempt - 1}; this is its first miss, so it is re-run once first."
         else:
             match = QUEUE_BRANCH_RE.fullmatch(branch)
             if match is None:
@@ -657,6 +743,14 @@ def decide_stranded(repo: str, run_id: int, attempt: int, name: str, gh: Gh) -> 
                 return False, f"could not read the timeline of #{pr}."
             if enqueues < MIN_ENQUEUES_TO_PASS_STRANDED:
                 return False, f"{name} never got a runner on #{pr}'s first merge group; it is re-enqueued once first."
+            workflow = CI_WORKFLOW_PATH.rsplit("/", 1)[-1]
+            listing = gh(["api", f"repos/{repo}/actions/workflows/{workflow}/runs?event=merge_group&per_page=100"])
+            previous = previous_queue_run(listing, pr, number)
+            if previous is None:
+                return False, f"found no earlier merge group of #{pr}."
+            before = f"repos/{repo}/actions/runs/{previous}/jobs?per_page=100"
+            if _stranded_with_annotation(repo, before, name, gh) is None:
+                return False, f"{name} got a runner in #{pr}'s previous merge group; this is its first miss there."
     except subprocess.CalledProcessError:
         return False, "a GitHub API call failed."
     return True, f"{name} never got a runner again after a retry; CI Gate passes without its checks."
@@ -701,6 +795,9 @@ def main(argv: Sequence[str] | None = None, gh: Gh = run_gh) -> int:
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo) or args.run_id <= 0:
         print("merge_queue_requeue: bad --repo or --run-id", file=sys.stderr)
+        return 2
+    if args.stranded_job is None and args.run_attempt:
+        print("merge_queue_requeue: --run-attempt goes with --stranded-job", file=sys.stderr)
         return 2
     if args.stranded_job is not None:
         if not args.stranded_job or args.run_attempt <= 0:

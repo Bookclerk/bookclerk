@@ -929,7 +929,8 @@ jobs:
   macos:
     name: macOS (sandbox, gateway, tray)
     needs: plan
-    timeout-minutes: 90
+    # The three legs run one after another, so they share one budget.
+    timeout-minutes: 150
     if: >-
       needs.plan.outputs.job_confinement == 'true' ||
       needs.plan.outputs.job_native_gateway == 'true' ||
@@ -996,16 +997,22 @@ jobs:
         if: needs.plan.outputs.job_native_gateway == 'true' && env.CI_SAVED_CACHE_CURRENT != 'true'
         run: brew install capnp
 
+      # Runs only when every setup step above succeeded; the legs below
+      # need it, so a failed setup step doesn't start them.
+      - name: Setup done
+        id: setup
+        run: echo "setup done"
+
       - name: Confinement clippy + enforcement tests
-        if: ${{ !cancelled() && needs.plan.outputs.job_confinement == 'true' }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && needs.plan.outputs.job_confinement == 'true' }}
         run: python scripts/ci-exec.py run confinement
 
       - name: Native gateway smoke + workerd lib tests
-        if: ${{ !cancelled() && needs.plan.outputs.job_native_gateway == 'true' }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && needs.plan.outputs.job_native_gateway == 'true' }}
         run: python scripts/ci-exec.py run native_gateway
 
       - name: Tray clippy + tests
-        if: ${{ !cancelled() && needs.plan.outputs.job_tray == 'true' }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && needs.plan.outputs.job_tray == 'true' }}
         run: python scripts/ci-exec.py run tray
 
   postgres:
@@ -1311,12 +1318,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # The stranded-job step: this run's jobs, the macOS job's
+      # The stranded-job step: CI runs and their jobs, the macOS job's
       # annotations, and a merge group's pull request timeline.
       actions: read
       checks: read
       issues: read
-      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
