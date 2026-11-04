@@ -23,6 +23,17 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 6] = [
     Entrypoint::Oidc,
 ];
 
+/// Entrypoints the host loads into their own registry (sources,
+/// destinations, database adapters) rather than the integration registry.
+///
+/// Crons are rejected beside these, and job triggers beside them stay on
+/// that registry's session instead of making the plugin an integration.
+pub const REGISTRY_ENTRYPOINTS: [Entrypoint; 3] = [
+    Entrypoint::Storefront,
+    Entrypoint::Storage,
+    Entrypoint::DatabaseAdapter,
+];
+
 /// Handler family an [`Entrypoint`] belongs to.
 ///
 /// # Returns
@@ -1161,18 +1172,12 @@ impl PluginManifest {
         !self.triggers.crons.is_empty()
     }
 
-    /// True when the plugin declares a `storefront`, `storage` or
-    /// `databaseAdapter` entrypoint, each of which the host loads into its
-    /// own registry rather than the integration registry.
+    /// True when the plugin declares one of the [`REGISTRY_ENTRYPOINTS`].
     #[must_use]
     pub fn has_registry_entrypoint(&self) -> bool {
-        [
-            Entrypoint::Storefront,
-            Entrypoint::Storage,
-            Entrypoint::DatabaseAdapter,
-        ]
-        .into_iter()
-        .any(|entrypoint| self.has_entrypoint(entrypoint))
+        REGISTRY_ENTRYPOINTS
+            .into_iter()
+            .any(|entrypoint| self.has_entrypoint(entrypoint))
     }
 
     /// True when the plugin declares any publishable event type.
@@ -1706,11 +1711,7 @@ impl PluginManifest {
         // spawns a storefront, storage or database adapter in its own
         // registry instead, so a schedule there would never fire.
         if self.runs_crons() {
-            for entrypoint in [
-                Entrypoint::Storefront,
-                Entrypoint::Storage,
-                Entrypoint::DatabaseAdapter,
-            ] {
+            for entrypoint in REGISTRY_ENTRYPOINTS {
                 if self.has_entrypoint(entrypoint) {
                     return Err(Error::message(format!(
                         "plugin.toml: `[triggers].crons` cannot be combined with the `{}` \
