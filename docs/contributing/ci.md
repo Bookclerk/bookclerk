@@ -858,6 +858,10 @@ beside its coverage report and CI Gate runs
 [`scripts/contract_coverage.py`](../../scripts/contract_coverage.py) over
 them.
 
+CI Gate writes the only Web API contract report of a run. The plan job's
+tests of the script run it too, but neither they nor any other script test
+in that job write to the job's step summary.
+
 The step summary shows how many of the declared responses (route, status
 and media type) the tests observed, in all and (in a fold) per tag, and lists every
 disagreement: a status or media type the route does not declare, a body
