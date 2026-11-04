@@ -2071,6 +2071,9 @@ class PluginCapabilities(TypedDict):
         queueConsumers: Queues the default entrypoint consumes (`queue(batch)` trigger).
         queueProducers: Queues the guest may send to through its `[[queues.producers]]`
             bindings.
+        crons: Five-field UTC cron schedules the default entrypoint handles
+            (`scheduled(controller)` trigger, `[triggers] crons`), normalized to single
+            spaces.
     """
 
     entrypoints: list[Entrypoint]
@@ -2081,6 +2084,7 @@ class PluginCapabilities(TypedDict):
     bindings: list[str]
     queueConsumers: list[str]
     queueProducers: list[str]
+    crons: list[str]
 
 
 class Brand(TypedDict):

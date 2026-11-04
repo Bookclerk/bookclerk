@@ -1107,6 +1107,10 @@ struct PluginCapabilities {
   queueConsumers @6 :List(Text);
   # Queues the guest may send to through its `[[queues.producers]]` bindings.
   queueProducers @7 :List(Text);
+  # Five-field UTC cron schedules the default entrypoint handles
+  # (`scheduled(controller)` trigger, `[triggers] crons`), normalized to
+  # single spaces.
+  crons @8 :List(Text);
 }
 
 # Portal Accounts connect mode for storefronts.

@@ -258,7 +258,7 @@ def _write_plugin_describe(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(1, v["displayName"])
     s.set_text_list(2, v["rpcFeatures"])
     _scalar_limits_codec.write(s.init_struct(3, 2, 0), v["scalarLimits"], caps)
-    _plugin_capabilities_codec.write(s.init_struct(4, 0, 8), v["capabilities"], caps)
+    _plugin_capabilities_codec.write(s.init_struct(4, 0, 9), v["capabilities"], caps)
     s.set_u16(2, _ord(A.PORTAL_AUTH_MODES, v["portalAuthMode"], "PortalAuthMode"))
     if v.get("passwordEnvVar") is not None:
         s.set_text(5, v["passwordEnvVar"])
@@ -278,7 +278,7 @@ def _read_plugin_describe(s: _StructReader, caps: _CapTable) -> Any:
         "displayName": s.get_text(1),
         "rpcFeatures": s.get_text_list(2),
         "scalarLimits": _scalar_limits_codec.read(s.get_struct(3, 2, 0), caps),
-        "capabilities": _plugin_capabilities_codec.read(s.get_struct(4, 0, 8), caps),
+        "capabilities": _plugin_capabilities_codec.read(s.get_struct(4, 0, 9), caps),
         "portalAuthMode": _from_ord(A.PORTAL_AUTH_MODES, s.get_u16(2), "PortalAuthMode"),
         "aliases": s.get_text_list(6),
         "sortKey": s.get_u32(2),
@@ -1434,6 +1434,7 @@ def _write_plugin_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> None
     s.set_text_list(5, v["bindings"])
     s.set_text_list(6, v["queueConsumers"])
     s.set_text_list(7, v["queueProducers"])
+    s.set_text_list(8, v["crons"])
 
 
 def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
@@ -1446,11 +1447,12 @@ def _read_plugin_capabilities(s: _StructReader, caps: _CapTable) -> Any:
         "bindings": s.get_text_list(5),
         "queueConsumers": s.get_text_list(6),
         "queueProducers": s.get_text_list(7),
+        "crons": s.get_text_list(8),
     }
 
 
-_plugin_capabilities_codec = _Codec(0, 8, _write_plugin_capabilities, _read_plugin_capabilities)
-"""Wire codec for ``PluginCapabilities`` (0 data words, 8 pointers)."""
+_plugin_capabilities_codec = _Codec(0, 9, _write_plugin_capabilities, _read_plugin_capabilities)
+"""Wire codec for ``PluginCapabilities`` (0 data words, 9 pointers)."""
 
 
 def _write_brand(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

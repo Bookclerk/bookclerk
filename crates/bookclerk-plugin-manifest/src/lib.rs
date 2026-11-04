@@ -19,6 +19,7 @@
 //!
 //! | Module | Responsibility |
 //! | --- | --- |
+//! | [`cron`] | Five-field UTC cron schedules for `[triggers] crons` |
 //! | [`egress`] | Hostname allowlist policy, IDNA normalization, Pyodide hosts |
 //! | [`error`] | Parse / validate error type |
 //! | [`fmt`] | Canonical TOML serialization for `fmt --check` |
@@ -49,6 +50,7 @@
 //! ```
 
 pub mod address;
+pub mod cron;
 pub mod egress;
 pub mod error;
 pub mod fmt;
@@ -62,6 +64,7 @@ pub use address::{
     workerd_network_allow, CidrGrant,
 };
 
+pub use cron::{CronError, CronSchedule, UnixMinute, MAX_CRON_SOURCE_BYTES};
 pub use egress::{
     consent_domains_for, host_matches, manifest_needs_python, normalize_domain_pattern,
     normalize_hostname, with_python_runtime_hosts, EgressPolicy, TcpGrant, DEFAULT_MAX_REDIRECTS,

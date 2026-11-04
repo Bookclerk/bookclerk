@@ -1527,7 +1527,7 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
       ScalarLimitsCodec.write(s.initStruct(3, 2, 0), v.scalarLimits, caps);
     }
     if (v.capabilities != null) {
-      PluginCapabilitiesCodec.write(s.initStruct(4, 0, 8), v.capabilities, caps);
+      PluginCapabilitiesCodec.write(s.initStruct(4, 0, 9), v.capabilities, caps);
     }
     s.setUint16(2, ord(A.PORTAL_AUTH_MODES, v.portalAuthMode ?? A.PORTAL_AUTH_MODES[0]!, "PortalAuthMode"));
     if (v.passwordEnvVar !== undefined) {
@@ -1556,7 +1556,7 @@ export const PluginDescribeCodec: StructCodec<T.PluginDescribe> = {
       displayName: s.getText(1),
       rpcFeatures: s.getTextList(2),
       scalarLimits: ScalarLimitsCodec.read(s.getStruct(3, 2, 0), caps),
-      capabilities: PluginCapabilitiesCodec.read(s.getStruct(4, 0, 8), caps),
+      capabilities: PluginCapabilitiesCodec.read(s.getStruct(4, 0, 9), caps),
       portalAuthMode: fromOrd(A.PORTAL_AUTH_MODES, s.getUint16(2), "PortalAuthMode"),
       aliases: s.getTextList(6),
       sortKey: s.getUint32(2),
@@ -3170,13 +3170,13 @@ export const EventConsumerSpecCodec: StructCodec<T.EventConsumerSpec> = {
 };
 
 /**
- * Wire codec for `PluginCapabilities` (0 data words, 8 pointers).
+ * Wire codec for `PluginCapabilities` (0 data words, 9 pointers).
  *
  * @internal
  */
 export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
   dataWords: 0,
-  pointerCount: 8,
+  pointerCount: 9,
   write(s, v, caps) {
     s.setUint16List(0, (v.entrypoints ?? []).map((v) => ord(A.ENTRYPOINTS, v, "Entrypoint")));
     {
@@ -3192,6 +3192,7 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
     s.setTextList(5, v.bindings ?? []);
     s.setTextList(6, v.queueConsumers ?? []);
     s.setTextList(7, v.queueProducers ?? []);
+    s.setTextList(8, v.crons ?? []);
   },
   read(s, caps) {
     return {
@@ -3203,6 +3204,7 @@ export const PluginCapabilitiesCodec: StructCodec<T.PluginCapabilities> = {
       bindings: s.getTextList(5),
       queueConsumers: s.getTextList(6),
       queueProducers: s.getTextList(7),
+      crons: s.getTextList(8),
     };
   },
 };

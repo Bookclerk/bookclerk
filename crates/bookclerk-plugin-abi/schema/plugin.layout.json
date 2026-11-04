@@ -7691,7 +7691,7 @@
       "name": "PluginCapabilities",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 8,
+      "pointerCount": 9,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -7792,6 +7792,18 @@
             }
           },
           "offset": 7
+        },
+        {
+          "name": "crons",
+          "codeOrder": 8,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 8
         }
       ]
     },

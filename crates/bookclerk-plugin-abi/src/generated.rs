@@ -496,6 +496,11 @@ pub struct PluginCapabilities {
     /// Queues the guest may send to through its `\[\[queues.producers\]\]` bindings.
     #[serde(default)]
     pub queue_producers: Vec<String>,
+    /// Five-field UTC cron schedules the default entrypoint handles
+    /// (`scheduled(controller)` trigger, `\[triggers\] crons`), normalized to
+    /// single spaces.
+    #[serde(default)]
+    pub crons: Vec<String>,
 }
 
 /// Portal brand crossing the RPC boundary. Distinct from `plugin.toml`
@@ -1885,6 +1890,12 @@ pub fn write_plugin_capabilities(
             items.set(list_len(i)?, item);
         }
     }
+    {
+        let mut items = b.reborrow().init_crons(list_len(v.crons.len())?);
+        for (i, item) in v.crons.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
     Ok(())
 }
 
@@ -1913,6 +1924,7 @@ pub fn read_plugin_capabilities(
         bindings: read_text_list(r.get_bindings()?)?,
         queue_consumers: read_text_list(r.get_queue_consumers()?)?,
         queue_producers: read_text_list(r.get_queue_producers()?)?,
+        crons: read_text_list(r.get_crons()?)?,
     })
 }
 

@@ -1186,6 +1186,12 @@ export interface PluginCapabilities {
   queueConsumers: string[];
   /** Queues the guest may send to through its `[[queues.producers]]` bindings. */
   queueProducers: string[];
+  /**
+   * Five-field UTC cron schedules the default entrypoint handles
+   * (`scheduled(controller)` trigger, `[triggers] crons`), normalized to
+   * single spaces.
+   */
+  crons: string[];
 }
 
 /**

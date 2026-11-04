@@ -194,6 +194,18 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "crons": {
+          "type": "array",
+          "description": "Five-field UTC cron schedules (minute hour day-of-month month day-of-week) for the default entrypoint's scheduled(controller) handler, as in Workers. Values, ranges, lists, */step and JAN-DEC / SUN-SAT names; no L, W, # or @macros. At most 8, no duplicates.",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 9,
+            "maxLength": 128,
+            "pattern": "^\\s*\\S+(\\s+\\S+){4}\\s*$"
+          }
+        },
         "jobs": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
