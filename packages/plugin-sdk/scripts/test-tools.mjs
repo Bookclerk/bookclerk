@@ -94,8 +94,7 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
     run(["fmt", target], true, "wrote");
     const gold = fs.readFileSync(path.join(fixtures, "fmt-full/plugin.fmt.toml"), "utf8");
     if (fs.readFileSync(target, "utf8") !== gold) {
-      console.error("FAIL fmt-full: fmt output differs from plugin.fmt.toml");
-      process.exit(1);
+      throw new Error("FAIL fmt-full: fmt output differs from plugin.fmt.toml");
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

@@ -431,7 +431,7 @@ def test_fmt_check_gold(name):
 
 
 @pytest.mark.parametrize("name", FMT_GOLDS)
-def test_format_manifest_matches_gold(name):
+def test_format_manifest_matches_gold(name: str) -> None:
     import tomllib
 
     source = (FIXTURES / name / "plugin.toml").read_text(encoding="utf-8")
@@ -439,7 +439,7 @@ def test_format_manifest_matches_gold(name):
     assert format_manifest(tomllib.loads(source)) == gold
 
 
-def test_fmt_rewrites_to_gold(tmp_path: Path):
+def test_fmt_rewrites_to_gold(tmp_path: Path) -> None:
     target = tmp_path / "plugin.toml"
     shutil.copy(FIXTURES / "fmt-full" / "plugin.toml", target)
     assert "wrote" in fmt_plugin_toml(target, check_only=False)
@@ -448,7 +448,7 @@ def test_fmt_rewrites_to_gold(tmp_path: Path):
     assert "ok" in fmt_plugin_toml(target, check_only=True)
 
 
-def test_fmt_check_rejects_unformatted():
+def test_fmt_check_rejects_unformatted() -> None:
     with pytest.raises(ValueError, match="would reformat"):
         fmt_plugin_toml(FIXTURES / "fmt-full" / "plugin.toml", check_only=True)
 
@@ -1142,17 +1142,18 @@ def test_package_native_archive_layout_and_checksum(tmp_path: Path):
 
 
 def test_package_native_replaces_its_own_checksum_line(tmp_path: Path):
+    import hashlib
+
     plugin = _native_plugin(tmp_path)
     out = tmp_path / "dist"
     out.mkdir()
     (out / "SHA256SUMS").write_text("abc  other.tar.gz\n\n", encoding="utf-8")
-    first = package_plugin(plugin, out)
-    (plugin / "echo-tools").write_bytes(b"rebuilt")
     package_plugin(plugin, out)
+    (plugin / "echo-tools").write_bytes(b"rebuilt")
+    archive = package_plugin(plugin, out)
     lines = (out / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
-    assert lines[0] == "abc  other.tar.gz"
-    assert len(lines) == 2
-    assert lines[1].endswith(f"  {first.name}")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert lines == ["abc  other.tar.gz", f"{digest}  {archive.name}"]
 
 
 def test_package_native_reuses_a_stale_staging_dir(tmp_path: Path):

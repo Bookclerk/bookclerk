@@ -353,6 +353,20 @@ fn fmt_full_matches_gold() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(std::fs::read_to_string(&target).expect("read output"), gold);
+
+    let gold_check = bookclerk_plugin()
+        .args([
+            "fmt",
+            "--check",
+            fixture.join("plugin.fmt.toml").to_str().unwrap(),
+        ])
+        .output()
+        .expect("run fmt --check on the gold");
+    assert!(
+        gold_check.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&gold_check.stderr)
+    );
 }
 
 #[test]
