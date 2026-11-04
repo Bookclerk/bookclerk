@@ -179,6 +179,12 @@ The daemon APIs behind it:
 | `GET` | `/api/plugins/{id}/consent` | Request surface, `covered`, optional `brand` / `limits` |
 | `POST` | `/api/plugins/{id}/consent` | `{ "approve": true, "grant"?: { … } }`; omit `grant` for the full request |
 
+A `grant` override's `bindings` may keep or drop the tokens the consent
+request lists for manifest rows: `database:<NAME>`, `queue:<BINDING>`,
+`queue_consumer:<queue>` and `cron:<schedule>`. Each one must match a
+token in the request exactly; one the manifest doesn't declare is
+rejected. A dropped token isn't granted.
+
 ### Approving on the command line
 
 The CLI always approves the full request:

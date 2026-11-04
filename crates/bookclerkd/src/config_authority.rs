@@ -3470,6 +3470,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn daemon_reconcile_registers_a_job_trigger_storage_plugin_as_a_destination() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
+        use bookclerk_config::Isolation;
+        use bookclerk_library::control_plane::{
+            bootstrap_control_plane, create_plugin_instance, ensure_plugin_deployment,
+            import_instance_config_if_absent, load_observation, ConfigActor, DeploymentStatus,
+            DesiredState, PluginInstanceConfigV1, SettingValue,
+        };
+
+        let files = tempfile::tempdir().expect("files");
+        let files_path = files.path();
+        std::fs::write(files_path.join("config.toml"), "").unwrap();
+        // `local` declares `[triggers] jobs = ["stream_copy"]` beside its
+        // `storage` entrypoint; that must not route it to the integration
+        // registry, where `run_plugin_copy` and acquire can't reach it.
+        let toml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../bookclerk-plugins/platform/destination-local/plugin.toml");
+        let plugin_key = stage_plugin_package(
+            files_path,
+            "local",
+            &toml,
+            "bookclerk-plugin-destination-local",
+            "output",
+            "local",
+            "deny",
+        );
+
+        let db = bookclerk_plugin_database_sqlite::open(&files_path.join("library.db"))
+            .await
+            .expect("sqlite");
+        bookclerk_library::apply_host_schema(&db)
+            .await
+            .expect("schema");
+        let store = bookclerk_library::LibraryStore::from_connection(db);
+        let scratch = files_path.join("cache");
+        let session = bootstrap_control_plane(
+            &store,
+            files_path,
+            &scratch,
+            None,
+            &bookclerk_config::Config::default(),
+        )
+        .await
+        .expect("bootstrap");
+        let actor = ConfigActor::Bootstrap;
+        let instance = create_plugin_instance(&store, &actor, &plugin_key, "")
+            .await
+            .expect("instance");
+        let mut settings = BTreeMap::new();
+        settings.insert(
+            "root".into(),
+            SettingValue::String(files_path.join("out").display().to_string()),
+        );
+        import_instance_config_if_absent(
+            &store,
+            &actor,
+            &instance.id,
+            &ga_schema(&toml),
+            &PluginInstanceConfigV1 {
+                settings,
+                secret_refs: Vec::new(),
+            },
+            "import-daemon-local",
+        )
+        .await
+        .expect("import");
+        let toml_text = std::fs::read_to_string(&toml).unwrap();
+        let manifest = bookclerk_plugin_host::PluginManifest::parse(&toml_text).unwrap();
+        assert!(manifest.runs_jobs());
+        let mut grant = bookclerk_plugin_host::consent_request_alias(&manifest);
+        grant.plugin_key = plugin_key;
+        let mut grants = bookclerk_plugin_host::PluginGrantStore::default();
+        grants.upsert(grant);
+        grants.save(files_path).unwrap();
+        let deployment = ensure_plugin_deployment(
+            &store,
+            &actor,
+            &instance.id,
+            &session.node.node_id,
+            DesiredState::Present,
+        )
+        .await
+        .expect("deployment");
+
+        let mut config = Config::load(
+            Some(files_path.to_path_buf()),
+            Some(files_path.join("config.toml")),
+        )
+        .unwrap();
+        config.plugins.isolation = Isolation::Off;
+        let state = control_plane_test_state(store.clone(), config);
+        super::reconcile_deployments(&state)
+            .await
+            .expect("daemon reconcile");
+
+        let obs = load_observation(&store, &deployment.deployment_id, &session.node.node_id)
+            .await
+            .unwrap()
+            .expect("observation");
+        assert_eq!(obs.status, DeploymentStatus::Healthy, "{}", obs.detail);
+        state
+            .destinations
+            .read()
+            .await
+            .require_plugin_session("local", bookclerk_plugin_host::OPERATOR_ACCOUNT)
+            .expect("the storage guest is registered as a destination");
+        assert!(
+            state.integrations.read().await.all().is_empty(),
+            "a storage guest with job triggers is not an integration"
+        );
+    }
+
+    #[tokio::test]
     async fn daemon_reconcile_installs_and_runs_a_local_archive() {
         let _dek = crate::auth::tests::process_dek_lock().await;
         use std::collections::BTreeMap;

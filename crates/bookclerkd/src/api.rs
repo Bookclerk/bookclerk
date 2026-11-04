@@ -837,8 +837,14 @@ struct PluginGrantOverride {
     /// Override undeclared-public-redirect permission when set.
     #[schema(example = false)]
     allow_undeclared_public_redirects: Option<bool>,
-    /// Override approved host bindings when set.
-    #[schema(example = json!(["config", "secrets"]))]
+    /// Override approved bindings when set.
+    ///
+    /// Entries are host binding names (`config`, `secrets`, `plugin_kv`,
+    /// `work_fs`, `oauth`) and the manifest tokens the consent request lists
+    /// (`database:<NAME>`, `queue:<BINDING>`, `queue_consumer:<queue>`,
+    /// `cron:<schedule>`). A manifest token must match one in the request
+    /// exactly; leaving one out narrows the grant.
+    #[schema(example = json!(["config", "secrets", "queue:NOTIFY", "queue_consumer:jobs"]))]
     bindings: Option<Vec<String>>,
     /// Override compatibility flags when set.
     #[schema(example = json!(["nodejs_compat"]))]

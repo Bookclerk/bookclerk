@@ -30576,10 +30576,12 @@
             "items": {
               "type": "string"
             },
-            "description": "Override approved host bindings when set.",
+            "description": "Override approved bindings when set.\n\nEntries are host binding names (`config`, `secrets`, `plugin_kv`,\n`work_fs`, `oauth`) and the manifest tokens the consent request lists\n(`database:<NAME>`, `queue:<BINDING>`, `queue_consumer:<queue>`,\n`cron:<schedule>`). A manifest token must match one in the request\nexactly; leaving one out narrows the grant.",
             "example": [
               "config",
-              "secrets"
+              "secrets",
+              "queue:NOTIFY",
+              "queue_consumer:jobs"
             ]
           },
           "compatibilityFlags": {
