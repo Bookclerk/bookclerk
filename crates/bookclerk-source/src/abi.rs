@@ -489,6 +489,39 @@ impl DownloadOptions {
     }
 }
 
+/// The title a scan record describes: its flat row and its listing.
+///
+/// The listing is `None` when the record fails listing validation (the
+/// flat row is still stored and its own listing derived from it); see
+/// [`scan_book_to_new`] for when no title is returned at all.
+///
+/// # Arguments
+///
+/// * `plugin_id` - The plugin that produced the record; it owns the listing.
+/// * `book` - The scan record as the guest returned it.
+#[must_use]
+pub fn scanned_title(
+    plugin_id: &str,
+    book: abi::ScanBook,
+) -> Option<bookclerk_library::ScannedTitle> {
+    let mut draft = crate::listing::scan_book_draft(&book);
+    draft.plugin_key = plugin_id.to_string();
+    let listing = match bookclerk_resolve::Listing::from_draft(&draft) {
+        Ok(listing) => Some(listing),
+        Err(err) => {
+            tracing::warn!(
+                plugin = plugin_id,
+                product_id = %book.product_id,
+                error = %err,
+                "scan record is not a valid listing; using its flat row"
+            );
+            None
+        }
+    };
+    let book = scan_book_to_new(plugin_id, book)?;
+    Some(bookclerk_library::ScannedTitle { book, listing })
+}
+
 /// Maps a guest scan row onto the flat [`NewBook`] row the library stores
 /// until it keeps works, expressions and editions, forcing `source` to the
 /// plugin id so a guest can never claim another storefront's rows. The

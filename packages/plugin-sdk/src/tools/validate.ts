@@ -188,10 +188,16 @@ function validateQueueName(field: string, name: unknown): void {
 
 /**
  * Domain event types only the host emits (`book_acquired` is written by the
- * acquire pipeline once a source's acquire handler returns). Plugins consume
- * them but cannot declare them under `[[events.producers]]`.
+ * acquire pipeline once a source's acquire handler returns; `edition_linked`,
+ * `edition_updated` and `holding_added` by the library model resolver).
+ * Plugins consume them but cannot declare them under `[[events.producers]]`.
  */
-export const HOST_EVENT_TYPES: ReadonlySet<string> = new Set(["book_acquired"]);
+export const HOST_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "book_acquired",
+  "edition_linked",
+  "edition_updated",
+  "holding_added",
+]);
 
 /** Largest `max_value_bytes` a `[[kv_namespaces]]` row may declare (1 MiB). */
 export const MAX_KV_NAMESPACE_VALUE_BYTES = 1_048_576;

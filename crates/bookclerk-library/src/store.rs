@@ -25,16 +25,17 @@ use crate::entities::{
     listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
     operator_sessions, portal_identities, portal_sessions, saved_filters, security_audit_events,
     title_request_sources, title_requests, user_invites, user_preferences, users,
-    webauthn_challenges, webauthn_credentials, work_editions, works,
+    webauthn_challenges, webauthn_credentials,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
     user_prefs_key, AccountRecord, AcquireStatus, BookRecord, GlobalQueueEntry,
     ListeningProgressRecord, OidcClientRecord, PortalIdentity, QueueWisher, RequestStatus,
     StoredPasskey, TitleRequestRecord, TitleRequestSourceRecord, UserPreferences, UserRecord,
-    UserRole, UserStatus, WorkRecord,
+    UserRole, UserStatus,
 };
 use crate::wishlist_merge::apply_merged_sources;
+use library_model::{holding_from_book, listing_from_book};
 
 /// Handle to the Bookclerk library database.
 ///
@@ -3928,17 +3929,61 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Upsert a book from a library sync.
+    /// Upsert a book from a library sync and resolve the listing it
+    /// describes into works, expressions and editions.
     ///
+    /// The listing is derived from the flat row ([`listing_from_book`]);
+    /// a scan that has the plugin's structured record uses
+    /// [`Self::upsert_scanned_book`] instead. A row that fails listing
+    /// validation is still stored, and the listing is skipped with a warning.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read or write fails.
+    pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
+        let record = self.upsert_book_row(book).await?;
+        match listing_from_book(book) {
+            Ok(listing) => {
+                self.record_listing(&listing, &holding_from_book(book))
+                    .await?;
+            }
+            Err(err) => tracing::warn!(
+                product_id = %book.product_id,
+                plugin_key = %book.plugin_key,
+                error = %err,
+                "library title not resolved into the library model"
+            ),
+        }
+        Ok(record)
+    }
+
+    /// Upsert a scanned title: the flat row, and the listing its plugin's
+    /// structured record describes (or, without one, the listing the flat
+    /// row describes).
+    ///
+    /// The listing is filed under the book's plugin, whatever plugin key it
+    /// carries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read or write fails.
+    pub async fn upsert_scanned_title(&self, title: &ScannedTitle) -> Result<BookRecord> {
+        let Some(listing) = &title.listing else {
+            return self.upsert_book(&title.book).await;
+        };
+        let record = self.upsert_book_row(&title.book).await?;
+        let mut listing = listing.clone();
+        listing.key.plugin_key.clone_from(&title.book.plugin_key);
+        self.record_listing(&listing, &holding_from_book(&title.book))
+            .await?;
+        Ok(record)
+    }
+
     /// Insert on first sight; on `(source, account_id, product_id)` conflict,
     /// merge fields with Audible-precedence rules (a Libro rescan without an
     /// ASIN must not wipe Audible enrichment). Expressed as load-then-merge over
     /// the `books` entity so the precedence logic is explicit and portable.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn upsert_book(&self, book: &NewBook) -> Result<BookRecord> {
+    async fn upsert_book_row(&self, book: &NewBook) -> Result<BookRecord> {
         // Only clone when HTML entities are present — hot scan paths stay allocation-light.
         let decoded;
         let book = if book.needs_html_entity_decode() {
@@ -4696,237 +4741,6 @@ impl LibraryStore {
         am.updated_at = Set(now_str());
         am.update(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(())
-    }
-
-    /// Upsert a canonical work row (COALESCE-preserve on conflict).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn upsert_work(&self, work: &NewWork) -> Result<WorkRecord> {
-        let now = now_str();
-        let id = work
-            .id
-            .clone()
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let existing = works::Entity::find_by_id(id.clone())
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        let model = if let Some(existing) = existing {
-            let coalesce = |new: Option<String>, old: Option<String>| new.or(old);
-            let mut am: works::ActiveModel = existing.clone().into();
-            am.canonical_asin = Set(coalesce(
-                work.canonical_asin.clone(),
-                existing.canonical_asin.clone(),
-            ));
-            am.canonical_isbn = Set(coalesce(
-                work.canonical_isbn.clone(),
-                existing.canonical_isbn.clone(),
-            ));
-            am.title = Set(work.title.clone());
-            am.authors = Set(coalesce(work.authors.clone(), existing.authors.clone()));
-            am.narrators = Set(coalesce(work.narrators.clone(), existing.narrators.clone()));
-            am.description = Set(coalesce(
-                work.description.clone(),
-                existing.description.clone(),
-            ));
-            am.subjects = Set(coalesce(work.subjects.clone(), existing.subjects.clone()));
-            am.categories = Set(coalesce(
-                work.categories.clone(),
-                existing.categories.clone(),
-            ));
-            am.language = Set(coalesce(work.language.clone(), existing.language.clone()));
-            am.series = Set(coalesce(work.series.clone(), existing.series.clone()));
-            am.series_index = Set(coalesce(
-                work.series_index.clone(),
-                existing.series_index.clone(),
-            ));
-            am.cover_url = Set(coalesce(work.cover_url.clone(), existing.cover_url.clone()));
-            am.openlibrary_id = Set(coalesce(
-                work.openlibrary_id.clone(),
-                existing.openlibrary_id.clone(),
-            ));
-            am.updated_at = Set(now);
-            am.update(&self.db).await.map_err(LibraryError::Orm)?
-        } else {
-            let am = works::ActiveModel {
-                id: Set(id),
-                canonical_asin: Set(work.canonical_asin.clone()),
-                canonical_isbn: Set(work.canonical_isbn.clone()),
-                title: Set(work.title.clone()),
-                authors: Set(work.authors.clone()),
-                narrators: Set(work.narrators.clone()),
-                description: Set(work.description.clone()),
-                subjects: Set(work.subjects.clone()),
-                categories: Set(work.categories.clone()),
-                language: Set(work.language.clone()),
-                series: Set(work.series.clone()),
-                series_index: Set(work.series_index.clone()),
-                cover_url: Set(work.cover_url.clone()),
-                openlibrary_id: Set(work.openlibrary_id.clone()),
-                created_at: Set(now.clone()),
-                updated_at: Set(now),
-            };
-            am.insert(&self.db).await.map_err(LibraryError::Orm)?
-        };
-        Ok(map_work(model))
-    }
-
-    /// Loads a canonical work by id, if present.
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - Row or work id.
-    ///
-    /// # Returns
-    ///
-    /// `Result<Option<WorkRecord>>` — `Ok` on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
-    pub async fn get_work(&self, id: &str) -> Result<Option<WorkRecord>> {
-        Ok(works::Entity::find_by_id(id.to_string())
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(map_work))
-    }
-
-    /// Find work by Amazon ASIN identifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn find_work_by_asin(&self, asin: &str) -> Result<Option<WorkRecord>> {
-        Ok(works::Entity::find()
-            .filter(works::Column::CanonicalAsin.eq(asin))
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(map_work))
-    }
-
-    /// Finds a canonical work whose preferred ISBN matches `isbn`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn find_work_by_isbn(&self, isbn: &str) -> Result<Option<WorkRecord>> {
-        Ok(works::Entity::find()
-            .filter(works::Column::CanonicalIsbn.eq(isbn))
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(map_work))
-    }
-
-    /// Lists every canonical work row in the library database.
-    ///
-    ///
-    /// # Returns
-    ///
-    /// `Result<Vec<WorkRecord>>` — `Ok` on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
-    pub async fn list_works(&self) -> Result<Vec<WorkRecord>> {
-        Ok(works::Entity::find()
-            .order_by_asc(works::Column::Title)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_work)
-            .collect())
-    }
-
-    /// Associates a book UUID with a canonical work id.
-    ///
-    /// # Arguments
-    ///
-    /// * `work_id` - Canonical work id.
-    /// * `book_uuid` - Library `books.uuid`.
-    ///
-    /// # Returns
-    ///
-    /// `Result<()>` — `Ok` on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
-    pub async fn link_book_to_work(&self, work_id: &str, book_uuid: &str) -> Result<()> {
-        let existing = work_editions::Entity::find()
-            .filter(work_editions::Column::BookUuid.eq(book_uuid))
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        if let Some(model) = existing {
-            if model.work_id == work_id {
-                return Ok(());
-            }
-            // The primary key includes work_id, so re-key by delete + insert.
-            work_editions::Entity::delete_many()
-                .filter(work_editions::Column::BookUuid.eq(book_uuid))
-                .exec(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
-        }
-        let am = work_editions::ActiveModel {
-            work_id: Set(work_id.to_string()),
-            book_uuid: Set(book_uuid.to_string()),
-            created_at: Set(now_str()),
-        };
-        am.insert(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(())
-    }
-
-    /// Returns the work id linked to `book_uuid`, if any.
-    ///
-    /// # Arguments
-    ///
-    /// * `book_uuid` - Library `books.uuid`.
-    ///
-    /// # Returns
-    ///
-    /// `Result<Option<String>>` — `Ok` on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
-    pub async fn work_id_for_book(&self, book_uuid: &str) -> Result<Option<String>> {
-        Ok(work_editions::Entity::find()
-            .filter(work_editions::Column::BookUuid.eq(book_uuid))
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(|m| m.work_id))
-    }
-
-    /// Lists book UUIDs linked to `work_id`.
-    ///
-    /// # Arguments
-    ///
-    /// * `work_id` - Canonical work id.
-    ///
-    /// # Returns
-    ///
-    /// `Result<Vec<String>>` — `Ok` on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
-    pub async fn book_uuids_for_work(&self, work_id: &str) -> Result<Vec<String>> {
-        Ok(work_editions::Entity::find()
-            .filter(work_editions::Column::WorkId.eq(work_id))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|m| m.book_uuid)
-            .collect())
     }
 
     /// Inserts or updates listening progress for a title.
@@ -6249,37 +6063,23 @@ pub struct CatalogEnrichmentFields {
     pub enrich_updated_at: Option<chrono::DateTime<Utc>>,
 }
 
-/// Input for upserting a canonical work.
-#[derive(Debug, Clone, Default)]
-pub struct NewWork {
-    /// Surrogate primary key assigned by the database.
-    pub id: Option<String>,
-    /// Preferred ASIN representing this canonical work.
-    pub canonical_asin: Option<String>,
-    /// Preferred ISBN representing this canonical work.
-    pub canonical_isbn: Option<String>,
-    /// Display title of the work or edition.
-    pub title: String,
-    /// Comma-separated or JSON author list from the storefront.
-    pub authors: Option<String>,
-    /// Comma-separated or JSON narrator list when present.
-    pub narrators: Option<String>,
-    /// Blurb / synopsis text (may contain HTML).
-    pub description: Option<String>,
-    /// Subject / topic tags from enrichment (serialized).
-    pub subjects: Option<String>,
-    /// Storefront category / genre path list (serialized).
-    pub categories: Option<String>,
-    /// BCP-47 or storefront language code when known.
-    pub language: Option<String>,
-    /// Series name when the title belongs to a series.
-    pub series: Option<String>,
-    /// Position within the series (storefront string form).
-    pub series_index: Option<String>,
-    /// HTTPS URL for cover art when known.
-    pub cover_url: Option<String>,
-    /// Open Library work/edition id when enrichment found one.
-    pub openlibrary_id: Option<String>,
+/// One title a storefront scan reported.
+#[derive(Debug, Clone)]
+pub struct ScannedTitle {
+    /// The flat row the library views read.
+    pub book: NewBook,
+    /// The listing the plugin's structured record describes; `None` when
+    /// only the flat row is known.
+    pub listing: Option<bookclerk_resolve::Listing>,
+}
+
+impl From<NewBook> for ScannedTitle {
+    fn from(book: NewBook) -> Self {
+        Self {
+            book,
+            listing: None,
+        }
+    }
 }
 
 /// Input for upserting listening progress.
@@ -6953,28 +6753,6 @@ fn map_saved_filter(m: saved_filters::Model) -> SavedFilterRecord {
     }
 }
 
-/// Maps a `works` row to [`WorkRecord`] (canonical ASIN/ISBN and bibliographic fields).
-fn map_work(m: works::Model) -> WorkRecord {
-    WorkRecord {
-        id: m.id,
-        canonical_asin: m.canonical_asin,
-        canonical_isbn: m.canonical_isbn,
-        title: m.title,
-        authors: m.authors,
-        narrators: m.narrators,
-        description: m.description,
-        subjects: m.subjects,
-        categories: m.categories,
-        language: m.language,
-        series: m.series,
-        series_index: m.series_index,
-        cover_url: m.cover_url,
-        openlibrary_id: m.openlibrary_id,
-        created_at: parse_dt(&m.created_at),
-        updated_at: parse_dt(&m.updated_at),
-    }
-}
-
 /// Maps a `listening_progress` row; `is_finished` is stored as 0/1.
 fn map_listening(m: listening_progress::Model) -> ListeningProgressRecord {
     ListeningProgressRecord {
@@ -7251,6 +7029,7 @@ impl LibraryStore {
 }
 
 pub(crate) mod event_outbox;
+pub(crate) mod library_model;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
 pub(crate) mod storage_scan;

@@ -30,6 +30,7 @@ mod error;
 mod host_schema;
 #[cfg(any(test, feature = "test-support"))]
 mod in_process_atomic;
+pub mod library_link;
 pub mod master_key;
 pub mod migrations;
 /// Public library DTOs and status enums (`BookRecord`, `AcquireStatus`, prefs) re-exported from this crate.
@@ -152,12 +153,13 @@ pub use sql_plan::{
 pub use store::{
     event_outbox::{deliver_after_for, prepare_publish_domain_event, EventPruneStep},
     fallback_work_key, inject_dispatch_page_failures,
+    library_model::{holding_from_book, listing_from_book, WorkEnrichment},
     plugin_databases::PluginDatabaseRecord,
     plugin_kv::{KvEntry, KvListPage, KvPutOutcome, KvWriteSpec, KV_LIST_DEFAULT_LIMIT},
     prefer_enrichment_source, set_dispatch_chunk_for_test, wishlist_identities_match, BookPage,
     CatalogEnrichmentFields, LibraryStore, NewBook, NewListeningProgress, NewTitleRequest,
-    NewTitleRequestSource, NewWork, SavedFilterRecord, TitleFile, UserBookFields, WishlistIdentity,
-    ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
+    NewTitleRequestSource, SavedFilterRecord, ScannedTitle, TitleFile, UserBookFields,
+    WishlistIdentity, ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
 };
 pub use text::{
     decode_html_entities, decode_html_entities_cow, decode_html_entities_in_place,

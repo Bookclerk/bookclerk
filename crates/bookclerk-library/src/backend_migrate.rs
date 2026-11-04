@@ -7,11 +7,13 @@
 use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, PaginatorTrait, TransactionTrait};
 
 use crate::entities::{
-    account_links, accounts, books, claim_tickets, embeddings, encrypted_secrets, ignored_titles,
-    job_temp_paths, jobs, listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens,
-    oidc_rp_states, operator_sessions, portal_identities, portal_sessions, saved_filters,
-    security_audit_events, title_files, title_request_sources, title_requests, user_invites,
-    user_preferences, users, webauthn_challenges, webauthn_credentials, work_editions, works,
+    account_links, accounts, books, claim_tickets, contributors, credits, edition_identifiers,
+    editions, embeddings, encrypted_secrets, expressions, holdings, ignored_titles, job_temp_paths,
+    jobs, listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
+    operator_sessions, portal_identities, portal_sessions, resolution_conflicts,
+    resolution_overrides, saved_filters, security_audit_events, series, series_entries,
+    store_listings, title_files, title_request_sources, title_requests, user_invites,
+    user_preferences, users, webauthn_challenges, webauthn_credentials, work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
 
@@ -99,6 +101,18 @@ pub async fn migrate_library_backend(
     copy!(accounts, "accounts");
     copy!(portal_identities, "portal_identities");
     copy!(works, "works");
+    copy!(work_identifiers, "work_identifiers");
+    copy!(expressions, "expressions");
+    copy!(editions, "editions");
+    copy!(edition_identifiers, "edition_identifiers");
+    copy!(contributors, "contributors");
+    copy!(credits, "credits");
+    copy!(series, "series");
+    copy!(series_entries, "series_entries");
+    copy!(store_listings, "store_listings");
+    copy!(holdings, "holdings");
+    copy!(resolution_overrides, "resolution_overrides");
+    copy!(resolution_conflicts, "resolution_conflicts");
     copy!(books, "books");
     copy!(title_files, "title_files");
     copy!(ignored_titles, "ignored_titles");
@@ -108,7 +122,6 @@ pub async fn migrate_library_backend(
     copy!(portal_sessions, "portal_sessions");
     copy!(operator_sessions, "operator_sessions");
     copy!(account_links, "account_links");
-    copy!(work_editions, "work_editions");
     copy!(listening_progress, "listening_progress");
     copy!(title_requests, "title_requests");
     copy!(title_request_sources, "title_request_sources");
@@ -170,6 +183,18 @@ async fn dry_run_counts(
     count!(accounts, "accounts");
     count!(portal_identities, "portal_identities");
     count!(works, "works");
+    count!(work_identifiers, "work_identifiers");
+    count!(expressions, "expressions");
+    count!(editions, "editions");
+    count!(edition_identifiers, "edition_identifiers");
+    count!(contributors, "contributors");
+    count!(credits, "credits");
+    count!(series, "series");
+    count!(series_entries, "series_entries");
+    count!(store_listings, "store_listings");
+    count!(holdings, "holdings");
+    count!(resolution_overrides, "resolution_overrides");
+    count!(resolution_conflicts, "resolution_conflicts");
     count!(books, "books");
     count!(title_files, "title_files");
     count!(ignored_titles, "ignored_titles");
@@ -179,7 +204,6 @@ async fn dry_run_counts(
     count!(portal_sessions, "portal_sessions");
     count!(operator_sessions, "operator_sessions");
     count!(account_links, "account_links");
-    count!(work_editions, "work_editions");
     count!(listening_progress, "listening_progress");
     count!(title_requests, "title_requests");
     count!(title_request_sources, "title_request_sources");

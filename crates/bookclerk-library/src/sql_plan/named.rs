@@ -169,6 +169,8 @@ fn operation_kind(op: &DbAtomicParams) -> &'static str {
         DbAtomicParams::SetAcquireStatus { .. } => "setAcquireStatus",
         DbAtomicParams::DispatchEventDeliveries { .. } => "dispatchEventDeliveries",
         DbAtomicParams::ClaimNextEventDelivery { .. } => "claimNextEventDelivery",
+        DbAtomicParams::LinkListing(_) => "linkListing",
+        DbAtomicParams::WriteCredits(_) => "writeCredits",
     }
 }
 
@@ -265,15 +267,32 @@ fn plan_atomic(
         | DbAtomicParams::ClaimNextEventDelivery { .. } => {
             wrap_status_op(inner, &ctx, PayloadKind::JsonFromPlan)
         }
-        DbAtomicParams::ConfirmTotpEnrollment { .. } | DbAtomicParams::DisableUserTotp { .. } => {
-            wrap_status_op(inner, &ctx, PayloadKind::None)
-        }
+        DbAtomicParams::ConfirmTotpEnrollment { .. }
+        | DbAtomicParams::DisableUserTotp { .. }
+        | DbAtomicParams::LinkListing(_)
+        | DbAtomicParams::WriteCredits(_) => wrap_status_op(inner, &ctx, PayloadKind::None),
     })
+}
+
+/// A plan whose last statement is the application-status `SELECT`.
+fn outcome_last(statements: Vec<SqlStmt>) -> AtomicPlan {
+    let outcome_index = statements.len().saturating_sub(1);
+    AtomicPlan {
+        statements,
+        outcome_index,
+        payload_index: None,
+        consume_once: None,
+        receipt_select_index: None,
+        prior_receipt_index: None,
+        expected_hash: None,
+    }
 }
 
 /// Compiles `op` into the inner SQL statements before receipt wrapping.
 fn plan_inner(op: &DbAtomicParams, now: &str) -> AtomicPlan {
     match op {
+        DbAtomicParams::LinkListing(p) => outcome_last(super::link::plan_link_listing(p, now)),
+        DbAtomicParams::WriteCredits(p) => outcome_last(super::link::plan_write_credits(p, now)),
         DbAtomicParams::DeleteUser { user_id } => plan_delete_user(*user_id),
         DbAtomicParams::SetUserStatus { user_id, status } => {
             plan_set_user_status(*user_id, status, now)
@@ -506,7 +525,7 @@ fn compiled_from_inner(
 }
 
 /// Pairs SQL text with typed binds and a structural kind.
-fn sql(text: &str, params: Vec<DbValue>) -> SqlStmt {
+pub(super) fn sql(text: &str, params: Vec<DbValue>) -> SqlStmt {
     let sql = text.to_string();
     let kind = authored_kind(&sql);
     let max_rows = proven_max_rows(kind, &sql);
@@ -772,17 +791,17 @@ fn where_or_and(sql: &str) -> &'static str {
 }
 
 /// Integer bind for a signed 64-bit column.
-fn j_i64(n: i64) -> DbValue {
+pub(super) fn j_i64(n: i64) -> DbValue {
     DbValue::Int64(n)
 }
 
 /// Text bind. Contents stay [`DbValue::Text`] even when they start with `b64:`.
-fn j_str(s: &str) -> DbValue {
+pub(super) fn j_str(s: &str) -> DbValue {
     DbValue::Text(s.to_string())
 }
 
 /// Text bind, or an untyped SQL null when the optional value is absent.
-fn j_opt_str(s: Option<&str>) -> DbValue {
+pub(super) fn j_opt_str(s: Option<&str>) -> DbValue {
     match s {
         Some(v) => j_str(v),
         None => DbValue::Null(DbType::Unspecified),
@@ -790,7 +809,7 @@ fn j_opt_str(s: Option<&str>) -> DbValue {
 }
 
 /// Integer bind, or a typed Int64 null when the optional value is absent.
-fn j_opt_i64(n: Option<i64>) -> DbValue {
+pub(super) fn j_opt_i64(n: Option<i64>) -> DbValue {
     match n {
         Some(v) => DbValue::Int64(v),
         None => DbValue::Null(DbType::Int64),

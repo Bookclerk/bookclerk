@@ -30,6 +30,7 @@ boundary extends it.
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
+| `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 
 Some boundaries need more than a cell:
 
@@ -72,6 +73,16 @@ only that. The others check:
   end, delivers no more than the peer sent, accepts no more streams than
   the peer could open, and leaves no task behind. The shared oracle is
   `fuzz/oracles/mux_peer.rs`, replayed from `bookclerk-plugin-sdk`.
+- **`library_resolve`**: decodes up to 64 listings from small pools of
+  titles, authors and identifiers, so they collide, and records each one
+  into an in-memory catalog. After every step one strong identifier maps
+  to one edition; a weak identifier alone never joins editions of
+  another media kind, work kind or an incompatible expression; strong
+  identifiers naming different editions are never merged and the conflict
+  is recorded; a work found by identifier or text match has the listing's
+  kind, and an episode's work shares its show. Resolving any listing
+  again changes nothing. The oracle is
+  `bookclerk_resolve::fuzzing::run_case`, replayed from `bookclerk-resolve`.
 
 ## Boundaries outside the Rust workspace
 

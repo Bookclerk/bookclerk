@@ -508,9 +508,16 @@ impl EventsManifest {
 ///
 /// `book_acquired` is written by the host's acquire pipeline in the same
 /// transaction as the library row once a source plugin's acquire handler
-/// returns; the source never publishes it. Plugins consume these types but
-/// cannot declare them under `[[events.producers]]`.
-pub const HOST_EVENT_TYPES: [&str; 1] = ["book_acquired"];
+/// returns; the source never publishes it. `edition_linked`,
+/// `edition_updated` and `holding_added` are written by the library model
+/// resolver in the same batch as the listing they describe. Plugins consume
+/// these types but cannot declare them under `[[events.producers]]`.
+pub const HOST_EVENT_TYPES: [&str; 4] = [
+    "book_acquired",
+    "edition_linked",
+    "edition_updated",
+    "holding_added",
+];
 
 /// True when `event_type` is in [`HOST_EVENT_TYPES`].
 #[must_use]

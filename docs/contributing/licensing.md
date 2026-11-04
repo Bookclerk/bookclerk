@@ -18,6 +18,7 @@ may be used. The reasons behind these choices are in
 | The example plugins under `examples/` | MIT |
 | `bookclerk-naming`, ported from Libation | GPL-3.0-only |
 | `match_score` in `bookclerk-enrich`, ported from audiobookshelf | GPL-3.0-only |
+| `normalize` in `bookclerk-resolve`, ported from audiobookshelf (title and author cleaning moved out of `match_score`) | GPL-3.0-only |
 | Vendored code under `third_party/` and fonts under `ui/public/fonts/` | Their own licenses, next to them |
 
 The plugin SDKs and everything a plugin links are permissive so plugin

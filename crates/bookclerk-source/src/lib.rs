@@ -13,6 +13,7 @@ pub mod abi;
 mod brand;
 mod error;
 mod language;
+pub mod listing;
 mod media;
 mod options;
 pub mod records;

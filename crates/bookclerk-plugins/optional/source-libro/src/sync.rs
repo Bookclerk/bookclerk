@@ -2,7 +2,7 @@
 
 use bookclerk_library::SourceScope;
 use bookclerk_plugin_sdk::ScanBook;
-use bookclerk_source::abi::{abridgement_from_flag, rfc3339, scan_book_to_new};
+use bookclerk_source::abi::{abridgement_from_flag, rfc3339, scanned_title};
 use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_source::ScanSummary;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -177,9 +177,9 @@ pub async fn scan_account_into_library(
     let mut books_upserted = 0usize;
     for new in books
         .into_iter()
-        .filter_map(|book| scan_book_to_new("libro", book))
+        .filter_map(|book| scanned_title("libro", book))
     {
-        library.upsert_book(&new).await?;
+        library.upsert_scanned_title(&new).await?;
         books_upserted += 1;
     }
     Ok((books_upserted, pages))

@@ -10,7 +10,7 @@ use crate::format_out::{self, OutputFormat};
 #[derive(Debug, Subcommand)]
 /// `bookclerk discover` verbs: recommend, enrich, embed, listening sync, wishlist.
 pub enum DiscoverCommand {
-    /// Rebuild works graph, optionally enrich + embed, then print recommendations.
+    /// Optionally enrich + embed works, then print recommendations.
     Recommend {
         /// Max recommendations to print.
         #[arg(long, short = 'n')]
@@ -28,8 +28,6 @@ pub enum DiscoverCommand {
         #[arg(long = "listening-provider", value_name = "ID")]
         listening_providers: Vec<String>,
     },
-    /// Rebuild the works graph from ownership rows.
-    RebuildWorks,
     /// Run Open Library enrichment for metadata gaps.
     EnrichOpenlibrary,
     /// Embed dirty works.
@@ -84,10 +82,6 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
     let registry = crate::registry::sources(&host).await?;
 
     match command {
-        DiscoverCommand::RebuildWorks => {
-            let n = bookclerk_discover::rebuild_works_from_library(&library).await?;
-            format_out::line(format!("linked {n} book(s) into works"));
-        }
         DiscoverCommand::EnrichOpenlibrary => {
             let opts = bookclerk_discover::OpenLibraryOptions {
                 contact_email: cfg.discovery.openlibrary_contact_email.clone(),
@@ -125,7 +119,6 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
             no_listening,
             listening_providers,
         } => {
-            let _ = bookclerk_discover::rebuild_works_from_library(&library).await?;
             let prefer_onnx = cfg.discovery.embeddings_enabled;
             let mut embedder = bookclerk_discover::open_embedder(
                 &cfg.paths().models_dir,

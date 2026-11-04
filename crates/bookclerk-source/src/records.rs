@@ -16,13 +16,7 @@ pub use abi::{
 };
 
 /// Separator the flat `books` row view uses between contributor names.
-pub const NAME_SEPARATOR: &str = ", ";
-
-/// Name suffixes that belong to the name before them when a display string
-/// is split on commas (`Martin Luther King, Jr.`).
-const NAME_SUFFIXES: &[&str] = &[
-    "jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "phd", "ph.d.", "md", "m.d.", "esq", "esq.",
-];
+pub const NAME_SEPARATOR: &str = bookclerk_resolve::names::NAME_SEPARATOR;
 
 /// One credit, or `None` when `name` is blank after trimming.
 ///
@@ -73,48 +67,13 @@ pub fn credits_from_display(display: Option<&str>, role: CreditRole) -> Vec<Cred
 /// # Returns
 ///
 /// The trimmed, non-empty names in the order they appear. HTML entities
-/// are decoded first, so `O&#39;Brien` stays one name.
+/// are decoded first, so `O&#39;Brien` stays one name; splitting is
+/// [`bookclerk_resolve::names::split_display_names`].
 #[must_use]
 pub fn split_display_names(display: &str) -> Vec<String> {
     let mut decoded = display.to_string();
     bookclerk_library::decode_html_entities_in_place(&mut decoded);
-    // Any run of whitespace (tabs, newlines, no-break spaces) reads as one
-    // space, so the word `and` splits however the store spaced it.
-    let decoded = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut names: Vec<String> = Vec::new();
-    for part in decoded.split([',', ';', '&']) {
-        for piece in split_on_and(part) {
-            let piece = piece.trim();
-            if piece.is_empty() {
-                continue;
-            }
-            let is_suffix = NAME_SUFFIXES.contains(&piece.to_ascii_lowercase().as_str());
-            match names.last_mut() {
-                Some(previous) if is_suffix => {
-                    previous.push_str(NAME_SEPARATOR);
-                    previous.push_str(piece);
-                }
-                _ => names.push(piece.to_string()),
-            }
-        }
-    }
-    names
-}
-
-/// Splits on the standalone word `and`, matched without regard to case.
-fn split_on_and(part: &str) -> Vec<&str> {
-    let lower = part.to_ascii_lowercase();
-    let mut pieces = Vec::new();
-    let mut start = 0;
-    let mut search = 0;
-    while let Some(found) = lower[search..].find(" and ") {
-        let at = search + found;
-        pieces.push(&part[start..at]);
-        start = at + " and ".len();
-        search = start;
-    }
-    pieces.push(&part[start..]);
-    pieces
+    bookclerk_resolve::names::split_display_names(&decoded)
 }
 
 /// One identifier, or `None` when `value` is blank after trimming.
@@ -225,58 +184,7 @@ pub fn asin_for_marketplace(identifiers: &[Identifier], marketplace: &str) -> Op
 /// `None` when the value is blank.
 #[must_use]
 pub fn normalize_identifier(scheme: IdentifierScheme, raw: &str) -> Option<String> {
-    let value = raw.trim();
-    if value.is_empty() {
-        return None;
-    }
-    Some(match scheme {
-        IdentifierScheme::Asin => value.to_ascii_uppercase(),
-        IdentifierScheme::Isbn => normalize_isbn(value),
-        IdentifierScheme::OpenLibraryEdition | IdentifierScheme::OpenLibraryWork => {
-            value.to_string()
-        }
-    })
-}
-
-/// An ISBN without separators, as ISBN-13 when it is a valid ISBN-10.
-fn normalize_isbn(value: &str) -> String {
-    let compact: String = value
-        .chars()
-        .filter(|c| !matches!(c, '-' | ' ' | '\u{2010}'..='\u{2015}'))
-        .map(|c| c.to_ascii_uppercase())
-        .collect();
-    isbn10_to_isbn13(&compact).unwrap_or(compact)
-}
-
-/// The ISBN-13 for a valid ISBN-10 (nine digits plus a digit or `X` check).
-///
-/// # Returns
-///
-/// `None` when `isbn10` is not a valid ISBN-10, check digit included.
-fn isbn10_to_isbn13(isbn10: &str) -> Option<String> {
-    let bytes = isbn10.as_bytes();
-    if bytes.len() != 10 {
-        return None;
-    }
-    let mut sum10 = 0u32;
-    for (weight, byte) in (1..=10u32).rev().zip(bytes) {
-        let digit = match byte {
-            b'0'..=b'9' => u32::from(byte - b'0'),
-            b'X' if weight == 1 => 10,
-            _ => return None,
-        };
-        sum10 += weight * digit;
-    }
-    if !sum10.is_multiple_of(11) {
-        return None;
-    }
-    let body = format!("978{}", &isbn10[..9]);
-    let sum13: u32 = body
-        .bytes()
-        .zip([1u32, 3].into_iter().cycle())
-        .map(|(byte, weight)| u32::from(byte - b'0') * weight)
-        .sum();
-    Some(format!("{body}{}", (10 - sum13 % 10) % 10))
+    bookclerk_resolve::normalize_identifier(crate::listing::identifier_scheme(scheme), raw)
 }
 
 /// The flat `books.content_kind` value for a work kind.
