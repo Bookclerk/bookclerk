@@ -28,7 +28,7 @@
 # Base images are pinned by digest; Dependabot (docker ecosystem) bumps them.
 # The node major must equal the `nodejs` pin in /.tool-versions.
 
-FROM node:26-trixie-slim@sha256:36793bcbb160a6a16cede1e62b93f84e26b78a972a8a4c0b879c1c12f22761ec AS ui
+FROM node:26-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39 AS ui
 WORKDIR /src/ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -60,7 +60,7 @@ RUN cargo package-platform --out /dist \
     && test -x /opt/bookclerk/workerd \
     && test "$(find /opt/bookclerk/plugins -mindepth 2 -maxdepth 2 -name plugin.toml | wc -l)" -ge 2
 
-FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS runtime
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
