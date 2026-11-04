@@ -15,7 +15,8 @@ An **integration** is an outbound plugin. It can:
 
 There is no plugin `kind = "integration"`. An integration plugin exports
 `remoteLibrary`, declares `[[events.consumers]]`, or both, and may
-declare `oidc` and `cli`. See [Plugins](../plugins/README.md).
+declare `oidc` and `cli`. A metadata provider (`metadata`) also shows in
+the integration family. See [Plugins](../plugins/README.md).
 
 Third-party integrations install as external plugins; see
 [Turning on a third-party integration](#turning-on-a-third-party-integration).

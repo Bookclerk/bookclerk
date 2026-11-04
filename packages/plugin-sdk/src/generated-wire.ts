@@ -953,6 +953,77 @@ export interface OidcAuthenticateUserResults {
 }
 
 /**
+ * Params envelope of `MetadataProvider.health`.
+ *
+ * @internal
+ */
+export interface MetadataProviderHealthParams {
+}
+
+/**
+ * Results envelope of `MetadataProvider.health`.
+ *
+ * @internal
+ */
+export interface MetadataProviderHealthResults {
+  result: T.HealthReply;
+}
+
+/**
+ * Params envelope of `MetadataProvider.lookup`.
+ *
+ * @internal
+ */
+export interface MetadataProviderLookupParams {
+  params: T.MetadataLookupParams;
+}
+
+/**
+ * Results envelope of `MetadataProvider.lookup`.
+ *
+ * @internal
+ */
+export interface MetadataProviderLookupResults {
+  result: T.MetadataRecordsReply;
+}
+
+/**
+ * Params envelope of `MetadataProvider.search`.
+ *
+ * @internal
+ */
+export interface MetadataProviderSearchParams {
+  params: T.MetadataSearchParams;
+}
+
+/**
+ * Results envelope of `MetadataProvider.search`.
+ *
+ * @internal
+ */
+export interface MetadataProviderSearchResults {
+  result: T.MetadataRecordsReply;
+}
+
+/**
+ * Params envelope of `MetadataProvider.chapters`.
+ *
+ * @internal
+ */
+export interface MetadataProviderChaptersParams {
+  params: T.MetadataChaptersParams;
+}
+
+/**
+ * Results envelope of `MetadataProvider.chapters`.
+ *
+ * @internal
+ */
+export interface MetadataProviderChaptersResults {
+  result: T.MetadataChaptersReply;
+}
+
+/**
  * Params envelope of `Database.openSession`.
  *
  * @internal
@@ -1784,13 +1855,13 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
 };
 
 /**
- * Wire codec for `Entrypoints` (0 data words, 10 pointers).
+ * Wire codec for `Entrypoints` (0 data words, 11 pointers).
  *
  * @internal
  */
 export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
   dataWords: 0,
-  pointerCount: 10,
+  pointerCount: 11,
   write(s, v, caps) {
     if (v.eventConsumer != null) {
       s.setCap(0, caps.exportCap(v.eventConsumer));
@@ -1821,6 +1892,9 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     }
     if (v.scheduledHandler != null) {
       s.setCap(9, caps.exportCap(v.scheduledHandler));
+    }
+    if (v.metadata != null) {
+      s.setCap(10, caps.exportCap(v.metadata));
     }
   },
   read(s, caps) {
@@ -1866,6 +1940,10 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (!(scheduledHandlerValue == null)) {
       out.scheduledHandler = scheduledHandlerValue;
     }
+    const metadataValue = caps.importCap(s.getCapIndex(10)) as T.MetadataProvider;
+    if (!(metadataValue == null)) {
+      out.metadata = metadataValue;
+    }
     return out;
   },
 };
@@ -1883,7 +1961,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          EntrypointsCodec.write(s.initStruct(0, 0, 10), v.value, caps);
+          EntrypointsCodec.write(s.initStruct(0, 0, 11), v.value, caps);
         }
         break;
       case "err":
@@ -1900,7 +1978,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 10), caps) };
+        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 11), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
       default:
@@ -6336,6 +6414,438 @@ export const ScheduledControllerCodec: StructCodec<T.ScheduledController> = {
 };
 
 /**
+ * Wire codec for `MetadataLookupParams` (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const MetadataLookupParamsCodec: StructCodec<T.MetadataLookupParams> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.identifiers ?? [];
+      const items = s.initStructList(0, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        IdentifierCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    if (v.marketplace !== undefined) {
+      s.setText(1, v.marketplace ?? "");
+    }
+    if (v.limit !== undefined) {
+      s.setUint32(0, v.limit ?? 0);
+    }
+  },
+  read(s, caps) {
+    const out: T.MetadataLookupParams = {
+      identifiers: s.getStructList(0, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
+    };
+    const marketplaceValue = s.getText(1);
+    if (!(marketplaceValue === "")) {
+      out.marketplace = marketplaceValue;
+    }
+    const limitValue = s.getUint32(0);
+    if (!(limitValue === 0)) {
+      out.limit = limitValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `MetadataSearchParams` (1 data words, 4 pointers).
+ *
+ * @internal
+ */
+export const MetadataSearchParamsCodec: StructCodec<T.MetadataSearchParams> = {
+  dataWords: 1,
+  pointerCount: 4,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.title ?? "");
+    if (v.author !== undefined) {
+      s.setText(1, v.author ?? "");
+    }
+    if (v.language !== undefined) {
+      s.setText(2, v.language ?? "");
+    }
+    if (v.marketplace !== undefined) {
+      s.setText(3, v.marketplace ?? "");
+    }
+    if (v.limit !== undefined) {
+      s.setUint32(0, v.limit ?? 0);
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.MetadataSearchParams = {
+      title: s.getText(0),
+    };
+    const authorValue = s.getText(1);
+    if (!(authorValue === "")) {
+      out.author = authorValue;
+    }
+    const languageValue = s.getText(2);
+    if (!(languageValue === "")) {
+      out.language = languageValue;
+    }
+    const marketplaceValue = s.getText(3);
+    if (!(marketplaceValue === "")) {
+      out.marketplace = marketplaceValue;
+    }
+    const limitValue = s.getUint32(0);
+    if (!(limitValue === 0)) {
+      out.limit = limitValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `MetadataChaptersParams` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const MetadataChaptersParamsCodec: StructCodec<T.MetadataChaptersParams> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.identifiers ?? [];
+      const items = s.initStructList(0, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        IdentifierCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    if (v.marketplace !== undefined) {
+      s.setText(1, v.marketplace ?? "");
+    }
+  },
+  read(s, caps) {
+    const out: T.MetadataChaptersParams = {
+      identifiers: s.getStructList(0, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
+    };
+    const marketplaceValue = s.getText(1);
+    if (!(marketplaceValue === "")) {
+      out.marketplace = marketplaceValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `MetadataRecord` (3 data words, 12 pointers).
+ *
+ * @internal
+ */
+export const MetadataRecordCodec: StructCodec<T.MetadataRecord> = {
+  dataWords: 3,
+  pointerCount: 12,
+  write(s, v, caps) {
+    s.setText(0, v.title ?? "");
+    if (v.subtitle !== undefined) {
+      s.setText(1, v.subtitle ?? "");
+    }
+    if (v.description !== undefined) {
+      s.setText(2, v.description ?? "");
+    }
+    if (v.coverUrl !== undefined) {
+      s.setText(3, v.coverUrl ?? "");
+    }
+    if (v.url !== undefined) {
+      s.setText(4, v.url ?? "");
+    }
+    if (v.publisher !== undefined) {
+      s.setText(5, v.publisher ?? "");
+    }
+    if (v.lengthMinutes !== undefined) {
+      s.setUint32(0, v.lengthMinutes ?? 0);
+    }
+    if (v.publishedAt !== undefined) {
+      s.setText(6, v.publishedAt ?? "");
+    }
+    if (v.categories !== undefined) {
+      s.setText(7, v.categories ?? "");
+    }
+    if (v.language !== undefined) {
+      s.setText(8, v.language ?? "");
+    }
+    s.setUint16(2, ord(A.ABRIDGEMENTS, v.abridgement ?? A.ABRIDGEMENTS[0]!, "Abridgement"));
+    s.setUint16(3, ord(A.WORK_KINDS, v.workKind ?? A.WORK_KINDS[0]!, "WorkKind"));
+    s.setUint16(4, ord(A.EXPRESSION_KINDS, v.expressionKind ?? A.EXPRESSION_KINDS[0]!, "ExpressionKind"));
+    s.setUint16(5, ord(A.MEDIA_KINDS, v.mediaKind ?? A.MEDIA_KINDS[0]!, "MediaKind"));
+    {
+      const list = v.identifiers ?? [];
+      const items = s.initStructList(9, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        IdentifierCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    {
+      const list = v.credits ?? [];
+      const items = s.initStructList(10, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        CreditCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    {
+      const list = v.seriesEntries ?? [];
+      const items = s.initStructList(11, list.length, 0, 3);
+      for (let i = 0; i < items.length; i++) {
+        SeriesEntryCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    if (v.ratingOverall !== undefined) {
+      s.setFloat64(2, v.ratingOverall ?? 0);
+    }
+    if (v.ratingCount !== undefined) {
+      s.setUint32(3, v.ratingCount ?? 0);
+    }
+  },
+  read(s, caps) {
+    const out: T.MetadataRecord = {
+      title: s.getText(0),
+      abridgement: fromOrd(A.ABRIDGEMENTS, s.getUint16(2), "Abridgement"),
+      workKind: fromOrd(A.WORK_KINDS, s.getUint16(3), "WorkKind"),
+      expressionKind: fromOrd(A.EXPRESSION_KINDS, s.getUint16(4), "ExpressionKind"),
+      mediaKind: fromOrd(A.MEDIA_KINDS, s.getUint16(5), "MediaKind"),
+      identifiers: s.getStructList(9, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
+      credits: s.getStructList(10, 1, 1).map((item) => CreditCodec.read(item, caps)),
+      seriesEntries: s.getStructList(11, 0, 3).map((item) => SeriesEntryCodec.read(item, caps)),
+    };
+    const subtitleValue = s.getText(1);
+    if (!(subtitleValue === "")) {
+      out.subtitle = subtitleValue;
+    }
+    const descriptionValue = s.getText(2);
+    if (!(descriptionValue === "")) {
+      out.description = descriptionValue;
+    }
+    const coverUrlValue = s.getText(3);
+    if (!(coverUrlValue === "")) {
+      out.coverUrl = coverUrlValue;
+    }
+    const urlValue = s.getText(4);
+    if (!(urlValue === "")) {
+      out.url = urlValue;
+    }
+    const publisherValue = s.getText(5);
+    if (!(publisherValue === "")) {
+      out.publisher = publisherValue;
+    }
+    const lengthMinutesValue = s.getUint32(0);
+    if (!(lengthMinutesValue === 0)) {
+      out.lengthMinutes = lengthMinutesValue;
+    }
+    const publishedAtValue = s.getText(6);
+    if (!(publishedAtValue === "")) {
+      out.publishedAt = publishedAtValue;
+    }
+    const categoriesValue = s.getText(7);
+    if (!(categoriesValue === "")) {
+      out.categories = categoriesValue;
+    }
+    const languageValue = s.getText(8);
+    if (!(languageValue === "")) {
+      out.language = languageValue;
+    }
+    const ratingOverallValue = s.getFloat64(2);
+    if (!(ratingOverallValue === 0)) {
+      out.ratingOverall = ratingOverallValue;
+    }
+    const ratingCountValue = s.getUint32(3);
+    if (!(ratingCountValue === 0)) {
+      out.ratingCount = ratingCountValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `MetadataRecords` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MetadataRecordsCodec: StructCodec<T.MetadataRecords> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.records ?? [];
+      const items = s.initStructList(0, list.length, 3, 12);
+      for (let i = 0; i < items.length; i++) {
+        MetadataRecordCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      records: s.getStructList(0, 3, 12).map((item) => MetadataRecordCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `MetadataRecordsReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MetadataRecordsReplyCodec: StructCodec<T.MetadataRecordsReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MetadataRecordsCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MetadataRecordsReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MetadataRecordsCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("MetadataRecordsReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `MetadataChapter` (3 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MetadataChapterCodec: StructCodec<T.MetadataChapter> = {
+  dataWords: 3,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.title ?? "");
+    s.setUint64(0, BigInt(v.startMs ?? 0));
+    if (v.lengthMs !== undefined) {
+      s.setUint64(1, BigInt(v.lengthMs ?? 0));
+    }
+    s.setUint32(4, v.depth ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.MetadataChapter = {
+      title: s.getText(0),
+      startMs: Number(s.getUint64(0)),
+      depth: s.getUint32(4),
+    };
+    const lengthMsValue = Number(s.getUint64(1));
+    if (!(lengthMsValue === 0)) {
+      out.lengthMs = lengthMsValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `MetadataChapters` (4 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MetadataChaptersCodec: StructCodec<T.MetadataChapters> = {
+  dataWords: 4,
+  pointerCount: 1,
+  write(s, v, caps) {
+    s.setBool(0, v.found ?? false);
+    {
+      const list = v.chapters ?? [];
+      const items = s.initStructList(0, list.length, 3, 1);
+      for (let i = 0; i < items.length; i++) {
+        MetadataChapterCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    if (v.brandIntroMs !== undefined) {
+      s.setUint64(1, BigInt(v.brandIntroMs ?? 0));
+    }
+    if (v.brandOutroMs !== undefined) {
+      s.setUint64(2, BigInt(v.brandOutroMs ?? 0));
+    }
+    if (v.runtimeMs !== undefined) {
+      s.setUint64(3, BigInt(v.runtimeMs ?? 0));
+    }
+    s.setBool(1, v.accurate ?? false);
+  },
+  read(s, caps) {
+    const out: T.MetadataChapters = {
+      found: s.getBool(0),
+      chapters: s.getStructList(0, 3, 1).map((item) => MetadataChapterCodec.read(item, caps)),
+      accurate: s.getBool(1),
+    };
+    const brandIntroMsValue = Number(s.getUint64(1));
+    if (!(brandIntroMsValue === 0)) {
+      out.brandIntroMs = brandIntroMsValue;
+    }
+    const brandOutroMsValue = Number(s.getUint64(2));
+    if (!(brandOutroMsValue === 0)) {
+      out.brandOutroMs = brandOutroMsValue;
+    }
+    const runtimeMsValue = Number(s.getUint64(3));
+    if (!(runtimeMsValue === 0)) {
+      out.runtimeMs = runtimeMsValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `MetadataChaptersReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MetadataChaptersReplyCodec: StructCodec<T.MetadataChaptersReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          MetadataChaptersCodec.write(s.initStruct(0, 4, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("MetadataChaptersReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: MetadataChaptersCodec.read(s.getStruct(0, 4, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("MetadataChaptersReply", disc);
+    }
+  },
+};
+
+/**
  * Wire codec for `DbValue` (2 data words, 1 pointers).
  *
  * @internal
@@ -9516,6 +10026,166 @@ export const OidcAuthenticateUserResultsCodec: StructCodec<OidcAuthenticateUserR
   read(s, caps) {
     return {
       result: ExternalUserReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `MetadataProvider.health` params envelope (0 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const MetadataProviderHealthParamsCodec: StructCodec<MetadataProviderHealthParams> = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  },
+};
+
+/**
+ * Wire codec for the `MetadataProvider.health` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MetadataProviderHealthResultsCodec: StructCodec<MetadataProviderHealthResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: HealthReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `MetadataProvider.lookup` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MetadataProviderLookupParamsCodec: StructCodec<MetadataProviderLookupParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      MetadataLookupParamsCodec.write(s.initStruct(0, 1, 2), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: MetadataLookupParamsCodec.read(s.getStruct(0, 1, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `MetadataProvider.lookup` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MetadataProviderLookupResultsCodec: StructCodec<MetadataProviderLookupResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MetadataRecordsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MetadataRecordsReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `MetadataProvider.search` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MetadataProviderSearchParamsCodec: StructCodec<MetadataProviderSearchParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      MetadataSearchParamsCodec.write(s.initStruct(0, 1, 4), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: MetadataSearchParamsCodec.read(s.getStruct(0, 1, 4), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `MetadataProvider.search` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MetadataProviderSearchResultsCodec: StructCodec<MetadataProviderSearchResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MetadataRecordsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MetadataRecordsReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `MetadataProvider.chapters` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MetadataProviderChaptersParamsCodec: StructCodec<MetadataProviderChaptersParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      MetadataChaptersParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: MetadataChaptersParamsCodec.read(s.getStruct(0, 0, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `MetadataProvider.chapters` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const MetadataProviderChaptersResultsCodec: StructCodec<MetadataProviderChaptersResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      MetadataChaptersReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: MetadataChaptersReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

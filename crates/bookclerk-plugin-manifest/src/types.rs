@@ -14,13 +14,14 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Every entrypoint in declaration order (mirrors the Cap'n Proto enum).
-pub const ALL_ENTRYPOINTS: [Entrypoint; 6] = [
+pub const ALL_ENTRYPOINTS: [Entrypoint; 7] = [
     Entrypoint::Storefront,
     Entrypoint::Storage,
     Entrypoint::DatabaseAdapter,
     Entrypoint::RemoteLibrary,
     Entrypoint::Cli,
     Entrypoint::Oidc,
+    Entrypoint::Metadata,
 ];
 
 /// Handler family an [`Entrypoint`] belongs to.
@@ -35,7 +36,9 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
         Entrypoint::Storefront => PluginFamily::Source,
         Entrypoint::Storage => PluginFamily::Output,
         Entrypoint::DatabaseAdapter => PluginFamily::Database,
-        Entrypoint::RemoteLibrary | Entrypoint::Cli | Entrypoint::Oidc => PluginFamily::Integration,
+        Entrypoint::RemoteLibrary | Entrypoint::Cli | Entrypoint::Oidc | Entrypoint::Metadata => {
+            PluginFamily::Integration
+        }
     }
 }
 
@@ -50,7 +53,8 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
 pub enum PluginFamily {
     /// Storefront / library source (`Storefront` entrypoint).
     Source,
-    /// Event consumer, job runner, remote library, CLI, or OIDC bridge.
+    /// Event consumer, job runner, remote library, CLI, OIDC bridge, or
+    /// metadata provider.
     Integration,
     /// Destination / output backend (`Storage` entrypoint).
     Output,
@@ -1208,7 +1212,7 @@ impl PluginManifest {
     /// A plugin joins the `Source` / `Output` / `Database` families through
     /// the matching named entrypoint and the `Integration` family through
     /// event consumers, queue consumers, job triggers, `RemoteLibrary`,
-    /// `Cli`, or `Oidc`.
+    /// `Cli`, `Oidc`, or `Metadata`.
     ///
     /// # Returns
     ///
@@ -1228,6 +1232,7 @@ impl PluginManifest {
                         || self.runs_crons()
                         || self.has_entrypoint(Entrypoint::RemoteLibrary)
                         || self.has_entrypoint(Entrypoint::Oidc)
+                        || self.has_entrypoint(Entrypoint::Metadata)
                         || (self.has_entrypoint(Entrypoint::Cli)
                             && !self.has_entrypoint(Entrypoint::Storefront)
                             && !self.has_entrypoint(Entrypoint::Storage)
@@ -1874,6 +1879,23 @@ pub enum JailNetworkNeed {
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_entrypoint_maps_to_its_family() {
+        let families: Vec<PluginFamily> = ALL_ENTRYPOINTS.map(entrypoint_family).to_vec();
+        assert_eq!(
+            families,
+            vec![
+                PluginFamily::Source,
+                PluginFamily::Output,
+                PluginFamily::Database,
+                PluginFamily::Integration,
+                PluginFamily::Integration,
+                PluginFamily::Integration,
+                PluginFamily::Integration,
+            ]
+        );
+    }
 
     /// Minimal v3 native manifest body; callers append tables.
     fn native(extra: &str) -> String {

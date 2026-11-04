@@ -1,8 +1,8 @@
 """Out-of-tree workerd plugin smoke: ensure → materialize → describe + health.
 
 Spawns the pinned Cloudflare ``workerd`` with a materialized Cap'n Proto config
-and POSTs ``describe`` (plus a ``POST /invoke`` ``health`` call for storefront /
-remoteLibrary guests) to the HTTP bridge. Does not require the Rust
+and POSTs ``describe`` (plus a ``POST /invoke`` ``health`` call for storefront,
+remoteLibrary and metadata guests) to the HTTP bridge. Does not require the Rust
 ``bookclerk-workerd`` binary.
 """
 
@@ -59,12 +59,88 @@ def _wait_for_health(base: str, token: str, timeout_s: float = 15.0) -> None:
         time.sleep(0.05)
 
 
+# Entrypoints with a ``health`` method, in probe order, and their interfaces.
+_HEALTH_INTERFACES: tuple[tuple[str, str], ...] = (
+    ("storefront", "ContentSource"),
+    ("remoteLibrary", "RemoteLibrary"),
+    ("metadata", "MetadataProvider"),
+)
+
+
+def _health_ifaces(entrypoints: list[Any]) -> list[str]:
+    """Interfaces to probe for ``health``, from a manifest's entrypoints.
+
+    Args:
+        entrypoints: The manifest's ``entrypoints`` list.
+
+    Returns:
+        Every interface in ``_HEALTH_INTERFACES`` order whose entrypoint the
+        plugin exports; empty when none has a health probe (the default
+        entrypoint's event / job triggers have none).
+    """
+    names = {str(e) for e in entrypoints}
+    return [iface for entrypoint, iface in _HEALTH_INTERFACES if entrypoint in names]
+
+
+def _require_healthy(iface: str, health: Any) -> Any:
+    """Return a ``HealthOk`` reply, or raise when it reports not ready.
+
+    Args:
+        iface: Interface the reply came from, for the error message.
+        health: The decoded ``HealthOk`` dict.
+
+    Returns:
+        ``health`` unchanged when its ``ok`` is true.
+
+    Raises:
+        RuntimeError: When ``ok`` is false, with the guest's detail.
+    """
+    if not (health or {}).get("ok"):
+        detail = (health or {}).get("detail") or "no detail"
+        raise RuntimeError(f"{iface}.health reported not ready: {detail}")
+    return health
+
+
+def _health_codecs(iface: str) -> tuple[Any, Any]:
+    """Params and results codecs of ``iface``'s ``health`` method.
+
+    Args:
+        iface: ``ContentSource``, ``RemoteLibrary`` or ``MetadataProvider``.
+
+    Returns:
+        The ``(params, results)`` struct codecs.
+
+    Raises:
+        ValueError: When ``iface`` has no health probe.
+    """
+    from .. import _wire
+
+    codecs = {
+        "ContentSource": (
+            _wire._content_source_health_params_codec,
+            _wire._content_source_health_results_codec,
+        ),
+        "RemoteLibrary": (
+            _wire._remote_library_health_params_codec,
+            _wire._remote_library_health_results_codec,
+        ),
+        "MetadataProvider": (
+            _wire._metadata_provider_health_params_codec,
+            _wire._metadata_provider_health_results_codec,
+        ),
+    }
+    if iface not in codecs:
+        raise ValueError(f"{iface} has no health probe")
+    return codecs[iface]
+
+
 def _invoke_health(base: str, iface: str, token: str) -> Any:
-    """``POST /invoke`` health probe for ``ContentSource`` / ``RemoteLibrary``.
+    """``POST /invoke`` health probe for an entrypoint interface.
 
     Args:
         base: Bridge base URL.
-        iface: Cap'n interface name (``ContentSource`` or ``RemoteLibrary``).
+        iface: Cap'n interface name (``ContentSource``, ``RemoteLibrary`` or
+            ``MetadataProvider``).
         token: Bridge bearer token.
 
     Returns:
@@ -75,12 +151,7 @@ def _invoke_health(base: str, iface: str, token: str) -> Any:
     """
     from .. import _wire
 
-    if iface == "ContentSource":
-        params = _wire._content_source_health_params_codec
-        results = _wire._content_source_health_results_codec
-    else:
-        params = _wire._remote_library_health_params_codec
-        results = _wire._remote_library_health_results_codec
+    params, results = _health_codecs(iface)
     req = urllib.request.Request(
         f"{base}/invoke",
         data=_wire._encode_message(params, {}, _wire.NO_CAPS),
@@ -208,16 +279,13 @@ def run_smoke(plugin_dir: Path) -> str:
     try:
         _wait_for_health(base, bridge_token)
         describe = _post_json(f"{base}/describe", {}, bridge_token)
-        # `health` is a method of the storefront and remoteLibrary entrypoints;
-        # the default entrypoint (event/job triggers) has no health probe.
-        entrypoints = [str(e) for e in (manifest.get("entrypoints") or [])]
-        if "storefront" in entrypoints:
-            health_iface: str | None = "ContentSource"
-        elif "remoteLibrary" in entrypoints:
-            health_iface = "RemoteLibrary"
-        else:
-            health_iface = None
-        health = _invoke_health(base, health_iface, bridge_token) if health_iface else None
+        # `health` is a method of the storefront, remoteLibrary and metadata
+        # entrypoints; the default entrypoint (event/job triggers) has no
+        # health probe.
+        health = {
+            iface: _require_healthy(iface, _invoke_health(base, iface, bridge_token))
+            for iface in _health_ifaces(manifest.get("entrypoints") or [])
+        }
         detail = {
             "plugin": manifest["id"],
             "listen": listen_addr,

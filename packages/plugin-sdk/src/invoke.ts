@@ -27,6 +27,7 @@ import type {
   JobController as WireJobController,
   JobOutcome,
   ListeningProgress,
+  MetadataRecord,
   ObjectMetadata as WireObjectMetadata,
   OidcClientTemplate,
   PluginError as WirePluginError,
@@ -219,6 +220,20 @@ function withoutParams<P, R>(
 const asList = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
 
 const okHits = (value: unknown) => okValue({ hits: asList<CatalogHit>(value) });
+/**
+ * Wraps a metadata provider's `lookup` / `search` return as `MetadataRecords`.
+ * Anything but an array is an author bug, not an empty answer.
+ *
+ * @param value - The author method's return value.
+ * @returns The `ok` arm carrying the records.
+ * @throws {PluginError} `internal` when `value` is not an array.
+ */
+const okRecords = (value: unknown) => {
+  if (!Array.isArray(value)) {
+    throw PluginError.fromWire("internal", "metadata provider must return a MetadataRecord[]");
+  }
+  return okValue({ records: value as MetadataRecord[] });
+};
 const okLines = (value: unknown) =>
   okValue({ lines: asList<unknown>(value).map((l) => String(l)) });
 const okHealth = (value: unknown) => {
@@ -688,6 +703,36 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       "authenticateUser",
       W.OidcAuthenticateUserParamsCodec,
       W.OidcAuthenticateUserResultsCodec,
+      okPass,
+    ),
+  },
+  MetadataProvider: {
+    health: withoutParams(
+      "metadata",
+      "health",
+      W.MetadataProviderHealthParamsCodec,
+      W.MetadataProviderHealthResultsCodec,
+      okHealth,
+    ),
+    lookup: withParams(
+      "metadata",
+      "lookup",
+      W.MetadataProviderLookupParamsCodec,
+      W.MetadataProviderLookupResultsCodec,
+      okRecords,
+    ),
+    search: withParams(
+      "metadata",
+      "search",
+      W.MetadataProviderSearchParamsCodec,
+      W.MetadataProviderSearchResultsCodec,
+      okRecords,
+    ),
+    chapters: withParams(
+      "metadata",
+      "chapters",
+      W.MetadataProviderChaptersParamsCodec,
+      W.MetadataProviderChaptersResultsCodec,
       okPass,
     ),
   },

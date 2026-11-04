@@ -179,34 +179,33 @@ impl ExternalIntegration {
 
     /// Integration health RPC.
     ///
-    /// Guests that do not export `remoteLibrary` are ready once `open` has
-    /// succeeded. Event, job, OIDC, and CLI-only integrations use that
-    /// describe/open check. This function calls remote-library health only
-    /// when that entrypoint is exported.
+    /// Calls `health` on each exported entrypoint that has one
+    /// (`remoteLibrary`, `metadata`). Guests that export neither are ready
+    /// once `open` has succeeded: event, job, OIDC, and CLI-only integrations
+    /// use that describe/open check.
     ///
     /// # Errors
     ///
-    /// Returns an error when remote-library health reports not ok.
+    /// Returns an error when an entrypoint's health reports not ok.
     pub async fn check_health(&self) -> Result<()> {
-        if !self
+        if self
             .session
             .has_entrypoint(crate::Entrypoint::RemoteLibrary)
         {
-            return Ok(());
+            let ok = self
+                .session
+                .remote_library(|src| async move { src.health().await })
+                .await?;
+            health_result(ok)?;
         }
-        let ok = self
-            .session
-            .remote_library(|src| async move { src.health().await })
-            .await?;
-        if ok.ok {
-            Ok(())
-        } else {
-            Err(crate::PluginError::message(if ok.detail.is_empty() {
-                "health failed".to_string()
-            } else {
-                ok.detail
-            }))
+        if self.session.has_entrypoint(crate::Entrypoint::Metadata) {
+            let ok = self
+                .session
+                .metadata(|provider| async move { provider.health().await })
+                .await?;
+            health_result(ok)?;
         }
+        Ok(())
     }
 
     /// Runs one typed `remoteLibrary` method through the plugin session.
@@ -223,6 +222,41 @@ impl ExternalIntegration {
     {
         Ok(self.session.remote_library(call).await?)
     }
+}
+
+/// Maps a guest `HealthOk` onto the integration health result.
+///
+/// # Errors
+///
+/// Returns the guest's detail (or `health failed`) when `ok` is false.
+fn health_result(ok: bookclerk_plugin_sdk::HealthOk) -> Result<()> {
+    if ok.ok {
+        Ok(())
+    } else {
+        Err(crate::PluginError::message(if ok.detail.is_empty() {
+            "health failed".to_string()
+        } else {
+            ok.detail
+        }))
+    }
+}
+
+/// Folds the health reports of every probed entrypoint into one status.
+///
+/// No reports (an event, job, OIDC, or CLI-only integration) is healthy.
+///
+/// # Returns
+///
+/// `ok` when every report is ok, and the non-empty details joined with
+/// `; ` (`None` when there are none).
+fn combine_health(reports: Vec<bookclerk_plugin_sdk::HealthOk>) -> (bool, Option<String>) {
+    let ok = reports.iter().all(|report| report.ok);
+    let details: Vec<String> = reports
+        .into_iter()
+        .map(|report| report.detail)
+        .filter(|detail| !detail.is_empty())
+        .collect();
+    (ok, (!details.is_empty()).then(|| details.join("; ")))
 }
 
 #[async_trait]
@@ -400,29 +434,29 @@ impl Integration for ExternalIntegration {
     }
 
     async fn health(&self) -> bookclerk_integrations::Result<IntegrationHealth> {
-        if !self
+        let mut reports = Vec::new();
+        if self
             .session
             .has_entrypoint(crate::Entrypoint::RemoteLibrary)
         {
-            return Ok(IntegrationHealth {
-                id: self.id().to_string(),
-                enabled: self.enabled,
-                ok: true,
-                detail: None,
-            });
+            reports.push(
+                self.int_call(|stub| async move { stub.health().await })
+                    .await?,
+            );
         }
-        let dto = self
-            .int_call(|stub| async move { stub.health().await })
-            .await?;
+        if self.session.has_entrypoint(crate::Entrypoint::Metadata) {
+            reports.push(
+                self.session
+                    .metadata(|provider| async move { provider.health().await })
+                    .await?,
+            );
+        }
+        let (ok, detail) = combine_health(reports);
         Ok(IntegrationHealth {
             id: self.id().to_string(),
             enabled: self.enabled,
-            ok: dto.ok,
-            detail: if dto.detail.is_empty() {
-                None
-            } else {
-                Some(dto.detail)
-            },
+            ok,
+            detail,
         })
     }
 
@@ -600,6 +634,36 @@ mod tests {
     use super::*;
     use bookclerk_plugin_catalog::{PluginKey, PluginProvenance};
     use bookclerk_plugin_manifest::PluginManifest;
+
+    #[test]
+    fn combine_health_requires_every_report_ok() {
+        let health = |ok: bool, detail: &str| bookclerk_plugin_sdk::HealthOk {
+            ok,
+            detail: detail.to_string(),
+        };
+        assert_eq!(combine_health(Vec::new()), (true, None));
+        assert_eq!(combine_health(vec![health(true, "")]), (true, None));
+        assert_eq!(
+            combine_health(vec![
+                health(true, "library ok"),
+                health(false, "catalog down")
+            ]),
+            (false, Some("library ok; catalog down".to_string()))
+        );
+    }
+
+    #[test]
+    fn health_result_maps_not_ok_to_the_guest_detail() {
+        let health = |ok: bool, detail: &str| bookclerk_plugin_sdk::HealthOk {
+            ok,
+            detail: detail.to_string(),
+        };
+        assert!(health_result(health(true, "")).is_ok());
+        let err = health_result(health(false, "catalog down")).expect_err("not ok");
+        assert!(err.to_string().contains("catalog down"), "{err}");
+        let err = health_result(health(false, "")).expect_err("not ok");
+        assert!(err.to_string().contains("health failed"), "{err}");
+    }
 
     const ABS_TOML: &str = r#"
 api_version = 3

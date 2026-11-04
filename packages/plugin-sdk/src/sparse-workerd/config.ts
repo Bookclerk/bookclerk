@@ -113,6 +113,7 @@ const ENTRYPOINT_SERVICE_BINDINGS: Readonly<Record<string, readonly [string, str
     remoteLibrary: ["PLUGIN_REMOTE_LIBRARY", "RemoteLibrary"],
     cli: ["PLUGIN_CLI", "Cli"],
     oidc: ["PLUGIN_OIDC", "Oidc"],
+    metadata: ["PLUGIN_METADATA", "Metadata"],
   });
 
 /**

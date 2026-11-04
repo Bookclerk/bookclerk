@@ -334,6 +334,8 @@ struct Entrypoints {
   queueConsumer @8 :QueueConsumer;
   # `[triggers] crons` trigger: `scheduled(controller)` handler.
   scheduledHandler @9 :ScheduledHandler;
+  # `metadata` entrypoint.
+  metadata @10 :MetadataProvider;
 }
 
 # Result union of `PluginWorker.open`.
@@ -1025,6 +1027,28 @@ interface Oidc {
   ) -> (result :ExternalUserReply);
 }
 
+# `metadata` entrypoint: bibliographic lookups against a public catalog
+# (OpenLibrary, Audnexus, ...). A provider describes what it finds as
+# edition records; the host decides identity and never trusts a record to
+# name an existing library row. Network access is limited to the domains the
+# manifest's `[capabilities.network]` declares.
+interface MetadataProvider {
+  # Liveness / readiness probe.
+  health @0 () -> (result :HealthReply);
+  # Records for the editions the given identifiers name.
+  lookup @1 (
+      params :MetadataLookupParams  # Identifiers to resolve and a result cap.
+  ) -> (result :MetadataRecordsReply);
+  # Records matching a title and, optionally, an author.
+  search @2 (
+      params :MetadataSearchParams  # Title, author, language and a result cap.
+  ) -> (result :MetadataRecordsReply);
+  # Chapter layout of the edition the given identifiers name.
+  chapters @3 (
+      params :MetadataChaptersParams  # Identifiers of one edition.
+  ) -> (result :MetadataChaptersReply);
+}
+
 # Marks an enum whose wire strings (where an enum travels as `Text`, e.g.
 # `PluginError.code`) are the snake_case form of the enumerant names
 # (`payloadTooLarge` -> "payload_too_large").
@@ -1091,6 +1115,9 @@ enum Entrypoint {
   cli @4;
   # OIDC bridge: relying-party client templates and `authenticateUser`.
   oidc @5;
+  # Metadata provider: `lookup`, `search` and `chapters`
+  # (`MetadataProvider`).
+  metadata @6;
 }
 
 # One declared event consumer: a `[[events.consumers]]` row the default
@@ -2358,6 +2385,139 @@ struct ScheduledController {
   # UTC unix milliseconds. Host fence/lease is authoritative; this hint must
   # not outlive the fence.
   deadlineUnixMs @4 :UInt64;
+}
+
+# Params of `MetadataProvider.lookup`.
+struct MetadataLookupParams {
+  # Identifiers naming the wanted edition or work; never empty. A provider
+  # ignores schemes it does not serve.
+  identifiers @0 :List(Identifier);
+  # Marketplace to answer for (`us`, `uk`, ...) when the provider is
+  # regional.
+  marketplace @1 :Text $optional;
+  # Most records to return; the provider picks a small default when absent.
+  limit @2 :UInt32 $optional;
+}
+
+# Params of `MetadataProvider.search`.
+struct MetadataSearchParams {
+  # Title to match; never empty.
+  title @0 :Text;
+  # Author display name to narrow the match when known.
+  author @1 :Text $optional;
+  # Preferred content language code when known.
+  language @2 :Text $optional;
+  # Marketplace to answer for when the provider is regional.
+  marketplace @3 :Text $optional;
+  # Most records to return; the provider picks a small default when absent.
+  limit @4 :UInt32 $optional;
+}
+
+# Params of `MetadataProvider.chapters`.
+struct MetadataChaptersParams {
+  # Identifiers of one edition (an ASIN for Audnexus); never empty.
+  identifiers @0 :List(Identifier);
+  # Marketplace to answer for when the provider is regional.
+  marketplace @1 :Text $optional;
+}
+
+# One edition as a metadata provider describes it: the same structured
+# fields as `CatalogHit`, without store pricing.
+struct MetadataRecord {
+  # Primary title.
+  title @0 :Text;
+  # Subtitle when distinct from `title`.
+  subtitle @1 :Text $optional;
+  # Long description / blurb when known.
+  description @2 :Text $optional;
+  # Cover image URL.
+  coverUrl @3 :Text $optional;
+  # The provider's page for this record.
+  url @4 :Text $optional;
+  # Publisher name when known.
+  publisher @5 :Text $optional;
+  # Runtime in whole minutes when known.
+  lengthMinutes @6 :UInt32 $optional;
+  # Publication date string as the provider prints it.
+  publishedAt @7 :Text $optional;
+  # Category / genre labels as a single string when known.
+  categories @8 :Text $optional;
+  # Content language code when known.
+  language @9 :Text $optional;
+  # Whether the edition is abridged when the provider says so.
+  abridgement @10 :Abridgement;
+  # Kind of work the record describes.
+  workKind @11 :WorkKind;
+  # How the work is realised in this edition.
+  expressionKind @12 :ExpressionKind;
+  # Form of this edition.
+  mediaKind @13 :MediaKind;
+  # External identifiers (ISBN, ASIN, OpenLibrary ids).
+  identifiers @14 :List(Identifier);
+  # Credited contributors in billing order.
+  credits @15 :List(Credit);
+  # Series the work belongs to.
+  seriesEntries @16 :List(SeriesEntry);
+  # Aggregate rating when the provider publishes one.
+  ratingOverall @17 :Float64 $optional;
+  # Number of ratings behind `ratingOverall` when known.
+  ratingCount @18 :UInt32 $optional;
+}
+
+# Success payload of `MetadataProvider.lookup` / `search`.
+struct MetadataRecords {
+  # Records in the provider's relevance order; empty when nothing matched.
+  records @0 :List(MetadataRecord);
+}
+
+# Result union of `MetadataProvider.lookup` / `search`.
+struct MetadataRecordsReply {
+  union {
+    # Success: matching records.
+    ok @0 :MetadataRecords;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# One chapter in a provider's chapter layout. Chapters are listed in
+# pre-order: a chapter with `depth` n + 1 is nested under the nearest
+# earlier chapter with `depth` n.
+struct MetadataChapter {
+  # Chapter title.
+  title @0 :Text;
+  # Start offset in milliseconds from the beginning of the title.
+  startMs @1 :UInt64;
+  # Length in milliseconds when known.
+  lengthMs @2 :UInt64 $optional;
+  # Nesting depth; 0 for a top-level chapter.
+  depth @3 :UInt32;
+}
+
+# Success payload of `MetadataProvider.chapters`.
+struct MetadataChapters {
+  # False when the provider has no chapter layout for the edition.
+  found @0 :Bool;
+  # Chapters in pre-order; empty when not `found`.
+  chapters @1 :List(MetadataChapter);
+  # Length of the store's spoken brand intro in milliseconds when known.
+  brandIntroMs @2 :UInt64 $optional;
+  # Length of the store's spoken brand outro in milliseconds when known.
+  brandOutroMs @3 :UInt64 $optional;
+  # Total runtime the layout was measured against, in milliseconds.
+  runtimeMs @4 :UInt64 $optional;
+  # Whether the provider marks the offsets as exact rather than estimated.
+  accurate @5 :Bool;
+}
+
+# Result union of `MetadataProvider.chapters`.
+struct MetadataChaptersReply {
+  union {
+    # Success: chapter layout or not-found marker.
+    ok @0 :MetadataChapters;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
 }
 
 # --- rust-generated: end ---
