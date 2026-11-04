@@ -202,10 +202,23 @@ queries go through SQL-v1.
 - on `ScanBook` only, `language` and `abridgement :Abridgement`, which
   `CatalogHit` already has.
 
-Every new enum starts with `unspecified @0`. Cap'n Proto reads an absent
-field as ordinal 0, so an older guest that never sets the field is
-indistinguishable from one that says "unspecified", and both trigger the
-flat-field fallback. In Rust each maps to an `Option` of the enum.
+Cap'n Proto reads an absent enum field as ordinal 0, so ordinal 0 is
+always the value a guest gets when it says nothing. The schema is
+unreleased, so there are no older guests to tell apart, and the new enums
+follow the rule the schema already uses (`CatalogSort`, `Entrypoint`):
+
+- Ordinal 0 is the common case: `book` for `WorkKind`, `audiobook` for
+  `MediaKind`, `narration` for `ExpressionKind`, `edition` for the
+  identifier level and `author` for the credit role. A guest that returns
+  anything else sets the field, and the conformance tests check that each
+  first-party plugin does.
+- `unknown @0` is used only where a source can honestly not know the
+  answer, and the resolver treats unknown differently from any known value.
+  Today that is `Abridgement`, which already works this way.
+
+After the v1 freeze the same rule decides any enum field added later:
+ordinal 0 must then be the right answer for a guest built before the field
+existed.
 
 The flat text fields (`authors`, `narrators`, `asin`, `isbn`, `contentKind`,
 `series`, `seriesIndex`) stay on the wire, documented as deprecated. The host
