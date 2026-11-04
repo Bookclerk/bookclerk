@@ -412,6 +412,213 @@ class RunGhTests(unittest.TestCase):
             mq.subprocess.run = old
 
 
+MACOS_JOB = "macOS (sandbox, gateway, tray)"
+MACOS_JOB_ID = 126203811708
+
+
+def stranded_bodies(attempt: int = 2) -> dict[str, bytes]:
+    """A pull request run whose CI Gate is deciding on attempt ``attempt``.
+
+    The macOS job never got a runner on this attempt or the one before.
+    """
+    base = f"repos/{REPO}"
+    bodies = {
+        f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr_gate_attempt2.json", run_attempt=attempt),
+        f"{base}/check-runs/{MACOS_JOB_ID}/annotations": seed("annotations__not_acquired.json"),
+    }
+    for n in range(1, attempt + 1):
+        bodies[f"{base}/actions/runs/{PR_RUN_ID}/attempts/{n}/jobs"] = seed("jobs__macos_stranded.json")
+    return bodies
+
+
+def merge_group_gate_bodies() -> dict[str, bytes]:
+    """The 604 merge group, as its CI Gate sees it, with the macOS job stranded."""
+    base = f"repos/{REPO}"
+    # Re-enqueued after the first merge group (run 3490) stranded macOS.
+    timeline = json.loads(seed("timeline__pr604.json")) + [[{"event": "added_to_merge_queue", "created_at": "2026-11-03T21:55:00Z"}]]
+    return {
+        f"{base}/actions/runs/{RUN_ID}": edited(
+            "run__pr604.json", status="in_progress", conclusion=None, repository={"full_name": REPO}, run_number=3500
+        ),
+        f"{base}/actions/runs/{RUN_ID}/attempts/1/jobs": seed("jobs__macos_stranded.json"),
+        f"{base}/check-runs/{MACOS_JOB_ID}/annotations": seed("annotations__not_acquired.json"),
+        f"{base}/issues/604/timeline": json.dumps(timeline).encode(),
+        f"{base}/actions/workflows/ci.yml/runs": seed("runs__pr604_merge_groups.json"),
+        # The previous merge group of #604 (run 3490).
+        f"{base}/actions/runs/41650000001/jobs": seed("jobs__macos_stranded.json"),
+    }
+
+
+class StrandedJobTests(unittest.TestCase):
+    """CI Gate passes a stranded macOS job only after one retry."""
+
+    def test_reads_the_gate_run(self) -> None:
+        raw = seed("run__pr_gate_attempt2.json")
+        self.assertEqual(mq.gate_run(raw, REPO), ("pull_request", "claude/project-thread-bslas8", 3541))
+        queue = edited("run__pr604.json", repository={"full_name": REPO}, run_number=3500)
+        branch = "gh-readonly-queue/main/pr-604-9bc9f97b61370d35f573f5f1dc23b99d75eb155b"
+        self.assertEqual(mq.gate_run(queue, REPO), ("merge_group", branch, 3500))
+        self.assertIsNone(mq.gate_run(seed("run__pr604.json"), REPO), "no base repository")
+        for name, bad in {
+            "push": edited("run__pr_gate_attempt2.json", event="push"),
+            "other workflow": edited("run__pr_gate_attempt2.json", path=".github/workflows/osv-remediate.yml"),
+            "no branch": edited("run__pr_gate_attempt2.json", head_branch=""),
+            "not json": b"{",
+        }.items():
+            with self.subTest(case=name):
+                self.assertIsNone(mq.gate_run(bad, REPO))
+        self.assertIsNone(mq.gate_run(seed("run__pr_gate_attempt2.json"), "other/repo"))
+
+    def test_finds_only_a_stranded_job_by_name(self) -> None:
+        raw = seed("jobs__macos_stranded.json")
+        self.assertEqual(mq.stranded_job(raw, MACOS_JOB), MACOS_JOB_ID)
+        self.assertIsNone(mq.stranded_job(raw, "tray (windows-latest)"), "it succeeded")
+        self.assertIsNone(mq.stranded_job(raw, "nope"))
+        doc = json.loads(raw)
+        prefixed = copy.deepcopy(doc)
+        for job in prefixed["jobs"]:
+            job["name"] = "verify / " + job["name"]
+        self.assertEqual(mq.stranded_job(json.dumps(prefixed).encode(), MACOS_JOB), MACOS_JOB_ID)
+        twice = copy.deepcopy(doc)
+        twice["jobs"].append(next(j for j in doc["jobs"] if j["name"] == MACOS_JOB))
+        self.assertIsNone(mq.stranded_job(json.dumps(twice).encode(), MACOS_JOB))
+        started = copy.deepcopy(doc)
+        next(j for j in started["jobs"] if j["name"] == MACOS_JOB)["runner_name"] = "GitHub Actions 1"
+        self.assertIsNone(mq.stranded_job(json.dumps(started).encode(), MACOS_JOB))
+
+    def test_gate_passed(self) -> None:
+        self.assertFalse(mq.gate_passed(seed("jobs__macos_stranded.json")))
+        self.assertFalse(mq.gate_passed(seed("jobs__pr605_two_stranded.json")))
+        jobs = json.loads(seed("jobs__pr605_two_stranded.json"))
+        next(j for j in jobs["jobs"] if j["name"] == "CI Gate")["conclusion"] = "success"
+        self.assertTrue(mq.gate_passed(json.dumps(jobs).encode()))
+
+    def test_pull_request_passes_on_the_second_attempt(self) -> None:
+        passes, reason = mq.decide_stranded(REPO, PR_RUN_ID, 2, MACOS_JOB, FakeGh(stranded_bodies()))
+        self.assertTrue(passes, reason)
+
+    def test_pull_request_first_attempt_is_re_run_first(self) -> None:
+        passes, reason = mq.decide_stranded(REPO, PR_RUN_ID, 1, MACOS_JOB, FakeGh(stranded_bodies(1)))
+        self.assertFalse(passes)
+        self.assertIn("re-run once first", reason)
+
+    def test_pull_request_first_miss_on_a_later_attempt_is_re_run_first(self) -> None:
+        """A hand re-run after another failure is not a macOS retry."""
+        bodies = stranded_bodies()
+        jobs = json.loads(seed("jobs__macos_stranded.json"))
+        mac = next(j for j in jobs["jobs"] if j["name"] == MACOS_JOB)
+        mac.update(conclusion="success", runner_name="GitHub Actions 7", steps=[{"name": "Set up job"}])
+        bodies[f"repos/{REPO}/actions/runs/{PR_RUN_ID}/attempts/1/jobs"] = json.dumps(jobs).encode()
+        passes, reason = mq.decide_stranded(REPO, PR_RUN_ID, 2, MACOS_JOB, FakeGh(bodies))
+        self.assertFalse(passes)
+        self.assertIn("first miss", reason)
+
+    def test_merge_group_passes_after_one_re_enqueue(self) -> None:
+        passes, reason = mq.decide_stranded(REPO, RUN_ID, 1, MACOS_JOB, FakeGh(merge_group_gate_bodies()))
+        self.assertTrue(passes, reason)
+
+    def test_merge_group_first_miss_is_re_enqueued_first(self) -> None:
+        base = f"repos/{REPO}"
+        once = merge_group_gate_bodies()
+        once[f"{base}/issues/604/timeline"] = seed("timeline__pr604.json")
+        passes, reason = mq.decide_stranded(REPO, RUN_ID, 1, MACOS_JOB, FakeGh(once))
+        self.assertFalse(passes, "the 604 timeline holds one enqueue")
+        self.assertIn("re-enqueued once first", reason)
+        # Re-queued by hand after another failure: the previous group ran macOS.
+        other = merge_group_gate_bodies()
+        other[f"{base}/actions/runs/41650000001/jobs"] = seed("jobs__real_failure.json")
+        passes, reason = mq.decide_stranded(REPO, RUN_ID, 1, MACOS_JOB, FakeGh(other))
+        self.assertFalse(passes)
+        self.assertIn("first miss", reason)
+        none = merge_group_gate_bodies()
+        none[f"{base}/actions/workflows/ci.yml/runs"] = b'{"workflow_runs": []}'
+        passes, reason = mq.decide_stranded(REPO, RUN_ID, 1, MACOS_JOB, FakeGh(none))
+        self.assertFalse(passes)
+        self.assertIn("no earlier merge group", reason)
+
+    def test_merge_group_on_an_older_head_is_no_retry(self) -> None:
+        # #604 got a new head after run 3490 and was queued twice since; the
+        # first of those entries left no run, so 3490 tested the old head.
+        bodies = merge_group_gate_bodies()
+        timeline = json.loads(seed("timeline__pr604.json")) + [
+            [
+                {"event": "committed", "sha": "e" * 40},
+                {"event": "added_to_merge_queue", "created_at": "2026-11-03T21:30:00Z"},
+                {"event": "added_to_merge_queue", "created_at": "2026-11-03T21:55:00Z"},
+            ]
+        ]
+        bodies[f"repos/{REPO}/issues/604/timeline"] = json.dumps(timeline).encode()
+        gh = FakeGh(bodies)
+        passes, reason = mq.decide_stranded(REPO, RUN_ID, 1, MACOS_JOB, gh)
+        self.assertFalse(passes)
+        self.assertIn("on its head", reason)
+        listing = next(c for c in gh.calls if "/actions/workflows/" in c[-1])
+        self.assertEqual(listing[1:3], ["--paginate", "--slurp"])
+        self.assertIn("created=%3E%3D2026-11-03T21%3A30%3A00Z", listing[-1])
+        # A timeline whose entry has no timestamp proves nothing.
+        unstamped = [{"event": "committed"}, {"event": "added_to_merge_queue"}, {"event": "added_to_merge_queue"}]
+        bodies[f"repos/{REPO}/issues/604/timeline"] = json.dumps([*timeline, unstamped]).encode()
+        passes, reason = mq.decide_stranded(REPO, RUN_ID, 1, MACOS_JOB, FakeGh(bodies))
+        self.assertFalse(passes)
+        self.assertIn("entered the queue", reason)
+
+    def test_previous_queue_run(self) -> None:
+        raw = seed("runs__pr604_merge_groups.json")
+        old = "2026-11-03T00:00:00Z"
+        self.assertEqual(mq.previous_queue_run(raw, 604, 3500, old), 41650000001)
+        self.assertEqual(mq.previous_queue_run(raw, 604, 3490, old), 41630000003, "found on the second page")
+        self.assertEqual(mq.previous_queue_run(raw, 604, 3500, "2026-11-03T21:00:00Z"), 41650000001, "at since counts")
+        self.assertIsNone(mq.previous_queue_run(raw, 604, 3500, "2026-11-03T21:00:01Z"), "older head")
+        self.assertIsNone(mq.previous_queue_run(raw, 604, 3470, old))
+        self.assertIsNone(mq.previous_queue_run(raw, 605, 9999, old))
+        self.assertIsNone(mq.previous_queue_run(raw, 604, 3500, "yesterday"))
+        self.assertIsNone(mq.previous_queue_run(b"[]", 604, 3500, old))
+        self.assertIsNone(mq.previous_queue_run(b'{"workflow_runs": []}', 604, 3500, old), "not slurped")
+
+    def test_first_enqueue_on_head(self) -> None:
+        self.assertEqual(mq.first_enqueue_on_head(seed("timeline__pr604.json")), "2026-11-03T20:30:00Z")
+        stamp = [{"event": "added_to_merge_queue", "created_at": "2026-11-03T21:00:00Z"}]
+        later = [{"event": "added_to_merge_queue", "created_at": "2026-11-03T22:00:00Z"}]
+        self.assertEqual(mq.first_enqueue_on_head(json.dumps([stamp, later]).encode()), "2026-11-03T21:00:00Z")
+        pushed = [stamp + [{"event": "head_ref_force_pushed"}] + later]
+        self.assertEqual(mq.first_enqueue_on_head(json.dumps(pushed).encode()), "2026-11-03T22:00:00Z")
+        for raw in (b'[[{"event": "committed"}]]', b'[[{"event": "added_to_merge_queue"}]]', b"[{}]", b"{"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(mq.first_enqueue_on_head(raw))
+
+    def test_refusals(self) -> None:
+        base = f"repos/{REPO}"
+        cases = {
+            "main push": {f"{base}/actions/runs/{PR_RUN_ID}": edited("run__pr_gate_attempt2.json", event="push")},
+            "job ran": {f"{base}/actions/runs/{PR_RUN_ID}/attempts/2/jobs": seed("jobs__all_green.json")},
+            "cancelled by hand": {f"{base}/check-runs/{MACOS_JOB_ID}/annotations": seed("annotations__notice_only.json")},
+            "api failure": {f"{base}/check-runs/{MACOS_JOB_ID}/annotations": None},
+        }
+        for name, over in cases.items():
+            with self.subTest(case=name):
+                bodies = stranded_bodies()
+                for key, body in over.items():
+                    if body is None:
+                        del bodies[key]
+                    else:
+                        bodies[key] = body
+                passes, reason = mq.decide_stranded(REPO, PR_RUN_ID, 2, MACOS_JOB, FakeGh(bodies))
+                self.assertFalse(passes)
+                self.assertTrue(reason)
+        passes, _ = mq.decide_stranded(REPO, PR_RUN_ID, 0, MACOS_JOB, FakeGh({}))
+        self.assertFalse(passes)
+
+    def test_recovery_leaves_a_run_whose_gate_passed(self) -> None:
+        """A run CI Gate let through is never re-run or re-enqueued."""
+        bodies = rerun_bodies()
+        jobs = json.loads(seed("jobs__pr605_two_stranded.json"))
+        next(j for j in jobs["jobs"] if j["name"] == "CI Gate")["conclusion"] = "success"
+        bodies[f"repos/{REPO}/actions/runs/{PR_RUN_ID}/jobs"] = json.dumps(jobs).encode()
+        rerun, reason = mq.decide_rerun(REPO, PR_RUN_ID, FakeGh(bodies))
+        self.assertFalse(rerun)
+        self.assertIn("passed CI Gate", reason)
+
+
 class CliTests(unittest.TestCase):
     """The command line writes `pr=` only when the pull request goes back."""
 
@@ -460,9 +667,27 @@ class CliTests(unittest.TestCase):
         code, out, _ = self.run_main(["--repo", REPO, "--run-id", str(PR_RUN_ID), "--rerun"], FakeGh({}))
         self.assertEqual((code, out), (0, ""))
 
+    def test_stranded_writes_the_flag(self) -> None:
+        """A stranded macOS job on a retried run writes ``stranded=true``."""
+        args = ["--repo", REPO, "--run-id", str(PR_RUN_ID), "--run-attempt", "2", "--stranded-job", MACOS_JOB]
+        code, out, summary = self.run_main(args, FakeGh(stranded_bodies()))
+        self.assertEqual((code, out), (0, "stranded=true\n"))
+        self.assertIn("Stranded job", summary)
+        args[5] = "1"
+        code, out, _ = self.run_main(args, FakeGh(stranded_bodies(1)))
+        self.assertEqual((code, out), (0, ""))
+        code, out, _ = self.run_main(["--repo", REPO, "--run-id", "1", "--rerun", "--run-attempt", "2"], FakeGh({}))
+        self.assertEqual((code, out), (2, ""))
+
     def test_bad_arguments_never_call_github(self) -> None:
         gh = FakeGh({})
-        for args in (["--repo", "x", "--run-id", "1"], ["--repo", REPO, "--run-id", "0"], ["--repo", "a/b c", "--run-id", "1"]):
+        for args in (
+            ["--repo", "x", "--run-id", "1"],
+            ["--repo", REPO, "--run-id", "0"],
+            ["--repo", "a/b c", "--run-id", "1"],
+            ["--repo", REPO, "--run-id", "1", "--stranded-job", MACOS_JOB],
+            ["--repo", REPO, "--run-id", "1", "--stranded-job", "", "--run-attempt", "2"],
+        ):
             with self.subTest(args=args):
                 code, out, _ = self.run_main(args, gh)
                 self.assertEqual((code, out), (2, ""))
@@ -611,6 +836,122 @@ def oracle_newer_run(raw: bytes, head_repo: str, run_number: int) -> bool | None
     return any(r["head_repository"].get("full_name") == head_repo and r["run_number"] > run_number for r in runs)
 
 
+def oracle_gate_run(raw: bytes) -> tuple[str, str] | None:
+    """Independent reading of ``gate_run`` with exact type checks."""
+    run = _parse(raw)
+    if type(run) is not dict or type(run.get("repository")) is not dict:
+        return None
+    event = run.get("event")
+    branch = run.get("head_branch")
+    number = run.get("run_number")
+    if (
+        event in ("pull_request", "merge_group")
+        and run.get("path") == ".github/workflows/ci.yml"
+        and run["repository"].get("full_name") == REPO
+        and type(branch) is str
+        and branch != ""
+        and type(number) is int
+        and number >= 1
+    ):
+        return event, branch, number
+    return None
+
+
+def oracle_time(value: object) -> bool:
+    """Whether a value has the API's ``YYYY-MM-DDTHH:MM:SSZ`` shape, by hand."""
+    if type(value) is not str or len(value) != 20 or not value.isascii():
+        return False
+    digits = value[0:4] + value[5:7] + value[8:10] + value[11:13] + value[14:16] + value[17:19]
+    return digits.isdigit() and value[4] + value[7] + value[10] + value[13] + value[16] + value[19] == "--T::Z"
+
+
+def oracle_first_enqueue(raw: bytes) -> str | None:
+    """Independent reading of ``first_enqueue_on_head`` with exact type checks."""
+    pages = _parse(raw)
+    if type(pages) is not list or not all(type(p) is list for p in pages):
+        return None
+    events = [e for p in pages for e in p]
+    if not all(type(e) is dict for e in events):
+        return None
+    last_head = max((i for i, e in enumerate(events) if e.get("event") in ("committed", "head_ref_force_pushed")), default=-1)
+    entries = [e for e in events[last_head + 1 :] if e.get("event") == "added_to_merge_queue"]
+    if not entries or not oracle_time(entries[0].get("created_at")):
+        return None
+    return entries[0]["created_at"]
+
+
+def oracle_previous_queue_run(raw: bytes, pr: int, run_number: int, since: str) -> int | None:
+    """Independent reading of ``previous_queue_run`` with exact type checks."""
+    pages = _parse(raw)
+    if type(pages) is not list or not oracle_time(since):
+        return None
+    if not all(type(p) is dict and type(p.get("workflow_runs")) is list for p in pages):
+        return None
+    runs = [r for p in pages for r in p["workflow_runs"]]
+    if not all(
+        type(r) is dict
+        and type(r.get("run_number")) is int
+        and type(r.get("id")) is int
+        and type(r.get("head_branch")) is str
+        and oracle_time(r.get("created_at"))
+        for r in runs
+    ):
+        return None
+    mine = [
+        r
+        for r in runs
+        if oracle_queued_pr_branch(r["head_branch"]) == pr and r["run_number"] < run_number and r["created_at"] >= since
+    ]
+    return max(mine, key=lambda r: r["run_number"])["id"] if mine else None
+
+
+def oracle_queued_pr_branch(branch: str) -> int | None:
+    """The pull request number of a queue branch, by hand."""
+    prefix = "gh-readonly-queue/main/pr-"
+    if not branch.startswith(prefix):
+        return None
+    number, _, sha = branch[len(prefix) :].partition("-")
+    if not (1 <= len(number) <= 10 and number.isascii() and number.isdigit() and number[0] != "0"):
+        return None
+    if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
+        return None
+    return int(number)
+
+
+def oracle_stranded_job(raw: bytes, name: str) -> int | None:
+    """Independent reading of ``stranded_job`` with exact type checks."""
+    doc = _parse(raw)
+    if type(doc) is not dict or type(doc.get("jobs")) is not list:
+        return None
+    if not all(type(j) is dict and type(j.get("name")) is str for j in doc["jobs"]):
+        return None
+    found = [j for j in doc["jobs"] if j["name"] == name or j["name"].endswith(" / " + name)]
+    if len(found) != 1:
+        return None
+    job = found[0]
+    if (
+        type(job.get("id")) is int
+        and job.get("status") == "completed"
+        and job.get("conclusion") == "cancelled"
+        and job.get("runner_name") in (None, "")
+        and job.get("steps") in (None, [])
+    ):
+        return job["id"]
+    return None
+
+
+def oracle_gate_passed(raw: bytes) -> bool:
+    """Independent reading of ``gate_passed`` with exact type checks."""
+    doc = _parse(raw)
+    if type(doc) is not dict or type(doc.get("jobs")) is not list:
+        return False
+    for job in doc["jobs"]:
+        if type(job) is dict and type(job.get("name")) is str and job.get("conclusion") == "success":
+            if job["name"] == "CI Gate" or job["name"].endswith(" / CI Gate"):
+                return True
+    return False
+
+
 def check_against_oracles(case: unittest.TestCase, raw: bytes, label: str) -> None:
     """Asserts every parser agrees with its oracle on one body."""
     case.assertEqual(mq.run_lineage(raw), oracle_run_lineage(raw), label)
@@ -622,6 +963,14 @@ def check_against_oracles(case: unittest.TestCase, raw: bytes, label: str) -> No
     case.assertEqual(mq.not_acquired(raw), oracle_not_acquired(raw), label)
     case.assertEqual(mq.pr_head(raw, REPO), oracle_pr_head(raw), label)
     case.assertEqual(mq.enqueues_since_head(raw), oracle_enqueues(raw), label)
+    case.assertEqual(mq.gate_run(raw, REPO), oracle_gate_run(raw), label)
+    for name in ("macOS (sandbox, gateway, tray)", "CI Gate", "tray (macos-latest)"):
+        case.assertEqual(mq.stranded_job(raw, name), oracle_stranded_job(raw, name), label)
+    case.assertEqual(mq.gate_passed(raw), oracle_gate_passed(raw), label)
+    case.assertEqual(mq.first_enqueue_on_head(raw), oracle_first_enqueue(raw), label)
+    for pr, number, since in ((604, 3500, "2026-11-03T00:00:00Z"), (604, 3490, "2026-11-03T21:00:00Z"), (603, 10**6, "x")):
+        got = mq.previous_queue_run(raw, pr, number, since)
+        case.assertEqual(got, oracle_previous_queue_run(raw, pr, number, since), label)
 
 
 class CorpusTests(unittest.TestCase):
@@ -642,7 +991,8 @@ class FuzzTests(unittest.TestCase):
 
     VALUES: list[object] = [
         None, True, False, 0, 1, -1, 1.5, "", "x", "success", "cancelled", "failure", "skipped",
-        "merge_group", "open", "CI Gate", "added_to_merge_queue", "committed", REPO, [], {}, [1], {"a": 1},
+        "merge_group", "pull_request", "open", "CI Gate", "macOS (sandbox, gateway, tray)", "completed", "added_to_merge_queue",
+        "committed", "2026-11-03T21:00:00Z", "2026-13-99T99:99:99Z", REPO, [], {}, [1], {"a": 1},
     ]  # fmt: skip
 
     def mutate_json(self, rng: random.Random, node: object) -> object:

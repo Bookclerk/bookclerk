@@ -5,7 +5,7 @@
 //! `describe()` advertises typed [`PluginCapabilities`], then
 //! `open(invocation, bindings)` returns the exported [`Entrypoints`]
 //! (`storefront`, `storage`, `databaseAdapter`, `remoteLibrary`, `cli`,
-//! `oidc`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
+//! `oidc`, `metadata`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
 //! [`Bindings`] carry `CONFIG` / `SECRETS`, the `EVENTS` publisher, and named
 //! `[[databases]]` sessions — the Workers `env` idiom.
 //!
@@ -237,9 +237,9 @@ pub use limits::{
 pub use roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
     Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
-    JobController, JobRunner, KvNamespace, NamedKvBinding, NamedQueueBinding, NeverCancel, Oidc,
-    PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary,
-    ScheduledHandler, Source,
+    JobController, JobRunner, KvNamespace, MetadataProvider, NamedKvBinding, NamedQueueBinding,
+    NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer,
+    ReadResult, RemoteLibrary, ScheduledHandler, Source,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
@@ -247,9 +247,9 @@ pub use rpc::{
     byte_source_from_async_read, connect_plugin, pull_byte_source_to_writer, serve_plugin,
     serve_plugin_stdio, ContentSourceClient, DatabaseClient, DestinationClient, DestinationServer,
     EventConsumerClient, EventPublisherClient, HostBindings, JobRunnerClient, KvNamespaceClient,
-    OidcClient, OpenedEntrypoints, PluginCliClient, PluginClient, PluginServer,
-    QueueConsumerClient, QueueProducerClient, RemoteLibraryClient, ScheduledHandlerClient,
-    SourceClient, SourceServer,
+    MetadataProviderClient, OidcClient, OpenedEntrypoints, PluginCliClient, PluginClient,
+    PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
+    ScheduledHandlerClient, SourceClient, SourceServer,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,

@@ -26,6 +26,7 @@ bookclerk-sandbox.workspace = true
 bookclerk-db-exec.workspace = true
 bookclerk-node-proto.workspace = true
 bookclerk-plugin-abi = { workspace = true, features = ["host"] }
+bookclerk-resolve.workspace = true
 html-escape.workspace = true
 rand.workspace = true
 zeroize.workspace = true

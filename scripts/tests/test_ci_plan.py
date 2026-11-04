@@ -33,6 +33,7 @@ from ci_plan.execute import (  # noqa: E402
     ExecError,
     build_only_command,
     execution_mode,
+    expected_jobs,
     gate,
     job_outputs,
     planned_commands,
@@ -1053,9 +1054,10 @@ class NativeGatewayTests(unittest.TestCase):
             p = plan(path)
             art = artifact(p)
             ok = {"plan": {"result": "success"}}
-            for job, on in p.jobs.items():
+            for job, on in expected_jobs(art).items():
                 ok[job] = {"result": "success" if on else "skipped"}
             self.assertEqual(ok["native-gateway"]["result"], "success" if want else "skipped")
+            self.assertEqual(ok["macos"]["result"], "success" if want else "skipped")
             self.assertEqual(gate(art, ok), [])
             for result in ("failure", "cancelled", "skipped" if want else "success"):
                 with self.subTest(path=path, result=result):
@@ -1306,7 +1308,7 @@ class ExecutionTests(unittest.TestCase):
         p = plan("crates/bookclerk-cli/src/main.rs")
         art = artifact(p)
         ok = {"plan": {"result": "success"}}
-        for job, on in p.jobs.items():
+        for job, on in expected_jobs(art).items():
             ok[job] = {"result": "success" if on else "skipped"}
         self.assertEqual(gate(art, ok), [])
         for job, result, needle in (
@@ -1323,6 +1325,46 @@ class ExecutionTests(unittest.TestCase):
         missing = copy.deepcopy(ok)
         del missing["postgres"]
         self.assertTrue(any("not reported" in x for x in gate(art, missing)))
+
+    def test_gate_passes_only_a_stranded_os_leg_job(self) -> None:
+        p = plan("crates/bookclerk-tray/src/lib.rs")
+        art = artifact(p)
+        ok = {"plan": {"result": "success"}}
+        for job, on in expected_jobs(art).items():
+            ok[job] = {"result": "success" if on else "skipped"}
+        self.assertEqual(ok["macos"]["result"], "success")
+        stranded = copy.deepcopy(ok)
+        stranded["macos"]["result"] = "cancelled"
+        # Cancelled fails unless the stranded-job step vouched for it.
+        self.assertTrue(any(x.startswith("macos: expected to run") for x in gate(art, stranded)))
+        self.assertEqual(gate(art, stranded, frozenset({"macos"})), [])
+        # `needs` reports a job no runner took as `abandoned`.
+        stranded["macos"]["result"] = "abandoned"
+        self.assertTrue(any(x.startswith("macos: expected to run") for x in gate(art, stranded)))
+        self.assertEqual(gate(art, stranded, frozenset({"macos"})), [])
+        # Only `cancelled` passes, and only for an OS leg job.
+        for result in ("failure", "timed_out", "skipped"):
+            with self.subTest(result=result):
+                bad = copy.deepcopy(ok)
+                bad["macos"]["result"] = result
+                self.assertTrue(gate(art, bad, frozenset({"macos"})))
+        tray = copy.deepcopy(ok)
+        tray["tray"]["result"] = "cancelled"
+        problems = gate(art, tray, frozenset({"tray"}))
+        self.assertIn("tray: only an OS leg job may pass without a runner", problems)
+        self.assertIn("tray: expected to run, result cancelled", problems)
+
+    def test_os_leg_job_is_expected_with_any_owner(self) -> None:
+        for path, want in (
+            ("crates/bookclerk-tray/src/lib.rs", True),
+            ("crates/bookclerk-sandbox/src/lib.rs", True),
+            ("docs/a.md", False),
+        ):
+            with self.subTest(path=path):
+                expected = expected_jobs(artifact(plan(path)))
+                owners = ("confinement", "native-gateway", "tray")
+                self.assertEqual(expected["macos"], any(expected[o] for o in owners))
+                self.assertEqual(expected["macos"], want)
 
     def _exec_ctx(self, root: Path) -> Context:
         tmp = root / "tmp"
@@ -1741,6 +1783,8 @@ class RunnerLayoutTests(unittest.TestCase):
         needs = {"plan": {"result": "success"}}
         for job in JOB_CHECKS:
             needs[job] = {"result": "success" if job in BUILD_ONLY_JOBS else "skipped"}
+        # The macOS job runs the native-gateway leg, which saves the macOS cache.
+        needs["macos"] = {"result": "success"}
         self.assertEqual(gate(art, needs), [])
 
     def test_build_only_compiles_and_runs_nothing(self) -> None:

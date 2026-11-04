@@ -8,14 +8,14 @@
   },
   {
     "entrypoints": [],
-    "error": "index.js: `BookclerkPlugin` was removed in api_version 3; extend `BookclerkEntrypoint` (default export with event()/job() triggers) and export named entrypoint classes (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc)",
+    "error": "index.js: `BookclerkPlugin` was removed in api_version 3; extend `BookclerkEntrypoint` (default export with event()/job() triggers) and export named entrypoint classes (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata)",
     "language": "js",
     "name": "js removed base",
     "src": "import { BookclerkPlugin } from \"@bookclerk/plugin-sdk\";\n"
   },
   {
     "entrypoints": [],
-    "error": "main.py: `BookclerkPlugin` was removed in api_version 3; extend `BookclerkEntrypoint` (default export with event()/job() triggers) and export named entrypoint classes (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc)",
+    "error": "main.py: `BookclerkPlugin` was removed in api_version 3; extend `BookclerkEntrypoint` (default export with event()/job() triggers) and export named entrypoint classes (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata)",
     "language": "python",
     "name": "py removed base",
     "src": "from bookclerk_plugin_sdk import BookclerkPlugin\n"
@@ -180,6 +180,20 @@
     "language": "js",
     "name": "js first missing entrypoint reported",
     "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\nexport class Storage extends StorageEntrypoint {}\n"
+  },
+  {
+    "name": "js metadata missing",
+    "language": "js",
+    "entrypoints": ["metadata"],
+    "src": "import { BookclerkEntrypoint } from \"@bookclerk/plugin-sdk/workerd\";\n",
+    "error": "index.js: entrypoints = [\"metadata\"] requires `export class Metadata extends MetadataEntrypoint`"
+  },
+  {
+    "name": "py metadata defined",
+    "language": "python",
+    "entrypoints": ["metadata"],
+    "src": "from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint\nclass Metadata(MetadataEntrypoint):\n    pass\n",
+    "error": null
   },
   {
     "entrypoints": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc"],

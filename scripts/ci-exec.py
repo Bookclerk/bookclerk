@@ -101,6 +101,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         if name == "gate":
             p.add_argument("--needs-json", default=os.environ.get("NEEDS_JSON"), help="toJSON(needs)")
+            p.add_argument(
+                "--stranded",
+                default=os.environ.get("CI_GATE_STRANDED", ""),
+                help="Comma-separated OS leg jobs that never got a runner after a retry (default: $CI_GATE_STRANDED)",
+            )
 
     args = parser.parse_args(argv)
     if args.plan is None:
@@ -152,11 +157,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "gate":
             if not args.needs_json:
                 raise ExecError("gate needs --needs-json or $NEEDS_JSON (toJSON(needs))")
-            problems = gate(artifact, json.loads(args.needs_json))
+            stranded = frozenset(j for j in args.stranded.split(",") if j)
+            problems = gate(artifact, json.loads(args.needs_json), stranded)
             for p in problems:
                 print(f"::error::CI Gate: {p}")
             if problems:
                 return 1
+            for job in sorted(stranded):
+                note = f"{job} never got a runner after a retry; its checks did not run on this commit"
+                print(f"::warning::CI Gate: {note}")
+                write_step_summary(f"> [!WARNING]\n> {note}.\n")
             print("CI Gate: every job matched the expected execution")
             return 0
     except (ExecError, PlanError) as exc:

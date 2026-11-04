@@ -16,7 +16,7 @@ use crate::secrets::{
     build_sealed_record, delete_secret, get_secret, list_secrets, secret_account_type, secret_kind,
     unseal_secret, upsert_secret, EncryptedSecretRecord,
 };
-use crate::store::{LibraryStore, NewBook};
+use crate::store::{LibraryStore, NewBook, ScannedTitle};
 
 /// Host-enforced view of [`LibraryStore`] for one content-source plugin.
 ///
@@ -158,6 +158,18 @@ impl SourceScope {
         book.plugin_key = self.plugin_key.clone();
         book.source = self.source_id.clone();
         self.store.upsert_book(&book).await
+    }
+
+    /// Upsert a scanned title as this plugin's, and resolve its listing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read or write fails.
+    pub async fn upsert_scanned_title(&self, title: &ScannedTitle) -> Result<BookRecord> {
+        let mut title = title.clone();
+        title.book.plugin_key = self.plugin_key.clone();
+        title.book.source = self.source_id.clone();
+        self.store.upsert_scanned_title(&title).await
     }
 
     /// Look up one of this plugin's books by uuid, product id, ASIN, or ISBN.

@@ -244,7 +244,9 @@ def _validate_int(field: str, value: Any, low: int, high: int, message: str) -> 
         raise ValueError(f"plugin.toml: {field} {message}")
 
 
-HOST_EVENT_TYPES = frozenset({"book_acquired"})
+HOST_EVENT_TYPES = frozenset(
+    {"book_acquired", "edition_linked", "edition_updated", "holding_added"}
+)
 """Domain event types only the host emits; plugins consume them but cannot produce them."""
 
 MAX_KV_NAMESPACE_VALUE_BYTES = 1_048_576
@@ -619,6 +621,7 @@ ENTRYPOINT_NAMES: tuple[str, ...] = (
     "remoteLibrary",
     "cli",
     "oidc",
+    "metadata",
 )
 """Entrypoint wire names accepted in ``entrypoints``."""
 
@@ -820,6 +823,7 @@ ENTRYPOINT_EXPORT_CLASSES: dict[str, str] = {
     "remoteLibrary": "RemoteLibrary",
     "cli": "Cli",
     "oidc": "Oidc",
+    "metadata": "Metadata",
 }
 """Exported class name the launcher binds for each ``entrypoints`` wire name."""
 
@@ -848,7 +852,7 @@ def check_main_module_source(
         raise ValueError(
             f"{main_name}: `BookclerkPlugin` was removed in api_version 3; extend `{base}` "
             "(default export with event()/job() triggers) and export named entrypoint classes "
-            "(Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc)"
+            "(Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata)"
         )
     if language == "python":
         if "bookclerk_plugin_sdk" not in src and base not in src:

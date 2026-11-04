@@ -2,8 +2,8 @@
  * Out-of-tree workerd plugin smoke: ensure → materialize → describe + health.
  *
  * Spawns the pinned `workerd` binary against a materialised Cap'n Proto config
- * and exercises the bridge `/health`, `describe()`, and (for `storefront` /
- * `remoteLibrary` entrypoints) the entrypoint `health` method over
+ * and exercises the bridge `/health`, `describe()`, and (for `storefront`,
+ * `remoteLibrary` and `metadata` entrypoints) the entrypoint `health` method over
  * `POST /invoke`.
  */
 
@@ -16,12 +16,17 @@ import { parse as parseToml } from "smol-toml";
 import {
   ContentSourceHealthParamsCodec,
   ContentSourceHealthResultsCodec,
+  MetadataProviderHealthParamsCodec,
+  MetadataProviderHealthResultsCodec,
   RemoteLibraryHealthParamsCodec,
   RemoteLibraryHealthResultsCodec,
   decodeMessage,
   encodeMessage,
+  type ContentSourceHealthParams,
+  type ContentSourceHealthResults,
+  type StructCodec,
 } from "../generated-wire.js";
-import type { HealthReply } from "../generated.js";
+import type { HealthOk } from "../generated.js";
 import { validateManifest, type Manifest } from "../tools/validate.js";
 import { materializeConfig } from "./config.js";
 import {
@@ -30,6 +35,33 @@ import {
   ensureWorkerd,
   validateSpawnExecutable,
 } from "./ensure.js";
+
+/** Cap'n interfaces whose `health` method the smoke probes. */
+export type HealthInterface = "ContentSource" | "RemoteLibrary" | "MetadataProvider";
+
+/** `health` params / results codecs per probed interface. */
+const HEALTH_CODECS: Readonly<
+  Record<
+    HealthInterface,
+    {
+      readonly params: StructCodec<ContentSourceHealthParams>;
+      readonly results: StructCodec<ContentSourceHealthResults>;
+    }
+  >
+> = Object.freeze({
+  ContentSource: {
+    params: ContentSourceHealthParamsCodec,
+    results: ContentSourceHealthResultsCodec,
+  },
+  RemoteLibrary: {
+    params: RemoteLibraryHealthParamsCodec,
+    results: RemoteLibraryHealthResultsCodec,
+  },
+  MetadataProvider: {
+    params: MetadataProviderHealthParamsCodec,
+    results: MetadataProviderHealthResultsCodec,
+  },
+});
 
 /** Default Cap'n Proto config name written by {@link materializeConfig}. */
 const WORKERD_SMOKE_CONFIG = "workerd-config.capnp";
@@ -94,6 +126,42 @@ async function postJson(url: string, body: unknown, token: string): Promise<unkn
   return value;
 }
 
+/** Entrypoints with a `health` method, in probe order, and their interfaces. */
+const HEALTH_ENTRYPOINTS: readonly (readonly [string, HealthInterface])[] = [
+  ["storefront", "ContentSource"],
+  ["remoteLibrary", "RemoteLibrary"],
+  ["metadata", "MetadataProvider"],
+];
+
+/**
+ * Interfaces to probe for `health`, from a manifest's entrypoints.
+ *
+ * @param entrypoints The manifest's `entrypoints` list.
+ * @returns Every interface whose entrypoint the plugin exports, in probe
+ *   order; empty when none has a health probe (the default entrypoint's
+ *   event / job triggers have none).
+ */
+export function healthInterfaces(entrypoints: readonly string[]): HealthInterface[] {
+  return HEALTH_ENTRYPOINTS.filter(([name]) => entrypoints.includes(name)).map(
+    ([, iface]) => iface,
+  );
+}
+
+/**
+ * Returns a `HealthOk` reply, or throws when it reports not ready.
+ *
+ * @param iface Interface the reply came from, for the error message.
+ * @param health The decoded `HealthOk` value.
+ * @returns `health` unchanged when its `ok` is true.
+ * @throws {Error} When `ok` is false, with the guest's detail.
+ */
+export function requireHealthy(iface: HealthInterface, health: HealthOk): HealthOk {
+  if (!health.ok) {
+    throw new Error(`${iface}.health reported not ready: ${health.detail || "no detail"}`);
+  }
+  return health;
+}
+
 /**
  * `POST /invoke` health probe: the `health$Params` Cap'n message for the
  * entrypoint's interface, decoded as its `health$Results` reply union.
@@ -101,17 +169,14 @@ async function postJson(url: string, body: unknown, token: string): Promise<unkn
  * @param base Bridge base URL (`http://host:port`).
  * @param iface Cap'n interface that owns the `health` method.
  * @param token Bridge bearer token.
- * @returns The decoded `HealthReply` (`ok` arm; `err` arms throw).
+ * @returns The `HealthOk` value of the reply's `ok` arm (`err` arms throw).
  */
 async function invokeHealth(
   base: string,
-  iface: "ContentSource" | "RemoteLibrary",
+  iface: HealthInterface,
   token: string,
-): Promise<HealthReply> {
-  const params =
-    iface === "ContentSource" ? ContentSourceHealthParamsCodec : RemoteLibraryHealthParamsCodec;
-  const results =
-    iface === "ContentSource" ? ContentSourceHealthResultsCodec : RemoteLibraryHealthResultsCodec;
+): Promise<HealthOk> {
+  const { params, results } = HEALTH_CODECS[iface];
   const res = await fetch(`${base}/invoke`, {
     method: "POST",
     headers: {
@@ -130,7 +195,7 @@ async function invokeHealth(
   if (reply.kind === "err") {
     throw new Error(`${iface}.health failed: ${reply.value.code}: ${reply.value.message}`);
   }
-  return reply;
+  return reply.value;
 }
 
 function loadManifest(pluginDir: string): Manifest {
@@ -227,15 +292,13 @@ export async function runSmoke(pluginDir: string): Promise<string> {
   try {
     await waitForHealth(base, bridgeToken);
     const describe = await postJson(`${base}/describe`, {}, bridgeToken);
-    // `health` is a method of the storefront and remoteLibrary entrypoints;
-    // the default entrypoint (event/job triggers) has no health probe.
-    const entrypoints = manifest.entrypoints ?? [];
-    const healthIface = entrypoints.includes("storefront")
-      ? "ContentSource"
-      : entrypoints.includes("remoteLibrary")
-        ? "RemoteLibrary"
-        : null;
-    const health = healthIface ? (await invokeHealth(base, healthIface, bridgeToken)).value : null;
+    // `health` is a method of the storefront, remoteLibrary and metadata
+    // entrypoints; the default entrypoint (event/job triggers) has no health
+    // probe.
+    const health: Partial<Record<HealthInterface, HealthOk>> = {};
+    for (const iface of healthInterfaces(manifest.entrypoints ?? [])) {
+      health[iface] = requireHealthy(iface, await invokeHealth(base, iface, bridgeToken));
+    }
     const detail = {
       plugin: manifest.id,
       listen: generated.listenAddr,

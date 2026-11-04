@@ -1,40 +1,30 @@
-//! SeaORM entity for the `works` table entity (text primary key).
+//! SeaORM entity for the `works` table (text primary key).
 
 use sea_orm::entity::prelude::*;
 
 /// Row shape for this table (`DeriveEntityModel`).
-#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "works")]
 pub struct Model {
-    /// Surrogate primary key assigned by the database.
+    /// Work id (a random UUID).
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: String,
-    /// Preferred ASIN representing this canonical work.
-    pub canonical_asin: Option<String>,
-    /// Preferred ISBN representing this canonical work.
-    pub canonical_isbn: Option<String>,
-    /// Display title of the work or edition.
+    /// Kind of work: `book`, `podcast_show`, `podcast_episode` or `drama`.
+    pub kind: String,
+    /// Display title.
     pub title: String,
-    /// Comma-separated or JSON author list from the storefront.
-    pub authors: Option<String>,
-    /// Comma-separated or JSON narrator list when present.
-    pub narrators: Option<String>,
-    /// Blurb / synopsis text (may contain HTML).
+    /// The work matcher's key (cleaned title and authors); empty when the work is never matched by text.
+    pub match_key: String,
+    /// The show a podcast episode belongs to.
+    pub parent_work_id: Option<String>,
+    /// Blurb or synopsis (may contain HTML) from enrichment.
     pub description: Option<String>,
-    /// Subject / topic tags from enrichment (serialized).
+    /// Subject tags from enrichment (serialized).
     pub subjects: Option<String>,
-    /// Storefront category / genre path list (serialized).
+    /// Category or genre labels (serialized).
     pub categories: Option<String>,
-    /// BCP-47 or storefront language code when known.
-    pub language: Option<String>,
-    /// Series name when the title belongs to a series.
-    pub series: Option<String>,
-    /// Position within the series (storefront string form).
-    pub series_index: Option<String>,
-    /// HTTPS URL for cover art when known.
+    /// HTTPS URL of cover art when known.
     pub cover_url: Option<String>,
-    /// Open Library work/edition id when enrichment found one.
-    pub openlibrary_id: Option<String>,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
     /// RFC 3339 timestamp when the row was last modified.

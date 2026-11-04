@@ -7,7 +7,7 @@ use audible_rs::models::library as lib_model;
 use bookclerk_library::SourceScope;
 use bookclerk_plugin_sdk::http::Method;
 use bookclerk_plugin_sdk::{Abridgement, ScanBook, SeriesEntry};
-use bookclerk_source::abi::{rfc3339, scan_book_to_new};
+use bookclerk_source::abi::{rfc3339, scanned_title};
 use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_source::{ScanOptions, ScanSummary};
 use chrono::{DateTime, NaiveDate, Utc};
@@ -139,9 +139,9 @@ pub async fn scan_account_into_library(
     let count = books.len();
     for new in books
         .into_iter()
-        .filter_map(|book| scan_book_to_new("audible", book))
+        .filter_map(|book| scanned_title("audible", book))
     {
-        scope.upsert_book(&new).await?;
+        scope.upsert_scanned_title(&new).await?;
     }
     Ok((count, pages))
 }

@@ -1,0 +1,17 @@
+[package]
+name = "bookclerk-resolve"
+description = "Sans-IO resolver that maps store listings to FRBR works, expressions and editions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# `normalize` ports audiobookshelf's title and author cleaning (GPL-3.0) and
+# keeps that license; see docs/contributing/licensing.md.
+license = "AGPL-3.0-or-later AND GPL-3.0-only"
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+unicode-normalization = "0.1"
+
+[lints]
+workspace = true

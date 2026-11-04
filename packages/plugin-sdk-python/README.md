@@ -32,7 +32,7 @@ Every named entrypoint in ``entrypoints = [...]`` is a module-level class with
 the matching name extending its base: ``Storefront(StorefrontEntrypoint)``,
 ``Storage(StorageEntrypoint)``, ``RemoteLibrary(RemoteLibraryEntrypoint)``,
 ``DatabaseAdapter(DatabaseAdapterEntrypoint)``, ``Cli(CliEntrypoint)``,
-``Oidc(OidcEntrypoint)``.
+``Oidc(OidcEntrypoint)``, ``Metadata(MetadataEntrypoint)``.
 
 ```python
 from bookclerk_plugin_sdk.workerd import (

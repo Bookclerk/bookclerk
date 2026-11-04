@@ -6,8 +6,8 @@
  *   handler methods on it: `event(batch)` for `[[events.consumers]]` and
  *   `job(job)` for `[triggers] jobs`.
  * - Capabilities the host calls are named exported classes (`Storefront`,
- *   `Storage`, `RemoteLibrary`, `DatabaseAdapter`, `Cli`, `Oidc`) extending
- *   the matching `*Entrypoint` base with typed methods.
+ *   `Storage`, `RemoteLibrary`, `DatabaseAdapter`, `Cli`, `Oidc`,
+ *   `Metadata`) extending the matching `*Entrypoint` base with typed methods.
  * - Everything the host provides is a binding on `env` ({@link BookclerkEnv}:
  *   `CONFIG`, `SECRETS`, `EVENTS`, `WORK_FS`, named databases, …);
  *   per-invocation facilities ride on the handler's controller object
@@ -86,6 +86,11 @@ import type {
   LoginParams,
   LoginResult,
   LoginStartResult,
+  MetadataChapters,
+  MetadataChaptersParams,
+  MetadataLookupParams,
+  MetadataRecord,
+  MetadataSearchParams,
   OidcClientTemplate,
   PlainFetch,
   PluginCapabilities as WirePluginCapabilities,
@@ -137,6 +142,12 @@ export type {
   HealthOk,
   Invocation,
   JobInvocation,
+  MetadataChapter,
+  MetadataChapters,
+  MetadataChaptersParams,
+  MetadataLookupParams,
+  MetadataRecord,
+  MetadataSearchParams,
   OidcClientTemplate,
   PluginCapabilities,
   PluginMigration,
@@ -2224,13 +2235,60 @@ export class OidcEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends Nam
   }
 }
 
+/**
+ * `metadata` entrypoint (`MetadataProvider`): bibliographic lookups against a
+ * public catalog. Records describe editions; the host decides identity.
+ * Export it as `export class Metadata extends MetadataEntrypoint`.
+ */
+export class MetadataEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends NamedEntrypoint<Env> {
+  static override bookclerkMethods = Object.freeze(["health", "lookup", "search", "chapters"]);
+
+  /**
+   * Reports whether the provider can answer.
+   *
+   * @returns Health flag plus detail.
+   */
+  health(): Promise<HealthOk> {
+    return Promise.resolve({ ok: true, detail: "" });
+  }
+  /**
+   * Records for the editions the identifiers name.
+   *
+   * @param _params - Identifiers, marketplace and result cap.
+   * @returns Records in relevance order (`[]` when nothing matched).
+   */
+  lookup(_params: MetadataLookupParams): Promise<MetadataRecord[]> {
+    return Promise.reject(unsupported("lookup"));
+  }
+  /**
+   * Records matching a title and, optionally, an author.
+   *
+   * @param _params - Title, author, language, marketplace and result cap.
+   * @returns Records in relevance order (`[]` when nothing matched).
+   */
+  search(_params: MetadataSearchParams): Promise<MetadataRecord[]> {
+    return Promise.reject(unsupported("search"));
+  }
+  /**
+   * Chapter layout of one edition.
+   *
+   * @param _params - Identifiers of the edition.
+   * @returns The layout, or `{ found: false }` when the provider has none.
+   */
+  chapters(_params: MetadataChaptersParams): Promise<MetadataChapters> {
+    return Promise.reject(unsupported("chapters"));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Adapter isolate (trusted; owns GRANTED / BRIDGE_TOKEN / PLUGIN_DESCRIBE)
 // ---------------------------------------------------------------------------
 
 /** Wire name of each named entrypoint (`plugin.toml` `entrypoints`). */
 export type EntrypointName =
-  "storefront" | "storage" | "databaseAdapter" | "remoteLibrary" | "cli" | "oidc";
+  "storefront" | "storage" | "databaseAdapter" | "remoteLibrary" | "cli" | "oidc" | "metadata";
 
 /** Adapter binding name for each named entrypoint. */
 export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Object.freeze({
@@ -2240,6 +2298,7 @@ export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Obj
   remoteLibrary: "PLUGIN_REMOTE_LIBRARY",
   cli: "PLUGIN_CLI",
   oidc: "PLUGIN_OIDC",
+  metadata: "PLUGIN_METADATA",
 });
 
 /** Exported class name the launcher binds for each named entrypoint. */
@@ -2250,6 +2309,7 @@ export const ENTRYPOINT_CLASSES: Readonly<Record<EntrypointName, string>> = Obje
   remoteLibrary: "RemoteLibrary",
   cli: "Cli",
   oidc: "Oidc",
+  metadata: "Metadata",
 });
 
 /** Reverse-channel fetcher bound as `GRANTED` on the adapter isolate. */

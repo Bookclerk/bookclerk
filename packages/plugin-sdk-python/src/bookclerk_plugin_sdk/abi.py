@@ -38,6 +38,7 @@ Entrypoint = Literal[
     "remoteLibrary",
     "cli",
     "oidc",
+    "metadata",
 ]
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
@@ -466,6 +467,8 @@ class Entrypoints(TypedDict):
             the guest does not export this capability.
         scheduledHandler: `[triggers] crons` trigger: `scheduled(controller)` handler.
             Null when the guest does not export this capability.
+        metadata: `metadata` entrypoint. Null when the guest does not export this
+            capability.
     """
 
     eventConsumer: NotRequired[EventConsumer | None]
@@ -478,6 +481,7 @@ class Entrypoints(TypedDict):
     oidc: NotRequired[Oidc | None]
     queueConsumer: NotRequired[QueueConsumer | None]
     scheduledHandler: NotRequired[ScheduledHandler | None]
+    metadata: NotRequired[MetadataProvider | None]
 
 
 class EntrypointsReplyOk(TypedDict):
@@ -2103,6 +2107,56 @@ class Oidc(Protocol):
 
         Returns:
             ``ExternalUserReply``
+        """
+        ...
+
+
+class MetadataProvider(Protocol):
+    """`metadata` entrypoint: bibliographic lookups against a public catalog
+    (OpenLibrary, Audnexus, ...). A provider describes what it finds as
+    edition records; the host decides identity and never trusts a record to
+    name an existing library row. Network access is limited to the domains the
+    manifest's `[capabilities.network]` declares.
+    """
+
+    async def health(self) -> HealthReply:
+        """Liveness / readiness probe.
+
+        Returns:
+            ``HealthReply``
+        """
+        ...
+
+    async def lookup(self, params: MetadataLookupParams) -> MetadataRecordsReply:
+        """Records for the editions the given identifiers name.
+
+        Args:
+            params: Identifiers to resolve and a result cap.
+
+        Returns:
+            ``MetadataRecordsReply``
+        """
+        ...
+
+    async def search(self, params: MetadataSearchParams) -> MetadataRecordsReply:
+        """Records matching a title and, optionally, an author.
+
+        Args:
+            params: Title, author, language and a result cap.
+
+        Returns:
+            ``MetadataRecordsReply``
+        """
+        ...
+
+    async def chapters(self, params: MetadataChaptersParams) -> MetadataChaptersReply:
+        """Chapter layout of the edition the given identifiers name.
+
+        Args:
+            params: Identifiers of one edition.
+
+        Returns:
+            ``MetadataChaptersReply``
         """
         ...
 
@@ -4103,6 +4157,235 @@ class ScheduledController(TypedDict):
     deadlineUnixMs: int
 
 
+class MetadataLookupParams(TypedDict):
+    """Params of `MetadataProvider.lookup`.
+
+    Attributes:
+        identifiers: Identifiers naming the wanted edition or work; never empty. A
+            provider ignores schemes it does not serve.
+        marketplace: Marketplace to answer for (`us`, `uk`, ...) when the provider is
+            regional. Omitted when absent (wire zero value).
+        limit: Most records to return; the provider picks a small default when absent.
+            Omitted when absent (wire zero value).
+    """
+
+    identifiers: list[Identifier]
+    marketplace: NotRequired[str]
+    limit: NotRequired[int]
+
+
+class MetadataSearchParams(TypedDict):
+    """Params of `MetadataProvider.search`.
+
+    Attributes:
+        title: Title to match; never empty.
+        author: Author display name to narrow the match when known. Omitted when absent
+            (wire zero value).
+        language: Preferred content language code when known. Omitted when absent (wire
+            zero value).
+        marketplace: Marketplace to answer for when the provider is regional. Omitted
+            when absent (wire zero value).
+        limit: Most records to return; the provider picks a small default when absent.
+            Omitted when absent (wire zero value).
+    """
+
+    title: str
+    author: NotRequired[str]
+    language: NotRequired[str]
+    marketplace: NotRequired[str]
+    limit: NotRequired[int]
+
+
+class MetadataChaptersParams(TypedDict):
+    """Params of `MetadataProvider.chapters`.
+
+    Attributes:
+        identifiers: Identifiers of one edition (an ASIN for Audnexus); never empty.
+        marketplace: Marketplace to answer for when the provider is regional. Omitted
+            when absent (wire zero value).
+    """
+
+    identifiers: list[Identifier]
+    marketplace: NotRequired[str]
+
+
+class MetadataRecord(TypedDict):
+    """One edition as a metadata provider describes it: the same structured
+    fields as `CatalogHit`, without store pricing.
+
+    Attributes:
+        title: Primary title.
+        subtitle: Subtitle when distinct from `title`. Omitted when absent (wire zero
+            value).
+        description: Long description / blurb when known. Omitted when absent (wire zero
+            value).
+        coverUrl: Cover image URL. Omitted when absent (wire zero value).
+        url: The provider's page for this record. Omitted when absent (wire zero value).
+        publisher: Publisher name when known. Omitted when absent (wire zero value).
+        lengthMinutes: Runtime in whole minutes when known. Omitted when absent (wire
+            zero value).
+        publishedAt: Publication date string as the provider prints it. Omitted when
+            absent (wire zero value).
+        categories: Category / genre labels as a single string when known. Omitted when
+            absent (wire zero value).
+        language: Content language code when known. Omitted when absent (wire zero
+            value).
+        abridgement: Whether the edition is abridged when the provider says so.
+        workKind: Kind of work the record describes.
+        expressionKind: How the work is realised in this edition.
+        mediaKind: Form of this edition.
+        identifiers: External identifiers (ISBN, ASIN, OpenLibrary ids).
+        credits: Credited contributors in billing order.
+        seriesEntries: Series the work belongs to.
+        ratingOverall: Aggregate rating when the provider publishes one. Omitted when
+            absent (wire zero value).
+        ratingCount: Number of ratings behind `ratingOverall` when known. Omitted when
+            absent (wire zero value).
+    """
+
+    title: str
+    subtitle: NotRequired[str]
+    description: NotRequired[str]
+    coverUrl: NotRequired[str]
+    url: NotRequired[str]
+    publisher: NotRequired[str]
+    lengthMinutes: NotRequired[int]
+    publishedAt: NotRequired[str]
+    categories: NotRequired[str]
+    language: NotRequired[str]
+    abridgement: Abridgement
+    workKind: WorkKind
+    expressionKind: ExpressionKind
+    mediaKind: MediaKind
+    identifiers: list[Identifier]
+    credits: list[Credit]
+    seriesEntries: list[SeriesEntry]
+    ratingOverall: NotRequired[float]
+    ratingCount: NotRequired[int]
+
+
+class MetadataRecords(TypedDict):
+    """Success payload of `MetadataProvider.lookup` / `search`.
+
+    Attributes:
+        records: Records in the provider's relevance order; empty when nothing matched.
+    """
+
+    records: list[MetadataRecord]
+
+
+class MetadataRecordsReplyOk(TypedDict):
+    """``MetadataRecordsReply`` member ``ok``.
+
+    Success: matching records.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: matching records.
+    """
+
+    kind: Literal["ok"]
+    value: MetadataRecords
+
+
+class MetadataRecordsReplyErr(TypedDict):
+    """``MetadataRecordsReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+MetadataRecordsReply = Union[
+    MetadataRecordsReplyOk,
+    MetadataRecordsReplyErr,
+]
+"""Result union of `MetadataProvider.lookup` / `search`."""
+
+
+class MetadataChapter(TypedDict):
+    """One chapter in a provider's chapter layout. Chapters are listed in
+    pre-order: a chapter with `depth` n + 1 is nested under the nearest
+    earlier chapter with `depth` n.
+
+    Attributes:
+        title: Chapter title.
+        startMs: Start offset in milliseconds from the beginning of the title.
+        lengthMs: Length in milliseconds when known. Omitted when absent (wire zero
+            value).
+        depth: Nesting depth; 0 for a top-level chapter.
+    """
+
+    title: str
+    startMs: int
+    lengthMs: NotRequired[int]
+    depth: int
+
+
+class MetadataChapters(TypedDict):
+    """Success payload of `MetadataProvider.chapters`.
+
+    Attributes:
+        found: False when the provider has no chapter layout for the edition.
+        chapters: Chapters in pre-order; empty when not `found`.
+        brandIntroMs: Length of the store's spoken brand intro in milliseconds when
+            known. Omitted when absent (wire zero value).
+        brandOutroMs: Length of the store's spoken brand outro in milliseconds when
+            known. Omitted when absent (wire zero value).
+        runtimeMs: Total runtime the layout was measured against, in milliseconds.
+            Omitted when absent (wire zero value).
+        accurate: Whether the provider marks the offsets as exact rather than estimated.
+    """
+
+    found: bool
+    chapters: list[MetadataChapter]
+    brandIntroMs: NotRequired[int]
+    brandOutroMs: NotRequired[int]
+    runtimeMs: NotRequired[int]
+    accurate: bool
+
+
+class MetadataChaptersReplyOk(TypedDict):
+    """``MetadataChaptersReply`` member ``ok``.
+
+    Success: chapter layout or not-found marker.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: chapter layout or not-found marker.
+    """
+
+    kind: Literal["ok"]
+    value: MetadataChapters
+
+
+class MetadataChaptersReplyErr(TypedDict):
+    """``MetadataChaptersReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+MetadataChaptersReply = Union[
+    MetadataChaptersReplyOk,
+    MetadataChaptersReplyErr,
+]
+"""Result union of `MetadataProvider.chapters`."""
+
+
 class DbValueNull(TypedDict):
     """``DbValue`` member ``null``.
 
@@ -5364,6 +5647,7 @@ __all__ = [
     "RemoteLibrary",
     "PluginCli",
     "Oidc",
+    "MetadataProvider",
     "EventConsumerSpec",
     "PluginCapabilities",
     "Brand",
@@ -5495,6 +5779,19 @@ __all__ = [
     "KvListReplyErr",
     "KvListReply",
     "ScheduledController",
+    "MetadataLookupParams",
+    "MetadataSearchParams",
+    "MetadataChaptersParams",
+    "MetadataRecord",
+    "MetadataRecords",
+    "MetadataRecordsReplyOk",
+    "MetadataRecordsReplyErr",
+    "MetadataRecordsReply",
+    "MetadataChapter",
+    "MetadataChapters",
+    "MetadataChaptersReplyOk",
+    "MetadataChaptersReplyErr",
+    "MetadataChaptersReply",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",

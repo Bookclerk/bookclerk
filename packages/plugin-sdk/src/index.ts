@@ -28,6 +28,7 @@ export {
   QueueBatch,
   QueueMessage,
   JobController,
+  MetadataEntrypoint,
   NamedEntrypoint,
   OidcEntrypoint,
   PluginError,

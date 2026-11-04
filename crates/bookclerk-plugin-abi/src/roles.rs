@@ -9,9 +9,10 @@ use crate::generated::{
     AuthenticateUserParams, CatalogDetailParams, CatalogHit, CliInvokeParams, CliInvokeResult,
     CliSchema, DatabaseAdapterConfig, ExpandCandidatesParams, ExternalUser, FetchTitleParams,
     Invocation, ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
-    LoginStartResult, PlainFetch, PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams,
-    RevokeAccountParams, ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams,
-    SourceAccount,
+    LoginStartResult, MetadataChapters, MetadataChaptersParams, MetadataLookupParams,
+    MetadataRecord, MetadataSearchParams, PlainFetch, PluginEvent, PublishOk, PurchaseHint,
+    PurchaseHintParams, RevokeAccountParams, ScanLibraryParams, ScanParams, ScanSummary,
+    SearchCatalogParams, SourceAccount,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -384,6 +385,39 @@ pub trait Oidc {
     }
 }
 
+/// `metadata` entrypoint: bibliographic lookups against a public catalog.
+///
+/// A provider describes the editions it finds as [`MetadataRecord`]s; the host
+/// decides identity. Methods a provider does not serve keep the default,
+/// which returns typed `unsupported`.
+#[async_trait::async_trait(?Send)]
+pub trait MetadataProvider {
+    /// Liveness / readiness probe.
+    async fn health(&self) -> Result<crate::rpc_types::HealthOk> {
+        Ok(crate::rpc_types::HealthOk {
+            ok: true,
+            detail: String::new(),
+        })
+    }
+
+    /// Records for the editions `params.identifiers` name, in relevance order.
+    async fn lookup(&self, _params: MetadataLookupParams) -> Result<Vec<MetadataRecord>> {
+        Err(PluginError::unsupported("lookup"))
+    }
+
+    /// Records matching `params.title` (and `params.author` when set), in
+    /// relevance order.
+    async fn search(&self, _params: MetadataSearchParams) -> Result<Vec<MetadataRecord>> {
+        Err(PluginError::unsupported("search"))
+    }
+
+    /// Chapter layout of the edition `params.identifiers` name; `found` is
+    /// false when the provider has none.
+    async fn chapters(&self, _params: MetadataChaptersParams) -> Result<MetadataChapters> {
+        Err(PluginError::unsupported("chapters"))
+    }
+}
+
 /// `cli` entrypoint: guest commands under `bookclerk plugins <id> <command>`.
 #[async_trait::async_trait(?Send)]
 pub trait PluginCli {
@@ -642,6 +676,8 @@ pub struct Entrypoints {
     pub queue_consumer: Option<Box<dyn QueueConsumer>>,
     /// `[triggers] crons` trigger.
     pub scheduled_handler: Option<Box<dyn ScheduledHandler>>,
+    /// `metadata` entrypoint.
+    pub metadata: Option<Box<dyn MetadataProvider>>,
 }
 
 /// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).

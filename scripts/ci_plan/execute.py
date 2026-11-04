@@ -30,6 +30,7 @@ from .plan import (
     E2E_PACKAGE,
     JOB_CHECKS,
     NON_CARGO_CHECKS,
+    OS_LEG_JOBS,
     STEP_GATED_JOBS,
     PlanError,
     Plan,
@@ -1163,17 +1164,59 @@ def run_check(
 # gate
 
 
-def gate(artifact: Mapping[str, Any], needs: Mapping[str, Any]) -> list[str]:
-    """Problems comparing job results with the expected execution."""
+# What ``needs.<job>.result`` reports for a job that never got a runner.
+STRANDED_RESULTS = frozenset({"cancelled", "abandoned"})
+
+
+def expected_jobs(artifact: Mapping[str, Any]) -> dict[str, bool]:
+    """Whether each job ``CI Gate`` needs is expected to run.
+
+    Args:
+        artifact: The validated plan artifact.
+
+    Returns:
+        The execution plan's jobs, plus each ``OS_LEG_JOBS`` job, expected
+        when any of the jobs it runs a leg of is.
+    """
+    expected = dict(execution_plan(artifact).jobs)
+    for job, owners in OS_LEG_JOBS.items():
+        expected[job] = any(expected.get(owner, False) for owner in owners)
+    return expected
+
+
+def gate(
+    artifact: Mapping[str, Any],
+    needs: Mapping[str, Any],
+    stranded: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Problems comparing job results with the expected execution.
+
+    Args:
+        artifact: The validated plan artifact.
+        needs: ``toJSON(needs)`` of the ``CI Gate`` job.
+        stranded: ``OS_LEG_JOBS`` jobs that GitHub cancelled without ever
+            giving them a runner, on a run that already retried them
+            (``scripts/merge_queue_requeue.py --stranded-job``). Such a job
+            passes the gate as ``cancelled`` or ``abandoned`` (what
+            ``needs`` reports for a job no runner took); any other job, or
+            any other result, does not.
+
+    Returns:
+        One sentence per problem; empty when the gate passes.
+    """
     problems: list[str] = []
     plan_result = (needs.get("plan") or {}).get("result")
     if plan_result != "success":
         problems.append(f"plan: {plan_result}")
-    expected = execution_plan(artifact).jobs
+    for job in sorted(stranded - set(OS_LEG_JOBS)):
+        problems.append(f"{job}: only an OS leg job may pass without a runner")
+    expected = expected_jobs(artifact)
     for job, want in expected.items():
         result = (needs.get(job) or {}).get("result")
         if result is None:
             problems.append(f"{job}: not reported to the gate (missing from needs)")
+        elif want and result in STRANDED_RESULTS and job in stranded and job in OS_LEG_JOBS:
+            continue
         elif want and result != "success":
             problems.append(f"{job}: expected to run, result {result}")
         elif not want and result != "skipped":

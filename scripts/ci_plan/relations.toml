@@ -41,7 +41,12 @@ paths = ["docs/server/cli-reference.md"]
 
 [[test_input]]
 package = "bookclerk-plugin-manifest"
-paths = ["examples/plugins-echo-native-rust/plugin.toml"]
+# `first_party_destinations_are_output_only` checks their handler family.
+paths = [
+    "examples/plugins-echo-native-rust/plugin.toml",
+    "crates/bookclerk-plugins/platform/destination-local/plugin.toml",
+    "crates/bookclerk-plugins/optional/destination-s3/plugin.toml",
+]
 
 [[test_input]]
 package = "bookclerk-plugin-tools"
@@ -97,6 +102,10 @@ paths = [
     "fuzz/corpus/cron_schedule/**",
     "fuzz/oracles/cron_schedule.rs",
 ]
+
+[[test_input]]
+package = "bookclerk-resolve"
+paths = ["fuzz/corpus/library_resolve/**"]
 
 [[test_input]]
 package = "bookclerk-cli"

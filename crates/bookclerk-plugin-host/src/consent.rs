@@ -223,6 +223,29 @@ pub fn granted_queue_consumers(grant: &PluginGrant) -> Vec<String> {
         .collect()
 }
 
+/// What a grant `bindings` entry authorizes when it is a token minted from
+/// one `plugin.toml` row rather than a [`KNOWN_HOST_BINDINGS`] name.
+///
+/// An approved grant may carry such a token only when the manifest baseline
+/// carries the same token, compared exactly (names and cron sources are
+/// case-sensitive).
+///
+/// # Returns
+///
+/// A short label for error messages (`cron`, `queue producer`,
+/// `queue consumer`), or `None` for any other entry.
+fn manifest_token_kind(binding: &str) -> Option<&'static str> {
+    if binding.starts_with(CRON_BINDING_PREFIX) {
+        Some("cron")
+    } else if binding.starts_with(QUEUE_PRODUCER_BINDING_PREFIX) {
+        Some("queue producer")
+    } else if binding.starts_with(QUEUE_CONSUMER_BINDING_PREFIX) {
+        Some("queue consumer")
+    } else {
+        None
+    }
+}
+
 /// The binding name when a grant entry is a named database binding.
 #[must_use]
 pub fn database_binding_name(binding: &str) -> Option<&str> {
@@ -386,7 +409,7 @@ pub struct PluginGrant {
     /// Display / CLI alias from `plugin.toml` (not security authoritative).
     pub plugin_id: String,
     /// Approved named entrypoints (wire names: `storefront`, `storage`,
-    /// `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`).
+    /// `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`).
     #[serde(default)]
     pub entrypoints: BTreeSet<String>,
     /// Approved event types the plugin may publish through its events binding.
@@ -1675,10 +1698,10 @@ pub fn validate_approved_grant(
             }
             continue;
         }
-        if binding.starts_with(CRON_BINDING_PREFIX) {
+        if let Some(kind) = manifest_token_kind(binding) {
             if !baseline.bindings.contains(binding) {
                 return Err(PluginError::message(format!(
-                    "grant cron `{binding}` is not declared by plugin.toml"
+                    "grant {kind} `{binding}` is not declared by plugin.toml"
                 )));
             }
             continue;
@@ -1728,9 +1751,9 @@ pub fn validate_approved_grant(
         .bindings
         .iter()
         .map(|b| {
-            if database_binding_name(b).is_some() || b.starts_with(CRON_BINDING_PREFIX) {
-                // Preserve the case-sensitive binding name or cron source
-                // (`MON` stays `MON`) after the prefix.
+            if database_binding_name(b).is_some() || manifest_token_kind(b).is_some() {
+                // Preserve the case-sensitive binding or queue name, or the
+                // cron source (`MON` stays `MON`), after the prefix.
                 return b.clone();
             }
             KNOWN_HOST_BINDINGS
@@ -4659,6 +4682,67 @@ crons = ["*/30  * * * *", "0 3 * * MON"]
             PortalAuthMode::Unspecified,
         )
         .is_err());
+    }
+
+    #[test]
+    fn approved_grant_overrides_accept_declared_queue_tokens_only() {
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "demo"
+runtime = "native"
+command = "./demo"
+entrypoints = ["cli"]
+
+[capabilities.network]
+mode = "deny"
+
+[[queues.producers]]
+queue = "notify"
+binding = "NOTIFY"
+
+[[queues.consumers]]
+queue = "jobs"
+"#,
+        )
+        .unwrap();
+        let baseline = consent_request_alias(&manifest);
+
+        // Echoing the consent request back as the override keeps both
+        // tokens, with the binding name in its declared case.
+        let approved = validate_approved_grant(&baseline, &baseline).expect("declared tokens");
+        assert!(approved.bindings.contains("queue:NOTIFY"), "{approved:?}");
+        assert!(
+            approved.bindings.contains("queue_consumer:jobs"),
+            "{approved:?}"
+        );
+        let effective = effective_grant(&approved, &baseline);
+        assert!(effective.allows_queue_producer("NOTIFY"));
+        assert!(effective.allows_queue_consumer("jobs"));
+
+        // Narrowing drops a token; the dropped side is then not granted.
+        let mut narrowed = baseline.clone();
+        narrowed.bindings.remove("queue_consumer:jobs");
+        let narrowed = validate_approved_grant(&narrowed, &baseline).expect("narrow");
+        assert!(!effective_grant(&narrowed, &baseline).allows_queue_consumer("jobs"));
+
+        // A token the manifest does not declare, or a declared binding in a
+        // different case, is refused rather than granted.
+        for (token, kind) in [
+            (queue_producer_grant("OTHER"), "queue producer"),
+            (queue_producer_grant("notify"), "queue producer"),
+            (queue_consumer_grant("other"), "queue consumer"),
+        ] {
+            let mut widened = baseline.clone();
+            widened.bindings.insert(token.clone());
+            let err = validate_approved_grant(&widened, &baseline)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains(&format!("grant {kind} `{token}` is not declared")),
+                "{token}: {err}"
+            );
+        }
     }
 
     #[test]

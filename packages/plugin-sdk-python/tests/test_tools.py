@@ -1300,6 +1300,44 @@ def test_validate_accepts_and_rejects_cron_triggers():
             )
 
 
+def test_smoke_health_probe_covers_every_health_entrypoint() -> None:
+    from bookclerk_plugin_sdk.sparse_workerd.smoke import _health_ifaces
+
+    assert _health_ifaces(["cli", "metadata", "storefront"]) == [
+        "ContentSource",
+        "MetadataProvider",
+    ]
+    assert _health_ifaces(["remoteLibrary"]) == ["RemoteLibrary"]
+    assert _health_ifaces(["cli"]) == []
+    assert _health_ifaces([]) == []
+
+
+def test_smoke_health_fails_when_not_ready() -> None:
+    from bookclerk_plugin_sdk.sparse_workerd.smoke import _require_healthy
+
+    ready = {"ok": True, "detail": ""}
+    assert _require_healthy("MetadataProvider", ready) is ready
+    with pytest.raises(RuntimeError, match="not ready: catalog down"):
+        _require_healthy("MetadataProvider", {"ok": False, "detail": "catalog down"})
+    with pytest.raises(RuntimeError, match="not ready: no detail"):
+        _require_healthy("ContentSource", {"ok": False})
+
+
+def test_smoke_health_codecs_cover_every_health_interface() -> None:
+    from bookclerk_plugin_sdk import _wire
+    from bookclerk_plugin_sdk.sparse_workerd.smoke import _HEALTH_INTERFACES, _health_codecs
+
+    for _, iface in _HEALTH_INTERFACES:
+        params, results = _health_codecs(iface)
+        assert params is not None and results is not None
+    assert _health_codecs("MetadataProvider") == (
+        _wire._metadata_provider_health_params_codec,
+        _wire._metadata_provider_health_results_codec,
+    )
+    with pytest.raises(ValueError, match="no health probe"):
+        _health_codecs("Storage")
+
+
 # Shared with the Rust and TypeScript checkers: every SDK must classify each
 # logo the same way and give the same error text.
 LOGO_CASES = json.loads((FIXTURES / "logo-cases.json").read_text(encoding="utf-8"))

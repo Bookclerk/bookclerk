@@ -51,6 +51,7 @@ const ALL = [
   "remoteLibrary",
   "cli",
   "oidc",
+  "metadata",
 ];
 
 {
@@ -76,7 +77,14 @@ const ALL = [
   assert.equal(decoded.storefront, "sf");
   assert.equal(decoded.cli, "cli");
   assert.equal(decoded.eventConsumer, "ev");
-  assertAbsent(decoded, ["jobRunner", "storage", "databaseAdapter", "remoteLibrary", "oidc"]);
+  assertAbsent(decoded, [
+    "jobRunner",
+    "storage",
+    "databaseAdapter",
+    "remoteLibrary",
+    "oidc",
+    "metadata",
+  ]);
 }
 
 {
