@@ -171,10 +171,14 @@ jobs:
     needs: bump
     if: needs.bump.outputs.changed == 'true'
     # ci.yml's fail-fast job needs `actions: write` to cancel this run when a
-    # CI job fails; every other ci.yml job keeps `contents: read`.
+    # CI job fails, and CI Gate asks for read access to checks and issues
+    # (its stranded-job step, which skips this run); every other ci.yml job
+    # keeps `contents: read`.
     permissions:
       contents: read
       actions: write
+      checks: read
+      issues: read
     uses: ./.github/workflows/ci.yml
     with:
       private-head: true

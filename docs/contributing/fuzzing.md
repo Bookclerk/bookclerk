@@ -246,12 +246,14 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     from CodeQL, and every run carries the id `/language:rust`.
 
 - **Missing-runner recovery** (`queued_pr`, `pr_run_attempt`,
-  `run_lineage`, `newer_run`, `stranded_jobs`, `not_acquired`, `pr_head`
-  and `enqueues_since_head` in `scripts/merge_queue_requeue.py`). It reads GitHub API responses about
+  `run_lineage`, `newer_run`, `stranded_jobs`, `not_acquired`, `pr_head`,
+  `enqueues_since_head`, `first_enqueue_on_head`, `gate_run`,
+  `stranded_job`, `gate_passed` and `previous_queue_run` in
+  `scripts/merge_queue_requeue.py`). It reads GitHub API responses about
   a failed merge-group or pull request run, not pull request content, so
   it isn't an untrusted boundary. Its output decides whether a pull
-  request goes back in the queue or a run is re-run, though, so it is
-  fuzzed the same way.
+  request goes back in the queue, a run is re-run, or `CI Gate` passes
+  without the macOS job, though, so it is fuzzed the same way.
   - Test and corpus: `scripts/tests/test_merge_queue_requeue.py`,
     `scripts/tests/merge_queue_requeue_corpus/` (files named
     `run__<case>`, `runs__<case>`, `jobs__<case>`, `annotations__<case>`,
@@ -273,7 +275,19 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     request qualifies only when it is open, `draft` is `false`, auto-merge
     is unset and its head is a full commit id in this repository. Enqueues
     are counted after the last `committed` or `head_ref_force_pushed`
-    event.
+    event, and the first entry on the head is the first
+    `added_to_merge_queue` event after it, which needs a
+    `YYYY-MM-DDTHH:MM:SSZ` `created_at`. For `CI Gate`, a run counts only when it is a `pull_request` or
+    `merge_group` run of `ci.yml` in this repository with a non-empty head
+    branch; a job is stranded only when exactly one job has its name (or
+    `<caller> / <name>`) and it completed `cancelled` with no runner and
+    no steps; the gate passed only when a job named `CI Gate` (or
+    `<caller> / CI Gate`) succeeded; and a pull request's previous merge
+    group is the queue-branch run for that pull request with the largest
+    `run_number` below the current one and a `created_at` no earlier than
+    that first entry, across listing pages whose every entry has an
+    integer `id` and `run_number`, a string head branch and a timestamp
+    `created_at`.
 
 - **Mutation testing start commit** (`choose` in
   `scripts/mutation_base.py`). The nightly mutation workflows read the

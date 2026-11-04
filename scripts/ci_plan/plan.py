@@ -298,6 +298,15 @@ ALL_CHECKS = tuple(CHECK_JOB)
 # ``check_<name>`` plan output.
 STEP_GATED_JOBS = ("check", "release", "site")
 
+# Jobs that run other jobs' checks on one more OS, each check as its own
+# step gated by its owning job's ``job_<name>`` plan output. The macOS
+# legs of three matrix jobs share one runner so a run asks GitHub for one
+# macOS runner instead of three (docs/contributing/ci.md#macos-job). Such a
+# job is expected to run when any of its owning jobs is.
+OS_LEG_JOBS: dict[str, tuple[str, ...]] = {
+    "macos": ("confinement", "native-gateway", "tray"),
+}
+
 # Checks in the ``check`` (lint and docs) job that need no Cargo toolchain.
 NON_CARGO_CHECKS = frozenset({"lint", "ui", "python_sdk"})
 
