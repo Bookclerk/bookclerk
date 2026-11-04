@@ -323,6 +323,38 @@ fn check_rejects_native_with_domains() {
     assert!(!out.status.success());
 }
 
+/// `fmt` rewrites the every-section fixture to its gold byte for byte, and
+/// `fmt --check` accepts the gold but refuses the unformatted source. The
+/// Python and TypeScript SDKs compare their formatters against the same gold.
+#[test]
+fn fmt_full_matches_gold() {
+    let fixture = repo_root().join("crates/bookclerk-plugin-abi/fixtures/tools/fmt-full");
+    let gold = std::fs::read_to_string(fixture.join("plugin.fmt.toml")).expect("read gold");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("plugin.toml");
+    std::fs::copy(fixture.join("plugin.toml"), &target).expect("copy fixture");
+
+    let check = bookclerk_plugin()
+        .args(["fmt", "--check", target.to_str().unwrap()])
+        .output()
+        .expect("run fmt --check");
+    assert!(
+        !check.status.success(),
+        "the unformatted source passed --check"
+    );
+
+    let out = bookclerk_plugin()
+        .args(["fmt", target.to_str().unwrap()])
+        .output()
+        .expect("run fmt");
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(&target).expect("read output"), gold);
+}
+
 #[test]
 fn fmt_check_gold_native() {
     let file =

@@ -83,6 +83,24 @@ run(["check", path.join(fixtures, "invalid-kv-namespace")], false, "namespace");
 run(["check", path.join(fixtures, "valid-queues")], true);
 run(["fmt", "--check", path.join(fixtures, "valid-workerd/plugin.fmt.toml")], true);
 run(["fmt", "--check", path.join(fixtures, "valid-native/plugin.fmt.toml")], true);
+run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.fmt.toml")], true);
+run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
+// `fmt` rewrites every manifest section to the Rust formatter's gold.
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fmt-full-"));
+  try {
+    const target = path.join(dir, "plugin.toml");
+    fs.copyFileSync(path.join(fixtures, "fmt-full/plugin.toml"), target);
+    run(["fmt", target], true, "wrote");
+    const gold = fs.readFileSync(path.join(fixtures, "fmt-full/plugin.fmt.toml"), "utf8");
+    if (fs.readFileSync(target, "utf8") !== gold) {
+      console.error("FAIL fmt-full: fmt output differs from plugin.fmt.toml");
+      process.exit(1);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 const { parse } = await import("smol-toml");
 const { materializeConfig } = await import("../dist/sparse-workerd/config.js");
