@@ -40,6 +40,8 @@ pub struct ExternalIntegration {
     event_subscriptions: Vec<EventSubscription>,
     /// `[[queues.consumers]]` rows from `plugin.toml`.
     queue_subscriptions: Vec<QueueSubscription>,
+    /// `[triggers] crons` schedules from `plugin.toml`.
+    cron_schedules: Vec<bookclerk_plugin_manifest::CronSchedule>,
     /// Cancels the host-side `event_poll` loop from [`Self::start`].
     poll_cancel: Arc<AtomicBool>,
     /// Bumped on each [`Self::start`]/[`Self::stop`] so a superseded poll loop exits.
@@ -135,6 +137,7 @@ impl ExternalIntegration {
             allow_credential_login,
             event_subscriptions,
             queue_subscriptions,
+            cron_schedules: plugin.manifest.triggers.crons.clone(),
             poll_cancel: Arc::new(AtomicBool::new(false)),
             poll_epoch: Arc::new(AtomicU64::new(0)),
             plugin_instance_id: None,
@@ -336,6 +339,10 @@ impl Integration for ExternalIntegration {
 
     fn queue_subscriptions(&self) -> Vec<QueueSubscription> {
         self.queue_subscriptions.clone()
+    }
+
+    fn cron_schedules(&self) -> Vec<bookclerk_plugin_manifest::CronSchedule> {
+        self.cron_schedules.clone()
     }
 
     async fn deliver_queue_batch_cancelable(

@@ -62,6 +62,24 @@ impl EventSubscription {
     }
 }
 
+/// One fire of a `[triggers] crons` schedule, as the host delivers it to
+/// the `scheduled(controller)` trigger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduledInvocation {
+    /// The schedule that fired (normalized source is the handler's `cron`).
+    pub cron: bookclerk_plugin_manifest::CronSchedule,
+    /// Fire time in Unix milliseconds (a whole UTC minute): the handler's
+    /// `scheduledTime`. Retries of one fire keep it.
+    pub scheduled_time_ms: i64,
+    /// Durable job id of this fire; stable across retries.
+    pub job_id: String,
+    /// Failure attempt, starting at 1.
+    pub attempt: u32,
+    /// Lease expiry hint in Unix milliseconds; the host fence is
+    /// authoritative.
+    pub deadline_unix_ms: u64,
+}
+
 /// Context passed when starting background watchers.
 #[derive(Clone, Default)]
 pub struct IntegrationContext {
@@ -147,6 +165,32 @@ pub trait Integration: Send + Sync {
     /// consumes no plugin-owned queue.
     fn queue_subscriptions(&self) -> Vec<QueueSubscription> {
         Vec::new()
+    }
+
+    /// Declared `[triggers] crons` schedules. Empty means this integration
+    /// has no `scheduled(controller)` trigger.
+    fn cron_schedules(&self) -> Vec<bookclerk_plugin_manifest::CronSchedule> {
+        Vec::new()
+    }
+
+    /// Run one cron fire through the `scheduled(controller)` trigger,
+    /// aborting when `cancel` is set (fence loss or operator cancel).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the handler throws or the call fails; the host
+    /// retries the fire with backoff. The default returns
+    /// [`IntegrationError::Message`] because the integration declares no
+    /// crons.
+    async fn run_scheduled_cancelable(
+        &self,
+        invocation: ScheduledInvocation,
+        _cancel: Arc<AtomicBool>,
+    ) -> Result<()> {
+        Err(IntegrationError::message(format!(
+            "integration declares no cron `{}`",
+            invocation.cron
+        )))
     }
 
     /// Deliver one ordered [`QueueBatch`] to the `queue(batch)` trigger and
