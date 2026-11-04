@@ -46,7 +46,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use super::job_routing::{desired_requirements, no_common_node_message, requirements_routable};
+use super::job_routing::{
+    deployed_on_trusted_node, desired_requirements, no_common_node_message, requirements_routable,
+};
 use crate::error::Result;
 use crate::models::{JobKind, JobPayload, JobRecord};
 use crate::store::LibraryStore;
@@ -155,12 +157,17 @@ fn sweepable(job: &JobRecord) -> bool {
             || job.payload.requires_unsettled_since_ms.is_some())
 }
 
+/// One cache entry: the desired requirement set, whether some node can run
+/// it, and whether the job is a cron fire whose instance no trusted node
+/// runs.
+type Resolved = (Vec<String>, bool, bool);
+
 /// Desired requirement sets and their routability, resolved once per pass.
 ///
-/// Both depend only on the job kind, its pinned instance and the pass's
+/// All depend only on the job kind, its pinned instance and the pass's
 /// node-bound key set (fixed for the pass), so every unpinned acquire shares
 /// one entry instead of re-reading the instance and deployment tables.
-type ResolvedCache = BTreeMap<(&'static str, Option<String>), (Vec<String>, bool)>;
+type ResolvedCache = BTreeMap<(&'static str, Option<String>), Resolved>;
 
 /// Re-resolves one pending job and writes, holds, or fails it.
 async fn sweep_one(
@@ -174,22 +181,26 @@ async fn sweep_one(
 ) -> Result<()> {
     let current = &job.payload.requires;
     let cache_key = (job.kind.as_str(), job.payload.plugin_instance_id.clone());
-    let (desired, routable) = if let Some(hit) = resolved.get(&cache_key) {
+    let (desired, routable, orphaned_fire) = if let Some(hit) = resolved.get(&cache_key) {
         hit.clone()
     } else {
         let desired = desired_requirements(store, job.kind, &job.payload, keys).await?;
         let routable = requirements_routable(store, &desired).await?;
-        resolved.insert(cache_key, (desired.clone(), routable));
-        (desired, routable)
+        // A cron fire belongs to its instance and is pinned to it, so only a
+        // node trusted with every job may claim it. Once no such node runs
+        // the instance (it is deployed nowhere, or only on Hosts owned by
+        // members), any other node would only fail it: it is unroutable.
+        let orphaned_fire = match (job.kind, job.payload.plugin_instance_id.as_deref()) {
+            (JobKind::PluginScheduled, Some(pinned)) => {
+                !desired.iter().any(|id| id == pinned)
+                    || !deployed_on_trusted_node(store, pinned).await?
+            }
+            _ => false,
+        };
+        let entry = (desired, routable, orphaned_fire);
+        resolved.insert(cache_key, entry.clone());
+        entry
     };
-    // A cron fire belongs to its instance: once that instance is deployed
-    // nowhere, any other node would only fail it, so it is unroutable.
-    let orphaned_fire = job.kind == JobKind::PluginScheduled
-        && job
-            .payload
-            .plugin_instance_id
-            .as_ref()
-            .is_some_and(|pinned| !desired.contains(pinned));
     let routable = routable && !orphaned_fire;
     let drops = current.iter().any(|id| !desired.contains(id));
     let since = job.payload.requires_unsettled_since_ms;
@@ -253,7 +264,7 @@ async fn sweep_one(
     }
     let reason = if orphaned_fire {
         format!(
-            "plugin instance {} has been deployed on no node for over {} minutes",
+            "plugin instance {} has been deployed on no node trusted with its jobs for over {} minutes",
             job.payload
                 .plugin_instance_id
                 .as_deref()

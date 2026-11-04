@@ -507,7 +507,9 @@ impl PluginGrant {
     /// True when this grant authorizes firing the normalized cron `cron`.
     #[must_use]
     pub fn allows_cron(&self, cron: &str) -> bool {
-        grant_has_binding(self, &cron_grant(cron))
+        // Exact match: cron tokens are case-sensitive, unlike host bindings.
+        let token = cron_grant(cron);
+        self.bindings.iter().any(|binding| *binding == token)
     }
 
     /// True when this grant authorizes sending through the queue producer
@@ -4639,6 +4641,7 @@ crons = ["*/30  * * * *", "0 3 * * MON"]
             approved.bindings
         );
         assert!(effective_grant(&approved, &grant).allows_cron("0 3 * * MON"));
+        assert!(!effective_grant(&approved, &grant).allows_cron("0 3 * * mon"));
         let mut other = grant.clone();
         other.bindings.insert(cron_grant("0 * * * *"));
         let err = validate_approved_grant(&other, &grant)

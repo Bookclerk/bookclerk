@@ -185,9 +185,12 @@ ticker claims a due fire with a compare-and-swap on the instance's
 `requires = [instance]` so it routes to a node that runs the instance. The
 dedup key holds one fire per schedule, so a fire that comes due while the
 previous one is still active is skipped. A failed fire retries up to 3
-attempts with the same `scheduled_time_ms`. When the instance is deployed
-on no node past the requirements sweep's grace period, the sweep fails the
-fire as `unroutable` instead of letting another node claim it. See
+attempts with the same `scheduled_time_ms`. A pinned fire can only be
+claimed by a node trusted with every job (an owner node, or a Host whose
+owner is an Owner or Administrator). When no such node runs the instance
+past the requirements sweep's grace period, the sweep fails the fire as
+`unroutable`. That covers an instance deployed nowhere and one deployed only
+on Hosts owned by members. See
 [Scheduled triggers](../plugins/abi.md#scheduled-triggers).
 
 Reserved classes (no worker in this release): `media`, `transcription`,

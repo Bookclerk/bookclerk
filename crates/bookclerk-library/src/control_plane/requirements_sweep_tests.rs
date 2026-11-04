@@ -11,7 +11,7 @@ use chrono::Utc;
 use super::tests::{postgres_stores, postgres_tests_enabled};
 use super::*;
 use crate::models::{
-    EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobResourceClass, JobState,
+    EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobResourceClass, JobState, UserRole,
 };
 use crate::store::LibraryStore;
 
@@ -530,6 +530,109 @@ async fn undeployed_cron_fire_fails_after_grace(store_a: LibraryStore, store_b: 
     );
 }
 
+/// Inserts a Host node owned by a new user of `role`, with a live
+/// credential.
+async fn add_host_node(store: &LibraryStore, node_id: &str, role: UserRole) {
+    use crate::entities::{node_credentials, nodes};
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set};
+
+    let owner = store
+        .create_user(role, Some(node_id), None)
+        .await
+        .unwrap()
+        .id;
+    let now = Utc::now().to_rfc3339();
+    nodes::ActiveModel {
+        node_id: Set(node_id.into()),
+        cluster_id: Set("cluster".into()),
+        created_at: Set(now.clone()),
+        incarnation: Set("test".into()),
+        heartbeat_at: Set(now.clone()),
+        software_version: Set("1.0.0".into()),
+        schema_state: Set("current".into()),
+        compatible: Set(1),
+        logical_cpus: Set(None),
+        cpu_max_quota_us: Set(None),
+        cpu_max_period_us: Set(None),
+        memory_max_bytes: Set(None),
+        memory_current_bytes: Set(None),
+        memory_anon_bytes: Set(None),
+        files_dir_free_bytes: Set(None),
+        scratch_bytes: Set(None),
+        target: Set(String::new()),
+        labels_json: Set("[]".into()),
+        kind: Set("host".into()),
+        owner_user_id: Set(Some(owner)),
+        ..Default::default()
+    }
+    .insert(store.db())
+    .await
+    .unwrap();
+    node_credentials::ActiveModel {
+        node_id: Set(node_id.into()),
+        sign_public_key: Set(vec![1; 32]),
+        box_public_key: Set(vec![2; 32]),
+        link_id: Set(format!("link-{node_id}")),
+        enrolled_at: Set(now),
+        revoked_at: Set(None),
+        last_connected_at: Set(None),
+    }
+    .insert(store.db())
+    .await
+    .unwrap();
+}
+
+/// A cron fire whose instance runs only on a Host owned by a non-privileged
+/// user cannot be claimed by anyone, so it fails after the grace period;
+/// one on an administrator's Host stays routable.
+async fn cron_fire_on_member_host_fails_after_grace(store_a: LibraryStore, store_b: LibraryStore) {
+    add_host_node(&store_a, "host-member", UserRole::Host).await;
+    add_host_node(&store_a, "host-admin", UserRole::Administrator).await;
+    let mut jobs = Vec::new();
+    for host in ["host-member", "host-admin"] {
+        let instance = create_plugin_instance(&store_a, &operator(), LOCAL_KEY, host)
+            .await
+            .unwrap();
+        set_desired(&store_a, &instance.id, "node-a", DesiredState::Present).await;
+        let cron = "0 * * * *";
+        let cursor = ensure_cron_cursor(&store_a, instance.id.as_str(), cron, 0)
+            .await
+            .unwrap();
+        let CronFireClaim::Claimed { job_id: Some(job) } = claim_cron_fire(
+            &store_a,
+            instance.id.as_str(),
+            cron,
+            cursor.last_fire_ms,
+            3_600_000,
+        )
+        .await
+        .unwrap() else {
+            panic!("expected an admitted fire");
+        };
+        set_desired(&store_b, &instance.id, "node-a", DesiredState::Absent).await;
+        set_desired(&store_b, &instance.id, host, DesiredState::Present).await;
+        jobs.push(job);
+    }
+
+    let start = Utc::now();
+    assert_eq!(sweep(&store_a, start).await.unsettled, 1);
+    let expired = start + chrono::Duration::from_std(GRACE).unwrap() + chrono::Duration::seconds(1);
+    let report = sweep(&store_b, expired).await;
+    assert_eq!(report.failed, 1, "{report:?}");
+    let member = store_a.get_job(&jobs[0]).await.unwrap().unwrap();
+    assert_eq!(member.state, JobState::Failed);
+    assert!(
+        member
+            .error_message
+            .as_deref()
+            .is_some_and(|e| e.contains("trusted with its jobs")),
+        "{:?}",
+        member.error_message
+    );
+    let admin = store_a.get_job(&jobs[1]).await.unwrap().unwrap();
+    assert_eq!(admin.state, JobState::Pending);
+}
+
 macro_rules! twin {
     ($scenario:ident, $sqlite:ident, $postgres:ident) => {
         #[tokio::test]
@@ -593,4 +696,9 @@ twin!(
     undeployed_cron_fire_fails_after_grace,
     sqlite_undeployed_cron_fire_fails_after_grace,
     postgres_undeployed_cron_fire_fails_after_grace
+);
+twin!(
+    cron_fire_on_member_host_fails_after_grace,
+    sqlite_cron_fire_on_member_host_fails_after_grace,
+    postgres_cron_fire_on_member_host_fails_after_grace
 );
