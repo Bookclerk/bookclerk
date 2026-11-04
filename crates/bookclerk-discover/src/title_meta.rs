@@ -296,15 +296,18 @@ impl TitleMeta {
 
     /// Copies a storefront [`CatalogHit`] (Libro HTML/JSON-LD) into a detail-panel payload.
     fn from_catalog_hit(hit: CatalogHit) -> Self {
+        let (authors, narrators) = (hit.authors(), hit.narrators());
+        let (series, series_index) = (hit.series(), hit.series_index());
+        let (asin, isbn) = (hit.asin(), hit.isbn());
         Self {
-            asin: hit.asin.filter(|s| !s.is_empty()),
+            asin: asin.filter(|s| !s.is_empty()),
             title: Some(hit.title).filter(|s| !s.is_empty()),
             subtitle: hit.subtitle,
-            authors: hit.authors,
-            narrators: hit.narrators,
-            series: hit.series,
-            series_index: hit.series_index,
-            isbn: hit.isbn,
+            authors,
+            narrators,
+            series,
+            series_index,
+            isbn,
             cover_url: hit.cover_url,
             description: hit.description,
             publisher: hit.publisher,

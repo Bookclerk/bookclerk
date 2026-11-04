@@ -109,6 +109,71 @@ export const CLI_ARG_KINDS = ["string", "bool", "int", "path"] as const;
 export type CliArgKind = (typeof CLI_ARG_KINDS)[number];
 
 /**
+ * What kind of creative work a record describes (FRBR work). Ordinal 0 is
+ * the common case, so a guest that leaves it unset describes a book.
+ *
+ * Ordinal-ordered `WorkKind` wire names (index = Cap'n Proto ordinal).
+ */
+export const WORK_KINDS = ["book", "podcastShow", "podcastEpisode", "drama"] as const;
+
+/** Union of `WORK_KINDS` wire names. */
+export type WorkKind = (typeof WORK_KINDS)[number];
+
+/**
+ * How a work is realised (FRBR expression). Ordinal 0 is the common case
+ * for a storefront that sells audiobooks.
+ *
+ * Ordinal-ordered `ExpressionKind` wire names (index = Cap'n Proto ordinal).
+ */
+export const EXPRESSION_KINDS = ["narration", "text", "translation", "dramatisation", "podcastAudio"] as const;
+
+/** Union of `EXPRESSION_KINDS` wire names. */
+export type ExpressionKind = (typeof EXPRESSION_KINDS)[number];
+
+/**
+ * Physical or digital form of an edition (FRBR manifestation). Only
+ * `audiobook` and `podcastAudio` editions are acquire candidates.
+ *
+ * Ordinal-ordered `MediaKind` wire names (index = Cap'n Proto ordinal).
+ */
+export const MEDIA_KINDS = ["audiobook", "ebook", "print", "podcastAudio"] as const;
+
+/** Union of `MEDIA_KINDS` wire names. */
+export type MediaKind = (typeof MEDIA_KINDS)[number];
+
+/**
+ * Scheme of an external identifier. The scheme fixes whether the id names a
+ * work or an edition, and whether it is strong (unique) or weak (shared).
+ *
+ * Ordinal-ordered `IdentifierScheme` wire names (index = Cap'n Proto ordinal).
+ */
+export const IDENTIFIER_SCHEMES = ["isbn", "asin", "openLibraryEdition", "openLibraryWork"] as const;
+
+/** Union of `IDENTIFIER_SCHEMES` wire names. */
+export type IdentifierScheme = (typeof IDENTIFIER_SCHEMES)[number];
+
+/**
+ * A contributor's responsibility for a work, expression or edition.
+ *
+ * Ordinal-ordered `CreditRole` wire names (index = Cap'n Proto ordinal).
+ */
+export const CREDIT_ROLES = ["author", "narrator", "translator", "editor", "illustrator", "publisher", "host", "cast", "adaptor"] as const;
+
+/** Union of `CREDIT_ROLES` wire names. */
+export type CreditRole = (typeof CREDIT_ROLES)[number];
+
+/**
+ * Which level a credit attaches to. Ordinal 0 is the role's usual level, so
+ * a guest sets this only when a credit departs from it.
+ *
+ * Ordinal-ordered `CreditLevel` wire names (index = Cap'n Proto ordinal).
+ */
+export const CREDIT_LEVELS = ["roleDefault", "work", "expression", "edition"] as const;
+
+/** Union of `CREDIT_LEVELS` wire names. */
+export type CreditLevel = (typeof CREDIT_LEVELS)[number];
+
+/**
  * Catalog search ordering.
  *
  * Ordinal-ordered `CatalogSort` wire names (index = Cap'n Proto ordinal).

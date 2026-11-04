@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use bookclerk_library::NewBook;
+use bookclerk_plugin_sdk::ScanBook;
 use bookclerk_plugin_sdk::{
     FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch, ScanParams,
     ScanSummary, SourceAccount,
@@ -115,7 +115,7 @@ pub async fn guest_scan(
     base_url: &str,
     credentials: &BTreeMap<String, Value>,
     account_filter: &[String],
-) -> Result<(Vec<NewBook>, usize, u32)> {
+) -> Result<(Vec<ScanBook>, usize, u32)> {
     if credentials.is_empty() {
         return Err(LibroError::no_accounts(
             "no Libro.fm credentials from host — run login first",

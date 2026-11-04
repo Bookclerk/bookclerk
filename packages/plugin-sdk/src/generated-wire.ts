@@ -4009,92 +4009,177 @@ export const ScanParamsCodec: StructCodec<T.ScanParams> = {
 };
 
 /**
- * Wire codec for `ScanBook` (1 data words, 13 pointers).
+ * Wire codec for `Identifier` (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const IdentifierCodec: StructCodec<T.Identifier> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setUint16(0, ord(A.IDENTIFIER_SCHEMES, v.scheme ?? A.IDENTIFIER_SCHEMES[0]!, "IdentifierScheme"));
+    s.setText(0, v.value ?? "");
+    if (v.marketplace !== undefined) {
+      s.setText(1, v.marketplace ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.Identifier = {
+      scheme: fromOrd(A.IDENTIFIER_SCHEMES, s.getUint16(0), "IdentifierScheme"),
+      value: s.getText(0),
+    };
+    const marketplaceValue = s.getText(1);
+    if (!(marketplaceValue === "")) {
+      out.marketplace = marketplaceValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `Credit` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const CreditCodec: StructCodec<T.Credit> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    s.setUint16(0, ord(A.CREDIT_ROLES, v.role ?? A.CREDIT_ROLES[0]!, "CreditRole"));
+    s.setUint16(1, ord(A.CREDIT_LEVELS, v.level ?? A.CREDIT_LEVELS[0]!, "CreditLevel"));
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      name: s.getText(0),
+      role: fromOrd(A.CREDIT_ROLES, s.getUint16(0), "CreditRole"),
+      level: fromOrd(A.CREDIT_LEVELS, s.getUint16(1), "CreditLevel"),
+    };
+  },
+};
+
+/**
+ * Wire codec for `SeriesEntry` (0 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const SeriesEntryCodec: StructCodec<T.SeriesEntry> = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.name ?? "");
+    if (v.position !== undefined) {
+      s.setText(1, v.position ?? "");
+    }
+    if (v.storeSeriesId !== undefined) {
+      s.setText(2, v.storeSeriesId ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.SeriesEntry = {
+      name: s.getText(0),
+    };
+    const positionValue = s.getText(1);
+    if (!(positionValue === "")) {
+      out.position = positionValue;
+    }
+    const storeSeriesIdValue = s.getText(2);
+    if (!(storeSeriesIdValue === "")) {
+      out.storeSeriesId = storeSeriesIdValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `ScanBook` (2 data words, 14 pointers).
  *
  * @internal
  */
 export const ScanBookCodec: StructCodec<T.ScanBook> = {
-  dataWords: 1,
-  pointerCount: 13,
+  dataWords: 2,
+  pointerCount: 14,
   write(s, v, caps) {
-    void caps;
     s.setText(0, v.accountId ?? "");
     s.setText(1, v.productId ?? "");
     s.setText(2, v.title ?? "");
     if (v.marketplace !== undefined) {
       s.setText(3, v.marketplace ?? "");
     }
-    if (v.asin !== undefined) {
-      s.setText(4, v.asin ?? "");
-    }
-    if (v.isbn !== undefined) {
-      s.setText(5, v.isbn ?? "");
-    }
-    if (v.authors !== undefined) {
-      s.setText(6, v.authors ?? "");
-    }
-    if (v.narrators !== undefined) {
-      s.setText(7, v.narrators ?? "");
-    }
-    if (v.series !== undefined) {
-      s.setText(8, v.series ?? "");
-    }
-    if (v.seriesIndex !== undefined) {
-      s.setText(9, v.seriesIndex ?? "");
-    }
-    if (v.contentKind !== undefined) {
-      s.setText(10, v.contentKind ?? "");
-    }
     if (v.publisher !== undefined) {
-      s.setText(11, v.publisher ?? "");
+      s.setText(4, v.publisher ?? "");
     }
     if (v.lengthMinutes !== undefined) {
       s.setInt64(0, v.lengthMinutes ?? 0);
     }
     if (v.subtitle !== undefined) {
-      s.setText(12, v.subtitle ?? "");
+      s.setText(5, v.subtitle ?? "");
+    }
+    s.setUint16(4, ord(A.WORK_KINDS, v.workKind ?? A.WORK_KINDS[0]!, "WorkKind"));
+    s.setUint16(5, ord(A.EXPRESSION_KINDS, v.expressionKind ?? A.EXPRESSION_KINDS[0]!, "ExpressionKind"));
+    s.setUint16(6, ord(A.MEDIA_KINDS, v.mediaKind ?? A.MEDIA_KINDS[0]!, "MediaKind"));
+    {
+      const list = v.identifiers ?? [];
+      const items = s.initStructList(6, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        IdentifierCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    {
+      const list = v.credits ?? [];
+      const items = s.initStructList(7, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        CreditCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    {
+      const list = v.seriesEntries ?? [];
+      const items = s.initStructList(8, list.length, 0, 3);
+      for (let i = 0; i < items.length; i++) {
+        SeriesEntryCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    if (v.parentProductId !== undefined) {
+      s.setText(9, v.parentProductId ?? "");
+    }
+    if (v.language !== undefined) {
+      s.setText(10, v.language ?? "");
+    }
+    s.setUint16(7, ord(A.ABRIDGEMENTS, v.abridgement ?? A.ABRIDGEMENTS[0]!, "Abridgement"));
+    if (v.publishedAt !== undefined) {
+      s.setText(11, v.publishedAt ?? "");
+    }
+    if (v.purchasedAt !== undefined) {
+      s.setText(12, v.purchasedAt ?? "");
+    }
+    if (v.categories !== undefined) {
+      s.setText(13, v.categories ?? "");
     }
   },
   read(s, caps) {
-    void caps;
     const out: T.ScanBook = {
       accountId: s.getText(0),
       productId: s.getText(1),
       title: s.getText(2),
+      workKind: fromOrd(A.WORK_KINDS, s.getUint16(4), "WorkKind"),
+      expressionKind: fromOrd(A.EXPRESSION_KINDS, s.getUint16(5), "ExpressionKind"),
+      mediaKind: fromOrd(A.MEDIA_KINDS, s.getUint16(6), "MediaKind"),
+      identifiers: s.getStructList(6, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
+      credits: s.getStructList(7, 1, 1).map((item) => CreditCodec.read(item, caps)),
+      seriesEntries: s.getStructList(8, 0, 3).map((item) => SeriesEntryCodec.read(item, caps)),
+      abridgement: fromOrd(A.ABRIDGEMENTS, s.getUint16(7), "Abridgement"),
     };
     const marketplaceValue = s.getText(3);
     if (!(marketplaceValue === "")) {
       out.marketplace = marketplaceValue;
     }
-    const asinValue = s.getText(4);
-    if (!(asinValue === "")) {
-      out.asin = asinValue;
-    }
-    const isbnValue = s.getText(5);
-    if (!(isbnValue === "")) {
-      out.isbn = isbnValue;
-    }
-    const authorsValue = s.getText(6);
-    if (!(authorsValue === "")) {
-      out.authors = authorsValue;
-    }
-    const narratorsValue = s.getText(7);
-    if (!(narratorsValue === "")) {
-      out.narrators = narratorsValue;
-    }
-    const seriesValue = s.getText(8);
-    if (!(seriesValue === "")) {
-      out.series = seriesValue;
-    }
-    const seriesIndexValue = s.getText(9);
-    if (!(seriesIndexValue === "")) {
-      out.seriesIndex = seriesIndexValue;
-    }
-    const contentKindValue = s.getText(10);
-    if (!(contentKindValue === "")) {
-      out.contentKind = contentKindValue;
-    }
-    const publisherValue = s.getText(11);
+    const publisherValue = s.getText(4);
     if (!(publisherValue === "")) {
       out.publisher = publisherValue;
     }
@@ -4102,9 +4187,29 @@ export const ScanBookCodec: StructCodec<T.ScanBook> = {
     if (!(lengthMinutesValue === 0n)) {
       out.lengthMinutes = lengthMinutesValue;
     }
-    const subtitleValue = s.getText(12);
+    const subtitleValue = s.getText(5);
     if (!(subtitleValue === "")) {
       out.subtitle = subtitleValue;
+    }
+    const parentProductIdValue = s.getText(9);
+    if (!(parentProductIdValue === "")) {
+      out.parentProductId = parentProductIdValue;
+    }
+    const languageValue = s.getText(10);
+    if (!(languageValue === "")) {
+      out.language = languageValue;
+    }
+    const publishedAtValue = s.getText(11);
+    if (!(publishedAtValue === "")) {
+      out.publishedAt = publishedAtValue;
+    }
+    const purchasedAtValue = s.getText(12);
+    if (!(purchasedAtValue === "")) {
+      out.purchasedAt = purchasedAtValue;
+    }
+    const categoriesValue = s.getText(13);
+    if (!(categoriesValue === "")) {
+      out.categories = categoriesValue;
     }
     return out;
   },
@@ -4125,7 +4230,7 @@ export const ScanSummaryCodec: StructCodec<T.ScanSummary> = {
     s.setUint32(3, v.skippedDisabled ?? 0);
     {
       const list = v.books ?? [];
-      const items = s.initStructList(0, list.length, 1, 13);
+      const items = s.initStructList(0, list.length, 2, 14);
       for (let i = 0; i < items.length; i++) {
         ScanBookCodec.write(items[i]!, list[i]!, caps);
       }
@@ -4137,7 +4242,7 @@ export const ScanSummaryCodec: StructCodec<T.ScanSummary> = {
       booksUpserted: s.getUint32(1),
       pages: s.getUint32(2),
       skippedDisabled: s.getUint32(3),
-      books: s.getStructList(0, 1, 13).map((item) => ScanBookCodec.read(item, caps)),
+      books: s.getStructList(0, 2, 14).map((item) => ScanBookCodec.read(item, caps)),
     };
   },
 };
@@ -4739,71 +4844,52 @@ export const RevokeAccountParamsCodec: StructCodec<T.RevokeAccountParams> = {
 };
 
 /**
- * Wire codec for `CatalogHit` (5 data words, 19 pointers).
+ * Wire codec for `CatalogHit` (5 data words, 17 pointers).
  *
  * @internal
  */
 export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
   dataWords: 5,
-  pointerCount: 19,
+  pointerCount: 17,
   write(s, v, caps) {
-    void caps;
     s.setText(0, v.productId ?? "");
     s.setText(1, v.title ?? "");
-    if (v.authors !== undefined) {
-      s.setText(2, v.authors ?? "");
-    }
-    if (v.narrators !== undefined) {
-      s.setText(3, v.narrators ?? "");
-    }
-    if (v.series !== undefined) {
-      s.setText(4, v.series ?? "");
-    }
-    if (v.seriesIndex !== undefined) {
-      s.setText(5, v.seriesIndex ?? "");
-    }
-    if (v.asin !== undefined) {
-      s.setText(6, v.asin ?? "");
-    }
-    if (v.isbn !== undefined) {
-      s.setText(7, v.isbn ?? "");
-    }
     if (v.url !== undefined) {
-      s.setText(8, v.url ?? "");
+      s.setText(2, v.url ?? "");
     }
     if (v.coverUrl !== undefined) {
-      s.setText(9, v.coverUrl ?? "");
+      s.setText(3, v.coverUrl ?? "");
     }
-    s.setText(10, v.origin ?? "");
+    s.setText(4, v.origin ?? "");
     if (v.subtitle !== undefined) {
-      s.setText(11, v.subtitle ?? "");
+      s.setText(5, v.subtitle ?? "");
     }
     if (v.description !== undefined) {
-      s.setText(12, v.description ?? "");
+      s.setText(6, v.description ?? "");
     }
     if (v.publisher !== undefined) {
-      s.setText(13, v.publisher ?? "");
+      s.setText(7, v.publisher ?? "");
     }
     if (v.lengthMinutes !== undefined) {
       s.setInt64(0, v.lengthMinutes ?? 0);
     }
     if (v.publishedAt !== undefined) {
-      s.setText(14, v.publishedAt ?? "");
+      s.setText(8, v.publishedAt ?? "");
     }
     if (v.categories !== undefined) {
-      s.setText(15, v.categories ?? "");
+      s.setText(9, v.categories ?? "");
     }
     if (v.language !== undefined) {
-      s.setText(16, v.language ?? "");
+      s.setText(10, v.language ?? "");
     }
     if (v.priceCents !== undefined) {
       s.setInt64(1, v.priceCents ?? 0);
     }
     if (v.currency !== undefined) {
-      s.setText(17, v.currency ?? "");
+      s.setText(11, v.currency ?? "");
     }
     if (v.priceLabel !== undefined) {
-      s.setText(18, v.priceLabel ?? "");
+      s.setText(12, v.priceLabel ?? "");
     }
     if (v.ratingOverall !== undefined) {
       s.setFloat64(2, v.ratingOverall ?? 0);
@@ -4812,56 +4898,64 @@ export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
       s.setInt64(3, v.ratingCount ?? 0);
     }
     s.setUint16(16, ord(A.ABRIDGEMENTS, v.abridgement ?? A.ABRIDGEMENTS[0]!, "Abridgement"));
+    s.setUint16(17, ord(A.WORK_KINDS, v.workKind ?? A.WORK_KINDS[0]!, "WorkKind"));
+    s.setUint16(18, ord(A.EXPRESSION_KINDS, v.expressionKind ?? A.EXPRESSION_KINDS[0]!, "ExpressionKind"));
+    s.setUint16(19, ord(A.MEDIA_KINDS, v.mediaKind ?? A.MEDIA_KINDS[0]!, "MediaKind"));
+    {
+      const list = v.identifiers ?? [];
+      const items = s.initStructList(13, list.length, 1, 2);
+      for (let i = 0; i < items.length; i++) {
+        IdentifierCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    {
+      const list = v.credits ?? [];
+      const items = s.initStructList(14, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        CreditCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    {
+      const list = v.seriesEntries ?? [];
+      const items = s.initStructList(15, list.length, 0, 3);
+      for (let i = 0; i < items.length; i++) {
+        SeriesEntryCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    if (v.parentProductId !== undefined) {
+      s.setText(16, v.parentProductId ?? "");
+    }
   },
   read(s, caps) {
-    void caps;
     const out: T.CatalogHit = {
       productId: s.getText(0),
       title: s.getText(1),
-      origin: s.getText(10),
+      origin: s.getText(4),
       abridgement: fromOrd(A.ABRIDGEMENTS, s.getUint16(16), "Abridgement"),
+      workKind: fromOrd(A.WORK_KINDS, s.getUint16(17), "WorkKind"),
+      expressionKind: fromOrd(A.EXPRESSION_KINDS, s.getUint16(18), "ExpressionKind"),
+      mediaKind: fromOrd(A.MEDIA_KINDS, s.getUint16(19), "MediaKind"),
+      identifiers: s.getStructList(13, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
+      credits: s.getStructList(14, 1, 1).map((item) => CreditCodec.read(item, caps)),
+      seriesEntries: s.getStructList(15, 0, 3).map((item) => SeriesEntryCodec.read(item, caps)),
     };
-    const authorsValue = s.getText(2);
-    if (!(authorsValue === "")) {
-      out.authors = authorsValue;
-    }
-    const narratorsValue = s.getText(3);
-    if (!(narratorsValue === "")) {
-      out.narrators = narratorsValue;
-    }
-    const seriesValue = s.getText(4);
-    if (!(seriesValue === "")) {
-      out.series = seriesValue;
-    }
-    const seriesIndexValue = s.getText(5);
-    if (!(seriesIndexValue === "")) {
-      out.seriesIndex = seriesIndexValue;
-    }
-    const asinValue = s.getText(6);
-    if (!(asinValue === "")) {
-      out.asin = asinValue;
-    }
-    const isbnValue = s.getText(7);
-    if (!(isbnValue === "")) {
-      out.isbn = isbnValue;
-    }
-    const urlValue = s.getText(8);
+    const urlValue = s.getText(2);
     if (!(urlValue === "")) {
       out.url = urlValue;
     }
-    const coverUrlValue = s.getText(9);
+    const coverUrlValue = s.getText(3);
     if (!(coverUrlValue === "")) {
       out.coverUrl = coverUrlValue;
     }
-    const subtitleValue = s.getText(11);
+    const subtitleValue = s.getText(5);
     if (!(subtitleValue === "")) {
       out.subtitle = subtitleValue;
     }
-    const descriptionValue = s.getText(12);
+    const descriptionValue = s.getText(6);
     if (!(descriptionValue === "")) {
       out.description = descriptionValue;
     }
-    const publisherValue = s.getText(13);
+    const publisherValue = s.getText(7);
     if (!(publisherValue === "")) {
       out.publisher = publisherValue;
     }
@@ -4869,15 +4963,15 @@ export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
     if (!(lengthMinutesValue === 0n)) {
       out.lengthMinutes = lengthMinutesValue;
     }
-    const publishedAtValue = s.getText(14);
+    const publishedAtValue = s.getText(8);
     if (!(publishedAtValue === "")) {
       out.publishedAt = publishedAtValue;
     }
-    const categoriesValue = s.getText(15);
+    const categoriesValue = s.getText(9);
     if (!(categoriesValue === "")) {
       out.categories = categoriesValue;
     }
-    const languageValue = s.getText(16);
+    const languageValue = s.getText(10);
     if (!(languageValue === "")) {
       out.language = languageValue;
     }
@@ -4885,11 +4979,11 @@ export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
     if (!(priceCentsValue === 0n)) {
       out.priceCents = priceCentsValue;
     }
-    const currencyValue = s.getText(17);
+    const currencyValue = s.getText(11);
     if (!(currencyValue === "")) {
       out.currency = currencyValue;
     }
-    const priceLabelValue = s.getText(18);
+    const priceLabelValue = s.getText(12);
     if (!(priceLabelValue === "")) {
       out.priceLabel = priceLabelValue;
     }
@@ -4900,6 +4994,10 @@ export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
     const ratingCountValue = s.getInt64(3);
     if (!(ratingCountValue === 0n)) {
       out.ratingCount = ratingCountValue;
+    }
+    const parentProductIdValue = s.getText(16);
+    if (!(parentProductIdValue === "")) {
+      out.parentProductId = parentProductIdValue;
     }
     return out;
   },
@@ -4916,7 +5014,7 @@ export const CatalogHitsCodec: StructCodec<T.CatalogHits> = {
   write(s, v, caps) {
     {
       const list = v.hits ?? [];
-      const items = s.initStructList(0, list.length, 5, 19);
+      const items = s.initStructList(0, list.length, 5, 17);
       for (let i = 0; i < items.length; i++) {
         CatalogHitCodec.write(items[i]!, list[i]!, caps);
       }
@@ -4924,7 +5022,7 @@ export const CatalogHitsCodec: StructCodec<T.CatalogHits> = {
   },
   read(s, caps) {
     return {
-      hits: s.getStructList(0, 5, 19).map((item) => CatalogHitCodec.read(item, caps)),
+      hits: s.getStructList(0, 5, 17).map((item) => CatalogHitCodec.read(item, caps)),
     };
   },
 };
@@ -4979,13 +5077,13 @@ export const CatalogDetailCodec: StructCodec<T.CatalogDetail> = {
   write(s, v, caps) {
     s.setBool(0, v.found ?? false);
     if (v.hit != null) {
-      CatalogHitCodec.write(s.initStruct(0, 5, 19), v.hit, caps);
+      CatalogHitCodec.write(s.initStruct(0, 5, 17), v.hit, caps);
     }
   },
   read(s, caps) {
     return {
       found: s.getBool(0),
-      hit: CatalogHitCodec.read(s.getStruct(0, 5, 19), caps),
+      hit: CatalogHitCodec.read(s.getStruct(0, 5, 17), caps),
     };
   },
 };

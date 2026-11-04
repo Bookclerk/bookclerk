@@ -376,6 +376,9 @@ class TreeTest(unittest.TestCase):
 # Unix times of 2025-10-01 and 2025-10-02, 12:00 UTC.
 DAY1 = 1_759_320_000
 DAY2 = DAY1 + 86_400
+# The same instants as last-updated.json writes them.
+T1 = "2025-10-01T12:00:00Z"
+T2 = "2025-10-02T12:00:00Z"
 
 
 class PageDatesTest(unittest.TestCase):
@@ -391,11 +394,11 @@ class PageDatesTest(unittest.TestCase):
 
     def test_newest_content_change_wins(self) -> None:
         log = self.log((DAY2, ["M\tdocs/a.md"]), (DAY1, ["A\tdocs/a.md", "A\tdocs/b.md"]))
-        self.assertEqual(dm.page_dates(log, {"docs/a.md", "docs/b.md"}), {"docs/a.md": "2025-10-02", "docs/b.md": "2025-10-01"})
+        self.assertEqual(dm.page_dates(log, {"docs/a.md", "docs/b.md"}), {"docs/a.md": T2, "docs/b.md": T1})
 
     def test_a_pure_move_is_followed_not_counted(self) -> None:
         log = self.log((DAY2, ["R100\tdocs/old.md\tdocs/new.md"]), (DAY1, ["A\tdocs/old.md"]))
-        self.assertEqual(dm.page_dates(log, {"docs/new.md"}), {"docs/new.md": "2025-10-01"})
+        self.assertEqual(dm.page_dates(log, {"docs/new.md"}), {"docs/new.md": T1})
 
     def test_a_move_with_edits_counts_and_is_followed(self) -> None:
         log = self.log(
@@ -403,7 +406,7 @@ class PageDatesTest(unittest.TestCase):
             (DAY1 + 3600, ["M\tdocs/old.md"]),
             (DAY1, ["A\tdocs/old.md"]),
         )
-        self.assertEqual(dm.page_dates(log, {"docs/new.md"}), {"docs/new.md": "2025-10-02"})
+        self.assertEqual(dm.page_dates(log, {"docs/new.md"}), {"docs/new.md": T2})
 
     def test_a_readded_path_ignores_the_deleted_file(self) -> None:
         log = self.log(
@@ -411,7 +414,7 @@ class PageDatesTest(unittest.TestCase):
             (DAY1 + 1800, ["D\tdocs/a.md"]),
             (DAY2 + 86_400, ["M\tdocs/a.md"]),  # out of order, and of the old file
         )
-        self.assertEqual(dm.page_dates(log, {"docs/a.md"}), {"docs/a.md": "2025-10-01"})
+        self.assertEqual(dm.page_dates(log, {"docs/a.md"}), {"docs/a.md": "2025-10-01T13:00:00Z"})
 
     def test_other_paths_and_undated_pages_are_left_out(self) -> None:
         log = self.log((DAY1, ["M\tdocs/other.md", "R100\tdocs/x.md\tdocs/y.md"]))
@@ -479,7 +482,7 @@ class GitHistoryTest(unittest.TestCase):
         (out / "api" / "README.md").write_text("# API\n")
         self.assertEqual(dm.write_last_updated(out, dm.git_docs_log(self.repo)), 2)
         document = json.loads((out / dm.LAST_UPDATED_FILE).read_text())
-        self.assertEqual(document, {"version": 1, "pages": {"README": "2025-10-02", "guide/moved": "2025-10-01"}})
+        self.assertEqual(document, {"version": 1, "pages": {"README": T2, "guide/moved": T1}})
 
     def test_refuses_a_shallow_or_missing_history(self) -> None:
         for when in (DAY1, DAY2):

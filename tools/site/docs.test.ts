@@ -21,8 +21,17 @@ import {
   slugify,
 } from "./docs.ts";
 import { highlight } from "./highlight.ts";
-import { formatDate, pageDate, parseIsoDate } from "./last-updated.ts";
-import type { IsoDate } from "./last-updated.ts";
+import {
+  formatDate,
+  formatUtcTime,
+  hasTime,
+  pageDate,
+  parseIsoDate,
+  parsePageDate,
+  utcDate,
+} from "./last-updated.ts";
+import type { PageDate } from "./last-updated.ts";
+import { timeHtml } from "./render.ts";
 import {
   crumbsHtml,
   crumbTrail,
@@ -464,9 +473,51 @@ test("page dates are real calendar dates, shown as month, day and year", () => {
   ]) {
     assert.equal(parseIsoDate(bad), null, bad);
   }
-  assert.equal(formatDate("2026-10-26" as IsoDate), "Oct 26, 2026");
-  assert.equal(formatDate("2026-01-05" as IsoDate), "Jan 5, 2026");
-  assert.equal(formatDate("0099-12-31" as IsoDate), "Dec 31, 0099");
+  assert.equal(formatDate("2026-10-26" as PageDate), "Oct 26, 2026");
+  assert.equal(formatDate("2026-01-05" as PageDate), "Jan 5, 2026");
+  assert.equal(formatDate("0099-12-31" as PageDate), "Dec 31, 0099");
+});
+
+test("page dates may carry a UTC time to the second, shown in UTC until site.js runs", () => {
+  for (const ok of [
+    "2026-10-26",
+    "2026-10-26T00:00:00Z",
+    "2026-10-26T23:59:59Z",
+    "2024-02-29T12:30:45Z",
+  ])
+    assert.equal(parsePageDate(ok), ok, ok);
+  for (const bad of [
+    "2026-02-29T12:00:00Z",
+    "2026-10-26T24:00:00Z",
+    "2026-10-26T12:60:00Z",
+    "2026-10-26T12:00:60Z",
+    "2026-10-26T12:00Z",
+    "2026-10-26T12:00:00",
+    "2026-10-26T12:00:00z",
+    "2026-10-26t12:00:00Z",
+    "2026-10-26 12:00:00Z",
+    "2026-10-26T12:00:00.000Z",
+    "2026-10-26T12:00:00+00:00",
+    "2026-10-26T1:00:00Z",
+    "2026-10-26T",
+    "2026-10-26Z",
+    "",
+  ])
+    assert.equal(parsePageDate(bad), null, bad);
+  const instant = "2026-10-26T23:30:05Z" as PageDate;
+  const day = "2026-10-26" as PageDate;
+  assert.equal(hasTime(instant), true);
+  assert.equal(hasTime(day), false);
+  assert.equal(utcDate(instant), "2026-10-26");
+  assert.equal(utcDate(day), "2026-10-26");
+  assert.equal(formatDate(instant), "Oct 26, 2026");
+  assert.equal(formatUtcTime(instant), "Oct 26, 2026, 23:30 UTC");
+  assert.equal(formatUtcTime(day), null);
+  assert.equal(
+    timeHtml(instant),
+    '<time datetime="2026-10-26T23:30:05Z" data-local-date title="Oct 26, 2026, 23:30 UTC">Oct 26, 2026</time>',
+  );
+  assert.equal(timeHtml(day), '<time datetime="2026-10-26">Oct 26, 2026</time>');
 });
 
 test("pageDate reads one page's date and ignores anything malformed", () => {

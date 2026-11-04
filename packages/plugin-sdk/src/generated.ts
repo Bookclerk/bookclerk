@@ -18,6 +18,12 @@ import type {
   Entrypoint,
   PortalAuthMode,
   CliArgKind,
+  WorkKind,
+  ExpressionKind,
+  MediaKind,
+  IdentifierScheme,
+  CreditRole,
+  CreditLevel,
   CatalogSort,
   CatalogField,
   Abridgement,
@@ -34,6 +40,12 @@ export type {
   Entrypoint,
   PortalAuthMode,
   CliArgKind,
+  WorkKind,
+  ExpressionKind,
+  MediaKind,
+  IdentifierScheme,
+  CreditRole,
+  CreditLevel,
   CatalogSort,
   CatalogField,
   Abridgement,
@@ -1547,9 +1559,49 @@ export interface ScanParams {
   credentials: AccountCredential[];
 }
 
+/** One external identifier a storefront or metadata provider reports. */
+export interface Identifier {
+  /** Scheme the value belongs to; it decides the identifier's level. */
+  scheme: IdentifierScheme;
+  /** The identifier as the source printed it; the host trims and normalises. */
+  value: string;
+  /**
+   * Marketplace the id is scoped to (ASIN); absent for global schemes.
+   * Omitted when absent (wire zero value).
+   */
+  marketplace?: string;
+}
+
+/** One credited contributor. Credits are listed in billing order. */
+export interface Credit {
+  /** Contributor display name as the source prints it, one person or body. */
+  name: string;
+  /** What the contributor did. */
+  role: CreditRole;
+  /** Level the credit attaches to. */
+  level: CreditLevel;
+}
+
+/** A work's place in one series. */
+export interface SeriesEntry {
+  /** Series name as the source prints it. */
+  name: string;
+  /**
+   * Position label as the source prints it (`1`, `2.5`, `1-3`).
+   * Omitted when absent (wire zero value).
+   */
+  position?: string;
+  /**
+   * The store's own id for the series (an Audible series ASIN) when known.
+   * Omitted when absent (wire zero value).
+   */
+  storeSeriesId?: string;
+}
+
 /**
- * One library title returned by `ContentSource.scan`. The host upserts these
- * rows and forces `source` to the plugin id.
+ * One library title returned by `ContentSource.scan`. The host forces `source`
+ * to the plugin id and, until the library stores works, expressions and
+ * editions, maps the record onto one flat library row.
  */
 export interface ScanBook {
   /** Account that owns this library entry. */
@@ -1563,41 +1615,6 @@ export interface ScanBook {
    * Omitted when absent (wire zero value).
    */
   marketplace?: string;
-  /**
-   * Amazon ASIN when the storefront exposes one.
-   * Omitted when absent (wire zero value).
-   */
-  asin?: string;
-  /**
-   * ISBN when the storefront exposes one.
-   * Omitted when absent (wire zero value).
-   */
-  isbn?: string;
-  /**
-   * Comma- or guest-formatted author list.
-   * Omitted when absent (wire zero value).
-   */
-  authors?: string;
-  /**
-   * Comma- or guest-formatted narrator list.
-   * Omitted when absent (wire zero value).
-   */
-  narrators?: string;
-  /**
-   * Series name when applicable.
-   * Omitted when absent (wire zero value).
-   */
-  series?: string;
-  /**
-   * Series index / sequence label.
-   * Omitted when absent (wire zero value).
-   */
-  seriesIndex?: string;
-  /**
-   * Content classification (e.g. `book` vs `episode`).
-   * Omitted when absent (wire zero value).
-   */
-  contentKind?: string;
   /**
    * Publisher name when known.
    * Omitted when absent (wire zero value).
@@ -1613,6 +1630,45 @@ export interface ScanBook {
    * Omitted when absent (wire zero value).
    */
   subtitle?: string;
+  /** Kind of work the title is. */
+  workKind: WorkKind;
+  /** How the work is realised in this edition. */
+  expressionKind: ExpressionKind;
+  /** Form of this edition. */
+  mediaKind: MediaKind;
+  /** External identifiers (ISBN, ASIN, OpenLibrary ids). */
+  identifiers: Identifier[];
+  /** Credited contributors in billing order. */
+  credits: Credit[];
+  /** Series the work belongs to. */
+  seriesEntries: SeriesEntry[];
+  /**
+   * Product id of the parent podcast show, for a podcast episode.
+   * Omitted when absent (wire zero value).
+   */
+  parentProductId?: string;
+  /**
+   * Content language code when known.
+   * Omitted when absent (wire zero value).
+   */
+  language?: string;
+  /** Whether the edition is abridged when the storefront says so. */
+  abridgement: Abridgement;
+  /**
+   * Publication date as RFC 3339 when known.
+   * Omitted when absent (wire zero value).
+   */
+  publishedAt?: string;
+  /**
+   * When the account bought or added the title, as RFC 3339, when known.
+   * Omitted when absent (wire zero value).
+   */
+  purchasedAt?: string;
+  /**
+   * Category / genre labels as a single string when known.
+   * Omitted when absent (wire zero value).
+   */
+  categories?: string;
 }
 
 /** Summary result of `ContentSource.scan`. */
@@ -1918,36 +1974,6 @@ export interface CatalogHit {
   /** Primary title. */
   title: string;
   /**
-   * Authors string when known.
-   * Omitted when absent (wire zero value).
-   */
-  authors?: string;
-  /**
-   * Narrators string when known.
-   * Omitted when absent (wire zero value).
-   */
-  narrators?: string;
-  /**
-   * Series name when applicable.
-   * Omitted when absent (wire zero value).
-   */
-  series?: string;
-  /**
-   * Series index / sequence label.
-   * Omitted when absent (wire zero value).
-   */
-  seriesIndex?: string;
-  /**
-   * Amazon ASIN when known.
-   * Omitted when absent (wire zero value).
-   */
-  asin?: string;
-  /**
-   * ISBN when known.
-   * Omitted when absent (wire zero value).
-   */
-  isbn?: string;
-  /**
    * Storefront product page URL.
    * Omitted when absent (wire zero value).
    */
@@ -2021,6 +2047,23 @@ export interface CatalogHit {
   ratingCount?: bigint;
   /** Whether the edition is abridged when the storefront says so. */
   abridgement: Abridgement;
+  /** Kind of work the hit is. */
+  workKind: WorkKind;
+  /** How the work is realised in this edition. */
+  expressionKind: ExpressionKind;
+  /** Form of this edition; print and ebook hits are never acquired. */
+  mediaKind: MediaKind;
+  /** External identifiers (ISBN, ASIN, OpenLibrary ids). */
+  identifiers: Identifier[];
+  /** Credited contributors in billing order. */
+  credits: Credit[];
+  /** Series the work belongs to. */
+  seriesEntries: SeriesEntry[];
+  /**
+   * Product id of the parent podcast show, for a podcast episode.
+   * Omitted when absent (wire zero value).
+   */
+  parentProductId?: string;
 }
 
 /** Success payload of the catalog list methods. */

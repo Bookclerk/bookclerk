@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bookclerk_library::SourceScope;
+use bookclerk_source::records::{self, CreditRole};
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions,
     LoginOptions, PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount,
@@ -566,14 +567,26 @@ fn catalog_hit(book: &CatalogAudiobook, origin: String) -> CatalogHit {
     CatalogHit {
         product_id: book.id.clone(),
         title: book.title(),
-        authors: book.display_authors.clone(),
-        narrators: book.display_narrators.clone(),
-        series: book.series_name(),
-        series_index: book.series_audiobook.as_ref().and_then(|s| {
-            s.display_number
-                .clone()
-                .or_else(|| s.number.map(|n| n.to_string()))
-        }),
+        credits: {
+            let mut credits =
+                records::credits_from_display(book.display_authors.as_deref(), CreditRole::Author);
+            credits.extend(records::credits_from_display(
+                book.display_narrators.as_deref(),
+                CreditRole::Narrator,
+            ));
+            credits
+        },
+        series_entries: records::series_entries(
+            book.series_name().as_deref(),
+            book.series_audiobook
+                .as_ref()
+                .and_then(|s| {
+                    s.display_number
+                        .clone()
+                        .or_else(|| s.number.map(|n| n.to_string()))
+                })
+                .as_deref(),
+        ),
         url: book.url.clone().map(|u| {
             if u.starts_with("http") {
                 u

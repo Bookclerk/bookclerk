@@ -171,14 +171,16 @@ DATES_CORPUS = Path(__file__).resolve().parent / "docs_publish_dates_corpus"
 DATE_FRAGMENTS = [
     '"', "{", "}", "[", "]", ":", ",", "\\", "\\u0000", " ", "\n", "0", "1", "2", "9", "-", "-02-29", "-13-",
     "1.0", "1e0", "true", "null", '"version"', '"pages"', '"README"', "2026-10-26", "é",
+    "T", "Z", ":", "T12:00:00Z", "T23:59:59Z", "T24:00:00Z", "T12:60:00Z", "+00:00",
 ]
 
 
 def oracle_previous_dates(data: bytes) -> dict[str, str]:
     """Independent oracle for ``previous_dates``: the dates ``data`` should yield.
 
-    The date is read digit by digit against a days-in-month table rather
-    than with ``datetime``.
+    The date is read digit by digit against a days-in-month table, and the
+    optional UTC time (``THH:MM:SSZ``) field by field, rather than with
+    ``datetime``.
     """
     try:
         document = json.loads(data.decode("utf-8"))
@@ -191,12 +193,18 @@ def oracle_previous_dates(data: bytes) -> dict[str, str]:
         return {}
     out = {}
     for key, value in document["pages"].items():
-        if type(value) is not str or len(value) != 10 or value[4] != "-" or value[7] != "-":
+        if type(value) is not str or len(value) not in (10, 20) or value[4] != "-" or value[7] != "-":
             continue
-        digits = value[:4] + value[5:7] + value[8:]
+        digits = value[:4] + value[5:7] + value[8:10]
+        if len(value) == 20:
+            if value[10] != "T" or value[13] != ":" or value[16] != ":" or value[19] != "Z":
+                continue
+            digits += value[11:13] + value[14:16] + value[17:19]
         if not all("0" <= c <= "9" for c in digits):
             continue
-        year, month, day = int(value[:4]), int(value[5:7]), int(value[8:])
+        year, month, day = int(value[:4]), int(value[5:7]), int(value[8:10])
+        if len(value) == 20 and (int(value[11:13]) > 23 or int(value[14:16]) > 59 or int(value[17:19]) > 59):
+            continue
         leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
         days = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
         if year >= 1 and 1 <= month <= 12 and 1 <= day <= days[month - 1]:
@@ -214,7 +222,7 @@ class PreviousDatesFuzzTest(unittest.TestCase):
         got = dp.previous_dates(data)
         self.assertEqual(got, oracle_previous_dates(data), label)
         for value in got.values():
-            self.assertRegex(value, r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$", label)
+            self.assertRegex(value, r"^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$", label)
 
     def test_corpus_matches_oracle(self) -> None:
         paths = sorted(DATES_CORPUS.glob("*.json"))
@@ -226,6 +234,10 @@ class PreviousDatesFuzzTest(unittest.TestCase):
             {"README": "2026-10-26", "api/README": "2026-10-27", "api/rust/bookclerk_media": "2024-02-29"},
         )
         self.assertEqual(dp.previous_dates((DATES_CORPUS / "impossible_dates.json").read_bytes()), {"e": "2000-02-29"})
+        self.assertEqual(
+            dp.previous_dates((DATES_CORPUS / "instants.json").read_bytes()),
+            {"README": "2026-10-26T14:05:09Z", "api/a": "2024-02-29T23:59:59Z", "api/b": "2026-10-27"},
+        )
 
     def test_mutations_match_oracle(self) -> None:
         seeds = [p.read_bytes().decode("utf-8", "replace") for p in sorted(DATES_CORPUS.glob("*.json"))]
@@ -365,39 +377,50 @@ class PublishTest(unittest.TestCase):
     def test_generated_pages_keep_their_date_until_they_change(self) -> None:
         built = json.dumps({"version": 1, "pages": {"README": "2026-10-20"}}, indent=1) + "\n"
         tree = {"README.md": "# Docs\n", "api/README.md": "# API\n", "api/rust/a.md": "A\n", dp.LAST_UPDATED_FILE: built}
-        dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_A, today="2026-10-27")
-        self.assertEqual(self.dates(), {"README": "2026-10-20", "api/README": "2026-10-27", "api/rust/a": "2026-10-27"})
+        dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_A, published="2026-10-27T09:00:00Z")
+        self.assertEqual(self.dates(), {"README": "2026-10-20", "api/README": "2026-10-27T09:00:00Z", "api/rust/a": "2026-10-27T09:00:00Z"})
 
         # Rebuilt identically a day later: no new commit, dates kept.
         head = self.gh.refs["heads/main"]
-        summary = dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_B, today="2026-10-28")
+        summary = dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_B, published="2026-10-28T09:00:00Z")
         self.assertIn("no changes", summary)
         self.assertEqual(self.gh.refs["heads/main"], head)
 
         # One generated page changes, another is added: only those move.
         tree["api/rust/a.md"] = "A, changed\n"
         tree["api/rust/b.md"] = "B\n"
-        dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_C, today="2026-10-29")
+        dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_C, published="2026-10-29T08:30:05Z")
         self.assertEqual(
             self.dates(),
-            {"README": "2026-10-20", "api/README": "2026-10-27", "api/rust/a": "2026-10-29", "api/rust/b": "2026-10-29"},
+            {
+                "README": "2026-10-20",
+                "api/README": "2026-10-27T09:00:00Z",
+                "api/rust/a": "2026-10-29T08:30:05Z",
+                "api/rust/b": "2026-10-29T08:30:05Z",
+            },
         )
 
     def test_a_release_beside_main_dates_its_generated_pages_too(self) -> None:
         built = json.dumps({"version": 1, "pages": {}}, indent=1) + "\n"
-        dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built}), SRC, SHA_A, today="2026-10-27")
+        dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built}), SRC, SHA_A, published="2026-10-27T09:00:00Z")
         files = self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built})
-        dp.publish_release(self.repo, "main", files, SRC, SHA_B, "v1.0.0", today="2026-11-01")
-        self.assertEqual(self.dates("tags/v1.0.0"), {"api/x": "2026-10-27"})
+        dp.publish_release(self.repo, "main", files, SRC, SHA_B, "v1.0.0", published="2026-11-01T09:00:00Z")
+        self.assertEqual(self.dates("tags/v1.0.0"), {"api/x": "2026-10-27T09:00:00Z"})
 
     def test_a_tree_without_dates_is_published_without_them(self) -> None:
-        dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n"}), SRC, SHA_A, today="2026-10-27")
+        dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n"}), SRC, SHA_A, published="2026-10-27T09:00:00Z")
         self.assertNotIn(dp.LAST_UPDATED_FILE, self.gh.files("heads/main"))
+
+    def test_a_malformed_publish_time_is_refused(self) -> None:
+        built = json.dumps({"version": 1, "pages": {}}, indent=1) + "\n"
+        for bad in ("2026-10-27", "2026-10-27 09:00", "now", "2026-10-27T09:00:00+00:00"):
+            with self.subTest(bad=bad), self.assertRaises(dp.PublishError):
+                dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built}), SRC, SHA_A, published=bad)
 
     def test_a_malformed_built_dates_file_is_refused(self) -> None:
         for bad in ("{", "[]", '{"version": 2, "pages": {}}', '{"version": 1, "pages": []}'):
             with self.subTest(bad=bad), self.assertRaises(dp.PublishError):
-                dp.publish_main(self.repo, "main", self.write({dp.LAST_UPDATED_FILE: bad}), SRC, SHA_A, today="2026-10-27")
+                dp.publish_main(self.repo, "main", self.write({dp.LAST_UPDATED_FILE: bad}), SRC, SHA_A, published="2026-10-27T09:00:00Z")
 
     def test_chunks_split_large_trees(self) -> None:
         entries = [{"path": f"f{i}.md", "content": "x" * 50} for i in range(10)]
@@ -450,6 +473,17 @@ class InputTest(unittest.TestCase):
             self.assertEqual(dp.previous_dates(bad), {}, bad)
         document = {"version": 1, "pages": {"a": "2026-10-27", "b": "2026-02-30", "c": 20261027, "d": "2026-1-01", "e": "2024-02-29"}}
         self.assertEqual(dp.previous_dates(json.dumps(document).encode()), {"a": "2026-10-27", "e": "2024-02-29"})
+
+    def test_is_date_reads_dates_and_utc_instants(self) -> None:
+        for ok in ("2026-10-27", "2024-02-29", "2026-10-27T00:00:00Z", "2026-12-31T23:59:59Z"):
+            self.assertTrue(dp.is_date(ok), ok)
+        for bad in ("2026-10-27T24:00:00Z", "2026-10-27T12:00:00", "2026-10-27T12:00:00+00:00", "2026-02-30T12:00:00Z", None):
+            self.assertFalse(dp.is_date(bad), bad)
+
+    def test_now_utc_is_an_instant_to_the_second(self) -> None:
+        now = dp.now_utc()
+        self.assertRegex(now, r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+        self.assertTrue(dp.is_date(now))
 
     def test_trailer_round_trip(self) -> None:
         message = dp.commit_message(SRC, SHA_A, None)

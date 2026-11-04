@@ -14,6 +14,7 @@ use bookclerk_demo_seed::{
 use bookclerk_library::control_plane::branch_title_counts;
 use bookclerk_library::entities::nodes;
 use bookclerk_library::{AcquireStatus, LibraryStore, UserRole};
+use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_source::CatalogHit;
 use sea_orm::EntityTrait;
 
@@ -157,9 +158,16 @@ fn hit(product_id: &str, title: &str, authors: &str) -> CatalogHit {
     CatalogHit {
         product_id: product_id.into(),
         title: title.into(),
-        authors: Some(authors.into()),
+        credits: records::credits_from_names([authors], CreditRole::Author),
         ..CatalogHit::default()
     }
+}
+
+/// One identifier list holding `value` in `scheme`.
+fn ids(scheme: IdentifierScheme, value: &str) -> Vec<records::Identifier> {
+    records::identifier(scheme, value, None)
+        .into_iter()
+        .collect()
 }
 
 /// The lookup for `key`.
@@ -265,8 +273,14 @@ async fn writes_the_store_record_when_there_is_one() {
     records.insert(
         "demo-project-hail-mary",
         CatalogHit {
-            asin: Some("B08G9PRS1K".into()),
-            narrators: Some("Ray Porter".into()),
+            identifiers: ids(IdentifierScheme::Asin, "B08G9PRS1K"),
+            credits: [
+                records::credit("Andy Weir", CreditRole::Author),
+                records::credit("Ray Porter", CreditRole::Narrator),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
             cover_url: Some("https://m.media-amazon.com/images/I/phm.jpg".into()),
             description: Some("A lone astronaut.".into()),
             published_at: Some("2021-05-04".into()),
@@ -276,7 +290,7 @@ async fn writes_the_store_record_when_there_is_one() {
     records.insert(
         "demo-wish-james",
         CatalogHit {
-            asin: Some("B0CJ6Q8CZ4".into()),
+            identifiers: ids(IdentifierScheme::Asin, "B0CJ6Q8CZ4"),
             cover_url: Some("https://m.media-amazon.com/images/I/james.jpg".into()),
             ..hit("B0CJ6Q8CZ4", "James", "Percival Everett")
         },
@@ -284,7 +298,7 @@ async fn writes_the_store_record_when_there_is_one() {
     records.insert(
         "demo-circe",
         CatalogHit {
-            isbn: Some("9781549140396".into()),
+            identifiers: ids(IdentifierScheme::Isbn, "9781549140396"),
             ..hit("9781549140396", "Circe", "Madeline Miller")
         },
     );

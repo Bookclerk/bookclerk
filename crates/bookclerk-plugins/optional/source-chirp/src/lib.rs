@@ -30,6 +30,6 @@ pub use guest::{
 };
 pub use source::{ChirpSource, ID as CHIRP_SOURCE_ID};
 pub use sync::{
-    audiobook_to_new_book, collect_account_books, scan_account_into_library, scan_library,
+    audiobook_to_scan_book, collect_account_books, scan_account_into_library, scan_library,
     ScanOptions,
 };

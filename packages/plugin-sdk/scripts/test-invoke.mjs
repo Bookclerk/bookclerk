@@ -114,7 +114,11 @@ class Storefront extends StorefrontEntrypoint {
   async searchCatalog(params) {
     calls.storefront.push(["searchCatalog", params.query]);
     return [
-      { productId: "p1", title: `hit for ${params.query}`, authors: "A" },
+      {
+        productId: "p1",
+        title: `hit for ${params.query}`,
+        credits: [{ name: "A", role: "author" }],
+      },
       { productId: "p2", title: "second" },
     ];
   }
@@ -352,7 +356,7 @@ function decodeReply(reply, resultsCodec, caps) {
   assert.equal(result.value.hits.length, 2);
   assert.equal(result.value.hits[0].productId, "p1");
   assert.equal(result.value.hits[0].title, "hit for dune");
-  assert.equal(result.value.hits[0].authors, "A");
+  assert.equal(result.value.hits[0].credits[0].name, "A");
   assert.deepEqual(calls.storefront, [["searchCatalog", "dune"]]);
 }
 

@@ -550,7 +550,8 @@ fn ga_catalog_hit(p: &MagentoCatalogProduct, origin: String) -> CatalogHit {
     CatalogHit {
         product_id: p.product_id.clone(),
         title: p.title.clone(),
-        series: p.series.clone(),
+        series_entries: bookclerk_source::records::series_entries(p.series.as_deref(), None),
+        expression_kind: bookclerk_source::records::ExpressionKind::Dramatisation,
         url: p.url.clone(),
         cover_url: p.cover_url.clone(),
         origin,

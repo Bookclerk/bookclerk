@@ -278,16 +278,19 @@ fn source_enabled(id: &str, opts: &CandidateFetchOptions) -> bool {
 /// Projects a catalog hit into a [`StorefrontCandidate`] (HTML entities decoded).
 pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCandidate {
     let hit = hit.decode_html_entities();
+    let (authors, narrators) = (hit.authors(), hit.narrators());
+    let (series, series_index) = (hit.series(), hit.series_index());
+    let (asin, isbn) = (hit.asin(), hit.isbn());
     StorefrontCandidate {
         source: source_id.to_string(),
         product_id: hit.product_id,
         title: hit.title,
-        authors: hit.authors,
-        narrators: hit.narrators,
-        series: hit.series,
-        series_index: hit.series_index,
-        asin: hit.asin,
-        isbn: hit.isbn,
+        authors,
+        narrators,
+        series,
+        series_index,
+        asin,
+        isbn,
         cover_url: hit.cover_url,
         seed_categories: None,
         origin: hit.origin,

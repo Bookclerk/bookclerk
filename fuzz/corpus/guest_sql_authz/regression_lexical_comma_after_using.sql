@@ -1,0 +1,1 @@
+0SELECT b.title FROM books b JOIN books c USING (id), host_secrets h WHERE h.token = b.title

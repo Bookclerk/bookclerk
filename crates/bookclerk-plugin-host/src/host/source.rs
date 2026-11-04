@@ -528,8 +528,11 @@ impl ContentSource for ExternalSource {
             .await?;
         let mut upserted = 0usize;
         for book in &summary.books {
+            let Some(new) = scan_book_to_new(self.id(), book.clone()) else {
+                continue;
+            };
             scope
-                .upsert_book(&scan_book_to_new(self.id(), book.clone()))
+                .upsert_book(&new)
                 .await
                 .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
             upserted += 1;

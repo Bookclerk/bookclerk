@@ -4,6 +4,7 @@
 //! This crate intentionally does **not** depend on `bookclerk-enrich`.
 
 use bookclerk_plugin_sdk::http::{Client as HttpClient, RequestBuilder};
+use bookclerk_source::records::{self, CreditRole, IdentifierScheme, SeriesEntry};
 use bookclerk_source::{
     CatalogHit, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts, SourcePurchaseHint,
 };
@@ -76,7 +77,7 @@ pub async fn catalog_detail(product_id: &str) -> bookclerk_source::Result<Option
     if let Some(html_hit) = libro_product_html_hit(&http, key).await? {
         let mut hit = html_hit;
         // Explore can still fill series / genres when HTML is thin.
-        if hit_needs_html_extras(&hit) || !non_empty_opt(&hit.series) {
+        if hit_needs_html_extras(&hit) || hit.series_entries.is_empty() {
             if let Ok(Some(explore)) = libro_explore_audiobook(&http, key).await {
                 hit = merge_catalog_hits(hit, explore);
             }
@@ -98,17 +99,36 @@ fn non_empty_opt(s: &Option<String>) -> bool {
     s.as_deref().map(str::trim).is_some_and(|v| !v.is_empty())
 }
 
+/// Fills a missing position or store id on each of `base`'s entries from
+/// `fill`'s entry of the same name, then appends `fill`'s other series.
+fn fill_series_entries(base: &mut Vec<SeriesEntry>, fill: Vec<SeriesEntry>) {
+    let same = |a: &SeriesEntry, b: &SeriesEntry| a.name.trim().eq_ignore_ascii_case(b.name.trim());
+    for entry in base.iter_mut() {
+        let Some(other) = fill.iter().find(|other| same(other, entry)) else {
+            continue;
+        };
+        if entry.position.is_none() {
+            entry.position.clone_from(&other.position);
+        }
+        if entry.store_series_id.is_none() {
+            entry.store_series_id.clone_from(&other.store_series_id);
+        }
+    }
+    for other in fill {
+        if !base.iter().any(|entry| same(entry, &other)) {
+            base.push(other);
+        }
+    }
+}
+
 /// Copies missing bibliographic fields from `fill` onto `base` without overwriting set values.
 fn merge_catalog_hits(mut base: CatalogHit, fill: CatalogHit) -> CatalogHit {
     if base.title.trim().is_empty() {
         base.title = fill.title;
     }
-    fill_opt(&mut base.authors, fill.authors);
-    fill_opt(&mut base.narrators, fill.narrators);
-    fill_opt(&mut base.series, fill.series);
-    fill_opt(&mut base.series_index, fill.series_index);
-    fill_opt(&mut base.asin, fill.asin);
-    fill_opt(&mut base.isbn, fill.isbn);
+    records::fill_credits(&mut base.credits, fill.credits);
+    records::fill_identifiers(&mut base.identifiers, fill.identifiers);
+    fill_series_entries(&mut base.series_entries, fill.series_entries);
     fill_opt(&mut base.url, fill.url);
     fill_opt(&mut base.cover_url, fill.cover_url);
     fill_opt(&mut base.subtitle, fill.subtitle);
@@ -530,14 +550,19 @@ fn parse_libro_book(v: &Value) -> Option<CatalogHit> {
         .map(str::trim)
         .filter(|s| !s.is_empty())?
         .to_string();
-    let authors =
-        parse_person_names(v.get("authors")).or_else(|| parse_person_names(v.get("author")));
-    let narrators = parse_person_names(v.get("narrators"))
-        .or_else(|| parse_person_names(v.get("readBy")))
-        .or_else(|| {
+    let mut credits = records::credits_from_names(
+        first_person_names(&[v.get("authors"), v.get("author")]),
+        CreditRole::Author,
+    );
+    credits.extend(records::credits_from_names(
+        first_person_names(&[
+            v.get("narrators"),
+            v.get("readBy"),
             v.get("audiobook_info")
-                .and_then(|info| parse_person_names(info.get("narrators")))
-        });
+                .and_then(|info| info.get("narrators")),
+        ]),
+        CreditRole::Narrator,
+    ));
     let series = v.get("series").and_then(|s| {
         s.as_str()
             .map(str::to_string)
@@ -604,12 +629,12 @@ fn parse_libro_book(v: &Value) -> Option<CatalogHit> {
     let is_abridged = parse_abridged_flag(v.get("abridged"));
     Some(CatalogHit {
         product_id,
+        identifiers: records::identifier(IdentifierScheme::Isbn, &isbn, None)
+            .into_iter()
+            .collect(),
         title,
-        authors,
-        narrators,
-        series,
-        series_index,
-        isbn: Some(isbn),
+        credits,
+        series_entries: records::series_entries(series.as_deref(), series_index.as_deref()),
         cover_url,
         url,
         origin: String::from("libro"),
@@ -769,32 +794,40 @@ fn json_ld_type_is_audiobook(v: &Value) -> bool {
 }
 
 /// Joins author/narrator names from a string, `{ name }`, or array of either.
-fn parse_person_names(v: Option<&Value>) -> Option<String> {
-    let v = v?;
+fn parse_person_names(v: Option<&Value>) -> Vec<String> {
+    let Some(v) = v else {
+        return Vec::new();
+    };
     if let Some(s) = v.as_str() {
-        let t = s.trim();
-        return (!t.is_empty()).then(|| t.to_string());
+        return records::split_display_names(s);
     }
     if let Some(arr) = v.as_array() {
-        let names: Vec<&str> = arr
+        return arr
             .iter()
             .filter_map(|x| {
                 x.as_str()
                     .or_else(|| x.get("name").and_then(Value::as_str))
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
+                    .map(str::to_string)
             })
             .collect();
-        if names.is_empty() {
-            return None;
-        }
-        return Some(names.join(", "));
     }
     v.get("name")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
+        .map(|s| vec![s.to_string()])
+        .unwrap_or_default()
+}
+
+/// Names from the first of `fields` that lists any.
+fn first_person_names(fields: &[Option<&Value>]) -> Vec<String> {
+    fields
+        .iter()
+        .map(|field| parse_person_names(*field))
+        .find(|names| !names.is_empty())
+        .unwrap_or_default()
 }
 
 /// Reads a display string from a JSON string or `{ "name": … }` object.
@@ -936,7 +969,7 @@ async fn libro_title_search(
     let Some(hit) = libro_search_hits(http, &q, 1, 1).await?.into_iter().next() else {
         return Ok(None);
     };
-    let Some(isbn) = hit.isbn.filter(|s| !s.is_empty()) else {
+    let Some(isbn) = hit.isbn().filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
     // Prefer the ISBN-slug path for product_id so price HTML fetch matches the
@@ -1049,10 +1082,14 @@ async fn libro_html_search(
                     .title
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| isbn.clone()),
-                authors: book.authors.filter(|s| !s.is_empty()),
-                series: book.series.and_then(LibroSeriesField::name),
-                series_index: series_num_to_index(book.series_num.as_ref()),
-                isbn: Some(isbn),
+                credits: records::credits_from_display(book.authors.as_deref(), CreditRole::Author),
+                series_entries: records::series_entries(
+                    book.series.and_then(LibroSeriesField::name).as_deref(),
+                    series_num_to_index(book.series_num.as_ref()).as_deref(),
+                ),
+                identifiers: records::identifier(IdentifierScheme::Isbn, &isbn, None)
+                    .into_iter()
+                    .collect(),
                 cover_url: book.cover_url.filter(|s| !s.trim().is_empty()),
                 origin: String::from("search"),
                 ..Default::default()
@@ -1591,10 +1628,10 @@ mod tests {
             "series_num": 3
         });
         let c = parse_libro_book(&v).unwrap();
-        assert_eq!(c.isbn.as_deref(), Some("9781234567890"));
-        assert_eq!(c.authors.as_deref(), Some("Ada Author"));
-        assert_eq!(c.series.as_deref(), Some("Test Series"));
-        assert_eq!(c.series_index.as_deref(), Some("3"));
+        assert_eq!(c.isbn().as_deref(), Some("9781234567890"));
+        assert_eq!(c.authors().as_deref(), Some("Ada Author"));
+        assert_eq!(c.series().as_deref(), Some("Test Series"));
+        assert_eq!(c.series_index().as_deref(), Some("3"));
     }
 
     #[test]
@@ -1617,14 +1654,14 @@ mod tests {
             "series_num": "1"
         });
         let c = parse_libro_book(&v).unwrap();
-        assert_eq!(c.isbn.as_deref(), Some("9781446462164"));
-        assert_eq!(c.narrators.as_deref(), Some("Russell Boulter"));
+        assert_eq!(c.isbn().as_deref(), Some("9781446462164"));
+        assert_eq!(c.narrators().as_deref(), Some("Russell Boulter"));
         assert_eq!(c.length_minutes, Some(679));
         assert_eq!(c.publisher.as_deref(), Some("Random House"));
         assert_eq!(c.categories.as_deref(), Some("Historical Fiction"));
         assert!(c.description.as_deref().unwrap().contains("Ancient Rome"));
-        assert_eq!(c.series.as_deref(), Some("Rufus"));
-        assert_eq!(c.series_index.as_deref(), Some("1"));
+        assert_eq!(c.series().as_deref(), Some("Rufus"));
+        assert_eq!(c.series_index().as_deref(), Some("1"));
     }
 
     #[test]
@@ -1665,8 +1702,8 @@ mod tests {
         let c =
             parse_libro_product_html(html, "https://libro.fm/audiobooks/9781446462164").unwrap();
         assert_eq!(c.title, "Caligula");
-        assert_eq!(c.authors.as_deref(), Some("Douglas Jackson"));
-        assert_eq!(c.narrators.as_deref(), Some("Russell Boulter"));
+        assert_eq!(c.authors().as_deref(), Some("Douglas Jackson"));
+        assert_eq!(c.narrators().as_deref(), Some("Russell Boulter"));
         assert_eq!(c.length_minutes, Some(679));
         assert_eq!(c.publisher.as_deref(), Some("Random House"));
         assert_eq!(c.language.as_deref(), Some("en"));
@@ -1725,5 +1762,87 @@ mod tests {
         let priced = parse_libro_html_prices(html).unwrap();
         assert_eq!(priced.list_cents, Some(1995));
         assert_eq!(priced.member_cents, Some(1499));
+    }
+
+    #[test]
+    fn merge_fills_only_what_the_base_hit_lacks() {
+        let base = CatalogHit {
+            product_id: "9780000000001".into(),
+            title: "Rufus".into(),
+            credits: records::credits_from_names(["Base Author"], CreditRole::Author),
+            series_entries: records::series_entries(Some("Rufus"), None),
+            publisher: Some("Base House".into()),
+            ..CatalogHit::default()
+        };
+        let mut credits = records::credits_from_names(["Other Author"], CreditRole::Author);
+        credits.extend(records::credits_from_names(
+            ["Reader"],
+            CreditRole::Narrator,
+        ));
+        let fill = CatalogHit {
+            product_id: "ignored".into(),
+            title: "Ignored".into(),
+            credits,
+            identifiers: records::identifier(IdentifierScheme::Isbn, "9780000000001", None)
+                .into_iter()
+                .collect(),
+            series_entries: vec![
+                SeriesEntry {
+                    name: "rufus".into(),
+                    position: Some("1".into()),
+                    store_series_id: Some("rufus-series".into()),
+                },
+                SeriesEntry {
+                    name: "Dog Days".into(),
+                    position: Some("4".into()),
+                    store_series_id: None,
+                },
+            ],
+            publisher: Some("Other House".into()),
+            description: Some("Blurb".into()),
+            length_minutes: Some(90),
+            price_cents: Some(1499),
+            rating_overall: Some(4.5),
+            rating_count: Some(12),
+            is_abridged: Some(false),
+            ..CatalogHit::default()
+        };
+        let merged = merge_catalog_hits(base, fill);
+        assert_eq!(merged.title, "Rufus");
+        assert_eq!(merged.product_id, "9780000000001");
+        assert_eq!(merged.authors().as_deref(), Some("Base Author"));
+        assert_eq!(merged.narrators().as_deref(), Some("Reader"));
+        assert_eq!(merged.isbn().as_deref(), Some("9780000000001"));
+        assert_eq!(merged.series().as_deref(), Some("Rufus"));
+        assert_eq!(merged.series_index().as_deref(), Some("1"));
+        assert_eq!(
+            merged.series_entries[0].store_series_id.as_deref(),
+            Some("rufus-series")
+        );
+        assert_eq!(merged.series_entries.len(), 2);
+        assert_eq!(merged.series_entries[1].name, "Dog Days");
+        assert_eq!(merged.publisher.as_deref(), Some("Base House"));
+        assert_eq!(merged.description.as_deref(), Some("Blurb"));
+        assert_eq!(merged.length_minutes, Some(90));
+        assert_eq!(merged.price_cents, Some(1499));
+        assert_eq!(merged.rating_count, Some(12));
+        assert_eq!(merged.is_abridged, Some(false));
+    }
+
+    #[test]
+    fn merge_takes_the_fill_series_when_the_base_has_none() {
+        let base = CatalogHit {
+            product_id: "p".into(),
+            ..CatalogHit::default()
+        };
+        let fill = CatalogHit {
+            title: "Filled".into(),
+            series_entries: records::series_entries(Some("Saga"), Some("3")),
+            ..CatalogHit::default()
+        };
+        let merged = merge_catalog_hits(base, fill);
+        assert_eq!(merged.title, "Filled");
+        assert_eq!(merged.series().as_deref(), Some("Saga"));
+        assert_eq!(merged.series_index().as_deref(), Some("3"));
     }
 }

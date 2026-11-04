@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use bookclerk_library::NewBook;
+use bookclerk_plugin_sdk::ScanBook;
 use bookclerk_plugin_sdk::{
     FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch, ScanParams,
     ScanSummary, SourceAccount,
@@ -139,7 +139,7 @@ pub async fn guest_scan(
     credentials: &BTreeMap<String, Value>,
     account_filter: &[String],
     include_samples: bool,
-) -> Result<(Vec<NewBook>, usize, u32)> {
+) -> Result<(Vec<ScanBook>, usize, u32)> {
     if credentials.is_empty() {
         return Err(GraphicAudioError::no_accounts(
             "no GraphicAudio credentials from host — run login first",

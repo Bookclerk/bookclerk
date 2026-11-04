@@ -30,8 +30,8 @@ import {
 import type { ApiRouteGroup, HttpMethod } from "./api-reference.ts";
 import { diagram, drawable, PAGE_DIAGRAM_COUNT_MAX, PAGE_DIAGRAM_MAX } from "./diagram.ts";
 import { highlight } from "./highlight.ts";
-import { formatDate } from "./last-updated.ts";
-import type { IsoDate } from "./last-updated.ts";
+import { formatDate, formatUtcTime } from "./last-updated.ts";
+import type { PageDate } from "./last-updated.ts";
 
 /** One sidebar group: its heading and the docs it lists, by key. */
 export interface NavSpec {
@@ -204,6 +204,7 @@ export const NAV: NavSpec[] = [
       "adr/untrusted-input-fuzzing",
       "adr/security-advisory-automation",
       "adr/observability",
+      "adr/library-data-model",
       "adr/web-api-contract-checks",
       "adr/licensing",
     ],
@@ -944,7 +945,7 @@ export function jsonLd(data: object | null): string {
 export function docJsonLd(
   origin: string,
   base: string,
-  doc: { key: string; title: string; description: string; updated?: IsoDate | null },
+  doc: { key: string; title: string; description: string; updated?: PageDate | null },
   trail: readonly Crumb[] = [
     { title: "Docs", key: null },
     { title: doc.title, key: doc.key },
@@ -1340,6 +1341,25 @@ function icon(paths: string): string {
 }
 
 /**
+ * Renders a page's date as a `<time>` element.
+ *
+ * The text is the date in UTC, so the page reads the same without
+ * JavaScript. A date with a time is marked `data-local-date`, which site.js
+ * rewrites to the date in the reader's own time zone, and its tooltip gives
+ * the time in UTC until then. A date alone stays as it is: it names no
+ * instant to convert.
+ *
+ * @param date - The date, from last-updated.json.
+ * @returns The element; its text and attributes are letters, digits,
+ *   spaces and `,:-TZ` only, so nothing needs escaping.
+ */
+export function timeHtml(date: PageDate): string {
+  const utc = formatUtcTime(date);
+  const local = utc === null ? "" : ` data-local-date title="${utc}"`;
+  return `<time datetime="${date}"${local}>${formatDate(date)}</time>`;
+}
+
+/**
  * Renders the line under a doc's title: the development note, when the
  * docs follow main, then the page's date and its Markdown actions.
  *
@@ -1351,9 +1371,9 @@ function icon(paths: string): string {
  * @param markdownUrl - The page's Markdown version.
  * @returns A `div.doc-meta`.
  */
-export function metaHtml(note: string, updated: IsoDate | null, markdownUrl: string): string {
+export function metaHtml(note: string, updated: PageDate | null, markdownUrl: string): string {
   const date = updated
-    ? `<span class="doc-action doc-updated">${ICONS.updated}Last updated <time datetime="${updated}">${formatDate(updated)}</time></span>`
+    ? `<span class="doc-action doc-updated">${ICONS.updated}Last updated ${timeHtml(updated)}</span>`
     : "";
   const url = escapeHtml(markdownUrl);
   const copy = `<button type="button" class="doc-action doc-copy-markdown" data-markdown="${url}" hidden>${ICONS.copy}<span>Copy as Markdown</span></button>`;
@@ -1558,7 +1578,7 @@ export function renderDocPage(
     ref: string;
     base: string;
     keys?: ReadonlySet<string> | null;
-    updated?: IsoDate | null;
+    updated?: PageDate | null;
     apiIndex?: string | null;
   },
 ): RenderedPage {
@@ -1714,7 +1734,7 @@ export interface SitemapPageLink {
   /** Its title, or null to name it from its path. */
   title: string | null;
   /** When it last changed, or null when unknown. */
-  updated: IsoDate | null;
+  updated: PageDate | null;
 }
 
 /** One heading of the human-readable sitemap and the pages under it. */
@@ -1819,9 +1839,7 @@ export function renderSitemapPage(
   const total = links.length;
 
   const itemHtml = (l: SitemapPageLink): string => {
-    const date = l.updated
-      ? ` <span class="faint">· <time datetime="${l.updated}">${formatDate(l.updated)}</time></span>`
-      : "";
+    const date = l.updated ? ` <span class="faint">· ${timeHtml(l.updated)}</span>` : "";
     return `<li><a href="${escapeHtml(l.path)}">${escapeHtml(l.title ?? l.path)}</a>${date}</li>`;
   };
   const itemMd = (l: SitemapPageLink): string => {

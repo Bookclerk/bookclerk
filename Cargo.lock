@@ -2344,6 +2344,7 @@ dependencies = [
  "bookclerk-library",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-database-sqlite",
+ "chrono",
  "infer",
  "mime_guess",
  "serde",

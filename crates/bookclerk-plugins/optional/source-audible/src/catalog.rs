@@ -8,6 +8,7 @@ use bookclerk_enrich::{
     search_catalog_keywords, search_catalog_products, search_catalog_products_paged,
     search_catalog_storefront, CatalogProduct,
 };
+use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_source::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts,
     SourcePurchaseHint,
@@ -418,16 +419,34 @@ pub async fn purchase_hint(
     Ok(Some(hint))
 }
 
-/// Maps an Audible catalog product to a [`CatalogHit`] (ASIN is both `product_id` and `asin`).
+/// Maps an Audible catalog product to a [`CatalogHit`] (the ASIN is both `product_id` and an identifier).
+///
+/// The catalog product carries display strings, so names are split with
+/// [`records::credits_from_display`].
 fn product_to_hit(p: CatalogProduct, origin: String) -> CatalogHit {
     CatalogHit {
         product_id: p.asin.clone(),
         title: p.title.unwrap_or_else(|| p.asin.clone()),
-        authors: p.authors,
-        narrators: p.narrators,
-        series: p.series,
-        series_index: p.series_sequence,
-        asin: Some(p.asin),
+        credits: {
+            let mut credits =
+                records::credits_from_display(p.authors.as_deref(), CreditRole::Author);
+            credits.extend(records::credits_from_display(
+                p.narrators.as_deref(),
+                CreditRole::Narrator,
+            ));
+            credits
+        },
+        series_entries: {
+            let mut entries =
+                records::series_entries(p.series.as_deref(), p.series_sequence.as_deref());
+            if let Some(entry) = entries.first_mut() {
+                entry.store_series_id = p.series_asin.clone();
+            }
+            entries
+        },
+        identifiers: records::identifier(IdentifierScheme::Asin, &p.asin, None)
+            .into_iter()
+            .collect(),
         cover_url: p.cover_url,
         origin,
         subtitle: p.subtitle,
