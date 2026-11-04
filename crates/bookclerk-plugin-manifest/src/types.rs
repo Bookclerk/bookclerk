@@ -2032,6 +2032,10 @@ mode = "deny"
     }
 
     /// Minimal manifest with `triggers` spliced in as its `[triggers]` body.
+    ///
+    /// # Errors
+    ///
+    /// Returns the parse or validation error for `triggers`.
     fn with_triggers(triggers: &str) -> Result<PluginManifest> {
         PluginManifest::parse(&format!(
             "api_version = 3\nid = \"echo\"\nruntime = \"native\"\ncommand = \"./echo\"\n\

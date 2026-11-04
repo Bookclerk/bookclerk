@@ -162,6 +162,11 @@ const FIELDS: [FieldSpec; 5] = [
 ];
 
 /// Parses one value (number or name) of `spec`.
+///
+/// # Errors
+///
+/// Returns a [`CronError`] when the value is empty, unknown or outside the
+/// field's range.
 fn parse_value(text: &str, spec: &FieldSpec) -> Result<u32, CronError> {
     if text.is_empty() {
         return Err(err(format!("{} has an empty value", spec.name)));
@@ -191,6 +196,10 @@ fn parse_value(text: &str, spec: &FieldSpec) -> Result<u32, CronError> {
 }
 
 /// Parses one comma-separated field into a bit set.
+///
+/// # Errors
+///
+/// Returns a [`CronError`] when an item, range or step is malformed.
 fn parse_field(text: &str, spec: &FieldSpec) -> Result<u64, CronError> {
     let mut bits = 0u64;
     for item in text.split(',') {
@@ -497,6 +506,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
 
