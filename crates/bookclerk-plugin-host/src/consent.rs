@@ -1726,8 +1726,9 @@ pub fn validate_approved_grant(
         .bindings
         .iter()
         .map(|b| {
-            if database_binding_name(b).is_some() {
-                // Preserve the case-sensitive binding name after the prefix.
+            if database_binding_name(b).is_some() || b.starts_with(CRON_BINDING_PREFIX) {
+                // Preserve the case-sensitive binding name or cron source
+                // (`MON` stays `MON`) after the prefix.
                 return b.clone();
             }
             KNOWN_HOST_BINDINGS
@@ -4592,7 +4593,7 @@ command = "./demo"
 mode = "deny"
 
 [triggers]
-crons = ["*/30  * * * *"]
+crons = ["*/30  * * * *", "0 3 * * MON"]
 "#,
         )
         .unwrap();
@@ -4607,7 +4608,10 @@ crons = ["*/30  * * * *"]
         assert!(!grant.allows_cron("0 * * * *"));
 
         let described = manifest.capabilities();
-        assert_eq!(described.crons, vec!["*/30 * * * *".to_string()]);
+        assert_eq!(
+            described.crons,
+            vec!["*/30 * * * *".to_string(), "0 3 * * MON".to_string()]
+        );
         validate_described_capabilities(&manifest, &grant, &described, PortalAuthMode::Unspecified)
             .unwrap();
 
@@ -4628,7 +4632,13 @@ crons = ["*/30  * * * *"]
 
         // An operator override that keeps (or drops) the declared cron is
         // accepted; one naming an undeclared cron is not.
-        validate_approved_grant(&grant, &grant).unwrap();
+        let approved = validate_approved_grant(&grant, &grant).unwrap();
+        assert!(
+            approved.bindings.contains("cron:0 3 * * MON"),
+            "named crons keep their case: {:?}",
+            approved.bindings
+        );
+        assert!(effective_grant(&approved, &grant).allows_cron("0 3 * * MON"));
         let mut other = grant.clone();
         other.bindings.insert(cron_grant("0 * * * *"));
         let err = validate_approved_grant(&other, &grant)
