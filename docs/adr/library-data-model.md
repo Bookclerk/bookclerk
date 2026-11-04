@@ -43,9 +43,10 @@ This shape causes four problems:
    abridgements, publishers and store releases. None of that has a place.
 
 The host schema is still the unreleased development pack
-([schema versioning](schema-versioning.md)), and `ScanBook` and `CatalogHit`
-in `plugin.capnp` are append-only. Both get more expensive to change after the
-first release, so the model changes now.
+([schema versioning](schema-versioning.md)), and no plugin has been built
+against a released `plugin.capnp`. Both get more expensive to change after the
+first release, when the schema freezes and the ABI becomes append-only, so the
+model changes now.
 
 ## Decision
 
@@ -186,9 +187,9 @@ statements, because D1 has no interactive transactions
 ([#320](https://github.com/Bookclerk/bookclerk/issues/320)). All DDL and
 queries go through SQL-v1.
 
-### 5. The plugin ABI grows, it is not replaced
+### 5. The plugin ABI carries structured records
 
-`ScanBook` and `CatalogHit` gain new ordinals only:
+`ScanBook` and `CatalogHit` gain:
 
 - `workKind :WorkKind`, `expressionKind :ExpressionKind` and
   `mediaKind :MediaKind`;
@@ -219,10 +220,14 @@ After the v1 freeze the same rule decides any enum field added later:
 ordinal 0 must then be the right answer for a guest built before the field
 existed.
 
-The flat text fields (`authors`, `narrators`, `asin`, `isbn`, `contentKind`,
-`series`, `seriesIndex`) stay on the wire, documented as deprecated. The host
-prefers the structured fields and falls back to the flat ones. The TS and
-Python SDKs regenerate in the same pull request.
+The flat text fields they replace (`authors`, `narrators`, `asin`, `isbn`,
+`contentKind`, `series`, `seriesIndex`) are removed from both records, and
+the host has no fallback to them. Nothing has been released against them,
+so this is the one cheap moment to remove them; once v1 freezes, removed
+fields would stay on the wire for good. The pull request that changes the
+records also moves every first-party storefront to the structured fields
+and regenerates the TS and Python SDKs. `plugin.capnp` is append-only from
+the v1 freeze.
 
 A new `metadata` entrypoint returns the same edition records for a lookup by
 identifier or by title and author. OpenLibrary and Audnexus, which live in
@@ -302,16 +307,19 @@ not found ([#559](https://github.com/Bookclerk/bookclerk/issues/559)).
   denormalised page index refreshed by the events above, not the full join.
 - Every development library rebuilds its title tables once. Backups taken
   before the change can't be restored afterwards.
-- Storefront plugins need an update to fill the structured fields, but keep
-  working unchanged in the meantime through the flat-field fallback.
+- Every storefront plugin changes in the same pull request as the records.
+  A third-party plugin built against the development schema has to be
+  rebuilt, which is acceptable before the first release.
 
 ## Status of the work
 
 Planned as separate pull requests, in this order:
 
 1. This ADR.
-2. ABI: the new capnp fields and enums, both SDKs, and the four first-party
-   storefronts filling them; `export-state` against the current schema.
+2. ABI: the new capnp fields and enums replace the flat ones, both SDKs,
+   and the four first-party storefronts filling them. Until step 3 the host
+   maps the structured fields onto the current `books` row. `export-state`
+   against the current schema.
 3. Schema and resolver, with its fuzz target, plus `db rebuild-library` and
    `import-state`.
 4. Acquire and files: per-edition acquisition, `edition_files`, and the

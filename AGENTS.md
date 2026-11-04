@@ -210,8 +210,10 @@ description rather than widening the change silently.
 - Host SQL goes through the canonical SQL-v1 contract
   ([`docs/sql-contract/v1.md`](docs/sql-contract/v1.md)), never engine-specific
   SQL.
-- `plugin.capnp` is append-only (new ordinals only) and changes ship with the
-  TS SDK.
+- `plugin.capnp` changes ship with the TS SDK. From the v1 freeze it is
+  append-only (new ordinals only); before it, a change that removes or
+  renumbers fields updates every first-party plugin and SDK in the same pull
+  request ([data model ADR](docs/adr/library-data-model.md)).
 - Plugin configuration lives in the database; no new `[sources.*]`-style TOML
   tables or `BOOKCLERK_*` env overrides.
 - Prefer a plugin entrypoint or job/event over host special-casing.
