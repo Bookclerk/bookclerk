@@ -26,7 +26,7 @@ pub use enrich::{
 pub use error::{EnrichError, Result};
 pub use match_score::{
     calculate_match_confidence, canonicalize_isbn, clean_author_for_compares,
-    clean_title_for_compares, is_valid_asin, isbn_exact_match, levenshtein_distance,
+    clean_title_for_compares, is_asin_title, is_valid_asin, isbn_exact_match, levenshtein_distance,
     levenshtein_similarity, normalize_isbn, MatchQuery, ScoreInput,
 };
 pub use public_meta::{

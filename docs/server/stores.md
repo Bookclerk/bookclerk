@@ -64,6 +64,9 @@ Audible's public catalog search. This needs no Audible account.
 - It is on while `library.enrich_from_audible = true` (the default).
 - `library.enrich_min_confidence` sets how sure a match must be (default
   `90`).
+- A title that is itself an ASIN (`B0` and eight letters or digits, or an
+  ISBN-10: nine digits and a digit or `X`) is looked up directly. Any other title, including a
+  ten-letter one such as *Foundation*, is matched by search and scored.
 
 ## Audible
 

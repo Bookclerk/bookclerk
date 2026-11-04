@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{EnrichError, Result};
 use crate::match_score::{
-    calculate_match_confidence, is_valid_asin, normalize_isbn, MatchQuery, ScoreInput,
+    calculate_match_confidence, is_asin_title, normalize_isbn, MatchQuery, ScoreInput,
 };
 use crate::public_meta::{
     fetch_audnexus_book, normalize_region, public_http_client, search_catalog_asins,
@@ -125,7 +125,7 @@ pub async fn lookup_by_metadata_with_client(
     }
     let region = normalize_region(region);
     let author_query = query.author.map(primary_author).filter(|s| !s.is_empty());
-    let title_is_asin = !title.is_empty() && is_valid_asin(&title.to_ascii_uppercase());
+    let title_is_asin = is_asin_title(title);
 
     let mut asins = Vec::new();
     if title_is_asin {
