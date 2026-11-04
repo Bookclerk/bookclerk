@@ -58,7 +58,16 @@ async function readJson(response) {
     if (declared > MAX_BODY_BYTES) {
         throw new ProviderFailure("unavailable", "Open Library sent a response that is too large");
     }
-    const bytes = await readCapped(response, MAX_BODY_BYTES);
+    let bytes;
+    try {
+        bytes = await readCapped(response, MAX_BODY_BYTES);
+    }
+    catch (err) {
+        // The body streams after the headers, so a dropped connection or the
+        // request timeout can still fail it here.
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new ProviderFailure("unavailable", `Open Library response failed: ${reason}`);
+    }
     if (bytes === undefined) {
         throw new ProviderFailure("unavailable", "Open Library sent a response that is too large");
     }

@@ -85,6 +85,25 @@ function endless(): {
   return { body, state };
 }
 
+/**
+ * A body that sends one chunk and then fails, as a dropped connection does.
+ *
+ * @returns The stream.
+ */
+function broken(): ReadableStream<Uint8Array> {
+  let sent = false;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent) {
+        controller.error(new TypeError("connection reset"));
+        return;
+      }
+      sent = true;
+      controller.enqueue(new TextEncoder().encode("{"));
+    },
+  });
+}
+
 const BOOK_URL = "https://api.audnex.us/books/B002V0QK4C?region=us";
 const CHAPTERS_URL = "https://api.audnex.us/books/B002V0QK4C/chapters?region=us";
 
@@ -189,4 +208,19 @@ test("a body without a length is cut off at the cap", async () => {
 
 test("readCapped reads a missing body as empty", async () => {
   assert.deepEqual(await readCapped(new Response(null), 10), new Uint8Array());
+});
+
+test("a body that fails after the headers is unavailable", async () => {
+  const { options } = scripted({ [BOOK_URL]: () => new Response(broken()) });
+  await rejectsWith(getJson(options, BOOK_URL), "unavailable", /response failed: connection reset/);
+  const { options: odd } = scripted({
+    [BOOK_URL]: () =>
+      ({
+        status: 200,
+        ok: true,
+        headers: new Headers(),
+        body: { getReader: () => ({ read: () => Promise.reject("boom") }) },
+      }) as unknown as Response,
+  });
+  await rejectsWith(getJson(odd, BOOK_URL), "unavailable", /response failed: boom/);
 });

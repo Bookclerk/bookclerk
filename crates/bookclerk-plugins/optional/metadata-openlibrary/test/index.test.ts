@@ -106,14 +106,15 @@ test("provider failures become PluginErrors with the same code", async () => {
 });
 
 test("other errors pass through unchanged", async () => {
-  // A thrown fetch is a ProviderFailure, so break the body read instead.
+  // Fetch and body failures are ProviderFailures, so break the header read.
   reply = () =>
     ({
       status: 200,
       ok: true,
-      headers: new Headers(),
-      body: {
-        getReader: () => ({ read: () => Promise.reject(new RangeError("unexpected")) }),
+      headers: {
+        get: () => {
+          throw new RangeError("unexpected");
+        },
       },
     }) as unknown as Response;
   await assert.rejects(metadata.search({ title: "Dune" }), RangeError);

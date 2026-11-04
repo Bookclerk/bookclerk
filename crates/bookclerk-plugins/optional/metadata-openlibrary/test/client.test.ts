@@ -82,6 +82,25 @@ function endless(): {
   return { body, state };
 }
 
+/**
+ * A body that sends one chunk and then fails, as a dropped connection does.
+ *
+ * @returns The stream.
+ */
+function broken(): ReadableStream<Uint8Array> {
+  let sent = false;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent) {
+        controller.error(new TypeError("connection reset"));
+        return;
+      }
+      sent = true;
+      controller.enqueue(new TextEncoder().encode("{"));
+    },
+  });
+}
+
 const HOBBIT = readFileSync(new URL("fixtures/search-isbn.json", import.meta.url), "utf8");
 
 test("lookup sends one identified request and maps the answer", async () => {
@@ -174,4 +193,23 @@ test("a body without a length is cut off at the cap", async () => {
 
 test("readCapped reads a missing body as empty", async () => {
   assert.deepEqual(await readCapped(new Response(null), 10), new Uint8Array());
+});
+
+test("a body that fails after the headers is unavailable", async () => {
+  const { options } = scripted(() => new Response(broken()));
+  await rejectsWith(
+    search(options, { title: "Hobbit" }),
+    "unavailable",
+    /response failed: connection reset/,
+  );
+  const { options: odd } = scripted(
+    () =>
+      ({
+        status: 200,
+        ok: true,
+        headers: new Headers(),
+        body: { getReader: () => ({ read: () => Promise.reject("boom") }) },
+      }) as unknown as Response,
+  );
+  await rejectsWith(search(odd, { title: "Hobbit" }), "unavailable", /response failed: boom/);
 });
