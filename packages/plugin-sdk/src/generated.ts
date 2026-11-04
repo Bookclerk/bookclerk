@@ -346,6 +346,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   queueConsumer?: QueueConsumer | null;
+  /**
+   * `[triggers] crons` trigger: `scheduled(controller)` handler.
+   * Null when the guest does not export this capability.
+   */
+  scheduledHandler?: ScheduledHandler | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -853,6 +858,22 @@ export interface NamedDatabase {
    * Null when the guest does not export this capability.
    */
   database?: GuestDatabase | null;
+}
+
+/**
+ * `[triggers] crons` handler (`Entrypoints.scheduledHandler`), the Workers
+ * `scheduled(controller)` trigger. Each fire is delivered at least once;
+ * a fire that throws is retried with backoff, keeping `scheduledTime` and
+ * `fireId`, so handlers dedupe on `fireId`.
+ */
+export interface ScheduledHandler {
+  /**
+   * Run one cron fire to completion.
+   *
+   * @param controller - The fire being delivered.
+   * @returns {@link EmptyReply}
+   */
+  scheduled(controller: ScheduledController): Promise<EmptyReply>;
 }
 
 /**
@@ -2301,6 +2322,26 @@ export interface QueueBatch {
   queue: string;
   /** Messages in delivery order; the reply carries one `QueueResult` per entry. */
   messages: QueueMessage[];
+}
+
+/** One fire of a `[triggers] crons` schedule (`scheduled(controller)`). */
+export interface ScheduledController {
+  /** The schedule that fired, normalized to single spaces (`0 3 * * MON`). */
+  cron: string;
+  /**
+   * Fire time, UTC unix milliseconds (always a whole minute). Retries of
+   * one fire keep it.
+   */
+  scheduledTime: number;
+  /** Durable id of this fire, stable across retries; dedupe on it. */
+  fireId: string;
+  /** Failure attempt, starting at 1. */
+  attempt: number;
+  /**
+   * UTC unix milliseconds. Host fence/lease is authoritative; this hint must
+   * not outlive the fence.
+   */
+  deadlineUnixMs: number;
 }
 
 /** Redeliver a queue message later. */

@@ -25,7 +25,7 @@
 use std::fmt;
 
 /// Longest accepted cron source text, in bytes.
-pub const MAX_CRON_SOURCE_BYTES: usize = 128;
+pub const MAX_CRON_SOURCE_BYTES: usize = bookclerk_plugin_abi::MAX_CRON_BYTES as usize;
 
 /// Minutes in one day.
 const MINUTES_PER_DAY: i64 = 1440;

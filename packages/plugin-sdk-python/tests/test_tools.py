@@ -1011,3 +1011,34 @@ def test_manifest_capabilities_report_queues():
     assert caps["queueConsumers"] == ["notify"]
     assert caps["queueProducers"] == ["jobs"]
     assert caps["bindings"] == ["JOBS", "JOBS_AGAIN"]
+
+
+def test_validate_accepts_and_rejects_cron_triggers():
+    from bookclerk_plugin_sdk.tools import MAX_CRON_TRIGGERS, validate_manifest
+
+    base = {
+        "api_version": 3,
+        "id": "echo",
+        "runtime": "native",
+        "command": "./echo",
+        "capabilities": {"network": {"mode": "deny"}},
+    }
+    # Crons alone satisfy "declare at least one entrypoint or trigger".
+    validate_manifest({**base, "triggers": {"crons": ["*/30 * * * *", "0 3 * * MON-FRI"]}})
+    with pytest.raises(ValueError, match="array of strings"):
+        validate_manifest({**base, "triggers": {"crons": "* * * * *"}})
+    with pytest.raises(ValueError, match="at most"):
+        validate_manifest(
+            {
+                **base,
+                "triggers": {"crons": [f"{m} * * * *" for m in range(MAX_CRON_TRIGGERS + 1)]},
+            }
+        )
+    with pytest.raises(ValueError, match="ASCII string"):
+        validate_manifest({**base, "triggers": {"crons": [5]}})
+    with pytest.raises(ValueError, match="needs 5 fields"):
+        validate_manifest({**base, "triggers": {"crons": ["* * * *"]}})
+    with pytest.raises(ValueError, match="is not valid cron"):
+        validate_manifest({**base, "triggers": {"crons": ["@daily * * * *"]}})
+    with pytest.raises(ValueError, match="is duplicated"):
+        validate_manifest({**base, "triggers": {"crons": ["0 * * * *", "0  *  * * *"]}})

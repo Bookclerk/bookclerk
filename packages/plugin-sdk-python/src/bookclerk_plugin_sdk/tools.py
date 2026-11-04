@@ -641,11 +641,13 @@ def _validate_surface(m: dict[str, Any]) -> None:
     consumers = list(events.get("consumers") or [])
     queue_consumers = list((m.get("queues") or {}).get("consumers") or [])
     jobs = list((m.get("triggers") or {}).get("jobs") or [])
-    if not entrypoints and not consumers and not queue_consumers and not jobs:
+    crons = (m.get("triggers") or {}).get("crons") or []
+    if not entrypoints and not consumers and not queue_consumers and not jobs and not crons:
         raise ValueError(
             "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, "
-            "`[[queues.consumers]]`, or `[triggers].jobs`"
+            "`[[queues.consumers]]`, `[triggers].jobs`, or `[triggers].crons`"
         )
+    _validate_crons(crons)
     _validate_queues(m)
     _validate_kv_namespaces(m)
     for consumer in consumers:
@@ -1579,3 +1581,57 @@ def generate_types(plugin_dir: Path, out_file: Path | None = None) -> str:
         dest = cli_user_path(out_file)
     dest.write_text(render_env_types(m), encoding="utf-8")
     return f"wrote {dest}"
+
+
+MAX_CRON_TRIGGERS = 8
+"""Most ``[triggers] crons`` entries one manifest may declare."""
+
+MAX_CRON_BYTES = 128
+"""Longest cron source in bytes (ABI ``maxCronBytes``)."""
+
+_CRON_ITEM = re.compile(r"^(\*|[0-9A-Za-z]+(-[0-9A-Za-z]+)?)(/[0-9]{1,2})?$")
+
+
+def _validate_crons(crons: Any) -> None:
+    """Checks the shape of ``[triggers] crons``.
+
+    At most :data:`MAX_CRON_TRIGGERS` ASCII entries of five fields, each a
+    comma list of ``*``, values, ranges and ``/step``, with no duplicates once
+    whitespace is normalized. Value ranges, names and never-firing schedules
+    are checked by the host at install (``CronSchedule::parse``).
+
+    Args:
+        crons: The ``crons`` value as parsed from TOML.
+
+    Raises:
+        ValueError: Naming the first malformed entry.
+    """
+    if not isinstance(crons, list):
+        raise ValueError("plugin.toml: triggers.crons must be an array of strings")
+    if len(crons) > MAX_CRON_TRIGGERS:
+        raise ValueError(
+            f"plugin.toml: triggers.crons has {len(crons)} entries; "
+            f"at most {MAX_CRON_TRIGGERS} are allowed"
+        )
+    seen: set[str] = set()
+    for index, raw in enumerate(crons):
+        if not isinstance(raw, str) or len(raw) > MAX_CRON_BYTES or not raw.isascii():
+            raise ValueError(
+                f"plugin.toml: triggers.crons[{index}] must be an ASCII string "
+                f"of at most {MAX_CRON_BYTES} bytes"
+            )
+        fields = raw.split()
+        if len(fields) != 5:
+            raise ValueError(
+                f"plugin.toml: triggers.crons[{index}] `{raw}` needs 5 fields "
+                "(minute hour day-of-month month day-of-week)"
+            )
+        for field in fields:
+            if not all(_CRON_ITEM.match(item) for item in field.split(",")):
+                raise ValueError(
+                    f"plugin.toml: triggers.crons[{index}] field `{field}` is not valid cron"
+                )
+        normalized = " ".join(fields)
+        if normalized in seen:
+            raise ValueError(f"plugin.toml: triggers.crons[{index}] `{normalized}` is duplicated")
+        seen.add(normalized)

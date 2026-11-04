@@ -420,6 +420,8 @@ class Entrypoints(TypedDict):
         oidc: `oidc` entrypoint. Null when the guest does not export this capability.
         queueConsumer: `[[queues.consumers]]` trigger: `queue(batch)` handler. Null when
             the guest does not export this capability.
+        scheduledHandler: `[triggers] crons` trigger: `scheduled(controller)` handler.
+            Null when the guest does not export this capability.
     """
 
     eventConsumer: NotRequired[EventConsumer | None]
@@ -431,6 +433,7 @@ class Entrypoints(TypedDict):
     cli: NotRequired[PluginCli | None]
     oidc: NotRequired[Oidc | None]
     queueConsumer: NotRequired[QueueConsumer | None]
+    scheduledHandler: NotRequired[ScheduledHandler | None]
 
 
 class EntrypointsReplyOk(TypedDict):
@@ -1642,6 +1645,25 @@ class NamedDatabase(TypedDict):
 
     name: str
     database: NotRequired[GuestDatabase | None]
+
+
+class ScheduledHandler(Protocol):
+    """`[triggers] crons` handler (`Entrypoints.scheduledHandler`), the Workers
+    `scheduled(controller)` trigger. Each fire is delivered at least once;
+    a fire that throws is retried with backoff, keeping `scheduledTime` and
+    `fireId`, so handlers dedupe on `fireId`.
+    """
+
+    async def scheduled(self, controller: ScheduledController) -> EmptyReply:
+        """Run one cron fire to completion.
+
+        Args:
+            controller: The fire being delivered.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
 
 
 class QueueConsumer(Protocol):
@@ -3573,6 +3595,26 @@ class QueueBatch(TypedDict):
     messages: list[QueueMessage]
 
 
+class ScheduledController(TypedDict):
+    """One fire of a `[triggers] crons` schedule (`scheduled(controller)`).
+
+    Attributes:
+        cron: The schedule that fired, normalized to single spaces (`0 3 * * MON`).
+        scheduledTime: Fire time, UTC unix milliseconds (always a whole minute). Retries
+            of one fire keep it.
+        fireId: Durable id of this fire, stable across retries; dedupe on it.
+        attempt: Failure attempt, starting at 1.
+        deadlineUnixMs: UTC unix milliseconds. Host fence/lease is authoritative; this
+            hint must not outlive the fence.
+    """
+
+    cron: str
+    scheduledTime: int
+    fireId: str
+    attempt: int
+    deadlineUnixMs: int
+
+
 class QueueRetry(TypedDict):
     """Redeliver a queue message later.
 
@@ -5205,6 +5247,7 @@ __all__ = [
     "EventConsumer",
     "EventPublisher",
     "NamedDatabase",
+    "ScheduledHandler",
     "QueueConsumer",
     "QueueProducer",
     "NamedQueue",
@@ -5309,6 +5352,7 @@ __all__ = [
     "Invocation",
     "QueueMessage",
     "QueueBatch",
+    "ScheduledController",
     "QueueRetry",
     "QueueResultAck",
     "QueueResultRetry",

@@ -44,6 +44,7 @@ Authors write a Workers-shaped module:
   triggers `plugin.toml` declares:
   - `event(batch)` for `[[events.consumers]]`;
   - `job(job)` for `[triggers] jobs`;
+  - `scheduled(controller)` for `[triggers] crons`;
   - `databaseMigrations(binding)` for `[[databases]]`;
   - plus an optional `describe()` refinement.
 - Every named entrypoint in `entrypoints = [...]` is an exported class

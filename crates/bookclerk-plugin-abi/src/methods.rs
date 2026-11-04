@@ -108,6 +108,14 @@ pub mod queue {
     pub const NAME: &str = "queue";
 }
 
+/// Run one cron fire (Cap'n Proto `ScheduledHandler.scheduled`).
+///
+/// Params: [`crate::ScheduledController`]. Result: empty.
+pub mod scheduled {
+    /// Wire method name `"scheduled"`.
+    pub const NAME: &str = "scheduled";
+}
+
 /// Send one message into a granted queue (Cap'n Proto `QueueProducer.send`).
 ///
 /// Params: [`crate::QueueSendMessage`]. Result: [`crate::QueueSendOk`].

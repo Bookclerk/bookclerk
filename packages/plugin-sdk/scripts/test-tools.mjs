@@ -182,6 +182,27 @@ function bindingMessage(manifest) {
   }
   return "";
 }
+// [triggers] crons: shape, count and duplicates; a cron-only manifest is valid.
+{
+  const cronOnly = { ...bindingBase, entrypoints: [] };
+  const cases = [
+    [{ crons: ["*/30 * * * *", "0  3 * * MON"] }, ""],
+    [{ crons: ["* * * *"] }, "needs 5 fields"],
+    [{ crons: ["0 0 * * *", " 0 0 * * * "] }, "is duplicated"],
+    [{ crons: ["0 0 L * *"] }, ""],
+    [{ crons: ["0 0 5#2 * *"] }, "is not valid cron"],
+    [{ crons: Array.from({ length: 9 }, (_, i) => `${i} * * * *`) }, "at most 8"],
+    [{ crons: ["0 0 * * *".padEnd(129, " ") + "x"] }, "at most 128 bytes"],
+  ];
+  for (const [triggers, expected] of cases) {
+    const message = bindingMessage({ ...cronOnly, triggers });
+    const ok = expected === "" ? message === "" : message.includes(expected);
+    if (!ok) {
+      console.error("FAIL crons", JSON.stringify(triggers), "->", message || "(accepted)");
+      process.exit(1);
+    }
+  }
+}
 const duplicateKv = bindingMessage({
   ...bindingBase,
   kv_namespaces: [{ binding: "CACHE" }, { binding: "CACHE" }],

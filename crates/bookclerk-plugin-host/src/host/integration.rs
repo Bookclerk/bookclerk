@@ -345,6 +345,37 @@ impl Integration for ExternalIntegration {
         self.cron_schedules.clone()
     }
 
+    async fn run_scheduled_cancelable(
+        &self,
+        invocation: bookclerk_integrations::ScheduledInvocation,
+        cancel: Arc<AtomicBool>,
+    ) -> bookclerk_integrations::Result<()> {
+        if !self.cron_schedules.contains(&invocation.cron) {
+            return Err(bookclerk_integrations::IntegrationError::message(format!(
+                "plugin declares no cron `{}`",
+                invocation.cron
+            )));
+        }
+        let scheduled_time = u64::try_from(invocation.scheduled_time_ms).map_err(|_| {
+            bookclerk_integrations::IntegrationError::message(
+                "cron fire time is before the Unix epoch",
+            )
+        })?;
+        self.session
+            .run_scheduled(
+                bookclerk_plugin_abi::ScheduledController {
+                    cron: invocation.cron.as_str().to_string(),
+                    scheduled_time,
+                    fire_id: invocation.job_id,
+                    attempt: invocation.attempt,
+                    deadline_unix_ms: invocation.deadline_unix_ms,
+                },
+                cancel,
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn deliver_queue_batch_cancelable(
         &self,
         batch: bookclerk_integrations::QueueBatch,
