@@ -290,18 +290,6 @@ pub struct CatalogHit {
     pub product_id: String,
     /// Display title for the work.
     pub title: String,
-    /// Author names (`;`-separated when multiple).
-    pub authors: Option<String>,
-    /// Narrator names (`;`-separated when multiple).
-    pub narrators: Option<String>,
-    /// Series name when the title belongs to a series.
-    pub series: Option<String>,
-    /// Position within the series (e.g. `"1"`, `"1-5"`).
-    pub series_index: Option<String>,
-    /// Amazon ASIN when known (may match [`Self::product_id`] for Audible).
-    pub asin: Option<String>,
-    /// ISBN-10/13 when known.
-    pub isbn: Option<String>,
     /// Canonical storefront product URL when available.
     pub url: Option<String>,
     /// Public cover image URL when the storefront provides one.
@@ -350,6 +338,27 @@ pub struct CatalogHit {
     /// for unabridged; `None` when unknown.
     #[serde(default)]
     pub is_abridged: Option<bool>,
+    /// Kind of work the hit is.
+    #[serde(default)]
+    pub work_kind: crate::records::WorkKind,
+    /// How the work is realised in this edition.
+    #[serde(default)]
+    pub expression_kind: crate::records::ExpressionKind,
+    /// Form of this edition; print and ebook hits are never acquired.
+    #[serde(default)]
+    pub media_kind: crate::records::MediaKind,
+    /// External identifiers (ISBN, ASIN, OpenLibrary ids).
+    #[serde(default)]
+    pub identifiers: Vec<crate::records::Identifier>,
+    /// Credited contributors in billing order.
+    #[serde(default)]
+    pub credits: Vec<crate::records::Credit>,
+    /// Series the work belongs to.
+    #[serde(default)]
+    pub series_entries: Vec<crate::records::SeriesEntry>,
+    /// Product id of the parent podcast show, for a podcast episode.
+    #[serde(default)]
+    pub parent_product_id: Option<String>,
 }
 
 impl CatalogHit {
@@ -362,9 +371,7 @@ impl CatalogHit {
     #[must_use]
     pub fn decode_html_entities(mut self) -> Self {
         bookclerk_library::decode_html_entities_in_place(&mut self.title);
-        bookclerk_library::decode_html_entities_opt_in_place(&mut self.authors);
-        bookclerk_library::decode_html_entities_opt_in_place(&mut self.narrators);
-        bookclerk_library::decode_html_entities_opt_in_place(&mut self.series);
+        crate::records::decode_html_entities(&mut self.credits, &mut self.series_entries);
         bookclerk_library::decode_html_entities_opt_in_place(&mut self.subtitle);
         bookclerk_library::decode_html_entities_opt_in_place(&mut self.description);
         bookclerk_library::decode_html_entities_opt_in_place(&mut self.publisher);
@@ -373,6 +380,51 @@ impl CatalogHit {
         bookclerk_library::decode_html_entities_opt_in_place(&mut self.price_label);
         // Identifiers / URLs are left alone (must stay wire-exact).
         self
+    }
+
+    /// Author names joined for the flat view; `None` when none is credited.
+    #[must_use]
+    pub fn authors(&self) -> Option<String> {
+        crate::records::joined_names(&self.credits, crate::records::CreditRole::Author)
+    }
+
+    /// Narrator names joined for the flat view; `None` when none is credited.
+    #[must_use]
+    pub fn narrators(&self) -> Option<String> {
+        crate::records::joined_names(&self.credits, crate::records::CreditRole::Narrator)
+    }
+
+    /// Amazon ASIN when the hit carries one.
+    #[must_use]
+    pub fn asin(&self) -> Option<String> {
+        crate::records::identifier_value(&self.identifiers, crate::records::IdentifierScheme::Asin)
+    }
+
+    /// ASIN for `marketplace`, falling back to an unscoped ASIN and then to
+    /// any ASIN the hit carries.
+    #[must_use]
+    pub fn asin_in(&self, marketplace: &str) -> Option<String> {
+        crate::records::asin_for_marketplace(&self.identifiers, marketplace)
+    }
+
+    /// ISBN when the hit carries one.
+    #[must_use]
+    pub fn isbn(&self) -> Option<String> {
+        crate::records::identifier_value(&self.identifiers, crate::records::IdentifierScheme::Isbn)
+    }
+
+    /// Name of the first series the hit belongs to.
+    #[must_use]
+    pub fn series(&self) -> Option<String> {
+        self.series_entries.first().map(|entry| entry.name.clone())
+    }
+
+    /// Position label in the first series the hit belongs to.
+    #[must_use]
+    pub fn series_index(&self) -> Option<String> {
+        self.series_entries
+            .first()
+            .and_then(|entry| entry.position.clone())
     }
 }
 

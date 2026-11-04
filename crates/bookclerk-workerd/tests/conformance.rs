@@ -1764,8 +1764,12 @@ async fn storefront_vectors(client: &PluginClient, exports_jobs: bool) {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].product_id, "hit:dune:5:2");
     assert_eq!(hits[0].title, "dune");
-    assert_eq!(hits[0].authors.as_deref(), Some("A. Author"));
-    assert_eq!(hits[0].narrators, None);
+    assert_eq!(hits[0].credits[0].name, "A. Author");
+    assert_eq!(
+        hits[0].credits[0].role,
+        bookclerk_plugin_abi::CreditRole::Author
+    );
+    assert_eq!(hits[0].credits.len(), 1);
 
     assert_eq!(
         storefront

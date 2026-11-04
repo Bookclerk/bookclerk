@@ -46,5 +46,5 @@ pub use magento::{DownloadableProduct, LibraryItem, MagentoClient, DEFAULT_STORE
 pub use options::{GraphicAudioAccess, GraphicAudioBitrate, GraphicAudioContainer};
 pub use source::{GraphicAudioSource, ID as GRAPHICAUDIO_SOURCE_ID};
 pub use sync::{
-    collect_account_books, product_to_new_book, scan_library, ScanContext, ScanOptions,
+    collect_account_books, product_to_scan_book, scan_library, ScanContext, ScanOptions,
 };

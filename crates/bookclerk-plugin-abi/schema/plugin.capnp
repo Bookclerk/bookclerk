@@ -7,7 +7,9 @@
 #   version. Manifest `api_version` and `describe().apiVersion` must match.
 # - Named `rpcFeatures` negotiate optional facilities. Required features are
 #   rejected at spawn when missing.
-# - Do not reuse field, method, or union ordinals.
+# - Do not reuse field, method, or union ordinals after the v1 schema freeze.
+#   Before the freeze, renumbering is allowed when every first-party plugin and
+#   SDK is updated in the same change (see docs/adr/library-data-model.md).
 # - Unknown enum/union members: preserve the wire code and fail closed or
 #   return typed `unsupported`. Never collapse unknown codes to `internal`.
 # - Every variable-length field is bounded by the constants below.
@@ -1414,8 +1416,131 @@ struct ScanParams {
   credentials @5 :List(AccountCredential);
 }
 
-# One library title returned by `ContentSource.scan`. The host upserts these
-# rows and forces `source` to the plugin id.
+# What kind of creative work a record describes (FRBR work). Ordinal 0 is
+# the common case, so a guest that leaves it unset describes a book.
+enum WorkKind {
+  # A book: fiction or non-fiction, read or narrated.
+  book @0;
+  # A podcast show; its episodes name it through `parentProductId`.
+  podcastShow @1;
+  # One podcast episode, a child work of its show.
+  podcastEpisode @2;
+  # An original audio drama that is not an adaptation of a book.
+  drama @3;
+}
+
+# How a work is realised (FRBR expression). Ordinal 0 is the common case
+# for a storefront that sells audiobooks.
+enum ExpressionKind {
+  # A reading of the text by one or more narrators.
+  narration @0;
+  # The text itself, as sold in print and ebook editions.
+  text @1;
+  # A translation of the text into another language.
+  translation @2;
+  # A full-cast dramatisation or adaptation of the work.
+  dramatisation @3;
+  # The recorded audio of a podcast episode.
+  podcastAudio @4;
+}
+
+# Physical or digital form of an edition (FRBR manifestation). Only
+# `audiobook` and `podcastAudio` editions are acquire candidates.
+enum MediaKind {
+  # A downloadable audiobook.
+  audiobook @0;
+  # An ebook; shown in discover but never acquired.
+  ebook @1;
+  # A printed book; shown in discover but never acquired.
+  print @2;
+  # Podcast episode audio.
+  podcastAudio @3;
+}
+
+# Scheme of an external identifier. The scheme fixes whether the id names a
+# work or an edition, and whether it is strong (unique) or weak (shared).
+enum IdentifierScheme {
+  # ISBN-10 or ISBN-13 of an edition; weak, because one ISBN can sit on
+  # several editions. The host normalises it to ISBN-13.
+  isbn @0;
+  # Amazon ASIN of an edition in one marketplace; strong.
+  asin @1;
+  # OpenLibrary edition id (`OL…M`); strong.
+  openLibraryEdition @2;
+  # OpenLibrary work id (`OL…W`); names the work, not an edition.
+  openLibraryWork @3;
+}
+
+# One external identifier a storefront or metadata provider reports.
+struct Identifier {
+  # Scheme the value belongs to; it decides the identifier's level.
+  scheme @0 :IdentifierScheme;
+  # The identifier as the source printed it; the host trims and normalises.
+  value @1 :Text;
+  # Marketplace the id is scoped to (ASIN); absent for global schemes.
+  marketplace @2 :Text $optional;
+}
+
+# A contributor's responsibility for a work, expression or edition.
+enum CreditRole {
+  # Wrote the work.
+  author @0;
+  # Reads the text in a narration.
+  narrator @1;
+  # Translated the text.
+  translator @2;
+  # Edited the work or the edition.
+  editor @3;
+  # Illustrated the work or the edition.
+  illustrator @4;
+  # Published the edition.
+  publisher @5;
+  # Hosts a podcast show or episode.
+  host @6;
+  # Performs a part in a dramatisation.
+  cast @7;
+  # Adapted the work into a dramatisation.
+  adaptor @8;
+}
+
+# Which level a credit attaches to. Ordinal 0 is the role's usual level, so
+# a guest sets this only when a credit departs from it.
+enum CreditLevel {
+  # The role's usual level: author and adaptor on the work; narrator,
+  # translator, host and cast on the expression; editor, illustrator and
+  # publisher on the edition.
+  roleDefault @0;
+  # The work.
+  work @1;
+  # The expression.
+  expression @2;
+  # The edition.
+  edition @3;
+}
+
+# One credited contributor. Credits are listed in billing order.
+struct Credit {
+  # Contributor display name as the source prints it, one person or body.
+  name @0 :Text;
+  # What the contributor did.
+  role @1 :CreditRole;
+  # Level the credit attaches to.
+  level @2 :CreditLevel;
+}
+
+# A work's place in one series.
+struct SeriesEntry {
+  # Series name as the source prints it.
+  name @0 :Text;
+  # Position label as the source prints it (`1`, `2.5`, `1-3`).
+  position @1 :Text $optional;
+  # The store's own id for the series (an Audible series ASIN) when known.
+  storeSeriesId @2 :Text $optional;
+}
+
+# One library title returned by `ContentSource.scan`. The host forces `source`
+# to the plugin id and, until the library stores works, expressions and
+# editions, maps the record onto one flat library row.
 struct ScanBook {
   # Account that owns this library entry.
   accountId @0 :Text;
@@ -1425,26 +1550,36 @@ struct ScanBook {
   title @2 :Text;
   # Marketplace / region when known.
   marketplace @3 :Text $optional;
-  # Amazon ASIN when the storefront exposes one.
-  asin @4 :Text $optional;
-  # ISBN when the storefront exposes one.
-  isbn @5 :Text $optional;
-  # Comma- or guest-formatted author list.
-  authors @6 :Text $optional;
-  # Comma- or guest-formatted narrator list.
-  narrators @7 :Text $optional;
-  # Series name when applicable.
-  series @8 :Text $optional;
-  # Series index / sequence label.
-  seriesIndex @9 :Text $optional;
-  # Content classification (e.g. `book` vs `episode`).
-  contentKind @10 :Text $optional;
   # Publisher name when known.
-  publisher @11 :Text $optional;
+  publisher @4 :Text $optional;
   # Runtime in whole minutes when known.
-  lengthMinutes @12 :Int64 $optional;
+  lengthMinutes @5 :Int64 $optional;
   # Subtitle when distinct from `title`.
-  subtitle @13 :Text $optional;
+  subtitle @6 :Text $optional;
+  # Kind of work the title is.
+  workKind @7 :WorkKind;
+  # How the work is realised in this edition.
+  expressionKind @8 :ExpressionKind;
+  # Form of this edition.
+  mediaKind @9 :MediaKind;
+  # External identifiers (ISBN, ASIN, OpenLibrary ids).
+  identifiers @10 :List(Identifier);
+  # Credited contributors in billing order.
+  credits @11 :List(Credit);
+  # Series the work belongs to.
+  seriesEntries @12 :List(SeriesEntry);
+  # Product id of the parent podcast show, for a podcast episode.
+  parentProductId @13 :Text $optional;
+  # Content language code when known.
+  language @14 :Text $optional;
+  # Whether the edition is abridged when the storefront says so.
+  abridgement @15 :Abridgement;
+  # Publication date as RFC 3339 when known.
+  publishedAt @16 :Text $optional;
+  # When the account bought or added the title, as RFC 3339, when known.
+  purchasedAt @17 :Text $optional;
+  # Category / genre labels as a single string when known.
+  categories @18 :Text $optional;
 }
 
 # Summary result of `ContentSource.scan`.
@@ -1717,50 +1852,52 @@ struct CatalogHit {
   productId @0 :Text;
   # Primary title.
   title @1 :Text;
-  # Authors string when known.
-  authors @2 :Text $optional;
-  # Narrators string when known.
-  narrators @3 :Text $optional;
-  # Series name when applicable.
-  series @4 :Text $optional;
-  # Series index / sequence label.
-  seriesIndex @5 :Text $optional;
-  # Amazon ASIN when known.
-  asin @6 :Text $optional;
-  # ISBN when known.
-  isbn @7 :Text $optional;
   # Storefront product page URL.
-  url @8 :Text $optional;
+  url @2 :Text $optional;
   # Cover image URL.
-  coverUrl @9 :Text $optional;
+  coverUrl @3 :Text $optional;
   # Hit origin label (plugin id or storefront name).
-  origin @10 :Text;
+  origin @4 :Text;
   # Subtitle when distinct from `title`.
-  subtitle @11 :Text $optional;
+  subtitle @5 :Text $optional;
   # Long description / blurb when fetched.
-  description @12 :Text $optional;
+  description @6 :Text $optional;
   # Publisher name when known.
-  publisher @13 :Text $optional;
+  publisher @7 :Text $optional;
   # Runtime in whole minutes.
-  lengthMinutes @14 :Int64 $optional;
+  lengthMinutes @8 :Int64 $optional;
   # Publication date string as provided by the storefront.
-  publishedAt @15 :Text $optional;
+  publishedAt @9 :Text $optional;
   # Category / genre labels as a single string when known.
-  categories @16 :Text $optional;
+  categories @10 :Text $optional;
   # Content language code when known.
-  language @17 :Text $optional;
+  language @11 :Text $optional;
   # Current price in minor units (cents).
-  priceCents @18 :Int64 $optional;
+  priceCents @12 :Int64 $optional;
   # ISO currency code for `priceCents`.
-  currency @19 :Text $optional;
+  currency @13 :Text $optional;
   # Pre-formatted price for display.
-  priceLabel @20 :Text $optional;
+  priceLabel @14 :Text $optional;
   # Aggregate rating when known.
-  ratingOverall @21 :Float64 $optional;
+  ratingOverall @15 :Float64 $optional;
   # Number of ratings when known.
-  ratingCount @22 :Int64 $optional;
+  ratingCount @16 :Int64 $optional;
   # Whether the edition is abridged when the storefront says so.
-  abridgement @23 :Abridgement;
+  abridgement @17 :Abridgement;
+  # Kind of work the hit is.
+  workKind @18 :WorkKind;
+  # How the work is realised in this edition.
+  expressionKind @19 :ExpressionKind;
+  # Form of this edition; print and ebook hits are never acquired.
+  mediaKind @20 :MediaKind;
+  # External identifiers (ISBN, ASIN, OpenLibrary ids).
+  identifiers @21 :List(Identifier);
+  # Credited contributors in billing order.
+  credits @22 :List(Credit);
+  # Series the work belongs to.
+  seriesEntries @23 :List(SeriesEntry);
+  # Product id of the parent podcast show, for a podcast episode.
+  parentProductId @24 :Text $optional;
 }
 
 # Success payload of the catalog list methods.

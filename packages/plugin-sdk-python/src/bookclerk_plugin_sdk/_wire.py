@@ -2003,32 +2003,106 @@ _scan_params_codec = _Codec(1, 3, _write_scan_params, _read_scan_params)
 """Wire codec for ``ScanParams`` (1 data words, 3 pointers)."""
 
 
+def _write_identifier(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u16(0, _ord(A.IDENTIFIER_SCHEMES, v["scheme"], "IdentifierScheme"))
+    s.set_text(0, v["value"])
+    if v.get("marketplace") is not None:
+        s.set_text(1, v["marketplace"])
+
+
+def _read_identifier(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "scheme": _from_ord(A.IDENTIFIER_SCHEMES, s.get_u16(0), "IdentifierScheme"),
+        "value": s.get_text(0),
+    }
+    marketplace = s.get_text(1)
+    if not (marketplace == ""):
+        out["marketplace"] = marketplace
+    return out
+
+
+_identifier_codec = _Codec(1, 2, _write_identifier, _read_identifier)
+"""Wire codec for ``Identifier`` (1 data words, 2 pointers)."""
+
+
+def _write_credit(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["name"])
+    s.set_u16(0, _ord(A.CREDIT_ROLES, v["role"], "CreditRole"))
+    s.set_u16(1, _ord(A.CREDIT_LEVELS, v["level"], "CreditLevel"))
+
+
+def _read_credit(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "name": s.get_text(0),
+        "role": _from_ord(A.CREDIT_ROLES, s.get_u16(0), "CreditRole"),
+        "level": _from_ord(A.CREDIT_LEVELS, s.get_u16(1), "CreditLevel"),
+    }
+
+
+_credit_codec = _Codec(1, 1, _write_credit, _read_credit)
+"""Wire codec for ``Credit`` (1 data words, 1 pointers)."""
+
+
+def _write_series_entry(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["name"])
+    if v.get("position") is not None:
+        s.set_text(1, v["position"])
+    if v.get("storeSeriesId") is not None:
+        s.set_text(2, v["storeSeriesId"])
+
+
+def _read_series_entry(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "name": s.get_text(0),
+    }
+    position = s.get_text(1)
+    if not (position == ""):
+        out["position"] = position
+    store_series_id = s.get_text(2)
+    if not (store_series_id == ""):
+        out["storeSeriesId"] = store_series_id
+    return out
+
+
+_series_entry_codec = _Codec(0, 3, _write_series_entry, _read_series_entry)
+"""Wire codec for ``SeriesEntry`` (0 data words, 3 pointers)."""
+
+
 def _write_scan_book(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["accountId"])
     s.set_text(1, v["productId"])
     s.set_text(2, v["title"])
     if v.get("marketplace") is not None:
         s.set_text(3, v["marketplace"])
-    if v.get("asin") is not None:
-        s.set_text(4, v["asin"])
-    if v.get("isbn") is not None:
-        s.set_text(5, v["isbn"])
-    if v.get("authors") is not None:
-        s.set_text(6, v["authors"])
-    if v.get("narrators") is not None:
-        s.set_text(7, v["narrators"])
-    if v.get("series") is not None:
-        s.set_text(8, v["series"])
-    if v.get("seriesIndex") is not None:
-        s.set_text(9, v["seriesIndex"])
-    if v.get("contentKind") is not None:
-        s.set_text(10, v["contentKind"])
     if v.get("publisher") is not None:
-        s.set_text(11, v["publisher"])
+        s.set_text(4, v["publisher"])
     if v.get("lengthMinutes") is not None:
         s.set_i64(0, v["lengthMinutes"])
     if v.get("subtitle") is not None:
-        s.set_text(12, v["subtitle"])
+        s.set_text(5, v["subtitle"])
+    s.set_u16(4, _ord(A.WORK_KINDS, v["workKind"], "WorkKind"))
+    s.set_u16(5, _ord(A.EXPRESSION_KINDS, v["expressionKind"], "ExpressionKind"))
+    s.set_u16(6, _ord(A.MEDIA_KINDS, v["mediaKind"], "MediaKind"))
+    items = s.init_struct_list(6, len(v["identifiers"]), 1, 2)
+    for item, elem in zip(items, v["identifiers"], strict=True):
+        _identifier_codec.write(item, elem, caps)
+    items = s.init_struct_list(7, len(v["credits"]), 1, 1)
+    for item, elem in zip(items, v["credits"], strict=True):
+        _credit_codec.write(item, elem, caps)
+    items = s.init_struct_list(8, len(v["seriesEntries"]), 0, 3)
+    for item, elem in zip(items, v["seriesEntries"], strict=True):
+        _series_entry_codec.write(item, elem, caps)
+    if v.get("parentProductId") is not None:
+        s.set_text(9, v["parentProductId"])
+    if v.get("language") is not None:
+        s.set_text(10, v["language"])
+    s.set_u16(7, _ord(A.ABRIDGEMENTS, v["abridgement"], "Abridgement"))
+    if v.get("publishedAt") is not None:
+        s.set_text(11, v["publishedAt"])
+    if v.get("purchasedAt") is not None:
+        s.set_text(12, v["purchasedAt"])
+    if v.get("categories") is not None:
+        s.set_text(13, v["categories"])
 
 
 def _read_scan_book(s: _StructReader, caps: _CapTable) -> Any:
@@ -2036,45 +2110,46 @@ def _read_scan_book(s: _StructReader, caps: _CapTable) -> Any:
         "accountId": s.get_text(0),
         "productId": s.get_text(1),
         "title": s.get_text(2),
+        "workKind": _from_ord(A.WORK_KINDS, s.get_u16(4), "WorkKind"),
+        "expressionKind": _from_ord(A.EXPRESSION_KINDS, s.get_u16(5), "ExpressionKind"),
+        "mediaKind": _from_ord(A.MEDIA_KINDS, s.get_u16(6), "MediaKind"),
+        "identifiers": [_identifier_codec.read(item, caps) for item in s.get_struct_list(6, 1, 2)],
+        "credits": [_credit_codec.read(item, caps) for item in s.get_struct_list(7, 1, 1)],
+        "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(8, 0, 3)],
+        "abridgement": _from_ord(A.ABRIDGEMENTS, s.get_u16(7), "Abridgement"),
     }
     marketplace = s.get_text(3)
     if not (marketplace == ""):
         out["marketplace"] = marketplace
-    asin = s.get_text(4)
-    if not (asin == ""):
-        out["asin"] = asin
-    isbn = s.get_text(5)
-    if not (isbn == ""):
-        out["isbn"] = isbn
-    authors = s.get_text(6)
-    if not (authors == ""):
-        out["authors"] = authors
-    narrators = s.get_text(7)
-    if not (narrators == ""):
-        out["narrators"] = narrators
-    series = s.get_text(8)
-    if not (series == ""):
-        out["series"] = series
-    series_index = s.get_text(9)
-    if not (series_index == ""):
-        out["seriesIndex"] = series_index
-    content_kind = s.get_text(10)
-    if not (content_kind == ""):
-        out["contentKind"] = content_kind
-    publisher = s.get_text(11)
+    publisher = s.get_text(4)
     if not (publisher == ""):
         out["publisher"] = publisher
     length_minutes = s.get_i64(0)
     if not (length_minutes == 0):
         out["lengthMinutes"] = length_minutes
-    subtitle = s.get_text(12)
+    subtitle = s.get_text(5)
     if not (subtitle == ""):
         out["subtitle"] = subtitle
+    parent_product_id = s.get_text(9)
+    if not (parent_product_id == ""):
+        out["parentProductId"] = parent_product_id
+    language = s.get_text(10)
+    if not (language == ""):
+        out["language"] = language
+    published_at = s.get_text(11)
+    if not (published_at == ""):
+        out["publishedAt"] = published_at
+    purchased_at = s.get_text(12)
+    if not (purchased_at == ""):
+        out["purchasedAt"] = purchased_at
+    categories = s.get_text(13)
+    if not (categories == ""):
+        out["categories"] = categories
     return out
 
 
-_scan_book_codec = _Codec(1, 13, _write_scan_book, _read_scan_book)
-"""Wire codec for ``ScanBook`` (1 data words, 13 pointers)."""
+_scan_book_codec = _Codec(2, 14, _write_scan_book, _read_scan_book)
+"""Wire codec for ``ScanBook`` (2 data words, 14 pointers)."""
 
 
 def _write_scan_summary(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -2082,7 +2157,7 @@ def _write_scan_summary(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u32(1, v["booksUpserted"])
     s.set_u32(2, v["pages"])
     s.set_u32(3, v["skippedDisabled"])
-    items = s.init_struct_list(0, len(v["books"]), 1, 13)
+    items = s.init_struct_list(0, len(v["books"]), 2, 14)
     for item, elem in zip(items, v["books"], strict=True):
         _scan_book_codec.write(item, elem, caps)
 
@@ -2093,7 +2168,7 @@ def _read_scan_summary(s: _StructReader, caps: _CapTable) -> Any:
         "booksUpserted": s.get_u32(1),
         "pages": s.get_u32(2),
         "skippedDisabled": s.get_u32(3),
-        "books": [_scan_book_codec.read(item, caps) for item in s.get_struct_list(0, 1, 13)],
+        "books": [_scan_book_codec.read(item, caps) for item in s.get_struct_list(0, 2, 14)],
     }
 
 
@@ -2530,109 +2605,99 @@ _revoke_account_params_codec = _Codec(0, 2, _write_revoke_account_params, _read_
 def _write_catalog_hit(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["productId"])
     s.set_text(1, v["title"])
-    if v.get("authors") is not None:
-        s.set_text(2, v["authors"])
-    if v.get("narrators") is not None:
-        s.set_text(3, v["narrators"])
-    if v.get("series") is not None:
-        s.set_text(4, v["series"])
-    if v.get("seriesIndex") is not None:
-        s.set_text(5, v["seriesIndex"])
-    if v.get("asin") is not None:
-        s.set_text(6, v["asin"])
-    if v.get("isbn") is not None:
-        s.set_text(7, v["isbn"])
     if v.get("url") is not None:
-        s.set_text(8, v["url"])
+        s.set_text(2, v["url"])
     if v.get("coverUrl") is not None:
-        s.set_text(9, v["coverUrl"])
-    s.set_text(10, v["origin"])
+        s.set_text(3, v["coverUrl"])
+    s.set_text(4, v["origin"])
     if v.get("subtitle") is not None:
-        s.set_text(11, v["subtitle"])
+        s.set_text(5, v["subtitle"])
     if v.get("description") is not None:
-        s.set_text(12, v["description"])
+        s.set_text(6, v["description"])
     if v.get("publisher") is not None:
-        s.set_text(13, v["publisher"])
+        s.set_text(7, v["publisher"])
     if v.get("lengthMinutes") is not None:
         s.set_i64(0, v["lengthMinutes"])
     if v.get("publishedAt") is not None:
-        s.set_text(14, v["publishedAt"])
+        s.set_text(8, v["publishedAt"])
     if v.get("categories") is not None:
-        s.set_text(15, v["categories"])
+        s.set_text(9, v["categories"])
     if v.get("language") is not None:
-        s.set_text(16, v["language"])
+        s.set_text(10, v["language"])
     if v.get("priceCents") is not None:
         s.set_i64(1, v["priceCents"])
     if v.get("currency") is not None:
-        s.set_text(17, v["currency"])
+        s.set_text(11, v["currency"])
     if v.get("priceLabel") is not None:
-        s.set_text(18, v["priceLabel"])
+        s.set_text(12, v["priceLabel"])
     if v.get("ratingOverall") is not None:
         s.set_f64(2, v["ratingOverall"])
     if v.get("ratingCount") is not None:
         s.set_i64(3, v["ratingCount"])
     s.set_u16(16, _ord(A.ABRIDGEMENTS, v["abridgement"], "Abridgement"))
+    s.set_u16(17, _ord(A.WORK_KINDS, v["workKind"], "WorkKind"))
+    s.set_u16(18, _ord(A.EXPRESSION_KINDS, v["expressionKind"], "ExpressionKind"))
+    s.set_u16(19, _ord(A.MEDIA_KINDS, v["mediaKind"], "MediaKind"))
+    items = s.init_struct_list(13, len(v["identifiers"]), 1, 2)
+    for item, elem in zip(items, v["identifiers"], strict=True):
+        _identifier_codec.write(item, elem, caps)
+    items = s.init_struct_list(14, len(v["credits"]), 1, 1)
+    for item, elem in zip(items, v["credits"], strict=True):
+        _credit_codec.write(item, elem, caps)
+    items = s.init_struct_list(15, len(v["seriesEntries"]), 0, 3)
+    for item, elem in zip(items, v["seriesEntries"], strict=True):
+        _series_entry_codec.write(item, elem, caps)
+    if v.get("parentProductId") is not None:
+        s.set_text(16, v["parentProductId"])
 
 
 def _read_catalog_hit(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
         "productId": s.get_text(0),
         "title": s.get_text(1),
-        "origin": s.get_text(10),
+        "origin": s.get_text(4),
         "abridgement": _from_ord(A.ABRIDGEMENTS, s.get_u16(16), "Abridgement"),
+        "workKind": _from_ord(A.WORK_KINDS, s.get_u16(17), "WorkKind"),
+        "expressionKind": _from_ord(A.EXPRESSION_KINDS, s.get_u16(18), "ExpressionKind"),
+        "mediaKind": _from_ord(A.MEDIA_KINDS, s.get_u16(19), "MediaKind"),
+        "identifiers": [_identifier_codec.read(item, caps) for item in s.get_struct_list(13, 1, 2)],
+        "credits": [_credit_codec.read(item, caps) for item in s.get_struct_list(14, 1, 1)],
+        "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(15, 0, 3)],
     }
-    authors = s.get_text(2)
-    if not (authors == ""):
-        out["authors"] = authors
-    narrators = s.get_text(3)
-    if not (narrators == ""):
-        out["narrators"] = narrators
-    series = s.get_text(4)
-    if not (series == ""):
-        out["series"] = series
-    series_index = s.get_text(5)
-    if not (series_index == ""):
-        out["seriesIndex"] = series_index
-    asin = s.get_text(6)
-    if not (asin == ""):
-        out["asin"] = asin
-    isbn = s.get_text(7)
-    if not (isbn == ""):
-        out["isbn"] = isbn
-    url = s.get_text(8)
+    url = s.get_text(2)
     if not (url == ""):
         out["url"] = url
-    cover_url = s.get_text(9)
+    cover_url = s.get_text(3)
     if not (cover_url == ""):
         out["coverUrl"] = cover_url
-    subtitle = s.get_text(11)
+    subtitle = s.get_text(5)
     if not (subtitle == ""):
         out["subtitle"] = subtitle
-    description = s.get_text(12)
+    description = s.get_text(6)
     if not (description == ""):
         out["description"] = description
-    publisher = s.get_text(13)
+    publisher = s.get_text(7)
     if not (publisher == ""):
         out["publisher"] = publisher
     length_minutes = s.get_i64(0)
     if not (length_minutes == 0):
         out["lengthMinutes"] = length_minutes
-    published_at = s.get_text(14)
+    published_at = s.get_text(8)
     if not (published_at == ""):
         out["publishedAt"] = published_at
-    categories = s.get_text(15)
+    categories = s.get_text(9)
     if not (categories == ""):
         out["categories"] = categories
-    language = s.get_text(16)
+    language = s.get_text(10)
     if not (language == ""):
         out["language"] = language
     price_cents = s.get_i64(1)
     if not (price_cents == 0):
         out["priceCents"] = price_cents
-    currency = s.get_text(17)
+    currency = s.get_text(11)
     if not (currency == ""):
         out["currency"] = currency
-    price_label = s.get_text(18)
+    price_label = s.get_text(12)
     if not (price_label == ""):
         out["priceLabel"] = price_label
     rating_overall = s.get_f64(2)
@@ -2641,22 +2706,25 @@ def _read_catalog_hit(s: _StructReader, caps: _CapTable) -> Any:
     rating_count = s.get_i64(3)
     if not (rating_count == 0):
         out["ratingCount"] = rating_count
+    parent_product_id = s.get_text(16)
+    if not (parent_product_id == ""):
+        out["parentProductId"] = parent_product_id
     return out
 
 
-_catalog_hit_codec = _Codec(5, 19, _write_catalog_hit, _read_catalog_hit)
-"""Wire codec for ``CatalogHit`` (5 data words, 19 pointers)."""
+_catalog_hit_codec = _Codec(5, 17, _write_catalog_hit, _read_catalog_hit)
+"""Wire codec for ``CatalogHit`` (5 data words, 17 pointers)."""
 
 
 def _write_catalog_hits(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["hits"]), 5, 19)
+    items = s.init_struct_list(0, len(v["hits"]), 5, 17)
     for item, elem in zip(items, v["hits"], strict=True):
         _catalog_hit_codec.write(item, elem, caps)
 
 
 def _read_catalog_hits(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "hits": [_catalog_hit_codec.read(item, caps) for item in s.get_struct_list(0, 5, 19)],
+        "hits": [_catalog_hit_codec.read(item, caps) for item in s.get_struct_list(0, 5, 17)],
     }
 
 
@@ -2691,13 +2759,13 @@ _catalog_hits_reply_codec = _Codec(1, 1, _write_catalog_hits_reply, _read_catalo
 
 def _write_catalog_detail(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_bool(0, v["found"])
-    _catalog_hit_codec.write(s.init_struct(0, 5, 19), v["hit"], caps)
+    _catalog_hit_codec.write(s.init_struct(0, 5, 17), v["hit"], caps)
 
 
 def _read_catalog_detail(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "found": s.get_bool(0),
-        "hit": _catalog_hit_codec.read(s.get_struct(0, 5, 19), caps),
+        "hit": _catalog_hit_codec.read(s.get_struct(0, 5, 17), caps),
     }
 
 

@@ -634,12 +634,46 @@ methods on [`ContentSource`](../../packages/plugin-sdk/src/plugin.ts) and
 | --- | --- |
 | `login` | Password storefronts. Params include `pluginDataDir`, marketplace, label, email and password. Result: `{ account, credentials? }`. The host seals the credentials (`provider = plugin id`) and upserts the account row |
 | `loginStart` / `loginComplete` | OAuth storefronts (Audible). Start returns `{ sessionId, url }`; complete returns the login result |
-| `scan` | Params include `pluginDataDir`, filters, and a host-injected `credentials` map (`accountId` → opaque JSON; **no** library database path). The result includes `books[]` DTOs; the host upserts them with `source` forced to the plugin id |
+| `scan` | Params include `pluginDataDir`, filters, and a host-injected `credentials` list (one `{ accountId, credentials }` entry per account, with the credentials as opaque JSON bytes; **no** library database path). The result includes `books[]` records (see [Book records](#book-records)); the host stores them with `source` forced to the plugin id |
 | `fetchTitle` | The host injects `credentials` from `encrypted_secrets`. The plugin writes media under the work folder and returns **plain** paths (DRM guests decrypt before returning) |
 
 > [!IMPORTANT]
 > Plugins must not open `library.db` or read `master.key`. Don't put
 > encrypted content keys on the wire: decrypt in the guest when needed.
+
+#### Book records
+
+`scan` returns `ScanBook` records, and the catalog methods (`searchCatalog`,
+`catalogDetail`, `expandCandidates`, `listDeals`) return `CatalogHit`
+records. Both describe a title in structured fields, following the
+[library data model](../adr/library-data-model.md):
+
+| Field | Meaning |
+| --- | --- |
+| `workKind` | `book` (the default), `podcastShow`, `podcastEpisode` or `drama` |
+| `expressionKind` | `narration` (the default), `text`, `translation`, `dramatisation` or `podcastAudio`. A full-cast production is a `dramatisation` |
+| `mediaKind` | `audiobook` (the default), `ebook`, `print` or `podcastAudio`. Ebook and print records show in Discover but are never acquired |
+| `identifiers` | `{ scheme, value, marketplace? }` entries. `scheme` is `isbn` (ISBN-10 or ISBN-13), `asin` (set `marketplace`), `openLibraryEdition` or `openLibraryWork`. The host trims each value, upper-cases ASINs, and turns a valid ISBN-10 into its ISBN-13 |
+| `credits` | `{ name, role, level }` entries in billing order, one person or body per entry. `role` is `author` (the default), `narrator`, `translator`, `editor`, `illustrator`, `publisher`, `host`, `cast` or `adaptor`. Set `level` to `roleDefault` unless the credit sits somewhere unusual: by default authors and adaptors credit the work, narrators, translators, hosts and cast the expression, and editors, illustrators and publishers the edition |
+| `seriesEntries` | `{ name, position?, storeSeriesId? }` entries, one per series the work belongs to. `position` is the label as the store prints it (`1`, `2.5`, `1-3`) |
+| `parentProductId` | The show's product id, on a podcast episode |
+| `language`, `abridgement` | Content language, and `unknown` (the default), `unabridged` or `abridged` |
+
+`ScanBook` also carries `publishedAt` and `purchasedAt` (RFC 3339) and
+`categories`.
+
+Fill these from the store's own data. When a store returns a list of
+names, send one credit per name; split a display string such as
+`"Jane Doe, John Roe"` only when that is all the store gives.
+
+> [!NOTE]
+> Until the library stores works, expressions and editions, the host maps
+> these records onto its current flat title row: names join by role, the
+> first ISBN and ASIN fill the identifier columns, and the first series
+> entry fills the series columns. An episode with no `storeSeriesId` is
+> filed under the show named by `parentProductId`. Ebook and print scan
+> records are not stored yet, since the flat row cannot keep them out of
+> acquire.
 
 ### Storage entrypoints
 

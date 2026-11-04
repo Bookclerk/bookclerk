@@ -138,12 +138,6 @@ impl From<CatalogHit> for abi::CatalogHit {
         Self {
             product_id: hit.product_id,
             title: hit.title,
-            authors: hit.authors,
-            narrators: hit.narrators,
-            series: hit.series,
-            series_index: hit.series_index,
-            asin: hit.asin,
-            isbn: hit.isbn,
             url: hit.url,
             cover_url: hit.cover_url,
             origin: hit.origin,
@@ -160,6 +154,13 @@ impl From<CatalogHit> for abi::CatalogHit {
             rating_overall: hit.rating_overall,
             rating_count: hit.rating_count,
             abridgement: abridgement_from_flag(hit.is_abridged),
+            work_kind: hit.work_kind,
+            expression_kind: hit.expression_kind,
+            media_kind: hit.media_kind,
+            identifiers: hit.identifiers,
+            credits: hit.credits,
+            series_entries: hit.series_entries,
+            parent_product_id: hit.parent_product_id,
         }
     }
 }
@@ -169,12 +170,6 @@ impl From<abi::CatalogHit> for CatalogHit {
         Self {
             product_id: hit.product_id,
             title: hit.title,
-            authors: hit.authors,
-            narrators: hit.narrators,
-            series: hit.series,
-            series_index: hit.series_index,
-            asin: hit.asin,
-            isbn: hit.isbn,
             url: hit.url,
             cover_url: hit.cover_url,
             origin: hit.origin,
@@ -191,6 +186,13 @@ impl From<abi::CatalogHit> for CatalogHit {
             rating_overall: hit.rating_overall,
             rating_count: hit.rating_count,
             is_abridged: abridgement_to_flag(hit.abridgement),
+            work_kind: hit.work_kind,
+            expression_kind: hit.expression_kind,
+            media_kind: hit.media_kind,
+            identifiers: hit.identifiers,
+            credits: hit.credits,
+            series_entries: hit.series_entries,
+            parent_product_id: hit.parent_product_id,
         }
     }
 }
@@ -487,81 +489,114 @@ impl DownloadOptions {
     }
 }
 
-/// Guest scan row for a library [`NewBook`] the storefront produced.
+/// Maps a guest scan row onto the flat [`NewBook`] row the library stores
+/// until it keeps works, expressions and editions, forcing `source` to the
+/// plugin id so a guest can never claim another storefront's rows. The
+/// owning `plugin_key` is stamped by the [`bookclerk_library::SourceScope`]
+/// on write.
+///
+/// Credits join by role, the first ISBN and ASIN fill the identifier
+/// columns (normalised), the first series entry fills the series columns,
+/// and the work kind becomes `content_kind`. An episode with no store
+/// series id names its show through `parent_product_id`, which fills
+/// `series_asin` so the episode is filed under the show.
+///
+/// The ASIN columns take an ASIN scoped to the book's marketplace, or an
+/// unscoped one, before an ASIN from another marketplace.
+///
+/// # Returns
+///
+/// `None` for a record with a blank product id, which would overwrite
+/// another blank row, and for an ebook or print edition: the flat table has
+/// no way to keep those out of acquire, so they are not stored until the
+/// library keeps editions.
 #[must_use]
-pub fn scan_book_from_new(book: NewBook) -> abi::ScanBook {
-    abi::ScanBook {
-        account_id: book.account_id,
-        product_id: book.product_id,
-        title: book.title,
-        marketplace: Some(book.marketplace),
-        asin: book.asin,
-        isbn: book.isbn,
-        authors: book.authors,
-        narrators: book.narrators,
-        series: book.series,
-        series_index: book.series_index,
-        content_kind: Some(book.content_kind),
-        publisher: book.publisher,
-        length_minutes: book.length_minutes,
-        subtitle: book.subtitle,
+pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> Option<NewBook> {
+    use crate::records::{self, CreditRole, IdentifierScheme};
+    match book.media_kind {
+        abi::MediaKind::Audiobook | abi::MediaKind::PodcastAudio => {}
+        abi::MediaKind::Ebook | abi::MediaKind::Print => return None,
     }
-}
-
-/// Maps a guest scan row onto [`NewBook`], forcing `source` to the plugin id
-/// so a guest can never claim another storefront's rows. The owning
-/// `plugin_key` is stamped by the [`bookclerk_library::SourceScope`] on write.
-#[must_use]
-pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> NewBook {
-    NewBook {
+    if book.product_id.trim().is_empty() {
+        return None;
+    }
+    let non_blank = |id: &String| !id.trim().is_empty();
+    let series = book.series_entries.into_iter().next();
+    let series_asin = series
+        .as_ref()
+        .and_then(|entry| entry.store_series_id.clone())
+        .filter(non_blank)
+        .or_else(|| {
+            (book.work_kind == abi::WorkKind::PodcastEpisode)
+                .then_some(book.parent_product_id)
+                .flatten()
+                .filter(non_blank)
+        });
+    let marketplace = book.marketplace.unwrap_or_else(|| String::from("us"));
+    Some(NewBook {
         uuid: None,
-        product_id: book.product_id,
         plugin_key: String::new(),
         source: plugin_id.to_string(),
         account_id: book.account_id,
-        asin: book.asin,
-        isbn: book.isbn,
-        marketplace: book.marketplace.unwrap_or_else(|| String::from("us")),
+        asin: records::asin_for_marketplace(&book.identifiers, &marketplace),
+        isbn: records::identifier_value(&book.identifiers, IdentifierScheme::Isbn),
+        marketplace,
         title: book.title,
-        authors: book.authors,
-        narrators: book.narrators,
-        series: book.series,
-        series_index: book.series_index,
-        series_asin: None,
-        purchased_at: None,
+        authors: records::joined_names(&book.credits, CreditRole::Author),
+        narrators: records::joined_names(&book.credits, CreditRole::Narrator),
+        series_index: series.as_ref().and_then(|entry| entry.position.clone()),
+        series_asin,
+        series: series.map(|entry| entry.name),
+        purchased_at: book.purchased_at.as_deref().and_then(parse_rfc3339),
         publisher: book.publisher,
         length_minutes: book.length_minutes,
-        is_abridged: false,
-        content_kind: book.content_kind.unwrap_or_else(|| String::from("book")),
-        categories: None,
+        is_abridged: book.abridgement == abi::Abridgement::Abridged,
+        content_kind: records::content_kind(book.work_kind).to_string(),
+        categories: book.categories,
         subtitle: book.subtitle,
-        published_at: None,
-    }
+        published_at: book.published_at.as_deref().and_then(parse_rfc3339),
+        product_id: book.product_id,
+    })
+}
+
+/// RFC 3339 wire timestamp as UTC; `None` when it does not parse.
+fn parse_rfc3339(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(raw.trim())
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+}
+
+/// RFC 3339 wire form of a host timestamp, for `ScanBook` date fields.
+///
+/// Sub-second precision is kept when the timestamp has it, so a round
+/// trip through the wire form returns the same instant.
+#[must_use]
+pub fn rfc3339(at: chrono::DateTime<chrono::Utc>) -> String {
+    at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
 }
 
 /// Builds a guest scan summary from the books a scan produced.
 #[must_use]
-pub fn scan_summary(books: Vec<NewBook>, accounts: usize, pages: u32) -> abi::ScanSummary {
+pub fn scan_summary(books: Vec<abi::ScanBook>, accounts: usize, pages: u32) -> abi::ScanSummary {
     abi::ScanSummary {
         accounts: count_u32(accounts),
         books_upserted: count_u32(books.len()),
         pages,
         skipped_disabled: 0,
-        books: books.into_iter().map(scan_book_from_new).collect(),
+        books,
     }
 }
 
-/// Host counters from a guest scan summary (`books_upserted` is the host's
-/// own upsert count when it upserted rows itself).
+/// Host counters from a guest scan summary.
+///
+/// `books_upserted` is always the host's own count of the rows it wrote, so
+/// records the host skipped (ebook and print editions, blank product ids)
+/// never count, even when the guest reported them.
 #[must_use]
 pub fn scan_summary_from_abi(summary: &abi::ScanSummary, upserted: usize) -> crate::ScanSummary {
     crate::ScanSummary {
         accounts: count_usize(summary.accounts),
-        books_upserted: if upserted > 0 {
-            upserted
-        } else {
-            count_usize(summary.books_upserted)
-        },
+        books_upserted: upserted,
         pages: summary.pages,
         skipped_disabled: count_usize(summary.skipped_disabled),
         warnings: Vec::new(),
@@ -685,10 +720,207 @@ mod tests {
             title: "T".into(),
             ..abi::ScanBook::default()
         };
-        let new = scan_book_to_new("echo", book);
+        let new = scan_book_to_new("echo", book).expect("audiobook row");
         assert_eq!(new.source, "echo");
         assert_eq!(new.marketplace, "us");
         assert_eq!(new.content_kind, "book");
+    }
+
+    #[test]
+    fn scan_book_maps_structured_records_onto_the_flat_row() {
+        use crate::records::{self, CreditRole, IdentifierScheme, WorkKind};
+        let mut credits = records::credits_from_names(["A One", "A Two"], CreditRole::Author);
+        credits.extend(records::credits_from_names(["N One"], CreditRole::Narrator));
+        let book = abi::ScanBook {
+            account_id: "a".into(),
+            product_id: "p".into(),
+            title: "T".into(),
+            marketplace: Some("uk".into()),
+            identifiers: [
+                records::identifier(IdentifierScheme::Asin, "B0ASIN", Some("uk")),
+                records::identifier(IdentifierScheme::Isbn, "0-14-044913-2", None),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            credits,
+            series_entries: vec![abi::SeriesEntry {
+                name: "S".into(),
+                position: Some("2".into()),
+                store_series_id: Some("B0SERIES".into()),
+            }],
+            work_kind: WorkKind::PodcastEpisode,
+            abridgement: abi::Abridgement::Abridged,
+            published_at: Some("2020-01-02T00:00:00Z".into()),
+            purchased_at: Some("not a date".into()),
+            categories: Some("Fantasy".into()),
+            ..abi::ScanBook::default()
+        };
+        let new = scan_book_to_new("echo", book).expect("audiobook row");
+        assert_eq!(new.authors.as_deref(), Some("A One, A Two"));
+        assert_eq!(new.narrators.as_deref(), Some("N One"));
+        assert_eq!(new.asin.as_deref(), Some("B0ASIN"));
+        assert_eq!(new.isbn.as_deref(), Some("9780140449136"));
+        assert_eq!(new.series.as_deref(), Some("S"));
+        assert_eq!(new.series_index.as_deref(), Some("2"));
+        assert_eq!(new.series_asin.as_deref(), Some("B0SERIES"));
+        assert_eq!(new.content_kind, "episode");
+        assert!(new.is_abridged);
+        assert_eq!(new.marketplace, "uk");
+        assert_eq!(
+            new.published_at.map(rfc3339).as_deref(),
+            Some("2020-01-02T00:00:00Z")
+        );
+        assert_eq!(new.purchased_at, None);
+        assert_eq!(new.categories.as_deref(), Some("Fantasy"));
+    }
+
+    #[test]
+    fn scan_book_skips_editions_that_are_never_acquired() {
+        for media_kind in [abi::MediaKind::Ebook, abi::MediaKind::Print] {
+            let book = abi::ScanBook {
+                product_id: "p".into(),
+                media_kind,
+                ..abi::ScanBook::default()
+            };
+            assert!(scan_book_to_new("echo", book).is_none());
+        }
+        let podcast = abi::ScanBook {
+            product_id: "p".into(),
+            media_kind: abi::MediaKind::PodcastAudio,
+            ..abi::ScanBook::default()
+        };
+        assert!(scan_book_to_new("echo", podcast).is_some());
+    }
+
+    #[test]
+    fn episode_parent_fills_the_series_id_only_when_none_is_given() {
+        let episode = |series_entries| abi::ScanBook {
+            product_id: "ep".into(),
+            work_kind: abi::WorkKind::PodcastEpisode,
+            parent_product_id: Some("B0SHOW".into()),
+            series_entries,
+            ..abi::ScanBook::default()
+        };
+        let new = scan_book_to_new("echo", episode(Vec::new())).expect("episode row");
+        assert_eq!(new.series_asin.as_deref(), Some("B0SHOW"));
+        let named = vec![abi::SeriesEntry {
+            name: "Show".into(),
+            position: None,
+            store_series_id: Some("B0OTHER".into()),
+        }];
+        let new = scan_book_to_new("echo", episode(named)).expect("episode row");
+        assert_eq!(new.series_asin.as_deref(), Some("B0OTHER"));
+        let book = abi::ScanBook {
+            product_id: "b".into(),
+            parent_product_id: Some("B0SHOW".into()),
+            ..abi::ScanBook::default()
+        };
+        let new = scan_book_to_new("echo", book).expect("book row");
+        assert_eq!(new.series_asin, None);
+    }
+
+    #[test]
+    fn scan_book_skips_blank_product_ids() {
+        let book = abi::ScanBook {
+            product_id: "  ".into(),
+            ..abi::ScanBook::default()
+        };
+        assert!(scan_book_to_new("echo", book).is_none());
+    }
+
+    #[test]
+    fn blank_series_ids_fall_back_to_the_episode_parent() {
+        let book = abi::ScanBook {
+            product_id: "ep".into(),
+            work_kind: abi::WorkKind::PodcastEpisode,
+            parent_product_id: Some("B0SHOW".into()),
+            series_entries: vec![abi::SeriesEntry {
+                name: "Show".into(),
+                position: None,
+                store_series_id: Some(" ".into()),
+            }],
+            ..abi::ScanBook::default()
+        };
+        let new = scan_book_to_new("echo", book).expect("episode row");
+        assert_eq!(new.series_asin.as_deref(), Some("B0SHOW"));
+        let blank_parent = abi::ScanBook {
+            product_id: "ep".into(),
+            work_kind: abi::WorkKind::PodcastEpisode,
+            parent_product_id: Some(String::new()),
+            ..abi::ScanBook::default()
+        };
+        let new = scan_book_to_new("echo", blank_parent).expect("episode row");
+        assert_eq!(new.series_asin, None);
+    }
+
+    #[test]
+    fn scan_book_takes_the_asin_of_its_marketplace() {
+        use crate::records::{self, IdentifierScheme};
+        let book = abi::ScanBook {
+            product_id: "p".into(),
+            marketplace: Some("uk".into()),
+            identifiers: [
+                records::identifier(IdentifierScheme::Asin, "B0US", Some("us")),
+                records::identifier(IdentifierScheme::Asin, "B0UK", Some("uk")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            ..abi::ScanBook::default()
+        };
+        let new = scan_book_to_new("echo", book).expect("book row");
+        assert_eq!(new.asin.as_deref(), Some("B0UK"));
+    }
+
+    #[test]
+    fn summary_counts_only_rows_the_host_wrote() {
+        let summary = scan_summary(
+            vec![abi::ScanBook {
+                product_id: "p".into(),
+                media_kind: abi::MediaKind::Ebook,
+                ..abi::ScanBook::default()
+            }],
+            1,
+            1,
+        );
+        assert_eq!(summary.books_upserted, 1);
+        assert_eq!(scan_summary_from_abi(&summary, 0).books_upserted, 0);
+        assert_eq!(scan_summary_from_abi(&summary, 3).books_upserted, 3);
+    }
+
+    #[test]
+    fn rfc3339_keeps_sub_second_precision() {
+        let at = parse_rfc3339("2023-01-01T12:34:56.789Z").expect("valid timestamp");
+        assert_eq!(rfc3339(at), "2023-01-01T12:34:56.789Z");
+        let whole = parse_rfc3339("2023-01-01T12:34:56Z").expect("valid timestamp");
+        assert_eq!(rfc3339(whole), "2023-01-01T12:34:56Z");
+    }
+
+    #[test]
+    fn catalog_hit_round_trips_structured_records() {
+        use crate::records::{self, CreditRole, IdentifierScheme, MediaKind};
+        let hit = CatalogHit {
+            product_id: "p".into(),
+            title: "T".into(),
+            credits: records::credits_from_names(["A"], CreditRole::Author),
+            identifiers: records::identifier(IdentifierScheme::Isbn, "978", None)
+                .into_iter()
+                .collect(),
+            series_entries: records::series_entries(Some("S"), Some("1")),
+            media_kind: MediaKind::Ebook,
+            parent_product_id: Some("show".into()),
+            ..CatalogHit::default()
+        };
+        let back = CatalogHit::from(abi::CatalogHit::from(hit.clone()));
+        assert_eq!(back.authors().as_deref(), Some("A"));
+        assert_eq!(back.narrators(), None);
+        assert_eq!(back.isbn().as_deref(), Some("978"));
+        assert_eq!(back.asin(), None);
+        assert_eq!(back.series().as_deref(), Some("S"));
+        assert_eq!(back.series_index().as_deref(), Some("1"));
+        assert_eq!(back.media_kind, MediaKind::Ebook);
+        assert_eq!(back.parent_product_id, hit.parent_product_id);
     }
 
     #[test]

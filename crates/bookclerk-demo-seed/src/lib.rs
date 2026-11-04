@@ -412,7 +412,7 @@ pub fn search_query(lookup: &Lookup) -> String {
 pub fn best_match<'a>(lookup: &Lookup, hits: &'a [CatalogHit]) -> Option<&'a CatalogHit> {
     hits.iter()
         .filter(|hit| !hit.product_id.trim().is_empty())
-        .filter(|hit| match present(hit.authors.as_ref()) {
+        .filter(|hit| match present(hit.authors().as_ref()) {
             Some(authors) => lists_author(&authors, lookup.author),
             None => lookup.store == GRAPHIC_AUDIO.id,
         })
@@ -595,11 +595,11 @@ pub async fn seed(
                 identity_id: Some(identity.id),
                 title: hit.map_or(wish.title, |h| h.title.as_str()).to_owned(),
                 authors: Some(
-                    hit.and_then(|h| present(h.authors.as_ref()))
+                    hit.and_then(|h| present(h.authors().as_ref()))
                         .unwrap_or_else(|| wish.author.to_owned()),
                 ),
-                asin: hit.and_then(|h| present(h.asin.as_ref())),
-                isbn: hit.and_then(|h| present(h.isbn.as_ref())),
+                asin: hit.and_then(|h| present(h.asin().as_ref())),
+                isbn: hit.and_then(|h| present(h.isbn().as_ref())),
                 notes: None,
                 status: RequestStatus::Open,
                 // Empty: the store derives the work key from title and author.
@@ -642,13 +642,14 @@ fn new_book(sample: &SampleTitle, hit: Option<&CatalogHit>) -> NewBook {
     };
     let mut book = NewBook::minimal(&hit.product_id, SAMPLE_ACCOUNT, "us", &hit.title);
     book.source = sample.store.id.to_owned();
-    book.asin = present(hit.asin.as_ref());
-    book.isbn = present(hit.isbn.as_ref());
-    book.authors = present(hit.authors.as_ref()).or_else(|| Some(sample.author.to_owned()));
-    book.narrators = present(hit.narrators.as_ref()).or_else(|| Some(sample.narrators.to_owned()));
+    book.asin = present(hit.asin().as_ref());
+    book.isbn = present(hit.isbn().as_ref());
+    book.authors = present(hit.authors().as_ref()).or_else(|| Some(sample.author.to_owned()));
+    book.narrators =
+        present(hit.narrators().as_ref()).or_else(|| Some(sample.narrators.to_owned()));
     // A store that leaves the series out keeps the sample's.
-    let (series, series_index) = match present(hit.series.as_ref()) {
-        Some(series) => (Some(series), present(hit.series_index.as_ref())),
+    let (series, series_index) = match present(hit.series().as_ref()) {
+        Some(series) => (Some(series), present(hit.series_index().as_ref())),
         None => (
             sample.series.map(|(name, _)| name.to_owned()),
             sample.series.map(|(_, index)| index.to_owned()),

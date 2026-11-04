@@ -111,7 +111,10 @@ impl ContentSource for FixtureStorefront {
         Ok(vec![CatalogHit {
             product_id: format!("hit:{}:{}:{}", params.query, params.limit, params.page),
             title: params.query,
-            authors: Some("A. Author".into()),
+            credits: vec![bookclerk_plugin_abi::Credit {
+                name: "A. Author".into(),
+                ..bookclerk_plugin_abi::Credit::default()
+            }],
             ..CatalogHit::default()
         }])
     }

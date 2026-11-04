@@ -8,8 +8,8 @@ use audible_rs::auth::Authenticator;
 use bookclerk_config::AudioQuality;
 
 use bookclerk_plugin_source_audible::{
-    deregister_device, fetch_chapter_info, request_content_license, scan_account_into_library,
-    summarize_license,
+    collect_account_books, deregister_device, fetch_chapter_info, request_content_license,
+    scan_account_into_library, summarize_license,
 };
 use url::Url;
 use wiremock::matchers::{body_json, body_string_contains, header, method, path, query_param};
@@ -181,6 +181,85 @@ async fn scan_account_upserts_library_rows() {
             .title,
         "Second Book"
     );
+}
+
+#[tokio::test]
+async fn scan_rows_carry_structured_records() {
+    use bookclerk_plugin_sdk::{
+        Abridgement, CreditRole, ExpressionKind, IdentifierScheme, MediaKind, WorkKind,
+    };
+
+    let server = MockServer::start().await;
+    let mut episode = library_item("B0EPISODE1", "Pilot");
+    episode["content_delivery_type"] = serde_json::json!("PodcastEpisode");
+    episode["relationships"] = serde_json::json!([
+        {"asin": "B0SHOW", "relationship_to_product": "parent", "relationship_type": "podcast"}
+    ]);
+    let mut book = library_item("B0BOOK1", "Mistborn");
+    book["authors"] = serde_json::json!([{"name": "Brandon Sanderson"}, {"name": " "}]);
+    book["isbn"] = serde_json::json!("9781427209955");
+    book["is_abridged"] = serde_json::json!(false);
+    book["language"] = serde_json::json!("english");
+    book["series"] = serde_json::json!([
+        {"asin": "B0SERIES1", "title": "Mistborn", "sequence": "1"},
+        {"asin": "B0SERIES2", "title": "Cosmere", "sequence": ""}
+    ]);
+    Mock::given(method("GET"))
+        .and(path("/1.0/library"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "items": [episode, book] })),
+        )
+        .mount(&server)
+        .await;
+
+    let client = synthetic_client(&server);
+    let (rows, _) = collect_account_books(&client, "amzn1.account.TEST", "uk", 50, true, true)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+
+    let episode = &rows[0];
+    assert_eq!(episode.work_kind, WorkKind::PodcastEpisode);
+    assert_eq!(episode.expression_kind, ExpressionKind::PodcastAudio);
+    assert_eq!(episode.media_kind, MediaKind::PodcastAudio);
+    assert_eq!(episode.parent_product_id.as_deref(), Some("B0SHOW"));
+    assert_eq!(episode.abridgement, Abridgement::Unknown);
+
+    let book = &rows[1];
+    assert_eq!(book.work_kind, WorkKind::Book);
+    assert_eq!(book.expression_kind, ExpressionKind::Narration);
+    assert_eq!(book.media_kind, MediaKind::Audiobook);
+    assert_eq!(book.parent_product_id, None);
+    assert_eq!(book.abridgement, Abridgement::Unabridged);
+    assert_eq!(book.language.as_deref(), Some("english"));
+    let authors: Vec<&str> = book
+        .credits
+        .iter()
+        .filter(|c| c.role == CreditRole::Author)
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(authors, ["Brandon Sanderson"]);
+    assert!(book
+        .credits
+        .iter()
+        .any(|c| c.role == CreditRole::Narrator && c.name == "Test Narrator"));
+    let asin = &book.identifiers[0];
+    assert_eq!(
+        (
+            asin.scheme,
+            asin.value.as_str(),
+            asin.marketplace.as_deref()
+        ),
+        (IdentifierScheme::Asin, "B0BOOK1", Some("uk"))
+    );
+    assert_eq!(book.identifiers[1].scheme, IdentifierScheme::Isbn);
+    assert_eq!(book.series_entries.len(), 2);
+    assert_eq!(
+        book.series_entries[0].store_series_id.as_deref(),
+        Some("B0SERIES1")
+    );
+    assert_eq!(book.series_entries[1].position, None);
 }
 
 #[tokio::test]

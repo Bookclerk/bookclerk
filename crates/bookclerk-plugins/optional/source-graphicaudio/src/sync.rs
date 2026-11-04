@@ -1,7 +1,10 @@
 //! Library scan: fetch GraphicAudio products and upsert owned titles.
 
 use crate::options::GraphicAudioAccess;
-use bookclerk_library::{NewBook, SourceScope};
+use bookclerk_library::SourceScope;
+use bookclerk_plugin_sdk::ScanBook;
+use bookclerk_source::abi::{rfc3339, scan_book_to_new};
+use bookclerk_source::records::{self, CreditRole, ExpressionKind};
 use bookclerk_source::ScanSummary;
 use chrono::{DateTime, NaiveDate, Utc};
 
@@ -145,8 +148,11 @@ pub async fn scan_library(
         .await?;
 
         let mut books_upserted = 0usize;
-        for book in &books {
-            library.upsert_book(book).await?;
+        for new in books
+            .into_iter()
+            .filter_map(|book| scan_book_to_new("graphicaudio", book))
+        {
+            library.upsert_book(&new).await?;
             books_upserted += 1;
         }
 
@@ -186,7 +192,7 @@ pub async fn collect_account_books(
     include_samples: bool,
     account_id: &str,
     marketplace: &str,
-) -> Result<(Vec<NewBook>, u32)> {
+) -> Result<(Vec<ScanBook>, u32)> {
     let use_device = matches!(access, GraphicAudioAccess::Device) && auth.has_device_token();
 
     if use_device {
@@ -213,25 +219,25 @@ pub async fn collect_account_books(
     let items = store.list_library().await?;
     let books = items
         .iter()
-        .map(|item| library_item_to_new_book(item, account_id, marketplace))
+        .map(|item| library_item_to_scan_book(item, account_id, marketplace))
         .collect();
     Ok((books, 1))
 }
 
-/// Lists Access App products as [`NewBook`] rows, optionally skipping sample SKUs.
+/// Lists Access App products as structured scan rows, optionally skipping sample SKUs.
 async fn collect_access_products(
     access_base: &str,
     auth: &GraphicAudioAuthFile,
     include_samples: bool,
     account_id: &str,
     marketplace: &str,
-) -> Result<Vec<NewBook>> {
+) -> Result<Vec<ScanBook>> {
     let client = GraphicAudioClient::new(access_base).with_token(&auth.token);
     let products = client.products().await?;
     let books = products
         .iter()
         .filter(|product| include_samples || !product.is_sample())
-        .map(|product| product_to_new_book(product, account_id, marketplace))
+        .map(|product| product_to_scan_book(product, account_id, marketplace))
         .collect();
     tracing::debug!(
         samples_skipped = products.iter().filter(|p| p.is_sample()).count(),
@@ -240,9 +246,12 @@ async fn collect_access_products(
     Ok(books)
 }
 
-/// Map a GraphicAudio product JSON object to a [`NewBook`] row.
+/// Map a GraphicAudio product JSON object to a structured scan row.
+///
+/// Every GraphicAudio production is a full-cast dramatisation of the work,
+/// so the expression kind is [`ExpressionKind::Dramatisation`].
 #[must_use]
-pub fn product_to_new_book(product: &Product, account_id: &str, marketplace: &str) -> NewBook {
+pub fn product_to_scan_book(product: &Product, account_id: &str, marketplace: &str) -> ScanBook {
     let length_minutes = product
         .running_time
         .as_deref()
@@ -250,62 +259,43 @@ pub fn product_to_new_book(product: &Product, account_id: &str, marketplace: &st
     let purchased_at = product.purchased_date.as_deref().and_then(parse_ga_date);
     let published_at = product.release_date.as_deref().and_then(parse_ga_date);
 
-    NewBook {
-        plugin_key: String::new(),
-        uuid: None,
-        product_id: product.id.clone(),
-        source: String::from("graphicaudio"),
+    ScanBook {
         account_id: account_id.to_string(),
-        asin: None,
-        isbn: None,
-        marketplace: marketplace.to_string(),
+        product_id: product.id.clone(),
         title: product.display_title(),
-        authors: product.author.clone(),
-        narrators: None,
-        series: product.series.clone(),
-        series_index: product.episode.clone(),
-        series_asin: None,
-        purchased_at,
+        marketplace: Some(marketplace.to_string()),
         publisher: Some(String::from("GraphicAudio")),
         length_minutes,
-        is_abridged: false,
-        content_kind: String::from("book"),
-        categories: product.genre.clone(),
         subtitle: product.title.clone(),
-        published_at,
+        expression_kind: ExpressionKind::Dramatisation,
+        credits: records::credits_from_display(product.author.as_deref(), CreditRole::Author),
+        series_entries: records::series_entries(
+            product.series.as_deref(),
+            product.episode.as_deref(),
+        ),
+        published_at: published_at.map(rfc3339),
+        purchased_at: purchased_at.map(rfc3339),
+        categories: product.genre.clone(),
+        ..ScanBook::default()
     }
 }
 
-/// Maps a Browser Player library card onto a [`NewBook`] (title falls back to `GraphicAudio {id}`).
-fn library_item_to_new_book(item: &LibraryItem, account_id: &str, marketplace: &str) -> NewBook {
+/// Maps a Browser Player library card onto a structured scan row (title
+/// falls back to `GraphicAudio {id}`).
+fn library_item_to_scan_book(item: &LibraryItem, account_id: &str, marketplace: &str) -> ScanBook {
     let title = item
         .title
         .clone()
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| format!("GraphicAudio {}", item.product_id));
-    NewBook {
-        plugin_key: String::new(),
-        uuid: None,
-        product_id: item.product_id.clone(),
-        source: String::from("graphicaudio"),
+    ScanBook {
         account_id: account_id.to_string(),
-        asin: None,
-        isbn: None,
-        marketplace: marketplace.to_string(),
+        product_id: item.product_id.clone(),
         title,
-        authors: None,
-        narrators: None,
-        series: None,
-        series_index: None,
-        series_asin: None,
-        purchased_at: None,
+        marketplace: Some(marketplace.to_string()),
         publisher: Some(String::from("GraphicAudio")),
-        length_minutes: None,
-        is_abridged: false,
-        content_kind: String::from("book"),
-        categories: None,
-        subtitle: None,
-        published_at: None,
+        expression_kind: ExpressionKind::Dramatisation,
+        ..ScanBook::default()
     }
 }
 
@@ -364,4 +354,41 @@ fn parse_ga_date(raw: &str) -> Option<DateTime<Utc>> {
                 .and_then(|d| d.and_hms_opt(0, 0, 0))
                 .map(|ndt| DateTime::<Utc>::from_naive_utc_and_offset(ndt, Utc))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bookclerk_plugin_sdk::{CreditRole, ExpressionKind};
+
+    #[test]
+    fn scan_rows_are_dramatisations() {
+        let product: Product = serde_json::from_value(serde_json::json!({
+            "Id": "ga-1",
+            "Title": "Part 1",
+            "ProductName": "Red Rising",
+            "Author": "Pierce Brown",
+            "Series": "Red Rising",
+            "Episode": "1",
+            "Genre": "Science Fiction",
+            "Purchased Date": "1700000000"
+        }))
+        .expect("product");
+        let row = product_to_scan_book(&product, "acct", "us");
+        assert_eq!(row.expression_kind, ExpressionKind::Dramatisation);
+        assert_eq!(row.credits[0].name, "Pierce Brown");
+        assert_eq!(row.credits[0].role, CreditRole::Author);
+        assert_eq!(row.series_entries[0].position.as_deref(), Some("1"));
+        assert_eq!(row.purchased_at.as_deref(), Some("2023-11-14T22:13:20Z"));
+        assert_eq!(row.categories.as_deref(), Some("Science Fiction"));
+
+        let card = LibraryItem {
+            product_id: "ga-2".into(),
+            title: Some(" ".into()),
+            listen_path: None,
+        };
+        let row = library_item_to_scan_book(&card, "acct", "us");
+        assert_eq!(row.title, "GraphicAudio ga-2");
+        assert_eq!(row.expression_kind, ExpressionKind::Dramatisation);
+    }
 }

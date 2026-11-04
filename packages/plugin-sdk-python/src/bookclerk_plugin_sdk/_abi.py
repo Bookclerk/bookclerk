@@ -87,6 +87,47 @@ CLI_ARG_KINDS: tuple[str, ...] = ("string", "bool", "int", "path")
 Ordinal-ordered ``CliArgKind`` wire names (index = Cap'n Proto ordinal).
 """
 
+WORK_KINDS: tuple[str, ...] = ("book", "podcastShow", "podcastEpisode", "drama")
+"""What kind of creative work a record describes (FRBR work). Ordinal 0 is
+the common case, so a guest that leaves it unset describes a book.
+
+Ordinal-ordered ``WorkKind`` wire names (index = Cap'n Proto ordinal).
+"""
+
+EXPRESSION_KINDS: tuple[str, ...] = ("narration", "text", "translation", "dramatisation", "podcastAudio")
+"""How a work is realised (FRBR expression). Ordinal 0 is the common case
+for a storefront that sells audiobooks.
+
+Ordinal-ordered ``ExpressionKind`` wire names (index = Cap'n Proto ordinal).
+"""
+
+MEDIA_KINDS: tuple[str, ...] = ("audiobook", "ebook", "print", "podcastAudio")
+"""Physical or digital form of an edition (FRBR manifestation). Only
+`audiobook` and `podcastAudio` editions are acquire candidates.
+
+Ordinal-ordered ``MediaKind`` wire names (index = Cap'n Proto ordinal).
+"""
+
+IDENTIFIER_SCHEMES: tuple[str, ...] = ("isbn", "asin", "openLibraryEdition", "openLibraryWork")
+"""Scheme of an external identifier. The scheme fixes whether the id names a
+work or an edition, and whether it is strong (unique) or weak (shared).
+
+Ordinal-ordered ``IdentifierScheme`` wire names (index = Cap'n Proto ordinal).
+"""
+
+CREDIT_ROLES: tuple[str, ...] = ("author", "narrator", "translator", "editor", "illustrator", "publisher", "host", "cast", "adaptor")
+"""A contributor's responsibility for a work, expression or edition.
+
+Ordinal-ordered ``CreditRole`` wire names (index = Cap'n Proto ordinal).
+"""
+
+CREDIT_LEVELS: tuple[str, ...] = ("roleDefault", "work", "expression", "edition")
+"""Which level a credit attaches to. Ordinal 0 is the role's usual level, so
+a guest sets this only when a credit departs from it.
+
+Ordinal-ordered ``CreditLevel`` wire names (index = Cap'n Proto ordinal).
+"""
+
 CATALOG_SORTS: tuple[str, ...] = ("relevance", "popularity", "rating", "title", "author")
 """Catalog search ordering.
 
@@ -164,6 +205,12 @@ __all__ = [
     "ENTRYPOINTS",
     "PORTAL_AUTH_MODES",
     "CLI_ARG_KINDS",
+    "WORK_KINDS",
+    "EXPRESSION_KINDS",
+    "MEDIA_KINDS",
+    "IDENTIFIER_SCHEMES",
+    "CREDIT_ROLES",
+    "CREDIT_LEVELS",
     "CATALOG_SORTS",
     "CATALOG_FIELDS",
     "ABRIDGEMENTS",

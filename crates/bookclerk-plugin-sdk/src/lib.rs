@@ -101,13 +101,14 @@ pub use protocol::{
     methods, Abridgement, AccountCredential, AuthenticateUserParams, Brand, CatalogDetail,
     CatalogDetailParams, CatalogField, CatalogHit, CatalogHits, CatalogSort, ChapterMarker, CliArg,
     CliArgKind, CliArgSpec, CliCommandSpec, CliInvokeParams, CliInvokeResult, CliSchema,
-    ConfigOption, ConfigOptionValue, EventPollResult, ExpandCandidatesParams, ExternalUser,
-    FetchOptions, FetchTitleParams, ListDealsParams, ListeningProgress, LoginCompleteParams,
-    LoginParams, LoginResult, LoginStartResult, OutputLocalContextDto, OutputS3ContextDto,
-    PlainFetch, PlainPart, PortalAuthMode, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
-    RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams, ScanParams, ScanSummary,
-    SearchCatalogParams, SourceAccount, SourceAccounts, SyncListeningResult, MAX_RPC_LINE_BYTES,
-    PROTOCOL_NAME,
+    ConfigOption, ConfigOptionValue, Credit, CreditLevel, CreditRole, EventPollResult,
+    ExpandCandidatesParams, ExpressionKind, ExternalUser, FetchOptions, FetchTitleParams,
+    Identifier, IdentifierScheme, ListDealsParams, ListeningProgress, LoginCompleteParams,
+    LoginParams, LoginResult, LoginStartResult, MediaKind, OutputLocalContextDto,
+    OutputS3ContextDto, PlainFetch, PlainPart, PortalAuthMode, PurchaseHint, PurchaseHintParams,
+    PurchaseHintResult, RevokeAccountParams, S3CredentialsDto, ScanBook, ScanLibraryParams,
+    ScanParams, ScanSummary, SearchCatalogParams, SeriesEntry, SourceAccount, SourceAccounts,
+    SyncListeningResult, WorkKind, MAX_RPC_LINE_BYTES, PROTOCOL_NAME,
 };
 
 pub use bookclerk_plugin_abi::{

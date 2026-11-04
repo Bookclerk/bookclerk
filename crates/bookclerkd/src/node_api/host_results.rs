@@ -73,7 +73,7 @@ pub(super) async fn scan_results(
         let Ok(book) = serde_json::from_value::<bookclerk_plugin_abi::ScanBook>(row) else {
             return Ok(error(id, "refused", "invalid_row"));
         };
-        books.push(bookclerk_source::abi::scan_book_to_new("", book));
+        books.extend(bookclerk_source::abi::scan_book_to_new("", book));
     }
     Ok(
         match accept_scan_results(library, &host.node_id, &job_id, fence, plugin_key, books).await?

@@ -4,8 +4,11 @@ use audible_rs::api::client::Client;
 use audible_rs::api::paginator;
 use audible_rs::library_sync::DEFAULT_RESPONSE_GROUPS;
 use audible_rs::models::library as lib_model;
-use bookclerk_library::{NewBook, SourceScope};
+use bookclerk_library::SourceScope;
 use bookclerk_plugin_sdk::http::Method;
+use bookclerk_plugin_sdk::{Abridgement, ScanBook, SeriesEntry};
+use bookclerk_source::abi::{rfc3339, scan_book_to_new};
+use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_source::{ScanOptions, ScanSummary};
 use chrono::{DateTime, NaiveDate, Utc};
 use futures::TryStreamExt;
@@ -133,15 +136,19 @@ pub async fn scan_account_into_library(
         import_plus_titles,
     )
     .await?;
-    for book in &books {
-        scope.upsert_book(book).await?;
+    let count = books.len();
+    for new in books
+        .into_iter()
+        .filter_map(|book| scan_book_to_new("audible", book))
+    {
+        scope.upsert_book(&new).await?;
     }
-    Ok((books.len(), pages))
+    Ok((count, pages))
 }
 
 /// Fetch library pages for one account without touching the library DB.
 ///
-/// Used by the external guest plugin (host upserts [`NewBook`] rows).
+/// Used by the external guest plugin (the host resolves the structured rows).
 ///
 /// # Errors
 ///
@@ -153,7 +160,7 @@ pub async fn collect_account_books(
     page_size: u32,
     import_episodes: bool,
     import_plus_titles: bool,
-) -> Result<(Vec<NewBook>, u32)> {
+) -> Result<(Vec<ScanBook>, u32)> {
     let page_size = page_size.to_string();
     let marketplace_q = marketplace.to_string();
 
@@ -190,12 +197,17 @@ pub async fn collect_account_books(
             let Some(title) = lib_model::build_full_title(&item) else {
                 continue;
             };
-            let series_entries = lib_model::extract_series(&item);
-            let series = series_entries.first().map(|s| s.title.clone());
-            let series_index = series_entries.first().and_then(|s| s.sequence.clone());
-            let series_asin = series_entries.first().map(|s| s.asin.clone());
+            let series_entries: Vec<SeriesEntry> = lib_model::extract_series(&item)
+                .into_iter()
+                .map(|entry| SeriesEntry {
+                    name: entry.title,
+                    position: entry.sequence,
+                    store_series_id: Some(entry.asin).filter(|a| !a.is_empty()),
+                })
+                .collect();
 
-            let content_kind = lib_model::item_kind(&item).to_string();
+            let work_kind = records::work_kind_from_label(lib_model::item_kind(&item));
+            let (expression_kind, media_kind) = records::audio_kinds(work_kind);
             let subtitle = item
                 .get("subtitle")
                 .and_then(|v| v.as_str())
@@ -208,10 +220,17 @@ pub async fn collect_account_books(
                 .get("runtime_length_min")
                 .and_then(|v| v.as_i64())
                 .or_else(|| item.get("length_minutes").and_then(|v| v.as_i64()));
-            let is_abridged = item
-                .get("is_abridged")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let abridgement = match item.get("is_abridged").and_then(|v| v.as_bool()) {
+                None => Abridgement::Unknown,
+                Some(false) => Abridgement::Unabridged,
+                Some(true) => Abridgement::Abridged,
+            };
+            let language = item
+                .get("language")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
             let categories = item
                 .get("category_ladders")
                 .and_then(|v| v.as_array())
@@ -237,27 +256,42 @@ pub async fn collect_account_books(
                         .and_then(parse_release_date)
                 });
 
-            let mut book = NewBook::minimal(asin, account_id, marketplace, title);
-            book.source = String::from("audible");
-            book.asin = Some(asin.to_string());
-            book.isbn = item
-                .get("isbn")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(str::to_string);
-            book.authors = join_named_people(&item, "authors");
-            book.narrators = join_named_people(&item, "narrators");
-            book.series = series;
-            book.series_index = series_index;
-            book.series_asin = series_asin;
-            book.content_kind = content_kind;
-            book.subtitle = subtitle;
-            book.publisher = publisher;
-            book.length_minutes = length_minutes;
-            book.is_abridged = is_abridged;
-            book.categories = categories;
-            book.published_at = published_at;
-            book.purchased_at = purchased_at;
+            let mut identifiers: Vec<_> =
+                records::identifier(IdentifierScheme::Asin, asin, Some(marketplace))
+                    .into_iter()
+                    .collect();
+            identifiers.extend(
+                item.get("isbn")
+                    .and_then(|v| v.as_str())
+                    .and_then(|isbn| records::identifier(IdentifierScheme::Isbn, isbn, None)),
+            );
+            let mut credits =
+                records::credits_from_names(named_people(&item, "authors"), CreditRole::Author);
+            credits.extend(records::credits_from_names(
+                named_people(&item, "narrators"),
+                CreditRole::Narrator,
+            ));
+            let book = ScanBook {
+                account_id: account_id.to_string(),
+                product_id: asin.to_string(),
+                title,
+                marketplace: Some(marketplace.to_string()),
+                publisher,
+                length_minutes,
+                subtitle,
+                work_kind,
+                expression_kind,
+                media_kind,
+                identifiers,
+                credits,
+                series_entries,
+                parent_product_id: parent_product_id(&item),
+                language,
+                abridgement,
+                published_at: published_at.map(rfc3339),
+                purchased_at: purchased_at.map(rfc3339),
+                categories,
+            };
             books.push(book);
         }
     }
@@ -265,19 +299,30 @@ pub async fn collect_account_books(
     Ok((books, pages))
 }
 
-/// Joins non-empty `name` fields from a library-item authors/narrators array with `, `.
-fn join_named_people(item: &serde_json::Value, field: &str) -> Option<String> {
-    let arr = item.get(field)?.as_array()?;
-    let names: Vec<&str> = arr
+/// Non-empty `name` fields from a library-item authors/narrators array, in order.
+fn named_people<'a>(item: &'a serde_json::Value, field: &str) -> Vec<&'a str> {
+    item.get(field)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| entry.get("name").and_then(|v| v.as_str()))
+                .filter(|n| !n.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// ASIN of the podcast show (or season) a podcast episode belongs to, from
+/// the item's `parent` relationship.
+fn parent_product_id(item: &serde_json::Value) -> Option<String> {
+    item.get("relationships")?
+        .as_array()?
         .iter()
-        .filter_map(|entry| entry.get("name").and_then(|v| v.as_str()))
-        .filter(|n| !n.is_empty())
-        .collect();
-    if names.is_empty() {
-        None
-    } else {
-        Some(names.join(", "))
-    }
+        .find(|rel| rel.get("relationship_to_product").and_then(|v| v.as_str()) == Some("parent"))
+        .and_then(|rel| rel.get("asin").and_then(|v| v.as_str()))
+        .map(str::trim)
+        .filter(|asin| !asin.is_empty())
+        .map(str::to_string)
 }
 
 /// Parses RFC 3339 or `YYYY-MM-DD` into UTC; other formats yield `None`.
