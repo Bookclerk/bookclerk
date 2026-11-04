@@ -1,0 +1,1 @@
+0SELECT b.title, a.name FROM books b JOIN authors a ON a.id = b.author_id, books c WHERE c.id = b.id ORDER BY b.title, a.name

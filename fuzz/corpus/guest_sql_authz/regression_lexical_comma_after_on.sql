@@ -1,0 +1,1 @@
+0SELECT token FROM books b JOIN books c ON c.id = b.id, host_secrets hob

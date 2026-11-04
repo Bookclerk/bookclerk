@@ -1,0 +1,1 @@
+0WITH x(offset) AS (SELECT 1) SELECT token FROM books b JOIN x ON offset, host_secrets hob
