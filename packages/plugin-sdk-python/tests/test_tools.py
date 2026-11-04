@@ -1,3 +1,4 @@
+import json
 import shutil
 from datetime import date, timedelta
 from pathlib import Path
@@ -1296,3 +1297,40 @@ def test_validate_accepts_and_rejects_cron_triggers():
             validate_manifest(
                 {**base, "entrypoints": [registry], "triggers": {"crons": ["0 0 * * *"]}}
             )
+
+
+# Shared with the Rust and TypeScript checkers: every SDK must classify each
+# logo the same way and give the same error text.
+LOGO_CASES = json.loads((FIXTURES / "logo-cases.json").read_text(encoding="utf-8"))
+COMPAT_DATES = json.loads((FIXTURES / "compat-date-cases.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", LOGO_CASES, ids=lambda c: repr(c["input"]))
+def test_validate_logo_matches_shared_cases(case: dict[str, str]) -> None:
+    from bookclerk_plugin_sdk.tools import validate_logo
+
+    if "error" in case:
+        with pytest.raises(ValueError) as err:
+            validate_logo(case["input"])
+        assert str(err.value) == case["error"]
+    else:
+        kind = "remote" if "remote" in case else "embedded"
+        assert validate_logo(case["input"]) == (kind, case[kind])
+
+
+@pytest.mark.parametrize("date_text", COMPAT_DATES["valid"])
+def test_compatibility_date_accepts_shared_valid(date_text: str) -> None:
+    from bookclerk_plugin_sdk.tools import validate_author_compatibility_date
+
+    validate_author_compatibility_date(date_text)
+
+
+@pytest.mark.parametrize("date_text", COMPAT_DATES["invalid"], ids=repr)
+def test_compatibility_date_rejects_shared_invalid(date_text: str) -> None:
+    from bookclerk_plugin_sdk.tools import validate_author_compatibility_date
+
+    with pytest.raises(
+        ValueError,
+        match=r"^plugin\.toml: workerd\.compatibility_date must be a calendar YYYY-MM-DD$",
+    ):
+        validate_author_compatibility_date(date_text)
