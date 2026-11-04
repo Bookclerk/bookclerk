@@ -400,6 +400,13 @@ impl CatalogHit {
         crate::records::identifier_value(&self.identifiers, crate::records::IdentifierScheme::Asin)
     }
 
+    /// ASIN for `marketplace`, falling back to an unscoped ASIN and then to
+    /// any ASIN the hit carries.
+    #[must_use]
+    pub fn asin_in(&self, marketplace: &str) -> Option<String> {
+        crate::records::asin_for_marketplace(&self.identifiers, marketplace)
+    }
+
     /// ISBN when the hit carries one.
     #[must_use]
     pub fn isbn(&self) -> Option<String> {

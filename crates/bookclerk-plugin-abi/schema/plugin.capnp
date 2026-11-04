@@ -7,7 +7,9 @@
 #   version. Manifest `api_version` and `describe().apiVersion` must match.
 # - Named `rpcFeatures` negotiate optional facilities. Required features are
 #   rejected at spawn when missing.
-# - Do not reuse field, method, or union ordinals.
+# - Do not reuse field, method, or union ordinals after the v1 schema freeze.
+#   Before the freeze, renumbering is allowed when every first-party plugin and
+#   SDK is updated in the same change (see docs/adr/library-data-model.md).
 # - Unknown enum/union members: preserve the wire code and fail closed or
 #   return typed `unsupported`. Never collapse unknown codes to `internal`.
 # - Every variable-length field is bounded by the constants below.
@@ -1536,8 +1538,9 @@ struct SeriesEntry {
   storeSeriesId @2 :Text $optional;
 }
 
-# One library title returned by `ContentSource.scan`. The host resolves it to
-# a work, expression and edition and forces `source` to the plugin id.
+# One library title returned by `ContentSource.scan`. The host forces `source`
+# to the plugin id and, until the library stores works, expressions and
+# editions, maps the record onto one flat library row.
 struct ScanBook {
   # Account that owns this library entry.
   accountId @0 :Text;

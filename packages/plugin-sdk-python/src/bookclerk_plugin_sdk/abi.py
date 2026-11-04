@@ -2674,8 +2674,9 @@ class SeriesEntry(TypedDict):
 
 
 class ScanBook(TypedDict):
-    """One library title returned by `ContentSource.scan`. The host resolves it to
-    a work, expression and edition and forces `source` to the plugin id.
+    """One library title returned by `ContentSource.scan`. The host forces `source`
+    to the plugin id and, until the library stores works, expressions and
+    editions, maps the record onto one flat library row.
 
     Attributes:
         accountId: Account that owns this library entry.

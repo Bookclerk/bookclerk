@@ -501,11 +501,15 @@ impl DownloadOptions {
 /// series id names its show through `parent_product_id`, which fills
 /// `series_asin` so the episode is filed under the show.
 ///
+/// The ASIN columns take an ASIN scoped to the book's marketplace, or an
+/// unscoped one, before an ASIN from another marketplace.
+///
 /// # Returns
 ///
-/// `None` for an ebook or print edition: the flat table has no way to keep
-/// them out of acquire, so they are not stored until the library keeps
-/// editions.
+/// `None` for a record with a blank product id, which would overwrite
+/// another blank row, and for an ebook or print edition: the flat table has
+/// no way to keep those out of acquire, so they are not stored until the
+/// library keeps editions.
 #[must_use]
 pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> Option<NewBook> {
     use crate::records::{self, CreditRole, IdentifierScheme};
@@ -513,23 +517,30 @@ pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> Option<NewBook>
         abi::MediaKind::Audiobook | abi::MediaKind::PodcastAudio => {}
         abi::MediaKind::Ebook | abi::MediaKind::Print => return None,
     }
+    if book.product_id.trim().is_empty() {
+        return None;
+    }
+    let non_blank = |id: &String| !id.trim().is_empty();
     let series = book.series_entries.into_iter().next();
     let series_asin = series
         .as_ref()
         .and_then(|entry| entry.store_series_id.clone())
+        .filter(non_blank)
         .or_else(|| {
             (book.work_kind == abi::WorkKind::PodcastEpisode)
                 .then_some(book.parent_product_id)
                 .flatten()
+                .filter(non_blank)
         });
+    let marketplace = book.marketplace.unwrap_or_else(|| String::from("us"));
     Some(NewBook {
         uuid: None,
         plugin_key: String::new(),
         source: plugin_id.to_string(),
         account_id: book.account_id,
-        asin: records::identifier_value(&book.identifiers, IdentifierScheme::Asin),
+        asin: records::asin_for_marketplace(&book.identifiers, &marketplace),
         isbn: records::identifier_value(&book.identifiers, IdentifierScheme::Isbn),
-        marketplace: book.marketplace.unwrap_or_else(|| String::from("us")),
+        marketplace,
         title: book.title,
         authors: records::joined_names(&book.credits, CreditRole::Author),
         narrators: records::joined_names(&book.credits, CreditRole::Narrator),
@@ -576,17 +587,16 @@ pub fn scan_summary(books: Vec<abi::ScanBook>, accounts: usize, pages: u32) -> a
     }
 }
 
-/// Host counters from a guest scan summary (`books_upserted` is the host's
-/// own upsert count when it upserted rows itself).
+/// Host counters from a guest scan summary.
+///
+/// `books_upserted` is always the host's own count of the rows it wrote, so
+/// records the host skipped (ebook and print editions, blank product ids)
+/// never count, even when the guest reported them.
 #[must_use]
 pub fn scan_summary_from_abi(summary: &abi::ScanSummary, upserted: usize) -> crate::ScanSummary {
     crate::ScanSummary {
         accounts: count_usize(summary.accounts),
-        books_upserted: if upserted > 0 {
-            upserted
-        } else {
-            count_usize(summary.books_upserted)
-        },
+        books_upserted: upserted,
         pages: summary.pages,
         skipped_disabled: count_usize(summary.skipped_disabled),
         warnings: Vec::new(),
@@ -808,6 +818,75 @@ mod tests {
         };
         let new = scan_book_to_new("echo", book).expect("book row");
         assert_eq!(new.series_asin, None);
+    }
+
+    #[test]
+    fn scan_book_skips_blank_product_ids() {
+        let book = abi::ScanBook {
+            product_id: "  ".into(),
+            ..abi::ScanBook::default()
+        };
+        assert!(scan_book_to_new("echo", book).is_none());
+    }
+
+    #[test]
+    fn blank_series_ids_fall_back_to_the_episode_parent() {
+        let book = abi::ScanBook {
+            product_id: "ep".into(),
+            work_kind: abi::WorkKind::PodcastEpisode,
+            parent_product_id: Some("B0SHOW".into()),
+            series_entries: vec![abi::SeriesEntry {
+                name: "Show".into(),
+                position: None,
+                store_series_id: Some(" ".into()),
+            }],
+            ..abi::ScanBook::default()
+        };
+        let new = scan_book_to_new("echo", book).expect("episode row");
+        assert_eq!(new.series_asin.as_deref(), Some("B0SHOW"));
+        let blank_parent = abi::ScanBook {
+            product_id: "ep".into(),
+            work_kind: abi::WorkKind::PodcastEpisode,
+            parent_product_id: Some(String::new()),
+            ..abi::ScanBook::default()
+        };
+        let new = scan_book_to_new("echo", blank_parent).expect("episode row");
+        assert_eq!(new.series_asin, None);
+    }
+
+    #[test]
+    fn scan_book_takes_the_asin_of_its_marketplace() {
+        use crate::records::{self, IdentifierScheme};
+        let book = abi::ScanBook {
+            product_id: "p".into(),
+            marketplace: Some("uk".into()),
+            identifiers: [
+                records::identifier(IdentifierScheme::Asin, "B0US", Some("us")),
+                records::identifier(IdentifierScheme::Asin, "B0UK", Some("uk")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            ..abi::ScanBook::default()
+        };
+        let new = scan_book_to_new("echo", book).expect("book row");
+        assert_eq!(new.asin.as_deref(), Some("B0UK"));
+    }
+
+    #[test]
+    fn summary_counts_only_rows_the_host_wrote() {
+        let summary = scan_summary(
+            vec![abi::ScanBook {
+                product_id: "p".into(),
+                media_kind: abi::MediaKind::Ebook,
+                ..abi::ScanBook::default()
+            }],
+            1,
+            1,
+        );
+        assert_eq!(summary.books_upserted, 1);
+        assert_eq!(scan_summary_from_abi(&summary, 0).books_upserted, 0);
+        assert_eq!(scan_summary_from_abi(&summary, 3).books_upserted, 3);
     }
 
     #[test]

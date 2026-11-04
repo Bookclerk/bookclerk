@@ -78,6 +78,9 @@ pub fn credits_from_display(display: Option<&str>, role: CreditRole) -> Vec<Cred
 pub fn split_display_names(display: &str) -> Vec<String> {
     let mut decoded = display.to_string();
     bookclerk_library::decode_html_entities_in_place(&mut decoded);
+    // Any run of whitespace (tabs, newlines, no-break spaces) reads as one
+    // space, so the word `and` splits however the store spaced it.
+    let decoded = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut names: Vec<String> = Vec::new();
     for part in decoded.split([',', ';', '&']) {
         for piece in split_on_and(part) {
@@ -183,6 +186,32 @@ pub fn identifier_value(identifiers: &[Identifier], scheme: IdentifierScheme) ->
         .iter()
         .filter(|id| id.scheme == scheme)
         .find_map(|id| normalize_identifier(scheme, &id.value))
+}
+
+/// The first ASIN scoped to `marketplace`, else the first unscoped ASIN,
+/// else the first ASIN of any marketplace, normalised.
+///
+/// Marketplaces compare without regard to case or surrounding space.
+#[must_use]
+pub fn asin_for_marketplace(identifiers: &[Identifier], marketplace: &str) -> Option<String> {
+    /// How well an ASIN's scope fits the wanted marketplace; lower is better.
+    fn rank(id: &Identifier, marketplace: &str) -> u8 {
+        match id.marketplace.as_deref().map(str::trim) {
+            Some(scope) if scope.eq_ignore_ascii_case(marketplace) => 0,
+            None | Some("") => 1,
+            Some(_) => 2,
+        }
+    }
+    let marketplace = marketplace.trim();
+    identifiers
+        .iter()
+        .filter(|id| id.scheme == IdentifierScheme::Asin)
+        .filter_map(|id| {
+            normalize_identifier(IdentifierScheme::Asin, &id.value)
+                .map(|value| (rank(id, marketplace), value))
+        })
+        .min_by_key(|(rank, _)| *rank)
+        .map(|(_, value)| value)
 }
 
 /// The canonical form of an identifier value as a source printed it.
@@ -515,5 +544,34 @@ mod tests {
             split_display_names("Tim O&#39;Brien &amp; Jane Doe"),
             vec!["Tim O'Brien".to_string(), "Jane Doe".to_string()]
         );
+    }
+
+    #[test]
+    fn and_splits_across_any_whitespace() {
+        assert_eq!(
+            split_display_names("Jane Doe\tand\nJohn\u{a0}Roe"),
+            vec!["Jane Doe".to_string(), "John Roe".to_string()]
+        );
+    }
+
+    #[test]
+    fn asin_prefers_the_book_marketplace() {
+        let asin = |value: &str, marketplace: Option<&str>| Identifier {
+            scheme: IdentifierScheme::Asin,
+            value: value.into(),
+            marketplace: marketplace.map(str::to_string),
+        };
+        let ids = vec![
+            asin("B0US", Some("us")),
+            asin("B0ANY", None),
+            asin("b0uk", Some(" UK ")),
+        ];
+        assert_eq!(asin_for_marketplace(&ids, "uk").as_deref(), Some("B0UK"));
+        assert_eq!(asin_for_marketplace(&ids, "de").as_deref(), Some("B0ANY"));
+        assert_eq!(
+            asin_for_marketplace(&ids[..1], "de").as_deref(),
+            Some("B0US")
+        );
+        assert_eq!(asin_for_marketplace(&[], "us"), None);
     }
 }

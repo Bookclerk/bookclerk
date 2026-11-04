@@ -563,7 +563,7 @@ pub async fn catalog_search_page(
                             narrators: hit.narrators(),
                             series: hit.series(),
                             series_index: hit.series_index(),
-                            asin: hit.asin(),
+                            asin: hit.asin_in(&region),
                             isbn: hit.isbn(),
                             cover_url: hit.cover_url.clone(),
                             seed_categories: None,

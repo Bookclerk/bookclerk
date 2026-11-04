@@ -99,19 +99,12 @@ fn non_empty_opt(s: &Option<String>) -> bool {
     s.as_deref().map(str::trim).is_some_and(|v| !v.is_empty())
 }
 
-/// Takes `fill`'s series when `base` has none, and otherwise fills a missing
-/// position or store id on each of `base`'s entries from `fill`'s entry of
-/// the same name.
+/// Fills a missing position or store id on each of `base`'s entries from
+/// `fill`'s entry of the same name, then appends `fill`'s other series.
 fn fill_series_entries(base: &mut Vec<SeriesEntry>, fill: Vec<SeriesEntry>) {
-    if base.is_empty() {
-        *base = fill;
-        return;
-    }
+    let same = |a: &SeriesEntry, b: &SeriesEntry| a.name.trim().eq_ignore_ascii_case(b.name.trim());
     for entry in base.iter_mut() {
-        let Some(other) = fill
-            .iter()
-            .find(|other| other.name.trim().eq_ignore_ascii_case(entry.name.trim()))
-        else {
+        let Some(other) = fill.iter().find(|other| same(other, entry)) else {
             continue;
         };
         if entry.position.is_none() {
@@ -119,6 +112,11 @@ fn fill_series_entries(base: &mut Vec<SeriesEntry>, fill: Vec<SeriesEntry>) {
         }
         if entry.store_series_id.is_none() {
             entry.store_series_id.clone_from(&other.store_series_id);
+        }
+    }
+    for other in fill {
+        if !base.iter().any(|entry| same(entry, &other)) {
+            base.push(other);
         }
     }
 }
@@ -1788,11 +1786,18 @@ mod tests {
             identifiers: records::identifier(IdentifierScheme::Isbn, "9780000000001", None)
                 .into_iter()
                 .collect(),
-            series_entries: vec![SeriesEntry {
-                name: "rufus".into(),
-                position: Some("1".into()),
-                store_series_id: Some("rufus-series".into()),
-            }],
+            series_entries: vec![
+                SeriesEntry {
+                    name: "rufus".into(),
+                    position: Some("1".into()),
+                    store_series_id: Some("rufus-series".into()),
+                },
+                SeriesEntry {
+                    name: "Dog Days".into(),
+                    position: Some("4".into()),
+                    store_series_id: None,
+                },
+            ],
             publisher: Some("Other House".into()),
             description: Some("Blurb".into()),
             length_minutes: Some(90),
@@ -1814,6 +1819,8 @@ mod tests {
             merged.series_entries[0].store_series_id.as_deref(),
             Some("rufus-series")
         );
+        assert_eq!(merged.series_entries.len(), 2);
+        assert_eq!(merged.series_entries[1].name, "Dog Days");
         assert_eq!(merged.publisher.as_deref(), Some("Base House"));
         assert_eq!(merged.description.as_deref(), Some("Blurb"));
         assert_eq!(merged.length_minutes, Some(90));
