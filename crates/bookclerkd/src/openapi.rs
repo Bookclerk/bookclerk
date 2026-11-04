@@ -2704,6 +2704,75 @@ mod tests {
         );
     }
 
+    /// Content that already holds the extractor's refusal, under any name,
+    /// or an example named `extractor` is left as it is.
+    #[test]
+    fn extractor_example_is_added_once() {
+        use utoipa::openapi::example::ExampleBuilder;
+        use utoipa::openapi::{ContentBuilder, RefOr};
+        let named = |name: &str, value: &str| {
+            let mut content = ContentBuilder::new().build();
+            content.examples.insert(
+                name.to_string(),
+                RefOr::T(ExampleBuilder::new().value(Some(value.into())).build()),
+            );
+            content
+        };
+        let mut by_value = named("not_json", "Failed to parse the request body as JSON: x");
+        assert!(!add_extractor_example(
+            &mut by_value,
+            "Failed to parse the request body as JSON: y"
+        ));
+        assert_eq!(by_value.examples.len(), 1);
+        let mut by_name = named("extractor", "some other text");
+        assert!(!add_extractor_example(
+            &mut by_name,
+            "Failed to parse the request body as JSON: y"
+        ));
+        assert_eq!(by_name.examples.len(), 1);
+    }
+
+    /// A route's own 403 example is kept under its `error` slug when that is
+    /// a slug, and as `route` when it is a sentence.
+    #[test]
+    fn enrollment_refusal_names_the_routes_own_example() {
+        use utoipa::openapi::path::OperationBuilder;
+        use utoipa::openapi::{ContentBuilder, Ref, ResponseBuilder, ResponsesBuilder};
+        let names = |error: &str| {
+            let content = ContentBuilder::new()
+                .schema(Some(Ref::from_schema_name("ErrorJson")))
+                .example(Some(serde_json::json!({ "error": error })))
+                .build();
+            let response = ResponseBuilder::new()
+                .description("Forbidden.")
+                .content("application/json", content)
+                .build();
+            let mut op = OperationBuilder::new()
+                .responses(ResponsesBuilder::new().response("403", response).build())
+                .build();
+            add_enrollment_refusal(&mut op, false);
+            let op = serde_json::to_value(&op).unwrap();
+            let mut names: Vec<String> = op["responses"]["403"]["content"]["application/json"]
+                ["examples"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(
+            names("not_owner2"),
+            ["mfa_enrollment_required", "not_owner2"]
+        );
+        assert_eq!(
+            names("Only the owner may do that."),
+            ["mfa_enrollment_required", "route"]
+        );
+        assert_eq!(names(""), ["mfa_enrollment_required", "route"]);
+    }
+
     /// A route's own `text/plain` example moves beside the extractor's as a
     /// named example, and one that already is the extractor's stays alone.
     #[test]
