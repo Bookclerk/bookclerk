@@ -783,10 +783,17 @@ async fn build_taste_profile(
         }
     }
 
-    // One bulk lookup for every liked title's work; a failed read only
-    // loses the embedding seeds, as a failed per-title lookup did.
-    if let Ok(works) = library.work_ids_for_books(&seed_book_uuids).await {
-        seed_work_ids.extend(works.into_values());
+    // One bulk lookup for every liked title's work. If it fails, look each
+    // title up on its own, so a failed read only loses its own seed.
+    match library.work_ids_for_books(&seed_book_uuids).await {
+        Ok(works) => seed_work_ids.extend(works.into_values()),
+        Err(_) => {
+            for uuid in &seed_book_uuids {
+                if let Ok(Some(wid)) = library.work_id_for_book(uuid).await {
+                    seed_work_ids.insert(wid);
+                }
+            }
+        }
     }
 
     for row in listening {

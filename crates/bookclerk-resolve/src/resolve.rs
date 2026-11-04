@@ -115,8 +115,26 @@ fn push_unique(out: &mut Vec<String>, items: impl IntoIterator<Item = String>) {
     }
 }
 
+/// The show work of an episode listing's parent listing, once the parent
+/// has been resolved to a podcast show.
+fn parent_show<'a>(snapshot: &'a Snapshot, listing: &Listing) -> Option<&'a WorkRow> {
+    match listing.work_kind {
+        WorkKind::PodcastEpisode => snapshot
+            .parent_listing
+            .as_ref()
+            .filter(|row| Some(&row.key) == listing.parent_key().as_ref())
+            .and_then(|row| snapshot.work_of_edition(&row.edition_id))
+            .filter(|w| w.kind == WorkKind::PodcastShow),
+        WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => None,
+    }
+}
+
 /// The edition a weak identifier proposes and the listing may join.
+///
+/// An episode never joins an episode of another show: a candidate whose
+/// work has a show must have the listing's show, when that is known.
 fn weak_candidate(snapshot: &Snapshot, listing: &Listing) -> Option<String> {
+    let show = parent_show(snapshot, listing).map(|w| w.id.as_str());
     for key in listing
         .edition_identifiers()
         .filter(|key| key.strength() == Strength::Weak)
@@ -131,8 +149,13 @@ fn weak_candidate(snapshot: &Snapshot, listing: &Listing) -> Option<String> {
             let Some(work) = snapshot.work(&expression.work_id) else {
                 continue;
             };
+            let other_show = matches!(
+                (work.parent_work_id.as_deref(), show),
+                (Some(theirs), Some(ours)) if theirs != ours
+            );
             if edition.media_kind == listing.media_kind
                 && work.kind == listing.work_kind
+                && !other_show
                 && expression_compatible(expression, listing)
                 && !strong_clash(snapshot, edition_id, listing)
             {
@@ -157,15 +180,25 @@ fn find_work(
             work_owners(snapshot, key).into_iter().map(str::to_string),
         );
     }
+    // The first identified work of the listing's kind wins; the conflict
+    // names it first.
+    let chosen = by_identifier.iter().position(|id| {
+        snapshot
+            .work(id)
+            .is_some_and(|w| w.kind == listing.work_kind)
+    });
+    if by_identifier.len() > 1 {
+        let mut work_ids = by_identifier.clone();
+        if let Some(index) = chosen {
+            let id = work_ids.remove(index);
+            work_ids.insert(0, id);
+        }
+        conflicts.push(Conflict::WorkIdentifiers { work_ids });
+    }
+    if let Some(work) = chosen.and_then(|index| snapshot.work(&by_identifier[index])) {
+        return Some((work.clone(), WorkReason::Identifier));
+    }
     if let Some(first) = by_identifier.first().and_then(|id| snapshot.work(id)) {
-        if by_identifier.len() > 1 {
-            conflicts.push(Conflict::WorkIdentifiers {
-                work_ids: by_identifier.clone(),
-            });
-        }
-        if first.kind == listing.work_kind {
-            return Some((first.clone(), WorkReason::Identifier));
-        }
         conflicts.push(Conflict::WorkKindMismatch {
             work_id: first.id.clone(),
         });
@@ -295,15 +328,7 @@ pub fn resolve(
             (edition_id, link, work_id)
         }
         None => {
-            let parent_work_id = match listing.work_kind {
-                WorkKind::PodcastEpisode => snapshot
-                    .parent_listing
-                    .as_ref()
-                    .filter(|row| Some(&row.key) == listing.parent_key().as_ref())
-                    .and_then(|row| snapshot.work_of_edition(&row.edition_id))
-                    .map(|w| w.id.clone()),
-                WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => None,
-            };
+            let parent_work_id = parent_show(snapshot, listing).map(|w| w.id.clone());
             let (work, reason) =
                 match find_work(snapshot, listing, parent_work_id.as_deref(), &mut conflicts) {
                     Some((work, reason)) => (work, reason),
@@ -392,13 +417,21 @@ pub fn resolve(
                 }
                 continue;
             }
-            // Two strong values of one scheme on one listing: keep the first.
+            // Two strong values of one scheme on one listing: keep the first
+            // and record the clash, as a later resolve against the stored
+            // edition would.
             if edition_identifiers
                 .iter()
                 .any(|row: &EditionIdentifierRow| {
                     row.key.scheme == key.scheme && row.key.marketplace == key.marketplace
                 })
             {
+                let conflict = Conflict::StrongIdentifiers {
+                    edition_ids: vec![edition_id.clone()],
+                };
+                if !conflicts.contains(&conflict) {
+                    conflicts.push(conflict);
+                }
                 continue;
             }
         }
@@ -539,12 +572,7 @@ pub fn resolve(
     // An episode first seen before its show is stored without one; link it
     // once the show's listing has been resolved.
     let work_parent = if listing.work_kind == WorkKind::PodcastEpisode && new_work.is_none() {
-        let show = snapshot
-            .parent_listing
-            .as_ref()
-            .filter(|row| Some(&row.key) == listing.parent_key().as_ref())
-            .and_then(|row| snapshot.work_of_edition(&row.edition_id))
-            .filter(|w| w.kind == WorkKind::PodcastShow);
+        let show = parent_show(snapshot, listing);
         snapshot
             .work(&work_id)
             .filter(|w| w.kind == WorkKind::PodcastEpisode && w.parent_work_id.is_none())

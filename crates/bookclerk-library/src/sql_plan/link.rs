@@ -22,7 +22,7 @@ use bookclerk_plugin_abi::{DbType, DbValue};
 
 use super::named::{j_i64, j_opt_i64, j_opt_str, j_str, sql, SqlStmt};
 use crate::atomic_ops::atomic_status;
-use crate::library_link::{CreditBatchParams, ListingLinkParams};
+use crate::library_link::{CreditBatchParams, LinkWorkRow, ListingLinkParams};
 
 /// Real bind, or a typed REAL null.
 fn j_opt_f64(n: Option<f64>) -> DbValue {
@@ -150,6 +150,40 @@ fn listing_unchanged(p: &ListingLinkParams) -> (String, Vec<DbValue>) {
     }
 }
 
+/// The predicate "no work the matcher would have chosen appeared since the
+/// snapshot", with its binds, for the new work `w`.
+///
+/// The plan creates a work only when the matcher found none (or several)
+/// with its key; a same-key work another writer stored since would make
+/// two works of one book, so the work is held back and the batch answers
+/// `retry`. Works the snapshot already held stay allowed.
+fn new_rivals(p: &ListingLinkParams, w: &LinkWorkRow) -> (String, Vec<DbValue>) {
+    if w.match_key.is_empty() {
+        return ("1 = 1".to_string(), Vec::new());
+    }
+    let mut sql =
+        "NOT EXISTS (SELECT 1 FROM works o WHERE o.match_key = ? AND o.kind = ?".to_string();
+    let mut binds = vec![j_str(&w.match_key), j_str(&w.kind)];
+    match (w.kind.as_str(), &w.parent_work_id) {
+        // The matcher only joins episodes within one known show.
+        ("podcast_episode", None) => return ("1 = 1".to_string(), Vec::new()),
+        ("podcast_episode", Some(parent)) => {
+            sql.push_str(" AND o.parent_work_id = ?");
+            binds.push(j_str(parent));
+        }
+        _ => {}
+    }
+    if !p.known_rivals.is_empty() {
+        sql.push_str(&format!(
+            " AND o.id NOT IN ({})",
+            placeholders(p.known_rivals.len())
+        ));
+        binds.extend(p.known_rivals.iter().map(|id| j_str(id)));
+    }
+    sql.push(')');
+    (sql, binds)
+}
+
 /// The predicate "the listing sells the planned edition", with its binds.
 fn linked(p: &ListingLinkParams) -> (&'static str, Vec<DbValue>) {
     (
@@ -177,10 +211,13 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             j_str(now),
         ];
         binds.extend(gate_binds.clone());
+        let (rivals, rival_binds) = new_rivals(p, w);
+        binds.extend(rival_binds);
         out.push(sql(
             &format!(
                 "INSERT INTO works (id, kind, title, match_key, parent_work_id, created_at, updated_at) \
-                 SELECT ?, ?, ?, ?, (SELECT p.id FROM works p WHERE p.id = ?), ?, ? WHERE {gate}"
+                 SELECT ?, ?, ?, ?, (SELECT p.id FROM works p WHERE p.id = ?), ?, ? \
+                 WHERE {gate} AND {rivals}"
             ),
             binds,
         ));
@@ -230,32 +267,43 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             binds,
         ));
     }
+    // Updates to stored rows carry the listing guard too: a plan that lost
+    // the listing to another writer must not fill rows it no longer sells.
     if let Some(fill) = &p.edition_fill {
+        let mut binds = vec![
+            j_opt_str(fill.subtitle.as_deref()),
+            j_opt_str(fill.published_at.as_deref()),
+            j_opt_i64(fill.duration_minutes),
+            j_str(now),
+            j_str(&p.edition_id),
+        ];
+        binds.extend(unchanged_binds.clone());
         out.push(sql(
-            "UPDATE editions SET subtitle = COALESCE(subtitle, ?), \
-             published_at = COALESCE(published_at, ?), \
-             duration_minutes = COALESCE(duration_minutes, ?), updated_at = ? \
-             WHERE id = ?",
-            vec![
-                j_opt_str(fill.subtitle.as_deref()),
-                j_opt_str(fill.published_at.as_deref()),
-                j_opt_i64(fill.duration_minutes),
-                j_str(now),
-                j_str(&p.edition_id),
-            ],
+            &format!(
+                "UPDATE editions SET subtitle = COALESCE(subtitle, ?), \
+                 published_at = COALESCE(published_at, ?), \
+                 duration_minutes = COALESCE(duration_minutes, ?), updated_at = ? \
+                 WHERE id = ? AND {unchanged}"
+            ),
+            binds,
         ));
     }
     if let Some(link) = &p.work_parent {
+        let mut binds = vec![
+            j_str(&link.parent_work_id),
+            j_str(now),
+            j_str(&link.work_id),
+            j_str(&link.parent_work_id),
+        ];
+        binds.extend(unchanged_binds.clone());
         out.push(sql(
-            "UPDATE works SET parent_work_id = ?, updated_at = ? \
-             WHERE id = ? AND kind = 'podcast_episode' AND parent_work_id IS NULL \
-               AND EXISTS (SELECT 1 FROM works p WHERE p.id = ? AND p.kind = 'podcast_show')",
-            vec![
-                j_str(&link.parent_work_id),
-                j_str(now),
-                j_str(&link.work_id),
-                j_str(&link.parent_work_id),
-            ],
+            &format!(
+                "UPDATE works SET parent_work_id = ?, updated_at = ? \
+                 WHERE id = ? AND kind = 'podcast_episode' AND parent_work_id IS NULL \
+                   AND EXISTS (SELECT 1 FROM works p WHERE p.id = ? AND p.kind = 'podcast_show') \
+                   AND {unchanged}"
+            ),
+            binds,
         ));
     }
     if let Some(fill) = &p.work_match_key {
@@ -276,12 +324,13 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             (None, "podcast_episode") => " AND o.parent_work_id IS NULL",
             (None, _) => "",
         };
+        binds.extend(unchanged_binds.clone());
         out.push(sql(
             &format!(
                 "UPDATE works SET match_key = ?, updated_at = ? \
                  WHERE id = ? AND match_key = '' \
                    AND NOT EXISTS (SELECT 1 FROM works o WHERE o.match_key = ? \
-                   AND o.kind = ? AND o.id <> ?{same_show})"
+                   AND o.kind = ? AND o.id <> ?{same_show}) AND {unchanged}"
             ),
             binds,
         ));

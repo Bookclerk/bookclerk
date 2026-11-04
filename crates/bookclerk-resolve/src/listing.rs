@@ -312,7 +312,9 @@ impl Listing {
         let mut seen_ids = BTreeSet::new();
         let mut identifiers = Vec::new();
         for (scheme, raw, scope) in &draft.identifiers {
-            if raw.len() > MAX_TEXT_BYTES {
+            if raw.len() > MAX_TEXT_BYTES
+                || scope.as_ref().is_some_and(|s| s.len() > MAX_TEXT_BYTES)
+            {
                 return Err(ListingError::TooLong("identifiers"));
             }
             let Some(key) = IdentifierKey::new(*scheme, raw, scope.as_deref(), &marketplace) else {
@@ -566,6 +568,16 @@ mod tests {
         assert_eq!(
             Listing::from_draft(&d),
             Err(ListingError::TooMany("identifiers"))
+        );
+        let mut d = draft();
+        d.identifiers = vec![(
+            IdentifierScheme::Asin,
+            "B001".into(),
+            Some("x".repeat(MAX_TEXT_BYTES + 1)),
+        )];
+        assert_eq!(
+            Listing::from_draft(&d),
+            Err(ListingError::TooLong("identifiers"))
         );
         let mut d = draft();
         d.duration_minutes = Some(-1);

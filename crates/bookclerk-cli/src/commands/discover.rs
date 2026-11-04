@@ -126,8 +126,8 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                 prefer_onnx,
             )?;
             let model_id = embedder.model_id().to_string();
-            let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut()).await?;
 
+            // Enrich first, so the works it changes are embedded this run.
             if cfg.discovery.openlibrary_enabled {
                 let ol = bookclerk_discover::OpenLibraryOptions {
                     contact_email: cfg.discovery.openlibrary_contact_email.clone(),
@@ -136,6 +136,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                 };
                 let _ = bookclerk_discover::enrich_books_from_openlibrary_with(&library, &ol).await;
             }
+            let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut()).await?;
 
             let operator_prefs = library
                 .get_user_preferences_or_default(bookclerk_library::OPERATOR_PREFS_KEY, None)

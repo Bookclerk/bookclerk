@@ -122,7 +122,7 @@ pub fn scan_book_draft(book: &abi::ScanBook) -> resolve::ListingDraft {
         .collect();
     let has_publisher = credits
         .iter()
-        .any(|(_, role, _)| *role == resolve::CreditRole::Publisher);
+        .any(|(name, role, _)| *role == resolve::CreditRole::Publisher && !name.trim().is_empty());
     if let Some(publisher) = book.publisher.as_ref().filter(|p| !p.trim().is_empty()) {
         if !has_publisher {
             credits.push((decode(publisher), resolve::CreditRole::Publisher, None));
@@ -224,6 +224,28 @@ mod tests {
         assert_eq!(draft.identifiers[0].0, resolve::IdentifierScheme::Asin);
         assert_eq!(draft.series[0].1.as_deref(), Some("1"));
         assert!(draft.plugin_key.is_empty());
+    }
+
+    #[test]
+    fn a_blank_publisher_credit_does_not_hide_the_publisher_field() {
+        let book = abi::ScanBook {
+            account_id: "a1".into(),
+            product_id: "B001".into(),
+            title: "Dune".into(),
+            publisher: Some("Macmillan Audio".into()),
+            credits: vec![abi::Credit {
+                name: "  ".into(),
+                role: abi::CreditRole::Publisher,
+                level: abi::CreditLevel::RoleDefault,
+            }],
+            ..abi::ScanBook::default()
+        };
+        let draft = scan_book_draft(&book);
+        assert!(draft
+            .credits
+            .iter()
+            .any(|(name, role, _)| name == "Macmillan Audio"
+                && *role == resolve::CreditRole::Publisher));
     }
 
     #[test]

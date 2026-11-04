@@ -666,9 +666,12 @@ library holds as works, expressions and editions:
   `resolution_conflicts` (identifier clashes the resolver recorded instead
   of merging).
 
-Every stored title is resolved into these tables in one guarded batch
-(`linkListing`); a batch that lost a race answers `retry` and the title is
-resolved again, up to three times. A title that still cannot be resolved
+Every stored title is linked into its work, expression, edition,
+identifiers, listing and holding in one guarded batch (`linkListing`); a
+batch that lost a race answers `retry` and the title is resolved again, up
+to three times. Its contributors, credits, series and series entries follow
+in separate batches, so a scan that stops between them can leave a linked
+title without them; the next scan writes what is missing. A title that still cannot be resolved
 keeps its `books` row, is logged as a warning, and is resolved again on
 the next scan, so one title never stops the rest of a scan. A work takes
 its titles' description, subjects, categories and cover where it has none

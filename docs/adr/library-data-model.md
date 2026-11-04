@@ -308,11 +308,13 @@ Planned as separate pull requests, in this order:
 6. Web API and UI.
 7. The `metadata` entrypoint, with OpenLibrary and Audnexus moved into plugins.
 
-Step 3 spells the event types in snake case, like `book_acquired`:
-`edition_linked`, `edition_updated` and `holding_added`. It derives a
-listing from every stored `books` row, so the new tables fill as titles are
-scanned or imported. `holding.removed` and the files event come with the
-steps that remove holdings and write files. The old tables are dropped by
+The dotted names in decision 6 name the events; the published event types
+are spelled in snake case, like `book_acquired`. Step 3 publishes
+`edition_linked`, `edition_updated` and `holding_added`, so subscribe to
+those spellings. It derives a listing from every stored `books` row, so the
+new tables fill as titles are scanned or imported. `holding_removed` and
+`edition_files_written` come with the steps that remove holdings and write
+files. The old tables are dropped by
 the step that moves their last reader off them: `title_files` with step 4,
 `branch_titles` with step 5 and `books` with step 6.
 

@@ -351,6 +351,30 @@ fn link_params(
             work_id: link.work_id.clone(),
             parent_work_id: link.parent_work_id.clone(),
         }),
+        known_rivals: plan
+            .new_work
+            .as_ref()
+            .map(|w| {
+                snapshot
+                    .works
+                    .iter()
+                    .filter(|o| {
+                        !w.match_key.is_empty()
+                            && o.match_key == w.match_key
+                            && o.kind == w.kind
+                            && match w.kind {
+                                resolve::WorkKind::PodcastEpisode => {
+                                    o.parent_work_id == w.parent_work_id
+                                }
+                                resolve::WorkKind::Book
+                                | resolve::WorkKind::PodcastShow
+                                | resolve::WorkKind::Drama => true,
+                            }
+                    })
+                    .map(|o| o.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default(),
         work_match_key: plan.work_match_key.as_ref().map(|fill| LinkWorkMatchKey {
             work_id: fill.work_id.clone(),
             kind: fill.kind.as_str().to_string(),
@@ -2074,6 +2098,79 @@ mod store_tests {
             .await
             .unwrap();
         assert!(asins.is_empty(), "{asins:?}");
+    }
+
+    #[tokio::test]
+    async fn a_new_work_answers_retry_when_another_writer_stored_the_same_book() {
+        let store = store().await;
+        let mut draft = dune("audible", "B000000001");
+        draft.identifiers = vec![(resolve::IdentifierScheme::Asin, "B000000001".into(), None)];
+        let listing = resolve::Listing::from_draft(&draft).unwrap();
+        let holder = resolve::Holder::Account("a1".into());
+        let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        assert!(plan.new_work.is_some());
+
+        // Meanwhile another store's listing of the same book is stored.
+        let mut other = dune("libro", "L1");
+        other.identifiers.clear();
+        let other = store
+            .record_listing(
+                &resolve::Listing::from_draft(&other).unwrap(),
+                &account("a2"),
+            )
+            .await
+            .unwrap();
+        let other_work = other.new_work.unwrap().id;
+
+        assert_eq!(
+            store
+                .run_link_listing(link_params(&listing, &plan, &snapshot))
+                .await
+                .unwrap(),
+            atomic_status::RETRY
+        );
+        assert_eq!(works::Entity::find().all(&store.db).await.unwrap().len(), 1);
+        let again = store
+            .record_listing(&listing, &account("a1"))
+            .await
+            .unwrap();
+        assert_eq!(again.work_reason, Some(resolve::WorkReason::Matcher));
+        assert_eq!(works::Entity::find().all(&store.db).await.unwrap().len(), 1);
+        let rows = works::Entity::find().all(&store.db).await.unwrap();
+        assert_eq!(rows[0].id, other_work);
+    }
+
+    #[tokio::test]
+    async fn a_stale_plan_does_not_fill_an_edition_its_listing_left() {
+        let store = store().await;
+        let first = store
+            .record_listing(
+                &resolve::Listing::from_draft(&dune("audible", "B001")).unwrap(),
+                &account("a1"),
+            )
+            .await
+            .unwrap();
+        let mut fuller = dune("audible", "B001");
+        fuller.subtitle = Some("Book One".into());
+        let listing = resolve::Listing::from_draft(&fuller).unwrap();
+        let snapshot = store
+            .listing_snapshot(&listing, &resolve::Holder::Account("a1".into()))
+            .await
+            .unwrap();
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        assert!(plan.edition_update.is_some());
+        // The plan believes the listing sold another edition, as it would
+        // after a concurrent relink; its fill must not land.
+        let mut stale = link_params(&listing, &plan, &snapshot);
+        stale.stored_edition_id = Some("edition-read-before-the-race".into());
+        store.run_link_listing(stale).await.unwrap();
+        let edition = editions::Entity::find_by_id(first.listing.edition_id.clone())
+            .one(&store.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(edition.subtitle, None);
     }
 
     #[tokio::test]

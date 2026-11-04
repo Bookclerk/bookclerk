@@ -212,6 +212,10 @@ pub struct ListingLinkParams {
     /// A show link for a stored episode work that has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_parent: Option<LinkWorkParent>,
+    /// Works with the new work's matcher key that the snapshot already
+    /// held; any other same-key work stored since holds the new work back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known_rivals: Vec<String>,
     /// A matcher key for a stored work that has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_match_key: Option<LinkWorkMatchKey>,

@@ -515,3 +515,111 @@ fn a_match_key_another_work_holds_is_not_copied() {
     let again = record(&mut c, &dune("audible", "B001"), "a1");
     assert!(again.work_match_key.is_none());
 }
+
+#[test]
+fn a_later_work_identifier_of_the_listings_kind_still_joins() {
+    let mut c = MemoryCatalog::default();
+    let mut drama = with_id(dune("ga", "G1"), IdentifierScheme::OpenLibraryWork, "OL2W");
+    drama.work_kind = Some(WorkKind::Drama);
+    let d = record(&mut c, &drama, "g1");
+    let book = record(
+        &mut c,
+        &with_id(
+            dune("audible", "B001"),
+            IdentifierScheme::OpenLibraryWork,
+            "OL1W",
+        ),
+        "a1",
+    );
+    let book_work = work_of(&c, &book.listing.edition_id);
+
+    let mut both = with_id(
+        dune("libro", "L1"),
+        IdentifierScheme::OpenLibraryWork,
+        "OL2W",
+    );
+    both = with_id(both, IdentifierScheme::OpenLibraryWork, "OL1W");
+    both.title = "Dune: Deluxe".into();
+    let joined = record(&mut c, &both, "l1");
+    assert_eq!(joined.work_reason, Some(WorkReason::Identifier));
+    assert_eq!(work_of(&c, &joined.listing.edition_id), book_work);
+    assert!(joined.conflicts.contains(&Conflict::WorkIdentifiers {
+        work_ids: vec![book_work, work_of(&c, &d.listing.edition_id)],
+    }));
+}
+
+/// A podcast listing of `kind` sold as `product`, titled `title`.
+fn podcast(product: &str, title: &str, kind: WorkKind, parent: Option<&str>) -> ListingDraft {
+    ListingDraft {
+        plugin_key: "audible".into(),
+        product_id: product.into(),
+        title: title.into(),
+        work_kind: Some(kind),
+        expression_kind: Some(ExpressionKind::PodcastAudio),
+        media_kind: Some(MediaKind::PodcastAudio),
+        credits: vec![("Host Person".into(), CreditRole::Author, None)],
+        parent_product_id: parent.map(Into::into),
+        ..ListingDraft::default()
+    }
+}
+
+#[test]
+fn an_episode_takes_only_a_show_as_its_parent() {
+    let mut c = MemoryCatalog::default();
+    let mut not_a_show = podcast("S1", "Show", WorkKind::Book, None);
+    not_a_show.expression_kind = Some(ExpressionKind::Narration);
+    not_a_show.media_kind = Some(MediaKind::Audiobook);
+    record(&mut c, &not_a_show, "a1");
+    let episode = record(
+        &mut c,
+        &podcast("E1", "Trailer", WorkKind::PodcastEpisode, Some("S1")),
+        "a1",
+    );
+    assert!(episode.new_work.unwrap().parent_work_id.is_none());
+}
+
+#[test]
+fn a_shared_isbn_does_not_join_episodes_of_two_shows() {
+    let mut c = MemoryCatalog::default();
+    record(
+        &mut c,
+        &podcast("S1", "One", WorkKind::PodcastShow, None),
+        "a1",
+    );
+    record(
+        &mut c,
+        &podcast("S2", "Two", WorkKind::PodcastShow, None),
+        "a1",
+    );
+    let first = record(
+        &mut c,
+        &with_id(
+            podcast("E1", "Trailer", WorkKind::PodcastEpisode, Some("S1")),
+            IdentifierScheme::Isbn,
+            "9780593288368",
+        ),
+        "a1",
+    );
+    let second = record(
+        &mut c,
+        &with_id(
+            podcast("E2", "Trailer", WorkKind::PodcastEpisode, Some("S2")),
+            IdentifierScheme::Isbn,
+            "9780593288368",
+        ),
+        "a1",
+    );
+    assert_ne!(second.link, LinkReason::WeakIdentifier);
+    assert_ne!(second.listing.edition_id, first.listing.edition_id);
+}
+
+#[test]
+fn two_values_of_one_strong_scheme_record_a_conflict_on_first_sight() {
+    let mut c = MemoryCatalog::default();
+    let mut twice = with_id(dune("audible", "B001"), IdentifierScheme::Asin, "B001");
+    twice = with_id(twice, IdentifierScheme::Asin, "B002");
+    let plan = record(&mut c, &twice, "a1");
+    assert!(plan.conflicts.contains(&Conflict::StrongIdentifiers {
+        edition_ids: vec![plan.listing.edition_id.clone()],
+    }));
+}
