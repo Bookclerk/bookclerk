@@ -213,18 +213,27 @@ jobs:
               low_memory=0
             fi
             if [ -n "$reason" ]; then
-              echo "::warning::Stopping cargo-mutants: ${disk:-?} MiB disk free, ${memory:-?} MiB memory available ($reason)"
-              # timeout passes the signal on to cargo-mutants.
-              kill -INT "$mutants"
+              # timeout passes the signal on to cargo-mutants. When it has
+              # already exited on its own, there is nothing to stop.
+              if kill -INT "$mutants" 2>/dev/null; then
+                echo "::warning::Stopping cargo-mutants: ${disk:-?} MiB disk free, ${memory:-?} MiB memory available ($reason)"
+              else
+                reason=""
+              fi
               break
             fi
           done
           wait "$mutants"
           code=$?
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          if [ -n "$reason" ]; then
+          interrupted=false
+          if [ "$code" -eq 124 ] || [ "$code" -eq 130 ] || [ "$code" -eq 137 ]; then interrupted=true; fi
+          # Only an interrupted run is a stopped one: a run that ended on its
+          # own (a baseline failure, an error) keeps its exit code's meaning,
+          # even if the watchdog fired as it was ending.
+          if [ "$interrupted" = true ] && [ -n "$reason" ]; then
             echo "stopped=$reason" >> "$GITHUB_OUTPUT"
-          elif [ "$code" -eq 124 ] || [ "$code" -eq 130 ] || [ "$code" -eq 137 ]; then
+          elif [ "$interrupted" = true ]; then
             echo "stopped=time-limit" >> "$GITHUB_OUTPUT"
           fi
           df -h "$GITHUB_WORKSPACE/target"
