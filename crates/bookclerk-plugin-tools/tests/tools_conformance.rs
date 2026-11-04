@@ -323,6 +323,52 @@ fn check_rejects_native_with_domains() {
     assert!(!out.status.success());
 }
 
+/// `fmt` rewrites the every-section fixture to its gold byte for byte, and
+/// `fmt --check` accepts the gold but refuses the unformatted source. The
+/// Python and TypeScript SDKs compare their formatters against the same gold.
+#[test]
+fn fmt_full_matches_gold() {
+    let fixture = repo_root().join("crates/bookclerk-plugin-abi/fixtures/tools/fmt-full");
+    let gold = std::fs::read_to_string(fixture.join("plugin.fmt.toml")).expect("read gold");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("plugin.toml");
+    std::fs::copy(fixture.join("plugin.toml"), &target).expect("copy fixture");
+
+    let check = bookclerk_plugin()
+        .args(["fmt", "--check", target.to_str().unwrap()])
+        .output()
+        .expect("run fmt --check");
+    assert!(
+        !check.status.success(),
+        "the unformatted source passed --check"
+    );
+
+    let out = bookclerk_plugin()
+        .args(["fmt", target.to_str().unwrap()])
+        .output()
+        .expect("run fmt");
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(&target).expect("read output"), gold);
+
+    let gold_check = bookclerk_plugin()
+        .args([
+            "fmt",
+            "--check",
+            fixture.join("plugin.fmt.toml").to_str().unwrap(),
+        ])
+        .output()
+        .expect("run fmt --check on the gold");
+    assert!(
+        gold_check.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&gold_check.stderr)
+    );
+}
+
 #[test]
 fn fmt_check_gold_native() {
     let file =
@@ -337,4 +383,49 @@ fn fmt_check_gold_native() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+/// Reads a shared JSON fixture beside the other author-tool fixtures.
+fn shared_cases(name: &str) -> serde_json::Value {
+    let file = repo_root()
+        .join("crates/bookclerk-plugin-abi/fixtures/tools")
+        .join(name);
+    serde_json::from_str(&std::fs::read_to_string(&file).expect("read cases")).expect("parse cases")
+}
+
+/// Every logo in `logo-cases.json` gets the classification or error text the
+/// file names. The Python and TypeScript checkers read the same file.
+#[test]
+fn validate_logo_matches_shared_cases() {
+    use bookclerk_plugin_manifest::logo::{validate_logo, LogoKind};
+
+    let cases = shared_cases("logo-cases.json");
+    for case in cases.as_array().expect("an array of cases") {
+        let input = case["input"].as_str().expect("input");
+        let got = match validate_logo(input) {
+            Ok(LogoKind::RemoteUrl(v)) => serde_json::json!({ "input": input, "remote": v }),
+            Ok(LogoKind::EmbeddedPath(v)) => serde_json::json!({ "input": input, "embedded": v }),
+            Err(err) => serde_json::json!({ "input": input, "error": err.to_string() }),
+        };
+        assert_eq!(&got, case);
+    }
+}
+
+/// `compat-date-cases.json` splits dates into ones every checker accepts and
+/// ones every checker refuses.
+#[test]
+fn compatibility_dates_match_shared_cases() {
+    use bookclerk_plugin_manifest::workerd_contract::validate_author_compatibility_date;
+
+    let cases = shared_cases("compat-date-cases.json");
+    for (list, ok) in [("valid", true), ("invalid", false)] {
+        for date in cases[list].as_array().expect("a list of dates") {
+            let date = date.as_str().expect("a string date");
+            assert_eq!(
+                validate_author_compatibility_date(date).is_ok(),
+                ok,
+                "{date:?}"
+            );
+        }
+    }
 }

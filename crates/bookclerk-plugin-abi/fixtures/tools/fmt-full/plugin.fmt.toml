@@ -1,0 +1,144 @@
+api_version = 3
+id = "fmt_full"
+name = "Format Full Tools"
+version = "1.2.3"
+logo = "https://example.com/logo.png"
+runtime = "workerd"
+entrypoints = [
+    "cli",
+    "oidc",
+]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "src"
+entrypoint = "Main"
+
+[workerd.limits]
+cpu_ms = 50
+subrequests = 20
+
+[[modules]]
+name = "helper.js"
+path = "lib/helper.js"
+type = "js"
+
+[[modules]]
+name = "data.wasm"
+type = "wasm"
+
+[triggers]
+jobs = [
+    "refresh",
+    "sweep",
+]
+
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [
+    1,
+    2,
+]
+supports_suspend = true
+resource_class = "network"
+max_retries = 3
+
+[events.consumers.filter]
+abridged = false
+min_minutes = 30
+source = "audible"
+tags = [
+    "a",
+    "b",
+]
+
+[[events.producers]]
+type = "fmt_full_synced"
+binding = "SYNCED"
+
+[[databases]]
+binding = "DB"
+
+[vars]
+alpha = 1
+beta = true
+delta = [
+    "x",
+    "y",
+]
+gamma = 2.5
+zeta = "last"
+
+[secrets]
+binding = "SEALED"
+
+[[kv_namespaces]]
+binding = "KV"
+
+[[kv_namespaces]]
+binding = "CURSORS"
+namespace = "sync.cursors"
+max_value_bytes = 4096
+max_keys = 500
+
+[[queues.producers]]
+queue = "jobs"
+binding = "JOBS"
+
+[[queues.consumers]]
+queue = "jobs"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 4
+dead_letter_queue = "jobs-dlq"
+retry_delay = 30
+max_concurrency = 2
+
+[work_fs]
+binding = "WORK"
+
+[oauth]
+binding = "AUTH"
+
+[capabilities.network]
+mode = "outbound"
+domains = [
+    "api.example.com",
+    "cdn.example.com",
+]
+
+[[cli.commands]]
+name = "status"
+args = []
+
+[[cli.commands]]
+name = "sync"
+about = "Sync now"
+
+[[cli.commands.args]]
+name = "account"
+long = "account"
+short = "a"
+kind = "string"
+required = true
+about = "Account id"
+positional = true
+
+[[cli.commands.args]]
+name = "dry-run"
+kind = "bool"
+required = false
+positional = false
+
+[[oidc.clients]]
+client_id = "fmtfull"
+display_name = "Format Full"
+callback_path = "/auth/callback"
+public_client = false
+default_scopes = [
+    "openid",
+    "email",
+]
+issue_refresh_token = false
+origin_config_key = "fmt_full.base_url"

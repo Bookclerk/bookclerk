@@ -1,3 +1,4 @@
+import json
 import shutil
 from datetime import date, timedelta
 from pathlib import Path
@@ -442,10 +443,38 @@ def test_validate_plugin_id_rejects_whitespace(padded: str):
         validate_plugin_id(padded)
 
 
-@pytest.mark.parametrize("name", ["valid-native", "valid-workerd"])
+# Fixtures with a formatted gold: the Rust `bookclerk-plugin fmt` output,
+# which every SDK's formatter must reproduce byte for byte.
+FMT_GOLDS = ["valid-native", "valid-workerd", "fmt-full"]
+
+
+@pytest.mark.parametrize("name", FMT_GOLDS)
 def test_fmt_check_gold(name):
     gold = FIXTURES / name / "plugin.fmt.toml"
     assert "ok" in fmt_plugin_toml(gold, check_only=True)
+
+
+@pytest.mark.parametrize("name", FMT_GOLDS)
+def test_format_manifest_matches_gold(name: str) -> None:
+    import tomllib
+
+    source = (FIXTURES / name / "plugin.toml").read_text(encoding="utf-8")
+    gold = (FIXTURES / name / "plugin.fmt.toml").read_text(encoding="utf-8")
+    assert format_manifest(tomllib.loads(source)) == gold
+
+
+def test_fmt_rewrites_to_gold(tmp_path: Path) -> None:
+    target = tmp_path / "plugin.toml"
+    shutil.copy(FIXTURES / "fmt-full" / "plugin.toml", target)
+    assert "wrote" in fmt_plugin_toml(target, check_only=False)
+    gold = (FIXTURES / "fmt-full" / "plugin.fmt.toml").read_text(encoding="utf-8")
+    assert target.read_text(encoding="utf-8") == gold
+    assert "ok" in fmt_plugin_toml(target, check_only=True)
+
+
+def test_fmt_check_rejects_unformatted() -> None:
+    with pytest.raises(ValueError, match="would reformat"):
+        fmt_plugin_toml(FIXTURES / "fmt-full" / "plugin.toml", check_only=True)
 
 
 def test_check_echo_python_workerd():
@@ -1036,6 +1065,202 @@ def test_manifest_capabilities_report_queues():
     assert caps["bindings"] == ["JOBS", "JOBS_AGAIN"]
 
 
+# The `types` stub for the every-section fixture, reviewed by hand once and
+# compared byte for byte so a change to any binding, type or doc line shows.
+ENV_GOLD = Path(__file__).parent / "golden" / "fmt-full.env.txt"
+
+
+def test_render_env_types_matches_gold():
+    import tomllib
+
+    from bookclerk_plugin_sdk.tools import render_env_types
+
+    manifest = tomllib.loads((FIXTURES / "fmt-full" / "plugin.toml").read_text(encoding="utf-8"))
+    assert render_env_types(manifest) == ENV_GOLD.read_text(encoding="utf-8")
+
+
+def test_render_env_types_minimal_manifest_imports_nothing_extra():
+    from bookclerk_plugin_sdk.tools import render_env_types
+
+    stub = render_env_types({"id": "bare"})
+    assert "    CONFIG: dict[str, Any]\n" in stub
+    assert "DatabaseBinding" not in stub
+    assert "bookclerk_plugin_sdk.workerd" not in stub
+    assert [name for name, _, _ in env_properties_for({"id": "bare", "vars": {}})] == ["CONFIG"]
+
+
+def test_env_properties_default_binding_names():
+    manifest = {
+        "id": "defaults",
+        "secrets": {},
+        "work_fs": {},
+        "kv_namespaces": [{}],
+        "oauth": {},
+        "events": {"producers": [{"type": "a_done"}, {"type": "b_done"}]},
+    }
+    props = {name: (type_, doc) for name, type_, doc in env_properties_for(manifest)}
+    assert list(props) == ["CONFIG", "SECRETS", "EVENTS", "WORK_FS", "KV", "OAUTH"]
+    assert props["EVENTS"][1] == "`[[events.producers]]` outbox publisher (a_done, b_done)."
+
+
+def test_env_properties_var_types():
+    manifest = {"id": "v", "vars": {"t": {"k": 1}, "d": date(2026, 1, 1)}}
+    config = env_properties_for(manifest)[0][1]
+    assert config == 'dict[str, Any]  # {"d": Any, "t": dict[str, Any]}'
+
+
+@pytest.mark.parametrize("binding", ["CONFIG", "SECRETS", "EVENTS", "WORK_FS", "KV", "OAUTH"])
+def test_env_properties_database_cannot_take_a_host_binding(binding: str):
+    with pytest.raises(ValueError, match="collides with a Bookclerk binding"):
+        env_properties_for({"id": "x", "databases": [{"binding": binding}]})
+
+
+def test_env_properties_refuse_a_binding_declared_twice():
+    manifest = {"id": "x", "databases": [{"binding": "DB"}], "kv_namespaces": [{"binding": "DB"}]}
+    with pytest.raises(ValueError, match="declared twice"):
+        env_properties_for(manifest)
+
+
+def _native_plugin(tmp_path: Path, extra: str = "") -> Path:
+    """Copy the native fixture beside a stand-in binary and return its root."""
+    plugin = tmp_path / "native"
+    plugin.mkdir()
+    toml = (FIXTURES / "valid-native" / "plugin.toml").read_text(encoding="utf-8")
+    (plugin / "plugin.toml").write_text(toml + extra, encoding="utf-8")
+    binary = plugin / "echo-tools"
+    binary.write_bytes(b"\x7fELF stand-in")
+    binary.chmod(0o600)
+    return plugin
+
+
+def _members(archive: Path) -> dict[str, tuple[int, bytes]]:
+    """Each regular file in an archive: its mode bits and bytes."""
+    import tarfile
+
+    with tarfile.open(archive, "r:gz") as tar:
+        return {
+            info.name: (info.mode & 0o777, tar.extractfile(info).read())  # type: ignore[union-attr]
+            for info in tar.getmembers()
+            if info.isfile()
+        }
+
+
+def test_package_native_archive_layout_and_checksum(tmp_path: Path):
+    import hashlib
+
+    from bookclerk_plugin_sdk.tools import _host_target
+
+    plugin = _native_plugin(tmp_path)
+    out = tmp_path / "dist" / "nested"
+    archive = package_plugin(plugin, out)
+
+    assert archive == out / f"bookclerk-plugin-echo_tools-0.1.0-{_host_target()}.tar.gz"
+    members = _members(archive)
+    assert set(members) == {"./plugin.toml", "./echo-tools"}
+    assert members["./plugin.toml"][1] == (plugin / "plugin.toml").read_bytes()
+    assert members["./echo-tools"] == (0o755, b"\x7fELF stand-in")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert (out / "SHA256SUMS").read_text(encoding="utf-8") == f"{digest}  {archive.name}\n"
+    # Only the archive and its checksums stay behind: no staging or attempt dirs.
+    assert sorted(p.name for p in out.iterdir()) == sorted([archive.name, "SHA256SUMS"])
+
+
+def test_package_native_replaces_its_own_checksum_line(tmp_path: Path):
+    import hashlib
+
+    plugin = _native_plugin(tmp_path)
+    out = tmp_path / "dist"
+    out.mkdir()
+    (out / "SHA256SUMS").write_text("abc  other.tar.gz\n\n", encoding="utf-8")
+    package_plugin(plugin, out)
+    (plugin / "echo-tools").write_bytes(b"rebuilt")
+    archive = package_plugin(plugin, out)
+    lines = (out / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert lines == ["abc  other.tar.gz", f"{digest}  {archive.name}"]
+
+
+def test_package_native_reuses_a_stale_staging_dir(tmp_path: Path):
+    plugin = _native_plugin(tmp_path)
+    out = tmp_path / "dist"
+    stale = out / ".staging-echo_tools"
+    stale.mkdir(parents=True)
+    (stale / "leftover").write_text("old", encoding="utf-8")
+    archive = package_plugin(plugin, out)
+    assert "./leftover" not in _members(archive)
+    assert not stale.exists()
+
+
+def test_package_native_without_version_uses_zero(tmp_path: Path):
+    plugin = _native_plugin(tmp_path)
+    toml = (plugin / "plugin.toml").read_text(encoding="utf-8")
+    (plugin / "plugin.toml").write_text(toml.replace('version = "0.1.0"\n', ""), encoding="utf-8")
+    assert "-0.0.0-" in package_plugin(plugin, tmp_path / "dist").name
+
+
+def test_package_native_absolute_command(tmp_path: Path):
+    plugin = _native_plugin(tmp_path)
+    built = tmp_path / "build" / "echo-tools-bin"
+    built.parent.mkdir()
+    built.write_bytes(b"absolute")
+    toml = (plugin / "plugin.toml").read_text(encoding="utf-8")
+    toml = toml.replace('command = "./echo-tools"', f"command = {str(built)!r}")
+    (plugin / "plugin.toml").write_text(toml, encoding="utf-8")
+    members = _members(package_plugin(plugin, tmp_path / "dist"))
+    assert members["./echo-tools-bin"] == (0o755, b"absolute")
+
+
+def test_package_native_missing_binary(tmp_path: Path):
+    plugin = _native_plugin(tmp_path)
+    (plugin / "echo-tools").unlink()
+    with pytest.raises(FileNotFoundError, match="native binary not found for package"):
+        package_plugin(plugin, tmp_path / "dist")
+
+
+def test_package_native_refuses_a_binary_symlink(tmp_path: Path):
+    plugin = _native_plugin(tmp_path)
+    real = tmp_path / "real-binary"
+    real.write_bytes(b"outside")
+    (plugin / "echo-tools").unlink()
+    (plugin / "echo-tools").symlink_to(real)
+    with pytest.raises((ValueError, FileNotFoundError)):
+        package_plugin(plugin, tmp_path / "dist")
+
+
+def test_package_copies_an_embedded_logo(tmp_path: Path):
+    plugin = _native_plugin(tmp_path)
+    toml = (plugin / "plugin.toml").read_text(encoding="utf-8")
+    toml = toml.replace('runtime = "native"', 'logo = "assets/logo.png"\nruntime = "native"')
+    (plugin / "plugin.toml").write_text(toml, encoding="utf-8")
+    (plugin / "assets").mkdir()
+    (plugin / "assets" / "logo.png").write_bytes(b"\x89PNG")
+    members = _members(package_plugin(plugin, tmp_path / "dist"))
+    assert members["./assets/logo.png"][1] == b"\x89PNG"
+
+
+def test_package_refuses_a_missing_embedded_logo(tmp_path: Path):
+    plugin = _native_plugin(tmp_path)
+    toml = (plugin / "plugin.toml").read_text(encoding="utf-8")
+    toml = toml.replace('runtime = "native"', 'logo = "assets/logo.png"\nruntime = "native"')
+    (plugin / "plugin.toml").write_text(toml, encoding="utf-8")
+    (plugin / "assets").mkdir()
+    with pytest.raises(FileNotFoundError, match="embedded logo missing for package"):
+        package_plugin(plugin, tmp_path / "dist")
+
+
+def test_package_skips_a_url_logo(tmp_path: Path):
+    plugin = _native_plugin(tmp_path)
+    toml = (plugin / "plugin.toml").read_text(encoding="utf-8")
+    toml = toml.replace(
+        'runtime = "native"', 'logo = "https://example.com/logo.png"\nruntime = "native"'
+    )
+    (plugin / "plugin.toml").write_text(toml, encoding="utf-8")
+    assert set(_members(package_plugin(plugin, tmp_path / "dist"))) == {
+        "./plugin.toml",
+        "./echo-tools",
+    }
+
+
 def test_validate_accepts_and_rejects_cron_triggers():
     from bookclerk_plugin_sdk.tools import MAX_CRON_TRIGGERS, validate_manifest
 
@@ -1110,3 +1335,40 @@ def test_smoke_health_codecs_cover_every_health_interface() -> None:
     )
     with pytest.raises(ValueError, match="no health probe"):
         _health_codecs("Storage")
+
+
+# Shared with the Rust and TypeScript checkers: every SDK must classify each
+# logo the same way and give the same error text.
+LOGO_CASES = json.loads((FIXTURES / "logo-cases.json").read_text(encoding="utf-8"))
+COMPAT_DATES = json.loads((FIXTURES / "compat-date-cases.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", LOGO_CASES, ids=lambda c: repr(c["input"]))
+def test_validate_logo_matches_shared_cases(case: dict[str, str]) -> None:
+    from bookclerk_plugin_sdk.tools import validate_logo
+
+    if "error" in case:
+        with pytest.raises(ValueError) as err:
+            validate_logo(case["input"])
+        assert str(err.value) == case["error"]
+    else:
+        kind = "remote" if "remote" in case else "embedded"
+        assert validate_logo(case["input"]) == (kind, case[kind])
+
+
+@pytest.mark.parametrize("date_text", COMPAT_DATES["valid"])
+def test_compatibility_date_accepts_shared_valid(date_text: str) -> None:
+    from bookclerk_plugin_sdk.tools import validate_author_compatibility_date
+
+    validate_author_compatibility_date(date_text)
+
+
+@pytest.mark.parametrize("date_text", COMPAT_DATES["invalid"], ids=repr)
+def test_compatibility_date_rejects_shared_invalid(date_text: str) -> None:
+    from bookclerk_plugin_sdk.tools import validate_author_compatibility_date
+
+    with pytest.raises(
+        ValueError,
+        match=r"^plugin\.toml: workerd\.compatibility_date must be a calendar YYYY-MM-DD$",
+    ):
+        validate_author_compatibility_date(date_text)
