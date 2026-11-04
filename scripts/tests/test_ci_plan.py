@@ -816,7 +816,15 @@ class CoverageCommandTests(unittest.TestCase):
             cmds = commands(plan("crates/bookclerk-plugins/optional/metadata-openlibrary/src/client.ts"), "workerd_guests")
         self.assertEqual(cmds[:2], [["npm", "ci"], ["npm", "run", "build"]])
         self.assertIn(["npm", "run", "typecheck"], cmds)
-        self.assertIn(["git", "diff", "--exit-code", "--", "modules"], cmds)
+        self.assertIn([sys.executable, "-c", execute._CLEAR_MODULES], cmds)
+        self.assertIn([sys.executable, "-c", execute._MODULES_DRIFT], cmds)
+        clear = cmds.index([sys.executable, "-c", execute._CLEAR_MODULES])
+        self.assertEqual(cmds[clear + 1], ["npm", "run", "build"])
+        with self.env(), mock.patch.object(execute, "workerd_guest_dirs", return_value=[guest]):
+            p = plan("crates/bookclerk-plugins/optional/metadata-openlibrary/src/client.ts")
+            planned = [c for _, c in planned_commands(artifact(p), "workerd_guests", CTX)]
+        drift = [c for c in planned if c.argv == [sys.executable, "-c", execute._MODULES_DRIFT]]
+        self.assertEqual([c.cwd for c in drift], [str(guest)])
         node = cmds[-1]
         self.assertEqual(node[:2], ["node", "--test"])
         self.assertIn(f"--test-reporter-destination={self.dir / 'workerd-guests' / 'lcov.info'}", node)

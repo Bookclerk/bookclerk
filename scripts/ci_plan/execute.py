@@ -499,6 +499,20 @@ def workerd_guest_dirs(workspace: Path) -> list[Path]:
     return out
 
 
+# Removes a guest's emitted `modules/` before the build, so a module whose
+# source was deleted does not survive the rebuild unnoticed.
+_CLEAR_MODULES = "import shutil; shutil.rmtree('modules', ignore_errors=True)"
+
+# Fails when the rebuilt `modules/` differs from the committed one in any way:
+# a changed or deleted tracked file, or a new untracked one.
+_MODULES_DRIFT = (
+    "import subprocess, sys; "
+    "out = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all', '--', 'modules'], "
+    "capture_output=True, text=True, check=True).stdout; "
+    "print(out, end=''); sys.exit(1 if out else 0)"
+)
+
+
 def _workerd_guest_commands(ctx: "Context") -> list[Command]:
     """Type-check, rebuild and test every first-party workerd guest.
 
@@ -525,8 +539,9 @@ def _workerd_guest_commands(ctx: "Context") -> list[Command]:
         cmds += [
             Command(f"npm ci ({rel})", ["npm", "ci"], cwd=str(guest)),
             Command(f"tsc ({rel})", ["npm", "run", "typecheck"], cwd=str(guest)),
+            Command(f"clear modules ({rel})", [sys.executable, "-c", _CLEAR_MODULES], cwd=str(guest)),
             Command(f"npm run build ({rel})", ["npm", "run", "build"], cwd=str(guest)),
-            Command(f"modules drift ({rel})", ["git", "diff", "--exit-code", "--", "modules"], cwd=str(guest)),
+            Command(f"modules drift ({rel})", [sys.executable, "-c", _MODULES_DRIFT], cwd=str(guest)),
         ]
     if not dirs:
         return cmds

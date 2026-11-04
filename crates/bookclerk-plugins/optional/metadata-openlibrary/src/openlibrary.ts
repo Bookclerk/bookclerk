@@ -145,8 +145,9 @@ export function normalizeIsbn(raw: string): string | undefined {
  */
 export function normalizeOlid(raw: string, suffix: "M" | "W"): string | undefined {
   const last = raw.trim().split("/").pop() ?? "";
-  const id = last.toUpperCase();
-  return new RegExp(`^OL\\d{1,12}${suffix}$`).test(id) ? id : undefined;
+  // Checked before upper-casing: `toUpperCase` maps some non-ASCII letters
+  // onto ASCII ones.
+  return new RegExp(`^OL\\d{1,12}${suffix}$`, "i").test(last) ? last.toUpperCase() : undefined;
 }
 
 /**
@@ -238,8 +239,9 @@ export function planSearch(params: MetadataSearchParams): SearchRequest {
  */
 export function userAgent(version: string, contactEmail: unknown): string {
   const email = typeof contactEmail === "string" ? contactEmail.trim() : "";
-  // A control character or a parenthesis would break the header's comment.
-  const ok = /^[^\s@()<>,;:"\\[\]\p{Cc}]+@[^\s@()<>,;:"\\[\]\p{Cc}]+$/u.test(email);
+  // Printable ASCII only: a header value cannot carry other characters, and
+  // a parenthesis or similar would break the header's comment.
+  const ok = /^[!-~]+$/.test(email) && /^[^@()<>,;:"\\[\]]+@[^@()<>,;:"\\[\]]+$/.test(email);
   const contact = ok ? `${email}; ` : "";
   return `Bookclerk-OpenLibrary/${version} (${contact}https://bookclerk.app)`;
 }
@@ -377,10 +379,17 @@ export function recordFromDoc(doc: unknown): MetadataRecord | undefined {
 
   const identifiers: Identifier[] = [{ scheme: "openLibraryWork", value: work }];
   if (edition !== undefined) identifiers.push({ scheme: "openLibraryEdition", value: edition });
-  for (const raw of texts(ed?.isbn, MAX_IDS_PER_SCHEME)) {
-    const isbn = normalizeIsbn(raw);
-    if (isbn !== undefined) identifiers.push({ scheme: "isbn", value: isbn });
+  // Malformed entries are skipped before the cap, so they cannot crowd out
+  // valid ISBNs.
+  const isbns = new Set<string>();
+  for (const raw of Array.isArray(ed?.isbn) ? ed.isbn : []) {
+    const s = text(raw);
+    const isbn = s === undefined ? undefined : normalizeIsbn(s);
+    if (isbn === undefined) continue;
+    isbns.add(isbn);
+    if (isbns.size >= MAX_IDS_PER_SCHEME) break;
   }
+  for (const isbn of isbns) identifiers.push({ scheme: "isbn", value: isbn });
 
   const credits: Credit[] = texts(d.author_name, MAX_AUTHORS).map((name) => ({
     name,
@@ -410,9 +419,14 @@ export function recordFromDoc(doc: unknown): MetadataRecord | undefined {
   const publisher = texts(ed?.publisher, 1)[0];
   if (publisher !== undefined) record.publisher = publisher;
   const year = numberIn(d.first_publish_year, 1, 9999);
+  // A matched edition is dated by itself alone; the work's first year
+  // describes the work.
   const published =
-    texts(ed?.publish_date, 1)[0] ??
-    (year !== undefined && Number.isInteger(year) ? String(year) : undefined);
+    ed !== undefined
+      ? texts(ed.publish_date, 1)[0]
+      : year !== undefined && Number.isInteger(year)
+        ? String(year)
+        : undefined;
   if (published !== undefined) record.publishedAt = published;
   const categories = joinCapped(texts(d.subject, MAX_SUBJECTS));
   if (categories !== undefined) record.categories = categories;
@@ -465,7 +479,14 @@ export function recordsFromSearch(body: unknown, request: SearchRequest): Metada
   for (const doc of docs) {
     const record = recordFromDoc(doc);
     if (record === undefined) continue;
-    if (request.titleFilter !== undefined && !titlesOverlap(request.titleFilter, record.title)) {
+    // A translated edition keeps its work: either title may match.
+    const workTitle = text(object(doc)?.title);
+    const wanted = request.titleFilter;
+    if (
+      wanted !== undefined &&
+      !titlesOverlap(wanted, record.title) &&
+      (workTitle === undefined || !titlesOverlap(wanted, workTitle))
+    ) {
       continue;
     }
     out.push(record);

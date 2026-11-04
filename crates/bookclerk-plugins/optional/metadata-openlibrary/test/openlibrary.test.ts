@@ -165,6 +165,10 @@ test("userAgent includes a plausible contact email only", () => {
   ]) {
     assert.equal(userAgent("1.2.3", bad), "Bookclerk-OpenLibrary/1.2.3 (https://bookclerk.app)");
   }
+  // A header value cannot carry non-ASCII characters, so such an address is left out.
+  for (const intl of ["ops@\u4F8B\u3048.jp", "\u00E9@example.org"]) {
+    assert.equal(userAgent("1.2.3", intl), "Bookclerk-OpenLibrary/1.2.3 (https://bookclerk.app)");
+  }
 });
 
 test("an ISBN hit describes the matched edition", () => {
@@ -302,4 +306,52 @@ test("titlesOverlap matches containment either way", () => {
   assert.equal(titlesOverlap("the hobbit", "The Hobbit, or There and Back Again"), true);
   assert.equal(titlesOverlap("the hobbit, or there and back again", "The Hobbit"), true);
   assert.equal(titlesOverlap("the hobbit", "Dune"), false);
+});
+
+test("malformed ISBNs do not crowd out valid ones", () => {
+  const record = recordFromDoc({
+    key: "/works/OL1W",
+    title: "Crowded",
+    editions: {
+      docs: [
+        {
+          key: "/books/OL1M",
+          isbn: [...Array.from({ length: 40 }, (_, i) => `bad-${i}`), "978-0-547-92822-7"],
+        },
+      ],
+    },
+  });
+  assert.deepEqual(
+    record?.identifiers.filter((i) => i.scheme === "isbn"),
+    [{ scheme: "isbn", value: "9780547928227" }],
+  );
+});
+
+test("a matched edition is dated by itself, not by the work", () => {
+  const edition = recordFromDoc({
+    key: "/works/OL1W",
+    title: "Dated",
+    first_publish_year: 1937,
+    editions: { docs: [{ key: "/books/OL1M" }] },
+  });
+  assert.equal(edition?.publishedAt, undefined);
+  const work = recordFromDoc({ key: "/works/OL1W", title: "Dated", first_publish_year: 1937 });
+  assert.equal(work?.publishedAt, "1937");
+});
+
+test("a title search keeps a translated edition of a matching work", () => {
+  const body = {
+    docs: [
+      {
+        key: "/works/OL27482W",
+        title: "The Hobbit",
+        editions: { docs: [{ key: "/books/OL9M", title: "Der Hobbit" }] },
+      },
+    ],
+  };
+  const records = recordsFromSearch(body, planSearch({ title: "the hobbit" }));
+  assert.deepEqual(
+    records.map((r) => r.title),
+    ["Der Hobbit"],
+  );
 });

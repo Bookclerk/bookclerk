@@ -66,8 +66,10 @@ export function normalizeRegion(marketplace) {
  * @returns The ASIN, or `undefined` when it is not one.
  */
 export function normalizeAsin(raw) {
-    const asin = raw.trim().toUpperCase();
-    return /^[A-Z0-9]{10}$/.test(asin) ? asin : undefined;
+    // Checked before upper-casing: `toUpperCase` maps some non-ASCII letters
+    // (dotless i) onto ASCII ones.
+    const asin = raw.trim();
+    return /^[A-Za-z0-9]{10}$/.test(asin) ? asin.toUpperCase() : undefined;
 }
 /**
  * Clamps a caller's `limit` to `1..=MAX_LIMIT`.
@@ -223,21 +225,24 @@ function joinCapped(names) {
 function genres(value) {
     if (!Array.isArray(value))
         return undefined;
-    const ranked = [];
+    // A set and per-kind caps keep a huge list linear and bounded.
+    const seen = new Set();
+    const genreNames = [];
+    const tagNames = [];
     for (const entry of value) {
+        if (genreNames.length >= MAX_GENRES)
+            break;
         const e = object(entry);
         const name = text(e?.name);
         const kind = typeof e?.type === "string" ? e.type.toLowerCase() : "genre";
-        if (name === undefined || (kind !== "genre" && kind !== "tag"))
+        if (name === undefined || (kind !== "genre" && kind !== "tag") || seen.has(name))
             continue;
-        if (!ranked.some(([, n]) => n === name))
-            ranked.push([kind === "genre" ? 0 : 1, name]);
+        seen.add(name);
+        const bucket = kind === "genre" ? genreNames : tagNames;
+        if (bucket.length < MAX_GENRES)
+            bucket.push(name);
     }
-    const names = ranked
-        .sort((a, b) => a[0] - b[0])
-        .slice(0, MAX_GENRES)
-        .map(([, n]) => n);
-    return joinCapped(names);
+    return joinCapped([...genreNames, ...tagNames].slice(0, MAX_GENRES));
 }
 /**
  * One series entry from a `seriesPrimary` / `seriesSecondary` object.

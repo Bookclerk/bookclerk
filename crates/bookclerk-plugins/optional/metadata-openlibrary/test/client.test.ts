@@ -22,6 +22,8 @@ interface Seen {
   url: string;
   /** Request headers. */
   headers: Headers;
+  /** Abort signal the request was sent with. */
+  signal: AbortSignal | null | undefined;
 }
 
 /**
@@ -33,7 +35,7 @@ interface Seen {
 function scripted(reply: () => Response): { options: ClientOptions; seen: Seen[] } {
   const seen: Seen[] = [];
   const fetch: Fetch = (url, init) => {
-    seen.push({ url, headers: new Headers(init.headers) });
+    seen.push({ url, headers: new Headers(init.headers), signal: init.signal });
     return Promise.resolve().then(reply);
   };
   return { options: { fetch, version: "0.1.0", contactEmail: "ops@example.org" }, seen };
@@ -120,6 +122,8 @@ test("lookup sends one identified request and maps the answer", async () => {
     "Bookclerk-OpenLibrary/0.1.0 (ops@example.org; https://bookclerk.app)",
   );
   assert.equal(seen[0]?.headers.get("accept"), "application/json");
+  assert.ok(seen[0]?.signal instanceof AbortSignal);
+  assert.equal(seen[0]?.signal.aborted, false);
 });
 
 test("lookup with no served identifier makes no request", async () => {

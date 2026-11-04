@@ -131,6 +131,10 @@ change your library on their own.
 > editions; then they switch to these plugins and the built-in lookups are
 > removed ([#614](https://github.com/Bookclerk/bookclerk/issues/614)).
 
+These plugins are optional, so they aren't installed by default. Install
+the plugin first, as [Installing plugins](plugins.md#installing-plugins)
+describes; approving and deploying act only on an installed plugin.
+
 To turn one on:
 
 1. Approve its network access:

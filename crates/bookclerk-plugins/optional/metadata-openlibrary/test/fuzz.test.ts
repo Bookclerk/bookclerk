@@ -296,6 +296,26 @@ function mentionedIds(body: unknown, suffix: "W" | "M"): Set<string> {
 }
 
 /**
+ * Every string stored under a `title` key anywhere in the body.
+ *
+ * @param body - Parsed body.
+ * @returns The titles.
+ */
+function titlesIn(body: unknown): string[] {
+  const out: string[] = [];
+  const stack: unknown[] = [body];
+  while (stack.length > 0) {
+    const v = stack.pop();
+    if (typeof v !== "object" || v === null) continue;
+    if (!Array.isArray(v) && typeof (v as Record<string, unknown>)["title"] === "string") {
+      out.push((v as Record<string, string>)["title"] as string);
+    }
+    stack.push(...Object.values(v));
+  }
+  return out;
+}
+
+/**
  * The oracle for one record.
  *
  * @param record - A mapped record.
@@ -310,9 +330,14 @@ function checkRecord(record: MetadataRecord, body: unknown, request: SearchReque
     if (v !== undefined) checkText(v, key);
   }
   if (record.subtitle !== undefined) assert.notEqual(record.subtitle, record.title);
-  if (request.titleFilter !== undefined) {
-    const have = record.title.toLowerCase();
-    assert.ok(have.includes(request.titleFilter) || request.titleFilter.includes(have));
+  const wanted = request.titleFilter;
+  if (wanted !== undefined) {
+    // The record's own title or a work title in the body overlaps the asked one.
+    const overlaps = (t: string): boolean => {
+      const have = t.trim().toLowerCase();
+      return have !== "" && (have.includes(wanted) || wanted.includes(have));
+    };
+    assert.ok(overlaps(record.title) || titlesIn(body).some(overlaps), "title does not match");
   }
   assert.equal(record.abridgement, "unknown");
   assert.equal(record.workKind, "book");

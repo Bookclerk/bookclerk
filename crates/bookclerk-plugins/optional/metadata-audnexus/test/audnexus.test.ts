@@ -61,6 +61,8 @@ test("normalizeAsin accepts ten letters or digits", () => {
   assert.equal(normalizeAsin("B002V0QK4"), undefined);
   assert.equal(normalizeAsin("B002V0QK4C/"), undefined);
   assert.equal(normalizeAsin("../../etc1"), undefined);
+  // Dotless i upper-cases to I, so the check runs before upper-casing.
+  assert.equal(normalizeAsin("B002V0QK4\u0131"), undefined);
 });
 
 test("clampLimit defaults, floors and caps", () => {
@@ -294,4 +296,23 @@ test("chaptersFromBody without chapters is not found", () => {
   for (const body of [null, {}, { chapters: [] }, { chapters: "x" }, []]) {
     assert.deepEqual(chaptersFromBody(body), notFound());
   }
+});
+
+test("recordFromBook keeps genres before tags within the cap, however many arrive", () => {
+  const record = recordFromBook(
+    {
+      asin: "B002V0QK4C",
+      title: "Many genres",
+      genres: [
+        ...Array.from({ length: 100_000 }, (_, i) => ({ name: `T${i}`, type: "tag" })),
+        { name: "Fantasy", type: "genre" },
+        { name: "Fantasy", type: "genre" },
+      ],
+    },
+    { asin: "B002V0QK4C", region: "us" },
+  );
+  const names = record?.categories?.split("; ") ?? [];
+  assert.equal(names.length, MAX_GENRES);
+  assert.equal(names[0], "Fantasy");
+  assert.equal(names[1], "T0");
 });
