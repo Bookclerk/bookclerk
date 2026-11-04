@@ -6479,12 +6479,12 @@ export const MetadataChaptersParamsCodec: StructCodec<T.MetadataChaptersParams> 
 };
 
 /**
- * Wire codec for `MetadataRecord` (4 data words, 12 pointers).
+ * Wire codec for `MetadataRecord` (3 data words, 12 pointers).
  *
  * @internal
  */
 export const MetadataRecordCodec: StructCodec<T.MetadataRecord> = {
-  dataWords: 4,
+  dataWords: 3,
   pointerCount: 12,
   write(s, v, caps) {
     s.setText(0, v.title ?? "");
@@ -6504,7 +6504,7 @@ export const MetadataRecordCodec: StructCodec<T.MetadataRecord> = {
       s.setText(5, v.publisher ?? "");
     }
     if (v.lengthMinutes !== undefined) {
-      s.setInt64(0, v.lengthMinutes ?? 0);
+      s.setUint32(0, v.lengthMinutes ?? 0);
     }
     if (v.publishedAt !== undefined) {
       s.setText(6, v.publishedAt ?? "");
@@ -6515,10 +6515,10 @@ export const MetadataRecordCodec: StructCodec<T.MetadataRecord> = {
     if (v.language !== undefined) {
       s.setText(8, v.language ?? "");
     }
-    s.setUint16(4, ord(A.ABRIDGEMENTS, v.abridgement ?? A.ABRIDGEMENTS[0]!, "Abridgement"));
-    s.setUint16(5, ord(A.WORK_KINDS, v.workKind ?? A.WORK_KINDS[0]!, "WorkKind"));
-    s.setUint16(6, ord(A.EXPRESSION_KINDS, v.expressionKind ?? A.EXPRESSION_KINDS[0]!, "ExpressionKind"));
-    s.setUint16(7, ord(A.MEDIA_KINDS, v.mediaKind ?? A.MEDIA_KINDS[0]!, "MediaKind"));
+    s.setUint16(2, ord(A.ABRIDGEMENTS, v.abridgement ?? A.ABRIDGEMENTS[0]!, "Abridgement"));
+    s.setUint16(3, ord(A.WORK_KINDS, v.workKind ?? A.WORK_KINDS[0]!, "WorkKind"));
+    s.setUint16(4, ord(A.EXPRESSION_KINDS, v.expressionKind ?? A.EXPRESSION_KINDS[0]!, "ExpressionKind"));
+    s.setUint16(5, ord(A.MEDIA_KINDS, v.mediaKind ?? A.MEDIA_KINDS[0]!, "MediaKind"));
     {
       const list = v.identifiers ?? [];
       const items = s.initStructList(9, list.length, 1, 2);
@@ -6544,16 +6544,16 @@ export const MetadataRecordCodec: StructCodec<T.MetadataRecord> = {
       s.setFloat64(2, v.ratingOverall ?? 0);
     }
     if (v.ratingCount !== undefined) {
-      s.setInt64(3, v.ratingCount ?? 0);
+      s.setUint32(3, v.ratingCount ?? 0);
     }
   },
   read(s, caps) {
     const out: T.MetadataRecord = {
       title: s.getText(0),
-      abridgement: fromOrd(A.ABRIDGEMENTS, s.getUint16(4), "Abridgement"),
-      workKind: fromOrd(A.WORK_KINDS, s.getUint16(5), "WorkKind"),
-      expressionKind: fromOrd(A.EXPRESSION_KINDS, s.getUint16(6), "ExpressionKind"),
-      mediaKind: fromOrd(A.MEDIA_KINDS, s.getUint16(7), "MediaKind"),
+      abridgement: fromOrd(A.ABRIDGEMENTS, s.getUint16(2), "Abridgement"),
+      workKind: fromOrd(A.WORK_KINDS, s.getUint16(3), "WorkKind"),
+      expressionKind: fromOrd(A.EXPRESSION_KINDS, s.getUint16(4), "ExpressionKind"),
+      mediaKind: fromOrd(A.MEDIA_KINDS, s.getUint16(5), "MediaKind"),
       identifiers: s.getStructList(9, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
       credits: s.getStructList(10, 1, 1).map((item) => CreditCodec.read(item, caps)),
       seriesEntries: s.getStructList(11, 0, 3).map((item) => SeriesEntryCodec.read(item, caps)),
@@ -6578,8 +6578,8 @@ export const MetadataRecordCodec: StructCodec<T.MetadataRecord> = {
     if (!(publisherValue === "")) {
       out.publisher = publisherValue;
     }
-    const lengthMinutesValue = s.getInt64(0);
-    if (!(lengthMinutesValue === 0n)) {
+    const lengthMinutesValue = s.getUint32(0);
+    if (!(lengthMinutesValue === 0)) {
       out.lengthMinutes = lengthMinutesValue;
     }
     const publishedAtValue = s.getText(6);
@@ -6598,8 +6598,8 @@ export const MetadataRecordCodec: StructCodec<T.MetadataRecord> = {
     if (!(ratingOverallValue === 0)) {
       out.ratingOverall = ratingOverallValue;
     }
-    const ratingCountValue = s.getInt64(3);
-    if (!(ratingCountValue === 0n)) {
+    const ratingCountValue = s.getUint32(3);
+    if (!(ratingCountValue === 0)) {
       out.ratingCount = ratingCountValue;
     }
     return out;
@@ -6617,7 +6617,7 @@ export const MetadataRecordsCodec: StructCodec<T.MetadataRecords> = {
   write(s, v, caps) {
     {
       const list = v.records ?? [];
-      const items = s.initStructList(0, list.length, 4, 12);
+      const items = s.initStructList(0, list.length, 3, 12);
       for (let i = 0; i < items.length; i++) {
         MetadataRecordCodec.write(items[i]!, list[i]!, caps);
       }
@@ -6625,7 +6625,7 @@ export const MetadataRecordsCodec: StructCodec<T.MetadataRecords> = {
   },
   read(s, caps) {
     return {
-      records: s.getStructList(0, 4, 12).map((item) => MetadataRecordCodec.read(item, caps)),
+      records: s.getStructList(0, 3, 12).map((item) => MetadataRecordCodec.read(item, caps)),
     };
   },
 };

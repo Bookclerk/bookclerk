@@ -166,34 +166,33 @@ impl ExternalIntegration {
 
     /// Integration health RPC.
     ///
-    /// Guests that do not export `remoteLibrary` are ready once `open` has
-    /// succeeded. Event, job, OIDC, and CLI-only integrations use that
-    /// describe/open check. This function calls remote-library health only
-    /// when that entrypoint is exported.
+    /// Calls `health` on each exported entrypoint that has one
+    /// (`remoteLibrary`, `metadata`). Guests that export neither are ready
+    /// once `open` has succeeded: event, job, OIDC, and CLI-only integrations
+    /// use that describe/open check.
     ///
     /// # Errors
     ///
-    /// Returns an error when remote-library health reports not ok.
+    /// Returns an error when an entrypoint's health reports not ok.
     pub async fn check_health(&self) -> Result<()> {
-        if !self
+        if self
             .session
             .has_entrypoint(crate::Entrypoint::RemoteLibrary)
         {
-            return Ok(());
+            let ok = self
+                .session
+                .remote_library(|src| async move { src.health().await })
+                .await?;
+            health_result(ok)?;
         }
-        let ok = self
-            .session
-            .remote_library(|src| async move { src.health().await })
-            .await?;
-        if ok.ok {
-            Ok(())
-        } else {
-            Err(crate::PluginError::message(if ok.detail.is_empty() {
-                "health failed".to_string()
-            } else {
-                ok.detail
-            }))
+        if self.session.has_entrypoint(crate::Entrypoint::Metadata) {
+            let ok = self
+                .session
+                .metadata(|provider| async move { provider.health().await })
+                .await?;
+            health_result(ok)?;
         }
+        Ok(())
     }
 
     /// Runs one typed `remoteLibrary` method through the plugin session.
@@ -209,6 +208,23 @@ impl ExternalIntegration {
             + 'static,
     {
         Ok(self.session.remote_library(call).await?)
+    }
+}
+
+/// Maps a guest `HealthOk` onto the integration health result.
+///
+/// # Errors
+///
+/// Returns the guest's detail (or `health failed`) when `ok` is false.
+fn health_result(ok: bookclerk_plugin_sdk::HealthOk) -> Result<()> {
+    if ok.ok {
+        Ok(())
+    } else {
+        Err(crate::PluginError::message(if ok.detail.is_empty() {
+            "health failed".to_string()
+        } else {
+            ok.detail
+        }))
     }
 }
 

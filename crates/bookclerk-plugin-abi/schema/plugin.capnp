@@ -2402,7 +2402,7 @@ struct MetadataRecord {
   # Publisher name when known.
   publisher @5 :Text $optional;
   # Runtime in whole minutes when known.
-  lengthMinutes @6 :Int64 $optional;
+  lengthMinutes @6 :UInt32 $optional;
   # Publication date string as the provider prints it.
   publishedAt @7 :Text $optional;
   # Category / genre labels as a single string when known.
@@ -2426,7 +2426,7 @@ struct MetadataRecord {
   # Aggregate rating when the provider publishes one.
   ratingOverall @17 :Float64 $optional;
   # Number of ratings behind `ratingOverall` when known.
-  ratingCount @18 :Int64 $optional;
+  ratingCount @18 :UInt32 $optional;
 }
 
 # Success payload of `MetadataProvider.lookup` / `search`.

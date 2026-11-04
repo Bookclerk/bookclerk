@@ -707,11 +707,24 @@ access, and the host never fetches on its behalf.
 export class Metadata extends MetadataEntrypoint<Env> {
   async lookup(params: MetadataLookupParams): Promise<MetadataRecord[]> {
     const isbn = params.identifiers.find((id) => id.scheme === "isbn");
-    if (!isbn) return [];
-    const res = await fetch(`https://openlibrary.org/isbn/${isbn.value}.json`);
+    // Identifier values come from library data: check them before they
+    // reach a URL.
+    if (!isbn || !/^[0-9X-]{10,17}$/i.test(isbn.value)) return [];
+    const res = await fetch(`https://openlibrary.org/isbn/${encodeURIComponent(isbn.value)}.json`);
     if (!res.ok) return [];
     const edition = (await res.json()) as { title: string };
-    return [{ title: edition.title, mediaKind: "print", expressionKind: "text", identifiers: [isbn] }];
+    return [
+      {
+        title: edition.title,
+        abridgement: "unknown",
+        workKind: "book",
+        expressionKind: "text",
+        mediaKind: "print",
+        identifiers: [isbn],
+        credits: [],
+        seriesEntries: [],
+      },
+    ];
   }
 }
 ```

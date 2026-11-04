@@ -3721,17 +3721,17 @@ def _write_metadata_record(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("publisher") is not None:
         s.set_text(5, v["publisher"])
     if v.get("lengthMinutes") is not None:
-        s.set_i64(0, v["lengthMinutes"])
+        s.set_u32(0, v["lengthMinutes"])
     if v.get("publishedAt") is not None:
         s.set_text(6, v["publishedAt"])
     if v.get("categories") is not None:
         s.set_text(7, v["categories"])
     if v.get("language") is not None:
         s.set_text(8, v["language"])
-    s.set_u16(4, _ord(A.ABRIDGEMENTS, v["abridgement"], "Abridgement"))
-    s.set_u16(5, _ord(A.WORK_KINDS, v["workKind"], "WorkKind"))
-    s.set_u16(6, _ord(A.EXPRESSION_KINDS, v["expressionKind"], "ExpressionKind"))
-    s.set_u16(7, _ord(A.MEDIA_KINDS, v["mediaKind"], "MediaKind"))
+    s.set_u16(2, _ord(A.ABRIDGEMENTS, v["abridgement"], "Abridgement"))
+    s.set_u16(3, _ord(A.WORK_KINDS, v["workKind"], "WorkKind"))
+    s.set_u16(4, _ord(A.EXPRESSION_KINDS, v["expressionKind"], "ExpressionKind"))
+    s.set_u16(5, _ord(A.MEDIA_KINDS, v["mediaKind"], "MediaKind"))
     items = s.init_struct_list(9, len(v["identifiers"]), 1, 2)
     for item, elem in zip(items, v["identifiers"], strict=True):
         _identifier_codec.write(item, elem, caps)
@@ -3744,16 +3744,16 @@ def _write_metadata_record(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("ratingOverall") is not None:
         s.set_f64(2, v["ratingOverall"])
     if v.get("ratingCount") is not None:
-        s.set_i64(3, v["ratingCount"])
+        s.set_u32(3, v["ratingCount"])
 
 
 def _read_metadata_record(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
         "title": s.get_text(0),
-        "abridgement": _from_ord(A.ABRIDGEMENTS, s.get_u16(4), "Abridgement"),
-        "workKind": _from_ord(A.WORK_KINDS, s.get_u16(5), "WorkKind"),
-        "expressionKind": _from_ord(A.EXPRESSION_KINDS, s.get_u16(6), "ExpressionKind"),
-        "mediaKind": _from_ord(A.MEDIA_KINDS, s.get_u16(7), "MediaKind"),
+        "abridgement": _from_ord(A.ABRIDGEMENTS, s.get_u16(2), "Abridgement"),
+        "workKind": _from_ord(A.WORK_KINDS, s.get_u16(3), "WorkKind"),
+        "expressionKind": _from_ord(A.EXPRESSION_KINDS, s.get_u16(4), "ExpressionKind"),
+        "mediaKind": _from_ord(A.MEDIA_KINDS, s.get_u16(5), "MediaKind"),
         "identifiers": [_identifier_codec.read(item, caps) for item in s.get_struct_list(9, 1, 2)],
         "credits": [_credit_codec.read(item, caps) for item in s.get_struct_list(10, 1, 1)],
         "seriesEntries": [_series_entry_codec.read(item, caps) for item in s.get_struct_list(11, 0, 3)],
@@ -3773,7 +3773,7 @@ def _read_metadata_record(s: _StructReader, caps: _CapTable) -> Any:
     publisher = s.get_text(5)
     if not (publisher == ""):
         out["publisher"] = publisher
-    length_minutes = s.get_i64(0)
+    length_minutes = s.get_u32(0)
     if not (length_minutes == 0):
         out["lengthMinutes"] = length_minutes
     published_at = s.get_text(6)
@@ -3788,25 +3788,25 @@ def _read_metadata_record(s: _StructReader, caps: _CapTable) -> Any:
     rating_overall = s.get_f64(2)
     if not (rating_overall == 0):
         out["ratingOverall"] = rating_overall
-    rating_count = s.get_i64(3)
+    rating_count = s.get_u32(3)
     if not (rating_count == 0):
         out["ratingCount"] = rating_count
     return out
 
 
-_metadata_record_codec = _Codec(4, 12, _write_metadata_record, _read_metadata_record)
-"""Wire codec for ``MetadataRecord`` (4 data words, 12 pointers)."""
+_metadata_record_codec = _Codec(3, 12, _write_metadata_record, _read_metadata_record)
+"""Wire codec for ``MetadataRecord`` (3 data words, 12 pointers)."""
 
 
 def _write_metadata_records(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["records"]), 4, 12)
+    items = s.init_struct_list(0, len(v["records"]), 3, 12)
     for item, elem in zip(items, v["records"], strict=True):
         _metadata_record_codec.write(item, elem, caps)
 
 
 def _read_metadata_records(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "records": [_metadata_record_codec.read(item, caps) for item in s.get_struct_list(0, 4, 12)],
+        "records": [_metadata_record_codec.read(item, caps) for item in s.get_struct_list(0, 3, 12)],
     }
 
 

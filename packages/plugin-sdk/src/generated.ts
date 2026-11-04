@@ -2611,7 +2611,7 @@ export interface MetadataRecord {
    * Runtime in whole minutes when known.
    * Omitted when absent (wire zero value).
    */
-  lengthMinutes?: bigint;
+  lengthMinutes?: number;
   /**
    * Publication date string as the provider prints it.
    * Omitted when absent (wire zero value).
@@ -2650,7 +2650,7 @@ export interface MetadataRecord {
    * Number of ratings behind `ratingOverall` when known.
    * Omitted when absent (wire zero value).
    */
-  ratingCount?: bigint;
+  ratingCount?: number;
 }
 
 /** Success payload of `MetadataProvider.lookup` / `search`. */

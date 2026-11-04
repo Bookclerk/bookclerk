@@ -7535,7 +7535,7 @@
     "MetadataRecord": {
       "name": "MetadataRecord",
       "file": "plugin.capnp",
-      "dataWords": 4,
+      "dataWords": 3,
       "pointerCount": 12,
       "discriminantCount": 0,
       "discriminantOffset": 0,
@@ -7599,7 +7599,7 @@
           "codeOrder": 6,
           "discriminantValue": null,
           "type": {
-            "kind": "int64"
+            "kind": "uint32"
           },
           "offset": 0
         },
@@ -7638,7 +7638,7 @@
             "kind": "enum",
             "name": "Abridgement"
           },
-          "offset": 4
+          "offset": 2
         },
         {
           "name": "workKind",
@@ -7648,7 +7648,7 @@
             "kind": "enum",
             "name": "WorkKind"
           },
-          "offset": 5
+          "offset": 3
         },
         {
           "name": "expressionKind",
@@ -7658,7 +7658,7 @@
             "kind": "enum",
             "name": "ExpressionKind"
           },
-          "offset": 6
+          "offset": 4
         },
         {
           "name": "mediaKind",
@@ -7668,7 +7668,7 @@
             "kind": "enum",
             "name": "MediaKind"
           },
-          "offset": 7
+          "offset": 5
         },
         {
           "name": "identifiers",
@@ -7723,7 +7723,7 @@
           "codeOrder": 18,
           "discriminantValue": null,
           "type": {
-            "kind": "int64"
+            "kind": "uint32"
           },
           "offset": 3
         }

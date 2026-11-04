@@ -220,6 +220,16 @@ function withoutParams<P, R>(
 const asList = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
 
 const okHits = (value: unknown) => okValue({ hits: asList<CatalogHit>(value) });
+/**
+ * Wraps a metadata provider's `lookup` / `search` return as `MetadataRecords`.
+ * Anything but an array is an author bug, not an empty answer.
+ */
+const okRecords = (value: unknown) => {
+  if (!Array.isArray(value)) {
+    throw PluginError.fromWire("internal", "metadata provider must return a MetadataRecord[]");
+  }
+  return okValue({ records: value as MetadataRecord[] });
+};
 const okLines = (value: unknown) =>
   okValue({ lines: asList<unknown>(value).map((l) => String(l)) });
 const okHealth = (value: unknown) => {
@@ -692,14 +702,14 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       "lookup",
       W.MetadataProviderLookupParamsCodec,
       W.MetadataProviderLookupResultsCodec,
-      (value) => okValue({ records: asList<MetadataRecord>(value) }),
+      okRecords,
     ),
     search: withParams(
       "metadata",
       "search",
       W.MetadataProviderSearchParamsCodec,
       W.MetadataProviderSearchResultsCodec,
-      (value) => okValue({ records: asList<MetadataRecord>(value) }),
+      okRecords,
     ),
     chapters: withParams(
       "metadata",

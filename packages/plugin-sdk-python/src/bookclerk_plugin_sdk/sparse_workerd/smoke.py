@@ -1,8 +1,8 @@
 """Out-of-tree workerd plugin smoke: ensure → materialize → describe + health.
 
 Spawns the pinned Cloudflare ``workerd`` with a materialized Cap'n Proto config
-and POSTs ``describe`` (plus a ``POST /invoke`` ``health`` call for storefront /
-remoteLibrary guests) to the HTTP bridge. Does not require the Rust
+and POSTs ``describe`` (plus a ``POST /invoke`` ``health`` call for storefront,
+remoteLibrary and metadata guests) to the HTTP bridge. Does not require the Rust
 ``bookclerk-workerd`` binary.
 """
 
@@ -60,11 +60,12 @@ def _wait_for_health(base: str, token: str, timeout_s: float = 15.0) -> None:
 
 
 def _invoke_health(base: str, iface: str, token: str) -> Any:
-    """``POST /invoke`` health probe for ``ContentSource`` / ``RemoteLibrary``.
+    """``POST /invoke`` health probe for an entrypoint interface.
 
     Args:
         base: Bridge base URL.
-        iface: Cap'n interface name (``ContentSource`` or ``RemoteLibrary``).
+        iface: Cap'n interface name (``ContentSource``, ``RemoteLibrary`` or
+            ``MetadataProvider``).
         token: Bridge bearer token.
 
     Returns:
@@ -78,6 +79,9 @@ def _invoke_health(base: str, iface: str, token: str) -> Any:
     if iface == "ContentSource":
         params = _wire._content_source_health_params_codec
         results = _wire._content_source_health_results_codec
+    elif iface == "MetadataProvider":
+        params = _wire._metadata_provider_health_params_codec
+        results = _wire._metadata_provider_health_results_codec
     else:
         params = _wire._remote_library_health_params_codec
         results = _wire._remote_library_health_results_codec
@@ -208,13 +212,16 @@ def run_smoke(plugin_dir: Path) -> str:
     try:
         _wait_for_health(base, bridge_token)
         describe = _post_json(f"{base}/describe", {}, bridge_token)
-        # `health` is a method of the storefront and remoteLibrary entrypoints;
-        # the default entrypoint (event/job triggers) has no health probe.
+        # `health` is a method of the storefront, remoteLibrary and metadata
+        # entrypoints; the default entrypoint (event/job triggers) has no
+        # health probe.
         entrypoints = [str(e) for e in (manifest.get("entrypoints") or [])]
         if "storefront" in entrypoints:
             health_iface: str | None = "ContentSource"
         elif "remoteLibrary" in entrypoints:
             health_iface = "RemoteLibrary"
+        elif "metadata" in entrypoints:
+            health_iface = "MetadataProvider"
         else:
             health_iface = None
         health = _invoke_health(base, health_iface, bridge_token) if health_iface else None

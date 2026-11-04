@@ -125,15 +125,7 @@ impl WorkerdRoot {
         if self.runs_jobs() {
             out.push(FAMILY_JOB_RUNNER);
         }
-        for entrypoint in [
-            Entrypoint::Storefront,
-            Entrypoint::Storage,
-            Entrypoint::DatabaseAdapter,
-            Entrypoint::RemoteLibrary,
-            Entrypoint::Cli,
-            Entrypoint::Oidc,
-            Entrypoint::Metadata,
-        ] {
+        for entrypoint in bookclerk_plugin_manifest::ALL_ENTRYPOINTS {
             if self.exports(entrypoint) {
                 out.push(entrypoint.wire_name());
             }

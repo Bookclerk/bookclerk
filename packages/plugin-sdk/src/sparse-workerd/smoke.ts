@@ -2,8 +2,8 @@
  * Out-of-tree workerd plugin smoke: ensure → materialize → describe + health.
  *
  * Spawns the pinned `workerd` binary against a materialised Cap'n Proto config
- * and exercises the bridge `/health`, `describe()`, and (for `storefront` /
- * `remoteLibrary` entrypoints) the entrypoint `health` method over
+ * and exercises the bridge `/health`, `describe()`, and (for `storefront`,
+ * `remoteLibrary` and `metadata` entrypoints) the entrypoint `health` method over
  * `POST /invoke`.
  */
 
@@ -16,10 +16,15 @@ import { parse as parseToml } from "smol-toml";
 import {
   ContentSourceHealthParamsCodec,
   ContentSourceHealthResultsCodec,
+  MetadataProviderHealthParamsCodec,
+  MetadataProviderHealthResultsCodec,
   RemoteLibraryHealthParamsCodec,
   RemoteLibraryHealthResultsCodec,
   decodeMessage,
   encodeMessage,
+  type ContentSourceHealthParams,
+  type ContentSourceHealthResults,
+  type StructCodec,
 } from "../generated-wire.js";
 import type { HealthReply } from "../generated.js";
 import { validateManifest, type Manifest } from "../tools/validate.js";
@@ -30,6 +35,33 @@ import {
   ensureWorkerd,
   validateSpawnExecutable,
 } from "./ensure.js";
+
+/** Cap'n interfaces whose `health` method the smoke probes. */
+type HealthInterface = "ContentSource" | "RemoteLibrary" | "MetadataProvider";
+
+/** `health` params / results codecs per probed interface. */
+const HEALTH_CODECS: Readonly<
+  Record<
+    HealthInterface,
+    {
+      readonly params: StructCodec<ContentSourceHealthParams>;
+      readonly results: StructCodec<ContentSourceHealthResults>;
+    }
+  >
+> = Object.freeze({
+  ContentSource: {
+    params: ContentSourceHealthParamsCodec,
+    results: ContentSourceHealthResultsCodec,
+  },
+  RemoteLibrary: {
+    params: RemoteLibraryHealthParamsCodec,
+    results: RemoteLibraryHealthResultsCodec,
+  },
+  MetadataProvider: {
+    params: MetadataProviderHealthParamsCodec,
+    results: MetadataProviderHealthResultsCodec,
+  },
+});
 
 /** Default Cap'n Proto config name written by {@link materializeConfig}. */
 const WORKERD_SMOKE_CONFIG = "workerd-config.capnp";
@@ -105,13 +137,10 @@ async function postJson(url: string, body: unknown, token: string): Promise<unkn
  */
 async function invokeHealth(
   base: string,
-  iface: "ContentSource" | "RemoteLibrary",
+  iface: HealthInterface,
   token: string,
 ): Promise<HealthReply> {
-  const params =
-    iface === "ContentSource" ? ContentSourceHealthParamsCodec : RemoteLibraryHealthParamsCodec;
-  const results =
-    iface === "ContentSource" ? ContentSourceHealthResultsCodec : RemoteLibraryHealthResultsCodec;
+  const { params, results } = HEALTH_CODECS[iface];
   const res = await fetch(`${base}/invoke`, {
     method: "POST",
     headers: {
@@ -227,14 +256,17 @@ export async function runSmoke(pluginDir: string): Promise<string> {
   try {
     await waitForHealth(base, bridgeToken);
     const describe = await postJson(`${base}/describe`, {}, bridgeToken);
-    // `health` is a method of the storefront and remoteLibrary entrypoints;
-    // the default entrypoint (event/job triggers) has no health probe.
+    // `health` is a method of the storefront, remoteLibrary and metadata
+    // entrypoints; the default entrypoint (event/job triggers) has no health
+    // probe.
     const entrypoints = manifest.entrypoints ?? [];
     const healthIface = entrypoints.includes("storefront")
       ? "ContentSource"
       : entrypoints.includes("remoteLibrary")
         ? "RemoteLibrary"
-        : null;
+        : entrypoints.includes("metadata")
+          ? "MetadataProvider"
+          : null;
     const health = healthIface ? (await invokeHealth(base, healthIface, bridgeToken)).value : null;
     const detail = {
       plugin: manifest.id,

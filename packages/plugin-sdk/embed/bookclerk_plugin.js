@@ -4629,7 +4629,7 @@ var MetadataChaptersParamsCodec = {
   }
 };
 var MetadataRecordCodec = {
-  dataWords: 4,
+  dataWords: 3,
   pointerCount: 12,
   write(s, v, caps) {
     s.setText(0, v.title ?? "");
@@ -4649,7 +4649,7 @@ var MetadataRecordCodec = {
       s.setText(5, v.publisher ?? "");
     }
     if (v.lengthMinutes !== void 0) {
-      s.setInt64(0, v.lengthMinutes ?? 0);
+      s.setUint32(0, v.lengthMinutes ?? 0);
     }
     if (v.publishedAt !== void 0) {
       s.setText(6, v.publishedAt ?? "");
@@ -4660,10 +4660,10 @@ var MetadataRecordCodec = {
     if (v.language !== void 0) {
       s.setText(8, v.language ?? "");
     }
-    s.setUint16(4, ord(ABRIDGEMENTS, v.abridgement ?? ABRIDGEMENTS[0], "Abridgement"));
-    s.setUint16(5, ord(WORK_KINDS, v.workKind ?? WORK_KINDS[0], "WorkKind"));
-    s.setUint16(6, ord(EXPRESSION_KINDS, v.expressionKind ?? EXPRESSION_KINDS[0], "ExpressionKind"));
-    s.setUint16(7, ord(MEDIA_KINDS, v.mediaKind ?? MEDIA_KINDS[0], "MediaKind"));
+    s.setUint16(2, ord(ABRIDGEMENTS, v.abridgement ?? ABRIDGEMENTS[0], "Abridgement"));
+    s.setUint16(3, ord(WORK_KINDS, v.workKind ?? WORK_KINDS[0], "WorkKind"));
+    s.setUint16(4, ord(EXPRESSION_KINDS, v.expressionKind ?? EXPRESSION_KINDS[0], "ExpressionKind"));
+    s.setUint16(5, ord(MEDIA_KINDS, v.mediaKind ?? MEDIA_KINDS[0], "MediaKind"));
     {
       const list = v.identifiers ?? [];
       const items = s.initStructList(9, list.length, 1, 2);
@@ -4689,16 +4689,16 @@ var MetadataRecordCodec = {
       s.setFloat64(2, v.ratingOverall ?? 0);
     }
     if (v.ratingCount !== void 0) {
-      s.setInt64(3, v.ratingCount ?? 0);
+      s.setUint32(3, v.ratingCount ?? 0);
     }
   },
   read(s, caps) {
     const out = {
       title: s.getText(0),
-      abridgement: fromOrd(ABRIDGEMENTS, s.getUint16(4), "Abridgement"),
-      workKind: fromOrd(WORK_KINDS, s.getUint16(5), "WorkKind"),
-      expressionKind: fromOrd(EXPRESSION_KINDS, s.getUint16(6), "ExpressionKind"),
-      mediaKind: fromOrd(MEDIA_KINDS, s.getUint16(7), "MediaKind"),
+      abridgement: fromOrd(ABRIDGEMENTS, s.getUint16(2), "Abridgement"),
+      workKind: fromOrd(WORK_KINDS, s.getUint16(3), "WorkKind"),
+      expressionKind: fromOrd(EXPRESSION_KINDS, s.getUint16(4), "ExpressionKind"),
+      mediaKind: fromOrd(MEDIA_KINDS, s.getUint16(5), "MediaKind"),
       identifiers: s.getStructList(9, 1, 2).map((item) => IdentifierCodec.read(item, caps)),
       credits: s.getStructList(10, 1, 1).map((item) => CreditCodec.read(item, caps)),
       seriesEntries: s.getStructList(11, 0, 3).map((item) => SeriesEntryCodec.read(item, caps))
@@ -4723,8 +4723,8 @@ var MetadataRecordCodec = {
     if (!(publisherValue === "")) {
       out.publisher = publisherValue;
     }
-    const lengthMinutesValue = s.getInt64(0);
-    if (!(lengthMinutesValue === 0n)) {
+    const lengthMinutesValue = s.getUint32(0);
+    if (!(lengthMinutesValue === 0)) {
       out.lengthMinutes = lengthMinutesValue;
     }
     const publishedAtValue = s.getText(6);
@@ -4743,8 +4743,8 @@ var MetadataRecordCodec = {
     if (!(ratingOverallValue === 0)) {
       out.ratingOverall = ratingOverallValue;
     }
-    const ratingCountValue = s.getInt64(3);
-    if (!(ratingCountValue === 0n)) {
+    const ratingCountValue = s.getUint32(3);
+    if (!(ratingCountValue === 0)) {
       out.ratingCount = ratingCountValue;
     }
     return out;
@@ -4756,7 +4756,7 @@ var MetadataRecordsCodec = {
   write(s, v, caps) {
     {
       const list = v.records ?? [];
-      const items = s.initStructList(0, list.length, 4, 12);
+      const items = s.initStructList(0, list.length, 3, 12);
       for (let i = 0; i < items.length; i++) {
         MetadataRecordCodec.write(items[i], list[i], caps);
       }
@@ -4764,7 +4764,7 @@ var MetadataRecordsCodec = {
   },
   read(s, caps) {
     return {
-      records: s.getStructList(0, 4, 12).map((item) => MetadataRecordCodec.read(item, caps))
+      records: s.getStructList(0, 3, 12).map((item) => MetadataRecordCodec.read(item, caps))
     };
   }
 };
@@ -7351,6 +7351,12 @@ function withoutParams(stub, method, params, results, ok) {
 }
 var asList = (value) => Array.isArray(value) ? value : [];
 var okHits = (value) => okValue({ hits: asList(value) });
+var okRecords = (value) => {
+  if (!Array.isArray(value)) {
+    throw PluginError.fromWire("internal", "metadata provider must return a MetadataRecord[]");
+  }
+  return okValue({ records: value });
+};
 var okLines = (value) => okValue({ lines: asList(value).map((l) => String(l)) });
 var okHealth = (value) => {
   const v = value ?? {};
@@ -7616,8 +7622,8 @@ var METHODS = {
   },
   MetadataProvider: {
     health: withoutParams("metadata", "health", MetadataProviderHealthParamsCodec, MetadataProviderHealthResultsCodec, okHealth),
-    lookup: withParams("metadata", "lookup", MetadataProviderLookupParamsCodec, MetadataProviderLookupResultsCodec, (value) => okValue({ records: asList(value) })),
-    search: withParams("metadata", "search", MetadataProviderSearchParamsCodec, MetadataProviderSearchResultsCodec, (value) => okValue({ records: asList(value) })),
+    lookup: withParams("metadata", "lookup", MetadataProviderLookupParamsCodec, MetadataProviderLookupResultsCodec, okRecords),
+    search: withParams("metadata", "search", MetadataProviderSearchParamsCodec, MetadataProviderSearchResultsCodec, okRecords),
     chapters: withParams("metadata", "chapters", MetadataProviderChaptersParamsCodec, MetadataProviderChaptersResultsCodec, okPass)
   },
   Database: {
@@ -10070,6 +10076,7 @@ export {
   MAX_PLUGIN_MIGRATION_TOTAL_OPS,
   MAX_SCALAR_BYTES,
   MAX_STREAM_WINDOW_BYTES,
+  MetadataEntrypoint,
   NamedEntrypoint,
   OidcEntrypoint,
   PRODUCT_API_VERSION,

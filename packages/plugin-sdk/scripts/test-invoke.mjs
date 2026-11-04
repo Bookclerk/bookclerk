@@ -212,6 +212,8 @@ class Metadata extends MetadataEntrypoint {
     ];
   }
   async search(params) {
+    // The wire envelope is not a valid return value.
+    if (params.title === "wrapped") return { records: [] };
     return [{ title: `${params.title} by ${params.author ?? "anyone"}` }];
   }
   async chapters(params) {
@@ -954,6 +956,15 @@ const jobParams = (commandType) => ({
     W.MetadataProviderSearchResultsCodec,
   );
   assert.equal(searched.value.records[0].title, "Dune by Herbert");
+
+  const wrapped = decodeReply(
+    await invoke("MetadataProvider", "search", W.MetadataProviderSearchParamsCodec, {
+      params: { title: "wrapped" },
+    }),
+    W.MetadataProviderSearchResultsCodec,
+  );
+  assert.equal(wrapped.kind, "err", "a non-array return is an error, not an empty answer");
+  assert.equal(wrapped.value.code, "internal");
 
   const chapters = decodeReply(
     await invoke("MetadataProvider", "chapters", W.MetadataProviderChaptersParamsCodec, {

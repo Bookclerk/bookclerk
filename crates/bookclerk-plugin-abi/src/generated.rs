@@ -2356,7 +2356,7 @@ pub struct MetadataRecord {
     /// Runtime in whole minutes when known.
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub length_minutes: Option<i64>,
+    pub length_minutes: Option<u32>,
     /// Publication date string as the provider prints it.
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2397,7 +2397,7 @@ pub struct MetadataRecord {
     /// Number of ratings behind `ratingOverall` when known.
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rating_count: Option<i64>,
+    pub rating_count: Option<u32>,
 }
 
 /// Success payload of `MetadataProvider.lookup` / `search`.
