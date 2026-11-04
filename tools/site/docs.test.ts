@@ -61,6 +61,10 @@ test("doc URLs, in the default version and under a version prefix", () => {
   assert.equal(docUrl("adr/control-plane"), "/docs/adr/control-plane");
   assert.equal(docUrl("plugins", "/docs/v/main/"), "/docs/v/main/plugins");
   assert.equal(docUrl("README", "/docs/v/main/"), "/docs/v/main");
+  // A folder's index page is its entry page too, so no URL ends in /index.
+  assert.equal(docUrl("api/rust/demo/index"), "/docs/api/rust/demo");
+  assert.equal(docUrl("index", "/docs/v/main/"), "/docs/v/main");
+  assert.equal(docUrl("api/indexes"), "/docs/api/indexes");
   assert.equal(docMarkdownUrl("README", "/docs/v/v0.1.0/"), "/docs/v/v0.1.0/README.md");
 });
 
@@ -124,10 +128,7 @@ test("links to other repository files go to GitHub at the same ref", () => {
 });
 
 test("without a list of docs, any .md inside the docs tree is a doc", () => {
-  assert.equal(
-    rewriteLink("api/rust/x/index.md#fn", "README", null, BLOB),
-    "/docs/api/rust/x/index#fn",
-  );
+  assert.equal(rewriteLink("api/rust/x/index.md#fn", "README", null, BLOB), "/docs/api/rust/x#fn");
   assert.equal(rewriteLink("../AGENTS.md", "README", null, BLOB), `${BLOB}AGENTS.md`);
   assert.equal(rewriteLink("%E0%A4%A.md", "README", null, BLOB), "%E0%A4%A.md");
   assert.equal(

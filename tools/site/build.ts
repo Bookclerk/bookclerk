@@ -327,7 +327,7 @@ const RENDER_LIBRARIES = [
 ];
 
 /** Files copied verbatim from src/ to dist/. */
-const STATIC_FILES = ["sitemap.css", "_headers", "social-card.png"];
+const STATIC_FILES = ["sitemap.css", "_headers", "social-card.png", "link-icon.svg"];
 
 /**
  * Styles and scripts published under /assets/ with a content hash in their

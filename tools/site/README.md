@@ -153,7 +153,9 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   opens) pinned left, a reading column of about 88 characters centred
   between it and an "On this page" rail pinned right, which the Worker
   builds from the doc's `##` and `###` headings. Each `##`–`######` heading
-  carries a self-link that shows on hover, and a row under the title holds
+  carries a self-link that shows on hover (an empty link whose chain icon
+  `site.css` draws from `src/link-icon.svg`, so a page with a thousand
+  headings does not carry a thousand inline SVGs), and a row under the title holds
   the last updated date, Copy as Markdown and View as Markdown. The rail
   ends with Source on GitHub (for a generated page under `api/`, what it is
   generated from: build.ts `generatedSources`) and Report a problem, and comes with a
@@ -304,8 +306,10 @@ versions.
 - Every URL is slash-free: `<path>` is the file's path without `.md`, a
   directory's `README.md` is `<dir>` and the docs home is `/docs` (or
   `/docs/v/<ref>`). The slash spelling (`<dir>/`) and old `.html` URLs
-  redirect permanently (301), and `<dir>` without a README goes to
-  `<dir>/index` (rustdoc's crate pages). Because `x.md` and `x/README.md`
+  redirect permanently (301). `<dir>/index` redirects to `<dir>` too (and
+  `<dir>/index.md` to `<dir>/README.md`): the docs build names every folder's
+  entry page `README.md`, and a tree published before it did still has
+  `<dir>/index.md`, which `<dir>` then serves. Because `x.md` and `x/README.md`
   would share `/docs/x`, `docs.test.ts` checks no two docs do; the
   lookup tries the spelling the sidebar lists first. Website pages follow
   the same rule: `/download/` and `/download.html` move to `/download`

@@ -339,6 +339,7 @@ test("the build publishes pages, styles, headers and brand assets", () => {
       "llms.txt",
       "llms-full.txt",
       "social-card.png",
+      "link-icon.svg",
       "favicon.ico",
       "bookclerk-mark.svg",
       "site.webmanifest",
@@ -539,7 +540,7 @@ test("crawler and agent files list the site", () => {
     assert.doesNotMatch(llms.slice(0, llms.indexOf("\n## ")), /\n#/);
     assert.match(
       llms,
-      /^- \[Rust plugin SDK\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/bookclerk_plugin_sdk\/index.md\)$/m,
+      /^- \[Rust plugin SDK\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/bookclerk_plugin_sdk\/README.md\)$/m,
     );
     const full = site.page("llms-full.txt");
     assert.ok(full.includes("Source: https://bookclerk.app/docs/plugins/README.md"));
@@ -700,7 +701,7 @@ test("the docs shell has every hole and marker the Worker fills, once", () => {
         "api/README",
         "api/typescript/README",
         "api/python/README",
-        "api/rust/bookclerk_plugin_sdk/index",
+        "api/rust/bookclerk_plugin_sdk/README",
         "api/web/README",
         "api/rust/README",
       ],

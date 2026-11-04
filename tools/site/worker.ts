@@ -336,7 +336,8 @@ export type DocsTarget =
  * (the first) is served without the prefix, so its prefixed URLs redirect.
  * A path may name a directory (`api` → `api/README`); the slash form
  * (`api/`) is looked up too, and the caller redirects it to the page's
- * slash-free URL. `.html` paths left from the static site redirect to the page. Other dots are part of the
+ * slash-free URL. A path ending in `/index` redirects to its folder, where
+ * the folder's entry page is served. `.html` paths left from the static site redirect to the page. Other dots are part of the
  * name (`api/python/bookclerk_plugin_sdk.workerd`); the docs publish only
  * Markdown, so a path like `x.svg` is looked up as `x.svg.md` and not found.
  *
@@ -366,6 +367,18 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
   if (!DOC_REST_RE.test(rest)) return { kind: "missing" };
   if (rest === SEARCH_INDEX) return { kind: "search", version };
   const last = rest.slice(rest.lastIndexOf("/") + 1);
+  if (last === "index.md") {
+    // A folder's Markdown copy is its README's, like its page.
+    return {
+      kind: "redirect",
+      location: `${version.base}${rest.slice(0, -"index.md".length)}README.md`,
+    };
+  }
+  if (last === "README.md") {
+    // Trees published before entry pages were READMEs named them index.
+    const dir = rest.slice(0, -"README.md".length);
+    return { kind: "markdown", version, keys: [`${dir}README`, `${dir}index`] };
+  }
   if (last.endsWith(".md"))
     return { kind: "markdown", version, keys: [rest.slice(0, -".md".length)] };
   if (last.endsWith(".html")) {
@@ -375,6 +388,11 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
     // `a.html/index.html` lands on `a.html`, which would redirect again.
     const next = docsTarget(location, versions);
     return next.kind === "redirect" ? next : { kind: "redirect", location };
+  }
+  if (last === "index") {
+    // The folder URL serves the entry page; `/index` is never canonical.
+    const location = (version.base + rest.slice(0, -"index".length)).replace(/\/$/, "");
+    return { kind: "redirect", location };
   }
   if (rest === "" || rest.endsWith("/")) {
     const keys: [string, ...string[]] = [`${rest}README`, `${rest}index`];

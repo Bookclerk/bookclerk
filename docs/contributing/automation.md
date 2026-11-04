@@ -518,11 +518,16 @@ comments (`<!-- markdownlint-disable-line … -->`,
 and the rest) are left out of its pages' prose, since they matter to the
 `lint` check alone; code spans and fenced code keep them. The `api/` index lists the
 plugin SDKs first (TypeScript, Python, Rust), then the web API, then the
-Rust crates and the web UI library.
+Rust crates and the web UI library. No page is named `index.md`, and the
+build fails if one is: the site serves a folder's `README.md` at the
+folder's own URL, while an `index.md` would add a second URL ending in
+`/index` for the same folder.
 
 - **TypeScript**: TypeDoc's Markdown theme for `@bookclerk/plugin-sdk` and
   `ui/src/lib` (`typedoc-plugin-markdown`, a dev dependency of both). One
-  page per module, without source links or breadcrumbs.
+  page per module, without source links or breadcrumbs. The SDK's root
+  module is named `plugin-sdk` (`@module` in `src/index.ts`) rather than
+  TypeDoc's default `index`.
 - **Python**: `scripts/python_api_markdown.py` reads the SDK with `ast` (it
   imports nothing), and renders each public module's `__all__`, with
   Google-style sections as lists and cross-references as links.
@@ -532,7 +537,7 @@ Rust crates and the web UI library.
   re-exported. Signatures are rebuilt from the JSON, doc headings sit under
   their item, and intra-doc links come from rustdoc's own link table.
   `api/rust/README.md` groups the crates (plugin interface, plugins, host
-  internals, development).
+  internals, development). A crate's root module is `<crate>/README.md`.
 - **Web API**: `scripts/openapi_markdown.py` renders `bookclerkd`'s
   committed OpenAPI document (`crates/bookclerkd/openapi.json`). It writes
   an index with a quick-start request, the credentials and every route, one page per route group (with each

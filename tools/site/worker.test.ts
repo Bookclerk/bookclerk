@@ -56,8 +56,10 @@ const DOCS: Readonly<Record<string, string>> = Object.fromEntries(
 
 /** Generated pages the stand-in docs repository adds to docs/. */
 const GENERATED: Readonly<Record<string, string>> = {
-  "api/rust/demo/index.md":
+  "api/rust/demo/README.md":
     "# Crate `demo`\n\nA demo crate. See [the SDK](../../typescript/README.md) and [`Thing`](#thing).\n\n## Thing\n",
+  // A crate page as publishes before entry pages were READMEs named it.
+  "api/rust/legacy/index.md": "# Crate `legacy`\n\nAn older publish.\n",
   "api/web/README.md":
     "# Web API\n\n## Routes\n\n### [Jobs](jobs.md)\n\n| Route | Summary |\n| --- | --- |\n| [`GET /api/jobs`](jobs.md#get-apijobs) | Lists. |\n\n### [Health](health.md)\n\n| Route | Summary |\n| --- | --- |\n| [`GET /health`](health.md#get-health) | Liveness. |\n",
   "api/web/jobs.md": "# Jobs\n\n## `GET /api/jobs`\n\nLists jobs.\n",
@@ -65,7 +67,7 @@ const GENERATED: Readonly<Record<string, string>> = {
     version: 1,
     // One instant, as the build writes them, and one date alone, as older
     // publishes wrote them.
-    pages: { "plugins/README": "2026-10-26T23:30:05Z", "api/rust/demo/index": "2026-10-01" },
+    pages: { "plugins/README": "2026-10-26T23:30:05Z", "api/rust/demo/README": "2026-10-01" },
   }),
 };
 
@@ -251,6 +253,24 @@ test("docsTarget reads versions and paths", () => {
   assert.deepEqual(docsTarget("/docs/v/v0.2.0/api/web/index.html", versions), {
     kind: "redirect",
     location: "/docs/api/web",
+  });
+  assert.deepEqual(docsTarget("/docs/api/rust/x/index", versions), {
+    kind: "redirect",
+    location: "/docs/api/rust/x",
+  });
+  assert.deepEqual(docsTarget("/docs/index", versions), { kind: "redirect", location: "/docs" });
+  assert.deepEqual(docsTarget("/docs/api/rust/x/index.md", versions), {
+    kind: "redirect",
+    location: "/docs/api/rust/x/README.md",
+  });
+  assert.deepEqual(docsTarget("/docs/api/rust/x/README.md", versions), {
+    kind: "markdown",
+    version: latest,
+    keys: ["api/rust/x/README", "api/rust/x/index"],
+  });
+  assert.deepEqual(docsTarget("/docs/v/main/api/index", versions), {
+    kind: "redirect",
+    location: "/docs/v/main/api",
   });
   assert.deepEqual(docsTarget("/docs/a.html/index.html", versions), {
     kind: "redirect",
@@ -668,7 +688,7 @@ test("main's docs say they are the development version and link within main", as
 });
 
 test("generated pages link to what they are generated from and keep links inside the tree", async () => {
-  const html = await (await get("/docs/api/rust/demo/index", BROWSER)).text();
+  const html = await (await get("/docs/api/rust/demo", BROWSER)).text();
   // A crate the workspace does not hold falls back to the generator itself.
   const generator = "https://github.com/Bookclerk/bookclerk/blob/v0.2.0/scripts/docs-markdown.py";
   assert.ok(
@@ -819,13 +839,36 @@ test("a Markdown request does not read the dates file", async () => {
   assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/plugins/README.md`]);
 });
 
-test("a directory whose entry page is index serves it", async () => {
+test("a folder's entry page is served at the folder and never at /index", async () => {
   const dir = await get("/docs/api/rust/demo", BROWSER);
-  assert.equal(dir.status, 301);
-  assert.equal(dir.headers.get("Location"), "https://bookclerk.app/docs/api/rust/demo/index");
-  const old = await get("/docs/api/rust/demo/index.html", BROWSER);
-  assert.equal(old.status, 301);
-  assert.equal(old.headers.get("Location"), "https://bookclerk.app/docs/api/rust/demo");
+  assert.equal(dir.status, 200);
+  assert.match(
+    await dir.text(),
+    /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/api\/rust\/demo">/,
+  );
+  for (const path of [
+    "/docs/api/rust/demo/index",
+    "/docs/api/rust/demo/index.html",
+    "/docs/v/v0.2.0/api/rust/demo/index",
+  ]) {
+    const old = await get(path, BROWSER);
+    assert.equal(old.status, 301, path);
+    assert.equal(old.headers.get("Location"), "https://bookclerk.app/docs/api/rust/demo", path);
+  }
+  // A tree published before entry pages were READMEs still has index.md:
+  // its folder URL serves it without a redirect.
+  const legacy = await get("/docs/api/rust/legacy", BROWSER);
+  assert.equal(legacy.status, 200);
+  assert.match(
+    await legacy.text(),
+    /<link rel="canonical" href="https:\/\/bookclerk.app\/docs\/api\/rust\/legacy">/,
+  );
+  const legacyMarkdown = await get("/docs/api/rust/legacy/README.md", BROWSER);
+  assert.equal(legacyMarkdown.status, 200);
+  assert.match(await legacyMarkdown.text(), /^# Crate `legacy`/);
+  const legacyIndex = await get("/docs/api/rust/legacy/index", BROWSER);
+  assert.equal(legacyIndex.status, 301);
+  assert.equal(legacyIndex.headers.get("Location"), "https://bookclerk.app/docs/api/rust/legacy");
 });
 
 test("raw HTML in a doc is shown as text", async () => {
@@ -1035,7 +1078,7 @@ test("the sitemap is an index of one sitemap per section, listing every dated pa
     ["https://bookclerk.app/docs/plugins", "2026-10-26"],
   ]);
   assert.deepEqual(await urls("/sitemap-api.xml"), [
-    ["https://bookclerk.app/docs/api/rust/demo/index", "2026-10-01"],
+    ["https://bookclerk.app/docs/api/rust/demo", "2026-10-01"],
   ]);
   for (const path of ["/sitemap-guide.xml", "/sitemap-x.xml"])
     assert.equal((await get(path, "*/*")).status, 404, path);
@@ -1077,7 +1120,7 @@ test("/sitemap lists every page for people, grouped like the sidebar, with dates
   );
   assert.match(
     html,
-    /<h2 id="sitemap-api-reference">API reference<\/h2>\n<h3>Rust crates<\/h3>\n<ul><li><a href="\/docs\/api\/rust\/demo\/index">demo<\/a>/,
+    /<h2 id="sitemap-api-reference">API reference<\/h2>\n<h3>Rust crates<\/h3>\n<ul><li><a href="\/docs\/api\/rust\/demo">demo<\/a>/,
   );
   assert.match(html, /<a href="\/sitemap">Sitemap<\/a>/, "footer link");
   assert.doesNotMatch(html, /<script(?! type="application\/ld\+json")(?! src="\/)/);
@@ -1091,7 +1134,7 @@ test("/sitemap lists every page for people, grouped like the sidebar, with dates
     assert.equal(md.headers.get("Link"), '<https://bookclerk.app/sitemap>; rel="canonical"', path);
     assert.match(
       await md.text(),
-      /^# Sitemap\n[\s\S]*## API reference\n\n### Rust crates\n\n- \[demo\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/demo\/index\) \(Oct 1, 2026\)/,
+      /^# Sitemap\n[\s\S]*## API reference\n\n### Rust crates\n\n- \[demo\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/demo\) \(Oct 1, 2026\)/,
       path,
     );
   }
@@ -1119,7 +1162,7 @@ test("/sitemap lists the sidebar without dates when the dates file cannot be rea
 
 test("sitemapSection names a doc's top folder, site for the docs home, or docs", () => {
   assert.equal(sitemapSection("guide/getting-started"), "guide");
-  assert.equal(sitemapSection("api/rust/demo/index"), "api");
+  assert.equal(sitemapSection("api/rust/demo/README"), "api");
   assert.equal(sitemapSection("sql-contract/v1"), "sql-contract");
   assert.equal(sitemapSection("README"), "site");
   assert.equal(sitemapSection("Guide/x"), "docs");

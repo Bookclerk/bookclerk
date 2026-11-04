@@ -156,7 +156,7 @@ export const NAV: NavSpec[] = [
       "api/README",
       "api/typescript/README",
       "api/python/README",
-      "api/rust/bookclerk_plugin_sdk/index",
+      "api/rust/bookclerk_plugin_sdk/README",
       "api/web/README",
       "api/rust/README",
     ],
@@ -215,7 +215,7 @@ export const NAV: NavSpec[] = [
 export const GENERATED_TITLES: Readonly<Record<string, string>> = {
   "api/typescript/README": "TypeScript plugin SDK",
   "api/python/README": "Python plugin SDK",
-  "api/rust/bookclerk_plugin_sdk/index": "Rust plugin SDK",
+  "api/rust/bookclerk_plugin_sdk/README": "Rust plugin SDK",
   "api/web/README": "Web API",
   "api/rust/README": "Rust crates",
 };
@@ -263,11 +263,16 @@ function keyDir(key: string): string {
  * @param base - URL prefix of the docs version, ending in `/`.
  * @returns `<base><key>`, with no trailing slash: the index is `<base>`
  *   without its slash (`/docs`), and a nested README maps to its directory
- *   (`api/README` → `<base>api`).
+ *   (`api/README` → `<base>api`). A folder's `index` page maps to the
+ *   folder the same way (`api/rust/x/index` → `<base>api/rust/x`), so no
+ *   URL ends in `/index`; the docs build names entry pages `README`, and
+ *   this covers trees published before it did.
  */
 export function docUrl(key: string, base = "/docs/"): string {
-  if (key === "README") return base.slice(0, -1);
-  if (key.endsWith("/README")) return base + key.slice(0, -"/README".length);
+  if (key === "README" || key === "index") return base.slice(0, -1);
+  for (const entry of ["/README", "/index"]) {
+    if (key.endsWith(entry)) return base + key.slice(0, -entry.length);
+  }
   return base + key;
 }
 
@@ -478,14 +483,13 @@ function renderer(
     if (open === undefined || open.type !== "heading_open" || !anchored(open)) return close;
     const id = escapeHtml(String(open.attrGet("id")));
     const name = escapeHtml(inlineText(tokens[idx - 1]));
-    return `${close.trimEnd()}<a class="heading-anchor" href="#${id}" aria-label="Link to section: ${name}">${LINK_ICON}</a></div>\n`;
+    // The chain-link icon is drawn by site.css from /link-icon.svg, once for
+    // the whole page rather than once per heading (generated reference pages
+    // have over a thousand headings).
+    return `${close.trimEnd()}<a class="heading-anchor" href="#${id}" aria-label="Link to section: ${name}"></a></div>\n`;
   };
   return md;
 }
-
-/** The chain-link icon of a heading's link to itself; drawn here, not taken from an icon set. */
-const LINK_ICON =
-  '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"/></svg>';
 
 /**
  * Whether a heading gets a link to itself: every heading below the title

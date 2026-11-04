@@ -1828,6 +1828,22 @@ code.inline {
     opacity 0.15s,
     color 0.15s;
 }
+/* The chain-link icon (src/link-icon.svg), drawn in the link's colour. One
+   stylesheet rule instead of an inline SVG per heading keeps long generated
+   pages small. */
+.heading-anchor::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  mask: url("/link-icon.svg") center / contain no-repeat;
+}
+@media (forced-colors: active) {
+  .heading-anchor::before {
+    background-color: LinkText;
+    forced-color-adjust: none;
+  }
+}
 /* Text for screen readers only, such as docs.js's copy status. */
 .visually-hidden {
   position: absolute;

@@ -140,17 +140,17 @@ class IndexTest(unittest.TestCase):
         # The SDK is listed with the other SDKs, not among the crates.
         self.assertNotIn("| [`bookclerk_plugin_sdk`]", text)
         self.assertNotIn("## Plugins", text)
-        self.assertIn("| [`bookclerk_media`](bookclerk_media/index.md) | Clear media \\| remux |", text)
+        self.assertIn("| [`bookclerk_media`](bookclerk_media/README.md) | Clear media \\| remux |", text)
 
     def test_api_index_order_and_missing_references(self) -> None:
         with tempfile.TemporaryDirectory(prefix="docs-markdown-api-") as tmp:
             api = Path(tmp)
-            for rel in ("typescript/README.md", "python/README.md", "rust/README.md", "rust/bookclerk_plugin_sdk/index.md", "ui/README.md"):
+            for rel in ("typescript/README.md", "python/README.md", "rust/README.md", "rust/bookclerk_plugin_sdk/README.md", "ui/README.md"):
                 (api / rel).parent.mkdir(parents=True, exist_ok=True)
                 (api / rel).write_text("# x\n")
             dm.write_api_index(api)
             text = (api / "README.md").read_text()
-        order = [text.index(s) for s in ("## Plugin SDKs", "typescript/README.md", "python/README.md", "rust/bookclerk_plugin_sdk/index.md", "## Rust crates", "## Web UI")]
+        order = [text.index(s) for s in ("## Plugin SDKs", "typescript/README.md", "python/README.md", "rust/bookclerk_plugin_sdk/README.md", "## Rust crates", "## Web UI")]
         self.assertEqual(order, sorted(order))
         # No web API reference was built, so there is no section for it.
         self.assertNotIn("## Web API", text)
@@ -371,6 +371,13 @@ class TreeTest(unittest.TestCase):
             "```\n[c](c.md)\n```\n`[d](d.md)`\n"
         )
         self.assertEqual(dm.broken_links(out), ["README.md: missing.md", "api/rust/a.md: b.md"])
+
+    def test_index_pages_are_found_anywhere_in_the_tree(self) -> None:
+        out = self.base / "out"
+        for rel in ("README.md", "api/rust/a/README.md", "api/rust/b/index.md", "api/typescript/index.md", "api/ui/indexes.md"):
+            (out / rel).parent.mkdir(parents=True, exist_ok=True)
+            (out / rel).write_text("# x\n")
+        self.assertEqual(dm.index_pages(out), ["api/rust/b/index.md", "api/typescript/index.md"])
 
 
 # Unix times of 2025-10-01 and 2025-10-02, 12:00 UTC.

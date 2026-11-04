@@ -748,10 +748,12 @@ class Page:
         """The page's path under ``api/rust``.
 
         Returns:
-            ``<crate>/index.md`` or ``<crate>/<a>/<b>.md``.
+            ``<crate>/README.md`` or ``<crate>/<a>/<b>.md``. The crate root
+            is the folder's README so the site serves it at the folder's
+            own URL (``/docs/api/rust/<crate>``).
         """
         if not self.path:
-            return f"{self.crate}/index.md"
+            return f"{self.crate}/README.md"
         return f"{self.crate}/{'/'.join(self.path)}.md"
 
     @property

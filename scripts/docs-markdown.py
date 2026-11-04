@@ -709,7 +709,7 @@ plugin SDKs.
         "# Rust API reference",
         "",
         "Generated from rustdoc JSON for the Bookclerk workspace's libraries.",
-        "To write a native plugin, use the [Rust plugin SDK](bookclerk_plugin_sdk/index.md).",
+        "To write a native plugin, use the [Rust plugin SDK](bookclerk_plugin_sdk/README.md).",
         "",
     ]
     for title, description in RUST_GROUPS:
@@ -719,7 +719,7 @@ plugin SDKs.
         lines += [f"## {title}", "", description, "", "| Crate | Description |", "| --- | --- |"]
         for crate in members:
             text = crate.description.replace("|", "\\|")
-            lines.append(f"| [`{crate.name}`]({crate.name}/index.md) | {text} |")
+            lines.append(f"| [`{crate.name}`]({crate.name}/README.md) | {text} |")
         lines.append("")
     (rust_out / "README.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
@@ -909,7 +909,7 @@ API_INDEX = (
         (
             ("typescript/README.md", "TypeScript", "`@bookclerk/plugin-sdk`, for plugins that run in workerd"),
             ("python/README.md", "Python", "`bookclerk-plugin-sdk`, for Python plugins that run in workerd"),
-            (f"rust/{RUST_SDK_CRATE}/index.md", "Rust", f"`{RUST_SDK_CRATE}`, for native plugins"),
+            (f"rust/{RUST_SDK_CRATE}/README.md", "Rust", f"`{RUST_SDK_CRATE}`, for native plugins"),
         ),
     ),
     ("Web API", (("web/README.md", "bookclerkd HTTP API", "the endpoints the daemon serves"),)),
@@ -942,6 +942,23 @@ def write_api_index(api_out: Path) -> None:
         lines += [f"- [{title}]({page}): {description}" for page, title, description in built]
         lines.append("")
     (api_out / "README.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def index_pages(out: Path) -> list[str]:
+    """Find pages named ``index.md``, which the site would serve at ``…/index``.
+
+    The site serves a folder's ``README.md`` at the folder's own URL
+    (``/docs/api/rust/<crate>``), but an ``index.md`` at a URL ending in
+    ``/index``: a second, non-canonical spelling of a folder page. Generated
+    references name their landing pages ``README.md`` instead.
+
+    Args:
+        out: The output root.
+
+    Returns:
+        The path of each ``index.md`` under the root, relative to it.
+    """
+    return sorted(str(p.relative_to(out)) for p in out.rglob("index.md"))
 
 
 def broken_links(out: Path) -> list[str]:
@@ -1057,6 +1074,9 @@ def main(argv: list[str] | None = None) -> int:
             for line in broken[:50]:
                 print(f"broken link: {line}", file=sys.stderr)
             raise BuildError(f"{len(broken)} broken relative links in the API reference")
+        indexes = index_pages(out)
+        if indexes:
+            raise BuildError(f"pages named index.md (name them README.md): {', '.join(indexes[:20])}")
         files = sum(1 for p in out.rglob("*") if p.is_file())
         print(f"==> wrote {files} files under {out}")
     except BuildError as err:

@@ -407,7 +407,7 @@ test("section headings link to themselves, after the heading so its name stays i
   );
   assert.ok(
     out.html.includes(
-      '<a class="heading-anchor" href="#install-it" aria-label="Link to section: Install it"><svg aria-hidden="true"',
+      '<a class="heading-anchor" href="#install-it" aria-label="Link to section: Install it"></a></div>',
     ),
   );
   assert.ok(
