@@ -1897,6 +1897,38 @@ mod tests {
             .unwrap()
             .to_string();
 
+        // The consent form: deny sends the client `access_denied`, allow a code.
+        let consent = |answer: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/oidc/authorize")
+                .header(header::COOKIE, &portal_cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "client_id=audiobookshelf&redirect_uri=http%3A%2F%2F127.0.0.1%3A13378%2Fauth%2Fopenid%2Fcallback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&scope=openid&state=s1&consent={answer}"
+                )))
+                .unwrap()
+        };
+        for (answer, expected) in [("deny", "error=access_denied"), ("allow", "code=")] {
+            let answered = app.clone().oneshot(consent(answer)).await.unwrap();
+            assert_eq!(
+                answered.status(),
+                StatusCode::TEMPORARY_REDIRECT,
+                "{answer}"
+            );
+            let to = answered
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            assert!(
+                to.starts_with("http://127.0.0.1:13378/auth/openid/callback?")
+                    && to.contains(expected)
+                    && to.contains("state=s1"),
+                "{answer}: {to}"
+            );
+        }
+
         let token_body = format!(
             "grant_type=authorization_code&code={code}&redirect_uri=http%3A%2F%2F127.0.0.1%3A13378%2Fauth%2Fopenid%2Fcallback&client_id=audiobookshelf&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
         );
