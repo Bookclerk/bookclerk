@@ -163,13 +163,12 @@ expression and a work:
    author credits only, reusing `bookclerk-enrich`'s text normalisation but
    not `calculate_match_confidence`: that score includes recording signals
    (duration, narrator) and treats any ten-character alphanumeric title as an
-   ASIN. A matcher hit joins the work only when exactly one work matches,
-   its kind is the same, and nothing contradicts it: no work identifier of
-   the same scheme with another value and no different position in the same
-   series. Several candidates, or one that is contradicted, make a new work
-   and record the candidates for an Administrator, who can merge them with
-   an override. A wrong automatic merge is undone the same way, by an
-   override that splits the work.
+   ASIN. A matcher hit joins the work when the kind is the same and, for a
+   podcast episode, the parent show is the same, so two shows by one host
+   never share an episode called "Trailer". In the rare case that two
+   existing works already match (an Administrator split them), the listing
+   joins neither and the choice goes to the Administrator. A wrong
+   automatic merge is undone by an override that splits the work.
 4. `resolution_overrides` win over every automatic step.
 
 Resolution runs on guest-supplied identifiers and credits, so it is an
