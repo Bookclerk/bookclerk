@@ -11,6 +11,7 @@ mod batch;
 mod branch_catalog;
 mod clerks;
 mod cluster_links;
+mod cron_fires;
 mod deployments;
 mod documents;
 mod enrollment;
@@ -58,6 +59,10 @@ pub use cluster_links::{
     record_cluster_link, set_cluster_link_ancestry, set_cluster_link_sharing,
     set_cluster_link_state, ClusterLink, ClusterLinkKeys, NewClusterLink, CLUSTER_LINK_ACTIVE,
     CLUSTER_LINK_KEYS_NAME, CLUSTER_LINK_LEFT, CLUSTER_LINK_REVOKED,
+};
+pub use cron_fires::{
+    claim_cron_fire, ensure_cron_cursor, load_cron_cursor, CronCursor, CronFireClaim,
+    CRON_FIRE_MAX_ATTEMPTS,
 };
 pub use deployments::{
     bounded_observation_detail, delete_plugin_deployment, ensure_plugin_deployment,
@@ -834,6 +839,8 @@ fn invalid_events(detail: &str) -> LibraryError {
     LibraryError::Invalid(format!("invalid configuration: {detail}"))
 }
 
+#[cfg(test)]
+mod cron_fires_tests;
 #[cfg(test)]
 mod enrollment_tests;
 #[cfg(test)]

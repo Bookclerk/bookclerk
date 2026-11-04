@@ -149,8 +149,9 @@ host-managed `plugin-state/<PluginKey fs-id>/data` and
 
 Consent is keyed by `entrypoints`, the granted bindings (`[vars]`,
 `[secrets]`, `[work_fs]`, `[oauth]`, `[[kv_namespaces]]`,
-`[[databases]]`) and every `[[events.producers]]` type. There is no
-separate method list.
+`[[databases]]`), every `[[events.producers]]` type and every
+`[triggers] crons` schedule (`cron:<schedule>`). There is no separate
+method list.
 
 ## Consent before enable (and every spawn)
 

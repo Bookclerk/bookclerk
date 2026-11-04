@@ -17,6 +17,7 @@ class BookclerkEntrypoint<Env> extends WorkerEntrypoint<Env> {
   event?(batch: EventBatch): Promise<void>;             // [[events.consumers]]
   queue?(batch: QueueBatch): Promise<void>;             // [[queues.consumers]]
   job?(job: JobController): Promise<JobCompletion | void>; // [triggers] jobs
+  scheduled?(controller: ScheduledController): Promise<void>; // [triggers] crons
   databaseMigrations?(binding: string): Promise<PluginMigration[]>; // [[databases]]
   shutdown?(): Promise<void>;
 }
@@ -200,7 +201,7 @@ guests that export `cli` (and optional event and job triggers), not a
 
 | Workers concept | Bookclerk v3 |
 | --- | --- |
-| `export default class extends WorkerEntrypoint` | `export default class extends BookclerkEntrypoint` (`event` / `queue` / `job` triggers) |
+| `export default class extends WorkerEntrypoint` | `export default class extends BookclerkEntrypoint` (`event` / `queue` / `job` / `scheduled` triggers) |
 | Named `export class` entrypoints | `entrypoints = ["storefront", …]` + matching `*Entrypoint` subclass |
 | `env.DB` | `[[databases]]` → granted on `env` |
 | `env.KV` | `[[kv_namespaces]]` → `get` / `getWithMetadata` / `put` / `delete` / `list` with `expiration`, `expirationTtl`, and `metadata` |
@@ -208,7 +209,7 @@ guests that export `cli` (and optional event and job triggers), not a
 | `[[queues.producers]]` / `[[queues.consumers]]` | `env.<BINDING>.send` / `sendBatch` and `queue(batch)` with per-message `ack` / `retry` |
 | `[[events.consumers]]` | `event(batch)` with `ack` / `retry` / `reject` / `deadLetter` / `suspend` |
 | `[[events.producers]]` | `env.EVENTS.publish` (host outbox; forced `source`) |
-| Cron / scheduled | Not implemented yet |
+| `[triggers] crons` / `scheduled(controller)` | `[triggers] crons` and `scheduled(controller)`, five-field UTC schedules (see [Scheduled triggers](#scheduled-triggers)) |
 | `[triggers] jobs` | `job(controller)` (durable command envelope) |
 | `wrangler types` | `bookclerk-plugin types` → generated `Env` |
 | Workers for Platforms / Dynamic Workers | **Not used**: local embedded workerd + OS jail only |
@@ -416,6 +417,67 @@ consumers per queue) and `bookclerk queues inspect <name>` (recent
 messages and deliveries), backed by `GET /api/queues` and
 `GET /api/queues/{name}`. Delivery rows are the same `event_deliveries`
 that the `bookclerk events` verbs act on (`retry`, `ack`, `cancel`).
+
+## Scheduled triggers
+
+`[triggers] crons` runs the default export's `scheduled(controller)` on a
+schedule, as Workers Cron Triggers do.
+
+```toml
+[triggers]
+crons = ["*/30 * * * *", "0 3 * * MON-FRI"]
+```
+
+```ts
+export default class MyPlugin extends BookclerkEntrypoint<Env> {
+  async scheduled(controller: ScheduledController) {
+    // controller.cron, controller.scheduledTime (UTC Unix ms),
+    // controller.fireId, controller.attempt, controller.deadlineUnixMs
+    await refresh(controller.scheduledTime);
+  }
+}
+```
+
+Python authors define `async def scheduled(self, controller)` and receive a
+frozen `ScheduledController` (`cron`, `scheduled_time`, `fire_id`,
+`attempt`, `deadline_unix_ms`). Native guests implement
+`ScheduledHandler::scheduled` and return it from `open` as
+`Entrypoints.scheduled_handler`.
+
+- **Schedules.** Each entry has five fields (minute, hour, day of month,
+  month, day of week) and is read in UTC. Fields take `*`, values, ranges,
+  lists and `/step`; months and weekdays also take `JAN`–`DEC` and
+  `SUN`–`SAT`, and `7` is Sunday. When both day fields are restricted, a
+  day matching either one fires, as in Vixie cron. `L`, `W`, `#`, `@daily`
+  style macros and seconds are rejected, and so are schedules that never
+  fire or can go nine years without firing (such as `0 0 29 2 */7`,
+  February 29 on a Sunday). A manifest declares at most 8 schedules of at most 128 bytes each
+  (`MAX_CRON_BYTES`).
+- **One fire per instance.** Each fire runs once per deployed plugin
+  instance, cluster-wide. Every daemon checks its schedules every 15
+  seconds, and a compare-and-swap on the shared `plugin_cron_cursors` row
+  lets exactly one node claim a fire. The claim admits a durable
+  `plugin_scheduled` job in the same batch, and the job queue routes it to
+  a node that runs the instance (see
+  [Job kinds](../internals/jobs.md#job-kinds)).
+- **Missed fires coalesce.** A cluster that was down through several fire
+  times runs one late fire for the newest of them, with that time as
+  `scheduledTime`. The same goes for an instance that was undeployed and
+  is deployed again. A schedule seen for the first time (a new instance,
+  or a schedule a new version adds) waits for its next fire.
+- **Overlap.** A fire that comes due while the previous fire of the same
+  schedule is still queued or running is skipped, and the daemon logs a
+  warning.
+- **Retries.** Returning completes the fire. Throwing retries the same
+  fire (same `scheduledTime` and `fireId`) with backoff, up to 3
+  attempts, so handlers should be idempotent on `fireId`.
+- **Consent.** Each schedule is a grant token (`cron:<schedule>`, with the
+  schedule's whitespace normalized). A schedule the grant doesn't cover
+  never fires, and `describe()` can't add schedules beyond `plugin.toml`.
+
+> [!NOTE]
+> Fires run only on library nodes. An owned host node (one that runs work
+> for a single member) doesn't claim `plugin_scheduled` jobs.
 
 ## Entrypoint methods
 

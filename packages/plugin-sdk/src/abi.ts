@@ -23,6 +23,9 @@ export const MAX_CHECKPOINT_BYTES = 65536 as const;
 /** Maximum plugin / account identifier length (bytes). */
 export const MAX_IDENTIFIER_BYTES = 64 as const;
 
+/** Maximum `[triggers] crons` source length (bytes), as in `ScheduledController.cron`. */
+export const MAX_CRON_BYTES = 128 as const;
+
 /** Maximum granted config payload size (bytes). */
 export const MAX_CONFIG_PAYLOAD_BYTES = 65536 as const;
 

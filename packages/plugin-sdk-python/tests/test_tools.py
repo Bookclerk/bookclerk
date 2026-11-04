@@ -312,6 +312,29 @@ def test_kv_rows_format_and_type():
     assert "sync.cursors" in stub
 
 
+@pytest.mark.parametrize(
+    "triggers",
+    [
+        {"crons": ["*/30 * * * *", "0 3 * * MON"]},
+        {"jobs": ["echo.sync"], "crons": ["0 0 * * *"]},
+    ],
+)
+def test_format_keeps_cron_and_job_triggers(triggers: dict[str, list[str]]) -> None:
+    import tomllib
+
+    rendered = format_manifest(
+        {
+            "api_version": 3,
+            "id": "echo",
+            "runtime": "native",
+            "command": "./echo",
+            "triggers": triggers,
+            "capabilities": {"network": {"mode": "deny"}},
+        }
+    )
+    assert tomllib.loads(rendered)["triggers"] == triggers
+
+
 def test_format_keeps_queues_declaration():
     text = (FIXTURES / "valid-queues" / "plugin.toml").read_text(encoding="utf-8")
     import tomllib
@@ -1011,3 +1034,41 @@ def test_manifest_capabilities_report_queues():
     assert caps["queueConsumers"] == ["notify"]
     assert caps["queueProducers"] == ["jobs"]
     assert caps["bindings"] == ["JOBS", "JOBS_AGAIN"]
+
+
+def test_validate_accepts_and_rejects_cron_triggers():
+    from bookclerk_plugin_sdk.tools import MAX_CRON_TRIGGERS, validate_manifest
+
+    base = {
+        "api_version": 3,
+        "id": "echo",
+        "runtime": "native",
+        "command": "./echo",
+        "capabilities": {"network": {"mode": "deny"}},
+    }
+    # Crons alone satisfy "declare at least one entrypoint or trigger".
+    validate_manifest({**base, "triggers": {"crons": ["*/30 * * * *", "0 3 * * MON-FRI"]}})
+    with pytest.raises(ValueError, match="array of strings"):
+        validate_manifest({**base, "triggers": {"crons": "* * * * *"}})
+    with pytest.raises(ValueError, match="array of strings"):
+        validate_manifest({**base, "entrypoints": ["cli"], "triggers": {"crons": False}})
+    with pytest.raises(ValueError, match="at most"):
+        validate_manifest(
+            {
+                **base,
+                "triggers": {"crons": [f"{m} * * * *" for m in range(MAX_CRON_TRIGGERS + 1)]},
+            }
+        )
+    with pytest.raises(ValueError, match="ASCII string"):
+        validate_manifest({**base, "triggers": {"crons": [5]}})
+    with pytest.raises(ValueError, match="needs 5 fields"):
+        validate_manifest({**base, "triggers": {"crons": ["* * * *"]}})
+    with pytest.raises(ValueError, match="is not valid cron"):
+        validate_manifest({**base, "triggers": {"crons": ["@daily * * * *"]}})
+    with pytest.raises(ValueError, match="is duplicated"):
+        validate_manifest({**base, "triggers": {"crons": ["0 * * * *", "0  *  * * *"]}})
+    for registry in ("storefront", "storage", "databaseAdapter"):
+        with pytest.raises(ValueError, match="cannot be combined"):
+            validate_manifest(
+                {**base, "entrypoints": [registry], "triggers": {"crons": ["0 0 * * *"]}}
+            )

@@ -544,6 +544,79 @@ async fn open_granted_binding_databases(
         .map_err(|err| anyhow::anyhow!(err.to_string()))
 }
 
+/// Runs one `plugin_scheduled` fire through the instance's
+/// `scheduled(controller)` trigger on this node.
+///
+/// # Errors
+///
+/// Returns an error (retried with backoff until the attempt cap) when the
+/// payload is incomplete, the instance is not loaded here, the cron is no
+/// longer declared, the job was cancelled, or the handler fails.
+pub async fn run_plugin_scheduled(
+    state: &AppState,
+    payload: &bookclerk_library::JobPayload,
+    ctx: Option<&JobExecCtx>,
+) -> anyhow::Result<String> {
+    let instance = payload
+        .plugin_instance_id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("plugin_scheduled missing plugin_instance_id"))?;
+    let cron_text = payload
+        .cron
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("plugin_scheduled missing cron"))?;
+    let scheduled_time_ms = payload
+        .scheduled_time_ms
+        .ok_or_else(|| anyhow::anyhow!("plugin_scheduled missing scheduled_time_ms"))?;
+    let cron = bookclerk_plugin_manifest::CronSchedule::parse(cron_text)
+        .map_err(|err| anyhow::anyhow!("plugin_scheduled cron `{cron_text}`: {err}"))?;
+    let library = state.library.read().await.clone();
+    if job_cancelled(ctx, &library).await {
+        anyhow::bail!("cancelled");
+    }
+    let integration = {
+        let integrations = state.integrations.read().await;
+        integrations
+            .all()
+            .iter()
+            .find(|i| i.plugin_instance_id() == Some(instance))
+            .cloned()
+    }
+    .ok_or_else(|| anyhow::anyhow!("plugin instance {instance} is not running on this node"))?;
+    if !integration.cron_schedules().contains(&cron) {
+        // An upgrade removed the schedule, or consent no longer covers it,
+        // after this fire was queued: drop the fire instead of retrying it.
+        tracing::info!(
+            plugin_instance_id = %instance,
+            cron = %cron,
+            "cron fire dropped: the instance no longer runs this schedule"
+        );
+        return Ok(format!("scheduled `{cron}` dropped: no longer declared"));
+    }
+    let invocation = bookclerk_integrations::ScheduledInvocation {
+        cron: cron.clone(),
+        scheduled_time_ms,
+        job_id: ctx
+            .map(|c| c.fence.job_id.clone())
+            .unwrap_or_else(|| format!("plugin_scheduled:{instance}:{scheduled_time_ms}")),
+        attempt: ctx
+            .map(|c| u32::try_from(c.attempt_count.max(1)).unwrap_or(u32::MAX))
+            .unwrap_or(1),
+        deadline_unix_ms: ctx
+            .and_then(|c| c.lease_expires_at)
+            .and_then(|t| u64::try_from(t.timestamp_millis()).ok())
+            .unwrap_or(u64::MAX / 2),
+    };
+    let cancel = ctx
+        .map(|c| std::sync::Arc::clone(&c.cancel))
+        .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    integration
+        .run_scheduled_cancelable(invocation, cancel)
+        .await
+        .map_err(|err| anyhow::anyhow!("scheduled `{cron}`: {err}"))?;
+    Ok(format!("scheduled `{cron}` at {scheduled_time_ms} ran"))
+}
+
 /// Runs `plugin.worker().handle(stream_copy)` on a loaded destination guest.
 pub async fn run_plugin_copy(
     state: &AppState,

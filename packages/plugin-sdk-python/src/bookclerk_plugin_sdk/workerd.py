@@ -24,6 +24,7 @@ from __future__ import annotations
 import inspect
 import json
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -108,6 +109,7 @@ __all__ = [
     "QueueBinding",
     "QueueMessage",
     "RemoteLibraryEntrypoint",
+    "ScheduledController",
     "StorageEntrypoint",
     "StorefrontEntrypoint",
     "cli_args",
@@ -1106,6 +1108,48 @@ def job_outcome_for(
     }
 
 
+@dataclass(frozen=True)
+class ScheduledController:
+    """One ``[triggers] crons`` fire, as ``scheduled(controller)`` receives it.
+
+    Fires are delivered at least once; a fire that raises is retried with the
+    same ``scheduled_time`` and ``fire_id``, so dedupe on ``fire_id``.
+
+    Attributes:
+        cron: The schedule that fired, normalized to single spaces.
+        scheduled_time: Fire time in UTC Unix milliseconds (a whole minute).
+        fire_id: Durable id of this fire, stable across retries.
+        attempt: Failure attempt, starting at 1.
+        deadline_unix_ms: Deadline hint in Unix milliseconds; the host fence
+            is authoritative.
+    """
+
+    cron: str = ""
+    scheduled_time: int = 0
+    fire_id: str = ""
+    attempt: int = 0
+    deadline_unix_ms: int = 0
+
+    @classmethod
+    def from_wire(cls, wire: Any) -> ScheduledController:
+        """Builds the controller from a wire ``ScheduledController``.
+
+        Args:
+            wire: Decoded wire struct (a JS proxy or a dict); fields may be
+                missing.
+
+        Returns:
+            The controller with every field present.
+        """
+        return cls(
+            cron=str(_get(wire, "cron", "") or ""),
+            scheduled_time=int(_get(wire, "scheduledTime", 0) or 0),
+            fire_id=str(_get(wire, "fireId", "") or ""),
+            attempt=int(_get(wire, "attempt", 0) or 0),
+            deadline_unix_ms=int(_get(wire, "deadlineUnixMs", 0) or 0),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Author base classes
 # ---------------------------------------------------------------------------
@@ -1114,8 +1158,10 @@ def job_outcome_for(
 class BookclerkEntrypoint(WorkerEntrypoint):
     """Default-export base for ``api_version = 3`` Python Workers guests.
 
-    Optional trigger methods: ``event(batch)`` (for ``[[events.consumers]]``)
-    and ``job(job)`` (for ``[triggers] jobs``); optional ``describe()``
+    Optional trigger methods: ``event(batch)`` (for ``[[events.consumers]]``),
+    ``queue(batch)`` (for ``[[queues.consumers]]``), ``scheduled(controller)``
+    (for ``[triggers] crons``) and ``job(job)`` (for ``[triggers] jobs``);
+    optional ``describe()``
     (presentation fields beyond ``plugin.toml``), ``database_migrations(binding)``,
     and ``shutdown()``. Return plain Python values; the SDK converts them.
 
@@ -1178,6 +1224,21 @@ class BookclerkEntrypoint(WorkerEntrypoint):
         except Exception as err:  # noqa: BLE001 - every failure becomes a retry
             return js(queue_batch_results(batch, err))
         return js(queue_batch_results(batch, None))
+
+    async def bookclerkScheduled(self, context: Any = None, wire_controller: Any = None) -> None:
+        """Adapter dispatch: run one cron fire through ``scheduled(controller)``.
+
+        The handler receives a :class:`ScheduledController`. Returning
+        completes the fire; raising has the host retry the same fire.
+
+        Raises:
+            PluginError: ``unsupported`` when the author defines no ``scheduled``.
+        """
+        handler = getattr(self, "scheduled", None)
+        if not callable(handler):
+            raise _unsupported("scheduled")
+        _apply_invocation_env(self, context)
+        await _await_maybe(handler(ScheduledController.from_wire(wire_controller)))
 
     async def bookclerkJob(self, context=None, invocation=None, granted=None):
         """Adapter dispatch: run one durable job through ``job(controller)``.

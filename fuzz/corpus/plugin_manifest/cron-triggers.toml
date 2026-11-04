@@ -1,0 +1,10 @@
+api_version = 3
+id = "nightly"
+runtime = "native"
+command = "./nightly"
+
+[triggers]
+crons = ["*/30 * * * *", "0  3 * * MON-FRI", "0 12 29 2 *"]
+
+[capabilities.network]
+mode = "deny"

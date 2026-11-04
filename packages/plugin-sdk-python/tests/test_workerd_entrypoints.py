@@ -13,6 +13,7 @@ from bookclerk_plugin_sdk.workerd import (
     EventMessage,
     JobController,
     PluginError,
+    ScheduledController,
     cli_args,
     decode_extensible_config,
     event_batch_results,
@@ -109,6 +110,51 @@ class BookclerkEntrypointTests(unittest.IsolatedAsyncioTestCase):
     async def test_event_unsupported_without_handler(self) -> None:
         with self.assertRaises(PluginError) as ctx:
             await BookclerkEntrypoint().bookclerkEvent({}, {"events": []})
+        self.assertEqual(ctx.exception.code, "unsupported")
+
+    async def test_scheduled_receives_a_frozen_controller(self) -> None:
+        seen: list[ScheduledController] = []
+
+        class Default(BookclerkEntrypoint):
+            async def scheduled(self, controller: ScheduledController) -> None:
+                seen.append(controller)
+
+        await Default().bookclerkScheduled(
+            {},
+            {
+                "cron": "0 3 * * MON",
+                "scheduledTime": 1_700_000_040_000,
+                "fireId": "job-1",
+                "attempt": 2,
+                "deadlineUnixMs": 1_700_000_100_000,
+            },
+        )
+        self.assertEqual(
+            seen,
+            [
+                ScheduledController(
+                    cron="0 3 * * MON",
+                    scheduled_time=1_700_000_040_000,
+                    fire_id="job-1",
+                    attempt=2,
+                    deadline_unix_ms=1_700_000_100_000,
+                )
+            ],
+        )
+        with self.assertRaises(AttributeError):
+            seen[0].attempt = 3  # type: ignore[misc]
+        self.assertEqual(ScheduledController.from_wire({}), ScheduledController())
+
+    async def test_scheduled_errors_propagate_and_missing_is_unsupported(self) -> None:
+        class Default(BookclerkEntrypoint):
+            def scheduled(self, controller: ScheduledController) -> None:
+                raise PluginError.from_wire("unavailable", controller.cron)
+
+        with self.assertRaises(PluginError) as ctx:
+            await Default().bookclerkScheduled({}, {"cron": "* * * * *"})
+        self.assertEqual(ctx.exception.code, "unavailable")
+        with self.assertRaises(PluginError) as ctx:
+            await BookclerkEntrypoint().bookclerkScheduled({}, {})
         self.assertEqual(ctx.exception.code, "unsupported")
 
     async def test_job_completed_and_rejected(self) -> None:

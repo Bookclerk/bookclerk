@@ -38,6 +38,7 @@ bookclerk-integrations.workspace = true
 bookclerk-discover.workspace = true
 bookclerk-plugin-host.workspace = true
 bookclerk-plugin-abi.workspace = true
+bookclerk-plugin-manifest.workspace = true
 bookclerk-plugin-catalog.workspace = true
 bookclerk-tray.workspace = true
 serde.workspace = true

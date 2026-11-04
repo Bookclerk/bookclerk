@@ -72,6 +72,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "cron_schedule"
+path = "fuzz_targets/cron_schedule.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "abi_decode"
 path = "fuzz_targets/abi_decode.rs"
 test = false

@@ -358,6 +358,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   queueConsumer?: QueueConsumer | null;
+  /**
+   * `[triggers] crons` trigger: `scheduled(controller)` handler.
+   * Null when the guest does not export this capability.
+   */
+  scheduledHandler?: ScheduledHandler | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -868,6 +873,22 @@ export interface NamedDatabase {
 }
 
 /**
+ * `[triggers] crons` handler (`Entrypoints.scheduledHandler`), the Workers
+ * `scheduled(controller)` trigger. Each fire is delivered at least once;
+ * a fire that throws is retried with backoff, keeping `scheduledTime` and
+ * `fireId`, so handlers dedupe on `fireId`.
+ */
+export interface ScheduledHandler {
+  /**
+   * Run one cron fire to completion.
+   *
+   * @param controller - The fire being delivered.
+   * @returns {@link EmptyReply}
+   */
+  scheduled(controller: ScheduledController): Promise<EmptyReply>;
+}
+
+/**
  * `[[queues.consumers]]` handler (`Entrypoints.queueConsumer`). Delivery is
  * at-least-once; consumers must be idempotent on `QueueMessage.id`.
  */
@@ -1198,6 +1219,12 @@ export interface PluginCapabilities {
   queueConsumers: string[];
   /** Queues the guest may send to through its `[[queues.producers]]` bindings. */
   queueProducers: string[];
+  /**
+   * Five-field UTC cron schedules the default entrypoint handles
+   * (`scheduled(controller)` trigger, `[triggers] crons`), normalized to
+   * single spaces.
+   */
+  crons: string[];
 }
 
 /**
@@ -2475,6 +2502,26 @@ export interface KvListOk {
 export type KvListReply =
   | { kind: "ok"; value: KvListOk } // Success: one page of keys.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** One fire of a `[triggers] crons` schedule (`scheduled(controller)`). */
+export interface ScheduledController {
+  /** The schedule that fired, normalized to single spaces (`0 3 * * MON`). */
+  cron: string;
+  /**
+   * Fire time, UTC unix milliseconds (always a whole minute). Retries of
+   * one fire keep it.
+   */
+  scheduledTime: number;
+  /** Durable id of this fire, stable across retries; dedupe on it. */
+  fireId: string;
+  /** Failure attempt, starting at 1. */
+  attempt: number;
+  /**
+   * UTC unix milliseconds. Host fence/lease is authoritative; this hint must
+   * not outlive the fence.
+   */
+  deadlineUnixMs: number;
+}
 
 /** One typed SQL cell or bind parameter. */
 export type DbValue =

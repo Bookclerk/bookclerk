@@ -177,6 +177,21 @@ stateDiagram-v2
 | `listen_sync` | `listen_sync` | `network` | `run_listen_sync` |
 | `integration_scan` | `integration_scan:id={id}:force={0\|1}` | `network` | `run_integration_scan` |
 | `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI `JobRunner` stream-copy (`run_plugin_copy`) |
+| `plugin_scheduled` | `plugin_scheduled:instance={id}:cron={schedule}` | `network` | `scheduled(controller)` on the instance (`run_plugin_scheduled`) |
+
+`plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
+ticker claims a due fire with a compare-and-swap on the instance's
+`plugin_cron_cursors` row and inserts the job in the same batch, with
+`requires = [instance]` so it routes to a node that runs the instance. The
+dedup key holds one fire per schedule, so a fire that comes due while the
+previous one is still active is skipped. A failed fire retries up to 3
+attempts with the same `scheduled_time_ms`. A pinned fire can only be
+claimed by a node trusted with every job (an owner node, or a Host whose
+owner is an Owner or Administrator). When no such node runs the instance
+past the requirements sweep's grace period, the sweep fails the fire as
+`unroutable`. That covers an instance deployed nowhere and one deployed only
+on Hosts owned by members. See
+[Scheduled triggers](../plugins/abi.md#scheduled-triggers).
 
 Reserved classes (no worker in this release): `media`, `transcription`,
 `indexing`.
