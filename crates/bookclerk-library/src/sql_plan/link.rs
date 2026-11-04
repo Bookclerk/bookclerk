@@ -120,6 +120,36 @@ fn strong_clash(p: &ListingLinkParams) -> (String, Vec<DbValue>) {
     (format!("({})", parts.join(" OR ")), binds)
 }
 
+/// The predicate "nobody stored or relinked the listing since the
+/// snapshot", with its binds: it is still unstored when the plan inserts
+/// it, or still sells the edition the plan was made from.
+///
+/// Identifiers are attached before the listing is written, so they carry
+/// this guard themselves; otherwise a batch that loses the listing to
+/// another writer would still leave its identifiers on an edition the
+/// listing does not sell.
+fn listing_unchanged(p: &ListingLinkParams) -> (String, Vec<DbValue>) {
+    if p.listing_is_new {
+        return (
+            "NOT EXISTS (SELECT 1 FROM store_listings \
+             WHERE plugin_key = ? AND marketplace = ? AND product_id = ?)"
+                .to_string(),
+            vec![
+                j_str(&p.plugin_key),
+                j_str(&p.marketplace),
+                j_str(&p.product_id),
+            ],
+        );
+    }
+    match &p.stored_edition_id {
+        Some(stored) => (
+            "EXISTS (SELECT 1 FROM store_listings WHERE id = ? AND edition_id = ?)".to_string(),
+            vec![j_str(&p.listing_id), j_str(stored)],
+        ),
+        None => ("1 = 1".to_string(), Vec::new()),
+    }
+}
+
 /// The predicate "the listing sells the planned edition", with its binds.
 fn linked(p: &ListingLinkParams) -> (&'static str, Vec<DbValue>) {
     (
@@ -134,6 +164,7 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
     let (gate, gate_binds) = creation_gate(p);
     let (is_linked, linked_binds) = linked(p);
     let (clash, clash_binds) = strong_clash(p);
+    let (unchanged, unchanged_binds) = listing_unchanged(p);
 
     if let Some(w) = &p.new_work {
         let mut binds = vec![
@@ -239,12 +270,14 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             j_str(&p.edition_id),
         ];
         binds.extend(clash_binds.clone());
+        binds.extend(unchanged_binds.clone());
         out.push(sql(
             &format!(
                 "INSERT OR IGNORE INTO edition_identifiers \
                  (edition_id, scheme, value, marketplace, strength, strong_key, created_at) \
                  SELECT ?, ?, ?, ?, ?, ?, ? \
-                 WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) AND NOT {clash}"
+                 WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?) AND NOT {clash} \
+                 AND {unchanged}"
             ),
             binds,
         ));
@@ -258,11 +291,12 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             j_str(&p.work_id),
         ];
         binds.extend(clash_binds.clone());
+        binds.extend(unchanged_binds.clone());
         out.push(sql(
             &format!(
                 "INSERT OR IGNORE INTO work_identifiers (scheme, value, work_id, created_at) \
                  SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM works WHERE id = ?) \
-                 AND NOT {clash}"
+                 AND NOT {clash} AND {unchanged}"
             ),
             binds,
         ));

@@ -1984,6 +1984,56 @@ mod store_tests {
     }
 
     #[tokio::test]
+    async fn identifiers_stay_off_an_edition_when_another_writer_stored_the_listing() {
+        let store = store().await;
+        let isbn_only = store
+            .record_listing(
+                &resolve::Listing::from_draft(&dune("libro", "L1")).unwrap(),
+                &account("a1"),
+            )
+            .await
+            .unwrap();
+
+        let mut with_asin = dune("audible", "B000000001");
+        with_asin
+            .identifiers
+            .push((resolve::IdentifierScheme::Asin, "B000000001".into(), None));
+        let listing = resolve::Listing::from_draft(&with_asin).unwrap();
+        let holder = resolve::Holder::Account("a1".into());
+        let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        assert_eq!(plan.listing.edition_id, isbn_only.listing.edition_id);
+
+        // Meanwhile another scan stores the same product, described
+        // differently, on an edition of its own.
+        let mut other = dune("audible", "B000000001");
+        other.identifiers.clear();
+        other.abridgement = Some(resolve::Abridgement::Abridged);
+        let other = store
+            .record_listing(
+                &resolve::Listing::from_draft(&other).unwrap(),
+                &account("a2"),
+            )
+            .await
+            .unwrap();
+        assert_ne!(other.listing.edition_id, isbn_only.listing.edition_id);
+
+        assert_eq!(
+            store
+                .run_link_listing(link_params(&listing, &plan, &snapshot))
+                .await
+                .unwrap(),
+            atomic_status::RETRY
+        );
+        let asins = edition_identifiers::Entity::find()
+            .filter(edition_identifiers::Column::Scheme.eq("asin"))
+            .all(&store.db)
+            .await
+            .unwrap();
+        assert!(asins.is_empty(), "{asins:?}");
+    }
+
+    #[tokio::test]
     async fn a_new_work_answers_retry_when_another_work_claimed_its_work_identifier() {
         let store = store().await;
         let mut other = dune("audible", "B000000002");
