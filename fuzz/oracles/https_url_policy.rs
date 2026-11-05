@@ -13,8 +13,9 @@
 //! - an accepted URL is `https://`, its authority has no user info, port or
 //!   IP literal, its host has no empty label, and it is a CDN suffix or a
 //!   subdomain of one;
-//! - an input that does not start with `https:` (ignoring case and leading
-//!   whitespace or control bytes) is refused.
+//! - an input that, once surrounding whitespace is trimmed, does not start
+//!   with `https:` (ignoring case) or has a control byte or space left in it
+//!   is refused.
 
 use bookclerk_plugin_manifest::{https_url_on_hosts, MAX_FETCH_URL_BYTES};
 
@@ -38,7 +39,11 @@ pub fn check(data: &[u8]) {
     let Some(accepted) = https_url_on_hosts(text, PATTERNS) else {
         return;
     };
-    let lead = text.trim_start_matches(|c: char| c <= ' ');
+    let lead = text.trim();
+    assert!(
+        !lead.bytes().any(|b| b <= b' ' || b == 0x7f),
+        "accepted an input with an inner control byte or space {text:?}"
+    );
     assert!(
         lead.get(..6)
             .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https:")),

@@ -665,7 +665,10 @@ pub const MAX_FETCH_URL_BYTES: usize = 4096;
 #[must_use]
 pub fn https_url_on_hosts(url: &str, patterns: &[&str]) -> Option<String> {
     let url = url.trim();
-    if url.len() > MAX_FETCH_URL_BYTES {
+    // The URL parser silently drops tabs and newlines anywhere in its input
+    // (`http\ts://…` parses as `https://…`), so refuse control bytes and
+    // inner whitespace outright: what is checked is then what was written.
+    if url.len() > MAX_FETCH_URL_BYTES || url.bytes().any(|b| b <= b' ' || b == 0x7f) {
         return None;
     }
     let parsed = url::Url::parse(url).ok()?;
@@ -788,6 +791,9 @@ mod tests {
             // Found by the `https_url_policy` oracle: an empty first label.
             "  HTTPS:/.ssl-images-amazon.com/a.jpg",
             "https://m..media-amazon.com/a.jpg",
+            // Found by the oracle: the parser drops the tab.
+            "http\ts://m.media-amazon.com/a.jpg",
+            "https://m.media-amazon.com/a b.jpg",
             "https://127.0.0.1/a.jpg",
             "https://[::1]/a.jpg",
             "https://localhost/a.jpg",
