@@ -38,7 +38,7 @@ from .path_guard import (
 PYTHON_WORKERD_FLAGS = ("python_workers", "disable_python_external_sdk")
 """Compatibility flags required for Python Workers under bookclerk-workerd."""
 
-WORKERD_PIN_COMPAT_DATE = "2026-10-28"
+WORKERD_PIN_COMPAT_DATE = "2026-10-29"
 """Newest ``compatibility_date`` the pinned workerd binary honors."""
 
 _LOAD_SUFFIXES = (".js", ".mjs", ".py", ".wasm", ".json")
