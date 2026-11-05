@@ -201,9 +201,7 @@ impl CoverService {
     /// request is [`CoverFailure::Unavailable`]. Used when the cache directory
     /// cannot be created, and by tests that do not serve covers.
     pub(crate) fn detached() -> Self {
-        let mut key = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut key);
-        Self::with(None, key, CACHE_BUDGET_BYTES)
+        Self::with(None, random_key(), CACHE_BUDGET_BYTES)
     }
 
     /// The service from its parts.
@@ -652,6 +650,11 @@ fn sweep(dir: &Path, budget: u64) -> u64 {
     total
 }
 
+/// A fresh token key from the thread-local CSPRNG (ChaCha seeded from the OS).
+fn random_key() -> [u8; 32] {
+    rand::random()
+}
+
 /// Reads the token key, or creates it (owner-only on Unix).
 fn load_or_create_key(path: &Path) -> std::io::Result<[u8; 32]> {
     if let Ok(bytes) = std::fs::read(path) {
@@ -659,8 +662,7 @@ fn load_or_create_key(path: &Path) -> std::io::Result<[u8; 32]> {
             return Ok(key);
         }
     }
-    let mut key = [0u8; 32];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut key);
+    let key = random_key();
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
