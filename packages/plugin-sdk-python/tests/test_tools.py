@@ -1344,7 +1344,26 @@ LOGO_CASES = json.loads((FIXTURES / "logo-cases.json").read_text(encoding="utf-8
 COMPAT_DATES = json.loads((FIXTURES / "compat-date-cases.json").read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("case", LOGO_CASES, ids=lambda c: repr(c["input"]))
+def _plain_id(text: str) -> str:
+    """Spell a case input as a test id that pytest accepts back on its command line.
+
+    pytest escapes backslashes and non-ASCII characters in the ids it reports,
+    and a node id written that way is not found again, so mutmut, which runs
+    tests by node id, cannot select the case. Every other character is written
+    as ``U+XXXX``.
+
+    Args:
+        text: The case's input.
+
+    Returns:
+        A printable-ASCII id without backslashes (``empty`` for ``""``).
+    """
+    if not text:
+        return "empty"
+    return "".join(c if " " <= c <= "~" and c != "\\" else f"U+{ord(c):04X}" for c in text)
+
+
+@pytest.mark.parametrize("case", LOGO_CASES, ids=lambda c: _plain_id(c["input"]))
 def test_validate_logo_matches_shared_cases(case: dict[str, str]) -> None:
     from bookclerk_plugin_sdk.tools import validate_logo
 
@@ -1364,7 +1383,7 @@ def test_compatibility_date_accepts_shared_valid(date_text: str) -> None:
     validate_author_compatibility_date(date_text)
 
 
-@pytest.mark.parametrize("date_text", COMPAT_DATES["invalid"], ids=repr)
+@pytest.mark.parametrize("date_text", COMPAT_DATES["invalid"], ids=_plain_id)
 def test_compatibility_date_rejects_shared_invalid(date_text: str) -> None:
     from bookclerk_plugin_sdk.tools import validate_author_compatibility_date
 
