@@ -28,7 +28,8 @@ A native guest implements `PluginWorker` (`describe`, and
 `open(invocation, bindings) -> Entrypoints`) and calls `serve`, the
 stdin and stdout Cap'n Proto runner. The entrypoints it returns are the
 same named entrypoints the other SDKs export as classes: storefront,
-storage, remote library, database adapter, CLI, OIDC and metadata. The
+storage, remote library, database adapter, CLI, OIDC, metadata and
+covers. The
 crate root re-exports the DTOs and helpers a guest needs; prefer
 `use bookclerk_plugin_sdk::…` over reaching into submodules.
 
@@ -53,13 +54,17 @@ the host and fail closed; rebuild guests against this SDK. Pathname,
 The `bookclerk-plugin` author CLI (`check`, `fmt`, `sync-embed`,
 `package` and `smoke`) lives in the separate `bookclerk-plugin-tools`
 crate, so a guest that depends on this SDK never links
-`bookclerk-workerd`:
+`bookclerk-workerd`. Install it once, then run it from the plugin's
+directory:
 
 ```bash
-cargo plugin -- check .
-cargo plugin -- smoke .
-# the same as: cargo run -p bookclerk-plugin-tools --bin bookclerk-plugin -- check .
+cargo install --git https://github.com/Bookclerk/bookclerk bookclerk-plugin-tools
+bookclerk-plugin check .
+bookclerk-plugin smoke .
 ```
+
+Inside a Bookclerk checkout, `cargo plugin -- check <dir>` is an alias
+for the same binary (`.cargo/config.toml`).
 
 ## Next steps
 

@@ -46,6 +46,7 @@ extending its base:
 | `entrypoints = ["cli"]` | `Cli` | `CliEntrypoint` |
 | `entrypoints = ["oidc"]` | `Oidc` | `OidcEntrypoint` |
 | `entrypoints = ["metadata"]` | `Metadata` | `MetadataEntrypoint` |
+| `entrypoints = ["covers"]` | `Covers` | `CoverEntrypoint` |
 
 ```ts
 import {

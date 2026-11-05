@@ -1121,7 +1121,7 @@ def link_media_to_docs(project_out: Path, out: Path, generated: set[str]) -> lis
     """
     media = project_out / "_media"
     if not media.is_dir():
-        return 0
+        return []
     docs = {}
     for path in out.rglob("*.md"):
         rel = path.relative_to(out)

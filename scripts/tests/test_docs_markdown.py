@@ -397,6 +397,14 @@ class TreeTest(unittest.TestCase):
             ["pkg", "pkg.abi", "pkg.sub", "pkg.sub.x"],
         )
 
+    def test_a_project_without_media_copies_deletes_nothing(self) -> None:
+        out = self.base / "out"
+        project = out / "contributing" / "ui"
+        project.mkdir(parents=True)
+        (project / "README.md").write_text("# UI\n")
+        self.assertEqual(dm.link_media_to_docs(project, out, set()), [])
+        self.assertEqual((project / "README.md").read_text(), "# UI\n")
+
     def test_typedoc_media_copies_link_back_to_the_docs(self) -> None:
         out = self.base / "out"
         project = out / "contributing" / "ui"
@@ -606,7 +614,6 @@ class TreeTest(unittest.TestCase):
                 "plugins/sdk/typescript/index/README.md",
             ],
         )
-
 
     def test_relative_file_links_in_rust_doc_comments(self) -> None:
         src = self.base / "crates" / "x" / "src"

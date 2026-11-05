@@ -196,9 +196,10 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   SDKs, the web API, the Rust crates, the web UI library) with its folder,
   what it is generated from and the pages it wrote. The Worker tells
   generated pages from hand-written ones by it, so a reference can move in
-  the tree without a change here. When it is missing or unreadable every
-  page renders as hand-written, and such a page stays out of the edge
-  cache. It comes from outside the Worker, so `fuzz.test.ts` replays
+  the tree without a change here. When it is missing or not a valid
+  manifest, every page renders as hand-written. When the read fails, such
+  a page also stays out of the edge cache. It comes from outside the
+  Worker, so `fuzz.test.ts` replays
   `fuzz/generated/` and fuzzes mutations against an independent oracle.
 - `last-updated.ts` – reads `last-updated.json`, which the docs publishing
   workflow writes at the root of each docs version from this repository's
