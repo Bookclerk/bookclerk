@@ -237,6 +237,25 @@ class RenderTest(unittest.TestCase):
     def test_one_page_per_public_module(self) -> None:
         self.assertEqual(sorted(self.pages), ["demo/README.md", "demo/proto.md", "other/README.md"])
 
+    def test_crates_land_in_their_tree_folders(self) -> None:
+        # The SDK crate sits on the plugins shelf; every other crate under
+        # internals/crates. Links between them cross the folders.
+        folders = {"demo": "plugins/sdk/rust", "other": "internals/crates/other"}
+        pages = rm.Renderer({"demo": rm.Crate("demo", demo_crate()), "other": rm.Crate("other", other_crate())}, folders).render_all()
+        self.assertEqual(
+            sorted(pages),
+            ["internals/crates/other/README.md", "plugins/sdk/rust/README.md", "plugins/sdk/rust/proto.md"],
+        )
+        self.assertIn("- [`other::Thing`](../../../internals/crates/other/README.md#thing)", pages["plugins/sdk/rust/README.md"])
+        self.assertIn("- [`proto`](proto.md): Wire protocol.", pages["plugins/sdk/rust/README.md"])
+
+    def test_a_module_with_submodules_is_a_folder(self) -> None:
+        page = rm.Page("demo", ("net", "tcp"), {}, folder="plugins/sdk/rust")
+        self.assertEqual(page.file, "plugins/sdk/rust/net/tcp.md")
+        page.has_children = True
+        self.assertEqual(page.file, "plugins/sdk/rust/net/tcp/README.md")
+        self.assertEqual(rm.Page("demo", (), {}).file, "demo/README.md")
+
     def test_two_pages_for_one_file_are_refused(self) -> None:
         # A public module named README would land on its crate root's file.
         renderer = rm.Renderer({"demo": rm.Crate("demo", demo_crate())})

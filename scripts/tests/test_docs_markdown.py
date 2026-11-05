@@ -48,19 +48,37 @@ class OutputGuardTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_refuses_dangerous_outputs_without_touching_them(self) -> None:
-        for out in (Path("/"), Path.home(), ROOT, Path("/mnt"), Path("/mnt/project-files"), Path("/tmp")):
+        for out in (
+            Path("/"),
+            Path.home(),
+            ROOT,
+            Path("/mnt"),
+            Path("/mnt/project-files"),
+            Path("/tmp"),
+        ):
             with self.subTest(out=out), self.assertRaises(dm.UnsafeOutputDir):
                 dm.check_output_dir(out, self.scratch)
 
     def test_refuses_dangerous_scratch_roots(self) -> None:
-        for root in (Path("/"), Path.home(), ROOT, Path("/mnt"), Path("/tmp"), Path("/home")):
+        for root in (
+            Path("/"),
+            Path.home(),
+            ROOT,
+            Path("/mnt"),
+            Path("/tmp"),
+            Path("/home"),
+        ):
             with self.subTest(root=root), self.assertRaises(dm.UnsafeOutputDir):
                 dm.check_output_dir(root / "docs-markdown-out", root)
 
     def test_refuses_scratch_roots_outside_target_and_temp(self) -> None:
         # Paths only: check_output_dir never touches the filesystem beyond
         # resolving, and none of these is created.
-        for root in (Path("/etc/docs-markdown"), ROOT / "docs" / "scratch", Path.home() / "docs-markdown"):
+        for root in (
+            Path("/etc/docs-markdown"),
+            ROOT / "docs" / "scratch",
+            Path.home() / "docs-markdown",
+        ):
             with self.subTest(root=root), self.assertRaises(dm.UnsafeOutputDir):
                 dm.check_output_dir(root / "out", root)
 
@@ -115,45 +133,70 @@ class OutputGuardTest(unittest.TestCase):
 
 
 class IndexTest(unittest.TestCase):
-    """The indexes put the plugin SDKs first, then the web API, then the crates."""
+    """The crates page groups the crates; each reference has a shelf folder."""
 
     def test_groups(self) -> None:
-        self.assertEqual(dm.rust_group("bookclerk_plugin_abi", "crates/bookclerk-plugin-abi"), "Plugin interface")
-        self.assertEqual(dm.rust_group("bookclerk_dev", "crates/bookclerk-dev"), "Development and testing")
         self.assertEqual(
-            dm.rust_group("bookclerk_plugin_source_libro", "crates/bookclerk-plugins/optional/source-libro"), "Plugins"
+            dm.rust_group("bookclerk_plugin_abi", "crates/bookclerk-plugin-abi"),
+            "Plugin interface",
         )
-        self.assertEqual(dm.rust_group("echo", "examples/plugins-echo-workerd-rust"), "Development and testing")
+        self.assertEqual(
+            dm.rust_group("bookclerk_dev", "crates/bookclerk-dev"),
+            "Development and testing",
+        )
+        self.assertEqual(
+            dm.rust_group(
+                "bookclerk_plugin_source_libro",
+                "crates/bookclerk-plugins/optional/source-libro",
+            ),
+            "Plugins",
+        )
+        self.assertEqual(
+            dm.rust_group("echo", "examples/plugins-echo-workerd-rust"),
+            "Development and testing",
+        )
         self.assertEqual(dm.rust_group("bookclerk_media", "crates/bookclerk-media"), "Host internals")
 
-    def test_index_lists_groups_in_order(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="docs-markdown-rust-") as tmp:
-            out = Path(tmp)
-            crates = [
-                dm.RustCrate("bookclerk_media", "bookclerk-media", "Clear media | remux", "Host internals"),
-                dm.RustCrate("bookclerk_plugin_abi", "bookclerk-plugin-abi", "ABI", "Plugin interface"),
-                dm.RustCrate("bookclerk_plugin_sdk", "bookclerk-plugin-sdk", "Guest SDK", "Plugin interface"),
-            ]
-            dm.write_rust_index(out, crates)
-            text = (out / "README.md").read_text()
+    def test_crates_page_lists_groups_in_order(self) -> None:
+        crates = [
+            dm.RustCrate(
+                "bookclerk_media",
+                "bookclerk-media",
+                "Clear media | remux",
+                "Host internals",
+            ),
+            dm.RustCrate(
+                "bookclerk_plugin_abi",
+                "bookclerk-plugin-abi",
+                "ABI",
+                "Plugin interface",
+            ),
+            dm.RustCrate(
+                "bookclerk_plugin_sdk",
+                "bookclerk-plugin-sdk",
+                "Guest SDK",
+                "Plugin interface",
+            ),
+        ]
+        text = dm.rust_index(crates, dm.reference_of("rust-crates"), dm.reference_of("rust-sdk"))
         self.assertLess(text.index("## Plugin interface"), text.index("## Host internals"))
-        # The SDK is listed with the other SDKs, not among the crates.
+        # The SDK sits on the plugins shelf, not among the crates.
         self.assertNotIn("| [`bookclerk_plugin_sdk`]", text)
+        self.assertIn("[Rust plugin SDK](../../plugins/sdk/rust/README.md)", text)
         self.assertNotIn("## Plugins", text)
-        self.assertIn("| [`bookclerk_media`](bookclerk_media/README.md) | Clear media \\| remux |", text)
+        self.assertIn(
+            "| [`bookclerk_media`](bookclerk_media/README.md) | Clear media \\| remux |",
+            text,
+        )
 
-    def test_api_index_order_and_missing_references(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="docs-markdown-api-") as tmp:
-            api = Path(tmp)
-            for rel in ("typescript/README.md", "python/README.md", "rust/README.md", "rust/bookclerk_plugin_sdk/README.md", "ui/README.md"):
-                (api / rel).parent.mkdir(parents=True, exist_ok=True)
-                (api / rel).write_text("# x\n")
-            dm.write_api_index(api)
-            text = (api / "README.md").read_text()
-        order = [text.index(s) for s in ("## Plugin SDKs", "typescript/README.md", "python/README.md", "rust/bookclerk_plugin_sdk/README.md", "## Rust crates", "## Web UI")]
-        self.assertEqual(order, sorted(order))
-        # No web API reference was built, so there is no section for it.
-        self.assertNotIn("## Web API", text)
+    def test_references_land_on_shelves(self) -> None:
+        folders = [r.folder for r in dm.REFERENCES]
+        self.assertEqual(len(folders), len(set(folders)))
+        for reference in dm.REFERENCES:
+            self.assertNotIn("index", reference.folder.split("/"))
+        self.assertEqual(dm.reference_of("web-api").folder, "server/api")
+        self.assertTrue(dm.reference_of("python").landing)
+        self.assertFalse(dm.reference_of("web-api").landing)
 
 
 class TreeTest(unittest.TestCase):
@@ -166,17 +209,18 @@ class TreeTest(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_copy_docs_leaves_out_the_local_api_folder(self) -> None:
+    def test_copy_docs_copies_every_page(self) -> None:
         src = self.base / "docs"
-        (src / "api" / "rust").mkdir(parents=True)
-        (src / "api" / "README.md").write_text("generated")
-        (src / "adr").mkdir()
+        (src / "adr").mkdir(parents=True)
         (src / "README.md").write_text("# Docs")
         (src / "adr" / "one.md").write_text("# One")
         out = self.base / "out"
         out.mkdir()
         dm.copy_docs(src, out)
-        self.assertEqual(sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()), ["README.md", "adr/one.md"])
+        self.assertEqual(
+            sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()),
+            ["README.md", "adr/one.md"],
+        )
 
     def test_copy_docs_strips_markdownlint_overrides_from_pages_only(self) -> None:
         src = self.base / "docs"
@@ -249,20 +293,34 @@ class TreeTest(unittest.TestCase):
         )
         self.assertEqual(
             dm.strip_lint_comments(source),
-            "\n".join(["```markdown", "```not-a-closing-fence", "<!-- markdownlint-disable -->", "```", "Text."]),
+            "\n".join(
+                [
+                    "```markdown",
+                    "```not-a-closing-fence",
+                    "<!-- markdownlint-disable -->",
+                    "```",
+                    "Text.",
+                ]
+            ),
         )
 
     def test_strip_lint_comments_matches_code_span_runs_by_length(self) -> None:
         line = "Use `` ` <!-- markdownlint-disable MD038 --> `` here. <!-- markdownlint-disable-line MD001 -->"
-        self.assertEqual(dm.strip_lint_comments(line), "Use `` ` <!-- markdownlint-disable MD038 --> `` here.")
+        self.assertEqual(
+            dm.strip_lint_comments(line),
+            "Use `` ` <!-- markdownlint-disable MD038 --> `` here.",
+        )
 
     def test_strip_lint_comments_keeps_code_spans_across_lines(self) -> None:
         source = "Use `a\n<!-- markdownlint-disable -->\nb` here.\n\n`x\n\n<!-- markdownlint-disable -->\n"
         self.assertEqual(
-            dm.strip_lint_comments(source), "Use `a\n<!-- markdownlint-disable -->\nb` here.\n\n`x\n"
+            dm.strip_lint_comments(source),
+            "Use `a\n<!-- markdownlint-disable -->\nb` here.\n\n`x\n",
         )
 
-    def test_strip_lint_comments_ignores_backtick_fences_with_backticks_in_the_info_string(self) -> None:
+    def test_strip_lint_comments_ignores_backtick_fences_with_backticks_in_the_info_string(
+        self,
+    ) -> None:
         source = "```foo`bar\nText. <!-- markdownlint-disable-line MD001 -->\n"
         self.assertEqual(dm.strip_lint_comments(source), "```foo`bar\nText.\n")
 
@@ -296,7 +354,8 @@ class TreeTest(unittest.TestCase):
     def test_strip_lint_comments_keeps_line_breaks(self) -> None:
         source = "Text.\n<!--\nmarkdownlint-disable MD013 -->\nMore. <!-- markdownlint-disable-line MD001 -->\n"
         self.assertEqual(
-            dm.strip_lint_comments(source), "Text.\n<!--\nmarkdownlint-disable MD013 -->\nMore.\n"
+            dm.strip_lint_comments(source),
+            "Text.\n<!--\nmarkdownlint-disable MD013 -->\nMore.\n",
         )
 
     def test_strip_lint_comments_keeps_list_item_fences(self) -> None:
@@ -322,62 +381,222 @@ class TreeTest(unittest.TestCase):
 
     def test_python_modules_skip_private_and_templates(self) -> None:
         pkg = self.base / "src" / "pkg"
-        for rel in ("__init__.py", "__main__.py", "_abi.py", "abi.py", "sub/__init__.py", "sub/x.py", "a_template/t.py"):
+        for rel in (
+            "__init__.py",
+            "__main__.py",
+            "_abi.py",
+            "abi.py",
+            "sub/__init__.py",
+            "sub/x.py",
+            "a_template/t.py",
+        ):
             (pkg / rel).parent.mkdir(parents=True, exist_ok=True)
             (pkg / rel).write_text("")
-        self.assertEqual(dm.python_modules(self.base / "src", "pkg"), ["pkg", "pkg.abi", "pkg.sub", "pkg.sub.x"])
+        self.assertEqual(
+            dm.python_modules(self.base / "src", "pkg"),
+            ["pkg", "pkg.abi", "pkg.sub", "pkg.sub.x"],
+        )
 
     def test_typedoc_media_copies_link_back_to_the_docs(self) -> None:
         out = self.base / "out"
-        project = out / "api" / "ui"
+        project = out / "contributing" / "ui"
         (project / "_media").mkdir(parents=True)
         (out / "gui.md").write_text("# GUI\n\nSee [plugins](plugins.md).\n")
         (out / "plugins.md").write_text("# Plugins\n")
         (project / "_media" / "gui.md").write_text("# GUI\n\nSee [plugins](plugins.md).\n")
         (project / "_media" / "other.md").write_text("# Not a doc\n")
         (project / "README.md").write_text("See [the GUI](_media/gui.md#top) and [other](_media/other.md).\n")
-        self.assertEqual(dm.link_media_to_docs(project, out), 1)
+        self.assertEqual(dm.link_media_to_docs(project, out, set()), 1)
         self.assertEqual(
-            (project / "README.md").read_text(), "See [the GUI](../../gui.md#top) and [other](_media/other.md).\n"
+            (project / "README.md").read_text(),
+            "See [the GUI](../../gui.md#top) and [other](_media/other.md).\n",
         )
         self.assertFalse((project / "_media" / "gui.md").exists())
         self.assertTrue((project / "_media" / "other.md").exists())
 
-    def test_typedoc_module_list_moves_to_the_readme(self) -> None:
-        project = self.base / "out" / "api" / "typescript"
-        project.mkdir(parents=True)
-        (project / "README.md").write_text("# SDK\n\nIntro.\n")
-        (project / "modules.md").write_text("# SDK\n\n## Modules\n\n- [cli](cli.md)\n- [workerd](workerd.md)\n")
-        (project / "cli.md").write_text("# cli\n\nBack to [the SDK](modules.md).\n")
-        (project / "a" / "b").mkdir(parents=True)
-        (project / "a" / "b" / "deep.md").write_text("[up](../../modules.md#cli) [other](../modules.md) [keep](other/modules.md)\n")
-        dm.fold_module_index(project)
-        self.assertFalse((project / "modules.md").exists())
-        self.assertEqual(
-            (project / "README.md").read_text(), "# SDK\n\nIntro.\n\n## Modules\n\n- [cli](cli.md)\n- [workerd](workerd.md)\n"
+    def test_typedoc_pages_join_the_landing_page(self) -> None:
+        out = self.base / "out"
+        reference = dm.reference_of("typescript")
+        landing = out / reference.folder / "README.md"
+        landing.parent.mkdir(parents=True)
+        landing.write_text("# TypeScript SDK\n\nThe guide.\n")
+        scratch = self.base / "scratch"
+        scratch.mkdir()
+        (scratch / "README.md").write_text(
+            "# @bookclerk/plugin-sdk\n\n## Modules\n\n- [cli](cli.md)\n- [plugin-sdk](plugin-sdk.md)\n- [workerd](workerd.md)\n"
         )
-        self.assertIn("(README.md)", (project / "cli.md").read_text())
-        # Any depth, with or without an anchor; other files named modules.md stay.
-        self.assertEqual(
-            (project / "a" / "b" / "deep.md").read_text(), "[up](../../README.md#modules) [other](../modules.md) [keep](other/modules.md)\n"
+        (scratch / "plugin-sdk.md").write_text(
+            "# plugin-sdk\n\nThe root.\n\n## Classes\n\n### PluginError\n\n## References\n\n- [cliArgs](workerd.md#cliargs)\n"
         )
+        (scratch / "cli.md").write_text("# cli\n")
+        (scratch / "workerd.md").write_text(
+            "# workerd\n\nThrows [PluginError](plugin-sdk.md#pluginerror); see [plugin-sdk](./plugin-sdk.md) and `plugin-sdk.md`.\n"
+        )
+        tree = dm.Tree(out)
+        self.assertEqual(dm.place_typedoc(scratch, tree, reference), ["cli", "workerd"])
+        # Links to the root module's page now point at the landing page.
+        self.assertEqual(
+            (out / reference.folder / "workerd.md").read_text(),
+            "# workerd\n\nThrows [PluginError](README.md#pluginerror); see [plugin-sdk](README.md) and `plugin-sdk.md`.\n",
+        )
+        self.assertEqual(
+            landing.read_text(),
+            "# TypeScript SDK\n\nThe guide.\n\n## Modules\n\nThe root.\n\n- [cli](cli.md)\n- [workerd](workerd.md)\n\n## Classes\n\n### PluginError\n\n## References\n\n- [cliArgs](workerd.md#cliargs)\n",
+        )
+        self.assertEqual(
+            tree.pages,
+            {
+                reference.folder: [
+                    f"{reference.folder}/cli",
+                    f"{reference.folder}/workerd",
+                ]
+            },
+        )
+        self.assertEqual(tree.built, [reference])
+        self.assertFalse((scratch / "README.md").exists())
+
+    def test_a_landing_page_must_be_hand_written(self) -> None:
+        tree = dm.Tree(self.base)
+        with self.assertRaisesRegex(dm.BuildError, "docs/plugins/sdk/python/README.md is missing"):
+            tree.landing(dm.reference_of("python"), "## Modules\n")
+
+    def test_a_generated_page_never_overwrites_a_page(self) -> None:
+        out = self.base / "out"
+        reference = dm.reference_of("rust-sdk")
+        (out / reference.folder).mkdir(parents=True)
+        (out / reference.folder / "net.md").write_text("# Hand-written\n")
+        tree = dm.Tree(out)
+        tree.place(reference, "http.md", "# http\n")
+        with self.assertRaisesRegex(dm.BuildError, "plugins/sdk/rust/net.md: a page is already there"):
+            tree.place(reference, "net.md", "# net\n")
+        with self.assertRaisesRegex(dm.BuildError, "plugins/sdk/rust/http.md: a page is already there"):
+            tree.place(reference, "http.md", "# again\n")
+        self.assertEqual((out / reference.folder / "net.md").read_text(), "# Hand-written\n")
+
+    def test_generated_manifest_lists_references_and_crate_sources(self) -> None:
+        out = self.base / "out"
+        out.mkdir()
+        tree = dm.Tree(out)
+        crates = dm.reference_of("rust-crates")
+        tree.place(
+            crates,
+            "bookclerk_media/README.md",
+            "# bookclerk_media\n",
+            "crates/bookclerk-media",
+        )
+        tree.place(crates, "bookclerk_media/mp3.md", "# mp3\n")
+        tree.place(crates, "README.md", "# Rust crates\n")
+        dm.write_generated(out, tree)
+        document = json.loads((out / dm.GENERATED_FILE).read_text())
+        self.assertEqual(
+            document,
+            {
+                "version": 1,
+                "references": [
+                    {
+                        "folder": "internals/crates",
+                        "kind": "rust-crates",
+                        "title": "Rust crates",
+                        "source": "Cargo.toml",
+                        "landing": False,
+                        "pages": [
+                            "internals/crates/bookclerk_media/README",
+                            "internals/crates/bookclerk_media/mp3",
+                            "internals/crates/README",
+                        ],
+                    }
+                ],
+                "sources": {"internals/crates/bookclerk_media": "crates/bookclerk-media"},
+            },
+        )
+        self.assertEqual(
+            tree.keys,
+            {
+                "internals/crates/bookclerk_media/README",
+                "internals/crates/bookclerk_media/mp3",
+                "internals/crates/README",
+            },
+        )
+
+    def test_python_package_page_joins_the_landing_page(self) -> None:
+        src = self.base / "src" / "bookclerk_plugin_sdk"
+        src.mkdir(parents=True)
+        (src / "__init__.py").write_text('"""The package.\n\nSee :mod:`bookclerk_plugin_sdk.workerd`."""\n\nVERSION = "3"\n"""ABI version."""\n')
+        (src / "workerd.py").write_text('"""Workerd runtime."""\n\n\ndef run() -> None:\n    """Run."""\n')
+        out = self.base / "out"
+        reference = dm.reference_of("python")
+        (out / reference.folder).mkdir(parents=True)
+        (out / reference.folder / "README.md").write_text("# Python SDK\n\nThe guide.\n")
+        tree = dm.Tree(out)
+        self.assertEqual(
+            dm.build_python(self.base / "src", tree, reference),
+            ["bookclerk_plugin_sdk", "bookclerk_plugin_sdk.workerd"],
+        )
+        landing = (out / reference.folder / "README.md").read_text()
+        self.assertTrue(
+            landing.startswith(
+                "# Python SDK\n\nThe guide.\n\n## Modules\n\n| Module | Summary |\n| --- | --- |\n| [`bookclerk_plugin_sdk.workerd`](workerd.md) | Workerd runtime. |\n\nThe package.\n\nSee [`bookclerk_plugin_sdk.workerd`](workerd.md)."
+            ),
+            landing,
+        )
+        self.assertNotIn("\n# ", landing)
+        self.assertIn("### VERSION", landing)
+        self.assertEqual(tree.pages, {reference.folder: [f"{reference.folder}/workerd"]})
+
+    def test_sibling_pages_are_found(self) -> None:
+        out = self.base / "out"
+        for rel in (
+            "plugins/sdk/rust/http.md",
+            "plugins/sdk/rust/http/client.md",
+            "plugins/sdk/rust/net.md",
+            "plugins/README.md",
+        ):
+            (out / rel).parent.mkdir(parents=True, exist_ok=True)
+            (out / rel).write_text("# x\n")
+        self.assertEqual(dm.sibling_pages(out), ["plugins/sdk/rust/http.md"])
 
     def test_broken_links_in_the_tree_and_out_of_the_api_reference(self) -> None:
         out = self.base / "out"
-        (out / "api" / "rust").mkdir(parents=True)
-        (out / "README.md").write_text("[code](../crates/x/src/lib.rs) [ok](api/rust/a.md) [gone](missing.md)\n")
-        (out / "api" / "rust" / "a.md").write_text(
-            "[b](b.md) [web](https://example.com) [anchor](#x) [up](../../README.md)\n"
-            "```\n[c](c.md)\n```\n`[d](d.md)`\n"
+        (out / "internals" / "crates").mkdir(parents=True)
+        (out / "README.md").write_text("[code](../crates/x/src/lib.rs) [ok](internals/crates/a.md) [gone](missing.md)\n")
+        (out / "internals" / "crates" / "a.md").write_text(
+            "[b](b.md) [web](https://example.com) [anchor](#x) [up](../../README.md) [out](../../../Cargo.toml)\n```\n[c](c.md)\n```\n`[d](d.md)`\n"
         )
-        self.assertEqual(dm.broken_links(out), ["README.md: missing.md", "api/rust/a.md: b.md"])
+        self.assertEqual(
+            dm.broken_links(out, {"internals/crates/a"}),
+            [
+                "README.md: missing.md",
+                "internals/crates/a.md: b.md",
+                "internals/crates/a.md: ../../../Cargo.toml",
+            ],
+        )
+        # A hand-written page may link out of the tree.
+        self.assertEqual(
+            dm.broken_links(out),
+            ["README.md: missing.md", "internals/crates/a.md: b.md"],
+        )
 
     def test_index_pages_are_found_anywhere_in_the_tree(self) -> None:
         out = self.base / "out"
-        for rel in ("README.md", "api/rust/a/README.md", "api/rust/b/index.md", "api/typescript/index.md", "api/typescript/index/README.md", "api/ui/indexes.md", "api/ui/index.txt"):
+        for rel in (
+            "README.md",
+            "internals/crates/a/README.md",
+            "internals/crates/b/index.md",
+            "plugins/sdk/typescript/index.md",
+            "plugins/sdk/typescript/index/README.md",
+            "contributing/ui/indexes.md",
+            "contributing/ui/index.txt",
+        ):
             (out / rel).parent.mkdir(parents=True, exist_ok=True)
             (out / rel).write_text("# x\n")
-        self.assertEqual(dm.index_pages(out), ["api/rust/b/index.md", "api/typescript/index.md", "api/typescript/index/README.md"])
+        self.assertEqual(
+            dm.index_pages(out),
+            [
+                "internals/crates/b/index.md",
+                "plugins/sdk/typescript/index.md",
+                "plugins/sdk/typescript/index/README.md",
+            ],
+        )
 
 
 # Unix times of 2025-10-01 and 2025-10-02, 12:00 UTC.
@@ -401,7 +620,10 @@ class PageDatesTest(unittest.TestCase):
 
     def test_newest_content_change_wins(self) -> None:
         log = self.log((DAY2, ["M\tdocs/a.md"]), (DAY1, ["A\tdocs/a.md", "A\tdocs/b.md"]))
-        self.assertEqual(dm.page_dates(log, {"docs/a.md", "docs/b.md"}), {"docs/a.md": T2, "docs/b.md": T1})
+        self.assertEqual(
+            dm.page_dates(log, {"docs/a.md", "docs/b.md"}),
+            {"docs/a.md": T2, "docs/b.md": T1},
+        )
 
     def test_a_pure_move_is_followed_not_counted(self) -> None:
         log = self.log((DAY2, ["R100\tdocs/old.md\tdocs/new.md"]), (DAY1, ["A\tdocs/old.md"]))
@@ -467,7 +689,13 @@ class GitHistoryTest(unittest.TestCase):
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
         }
-        subprocess.run(["git", "-c", "commit.gpgsign=false", *args], cwd=cwd or self.repo, env=env, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", *args],
+            cwd=cwd or self.repo,
+            env=env,
+            check=True,
+            capture_output=True,
+        )
 
     def commit(self, when: int) -> None:
         """Commit everything with author date ``when``."""
@@ -485,9 +713,12 @@ class GitHistoryTest(unittest.TestCase):
 
         out = Path(self._tmp.name) / "out"
         dm.copy_docs(self.repo / "docs", out)
-        (out / "api").mkdir()
-        (out / "api" / "README.md").write_text("# API\n")
-        self.assertEqual(dm.write_last_updated(out, dm.git_docs_log(self.repo)), 2)
+        (out / "server" / "api").mkdir(parents=True)
+        (out / "server" / "api" / "README.md").write_text("# API\n")
+        self.assertEqual(
+            dm.write_last_updated(out, dm.git_docs_log(self.repo), {"server/api/README"}),
+            2,
+        )
         document = json.loads((out / dm.LAST_UPDATED_FILE).read_text())
         self.assertEqual(document, {"version": 1, "pages": {"README": T2, "guide/moved": T1}})
 
@@ -496,7 +727,15 @@ class GitHistoryTest(unittest.TestCase):
             (self.repo / "docs" / "README.md").write_text(f"# Docs {when}\n")
             self.commit(when)
         shallow = Path(self._tmp.name) / "shallow"
-        self.git("clone", "-q", "--depth", "1", f"file://{self.repo}", str(shallow), cwd=Path(self._tmp.name))
+        self.git(
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            f"file://{self.repo}",
+            str(shallow),
+            cwd=Path(self._tmp.name),
+        )
         with self.assertRaises(dm.NoHistory):
             dm.git_docs_log(shallow)
         with self.assertRaises(dm.NoHistory):

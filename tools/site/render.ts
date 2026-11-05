@@ -16,8 +16,6 @@ import MarkdownIt from "markdown-it";
 import type { MarkdownIt as Markdown, RendererRule, Token } from "markdown-it";
 
 import {
-  API_INDEX,
-  API_SCHEMAS,
   indexRoutes,
   isApiOperationsPage,
   layoutIndex,
@@ -29,6 +27,15 @@ import {
 } from "./api-reference.ts";
 import type { ApiRouteGroup, HttpMethod } from "./api-reference.ts";
 import { diagram, drawable, PAGE_DIAGRAM_COUNT_MAX, PAGE_DIAGRAM_MAX } from "./diagram.ts";
+import {
+  generatedSource,
+  isGenerated,
+  landingKey,
+  referenceModules,
+  referenceOf,
+  webApiPages,
+} from "./generated.ts";
+import type { GeneratedManifest, WebApiPages } from "./generated.ts";
 import { highlight } from "./highlight.ts";
 import { formatDate, formatUtcTime } from "./last-updated.ts";
 import type { PageDate } from "./last-updated.ts";
@@ -107,6 +114,7 @@ export const NAV: NavSpec[] = [
   {
     title: "Use Bookclerk",
     pages: [
+      "guide/README",
       "guide/what-is-bookclerk",
       "guide/getting-started",
       "guide/stores",
@@ -123,6 +131,7 @@ export const NAV: NavSpec[] = [
   {
     title: "Run a server",
     pages: [
+      "server/README",
       "server/operations",
       "server/configuration",
       "server/security",
@@ -137,6 +146,7 @@ export const NAV: NavSpec[] = [
       "server/backups",
       "server/diagnostics",
       "server/cli-reference",
+      "server/api/README",
     ],
   },
   {
@@ -147,23 +157,18 @@ export const NAV: NavSpec[] = [
       "plugins/capabilities",
       "plugins/abi",
       "plugins/registry",
-      "sql-contract/v1",
-    ],
-  },
-  {
-    title: "API reference",
-    pages: [
-      "api/README",
-      "api/typescript/README",
-      "api/python/README",
-      "api/rust/bookclerk_plugin_sdk/README",
-      "api/web/README",
-      "api/rust/README",
+      "plugins/sql-contract/README",
+      "plugins/sql-contract/v1",
+      "plugins/sdk/README",
+      "plugins/sdk/typescript/README",
+      "plugins/sdk/python/README",
+      "plugins/sdk/rust/README",
     ],
   },
   {
     title: "How it works",
     pages: [
+      "internals/README",
       "internals/architecture",
       "internals/discovery",
       "internals/jobs",
@@ -172,14 +177,16 @@ export const NAV: NavSpec[] = [
       "internals/workerd-bridge",
       "internals/node-api",
       "internals/windows-appcontainer",
+      "internals/crates/README",
     ],
   },
   {
     title: "Contribute",
     pages: [
+      "contributing/README",
       "contributing/build-from-source",
       "contributing/devcontainer",
-      "contributing/ui",
+      "contributing/ui/README",
       "contributing/ci",
       "contributing/fuzzing",
       "contributing/automation",
@@ -187,6 +194,7 @@ export const NAV: NavSpec[] = [
       "contributing/code-documentation",
       "contributing/writing-docs",
       "contributing/licensing",
+      "contributing/research/README",
       "contributing/research/source-candidates",
       "contributing/research/libation-parity",
     ],
@@ -194,6 +202,7 @@ export const NAV: NavSpec[] = [
   {
     title: "Design decisions",
     pages: [
+      "adr/README",
       "adr/plugin-capabilities-v3",
       "adr/plugin-workers-rpc-workerd",
       "adr/first-party-identity",
@@ -211,13 +220,15 @@ export const NAV: NavSpec[] = [
   },
 ];
 
-/** Sidebar titles for pages that are generated, not in docs/. */
+/**
+ * Sidebar titles of the pages the docs build generates without a
+ * hand-written landing page in docs/ (scripts/docs-markdown.py
+ * `REFERENCES` with `landing` false). Every other sidebar page is a file in
+ * docs/, whose title is its heading.
+ */
 export const GENERATED_TITLES: Readonly<Record<string, string>> = {
-  "api/typescript/README": "TypeScript plugin SDK",
-  "api/python/README": "Python plugin SDK",
-  "api/rust/bookclerk_plugin_sdk/README": "Rust plugin SDK",
-  "api/web/README": "Web API",
-  "api/rust/README": "Rust crates",
+  "server/api/README": "Web API",
+  "internals/crates/README": "Rust crates",
 };
 
 /**
@@ -272,17 +283,18 @@ export function docUrl(key: string, base = "/docs/"): string {
 }
 
 /**
- * The site URL of a doc's Markdown copy: its page's URL plus `.md`.
+ * The site URL of a doc's Markdown copy: `index.md` under its page's URL,
+ * so a page and the folder of its children share one URL and the copy
+ * never collides with a child page.
  *
  * @param key - Docs path without `.md`.
  * @param base - URL prefix of the docs version, ending in `/`.
- * @returns `<base><key>.md`, with a nested README at its directory's
- *   (`api/README` → `<base>api.md`); the index is `<base>README.md`, since
- *   `/docs.md` would sit outside the docs.
+ * @returns `<page URL>/index.md` (`plugins/manifest` →
+ *   `<base>plugins/manifest/index.md`, `plugins/README` →
+ *   `<base>plugins/index.md`); the index is `<base>index.md`.
  */
 export function docMarkdownUrl(key: string, base = "/docs/"): string {
-  if (key === "README") return `${base}README.md`;
-  return `${docUrl(key, base)}.md`;
+  return `${docUrl(key, base)}/index.md`;
 }
 
 /**
@@ -362,6 +374,8 @@ export function rewriteLink(
  * @param keys - See {@link rewriteLink}.
  * @param blobBase - See {@link rewriteLink}.
  * @param urlFor - Site URL of another doc's page.
+ * @param api - The web API reference's folder and fixed pages, whose pages
+ *   get the OpenAPI viewer layout; null when the docs version has none.
  * @returns A renderer with raw HTML off, GitHub-style heading
  *   ids, rewritten links, and code blocks and tables that keyboard users
  *   can scroll sideways.
@@ -371,6 +385,7 @@ function renderer(
   keys: ReadonlySet<string> | null,
   blobBase: string,
   urlFor: UrlFor,
+  api: WebApiPages | null = null,
 ): Markdown {
   const md = new MarkdownIt({ html: false, linkify: false, typographer: false });
   const seen = new Map<string, number>();
@@ -390,7 +405,7 @@ function renderer(
     });
   });
   md.core.ruler.after("block", "callouts", (state) => markCallouts(state.tokens));
-  if (isApiOperationsPage(docKey)) {
+  if (isApiOperationsPage(docKey, api)) {
     md.core.ruler.after("heading_ids", "api_operations", (state) => {
       state.tokens = layoutOperations(
         state.tokens,
@@ -398,7 +413,7 @@ function renderer(
       );
     });
   }
-  if (docKey.startsWith("api/web/")) {
+  if (api !== null && docKey.startsWith(`${api.folder}/`)) {
     md.core.ruler.after("heading_ids", "api_properties", (state) => {
       state.tokens = layoutProperties(
         state.tokens,
@@ -406,7 +421,7 @@ function renderer(
       );
     });
   }
-  if (docKey === API_INDEX) {
+  if (api !== null && docKey === api.index) {
     md.core.ruler.after("heading_ids", "api_index", (state) => {
       state.tokens = layoutIndex(
         state.tokens,
@@ -812,7 +827,7 @@ export interface SearchHeading {
 
 /** One page the sidebar filter can find. */
 export interface SearchPage {
-  /** What it sits under: its sidebar group, or `Web API` for a route group page. */
+  /** What it sits under: its sidebar group, `Web API` for a route group page, or its guide's title for an SDK module. */
   section: string;
   /** Its title. */
   title: string;
@@ -832,6 +847,8 @@ export interface SearchPage {
  * @param section - Its sidebar group's title.
  * @param title - Its title as the sidebar shows it.
  * @param base - URL prefix of the docs version.
+ * @param api - The web API reference's pages, so a route group page lists
+ *   its operations alone; null when the docs version has none.
  * @returns The page's entry.
  */
 export function searchPage(
@@ -840,9 +857,10 @@ export function searchPage(
   section: string,
   title: string,
   base: string,
+  api: WebApiPages | null = null,
 ): SearchPage {
   const url = docUrl(key, base);
-  const tokens = renderer(key, null, "", (k) => docUrl(k, base)).parse(source, {});
+  const tokens = renderer(key, null, "", (k) => docUrl(k, base), api).parse(source, {});
   const headings = headingsOf(tokens).map((h) => ({
     text: h.method === undefined ? h.text : `${h.method} ${h.text}`,
     url: `${url}#${h.id}`,
@@ -857,10 +875,11 @@ export function searchPage(
  *
  * @param source - The Web API index's Markdown.
  * @param base - URL prefix of the docs version.
+ * @param api - The web API reference's folder and fixed pages.
  * @returns One entry per route group.
  */
-export function apiSearchPages(source: string, base: string): SearchPage[] {
-  return apiRouteGroups(source, { blobBase: "", base }).map((group) => ({
+export function apiSearchPages(source: string, base: string, api: WebApiPages): SearchPage[] {
+  return apiRouteGroups(source, { blobBase: "", base, api }).map((group) => ({
     section: "Web API",
     title: group.title,
     url: group.href,
@@ -877,7 +896,8 @@ export function apiSearchPages(source: string, base: string): SearchPage[] {
  * @param source - The doc's Markdown.
  * @param key - The doc's key (path without `.md`).
  * @param options - Docs that exist (null: any `.md` in the tree), the GitHub prefix for
- *   repository files, and the URL prefix of the docs version.
+ *   repository files, the URL prefix of the docs version, and the web API
+ *   reference's pages (null: no page gets the OpenAPI viewer layout).
  * @returns The title (see docTitle), summary (see describe), HTML body,
  *   section headings and Markdown copy (see siteMarkdown).
  */
@@ -888,13 +908,22 @@ export function renderDoc(
     keys = null,
     blobBase,
     base = "/docs/",
-  }: { keys?: ReadonlySet<string> | null; blobBase: string; base?: string },
+    api = null,
+  }: {
+    keys?: ReadonlySet<string> | null;
+    blobBase: string;
+    base?: string;
+    api?: WebApiPages | null;
+  },
 ): RenderedDoc {
-  const md = renderer(key, keys, blobBase, (k) => docUrl(k, base));
+  const md = renderer(key, keys, blobBase, (k) => docUrl(k, base), api);
   const tokens = md.parse(source, {});
   const headings = headingsOf(tokens);
   // Read before rendering, which rewrites the links in place.
-  const routes = routeLinks(indexRoutes(tokens), keys, blobBase, base);
+  const routes =
+    api === null || key !== api.index
+      ? []
+      : routeLinks(indexRoutes(tokens), api.index, keys, blobBase, base);
   return {
     title: docTitle(source, key),
     description: describe(tokens),
@@ -1000,9 +1029,7 @@ export function buildNav(titles: ReadonlyMap<string, string>): NavGroup[] {
   const nav = NAV.map((g) => ({ title: g.title, pages: pages(g.pages) })).filter(
     (g) => g.pages.length > 0,
   );
-  const extra = [...titles.keys()].filter(
-    (k) => k !== "README" && !listed.has(k) && !k.startsWith("api/"),
-  );
+  const extra = [...titles.keys()].filter((k) => k !== "README" && !listed.has(k));
   if (extra.length > 0) nav.push({ title: "More", pages: pages(extra) });
   return nav;
 }
@@ -1055,27 +1082,61 @@ export interface NavNested {
  * @param key - The page's key.
  * @param title - Its title.
  * @param base - URL prefix of the docs version.
+ * @param api - The web API reference's folder and fixed pages; null when
+ *   the docs version has none.
  * @param groups - The index's route groups (see renderDoc and
  *   apiRouteGroups); when empty, the list holds only this page.
- * @returns The list, or null for a page outside `api/web/` and for an
+ * @returns The list, or null for a page outside the web API and for an
  *   index that lists no group.
  */
 export function apiNavNested(
   key: string,
   title: string,
   base: string,
+  api: WebApiPages | null,
   groups: readonly ApiRouteGroup[] = [],
 ): NavNested | null {
-  if (!key.startsWith("api/web/") || (key === API_INDEX && groups.length === 0)) return null;
+  if (api === null || !key.startsWith(`${api.folder}/`)) return null;
+  if (key === api.index && groups.length === 0) return null;
   const here = docUrl(key, base);
   const item = (href: string, text: string): string =>
     `<li><a href="${escapeHtml(href)}"${href === here ? ' aria-current="page"' : ""}>${escapeHtml(text)}</a></li>`;
-  const schemas = docUrl(API_SCHEMAS, base);
+  const schemas = docUrl(api.schemas, base);
   const listed =
     groups.length === 0
       ? [item(here, title)]
       : [...groups.map((g) => item(g.href, g.title)), item(schemas, "Schemas")];
-  return { under: API_INDEX, html: `<ul class="nav-sub">${listed.join("")}</ul>` };
+  return { under: api.index, html: `<ul class="nav-sub">${listed.join("")}</ul>` };
+}
+
+/**
+ * The sidebar list for a page of a generated reference with a hand-written
+ * guide (a plugin SDK, the web UI library), shown beneath the guide's
+ * entry: the reference's modules, one level below its folder, with the
+ * page being read marked. The guide itself shows the list too, so a reader
+ * sees the modules before scrolling to the reference.
+ *
+ * @param manifest - The docs version's generated.json, or null.
+ * @param key - The page's key.
+ * @param base - URL prefix of the docs version.
+ * @returns The list, or null for a page outside such a reference and for
+ *   a reference without modules.
+ */
+export function referenceNavNested(
+  manifest: GeneratedManifest | null,
+  key: string,
+  base: string,
+): NavNested | null {
+  const reference = referenceOf(manifest, key);
+  if (reference === null || !reference.landing) return null;
+  const modules = referenceModules(reference);
+  if (modules.length === 0) return null;
+  const here = docUrl(key, base);
+  const items = modules.map((m) => {
+    const href = docUrl(m.key, base);
+    return `<li><a href="${escapeHtml(href)}"${href === here ? ' aria-current="page"' : ""}><code>${escapeHtml(m.title)}</code></a></li>`;
+  });
+  return { under: landingKey(reference), html: `<ul class="nav-sub">${items.join("")}</ul>` };
 }
 
 /**
@@ -1084,7 +1145,8 @@ export function apiNavNested(
  *
  * @param source - The index's Markdown.
  * @param options - Docs that exist (null: any `.md`), the GitHub prefix for
- *   repository files, and the URL prefix of the docs version.
+ *   repository files, the URL prefix of the docs version, and the web API
+ *   reference's pages.
  * @returns The groups with their links rewritten for the site.
  */
 export function apiRouteGroups(
@@ -1093,16 +1155,18 @@ export function apiRouteGroups(
     keys = null,
     blobBase,
     base = "/docs/",
-  }: { keys?: ReadonlySet<string> | null; blobBase: string; base?: string },
+    api,
+  }: { keys?: ReadonlySet<string> | null; blobBase: string; base?: string; api: WebApiPages },
 ): ApiRouteGroup[] {
-  const md = renderer(API_INDEX, keys, blobBase, (k) => docUrl(k, base));
-  return routeLinks(indexRoutes(md.parse(source, {})), keys, blobBase, base);
+  const md = renderer(api.index, keys, blobBase, (k) => docUrl(k, base), api);
+  return routeLinks(indexRoutes(md.parse(source, {})), api.index, keys, blobBase, base);
 }
 
 /**
  * Rewrites the links of route groups for the site.
  *
  * @param groups - Groups as indexRoutes reads them from the index.
+ * @param index - The index's key, which the links are relative to.
  * @param keys - See rewriteLink.
  * @param blobBase - See rewriteLink.
  * @param base - URL prefix of the docs version.
@@ -1110,12 +1174,13 @@ export function apiRouteGroups(
  */
 function routeLinks(
   groups: readonly ApiRouteGroup[],
+  index: string,
   keys: ReadonlySet<string> | null,
   blobBase: string,
   base: string,
 ): ApiRouteGroup[] {
   const link = (href: string): string =>
-    rewriteLink(href, API_INDEX, keys, blobBase, (k) => docUrl(k, base));
+    rewriteLink(href, index, keys, blobBase, (k) => docUrl(k, base));
   return groups.map((group) => ({
     ...group,
     href: link(group.href),
@@ -1165,18 +1230,26 @@ export interface NavParent {
 }
 
 /**
- * Finds the sidebar page a Web API page sits under, which its breadcrumb
- * names: the sidebar lists only the Web API index, and the route group and
- * schema pages beneath it.
+ * Finds the sidebar page a generated page sits under, which its breadcrumb
+ * names: the sidebar lists only a reference's landing page (the Web API
+ * index, an SDK's guide), and its module, route group and schema pages
+ * sit beneath it.
  *
  * @param nav - The sidebar.
  * @param key - The doc's key.
- * @returns The Web API index for any other page under `api/web/`, when the
- *   sidebar lists the index, else null.
+ * @param manifest - The docs version's generated.json, or null.
+ * @returns The landing page of the reference that holds the doc, when the
+ *   sidebar lists it and the doc is not the landing page itself, else null.
  */
-export function navParent(nav: readonly NavGroup[], key: string): NavParent | null {
-  if (!key.startsWith("api/web/") || key === "api/web/README") return null;
-  const page = nav.flatMap((g) => g.pages).find((p) => p.key === "api/web/README");
+export function navParent(
+  nav: readonly NavGroup[],
+  key: string,
+  manifest: GeneratedManifest | null,
+): NavParent | null {
+  const reference = referenceOf(manifest, key);
+  if (reference === null || key === landingKey(reference)) return null;
+  const landing = landingKey(reference);
+  const page = nav.flatMap((g) => g.pages).find((p) => p.key === landing);
   return page === undefined ? null : { key: page.key, title: page.title };
 }
 
@@ -1196,10 +1269,16 @@ export interface Crumb {
  * @param nav - The sidebar.
  * @param key - The doc's key.
  * @param title - The doc's title.
+ * @param manifest - The docs version's generated.json, or null.
  * @returns The crumbs, Docs first and the doc last.
  */
-export function crumbTrail(nav: readonly NavGroup[], key: string, title: string): Crumb[] {
-  const parent = navParent(nav, key);
+export function crumbTrail(
+  nav: readonly NavGroup[],
+  key: string,
+  title: string,
+  manifest: GeneratedManifest | null = null,
+): Crumb[] {
+  const parent = navParent(nav, key, manifest);
   const place = navPlace(nav, parent?.key ?? key);
   const trail: Crumb[] = [{ title: "Docs", key: null }];
   if (place.group !== null && place.groupFirst !== null)
@@ -1531,31 +1610,6 @@ export interface DocsShell {
   pageTitles: string[];
   /** src/sitemap.html rendered for the site, with SITEMAP_MARKER where the list goes. */
   sitemapHtml: string;
-  /**
-   * Generated reference folders under `api/` (`api/web`, `api/rust/<crate>`)
-   * mapped to the repository path each is generated from (build.ts
-   * `generatedSources`).
-   */
-  sources: Readonly<Record<string, string>>;
-}
-
-/**
- * Finds the repository path a generated page under `api/` comes from: the
- * entry of `sources` for the longest folder holding the page.
- *
- * @param key - The page's key.
- * @param sources - DocsShell `sources`.
- * @returns The repository path, or null when no folder holds the page.
- */
-export function generatedSource(
-  key: string,
-  sources: Readonly<Record<string, string>>,
-): string | null {
-  for (let at = key.lastIndexOf("/"); at > 0; at = key.lastIndexOf("/", at - 1)) {
-    const folder = key.slice(0, at);
-    if (Object.hasOwn(sources, folder)) return sources[folder] ?? null;
-  }
-  return null;
 }
 
 /**
@@ -1565,10 +1619,12 @@ export function generatedSource(
  * @param source - The doc's Markdown.
  * @param key - The doc's key (path without `.md`).
  * @param at - The docs version: its ref, its URL prefix and the docs it
- *   holds (null when unknown), and the date the page last changed (null
- *   when unknown, which leaves out the "Last updated" line), and for a Web
- *   API page other than the index, the index's Markdown (null when it could
- *   not be read), whose route groups the sidebar lists.
+ *   holds (null when unknown), the date the page last changed (null when
+ *   unknown, which leaves out the "Last updated" line), its generated.json
+ *   (null when the version has none or it could not be read, which
+ *   renders every page as hand-written), and for a Web API page other
+ *   than the index, the index's Markdown (null when it could not be
+ *   read), whose route groups the sidebar lists.
  * @returns The full HTML page and the Markdown copy with links rewritten for
  *   the site.
  */
@@ -1581,22 +1637,25 @@ export function renderDocPage(
     base: string;
     keys?: ReadonlySet<string> | null;
     updated?: PageDate | null;
+    generated?: GeneratedManifest | null;
     apiIndex?: string | null;
   },
 ): RenderedPage {
   const blobBase = `${shell.repository}/blob/${at.ref}/`;
-  const doc = renderDoc(source, key, { keys: at.keys ?? null, blobBase, base: at.base });
+  const manifest = at.generated ?? null;
+  const api = webApiPages(manifest);
+  const doc = renderDoc(source, key, { keys: at.keys ?? null, blobBase, base: at.base, api });
   const groups =
-    key === API_INDEX
+    api !== null && key === api.index
       ? doc.routes
-      : at.apiIndex
-        ? apiRouteGroups(at.apiIndex, { keys: at.keys ?? null, blobBase, base: at.base })
+      : at.apiIndex && api !== null
+        ? apiRouteGroups(at.apiIndex, { keys: at.keys ?? null, blobBase, base: at.base, api })
         : [];
   const markdownUrl = docMarkdownUrl(key, at.base);
-  const generated = key.startsWith("api/");
+  const generated = isGenerated(manifest, key);
   // A generated page links to what it is generated from: a file (blob) or a
   // folder (tree) of the repository.
-  const sourcePath = generated ? generatedSource(key, shell.sources) : `docs/${key}.md`;
+  const sourcePath = generated ? generatedSource(manifest, key) : `docs/${key}.md`;
   const sourceUrl =
     sourcePath === null
       ? null
@@ -1615,11 +1674,12 @@ export function renderDocPage(
       : "";
   const meta = metaHtml(note, at.updated ?? null, markdownUrl);
   const place = navPlace(shell.nav, key);
-  const trail = crumbTrail(shell.nav, key, doc.title);
+  const trail = crumbTrail(shell.nav, key, doc.title, manifest);
   const versions = versionsHtml(shell.versions, at.ref, key);
-  const nav =
-    homeLink(at.base, key === "README") +
-    navHtml(shell.nav, key, at.base, apiNavNested(key, doc.title, at.base, groups));
+  const nested =
+    apiNavNested(key, doc.title, at.base, api, groups) ??
+    referenceNavNested(manifest, key, at.base);
+  const nav = homeLink(at.base, key === "README") + navHtml(shell.nav, key, at.base, nested);
   const html = fillShell(
     shell.html,
     {
@@ -1745,22 +1805,13 @@ interface SitemapGroup {
   title: string;
   /** Pages listed straight under the heading. */
   links: SitemapPageLink[];
-  /** Subheadings (one per API reference language), in first-seen order. */
-  parts: Map<string, SitemapPageLink[]>;
+  /** Subheadings (one per generated reference in the group), in first-seen order. */
+  parts: Map<string, { title: string; links: SitemapPageLink[] }>;
 }
-
-/** Subheadings for the API reference's folders on the sitemap page; others show the folder name. */
-const API_PART_TITLES: Readonly<Record<string, string>> = {
-  python: "Python plugin SDK",
-  rust: "Rust crates",
-  typescript: "TypeScript plugin SDK",
-  ui: "Web interface",
-  web: "Web API",
-};
 
 /**
  * Names a doc for the sitemap page when the sidebar does not: its path
- * below `prefix`, without a trailing README or index.
+ * below `prefix`, without a trailing README.
  *
  * @param key - The doc's key.
  * @param prefix - The part of the key its heading already says, ending in `/`, or "".
@@ -1768,7 +1819,7 @@ const API_PART_TITLES: Readonly<Record<string, string>> = {
  */
 function sitemapLabel(key: string, prefix: string): string {
   const rest = key.startsWith(prefix) ? key.slice(prefix.length) : key;
-  const trimmed = rest.replace(/(?:^|\/)(?:README|index)$/, "");
+  const trimmed = rest.replace(/(?:^|\/)README$/, "");
   return trimmed === "" ? "Overview" : trimmed;
 }
 
@@ -1778,16 +1829,20 @@ function sitemapLabel(key: string, prefix: string): string {
  * is a website page (src/sitemap.html), not a docs page.
  *
  * Site pages come first, then each sidebar group in order with every doc
- * whose key, or top folder, the group lists; the API reference is split by
- * language. Docs the sidebar does not place go under "More".
+ * whose key, or top folder, the group lists; the pages of each generated
+ * reference (which run to hundreds) go under a subheading of their own,
+ * named after the reference. Docs the sidebar does not place go under
+ * "More".
  *
  * @param shell - The baked page shell.
  * @param links - The pages, site pages first, then docs in key order.
+ * @param manifest - The default version's generated.json, or null.
  * @returns The full HTML page and its Markdown version.
  */
 export function renderSitemapPage(
   shell: DocsShell,
   links: readonly SitemapPageLink[],
+  manifest: GeneratedManifest | null = null,
 ): RenderedPage {
   const site: SitemapGroup = { title: "Website", links: [], parts: new Map() };
   const groups = shell.nav.map((g): SitemapGroup => ({
@@ -1814,15 +1869,14 @@ export function renderSitemapPage(
     const segments = link.key.split("/");
     const index = placed?.group ?? byFolder.get(segments[0] ?? "");
     const group = index === undefined ? more : (groups[index] ?? more);
+    const reference = isGenerated(manifest, link.key) ? referenceOf(manifest, link.key) : null;
     if (link.key === "README") {
       site.links.push({ ...link, title: link.title ?? "Documentation" });
-    } else if (segments[0] === "api" && segments.length > 2) {
-      // The API reference runs to hundreds of pages: one subheading per language.
-      const part = segments[1] ?? "";
-      const label = placed?.title ?? sitemapLabel(link.key, `api/${part}/`);
-      const list = group.parts.get(part) ?? [];
-      if (list.length === 0) group.parts.set(part, list);
-      list.push({ ...link, title: label });
+    } else if (reference !== null && placed === undefined) {
+      const label = sitemapLabel(link.key, `${reference.folder}/`);
+      const part = group.parts.get(reference.folder) ?? { title: reference.title, links: [] };
+      if (part.links.length === 0) group.parts.set(reference.folder, part);
+      part.links.push({ ...link, title: label });
     } else {
       group.links.push({
         ...link,
@@ -1867,8 +1921,7 @@ export function renderSitemapPage(
       html.push(`<ul>${g.links.map(itemHtml).join("")}</ul>`);
       md.push(...g.links.map(itemMd), "");
     }
-    for (const [part, list] of g.parts) {
-      const name = API_PART_TITLES[part] ?? part;
+    for (const { title: name, links: list } of g.parts.values()) {
       list.sort((a, b) => rank(a) - rank(b));
       html.push(`<h3>${escapeHtml(name)}</h3>`, `<ul>${list.map(itemHtml).join("")}</ul>`);
       md.push(`### ${name}`, "", ...list.map(itemMd), "");

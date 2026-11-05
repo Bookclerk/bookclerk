@@ -139,21 +139,30 @@ class PackageTest(unittest.TestCase):
         cls._tmp.cleanup()
 
     def test_pages(self) -> None:
-        self.assertEqual(sorted(self.pages), ["pkg.md", "pkg.worker.md"])
+        self.assertEqual(sorted(self.pages), ["README.md", "worker.md"])
+
+    def test_subpackages_are_folders(self) -> None:
+        # A subpackage is a folder with a README, like a hand-written shelf.
+        self.assertEqual(pm.page_file("pkg", True), "README.md")
+        self.assertEqual(pm.page_file("pkg.tools", True), "tools/README.md")
+        self.assertEqual(pm.page_file("pkg.tools.check", False), "tools/check.md")
+        self.assertEqual(pm.href("tools/check.md", "worker.md", "run"), "../worker.md#run")
+        self.assertEqual(pm.href("tools/README.md", "tools/check.md"), "check.md")
+        self.assertEqual(pm.href("worker.md", "worker.md", "run"), "#run")
 
     def test_package_page(self) -> None:
-        page = self.pages["pkg.md"]
-        self.assertTrue(page.startswith("# pkg\n\nThe package.\n\nStart with [`pkg.worker`](pkg.worker.md) and [`Worker`](pkg.worker.md#worker)."))
+        page = self.pages["README.md"]
+        self.assertTrue(page.startswith("# pkg\n\nThe package.\n\nStart with [`pkg.worker`](worker.md) and [`Worker`](worker.md#worker)."))
         # A name from a private module is documented where it is exported.
         self.assertIn('### VERSION\n\n```python\nVERSION: str = \'3\'\n```\n\nABI version the package speaks.', page)
         # A name from a public module links there.
-        self.assertIn("- [`Worker`](pkg.worker.md#worker) from `pkg.worker`", page)
-        self.assertIn("- [`run`](pkg.worker.md#run) from `pkg.worker`", page)
+        self.assertIn("- [`Worker`](worker.md#worker) from `pkg.worker`", page)
+        self.assertIn("- [`run`](worker.md#run) from `pkg.worker`", page)
         # An alias links to the name the item is documented under.
-        self.assertIn("- [`MAX_JOBS` (`LIMIT`)](pkg.worker.md#limit) from `pkg.worker`", page)
+        self.assertIn("- [`MAX_JOBS` (`LIMIT`)](worker.md#limit) from `pkg.worker`", page)
         # Not documented by its own module, so documented here.
         self.assertIn("### Unlisted\n", page)
-        self.assertNotIn("(pkg.worker.md#unlisted)", page)
+        self.assertNotIn("(worker.md#unlisted)", page)
         # Imported in a try block.
         self.assertIn("### encode\n", page)
 
@@ -172,7 +181,7 @@ class PackageTest(unittest.TestCase):
                 "DbValue = Union[int, str]\nId = str | int\nT = TypeVar('T')\n"
                 "Hook = Callable[[int], None]\nMode = 3\nhelper = dict()\n"
             )
-            page = dict(pm.render(Path(tmp), ["pkg"]))["pkg.md"]
+            page = dict(pm.render(Path(tmp), ["pkg"]))["README.md"]
             for name in ("DbValue", "Id", "T", "Hook"):
                 self.assertIn(f"### {name}\n", page)
             self.assertNotIn("### Mode", page)
@@ -186,7 +195,7 @@ class PackageTest(unittest.TestCase):
                 pm.render(Path(tmp), ["pkg"])
 
     def test_module_page(self) -> None:
-        page = self.pages["pkg.worker.md"]
+        page = self.pages["worker.md"]
         self.assertNotIn("_hidden", page)
         self.assertNotIn("_helper", page)
         self.assertNotIn("_private", page)

@@ -1,6 +1,6 @@
 """Render rustdoc JSON as Markdown pages, one per public module.
 
-``docs-markdown.py`` uses this for ``api/rust/``. The layout follows a
+``docs-markdown.py`` uses this for the Rust references. The layout follows a
 crate's public API rather than its source files: every item reachable from
 the crate root is documented on the page of the public module it is
 reachable from, re-exports from private modules included, and re-exports
@@ -735,6 +735,10 @@ class Page:
         module: The module item.
         entries: Items documented here, by kind.
         reexports: Items from other crates reachable here.
+        folder: The crate's folder in the docs tree (:class:`Renderer` sets
+            it; the crate's name until then).
+        has_children: Whether a public submodule gets a page of its own,
+            which makes this page a folder's ``README.md``.
     """
 
     crate: str
@@ -742,19 +746,26 @@ class Page:
     module: Json
     entries: dict[str, list[Entry]] = field(default_factory=dict)
     reexports: list[ReExport] = field(default_factory=list)
+    folder: str = ""
+    has_children: bool = False
 
     @property
     def file(self) -> str:
-        """The page's path under ``api/rust``.
+        """The page's path in the docs tree.
+
+        A module with submodule pages is a folder, so its page is that
+        folder's ``README.md``, which the site serves at the folder's own
+        URL; the crate root is the crate folder's ``README.md``.
 
         Returns:
-            ``<crate>/README.md`` or ``<crate>/<a>/<b>.md``. The crate root
-            is the folder's README so the site serves it at the folder's
-            own URL (``/docs/api/rust/<crate>``).
+            ``<folder>/README.md``, ``<folder>/<a>/<b>.md`` or
+            ``<folder>/<a>/<b>/README.md``.
         """
+        folder = self.folder or self.crate
         if not self.path:
-            return f"{self.crate}/README.md"
-        return f"{self.crate}/{'/'.join(self.path)}.md"
+            return f"{folder}/README.md"
+        inner = "/".join(self.path)
+        return f"{folder}/{inner}/README.md" if self.has_children else f"{folder}/{inner}.md"
 
     @property
     def title(self) -> str:
@@ -931,12 +942,24 @@ class Renderer:
 
     Args:
         crates: Every crate converted into this tree, by name.
+        folders: Each crate's folder in the docs tree, by name.
     """
 
-    def __init__(self, crates: Mapping[str, Crate]) -> None:
-        """Collect pages for every crate and plan their anchors."""
+    def __init__(self, crates: Mapping[str, Crate], folders: Mapping[str, str] | None = None) -> None:
+        """Collect pages for every crate and plan their anchors.
+
+        Args:
+            crates: Every crate converted into this tree, by name.
+            folders: Each crate's folder in the docs tree, by name; a crate
+                not listed lands in a folder named after it.
+        """
         self.crates = dict(crates)
         self.pages = {name: collect_pages(crate) for name, crate in self.crates.items()}
+        for name, pages in self.pages.items():
+            paths = {page.path for page in pages}
+            for page in pages:
+                page.folder = (folders or {}).get(name, name)
+                page.has_children = any(len(p) > len(page.path) and p[: len(page.path)] == page.path for p in paths)
         self.placement = Placement()
         for name, pages in self.pages.items():
             for page in pages:
@@ -1100,7 +1123,7 @@ class Renderer:
         """Render every page.
 
         Returns:
-            Page file under ``api/rust`` -> Markdown.
+            Page file in the docs tree -> Markdown.
 
         Raises:
             ValueError: Two pages would be written to one file (a public
@@ -1145,7 +1168,8 @@ class Renderer:
             lines += [f"## {title}", ""]
             if kind == "module":
                 for entry in entries:
-                    file = f"{page.crate}/{'/'.join((*page.path, entry.name))}.md"
+                    child = next((p for p in self.pages[page.crate] if p.path == (*page.path, entry.name)), None)
+                    file = child.file if child is not None else f"{page.folder or page.crate}/{'/'.join((*page.path, entry.name))}.md"
                     href = os.path.relpath(file, os.path.dirname(page.file)).replace(os.sep, "/")
                     text = summary(entry.item.get("docs"))
                     lines.append(f"- [`{entry.name}`]({href})" + (f": {text}" if text else ""))

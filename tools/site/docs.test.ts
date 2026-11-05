@@ -53,20 +53,23 @@ const DOCS = fileURLToPath(new URL("../../docs/", import.meta.url));
 const BLOB = "https://github.com/Bookclerk/bookclerk/blob/main/";
 
 /** Docs that exist in the link tests. */
-const KEYS = new Set(["README", "plugins", "media", "adr/control-plane", "api/README"]);
+const KEYS = new Set(["README", "plugins", "media", "adr/control-plane", "server/README"]);
 
 test("doc URLs, in the default version and under a version prefix", () => {
   assert.equal(docUrl("README"), "/docs");
-  assert.equal(docUrl("api/README"), "/docs/api");
+  assert.equal(docUrl("server/README"), "/docs/server");
   assert.equal(docUrl("adr/control-plane"), "/docs/adr/control-plane");
   assert.equal(docUrl("plugins", "/docs/v/main/"), "/docs/v/main/plugins");
   assert.equal(docUrl("README", "/docs/v/main/"), "/docs/v/main");
-  // A Markdown copy sits beside its page; the home's is README.md.
-  assert.equal(docMarkdownUrl("api/README"), "/docs/api.md");
-  assert.equal(docMarkdownUrl("plugins", "/docs/v/main/"), "/docs/v/main/plugins.md");
-  assert.equal(docMarkdownUrl("README", "/docs/v/main/"), "/docs/v/main/README.md");
-  assert.equal(docMarkdownUrl("api/rust/demo/index"), "/docs/api/rust/demo/index.md");
-  assert.equal(docMarkdownUrl("README", "/docs/v/v0.1.0/"), "/docs/v/v0.1.0/README.md");
+  // A Markdown copy is index.md under its page's URL; the home's is /docs/index.md.
+  assert.equal(docMarkdownUrl("server/README"), "/docs/server/index.md");
+  assert.equal(docMarkdownUrl("plugins", "/docs/v/main/"), "/docs/v/main/plugins/index.md");
+  assert.equal(docMarkdownUrl("README", "/docs/v/main/"), "/docs/v/main/index.md");
+  assert.equal(
+    docMarkdownUrl("internals/crates/demo/README"),
+    "/docs/internals/crates/demo/index.md",
+  );
+  assert.equal(docMarkdownUrl("README", "/docs/v/v0.1.0/"), "/docs/v/v0.1.0/index.md");
 });
 
 test("every doc has its own slash-free URL", () => {
@@ -106,7 +109,7 @@ test("links between docs stay on the site", () => {
     rewriteLink("adr/control-plane.md", "README", KEYS, BLOB),
     "/docs/adr/control-plane",
   );
-  assert.equal(rewriteLink("api/README.md", "README", KEYS, BLOB), "/docs/api");
+  assert.equal(rewriteLink("server/README.md", "README", KEYS, BLOB), "/docs/server");
   // Repository files the site renders as pages link to those pages.
   assert.equal(rewriteLink("../../SECURITY.md", "server/security", KEYS, BLOB), "/security");
   assert.equal(
@@ -130,8 +133,8 @@ test("links to other repository files go to GitHub at the same ref", () => {
 
 test("without a list of docs, any .md inside the docs tree is a doc", () => {
   assert.equal(
-    rewriteLink("api/rust/x/index.md#fn", "README", null, BLOB),
-    "/docs/api/rust/x/index#fn",
+    rewriteLink("internals/crates/x/net.md#fn", "README", null, BLOB),
+    "/docs/internals/crates/x/net#fn",
   );
   assert.equal(rewriteLink("../AGENTS.md", "README", null, BLOB), `${BLOB}AGENTS.md`);
   assert.equal(rewriteLink("%E0%A4%A.md", "README", null, BLOB), "%E0%A4%A.md");
@@ -168,13 +171,23 @@ test("every doc renders, and every link between docs resolves", () => {
       new Set([...d.html.matchAll(/ id="([^"]+)"/g)].map((m) => m[1])),
     ]),
   );
-  // Generated pages are not in docs/; links to them are checked by the docs build.
-  const generated = new Set(Object.keys(GENERATED_TITLES).map((k) => docUrl(k)));
+  // Generated pages are not in docs/; links to them are checked by the docs
+  // build. Their folders are the ones scripts/docs-markdown.py's REFERENCES
+  // name, read from the script so the two cannot drift.
+  const script = readFileSync(`${DOCS}../scripts/docs-markdown.py`, "utf8");
+  const folders = [...script.matchAll(/Reference\(\s*"([^"]+)"/g)].map((m) =>
+    docUrl(`${m[1]}/README`),
+  );
+  assert.ok(folders.length >= 5, "the generated folders were read");
+  const generatedFolders = new Set(folders);
   const broken: string[] = [];
   for (const doc of docs) {
     for (const [, href = ""] of doc.html.matchAll(/href="(\/docs\/[^"]*)"/g)) {
       const [path = "", hash] = href.split("#");
-      if (generated.has(path)) continue;
+      // A link into a reference folder other than to its landing page.
+      if ([...generatedFolders].some((f) => path.startsWith(`${f}/`))) continue;
+      // A generated landing page: in the sidebar, not in docs/.
+      if (Object.hasOwn(GENERATED_TITLES, path.slice("/docs/".length) + "/README")) continue;
       const anchors = ids.get(path);
       if (anchors === undefined) broken.push(`${doc.key} -> ${href}`);
       else if (hash && !anchors.has(hash)) broken.push(`${doc.key} -> ${href} (no anchor)`);
@@ -451,11 +464,11 @@ test("Markdown copies rewrite whole link targets outside code", () => {
   const out = siteMarkdown(md, "plugins", KEYS, BLOB).split("\n");
   assert.equal(
     out[0],
-    'See [media](/docs/media.md#codecs "Media") and [dir](https://github.com/Bookclerk/bookclerk/tree/main/examples/echo/) and [file](https://github.com/Bookclerk/bookclerk/blob/main/examples/echo/plugin.toml).',
+    'See [media](/docs/media/index.md#codecs "Media") and [dir](https://github.com/Bookclerk/bookclerk/tree/main/examples/echo/) and [file](https://github.com/Bookclerk/bookclerk/blob/main/examples/echo/plugin.toml).',
   );
   assert.equal(out[1], "Inline `[x](media.md)` stays.");
   assert.equal(out[3], "[y](media.md)");
-  assert.equal(out[5], "[ref]: /docs/plugins.md");
+  assert.equal(out[5], "[ref]: /docs/plugins/index.md");
 });
 
 test("page dates are real calendar dates, shown as month, day and year", () => {

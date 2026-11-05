@@ -533,7 +533,7 @@ test("crawler and agent files list the site", () => {
 
     const llms = site.page("llms.txt");
     assert.ok(llms.startsWith("# Bookclerk\n\n> "));
-    assert.match(llms, /^- \[[^\]]+\]\(https:\/\/bookclerk.app\/docs\/plugins.md\): \S/m);
+    assert.match(llms, /^- \[[^\]]+\]\(https:\/\/bookclerk.app\/docs\/plugins\/index.md\): \S/m);
     assert.match(llms, /^## Optional$/m);
     assert.ok(llms.includes("unstable development version"));
     assert.ok(llms.includes("https://bookclerk.app/security.md"));
@@ -543,10 +543,10 @@ test("crawler and agent files list the site", () => {
     assert.doesNotMatch(llms.slice(0, llms.indexOf("\n## ")), /\n#/);
     assert.match(
       llms,
-      /^- \[Rust plugin SDK\]\(https:\/\/bookclerk.app\/docs\/api\/rust\/bookclerk_plugin_sdk.md\)$/m,
+      /^- \[Rust plugin SDK\]\(https:\/\/bookclerk.app\/docs\/plugins\/sdk\/rust\/index.md\): \S/m,
     );
     const full = site.page("llms-full.txt");
-    assert.ok(full.includes("Source: https://bookclerk.app/docs/plugins.md"));
+    assert.ok(full.includes("Source: https://bookclerk.app/docs/plugins/index.md"));
     // Links in the combined file point at the site, never at bare .md paths.
     assert.ok(full.includes("](/docs/"));
     assert.ok(!/\]\((?!https?:|\/|#|mailto:)[^)]*\.md/.test(full));
@@ -647,7 +647,7 @@ test("the security page is SECURITY.md from the repository root, with links kept
     assert.ok(!html.includes("<!--source-->"));
     const md = site.page("security.md");
     assert.match(md, /^# Security policy$/m);
-    assert.ok(md.includes("](/docs/server/security.md)"));
+    assert.ok(md.includes("](/docs/server/security/index.md)"));
     assert.match(site.page("index.html"), /<a href="\/security">Security<\/a>/);
     assert.doesNotMatch(site.page("index.html"), /github\.com\/Bookclerk\/bookclerk\/security"/);
   } finally {
@@ -697,18 +697,15 @@ test("the docs shell has every hole and marker the Worker fills, once", () => {
     }
     assert.ok(!shell.html.includes("{{"));
     assert.equal(shell.versions[0]?.ref, "v0.1.0");
-    const api = shell.nav.find((g) => g.title === "API reference");
-    assert.deepEqual(
-      api?.pages.map((p) => p.key),
-      [
-        "api/README",
-        "api/typescript/README",
-        "api/python/README",
-        "api/rust/bookclerk_plugin_sdk/README",
-        "api/web/README",
-        "api/rust/README",
-      ],
-    );
+    // The generated landing pages sit in their shelves, titled by the build.
+    const server = shell.nav.find((g) => g.title === "Run a server");
+    assert.deepEqual(server?.pages.at(-1), { key: "server/api/README", title: "Web API" });
+    const internals = shell.nav.find((g) => g.title === "How it works");
+    assert.deepEqual(internals?.pages.at(-1), {
+      key: "internals/crates/README",
+      title: "Rust crates",
+    });
+    assert.ok(!shell.nav.some((g) => g.title === "API reference" || g.title === "More"));
   } finally {
     site.done();
   }

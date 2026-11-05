@@ -97,8 +97,10 @@ pull request as the behavior they describe:
   **Context**, **Decision** and **Consequences**) instead.
 - A new architecture decision gets an ADR; when a later change supersedes
   one, update that ADR's **Status** rather than rewriting its body.
-- A new page is listed in [`docs/README.md`](docs/README.md) and in the site
-  navigation (`NAV` in `tools/site/render.ts`).
+- A new page is listed in [`docs/README.md`](docs/README.md), in its shelf's
+  `README.md` and in the site navigation (`NAV` in `tools/site/render.ts`).
+  A page with child pages is its folder's `README.md`; no page is named
+  `index.md` (see [`docs/contributing/writing-docs.md`](docs/contributing/writing-docs.md#files-and-folders)).
 - Generated references are regenerated, never edited by hand:
   - CLI reference ([`docs/server/cli-reference.md`](docs/server/cli-reference.md)):
     `UPDATE_CLI_REFERENCE=1 cargo test -p bookclerk-cli cli_reference`
@@ -166,7 +168,7 @@ See [`docs/contributing/licensing.md`](docs/contributing/licensing.md).
 
 `bookclerk-jail`, `bookclerk-sandbox`, `bookclerk-workerd`,
 `bookclerk-plugin-host`, `bookclerk-plugin-abi` (`plugin.capnp`),
-`bookclerk-db-exec`, `docs/sql-contract/`, `bookclerk-media-worker`,
+`bookclerk-db-exec`, `docs/plugins/sql-contract/`, `bookclerk-media-worker`,
 `bookclerk-mp4`, secrets / `master.key` / operator-token code, and
 `.github/workflows/`.
 
@@ -208,7 +210,7 @@ description rather than widening the change silently.
   approved `[capabilities.network]` grants (`domains` for workerd fetch, `tcp`
   for native sockets, operator-added hosts or CIDRs).
 - Host SQL goes through the canonical SQL-v1 contract
-  ([`docs/sql-contract/v1.md`](docs/sql-contract/v1.md)), never engine-specific
+  ([`docs/plugins/sql-contract/v1.md`](docs/plugins/sql-contract/v1.md)), never engine-specific
   SQL.
 - `plugin.capnp` changes ship with the TS SDK. From the v1 freeze it is
   append-only (new ordinals only); before it, a change that removes or
@@ -245,7 +247,9 @@ Product docs live under [`docs/`](docs/README.md). Bookclerk is a
 **multi-storefront** audiobook library manager (sources + destinations +
 integrations), not an Audible-only Libation fork. Public APIs use
 [Google-style inline docs](docs/contributing/code-documentation.md); regenerate HTML with
-`./scripts/generate-api-docs.sh` into `docs/api/`.
+`./scripts/generate-api-docs.sh` into `target/api-docs/`; the published
+docs carry the same reference as Markdown beside the hand-written pages
+(see [`docs/contributing/automation.md`](docs/contributing/automation.md#docs-publishing)).
 
 ### Services / binaries
 
@@ -275,7 +279,7 @@ Optional companion (workspace member, not a default-member):
 
 - `bookclerk-tray` — in-process tray library linked into `bookclerkd` (opens the
   web UI in the browser; Linux `ksni`; Windows/macOS `tray-icon` with GTK
-  features off). See `docs/contributing/ui.md`.
+  features off). See `docs/contributing/ui/README.md`.
 
 Frontend sources live in `ui/` (Vite/React); `cargo dev` / `cargo build-app --platform`
 rebuild `ui/dist` when SPA sources are newer than the last Vite output. Manual:

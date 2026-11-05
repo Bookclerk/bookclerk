@@ -544,7 +544,7 @@ fuzzing in `npm test`.
   reference outside the diagram, and ids carrying the page's prefix.
 - **Web API layout** (`layoutOperations` in
   `tools/site/api-reference.ts`, through `renderDoc`) rearranges the
-  generated `api/web/` pages from the docs repository into operation
+  generated Web API pages from the docs repository into operation
   sections, with one panel per example response (`layoutResponses`),
   one per example request language (`layoutRequests`) and property rows
   for the parameter, body and response lists (`layoutProperties`).
@@ -557,7 +557,7 @@ fuzzing in `npm test`.
   has without the layout.
 - **Web API index layout** (`layoutIndex` and `indexRoutes` in
   `tools/site/api-reference.ts`, through `renderDoc`) lays out the
-  generated `api/web/README.md` as route group cards with a quick-start
+  generated Web API index as route group cards with a quick-start
   aside, and reads its routes for the sidebar. Corpus
   `tools/site/fuzz/api_index/`. Oracle: the HTML nests properly, every card
   and aside is labelled by its own heading, every badge names a known
@@ -571,6 +571,17 @@ fuzzing in `npm test`.
   by field, and each sitemap key segment by segment. The date shown is only
   `Mon D, YYYY`, and its `<time>` element holds only the date's own
   characters.
+- **Generated manifest reader** (`parseGenerated` and the lookups built
+  on it in `tools/site/generated.ts`) reads the docs repository's
+  `generated.json`, which says which pages the docs build generated, from
+  what, and which reference each belongs to; the Worker uses it for the
+  Web API layout, the source line, the sidebar lists and the sitemap
+  page. Corpus `tools/site/fuzz/generated/`. Oracle: the document read
+  through property descriptors by exact types, every folder, page and
+  source path segment by segment, each page under its folder, and the
+  lookups (a page's reference, whether it is generated, its source, the
+  Web API's pages and a reference's modules) derived plainly from the
+  oracle's reading.
 - **IndexNow sitemap reader** (`readSitemap` in `tools/site/indexnow.ts`)
   reads the live site's sitemaps in the `indexnow` workflow, which then
   submits the URLs they list. Corpus `tools/site/fuzz/indexnow_sitemap/`.

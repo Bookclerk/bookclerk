@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# Generate language API references into docs/api/.
+# Generate language API references as HTML into target/api-docs/.
 #
 # Builds rustdoc (workspace libraries or selected packages), TypeDoc for
 # @bookclerk/plugin-sdk and the operator UI, and pdoc for the Python guest SDK.
-# Output lands in docs/api/{rust,typescript,ui,python}/ for local browsing and
-# publish prep (crates.io / docs.rs still build from source rustdoc independently).
+# Output lands in target/api-docs/{rust,typescript,ui,python}/ for local browsing
+# and publish prep (crates.io / docs.rs still build from source rustdoc independently).
 #
 # Usage:
-#   ./scripts/generate-api-docs.sh              # generate everything under docs/api/
+#   ./scripts/generate-api-docs.sh              # generate everything under target/api-docs/
 #   ./scripts/generate-api-docs.sh --check      # generate into a temp dir (CI)
 #   ./scripts/generate-api-docs.sh --all        # explicit full generation
 #   ./scripts/generate-api-docs.sh --rust-package bookclerk-config --ui
@@ -19,7 +19,7 @@
 #   --ui                    TypeDoc for ui/
 #   --python                pdoc for packages/plugin-sdk-python (needs uv)
 #   --all                   All backends (workspace rustdoc)
-#   --check                 Write to a temp dir; do not dirty docs/api/
+#   --check                 Write to a temp dir; do not touch target/api-docs/
 #
 # Environment:
 #   CARGO_TARGET_DIR - Cargo target directory (default from .cargo/config.toml /
@@ -85,7 +85,7 @@ if [[ "$DO_ALL" -eq 1 ]]; then
 fi
 
 PYTHON="${BOOKCLERK_DOC_PYTHON:-python3}"
-OUT_ROOT="$ROOT/docs/api"
+OUT_ROOT="$ROOT/target/api-docs"
 if [[ "$CHECK" -eq 1 ]]; then
   OUT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bookclerk-api-docs.XXXXXX")"
   trap 'rm -rf "$OUT_ROOT"' EXIT
@@ -212,9 +212,5 @@ fi
 if [[ "$CHECK" -eq 1 ]]; then
   echo "==> check ok (generated under temp $OUT_ROOT)"
 else
-  if [[ ! -f "$ROOT/docs/api/README.md" ]]; then
-    echo "missing docs/api/README.md" >&2
-    exit 1
-  fi
   echo "==> wrote selected backends under $OUT_ROOT"
 fi

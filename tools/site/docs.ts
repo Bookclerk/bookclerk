@@ -21,11 +21,6 @@ export {
   slugify,
 } from "./render.ts";
 
-/**
- * Directories under docs/ that scripts/generate-api-docs.sh fills with
- * generated (gitignored) API reference. They are not docs; the published
- * reference comes from the docs repository.
- */
 /** Every local doc rendered, and the sidebar built from them (see renderDocs). */
 export interface RenderedDocs {
   /** The sidebar. */
@@ -34,15 +29,8 @@ export interface RenderedDocs {
   docs: (RenderedDoc & { key: string })[];
 }
 
-export const GENERATED_DIRS: readonly string[] = [
-  "api/rust",
-  "api/typescript",
-  "api/ui",
-  "api/python",
-];
-
 /**
- * Lists every Markdown file under a directory, skipping GENERATED_DIRS.
+ * Lists every Markdown file under a directory.
  *
  * @param root - The docs directory.
  * @returns Paths relative to `root`, POSIX separators, sorted.
@@ -52,7 +40,6 @@ export function markdownFiles(root: string): string[] {
   const walk = (dir: string): void => {
     for (const name of readdirSync(dir)) {
       const full = join(dir, name);
-      if (GENERATED_DIRS.includes(relative(root, full).split(sep).join("/"))) continue;
       if (statSync(full).isDirectory()) walk(full);
       else if (name.endsWith(".md")) out.push(relative(root, full).split(sep).join("/"));
     }

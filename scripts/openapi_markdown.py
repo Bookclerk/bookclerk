@@ -1,4 +1,4 @@
-"""Render the daemon's OpenAPI document as Markdown for ``api/web/``.
+"""Render the daemon's OpenAPI document as Markdown for the Web API reference folder.
 
 ``docs-markdown.py`` uses this for the web API reference. The input is
 ``crates/bookclerkd/openapi.json``, the document ``bookclerkd`` generates from
@@ -253,7 +253,7 @@ class Tag:
     name: str
     #: The tag's description, or ``""``.
     description: str
-    #: The page file name under ``api/web/``.
+    #: The page file name in the reference folder.
     page: str
     #: Operations in document order.
     operations: list[Operation] = field(default_factory=list)
@@ -857,7 +857,7 @@ class Document:
         """Render every page.
 
         Returns:
-            Page file name under ``api/web/`` mapped to its Markdown.
+            Page file name in the reference folder mapped to its Markdown.
         """
         pages = {"README.md": self.render_index()}
         for group in self.tags:
