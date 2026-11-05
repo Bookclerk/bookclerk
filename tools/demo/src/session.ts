@@ -11,7 +11,7 @@
 import { Container } from "@cloudflare/containers";
 import type { Env, SessionApi } from "./env.ts";
 import { finish, recordStartup } from "./limits.ts";
-import { withServerTiming } from "./timing.ts";
+import { timed } from "./timing.ts";
 import {
   type ContainerCall,
   enableStorefronts,
@@ -341,9 +341,7 @@ export class DemoSession extends Container<Env> implements SessionApi {
         { status: 503, headers: { "X-Demo-State": meta?.state ?? "none" } },
       );
     }
-    const started = Date.now();
-    const answer = await this.containerFetch(request, PORT);
-    return withServerTiming(answer, "container", Date.now() - started);
+    return timed("container", () => this.containerFetch(request, PORT));
   }
 
   /**

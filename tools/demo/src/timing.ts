@@ -3,6 +3,24 @@
 // session's Durable Object and its container, or in bookclerkd itself.
 
 /**
+ * Runs `call` and adds how long it took as a `Server-Timing` entry.
+ *
+ * @param name - Metric name (`session`, `container`).
+ * @param call - The request to time.
+ * @param now - Clock in milliseconds.
+ * @returns The answer, annotated.
+ */
+export async function timed(
+  name: string,
+  call: () => Promise<Response>,
+  now: () => number = Date.now,
+): Promise<Response> {
+  const started = now();
+  const answer = await call();
+  return withServerTiming(answer, name, now() - started);
+}
+
+/**
  * A copy of `response` with one more `Server-Timing` entry.
  *
  * A WebSocket upgrade is returned as is, since its headers are already
