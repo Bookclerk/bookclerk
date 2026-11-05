@@ -251,7 +251,9 @@ An optional top-level `logo` sets the Settings favicon. It is either:
 - an `https://` or `http://` URL. The host downloads an `https://` logo
   through its cover service and serves a 128 px copy (see
   [Other images](../server/integrations.md#other-images)); the browser
-  never loads it directly, and an `http://` logo isn't shown; or
+  never loads it directly, and an `http://` logo isn't shown. A remote
+  logo must be a JPEG, PNG or WebP image: an SVG or GIF can't be
+  converted, and Settings shows a fallback icon instead; or
 - a relative image path under the plugin install root, which the host
   serves at `GET /api/plugins/{kind}/{id}/logo`.
 

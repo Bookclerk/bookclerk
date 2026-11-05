@@ -495,7 +495,7 @@ struct PluginSettingsGroup {
     /// or a 128 px copy of the remote logo its manifest names.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(
-        example = "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr"
+        example = "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.N14rqh66Bok9-eCqJKBNoQ"
     )]
     logo: Option<String>,
     /// Editable options for this plugin, including `.enabled`.

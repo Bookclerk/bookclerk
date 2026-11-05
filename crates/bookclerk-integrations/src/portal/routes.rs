@@ -511,7 +511,7 @@ struct BrandInfo {
     /// Same-origin logo image (a 128 px copy of the brand's icon), or empty
     /// when there is none.
     #[schema(
-        example = "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr"
+        example = "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.N14rqh66Bok9-eCqJKBNoQ"
     )]
     logo: String,
 }

@@ -35,7 +35,7 @@ pub(crate) const ROUTE_PREFIX: &str = "/api/covers";
 
 /// Where the API mounts signed images that are not covers (profile
 /// pictures, remote logos): the same tokens, served as a 128 px JPEG with a
-/// daily cache header because the remote image can change in place.
+/// daily browser cache header instead of `immutable`.
 pub(crate) const IMAGE_PREFIX: &str = "/api/images";
 
 /// Bytes of processed covers kept on disk before the least recently served
@@ -53,6 +53,12 @@ pub(crate) const PREFETCH_LIMIT: usize = 24;
 /// Background prefetch batches downloading at once; a search while both are
 /// busy prefetches nothing and its covers load on request.
 const PREFETCH_BATCHES: usize = 2;
+
+/// Downloads at once for images whose address the caller picks (a
+/// Gravatar hash), so a burst of new addresses can't queue unbounded
+/// fetches; a request over the limit is answered `503` and the web app
+/// shows its fallback.
+const OPEN_FETCHES: usize = 4;
 
 /// Failures remembered at once; older ones are dropped first when full.
 const MAX_FAILURES: usize = 4096;
@@ -185,6 +191,9 @@ pub(crate) struct CoverService {
     prefetching: Mutex<HashSet<String>>,
     /// One permit per background batch, at most [`PREFETCH_BATCHES`].
     batches: Arc<tokio::sync::Semaphore>,
+    /// One permit per download of an image whose address the caller picks,
+    /// at most [`OPEN_FETCHES`].
+    open_fetches: Arc<tokio::sync::Semaphore>,
 }
 
 impl std::fmt::Debug for CoverService {
@@ -231,6 +240,7 @@ impl CoverService {
             failures: Mutex::default(),
             prefetching: Mutex::default(),
             batches: Arc::new(tokio::sync::Semaphore::new(PREFETCH_BATCHES)),
+            open_fetches: Arc::new(tokio::sync::Semaphore::new(OPEN_FETCHES)),
         }
     }
 
@@ -258,7 +268,8 @@ impl CoverService {
     /// The same-origin 128 px source for a remote image that is not a cover
     /// (a store icon, a sign-in provider's profile picture), so the web app
     /// can show it under an `img-src 'self'` policy. It is served by
-    /// [`get_image`], which the browser re-checks daily, unlike a cover path.
+    /// [`get_image`], which the browser asks for again daily, unlike a cover
+    /// path.
     ///
     /// # Returns
     ///
@@ -282,6 +293,11 @@ impl CoverService {
     /// `None` for anything else (a protocol-relative URL, plain `http`).
     pub(crate) fn same_origin_src(&self, src: &str) -> Option<String> {
         let src = src.trim();
+        // A tab or newline inside the path would be dropped by the browser's
+        // URL parser, turning `/\t/host` into `//host`.
+        if src.chars().any(|c| c.is_ascii_control()) {
+            return None;
+        }
         if src.starts_with('/') && !src.starts_with("//") && !src.starts_with("/\\") {
             Some(src.to_owned())
         } else {
@@ -310,6 +326,42 @@ impl CoverService {
     ) -> Result<Vec<u8>, CoverFailure> {
         let url = self.open_token(token).ok_or(CoverFailure::UnknownToken)?;
         self.image_for_url(backend, url, size).await
+    }
+
+    /// [`Self::image_detached`] for an image whose address the caller picks:
+    /// a cached image is served as usual, but a download needs one of
+    /// [`OPEN_FETCHES`] permits, held until it finishes.
+    ///
+    /// # Errors
+    ///
+    /// [`CoverFailure::Unavailable`] when every permit is taken, otherwise as
+    /// [`Self::image_for_url`].
+    pub(crate) async fn image_admitted<B: CoverBackend>(
+        self: &Arc<Self>,
+        backend: Arc<B>,
+        url: String,
+        size: CoverSize,
+    ) -> Result<Vec<u8>, CoverFailure> {
+        if let Some(dir) = &self.dir {
+            if let Some(bytes) = read_cached(dir, &cache_key(&url), size).await {
+                return Ok(bytes);
+            }
+        }
+        let permit = Arc::clone(&self.open_fetches)
+            .try_acquire_owned()
+            .map_err(|_| CoverFailure::Unavailable("too many image downloads at once".into()))?;
+        let service = Arc::clone(self);
+        tokio::spawn(async move {
+            let outcome = service.image_for_url(&*backend, url, size).await;
+            drop(permit);
+            outcome
+        })
+        .await
+        .unwrap_or_else(|err| {
+            Err(CoverFailure::Unavailable(format!(
+                "cover task failed: {err}"
+            )))
+        })
     }
 
     /// [`Self::image_for_url`] in its own task, so a caller that is dropped
@@ -796,15 +848,27 @@ pub(crate) async fn get_cover(
         return StatusCode::NOT_FOUND.into_response();
     };
     let url = state.covers.open_token(&token);
-    serve(&state, url, size, IMMUTABLE).await
+    serve(&state, url, size, IMMUTABLE, Admission::Signed).await
 }
 
 /// `Cache-Control` for a cover path, which always names the same image.
 const IMMUTABLE: &str = "private, max-age=31536000, immutable";
 
 /// `Cache-Control` for an image whose remote copy can change under the same
-/// address (a Gravatar, a store icon): the browser checks again daily.
+/// address (a Gravatar, a store icon): the browser asks Bookclerk again
+/// daily. Bookclerk answers from its disk cache until the entry is evicted.
 const DAILY: &str = "private, max-age=86400";
+
+/// How [`serve`] admits a download.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    /// The address was signed or chosen by this node, so the set of
+    /// addresses is bounded: download without a limit.
+    Signed,
+    /// The caller picks the address (a Gravatar hash): download only within
+    /// [`OPEN_FETCHES`].
+    Open,
+}
 
 /// Serves one size of the image at `url` through the cover service.
 ///
@@ -815,11 +879,13 @@ const DAILY: &str = "private, max-age=86400";
 /// * `url` - The remote image; `None` is a 404.
 /// * `size` - The size to serve.
 /// * `cache_control` - `Cache-Control` for a successful answer.
+/// * `admission` - Whether a download is limited by [`OPEN_FETCHES`].
 async fn serve(
     state: &crate::api::AppState,
     url: Option<String>,
     size: CoverSize,
     cache_control: &'static str,
+    admission: Admission,
 ) -> axum::response::Response {
     use axum::http::{header, StatusCode};
     use axum::response::IntoResponse;
@@ -828,7 +894,10 @@ async fn serve(
         integrations: Arc::clone(&state.integrations),
     });
     let outcome = match url {
-        Some(url) => state.covers.image_detached(backend, url, size).await,
+        Some(url) => match admission {
+            Admission::Signed => state.covers.image_detached(backend, url, size).await,
+            Admission::Open => state.covers.image_admitted(backend, url, size).await,
+        },
         None => Err(CoverFailure::UnknownToken),
     };
     match outcome {
@@ -857,8 +926,9 @@ async fn serve(
 ///
 /// The path comes from a `picture_path` or `logo` field: a sign-in
 /// provider's profile picture or a plugin's remote logo. It is fetched and
-/// processed like a cover, but the browser re-checks it daily because the
-/// remote image can change at the same address.
+/// processed like a cover, but answers with a daily browser cache header
+/// instead of `immutable`, because the remote image can change at the same
+/// address. Bookclerk keeps serving its cached copy until it is evicted.
 #[utoipa::path(
     get,
     path = "/api/images/{token}",
@@ -877,7 +947,7 @@ pub(crate) async fn get_image(
     axum::extract::Path(token): axum::extract::Path<String>,
 ) -> axum::response::Response {
     let url = state.covers.open_token(&token);
-    serve(&state, url, CoverSize::Thumb, DAILY).await
+    serve(&state, url, CoverSize::Thumb, DAILY, Admission::Signed).await
 }
 
 /// Serves a user's Gravatar as a 128 px JPEG through the cover service.
@@ -895,14 +965,21 @@ pub(crate) async fn get_image(
         (status = 200, description = "The picture as a JPEG.", content_type = "image/jpeg"),
         (status = 404, description = "The hash is not 64 lowercase hex digits."),
         (status = 502, description = "The email has no Gravatar, or the image is not a supported image."),
-        (status = 503, description = "This node cannot fetch or process images right now."),
+        (status = 503, description = "This node cannot fetch or process images right now, or too many Gravatars are downloading at once."),
     ),
 )]
 pub(crate) async fn get_gravatar(
     axum::extract::State(state): axum::extract::State<Arc<crate::api::AppState>>,
     axum::extract::Path(hash): axum::extract::Path<String>,
 ) -> axum::response::Response {
-    serve(&state, gravatar_url(&hash), CoverSize::Thumb, DAILY).await
+    serve(
+        &state,
+        gravatar_url(&hash),
+        CoverSize::Thumb,
+        DAILY,
+        Admission::Open,
+    )
+    .await
 }
 
 /// Serves a storefront's or integration's icon as a 128 px JPEG through the
@@ -928,7 +1005,7 @@ pub(crate) async fn get_store_icon(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> axum::response::Response {
     let url = store_icon_url(&state, &id).await;
-    serve(&state, url, CoverSize::Thumb, DAILY).await
+    serve(&state, url, CoverSize::Thumb, DAILY, Admission::Signed).await
 }
 
 /// The icon a deployed storefront, or failing that an integration, names
@@ -1145,10 +1222,54 @@ mod tests {
             "//evil.example/x.png",
             "/\\evil.example/x.png",
             "data:image/png,x",
+            "/\t/evil.example/x.png",
+            "/\n/evil.example/x.png",
+            "/api/images/a\rb",
             "",
         ] {
-            assert_eq!(service.same_origin_src(refused), None, "{refused}");
+            assert_eq!(service.same_origin_src(refused), None, "{refused:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn open_downloads_are_limited_but_cached_images_are_not() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = service(temp.path());
+        let backend = Arc::new(Fake::default());
+        let cached = "https://img.example/ok-cached.png".to_owned();
+        service
+            .image_admitted(Arc::clone(&backend), cached.clone(), CoverSize::Thumb)
+            .await
+            .expect("first download");
+
+        // Every permit taken: a new address is refused without a download,
+        // and the refusal isn't remembered as the address's own failure.
+        let held: Vec<_> = (0..OPEN_FETCHES)
+            .map(|_| {
+                Arc::clone(&service.open_fetches)
+                    .try_acquire_owned()
+                    .expect("permit")
+            })
+            .collect();
+        let fresh = "https://img.example/ok-fresh.png".to_owned();
+        let refused = service
+            .image_admitted(Arc::clone(&backend), fresh.clone(), CoverSize::Thumb)
+            .await;
+        assert!(matches!(refused, Err(CoverFailure::Unavailable(_))));
+        assert_eq!(backend.fetched.load(Ordering::SeqCst), 1);
+        let bytes = service
+            .image_admitted(Arc::clone(&backend), cached, CoverSize::Thumb)
+            .await
+            .expect("served from disk while full");
+        assert!(bytes.starts_with(&[0xFF, 0xD8, 0xFF]));
+
+        drop(held);
+        service
+            .image_admitted(Arc::clone(&backend), fresh, CoverSize::Thumb)
+            .await
+            .expect("downloaded once a permit is free");
+        assert_eq!(backend.fetched.load(Ordering::SeqCst), 2);
+        assert_eq!(service.open_fetches.available_permits(), OPEN_FETCHES);
     }
 
     #[test]

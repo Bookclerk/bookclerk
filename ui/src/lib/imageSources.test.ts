@@ -23,6 +23,13 @@ describe("same-origin image sources", () => {
     const unsigned = { ...signed, identity_id: 4, picture_path: null };
     expect(ssoPictureSrc(signed)).toBe("/api/images/abc.def");
     expect(ssoPictureSrc(unsigned)).toBeUndefined();
+    for (const offOrigin of [
+      "https://idp.example/me.png",
+      "//idp.example/me.png",
+      "/\\idp.example/me.png",
+    ]) {
+      expect(ssoPictureSrc({ ...signed, picture_path: offOrigin })).toBeUndefined();
+    }
     expect(resolveAvatar({ sso_pictures: [unsigned, signed] })).toEqual({
       kind: "sso",
       src: "/api/images/abc.def",

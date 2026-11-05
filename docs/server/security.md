@@ -75,8 +75,9 @@ Bookclerk's own scripts, load images only from Bookclerk, talk only to
 Bookclerk, and can't be framed by another site. Covers, store icons and
 profile pictures are downloaded by Bookclerk and served from its own
 address ([How covers are served](integrations.md#how-covers-are-served)).
-If your proxy adds its own `Content-Security-Policy` header, keep it at
-least this strict, or the app may stop loading.
+If your proxy adds its own `Content-Security-Policy` header, it must still
+allow Bookclerk's own scripts, images and connections. A stricter header,
+such as `script-src 'none'`, stops the app from loading.
 
 ## Sign-in
 

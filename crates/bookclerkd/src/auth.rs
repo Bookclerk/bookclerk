@@ -499,7 +499,7 @@ pub struct AuthSsoPicture {
     /// when this node can sign it.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(
-        example = "/api/images/aHR0cHM6Ly9saDMuZ29vZ2xldXNlcmNvbnRlbnQuY29tL2EvZXhhbXBsZT1zOTYtYw.3fA9c2Qx8bLm1kZr"
+        example = "/api/images/aHR0cHM6Ly9saDMuZ29vZ2xldXNlcmNvbnRlbnQuY29tL2EvZXhhbXBsZT1zOTYtYw.N14rqh66Bok9-eCqJKBNoQ"
     )]
     pub picture_path: Option<String>,
     /// RFC 3339 last portal-session activity for this identity, when any.
@@ -3736,7 +3736,7 @@ pub struct UserSsoPictureSummary {
     /// Same-origin 128 px copy of `picture_url` for the web app to show,
     /// when this node can sign it.
     #[schema(
-        example = "/api/images/aHR0cHM6Ly9hdmF0YXJzLmdpdGh1YnVzZXJjb250ZW50LmNvbS91Lzg2NzUzMDk.Qm9va2NsZXJr"
+        example = "/api/images/aHR0cHM6Ly9hdmF0YXJzLmdpdGh1YnVzZXJjb250ZW50LmNvbS91Lzg2NzUzMDk.N14rqh66Bok9-eCqJKBNoQ"
     )]
     pub picture_path: Option<String>,
     /// RFC 3339 time the identity last signed in, when it has.

@@ -260,9 +260,13 @@ somewhere else, as a 128 px JPEG:
   `/api/images/<token>` path. Remote plugin logos use the same kind of
   path.
 
-These answer with a one-day cache header instead of `immutable`, because
-the image behind the address can change. Without a deployed cover fetcher
-they answer `503` and the web app shows a monogram.
+These answer with a one-day browser cache header instead of `immutable`,
+because the image behind the address can change. Bookclerk itself keeps
+serving its cached copy until the cache evicts it, so a changed picture
+can take longer to appear. Without a deployed cover fetcher they answer
+`503` and the web app shows a monogram. Gravatars are downloaded at most
+four at a time, since anyone signed in can name a new hash; a request
+over that limit also answers `503`.
 
 ## Claim tickets and Accounts
 

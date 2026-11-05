@@ -53,7 +53,11 @@ export function gravatarUrl(hash: string): string {
  */
 export function ssoPictureSrc(picture: SsoPicture | undefined): string | undefined {
   const path = picture?.picture_path?.trim();
-  return path ? path : undefined;
+  // Only a same-origin path: the app's CSP would block anything else.
+  if (!path || !path.startsWith("/") || path.startsWith("//") || path.startsWith("/\\")) {
+    return undefined;
+  }
+  return path;
 }
 
 /**

@@ -14008,7 +14008,7 @@
           "Discover"
         ],
         "summary": "Serves a signed image that is not a cover as a 128 px JPEG.",
-        "description": "The path comes from a `picture_path` or `logo` field: a sign-in\nprovider's profile picture or a plugin's remote logo. It is fetched and\nprocessed like a cover, but the browser re-checks it daily because the\nremote image can change at the same address.",
+        "description": "The path comes from a `picture_path` or `logo` field: a sign-in\nprovider's profile picture or a plugin's remote logo. It is fetched and\nprocessed like a cover, but answers with a daily browser cache header\ninstead of `immutable`, because the remote image can change at the same\naddress. Bookclerk keeps serving its cached copy until it is evicted.",
         "operationId": "get_image",
         "parameters": [
           {
@@ -14236,7 +14236,7 @@
             }
           },
           "503": {
-            "description": "This node cannot fetch or process images right now.",
+            "description": "This node cannot fetch or process images right now, or too many Gravatars are downloading at once.",
             "content": {
               "application/json": {
                 "schema": {
@@ -24517,7 +24517,7 @@
           "picture_path": {
             "type": "string",
             "description": "Same-origin 128 px copy of `picture_url` for the web app to show,\nwhen this node can sign it.",
-            "example": "/api/images/aHR0cHM6Ly9saDMuZ29vZ2xldXNlcmNvbnRlbnQuY29tL2EvZXhhbXBsZT1zOTYtYw.3fA9c2Qx8bLm1kZr",
+            "example": "/api/images/aHR0cHM6Ly9saDMuZ29vZ2xldXNlcmNvbnRlbnQuY29tL2EvZXhhbXBsZT1zOTYtYw.N14rqh66Bok9-eCqJKBNoQ",
             "nullable": true
           },
           "last_used_at": {
@@ -25371,7 +25371,7 @@
           "logo": {
             "type": "string",
             "description": "Same-origin logo image (a 128 px copy of the brand's icon), or empty\nwhen there is none.",
-            "example": "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr"
+            "example": "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.N14rqh66Bok9-eCqJKBNoQ"
           }
         }
       },
@@ -26200,7 +26200,7 @@
               "logo": {
                 "type": "string",
                 "description": "Same-origin logo image (a 128 px copy of the brand's icon), or empty\nwhen there is none.",
-                "example": "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr"
+                "example": "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.N14rqh66Bok9-eCqJKBNoQ"
               }
             },
             "nullable": true
@@ -32902,7 +32902,7 @@
           "logo": {
             "type": "string",
             "description": "Same-origin logo for Settings list rows: the plugin's embedded logo,\nor a 128 px copy of the remote logo its manifest names.",
-            "example": "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr",
+            "example": "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.N14rqh66Bok9-eCqJKBNoQ",
             "nullable": true
           },
           "settings": {
@@ -34256,7 +34256,7 @@
           "picture_path": {
             "type": "string",
             "description": "Same-origin 128 px copy of `picture_url` for the web app to show\n(filled by the daemon; never stored).",
-            "example": "/api/images/aHR0cHM6Ly9hY2NvdW50cy5leGFtcGxlLmNvbS91L2RhbmEvcGljdHVyZS5wbmc.Qm9va2NsZXJr",
+            "example": "/api/images/aHR0cHM6Ly9hY2NvdW50cy5leGFtcGxlLmNvbS91L2RhbmEvcGljdHVyZS5wbmc.N14rqh66Bok9-eCqJKBNoQ",
             "nullable": true
           }
         }
@@ -37381,7 +37381,7 @@
           "picture_path": {
             "type": "string",
             "description": "Same-origin 128 px copy of `picture_url` for the web app to show,\nwhen this node can sign it.",
-            "example": "/api/images/aHR0cHM6Ly9hdmF0YXJzLmdpdGh1YnVzZXJjb250ZW50LmNvbS91Lzg2NzUzMDk.Qm9va2NsZXJr",
+            "example": "/api/images/aHR0cHM6Ly9hdmF0YXJzLmdpdGh1YnVzZXJjb250ZW50LmNvbS91Lzg2NzUzMDk.N14rqh66Bok9-eCqJKBNoQ",
             "nullable": true
           },
           "last_used_at": {
