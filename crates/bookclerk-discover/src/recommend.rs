@@ -158,7 +158,7 @@ pub struct Recommendation {
     #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
     /// Same-origin path of this cover's processed images, set by the daemon
-    /// when [`cover_url`](Self::cover_url) is an `https` URL. Append `/128`
+    /// when `cover_url` is an `https` URL. Append `/128`
     /// (thumbnail), `/360` (card) or `/full`; the browser never loads
     /// `cover_url` itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,7 +233,7 @@ pub struct RankedQueueEntry {
     #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
     /// Same-origin path of this cover's processed images, set by the daemon
-    /// when [`cover_url`](Self::cover_url) is an `https` URL. Append `/128`
+    /// when `cover_url` is an `https` URL. Append `/128`
     /// (thumbnail), `/360` (card) or `/full`; the browser never loads
     /// `cover_url` itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
