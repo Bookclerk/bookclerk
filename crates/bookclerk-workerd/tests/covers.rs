@@ -41,11 +41,14 @@ fn find_workerd() -> Option<PathBuf> {
         .and_then(|dir| bookclerk_sandbox::require_spawn_executable(&dir.join(binary_name())).ok())
 }
 
+/// Bodies the sink stored, keyed by sink key: bytes and content type.
+type Puts = Rc<RefCell<BTreeMap<String, (Vec<u8>, Option<String>)>>>;
+
 /// In-memory sink that records each put; refuses bodies over `max` and a
 /// second put under one key, as the host's cover sink does.
 struct MemSink {
     max: u64,
-    puts: Rc<RefCell<BTreeMap<String, (Vec<u8>, Option<String>)>>>,
+    puts: Puts,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -198,17 +201,19 @@ async fn workerd_cover_fetcher_streams_bodies_into_the_host_sink() {
                 images[4]
             );
 
-            let puts = puts.borrow();
-            for index in ["0", "2", "5"] {
-                let (body, content_type) = puts.get(index).expect("stored body");
-                assert_eq!(body, format!("body:{index}").as_bytes());
-                assert_eq!(content_type.as_deref(), Some("image/png"));
+            {
+                let puts = puts.borrow();
+                for index in ["0", "2", "5"] {
+                    let (body, content_type) = puts.get(index).expect("stored body");
+                    assert_eq!(body, format!("body:{index}").as_bytes());
+                    assert_eq!(content_type.as_deref(), Some("image/png"));
+                }
+                assert_eq!(
+                    puts.get("4").map(|(b, _)| b.as_slice()),
+                    Some(&b"first"[..])
+                );
+                assert!(!puts.contains_key("3"), "the oversized body was refused");
             }
-            assert_eq!(
-                puts.get("4").map(|(b, _)| b.as_slice()),
-                Some(&b"first"[..])
-            );
-            assert!(!puts.contains_key("3"), "the oversized body was refused");
             let _ = child.kill().await;
         })
         .await;
