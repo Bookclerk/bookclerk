@@ -415,6 +415,20 @@ export function withBanner(html: string): string {
 }
 
 /**
+ * Adds `no-transform` to a `Cache-Control` value, which stops Cloudflare
+ * from changing the document on its way to the browser (no Web Analytics
+ * beacon, no edge compression).
+ *
+ * @param value - The container's `Cache-Control`, or null when it sent none.
+ * @returns The value with `no-transform` in it once.
+ */
+export function withNoTransform(value: string | null): string {
+  const v = (value ?? "").trim();
+  if (v === "") return "no-transform";
+  return /(^|,)\s*no-transform\s*(,|$)/i.test(v) ? v : `${v}, no-transform`;
+}
+
+/**
  * Turns the container's answer into the visitor's response: rewritten
  * cookies, security headers, and the banner on HTML documents.
  *
@@ -433,6 +447,9 @@ async function forwardResponse(upstream: Response): Promise<Response> {
   const init = { status: upstream.status, statusText: upstream.statusText, headers };
   const type = headers.get("Content-Type") ?? "";
   if (!type.startsWith("text/html") || !upstream.body) return new Response(upstream.body, init);
+  // Keeps Cloudflare from adding the Web Analytics beacon to the visitor's
+  // own copy of the app: the Worker's pages are counted, the app is not.
+  headers.set("Cache-Control", withNoTransform(headers.get("Cache-Control")));
   // The body is decoded here, so its length changes; the runtime encodes it
   // again for the browser as Content-Encoding says.
   headers.delete("Content-Length");

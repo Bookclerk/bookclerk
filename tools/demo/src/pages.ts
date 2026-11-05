@@ -1,18 +1,33 @@
 // The demo Worker's own pages: the launch page with the Turnstile check, the
 // waiting page, and the pages for a busy demo or an ended session. Styles,
-// scripts, fonts and the mark are static files under public/_demo/, so the
+// scripts, fonts, icons and the mark are static files under public/_demo/, so the
 // pages' CSP needs no inline code. Nothing loads from another origin except
-// Turnstile.
+// Turnstile and the Cloudflare Web Analytics beacon, the website's only
+// outside requests too.
 
-/** Content-Security-Policy for the Worker's pages. Turnstile is the only outside origin. */
+/**
+ * Where the Cloudflare Web Analytics beacon Cloudflare adds to these pages
+ * loads from (`script-src`) and reports to (`connect-src`), as on the
+ * website (tools/site/src/_headers). The beacon's path carries a version
+ * (`/beacon.min.js/v<hash>`), so the script source is the host.
+ */
+export const RUM_SCRIPT_ORIGIN = "https://static.cloudflareinsights.com";
+
+/** Where the beacon sends its measurements. */
+export const RUM_REPORT_ORIGIN = "https://cloudflareinsights.com";
+
+/**
+ * Content-Security-Policy for the Worker's pages. Turnstile and the Web
+ * Analytics beacon are the only outside origins.
+ */
 export const PAGE_CSP = [
   "default-src 'none'",
-  "script-src 'self' https://challenges.cloudflare.com",
+  `script-src 'self' https://challenges.cloudflare.com ${RUM_SCRIPT_ORIGIN}`,
   "frame-src https://challenges.cloudflare.com",
   "style-src 'self'",
   "img-src 'self' data:",
   "font-src 'self'",
-  "connect-src 'self'",
+  `connect-src 'self' ${RUM_REPORT_ORIGIN}`,
   "form-action 'self'",
   "frame-ancestors 'none'",
   "base-uri 'none'",
@@ -73,6 +88,13 @@ export const LEGAL =
   "Bookclerk is free software under the GNU AGPL, version 3 or later. Bookclerk and the Bookclerk logo are trademarks of the Bookclerk project. It is not affiliated with or endorsed by Audible, Libro.fm, Chirp or GraphicAudio; their names are trademarks of their owners. Bookclerk is meant for books you have bought, for your own listening.";
 
 /**
+ * Alt text of the website's social card (tools/site/src/partials/head.html),
+ * which the pages name as their link preview image.
+ */
+export const SOCIAL_IMAGE_ALT =
+  "Bookclerk: every purchase, properly placed. A library catalog card for an audiobook.";
+
+/**
  * Escapes text for HTML element content and quoted attributes.
  *
  * @param s - Text.
@@ -129,6 +151,19 @@ function documentHtml(
   const privacy = site
     ? `<p><a href="${esc(site.replace(/\/+$/, ""))}/privacy">Privacy</a></p>`
     : "";
+  // Link previews: the website's social card, when there is a website.
+  const social = site
+    ? `<meta property="og:site_name" content="Bookclerk">
+<meta property="og:type" content="website">
+<meta property="og:title" content="${esc(title)}">
+<meta property="og:description" content="${esc(description)}">
+<meta property="og:image" content="${esc(site.replace(/\/+$/, ""))}/social-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="${esc(SOCIAL_IMAGE_ALT)}">
+<meta name="twitter:card" content="summary_large_image">
+`
+    : "";
   const main = opts.card
     ? `<main class="demo-card">\n${body}\n</main>`
     : `<main class="demo-launch">\n${body}\n</main>`;
@@ -140,6 +175,9 @@ function documentHtml(
 <meta name="robots" content="noindex">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(description)}">
+${social}<link rel="icon" href="/_demo/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/_demo/favicon-32x32.png">
+<link rel="apple-touch-icon" href="/_demo/apple-touch-icon.png">
 <link rel="preload" href="/_demo/fonts/literata-v40-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/_demo/fonts/source-sans-3-v20-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/_demo/demo.css">

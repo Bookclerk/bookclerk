@@ -45,6 +45,52 @@
     U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
+/* Local fallbacks scaled to the web fonts' width and line metrics, so text
+   keeps its line breaks when the web font arrives and the page does not shift.
+   The same faces as the website's site.css (values in
+   tools/site/src/fonts/README.md); a test fails when they drift. Liberation
+   and Arimo/Tinos are metric-compatible with the fonts named first. */
+@font-face {
+  font-family: "Source Sans 3 Fallback";
+  font-weight: 400;
+  src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("Arimo");
+  size-adjust: 93.12%;
+  ascent-override: 109.97%;
+  descent-override: 42.96%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Source Sans 3 Fallback";
+  font-weight: 600 700;
+  src:
+    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"), local("Arimo Bold");
+  size-adjust: 90.38%;
+  ascent-override: 113.29%;
+  descent-override: 44.26%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Literata Fallback";
+  font-weight: 400 500;
+  src:
+    local("Times New Roman"), local("TimesNewRomanPSMT"), local("Liberation Serif"), local("Tinos");
+  size-adjust: 119.61%;
+  ascent-override: 98.4%;
+  descent-override: 25.75%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Literata Fallback";
+  font-weight: 600 700;
+  src:
+    local("Times New Roman Bold"), local("TimesNewRomanPS-BoldMT"), local("Liberation Serif Bold"),
+    local("Tinos Bold");
+  size-adjust: 117.64%;
+  ascent-override: 100.05%;
+  descent-override: 26.18%;
+  line-gap-override: 0%;
+}
+
 :root {
   --paper: #fbf7ee;
   --parchment: #f3e5c6;
@@ -61,8 +107,9 @@
   --button-hover: #1a4a6b;
   --alert: #a33b28;
   --brick: #c84a34;
-  --display: "Literata", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
-  --sans: "Source Sans 3", "Segoe UI", Candara, system-ui, sans-serif;
+  --display:
+    "Literata", "Literata Fallback", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+  --sans: "Source Sans 3", "Source Sans 3 Fallback", "Segoe UI", Candara, system-ui, sans-serif;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
