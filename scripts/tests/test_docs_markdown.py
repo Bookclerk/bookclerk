@@ -406,7 +406,7 @@ class TreeTest(unittest.TestCase):
         (project / "_media" / "gui.md").write_text("# GUI\n\nSee [plugins](plugins.md).\n")
         (project / "_media" / "other.md").write_text("# Not a doc\n")
         (project / "README.md").write_text("See [the GUI](_media/gui.md#top) and [other](_media/other.md).\n")
-        self.assertEqual(dm.link_media_to_docs(project, out, set()), 1)
+        self.assertEqual(dm.link_media_to_docs(project, out, set()), ["_media/gui.md"])
         self.assertEqual(
             (project / "README.md").read_text(),
             "See [the GUI](../../gui.md#top) and [other](_media/other.md).\n",
@@ -432,8 +432,17 @@ class TreeTest(unittest.TestCase):
         (scratch / "workerd.md").write_text(
             "# workerd\n\nThrows [PluginError](plugin-sdk.md#pluginerror); see [plugin-sdk](./plugin-sdk.md) and `plugin-sdk.md`.\n"
         )
+        (scratch / "_media").mkdir()
+        (scratch / "_media" / "logo.png").write_bytes(b"\x89PNG")
+        (scratch / "_media" / "guide.md").write_text("# A copied doc\n")
         tree = dm.Tree(out)
-        self.assertEqual(dm.place_typedoc(scratch, tree, reference), ["cli", "workerd"])
+        self.assertEqual(dm.place_typedoc(scratch, tree, reference), ["_media/guide", "cli", "workerd"])
+        # An image is written beside the pages but is not one; a deleted copy leaves the manifest.
+        self.assertTrue((out / reference.folder / "_media" / "logo.png").is_file())
+        self.assertNotIn(f"{reference.folder}/_media/logo", tree.keys)
+        tree.forget(reference, "_media/guide.md")
+        self.assertNotIn(f"{reference.folder}/_media/guide", tree.keys)
+        self.assertIn(f"{reference.folder}/cli", tree.keys)
         # Links to the root module's page now point at the landing page.
         self.assertEqual(
             (out / reference.folder / "workerd.md").read_text(),

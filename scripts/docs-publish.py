@@ -634,7 +634,7 @@ def generated_keys(files: list[LocalFile]) -> set[str]:
     except (UnicodeDecodeError, ValueError) as err:
         raise PublishError(f"{GENERATED_FILE}: {err}") from err
     references = document.get("references") if isinstance(document, dict) else None
-    if document.get("version") != 1 or not isinstance(references, list):
+    if not isinstance(document, dict) or document.get("version") != 1 or not isinstance(references, list):
         raise PublishError(f"{GENERATED_FILE}: not a version 1 document")
     keys: set[str] = set()
     for reference in references:

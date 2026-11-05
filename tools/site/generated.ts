@@ -25,8 +25,9 @@ export const MAX_GENERATED_BYTES = 2 * 1024 * 1024;
 export const MAX_REFERENCES = 64;
 
 /**
- * A doc key or folder as the manifest may name it: path segments of
- * letters, digits, `.`, `_` and `-`, none empty or starting with `.`.
+ * A doc key, folder or repository path as the manifest may name it: path
+ * segments of letters, digits, `.`, `_` and `-`, none empty or starting
+ * with `.`, so neither `.` nor `..` is a segment.
  */
 const DOC_KEY_RE = /^(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 
@@ -112,7 +113,7 @@ export function parseGenerated(json: string): GeneratedManifest | null {
   const rawSources = document["sources"] ?? {};
   if (!isRecord(rawSources)) return null;
   for (const [key, value] of Object.entries(rawSources)) {
-    if (!isPath(key) || !isSource(value)) return null;
+    if (!isPath(key) || !isPath(value)) return null;
     sources[key] = value;
   }
   return { references, sources };
@@ -127,7 +128,7 @@ export function parseGenerated(json: string): GeneratedManifest | null {
 function readReference(entry: unknown): GeneratedReference | null {
   if (!isRecord(entry)) return null;
   const { folder, kind, title, source, landing, pages } = entry;
-  if (!isPath(folder) || !isKind(kind) || !isSource(source) || typeof landing !== "boolean")
+  if (!isPath(folder) || !isKind(kind) || !isPath(source) || typeof landing !== "boolean")
     return null;
   if (typeof title !== "string" || title.length === 0 || title.length > MAX_TITLE_LENGTH)
     return null;
@@ -152,17 +153,6 @@ function isPath(value: unknown): value is string {
   return (
     typeof value === "string" && value.length <= MAX_GENERATED_PATH_LENGTH && DOC_KEY_RE.test(value)
   );
-}
-
-/**
- * Tells whether a value is a repository path a source line may link to:
- * plain segments like a doc key, with no `..`.
- *
- * @param value - The parsed JSON value.
- * @returns True for a usable source path.
- */
-function isSource(value: unknown): value is string {
-  return isPath(value) && !value.split("/").includes("..");
 }
 
 /**

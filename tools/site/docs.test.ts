@@ -487,6 +487,22 @@ test("the sidebar nests a group's pages by folder and the breadcrumb follows the
     { key: "plugins/sdk/README", title: "Plugin SDKs" },
   ]);
   assert.deepEqual(navAncestors(nav, "plugins/manifest", null), []);
+  // The "More" group of unlisted docs has no shelf page: its first page nests too.
+  const more = [
+    {
+      title: "More",
+      pages: [
+        { key: "foo/README", title: "Foo" },
+        { key: "foo/bar", title: "Bar" },
+        { key: "baz", title: "Baz" },
+      ],
+    },
+  ];
+  assert.deepEqual(navTree(more[0]?.pages ?? []), [
+    { key: "foo/README", title: "Foo", children: [{ key: "foo/bar", title: "Bar", children: [] }] },
+    { key: "baz", title: "Baz", children: [] },
+  ]);
+  assert.deepEqual(navAncestors(more, "foo/bar", null), [{ key: "foo/README", title: "Foo" }]);
   assert.deepEqual(navAncestors(nav, "plugins/README", null), []);
   assert.equal(
     crumbsHtml(crumbTrail(nav, "plugins/sql-contract/v1", "SQL contract v1"), "/docs/"),

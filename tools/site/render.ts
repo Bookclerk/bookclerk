@@ -1047,26 +1047,42 @@ export interface NavNode {
 /**
  * Nests a group's pages by folder: a page sits under the nearest page
  * before it in the group that is the `README` of a folder holding it, so
- * the sidebar shows the shape of the docs tree. The group's first page
- * (the shelf's own `README`) heads the group rather than holding the
- * rest, and stays a leaf.
+ * the sidebar shows the shape of the docs tree. The shelf's own `README`,
+ * first in its group (see shelfKey), heads the group rather than holding
+ * the rest, and stays a leaf.
  *
  * @param pages - The group's pages, in sidebar order.
  * @returns The same pages as a tree, in the same order.
  */
 export function navTree(pages: readonly { key: string; title: string }[]): NavNode[] {
   const roots: NavNode[] = [];
+  const shelf = shelfKey(pages);
   /** The folders whose `README` is open above the page being placed, innermost last. */
   const open: { folder: string; node: NavNode }[] = [];
-  pages.forEach((page, i) => {
+  for (const page of pages) {
     while (open.length > 0 && !page.key.startsWith(`${open[open.length - 1]?.folder ?? ""}/`))
       open.pop();
     const node: NavNode = { key: page.key, title: page.title, children: [] };
     (open[open.length - 1]?.node.children ?? roots).push(node);
-    if (i > 0 && page.key.endsWith("/README"))
+    if (page.key !== shelf && page.key.endsWith("/README"))
       open.push({ folder: page.key.slice(0, -"/README".length), node });
-  });
+  }
   return roots;
+}
+
+/**
+ * Finds a group's shelf page: its first page when that is the `README` of
+ * a folder holding every other page of the group. The "More" group of
+ * unlisted docs has none.
+ *
+ * @param pages - The group's pages, in sidebar order.
+ * @returns The shelf page's key, or null.
+ */
+function shelfKey(pages: readonly { key: string }[]): string | null {
+  const first = pages[0]?.key;
+  if (first === undefined || !first.endsWith("/README")) return null;
+  const folder = first.slice(0, -"README".length);
+  return pages.every((p) => p.key === first || p.key.startsWith(folder)) ? first : null;
 }
 
 /**
@@ -1298,9 +1314,8 @@ export function navAncestors(
 ): NavParent[] {
   const titles = new Map<string, string>();
   for (const group of nav) {
-    group.pages.forEach((p, i) => {
-      if (i > 0) titles.set(p.key, p.title);
-    });
+    const shelf = shelfKey(group.pages);
+    for (const p of group.pages) if (p.key !== shelf) titles.set(p.key, p.title);
   }
   const generated = new Set(manifest?.references.flatMap((r) => r.pages) ?? []);
   const reference = referenceOf(manifest, key);

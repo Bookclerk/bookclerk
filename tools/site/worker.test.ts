@@ -880,6 +880,15 @@ test("the search index lists every sidebar page with its headings, and the Web A
     url: "/docs/plugins/sdk/python/workerd",
     headings: [{ text: "Classes", url: "/docs/plugins/sdk/python/workerd#classes" }],
   });
+  // The crates the sidebar lists beneath "Rust crates" are searchable too.
+  assert.ok(
+    pages.some(
+      (p) =>
+        p.section === "Rust crates" &&
+        p.title === "demo" &&
+        p.url === "/docs/internals/crates/demo",
+    ),
+  );
   const html = await (await get("/docs/server/configuration", BROWSER)).text();
   assert.match(
     html,

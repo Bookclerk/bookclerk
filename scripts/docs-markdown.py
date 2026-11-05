@@ -815,6 +815,35 @@ class Tree:
         if reference not in self.built:
             self.built.append(reference)
 
+    def asset(self, reference: Reference, rel: str, data: bytes) -> None:
+        """Write a file a reference carries beside its pages (an image TypeDoc copied).
+
+        It is not a page, so the manifest does not list it.
+
+        Args:
+            reference: The reference.
+            rel: The file's path under the reference's folder.
+            data: Its bytes.
+
+        Raises:
+            BuildError: A file already sits at that path.
+        """
+        dest = self.out / reference.folder / rel
+        if dest.exists():
+            raise BuildError(f"{reference.folder}/{rel}: a file is already there; the {reference.title} reference writes this path")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+
+    def forget(self, reference: Reference, rel: str) -> None:
+        """Drop a page the build deleted again from the manifest.
+
+        Args:
+            reference: The reference that wrote it.
+            rel: The page's path under the reference's folder.
+        """
+        key = (Path(reference.folder) / rel).with_suffix("").as_posix()
+        self.pages[reference.folder] = [k for k in self.pages.get(reference.folder, []) if k != key]
+
     def landing(self, reference: Reference, body: str) -> None:
         """Append the generated part of a reference to its hand-written landing page.
 
@@ -1059,18 +1088,21 @@ def place_typedoc(scratch: Path, tree: Tree, reference: Reference) -> list[str]:
     # (`plugin-sdk.md#pluginerror` from a sibling) point at README.md.
     root_link = re.compile(rf"(\]\()(?:\./)?{re.escape(reference.root_module)}\.md(?=[#)])") if reference.root_module else None
     for md in sorted(scratch.rglob("*")):
-        if md.is_file():
-            rel = md.relative_to(scratch).as_posix()
-            text = md.read_text(encoding="utf-8")
-            if root_link is not None and rel.endswith(".md") and "/" not in rel:
-                text = root_link.sub(r"\1README.md", text)
-            tree.place(reference, rel, text)
-            if rel.endswith(".md"):
-                placed.append(rel[: -len(".md")])
+        if not md.is_file():
+            continue
+        rel = md.relative_to(scratch).as_posix()
+        if not rel.endswith(".md"):
+            tree.asset(reference, rel, md.read_bytes())
+            continue
+        text = md.read_text(encoding="utf-8")
+        if root_link is not None and "/" not in rel:
+            text = root_link.sub(r"\1README.md", text)
+        tree.place(reference, rel, text)
+        placed.append(rel[: -len(".md")])
     return sorted(placed)
 
 
-def link_media_to_docs(project_out: Path, out: Path, generated: set[str]) -> int:
+def link_media_to_docs(project_out: Path, out: Path, generated: set[str]) -> list[str]:
     """Point TypeDoc's copies of ``docs/`` pages back at the pages themselves.
 
     TypeDoc copies every Markdown file a doc comment links to into
@@ -1084,7 +1116,8 @@ def link_media_to_docs(project_out: Path, out: Path, generated: set[str]) -> int
         generated: Keys of the generated pages, which are not candidates.
 
     Returns:
-        The number of copies replaced.
+        The deleted copies' paths under ``project_out``, for the caller to
+        drop from the manifest.
     """
     media = project_out / "_media"
     if not media.is_dir():
@@ -1100,7 +1133,7 @@ def link_media_to_docs(project_out: Path, out: Path, generated: set[str]) -> int
         if page is not None:
             replaced[copy.resolve()] = page
     if not replaced:
-        return 0
+        return []
     for md in project_out.rglob("*.md"):
         if md.resolve() in replaced:
             continue
@@ -1124,7 +1157,7 @@ def link_media_to_docs(project_out: Path, out: Path, generated: set[str]) -> int
         copy.unlink()
     if not any(media.iterdir()):
         media.rmdir()
-    return len(replaced)
+    return sorted(copy.relative_to(project_out.resolve()).as_posix() for copy in replaced)
 
 
 def python_modules(src: Path, package: str) -> list[str]:
@@ -1378,7 +1411,8 @@ def main(argv: list[str] | None = None) -> int:
                 with tempfile.TemporaryDirectory(prefix="typedoc-", dir=scratch) as tmp:
                     build_typedoc(project, Path(tmp))
                     modules = place_typedoc(Path(tmp), tree, reference)
-                link_media_to_docs(out / reference.folder, out, tree.keys)
+                for copy in link_media_to_docs(out / reference.folder, out, tree.keys):
+                    tree.forget(reference, copy)
                 print(f"==> {reference.title}: {len(modules)} modules")
 
         if not args.skip_python:

@@ -728,6 +728,19 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   // source line and the sidebar lists.
   const dates = wantsMarkdown ? null : fetchLastUpdated(version.ref, deps.fetch);
   const generated = wantsMarkdown ? null : fetchGenerated(version.ref, deps.fetch);
+  // A Web API page's sidebar lists the route groups its index names, so the
+  // index is fetched as soon as the manifest places the page under the web
+  // API, beside the page itself rather than after it.
+  const apiIndex =
+    generated === null
+      ? null
+      : generated.then((file) => {
+          const api = webApiPages(file.kind === "file" ? file.manifest : null);
+          const under = (k: string): boolean => k !== api?.index && k.startsWith(`${api?.folder}/`);
+          return api !== null && target.keys.some(under)
+            ? fetchApiIndex(version.ref, api.index, deps.fetch)
+            : null;
+        });
   let key: string | null = null;
   let source: string | null = null;
   // The last key asked for, so the unavailable page links on GitHub to the
@@ -788,11 +801,10 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   const updated = datesFile?.kind === "file" ? pageDate(datesFile.text, key) : null;
   const generatedFile = generated === null ? null : await generated;
   const manifest = generatedFile?.kind === "file" ? generatedFile.manifest : null;
-  // A Web API page's sidebar lists the route groups its index names.
   const api = webApiPages(manifest);
   const index =
     api !== null && key !== api.index && key.startsWith(`${api.folder}/`)
-      ? await fetchApiIndex(version.ref, api.index, deps.fetch)
+      ? await (apiIndex ?? Promise.resolve(null))
       : null;
   // A page whose date, manifest or index could not be read is shown, but
   // kept out of the edge cache so they come back once the docs repository
@@ -869,9 +881,12 @@ async function serveSearchIndex(
   const api = webApiPages(manifest);
   if (api !== null && listed.some((page) => page.key === api.index))
     listed.push({ key: api.schemas, title: "Schemas", section: "Web API" });
+  // The modules the sidebar lists beneath each reference's landing page
+  // (an SDK's modules, the crates); the web API's route groups come from
+  // its index below.
   for (const reference of manifest?.references ?? []) {
     const landing = listed.find((page) => page.key === landingKey(reference));
-    if (landing === undefined || !reference.landing) continue;
+    if (landing === undefined || reference.kind === "web-api") continue;
     for (const module of referenceModules(reference))
       listed.push({ key: module.key, title: module.title, section: landing.title });
   }

@@ -421,7 +421,7 @@ class PublishTest(unittest.TestCase):
         # A tree without the manifest dates nothing; a broken one is refused.
         dp.publish_main(self.repo, "main", self.write({"api/y.md": "Y\n", dp.LAST_UPDATED_FILE: built}), SRC, SHA_B, published="2026-10-28T09:00:00Z")
         self.assertEqual(self.dates(), {})
-        for bad in ("{", json.dumps({"version": 2, "references": []}), json.dumps({"version": 1, "references": [{"pages": "x"}]})):
+        for bad in ("{", "[]", '"x"', json.dumps({"version": 2, "references": []}), json.dumps({"version": 1, "references": [{"pages": "x"}]})):
             with self.assertRaises(dp.PublishError):
                 dp.publish_main(self.repo, "main", self.write({dp.LAST_UPDATED_FILE: built, dp.GENERATED_FILE: bad}), SRC, SHA_C, published="2026-10-29T09:00:00Z")
 
