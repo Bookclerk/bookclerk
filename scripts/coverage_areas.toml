@@ -88,4 +88,4 @@ test_results = "workerd-guests/junit.xml"
 root = "."
 paths = ["crates/bookclerk-plugins/"]
 suffixes = [".ts"]
-floor = 97
+floor = 99
