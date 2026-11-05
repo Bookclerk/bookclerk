@@ -302,7 +302,7 @@ Planned as separate pull requests, in this order:
    maps the structured fields onto the current `books` row.
 3. Schema and resolver, with its fuzz target.
 4. Acquire and files: per-edition acquisition, `edition_files`, and the
-   naming discriminator.
+   required `<library id>` naming tag.
 5. Cluster: branch titles become holdings; node frames carry identifiers and
    media kind.
 6. Web API and UI.
