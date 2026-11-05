@@ -47,7 +47,7 @@ test_results = "rust/junit.xml"
 root = "."
 paths = ["crates/", "fuzz/", "examples/"]
 suffixes = [".rs"]
-floor = 75
+floor = 76
 workspace_check = "rust_test"
 
 [areas.site]
