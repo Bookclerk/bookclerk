@@ -145,9 +145,19 @@ impl CoverBackend for LiveBackend {
         bookclerk_media::pool()
             .process_cover(bytes)
             .await
-            .map_err(|err| match err {
-                bookclerk_media::MediaError::Cover(message) => CoverFailure::Refused(message),
-                other => CoverFailure::Unavailable(other.to_string()),
+            .map_err(|err| {
+                use bookclerk_media::MediaError;
+                match err {
+                    MediaError::Cover(message) => CoverFailure::Refused(message),
+                    MediaError::Worker { .. }
+                    | MediaError::NotIsolated { .. }
+                    | MediaError::InputMissing(_)
+                    | MediaError::OutputMissing(_)
+                    | MediaError::Mp4(_)
+                    | MediaError::Native(_)
+                    | MediaError::Io(_)
+                    | MediaError::Other(_) => CoverFailure::Unavailable(err.to_string()),
+                }
             })
     }
 }
@@ -157,7 +167,7 @@ pub(crate) struct CoverService {
     /// `cache/covers`, or `None` for a service that only signs (tests).
     dir: Option<PathBuf>,
     /// Key for the token HMAC.
-    key: [u8; 32],
+    key: TokenKey,
     /// Bytes of processed covers on disk, as last counted plus what was
     /// written since.
     used: Arc<AtomicU64>,
@@ -205,7 +215,7 @@ impl CoverService {
     }
 
     /// The service from its parts.
-    fn with(dir: Option<PathBuf>, key: [u8; 32], budget: u64) -> Self {
+    fn with(dir: Option<PathBuf>, key: TokenKey, budget: u64) -> Self {
         Self {
             dir,
             key,
@@ -249,7 +259,7 @@ impl CoverService {
         let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let url = String::from_utf8(engine.decode(encoded).ok()?).ok()?;
         let mac = engine.decode(mac).ok()?;
-        let mut expected = TokenMac::new_from_slice(&self.key).ok()?;
+        let mut expected = TokenMac::new_from_slice(&self.key.0).ok()?;
         expected.update(url.as_bytes());
         expected.verify_truncated_left(&mac).ok()?;
         // `verify_truncated_left` accepts any prefix; insist on the full tag.
@@ -259,7 +269,7 @@ impl CoverService {
     /// The truncated HMAC of `url`.
     fn mac(&self, url: &str) -> [u8; MAC_BYTES] {
         #[allow(clippy::expect_used)] // HMAC accepts a key of any length.
-        let mut mac = TokenMac::new_from_slice(&self.key).expect("hmac key");
+        let mut mac = TokenMac::new_from_slice(&self.key.0).expect("hmac key");
         mac.update(url.as_bytes());
         let tag = mac.finalize().into_bytes();
         let mut out = [0u8; MAC_BYTES];
@@ -332,16 +342,14 @@ impl CoverService {
                 }
             }
         };
+        // Recorded before the flight is released, so a request waiting on it
+        // sees the failure instead of fetching again.
+        if let Err(failure) = &outcome {
+            self.note_failure(&key, failure);
+        }
         drop(guard);
         self.land(&key, &flight);
-        let set = outcome.inspect_err(|failure| {
-            // Nothing can fetch or process at all: not this URL's fault, and
-            // a plugin deployed a minute from now should not wait out the TTL.
-            if !matches!(failure, CoverFailure::Unavailable(_)) {
-                self.remember_failure(&key, failure);
-            }
-        })?;
-        Ok(set.get(size).to_vec())
+        Ok(outcome?.get(size).to_vec())
     }
 
     /// Warms the cache for up to [`PREFETCH_LIMIT`] of `urls` in the
@@ -369,49 +377,51 @@ impl CoverService {
         }
         let service = Arc::clone(self);
         tokio::spawn(async move {
-            let mut claimed = Vec::new();
+            let mut todo = Vec::new();
             for url in wanted {
                 let key = cache_key(&url);
-                if dir.join(&key).is_dir() || service.recent_failure(&key).is_err() {
-                    continue;
+                let cached = tokio::fs::try_exists(dir.join(&key)).await.unwrap_or(false);
+                if !cached && service.recent_failure(&key).is_ok() {
+                    todo.push((url, key));
                 }
-                let flight = service.flight(&key);
-                // A request already has it.
-                let Ok(guard) = Arc::clone(&flight).try_lock_owned() else {
-                    continue;
-                };
-                claimed.push((url, key, flight, guard));
             }
-            if claimed.is_empty() {
+            if todo.is_empty() {
                 return;
             }
-            let urls = claimed.iter().map(|(url, ..)| url.clone()).collect();
-            let fetched = backend.fetch(urls).await;
-            let outcomes: Vec<Result<Vec<u8>, CoverFailure>> = match fetched {
+            // No flight is held while the batch downloads, so a request for
+            // one of these covers never waits on the slowest of the others;
+            // at worst it downloads the same image once more.
+            let urls = todo.iter().map(|(url, _)| url.clone()).collect();
+            let outcomes: Vec<Result<Vec<u8>, CoverFailure>> = match backend.fetch(urls).await {
                 Ok(outcomes) => outcomes
                     .into_iter()
                     .map(|outcome| outcome.map_err(CoverFailure::Refused))
                     .collect(),
-                Err(failure) => vec![Err(failure); claimed.len()],
+                Err(failure) => vec![Err(failure); todo.len()],
             };
             let mut work = tokio::task::JoinSet::new();
-            for ((_, key, flight, guard), fetched) in claimed.into_iter().zip(outcomes) {
+            for ((_, key), fetched) in todo.into_iter().zip(outcomes) {
                 let service = Arc::clone(&service);
                 let backend = Arc::clone(&backend);
                 let dir = dir.clone();
                 work.spawn(async move {
-                    let outcome = match fetched {
-                        Ok(bytes) => service.store(&*backend, &dir, &key, bytes).await,
-                        Err(failure) => Err(failure),
+                    let flight = service.flight(&key);
+                    // A request is processing it now.
+                    let Ok(guard) = Arc::clone(&flight).try_lock_owned() else {
+                        return;
                     };
-                    drop(guard);
-                    service.land(&key, &flight);
-                    if let Err(failure) = outcome {
-                        // Nothing can fetch at all: not this URL's fault.
-                        if !matches!(failure, CoverFailure::Unavailable(_)) {
-                            service.remember_failure(&key, &failure);
+                    let cached = tokio::fs::try_exists(dir.join(&key)).await.unwrap_or(false);
+                    if !cached {
+                        let outcome = match fetched {
+                            Ok(bytes) => service.store(&*backend, &dir, &key, bytes).await,
+                            Err(failure) => Err(failure),
+                        };
+                        if let Err(failure) = &outcome {
+                            service.note_failure(&key, failure);
                         }
                     }
+                    drop(guard);
+                    service.land(&key, &flight);
                 });
             }
             while work.join_next().await.is_some() {}
@@ -461,19 +471,10 @@ impl CoverService {
         let budget = self.budget;
         let sweeping = Arc::clone(&self.sweeping);
         let used = Arc::clone(&self.used);
-        let before = used.load(Ordering::Relaxed);
         tokio::task::spawn_blocking(move || {
-            let left = sweep(&dir, budget);
-            // Covers written during the sweep were added on top of `before`
-            // by their own writers, so only the difference is applied.
-            if left >= before {
-                used.fetch_add(left - before, Ordering::Relaxed);
-            } else {
-                used.fetch_sub(
-                    (before - left).min(used.load(Ordering::Relaxed)),
-                    Ordering::Relaxed,
-                );
-            }
+            // The count replaces the estimate. A cover written while the
+            // sweep ran may be left out, which only delays the next sweep.
+            used.store(sweep(&dir, budget), Ordering::Relaxed);
             sweeping.store(false, Ordering::Release);
         });
     }
@@ -484,6 +485,16 @@ impl CoverService {
         match failures.get(key) {
             Some((at, failure)) if at.elapsed() < FAILURE_TTL => Err(failure.clone()),
             _ => Ok(()),
+        }
+    }
+
+    /// Remembers that `key` failed, for [`FAILURE_TTL`], unless the failure
+    /// is [`CoverFailure::Unavailable`].
+    fn note_failure(&self, key: &str, failure: &CoverFailure) {
+        // Nothing can fetch or process at all: not this URL's fault, and a
+        // plugin deployed a minute from now should not wait out the TTL.
+        if !matches!(failure, CoverFailure::Unavailable(_)) {
+            self.remember_failure(key, failure);
         }
     }
 
@@ -650,17 +661,32 @@ fn sweep(dir: &Path, budget: u64) -> u64 {
     total
 }
 
+/// The node's secret for signing cover tokens; never printed.
+struct TokenKey([u8; 32]);
+
+impl std::fmt::Debug for TokenKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TokenKey(..)")
+    }
+}
+
 /// A fresh token key from the thread-local CSPRNG (ChaCha seeded from the OS).
-fn random_key() -> [u8; 32] {
-    rand::random()
+fn random_key() -> TokenKey {
+    TokenKey(rand::random())
 }
 
 /// Reads the token key, or creates it (owner-only on Unix).
-fn load_or_create_key(path: &Path) -> std::io::Result<[u8; 32]> {
-    if let Ok(bytes) = std::fs::read(path) {
-        if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
-            return Ok(key);
+fn load_or_create_key(path: &Path) -> std::io::Result<TokenKey> {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                return Ok(TokenKey(key));
+            }
+            // A truncated or foreign file: replace it.
         }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        // Unreadable now does not mean lost: keep it, and the paths it signed.
+        Err(err) => return Err(err),
     }
     let key = random_key();
     let mut options = std::fs::OpenOptions::new();
@@ -671,7 +697,7 @@ fn load_or_create_key(path: &Path) -> std::io::Result<[u8; 32]> {
         options.mode(0o600);
     }
     let mut file = options.open(path)?;
-    std::io::Write::write_all(&mut file, &key)?;
+    std::io::Write::write_all(&mut file, &key.0)?;
     Ok(key)
 }
 
@@ -907,6 +933,21 @@ mod tests {
             service(temp.path()).open_token(&first).as_deref(),
             Some(url)
         );
+    }
+
+    #[test]
+    fn an_unreadable_key_is_kept_and_a_short_one_replaced() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // A directory where the key should be cannot be read as one.
+        let blocked = temp.path().join("blocked");
+        std::fs::create_dir_all(blocked.join(KEY_FILE)).expect("dir");
+        assert!(load_or_create_key(&blocked.join(KEY_FILE)).is_err());
+        assert!(blocked.join(KEY_FILE).is_dir());
+        let short = temp.path().join("short");
+        std::fs::write(&short, b"too short").expect("write");
+        let key = load_or_create_key(&short).expect("replaced");
+        assert_eq!(std::fs::read(&short).expect("read"), key.0);
+        assert_eq!(format!("{key:?}"), "TokenKey(..)");
     }
 
     #[tokio::test]

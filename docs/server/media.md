@@ -48,9 +48,10 @@ covers` process turns each download into the JPEGs Bookclerk serves:
 Unlike a media job, a cover needs no file, so this process is confined to
 no path and no network before it reads its first image, and then serves
 covers until the daemon stops. It decodes on `media.workers` threads,
-covers don't wait for a job slot, and a cover that crashes the decoder
-fails alone. If the process dies or takes longer than 30 seconds on a
-cover, the next cover starts a new one. With `media.isolation = "off"`
+covers don't wait for a job slot, and a cover that panics the decoder
+fails alone. A cover that takes longer than 30 seconds is refused and the
+process is stopped; when the process stops or dies, the next cover starts
+a new one. With `media.isolation = "off"`
 covers are processed in the daemon, like media jobs.
 
 ## Install the worker

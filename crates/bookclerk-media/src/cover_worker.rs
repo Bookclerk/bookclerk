@@ -66,8 +66,8 @@ struct Running {
     pending: Pending,
     /// Cleared once the reader sees the worker end or misbehave.
     alive: Arc<AtomicBool>,
-    /// The process; killed when this is dropped.
-    _child: tokio::process::Child,
+    /// The process; killed when this is dropped, or when a cover stalls it.
+    child: std::sync::Mutex<tokio::process::Child>,
 }
 
 /// Processes covers on a shared confined worker.
@@ -115,10 +115,10 @@ impl CoverWorker {
     ///
     /// # Errors
     ///
-    /// [`MediaError::Cover`] when the image is refused,
-    /// [`MediaError::NotIsolated`] when isolation is required but
-    /// unavailable, and [`MediaError::Worker`] when the worker cannot be
-    /// started, dies, times out or answers nonsense.
+    /// [`MediaError::Cover`] when the image is refused or takes longer than
+    /// 30 s to decode, [`MediaError::NotIsolated`] when isolation is
+    /// required but unavailable, and [`MediaError::Worker`] when the worker
+    /// cannot be started, dies or answers nonsense.
     pub(crate) async fn process(&self, cover: Vec<u8>) -> Result<CoverSet> {
         let _permit = self
             .permits
@@ -183,10 +183,19 @@ impl CoverWorker {
             Ok(Err(_)) => Err(worker_error("cover worker ended before replying".into())),
             Err(_) => {
                 lock(&running.pending).remove(&id);
-                // A worker stuck on one cover is restarted for the next.
+                // A worker stuck on one cover is killed now, so it stops
+                // burning a decode thread, and restarted for the next. The
+                // covers it was also working on fail as a worker error.
                 running.alive.store(false, Ordering::Release);
-                Err(worker_error(format!(
-                    "cover took longer than {}s",
+                let _ = running
+                    .child
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .start_kill();
+                // Only this cover ran out its time, so it is the one refused
+                // (and remembered as refused by the caller).
+                Err(MediaError::Cover(format!(
+                    "decoding took longer than {}s",
                     COVER_TIMEOUT.as_secs()
                 )))
             }
@@ -269,7 +278,7 @@ fn spawn(launch: &WorkerLaunch, confinement: Confinement, threads: usize) -> Res
         stdin: tokio::sync::Mutex::new(stdin),
         pending,
         alive,
-        _child: child,
+        child: std::sync::Mutex::new(child),
     })
 }
 

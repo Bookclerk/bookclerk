@@ -302,10 +302,10 @@ impl MediaPool {
     ///
     /// # Errors
     ///
-    /// [`MediaError::Cover`] when the image is refused,
-    /// [`MediaError::NotIsolated`] when isolation is required but no worker
-    /// was found, and [`MediaError::Worker`] when the worker cannot be
-    /// started, dies or times out.
+    /// [`MediaError::Cover`] when the image is refused or takes longer than
+    /// 30 s, [`MediaError::NotIsolated`] when isolation is required but no
+    /// worker was found, and [`MediaError::Worker`] when the worker cannot be
+    /// started or dies.
     pub async fn process_cover(&self, cover: Vec<u8>) -> Result<bookclerk_cover::CoverSet> {
         self.covers.process(cover).await
     }
