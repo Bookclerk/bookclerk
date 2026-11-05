@@ -668,6 +668,10 @@ class RatchetTest(unittest.TestCase):
         self.assertEqual(job["concurrency"]["group"], "coverage-floors")
         steps = {s.get("name"): s for s in job["steps"]}
         self.assertEqual(steps["Find the merge group run"]["env"]["TRIGGER_RUN"], "${{ github.event.workflow_run.id }}")
+        # The floors are raised on the commit the merge group measured, not on
+        # whatever main's tip was when the event fired (#692).
+        self.assertEqual(job["steps"][0]["with"]["ref"], "${{ github.event.workflow_run.head_sha || github.sha }}")
+        self.assertEqual(steps["Create or update pull request"]["with"]["base"], "main")
 
 
 class MainTest(unittest.TestCase):

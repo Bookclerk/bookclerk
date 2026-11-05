@@ -812,7 +812,8 @@ The summary has two figures:
 Floors ratchet. After every successful merge group run, which measures
 every area in full,
 [`coverage-floors.yml`](../../.github/workflows/coverage-floors.yml) reads
-that run's coverage and runs `scripts/coverage_gate.py --ratchet`:
+that run's coverage and runs `scripts/coverage_gate.py --ratchet` on the
+commit that run measured (the one that lands on `main`):
 
 1. Each floor rises to the area's measured coverage rounded down, less one
    point, so noise does not fail a run.

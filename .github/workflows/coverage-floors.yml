@@ -54,8 +54,14 @@ jobs:
       # Find the merge group run and download its artifacts.
       actions: read
     steps:
+      # Check out the commit the merge group measured, which is the commit
+      # that lands on main. The workflow_run event's own commit is main's tip
+      # when CI finished, which can still be the commit before that merge
+      # group, so the ratchet re-proposed the raise that group had just made
+      # (#692 repeated #686). A manual run reads the default branch.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
 
       - name: Find the merge group run
@@ -159,6 +165,8 @@ jobs:
             Each floor rises to just under the coverage of the latest merge
             group run (scripts/coverage_gate.py --ratchet).
           branch: ci/coverage-floors
+          # The checkout is a detached commit, so the base is named.
+          base: main
           delete-branch: true
           title: "ci: raise the coverage floors"
           body-path: ${{ runner.temp }}/body.md
