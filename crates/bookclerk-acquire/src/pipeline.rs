@@ -224,6 +224,10 @@ async fn acquire_book_recorded(
                 });
             }
         }
+        // Before accepting media already at the planned name: a file there
+        // may be another edition's (two editions whose short ids collide),
+        // and adopting it would point this edition at that recording.
+        check_edition_paths(library, destinations, &req).await?;
         match plan_existing_destinations(library, destinations, &req, index.as_deref()).await? {
             ExistingPlan::Skip { primary_key } => {
                 tracing::info!(
@@ -306,7 +310,10 @@ async fn acquire_book_recorded(
         }
     }
 
-    check_edition_paths(library, destinations, &req).await?;
+    if req.force || req.options.overwrite_existing {
+        // The existing-media path above has already checked.
+        check_edition_paths(library, destinations, &req).await?;
+    }
 
     library
         .set_acquire_status(
@@ -1013,6 +1020,12 @@ async fn planned_plain_part_storage_key(
     let mut part_ctx = file_ctx;
     part_ctx.title = format!("{} — {}", req.title, file.title);
     part_ctx.asin = format!("{}-p{:03}", req.asin, idx + 1);
+    // The default file templates name a title by `<library id>`, not
+    // `<asin>`, so the part number goes on the id too: two parts with one
+    // title must not share a name.
+    part_ctx.library_id = part_ctx
+        .library_id
+        .map(|id| format!("{id}-p{:03}", idx + 1));
     part_ctx.chapter_number = Some(u32::try_from(idx + 1).unwrap_or(1));
     part_ctx.chapter_title = Some(file.title.clone());
     let templates = req.options.naming_templates();
@@ -2604,10 +2617,14 @@ pub async fn planned_title_names(
             names.audio_stems.push(stem);
         }
         // Plain parts: the file template with the part's title and a
-        // `-pNNN` id (as `planned_plain_part_storage_key` names them).
+        // `-pNNN` product and library id (as `planned_plain_part_storage_key`
+        // names them).
         let mut part_ctx = file_ctx.clone();
         part_ctx.title = format!("{} — {TITLE_SENTINEL}", variant.title);
         part_ctx.asin = format!("{}-p{NUMBER_SENTINEL}", variant.asin);
+        part_ctx.library_id = part_ctx
+            .library_id
+            .map(|id| format!("{id}-p{NUMBER_SENTINEL}"));
         part_ctx.chapter_number = Some(NUMBER_SENTINEL);
         part_ctx.chapter_title = Some(TITLE_SENTINEL.into());
         let part = storage_key_with_contexts(
@@ -3739,6 +3756,58 @@ mod tests {
             2,
             "no edition overwrote another"
         );
+    }
+
+    #[tokio::test]
+    async fn two_parts_with_one_title_get_two_names() {
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut req = dummy_req(tmp.path(), None, None);
+        req.library_id = Some("hd4j63pc".into());
+        let part = |n: &str| PreparedAudioFile {
+            path: tmp.path().join(n),
+            title: "Introduction".into(),
+            ext: "mp3".into(),
+        };
+        let first = planned_plain_part_storage_key(&store, &req, 0, &part("a.mp3")).await;
+        let second = planned_plain_part_storage_key(&store, &req, 1, &part("b.mp3")).await;
+        assert_ne!(first, second, "parts with one title share {first}");
+        assert!(first.contains("hd4j63pc-p001"), "{first}");
+        assert!(second.contains("hd4j63pc-p002"), "{second}");
+    }
+
+    #[tokio::test]
+    async fn another_editions_file_at_the_planned_name_is_not_adopted() {
+        let store = test_store().await;
+        let first_uuid = edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00TWO", "user-1", "Twin", Some("Ada")).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&tmp.path().join("dest"), puts.clone());
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        // Two editions whose short ids collide plan one name.
+        let mut first = edition_req(&cache, job.clone(), "B00ONE", "user-1", &first_uuid);
+        first.library_id = Some("samesame".into());
+        acquire_book(&store, &destinations, first, &source)
+            .await
+            .unwrap();
+        let mut second = edition_req(&cache, job, "B00TWO", "user-1", &second_uuid);
+        second.library_id = Some("samesame".into());
+        let refused = acquire_book(&store, &destinations, second, &source).await;
+        assert!(
+            refused.is_err(),
+            "the second edition adopted the first's file"
+        );
+        let book = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        assert_ne!(book.acquire_status, AcquireStatus::Acquired);
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

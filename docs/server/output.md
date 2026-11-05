@@ -171,7 +171,9 @@ names.
 
 The `audiobookshelf` profile puts the id in the file names rather than the
 folder, because Audiobookshelf reads a bracketed value in a folder name as
-an ASIN.
+an ASIN. When a book is saved as its separate source tracks, each track's
+name carries the id with its track number, such as `hd4j63pc-p002`, so two
+tracks with the same title never share a name.
 
 Bookclerk refuses to save naming settings without it. A destination's own
 naming overrides are checked when a book is acquired: an acquire whose
