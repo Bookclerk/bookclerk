@@ -290,21 +290,22 @@ pub fn property_tag_names() -> &'static [(&'static str, bool)] {
 /// template always writes the tag.
 const LIBRARY_ID_PROBE: &str = "0libraryid0";
 
-/// True when `template` writes `<library id>` for a title with nothing but
-/// a title and its library id: a tag inside a conditional on another field
-/// (`<has series->…<-has>`) is not always written, so it does not count.
+/// True when `template` writes `<library id>` for every title: the tag
+/// must sit outside every conditional. A conditional on another field
+/// (`<has series->…<-has>`, `<!has series->…<-has>`) can be false for some
+/// title, so a tag inside one does not count, whatever a sample title
+/// renders.
 fn always_writes_library_id(template: &str) -> Result<bool> {
     let book = BookContext {
-        isbn: String::from("0id0"),
         library_id: String::from(LIBRARY_ID_PROBE),
-        title: Some(String::from("0title0")),
         ..BookContext::default()
     };
-    let chapter = ChapterContext::default();
-    let parts = Template::parse(template)?.evaluate_parts(&book, Some(&chapter));
-    Ok(parts
-        .iter()
-        .any(|part| part.value.contains(LIBRARY_ID_PROBE)))
+    Ok(engine::always_writes_property(
+        &Template::parse(template)?.inner,
+        "libraryid",
+        &book,
+        LIBRARY_ID_PROBE,
+    ))
 }
 
 /// Checks that templates name every edition apart: the folder template, or

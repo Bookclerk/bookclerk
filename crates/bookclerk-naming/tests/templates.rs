@@ -612,6 +612,15 @@ fn templates_must_always_write_the_library_id() {
         require_library_id("<has series-><library id><-has>", "<title>", "<ch#>"),
         Err(NamingError::MissingLibraryId)
     ));
+    // Nor behind a negated one, though a title without a series writes it.
+    assert!(matches!(
+        require_library_id(
+            "<title><!has series-> [<library id>]<-has>",
+            "<title>",
+            "<ch#>"
+        ),
+        Err(NamingError::MissingLibraryId)
+    ));
     // `<id>` is the store product, not the edition.
     assert!(matches!(
         require_library_id("<title> [<id>]", "<title> [<asin>]", "<ch#>"),

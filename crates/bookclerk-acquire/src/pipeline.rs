@@ -2811,12 +2811,14 @@ pub async fn share_acquired_sibling(
 /// # Returns
 ///
 /// The book's [`FileOwner::Edition`]; `None` when the title has no library
-/// row or no edition (a listing the resolver refused), so there is no
-/// edition to record the files for.
+/// row at all, so there is nothing to record the files for.
 ///
 /// # Errors
 ///
-/// Returns an error when the library lookup fails.
+/// Returns an error when the library lookup fails, and refuses a book whose
+/// row has no edition yet (a listing the resolver refused or has not
+/// resolved): its files would be written without an ownership record and
+/// named without a library id, so it waits for a scan to resolve it.
 async fn file_owner_of_request(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -2824,17 +2826,13 @@ async fn file_owner_of_request(
     let Some(book) = resolve_book(library, req).await else {
         return Ok(None);
     };
-    let owner = library.file_owner_of_book(&book.uuid).await?;
-    if owner.is_none() {
-        // A listing the resolver refuses (an oversized title or credit
-        // list) never gets an edition; it still acquires, as a title with
-        // no library row does, with its keys unrecorded.
-        tracing::warn!(
-            book = %book.uuid,
-            "title has no edition; its files are written without an edition record"
-        );
+    match library.file_owner_of_book(&book.uuid).await? {
+        Some(owner) => Ok(Some(owner)),
+        None => Err(AcquireError::Other(anyhow::anyhow!(
+            "title {} has no edition yet; rescan its account before acquiring it",
+            book.uuid
+        ))),
     }
-    Ok(owner)
 }
 
 /// [`acquire_pdf_only`] against destinations whose writes are already
@@ -3741,6 +3739,32 @@ mod tests {
             2,
             "no edition overwrote another"
         );
+    }
+
+    #[tokio::test]
+    async fn a_book_without_an_edition_acquires_nothing() {
+        let store = test_store().await;
+        // A title over the resolver's 4 KiB text limit is stored but never gets
+        // an edition.
+        let long_title = "T".repeat(8 * 1024);
+        let uuid = edition_book(&store, "B00LONG", "user-1", &long_title, None).await;
+        assert!(store.file_owner_of_book(&uuid).await.unwrap().is_none());
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&tmp.path().join("dest"), puts.clone());
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job, "B00LONG", "user-1", &uuid);
+        let refused = acquire_book(&store, &destinations, req, &source).await;
+        assert!(refused.is_err(), "an unresolved title must not acquire");
+        assert_eq!(fetches.load(Ordering::SeqCst), 0);
+        assert_eq!(puts.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

@@ -156,8 +156,8 @@ Replace `<asin>` with a book's ASIN.
 
 Every template set must include `<library id>`: in the folder template,
 or in both the file and the chapter file templates. The tag must be
-written for every book, so a `<library id>` inside a condition on another
-field (`<has series->…<-has>`) doesn't count. It is a short id for the
+written for every book, so a `<library id>` inside any condition
+(`<has series->…<-has>`, or `<!has series->…<-has>`) doesn't count. It is a short id for the
 edition, such as `1a2b3c4d`, so two editions of a book (an abridged and an
 unabridged recording, two narrators' readings) never share a path, while
 every store's copy of the same edition does.
