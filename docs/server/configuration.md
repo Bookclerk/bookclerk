@@ -45,7 +45,7 @@ Classic Libation setting names work as aliases where
 | `[output]` | The first-run seed of the `core.output` document, and the host's own `in_progress` scratch folder |
 | `[daemon]` | Listen addresses, JSON logs, trusted proxies, and `[daemon.node_api]` transport |
 | `[integrations]` | `public_origin`, and claim-ticket and portal session lifetimes |
-| `[discovery]` | Recommendations, embeddings, Open Library, listening sync |
+| `[discovery]` | Recommendations, embeddings, listening sync |
 | `[diagnostics]` | Opt-in report sharing |
 | `[jobs]`, `[jobs.concurrency]` | Job queue admission, leases and network concurrency |
 | `[events]` | The first-run seed of `core.events`: outbox retention and delivery workers |
@@ -72,7 +72,6 @@ Environment variables win over `config.toml`. Settings the database owns
 | `BOOKCLERK_AUTH_PASSWORD` | Wraps `master.key` at rest (preferred over `[auth].password`); needed for legacy `json-encrypted` rows |
 | `BOOKCLERK_OIDC_<ID>_CLIENT_SECRET` | Client secret of sign-in provider `<ID>` (hyphens become underscores) |
 | `BOOKCLERK_DISCOVERY_EMBEDDINGS_ENABLED` | Local ONNX embeddings on or off |
-| `BOOKCLERK_DISCOVERY_OPENLIBRARY_ENABLED` | Open Library enrichment on or off |
 | `BOOKCLERK_DISCOVERY_RECOMMEND_LIMIT` | How many recommendations by default |
 | `BOOKCLERK_JOBS_MAX_PENDING` | Cap on pending and running jobs (default 32) |
 | `BOOKCLERK_JOBS_LEASE_SECONDS` | Worker lease length (default 60) |

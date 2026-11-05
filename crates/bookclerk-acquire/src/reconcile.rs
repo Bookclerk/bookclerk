@@ -687,6 +687,7 @@ pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -
         write_destinations: None,
         job_id: None,
         temp_quota_bytes: None,
+        metadata: crate::AcquireMetadata::default(),
     }
 }
 

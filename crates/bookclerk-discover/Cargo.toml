@@ -16,6 +16,7 @@ anyhow.workspace = true
 bookclerk-config.workspace = true
 bookclerk-enrich.workspace = true
 bookclerk-library.workspace = true
+bookclerk-plugin-sdk.workspace = true
 bookclerk-resolve.workspace = true
 bookclerk-source.workspace = true
 chrono.workspace = true
@@ -46,6 +47,7 @@ uuid.workspace = true
 utoipa.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
