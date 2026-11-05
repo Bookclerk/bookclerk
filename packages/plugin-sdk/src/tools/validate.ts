@@ -725,7 +725,7 @@ function validateSurface(m: Manifest): void {
 }
 
 /** Newest compatibility date the pinned workerd binary honors. */
-export const WORKERD_PIN_COMPAT_DATE = "2026-10-28";
+export const WORKERD_PIN_COMPAT_DATE = "2026-10-29";
 
 /** Author flags allowed on this pin. Required together for Python guests. */
 export const PYTHON_COMPATIBILITY_FLAGS = [
