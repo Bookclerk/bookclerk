@@ -78,11 +78,14 @@ function CoverLayer({
   const [shown, setShown] = useState(false);
   useEffect(() => {
     const img = ref.current;
+    // A remount (StrictMode runs effects twice) restores what the cleanup
+    // below removed; React won't, since the `src` prop didn't change.
+    if (img && img.getAttribute("src") !== src) img.setAttribute("src", src);
     return () => {
       // Dropping `src` aborts a request the browser has not finished.
       if (img && !img.complete) img.removeAttribute("src");
     };
-  }, []);
+  }, [src]);
   return (
     <img
       ref={ref}
