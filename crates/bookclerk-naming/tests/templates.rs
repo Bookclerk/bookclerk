@@ -23,6 +23,7 @@ fn dt(y: i32, m: u32, d: u32) -> NaiveDateTime {
 fn book() -> BookContext {
     BookContext {
         isbn: "asin".into(),
+        library_id: "lib0001".into(),
         title: Some("A Study in Scarlet: A Sherlock Holmes Novel".into()),
         subtitle: Some("An Audible Original Drama".into()),
         title_with_subtitle: Some("A Study in Scarlet: An Audible Original Drama".into()),
@@ -580,4 +581,50 @@ fn chapters() {
     );
     assert_eq!(expand_template("<ch# 0>", &b, Some(&ch)).unwrap(), "03");
     assert_eq!(expand_template("<ch count>", &b, Some(&ch)).unwrap(), "12");
+}
+
+#[test]
+fn library_id_names_the_edition() {
+    let book = BookContext {
+        isbn: "B00ONE".into(),
+        library_id: "1a2b3c4d".into(),
+        title: Some("Twin".into()),
+        ..BookContext::default()
+    };
+    let name =
+        bookclerk_naming::expand_filename("<title> [<library id>]", &book, None, &[]).unwrap();
+    assert_eq!(name, "Twin [1a2b3c4d]");
+}
+
+#[test]
+fn templates_must_always_write_the_library_id() {
+    use bookclerk_naming::{require_library_id, NamingError};
+    // In the folder, every file under it is the edition's.
+    assert!(require_library_id("<author>/<title> [<library id>]", "<title>", "<ch#>").is_ok());
+    // In the file names, only when the chapter files carry it too.
+    assert!(require_library_id("<author>", "<title> <library id>", "<ch#> <library id>").is_ok());
+    assert!(matches!(
+        require_library_id("<author>", "<title> <library id>", "<ch#>"),
+        Err(NamingError::MissingLibraryId)
+    ));
+    // A tag behind a condition on another field is not always written.
+    assert!(matches!(
+        require_library_id("<has series-><library id><-has>", "<title>", "<ch#>"),
+        Err(NamingError::MissingLibraryId)
+    ));
+    // `<id>` is the store product, not the edition.
+    assert!(matches!(
+        require_library_id("<title> [<id>]", "<title> [<asin>]", "<ch#>"),
+        Err(NamingError::MissingLibraryId)
+    ));
+    for profile in [
+        bookclerk_config::NamingProfile::Audiobookshelf,
+        bookclerk_config::NamingProfile::Classic,
+    ] {
+        let t = profile.templates();
+        assert!(
+            require_library_id(t.folder, t.file, t.chapter_file).is_ok(),
+            "{profile:?}"
+        );
+    }
 }

@@ -165,6 +165,11 @@ pub struct HostTitle {
     /// seeded into the scratch library so episodes are named as on the
     /// owner.
     pub parent: Option<BookRecord>,
+    /// The title's library id on the owner, which names its files here as
+    /// there (this host's scratch library has its own edition ids).
+    pub library_id: Option<String>,
+    /// The podcast parent's library id on the owner.
+    pub parent_library_id: Option<String>,
     /// The owner node's destinations, the primary first; never empty.
     pub destinations: Vec<HostDestination>,
 }
@@ -416,6 +421,8 @@ pub fn acquire_request(
         write_destinations: None,
         job_id: None,
         temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
+        library_id: None,
+        parent_library_id: None,
     }
 }
 
@@ -473,6 +480,10 @@ async fn acquire_into(
     // enter a key.
     let mut request = acquire_request(cfg, book, &primary.options);
     request.cache_dir = cache_dir.to_path_buf();
+    request.library_id.clone_from(&title.library_id);
+    request
+        .parent_library_id
+        .clone_from(&title.parent_library_id);
     let result =
         bookclerk_acquire::acquire_book_indexed(scratch, &destinations, request, None, source)
             .await?;
@@ -756,6 +767,8 @@ async fn acquire_titles<G: HostGuests>(
             let title = HostTitle {
                 book,
                 parent,
+                library_id: target.library_id.map(String::from),
+                parent_library_id: target.parent_library_id.map(String::from),
                 destinations: destinations.clone(),
             };
             // Both the guest's acquire and the title's upload stop once the

@@ -436,7 +436,9 @@ A host never writes library SQL.
 1. The host asks the owner for the job's titles (`acquire.plan`).
 2. The answer, `acquire.targets`, lists the titles and every output
    destination deployed on the owner node that answered, each with its own
-   naming options (templates, replacement characters, path limits).
+   naming options (templates, replacement characters, path limits). Each
+   title carries its library id on the owner, so the `<library id>` naming
+   tag writes the owner's id rather than the host's scratch one.
 3. The host acquires each title into a per-title outbox, with one
    sub-directory per owner destination. So each destination's file names
    come out exactly as a local acquire on the owner would name them.

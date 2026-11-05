@@ -128,14 +128,14 @@ you need to:
 ```toml
 [output]
 naming_profile = "audiobookshelf"
-# folder_template = "<author>/<title>"
+# folder_template = "<author>/<title> [<library id>]"
 # file_template = "<title> [<asin>]"
 ```
 
 | Profile | Layout |
 | --- | --- |
-| `audiobookshelf` (default) | Author, series and year folders that suit Audiobookshelf |
-| `classic` | Libation's desktop defaults, such as `<title short> [<id>]` |
+| `audiobookshelf` (default) | Author, series and year folders that suit Audiobookshelf, with the library id on the book's folder |
+| `classic` | Libation's desktop defaults with the library id added: `<title short> [<id>] [<library id>]` |
 
 Each destination can override the naming too, with its own
 `naming_profile`, `folder_template`, `file_template` and
@@ -152,19 +152,25 @@ bookclerk config template preview <asin>
 
 Replace `<asin>` with a book's ASIN.
 
-### Two editions with one name
+### The library id
 
-Two editions of a book can name the same path: an abridged and an
-unabridged recording, or two narrators' readings, under a template
-without the product id. Bookclerk records which edition each file
-belongs to, so the second edition's acquire never overwrites the first's.
-Its title gets a short tag instead, built from what differs:
+Every template set must include `<library id>`: in the folder template,
+or in both the file and the chapter file templates. The tag must be
+written for every book, so a `<library id>` inside a condition on another
+field (`<has series->…<-has>`) doesn't count. It is a short id for the
+edition, such as `1a2b3c4d`, so two editions of a book (an abridged and an
+unabridged recording, two narrators' readings) never share a path, while
+every store's copy of the same edition does.
 
-1. `Abridged`, for an abridged edition;
-2. otherwise its first narrator, such as `Twin (Ada Reader)`;
-3. otherwise the first eight letters and digits of its edition id.
+Bookclerk refuses to save naming settings without it. A destination's own
+naming overrides are checked when a book is acquired: an acquire whose
+templates lack the tag stops before downloading anything and names the
+destination to fix. The store product id (`<id>`, `<asin>`) doesn't count,
+because the same edition bought from two stores has two product ids, and
+not every book has an ISBN or ASIN.
 
-The tag goes on the folder too when the folder is named after the title.
+Files you already have keep their names: storage matching marks them
+acquired where they are, whether or not their path has a library id.
 
 Copies of one edition on several accounts (the same book bought twice)
 share their files. The edition is downloaded once, and every account's

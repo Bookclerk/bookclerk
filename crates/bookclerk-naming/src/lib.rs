@@ -68,12 +68,20 @@ pub use bookclerk_config::ReplacementRule;
 pub enum NamingError {
     /// The template string could not be parsed.
     Parse(String),
+    /// Neither the folder template nor both file templates always write
+    /// `<library id>` ([`require_library_id`]).
+    MissingLibraryId,
 }
 
 impl std::fmt::Display for NamingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NamingError::Parse(msg) => write!(f, "template parse error: {msg}"),
+            NamingError::MissingLibraryId => f.write_str(
+                "naming templates must include <library id> in the folder template, \
+                 or in both the file and chapter file templates, so two editions of \
+                 a book never share a path",
+            ),
         }
     }
 }
@@ -276,4 +284,48 @@ pub fn expand_folder(
 #[must_use]
 pub fn property_tag_names() -> &'static [(&'static str, bool)] {
     tags::property_tags()
+}
+
+/// A `<library id>` value no metadata produces, used to see whether a
+/// template always writes the tag.
+const LIBRARY_ID_PROBE: &str = "0libraryid0";
+
+/// True when `template` writes `<library id>` for a title with nothing but
+/// a title and its library id: a tag inside a conditional on another field
+/// (`<has series->…<-has>`) is not always written, so it does not count.
+fn always_writes_library_id(template: &str) -> Result<bool> {
+    let book = BookContext {
+        isbn: String::from("0id0"),
+        library_id: String::from(LIBRARY_ID_PROBE),
+        title: Some(String::from("0title0")),
+        ..BookContext::default()
+    };
+    let chapter = ChapterContext::default();
+    let parts = Template::parse(template)?.evaluate_parts(&book, Some(&chapter));
+    Ok(parts
+        .iter()
+        .any(|part| part.value.contains(LIBRARY_ID_PROBE)))
+}
+
+/// Checks that templates name every edition apart: the folder template, or
+/// both the file and the chapter-file templates, always write
+/// `<library id>`. Two editions of a title (an abridged and an unabridged
+/// recording, two narrators' readings) would otherwise share one path.
+///
+/// # Arguments
+///
+/// * `folder`, `file`, `chapter_file` - The resolved folder, file and
+///   chapter-file templates.
+///
+/// # Errors
+///
+/// Returns [`NamingError::MissingLibraryId`] when no such placement holds,
+/// and [`NamingError::Parse`] when a template does not parse.
+pub fn require_library_id(folder: &str, file: &str, chapter_file: &str) -> Result<()> {
+    if always_writes_library_id(folder)?
+        || (always_writes_library_id(file)? && always_writes_library_id(chapter_file)?)
+    {
+        return Ok(());
+    }
+    Err(NamingError::MissingLibraryId)
 }

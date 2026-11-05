@@ -1385,19 +1385,33 @@ mod results_and_uploads {
     use super::*;
 
     /// The key an acquire names `book`'s audio with under `options`.
-    fn planned_key(book: &bookclerk_library::BookRecord, options: &DownloadOptions) -> String {
+    fn planned_key(
+        book: &bookclerk_library::BookRecord,
+        library_id: Option<&str>,
+        options: &DownloadOptions,
+    ) -> String {
         let templates = options.naming_templates();
         bookclerk_acquire::storage_key(
             &bookclerk_acquire::NamingContext {
                 asin: book.product_id.clone(),
                 title: book.title.clone(),
                 authors: book.authors.clone(),
+                library_id: library_id.map(str::to_string),
                 ..Default::default()
             },
             Some(templates.folder.as_str()),
             Some(templates.file.as_str()),
             "m4b",
         )
+    }
+
+    /// The folder the default naming profile gives title `product_id`
+    /// (`owner_book`) in `library`: `Author/Title <id> [<library id>]`.
+    async fn default_folder(library: &LibraryStore, book_uuid: &str, product_id: &str) -> String {
+        let short = bookclerk_acquire::library_id_of(library, book_uuid)
+            .await
+            .expect("the title has an edition");
+        format!("Author/Title {product_id} [{short}]")
     }
 
     /// The owner's one `local` destination, its title scope `folder`.
@@ -1486,7 +1500,11 @@ mod results_and_uploads {
             self.note(bindings);
             let mut keys = Vec::new();
             for (index, destination) in title.destinations.iter().enumerate() {
-                let key = planned_key(&title.book, &destination.options);
+                let key = planned_key(
+                    &title.book,
+                    title.library_id.as_deref(),
+                    &destination.options,
+                );
                 let path = destination_outbox(outbox, index).join(&key);
                 tokio::fs::create_dir_all(path.parent().unwrap()).await?;
                 tokio::fs::write(&path, self.payload.as_slice()).await?;
@@ -1833,8 +1851,9 @@ mod results_and_uploads {
             bookclerk_library::AcquireStatus::Acquired
         );
         let key = acquired.storage_key.clone().unwrap_or_default();
+        let dir = default_folder(&world.owner, &book.uuid, "t1").await;
         assert!(
-            key.starts_with("Author/Title t1/"),
+            key.starts_with(&format!("{dir}/")),
             "named as a local acquire would: {key}"
         );
         assert_eq!(
@@ -2915,11 +2934,12 @@ mod results_and_uploads {
             .upsert_book(&owner_book("riley-acct", "t1"))
             .await
             .unwrap();
+        let dir = default_folder(&world.owner, &book.uuid, "t1").await;
         let job_id = enqueue_acquire(&world.owner).await;
         let fence = claim_acquire(&world, 60).await;
         let files = vec![
-            local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
-            local_file("Author/Title t1/Title t1 [t1].jpg", b"jpeg"),
+            local_file(&format!("{dir}/Title t1 [t1].m4b"), b"audio"),
+            local_file(&format!("{dir}/Title t1 [t1].jpg"), b"jpeg"),
         ];
         let UploadGrant::Granted {
             upload_id, token, ..
@@ -2931,10 +2951,10 @@ mod results_and_uploads {
             &owner_node_id(&world),
             &UploadGrantRequest {
                 book_uuid: &book.uuid,
-                primary_key: "Author/Title t1/Title t1 [t1].m4b",
+                primary_key: &format!("{dir}/Title t1 [t1].m4b"),
                 pdf_key: None,
                 files: &files,
-                destinations: &local_scope("Author/Title t1"),
+                destinations: &local_scope(&dir),
             },
         )
         .await
@@ -2946,7 +2966,7 @@ mod results_and_uploads {
         assert!(first.starts_with("HTTP/1.1 200"), "{first}");
         assert!(owner_out
             .path()
-            .join("Author/Title t1/Title t1 [t1].jpg")
+            .join(format!("{dir}/Title t1 [t1].jpg"))
             .is_file());
 
         // The host (connected now; the job is already running) re-sends
@@ -2957,7 +2977,7 @@ mod results_and_uploads {
                 job_id: job_id.clone(),
                 fence,
                 book_uuid: book.uuid.clone(),
-                primary_key: "Author/Title t1/Title t1 [t1].m4b".into(),
+                primary_key: format!("{dir}/Title t1 [t1].m4b"),
                 pdf_key: None,
                 files: vec![files[0].clone()],
             })
@@ -3061,6 +3081,7 @@ mod results_and_uploads {
             .upsert_book(&owner_book("riley-acct", "t1"))
             .await
             .unwrap();
+        let dir = default_folder(&world.owner, &book.uuid, "t1").await;
         let other = world
             .owner
             .scope(PLUGIN, "test")
@@ -3129,43 +3150,30 @@ mod results_and_uploads {
         record_for_book(
             &world.owner,
             "local",
-            "Author/Title t1/Title t1 [t1].cue",
+            &format!("{dir}/Title t1 [t1].cue"),
             &other.uuid,
         )
         .await
         .unwrap();
-        // The folder template (`<title short>`) is shared, so only the
-        // title's planned names are in scope there: another title's names
-        // are refused by name. A planned name another edition holds moves
-        // the title's own names apart (the edition discriminator), so the
-        // Host's keys under the plain name are out of scope as well.
-        for key in [
-            "Author/Title t1/Title t2.m4b",
-            "Author/Title t1/Title t2.jpg",
-            "Author/Title t1/Title t1 [t1].cue",
+        // The folder template uses `<title short>`, so the scope treats the
+        // folder as shared and only the title's planned names are in scope
+        // there: another title's names are refused by name, and a planned
+        // name another title holds by its claim.
+        for (key, reason) in [
+            (format!("{dir}/Title t2.m4b"), "key_out_of_scope"),
+            (format!("{dir}/Title t2.jpg"), "key_out_of_scope"),
+            (format!("{dir}/Title t1 [t1].cue"), "key_of_another_book"),
         ] {
             let body = grant(vec![
-                local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
-                local_file(key, b"other"),
+                local_file(&format!("{dir}/Title t1 [t1].m4b"), b"audio"),
+                local_file(&key, b"other"),
             ])
             .await;
-            assert_eq!(refusal(&body), "key_out_of_scope", "{key}");
+            assert_eq!(refusal(&body), reason, "{key}");
         }
-        // With the other edition's file gone, the plain names are the
-        // title's again.
-        world
-            .owner
-            .release_edition_file(
-                "local",
-                "Author/Title t1/Title t1 [t1].cue",
-                bookclerk_library::ACQUIRE_WRITER,
-                None,
-            )
-            .await
-            .unwrap();
         let body = grant(vec![
-            local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
-            local_file("Author/Title t1/Title t1 [t1].jpg", b"jpeg"),
+            local_file(&format!("{dir}/Title t1 [t1].m4b"), b"audio"),
+            local_file(&format!("{dir}/Title t1 [t1].jpg"), b"jpeg"),
         ])
         .await;
         assert!(matches!(body, Body::UploadGranted { .. }), "{body:?}");
@@ -3558,7 +3566,8 @@ mod results_and_uploads {
             .unwrap()
             .remove(0)
             .options;
-        let key = planned_key(&book, &options);
+        let short = bookclerk_acquire::library_id_of(&world.owner, &book.uuid).await;
+        let key = planned_key(&book, short.as_deref(), &options);
         record_for_book(&world.owner, "local", &key, &other.uuid)
             .await
             .unwrap();

@@ -82,6 +82,9 @@ pub struct NamingContext {
     pub is_abridged: bool,
     /// Title kind (`book`, `episode`, …) for naming templates.
     pub content_kind: Option<String>,
+    /// The edition's short Bookclerk id for `<library id>`; `None` for a
+    /// title with no edition, which then names by its product id.
+    pub library_id: Option<String>,
     /// Chapter-specific: 1-based index.
     pub chapter_number: Option<u32>,
     /// Total chapter count when naming a split chapter file.
@@ -133,6 +136,7 @@ fn to_book_context(ctx: &NamingContext) -> BookContext {
 
     BookContext {
         isbn: ctx.asin.clone(),
+        library_id: ctx.library_id.clone().unwrap_or_else(|| ctx.asin.clone()),
         // Audible title (no subtitle) — drives `<audible title>` / `<title short>`.
         title: Some(ctx.title.clone()),
         subtitle: ctx.subtitle.clone(),
@@ -478,7 +482,7 @@ mod tests {
             "m4b",
             &bookclerk_config::windows_replacement_characters(),
         );
-        assert_eq!(key, "A_B/Hello/Hello_ World [B00X].m4b");
+        assert_eq!(key, "A_B/Hello [B00X]/Hello_ World [B00X].m4b");
     }
 
     #[test]
@@ -495,7 +499,7 @@ mod tests {
             "m4b",
             &bookclerk_config::posix_replacement_characters(),
         );
-        assert_eq!(key, "Jane Doe/Hello/Hello: World [B00X].m4b");
+        assert_eq!(key, "Jane Doe/Hello [B00X]/Hello: World [B00X].m4b");
     }
 
     #[test]
@@ -514,7 +518,7 @@ mod tests {
         let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
         assert_eq!(
             key,
-            "Terry Goodkind/Sword of Truth/1 - 1994 - Wizards First Rule {Sam Tsoutsouvas}/Wizards First Rule: A Novel [B00EXAMPLE1].m4b"
+            "Terry Goodkind/Sword of Truth/1 - 1994 - Wizards First Rule {Sam Tsoutsouvas} [B00EXAMPLE1]/Wizards First Rule: A Novel [B00EXAMPLE1].m4b"
         );
     }
 
@@ -529,7 +533,7 @@ mod tests {
         };
         let templates = resolve_templates(NamingProfile::Audiobookshelf, None, None, None);
         let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
-        assert_eq!(key, "Jane Doe/Main/Main: Sub [B00X].m4b");
+        assert_eq!(key, "Jane Doe/Main [B00X]/Main: Sub [B00X].m4b");
     }
 
     #[test]
@@ -542,7 +546,7 @@ mod tests {
         };
         let templates = resolve_templates(NamingProfile::Audiobookshelf, None, None, None);
         let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
-        assert_eq!(key, "Jane Doe/Standalone/Standalone [B00X].m4b");
+        assert_eq!(key, "Jane Doe/Standalone [B00X]/Standalone [B00X].m4b");
     }
 
     #[test]
@@ -555,7 +559,7 @@ mod tests {
         };
         let templates = resolve_templates(NamingProfile::Classic, None, None, None);
         let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
-        assert_eq!(key, "Hello [B00X]/Hello: World [B00X].m4b");
+        assert_eq!(key, "Hello [B00X] [B00X]/Hello: World [B00X].m4b");
     }
 
     #[test]

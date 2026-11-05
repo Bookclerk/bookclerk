@@ -37,7 +37,7 @@ pub use naming::{
     swap_audio_extension, NamingContext,
 };
 pub use pipeline::{
-    acquire_book, acquire_book_indexed, acquire_pdf_only, planned_storage_key,
+    acquire_book, acquire_book_indexed, acquire_pdf_only, library_id_of, planned_storage_key,
     planned_storage_key_for, planned_storage_key_with_rules, planned_title_folders,
     planned_title_names, AcquireRequest, AcquireResult, PlannedTitleNames, NAME_WILDCARD,
     NUMBER_WILDCARD,

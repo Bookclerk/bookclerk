@@ -947,6 +947,8 @@ pub async fn run_acquire(
             write_destinations: None,
             job_id: ctx.map(|c| c.fence.job_id.clone()),
             temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
+            library_id: None,
+            parent_library_id: None,
         };
         let mut attempts = 0u32;
         loop {

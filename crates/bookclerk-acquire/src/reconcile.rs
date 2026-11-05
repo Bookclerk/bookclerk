@@ -687,6 +687,8 @@ pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -
         write_destinations: None,
         job_id: None,
         temp_quota_bytes: None,
+        library_id: None,
+        parent_library_id: None,
     }
 }
 
@@ -1107,25 +1109,8 @@ mod reconcile_integration {
     async fn wildcard_lookups_reuse_the_durable_inventory() {
         let dir = tempdir().unwrap();
         let inner = LocalFsBackend::new(dir.path().join("books")).unwrap();
-        let key = "Jane Doe/Hello/Hello_ World _B00EXAMPLE1_.m4b";
-        inner
-            .put(key, Bytes::from_static(b"audio"), ObjectMeta::default())
-            .await
-            .unwrap();
         let lists = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let backend = CountLists {
-            inner,
-            lists: std::sync::Arc::clone(&lists),
-        };
         let library = bookclerk_plugin_database_sqlite::open_store_memory()
-            .await
-            .unwrap();
-        library
-            .storage_scan_register("scan-wild", "inst", None)
-            .await
-            .unwrap();
-        library
-            .storage_scan_put_object("scan-wild", key, 5, 0, true)
             .await
             .unwrap();
         library
@@ -1139,6 +1124,35 @@ mod reconcile_integration {
             .get_book("B00EXAMPLE1", "acct")
             .await
             .unwrap()
+            .unwrap();
+        // The default layout names the folder after the edition's library id.
+        let edition = library
+            .edition_of_book(&stored.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        let short: String = edition
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .take(8)
+            .collect();
+        let key = format!("Jane Doe/Hello _{short}_/Hello_ World _B00EXAMPLE1_.m4b");
+        let key = key.as_str();
+        inner
+            .put(key, Bytes::from_static(b"audio"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let backend = CountLists {
+            inner,
+            lists: std::sync::Arc::clone(&lists),
+        };
+        library
+            .storage_scan_register("scan-wild", "inst", None)
+            .await
+            .unwrap();
+        library
+            .storage_scan_put_object("scan-wild", key, 5, 0, true)
+            .await
             .unwrap();
         let req = request_from_book(
             &stored,

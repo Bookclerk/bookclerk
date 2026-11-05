@@ -78,19 +78,20 @@ impl NamingProfile {
     #[must_use]
     pub fn templates(self) -> NamingProfileTemplates {
         match self {
-            // Author/{Series/}{N - }{YYYY - }Short Title {Narrator}/Full Title [ASIN]
+            // Author/{Series/}{N - }{YYYY - }Short Title {Narrator} [library id]/Full Title [ASIN]
             // Matches Audiobookshelf Author/Series/Book (or Author/Book) scanning,
             // with series sequence, publish year, and narrator braces in the book
             // folder name when available.
             Self::Audiobookshelf => NamingProfileTemplates {
-                folder: "<first author>/<has series-><first series>/<-has><has series#-><series#> - <-has><has year-><year> - <-has><title short><has narrator-> {<first narrator>}<-has>",
+                folder: "<first author>/<has series-><first series>/<-has><has series#-><series#> - <-has><has year-><year> - <-has><title short><has narrator-> {<first narrator>}<-has> [<library id>]",
                 file: "<title> [<asin>]",
                 chapter_file: "<ch#> - <chapter title>",
             },
-            // Matches Classic Libation Templates.*.DefaultTemplate
+            // Classic Libation Templates.*.DefaultTemplate, with the edition's
+            // library id added to the folder so editions never share a path
             // (Source/LibationFileManager/Templates/Templates.cs).
             Self::Classic => NamingProfileTemplates {
-                folder: "<title short> [<id>]",
+                folder: "<title short> [<id>] [<library id>]",
                 file: "<title> [<id>]",
                 chapter_file: "<title> [<id>] - <ch# 0> - <ch title>",
             },
@@ -164,9 +165,9 @@ mod tests {
     }
 
     #[test]
-    fn classic_matches_bookclerk_desktop_defaults() {
+    fn classic_matches_bookclerk_desktop_defaults_plus_the_library_id() {
         let t = NamingProfile::Classic.templates();
-        assert_eq!(t.folder, "<title short> [<id>]");
+        assert_eq!(t.folder, "<title short> [<id>] [<library id>]");
         assert_eq!(t.file, "<title> [<id>]");
         assert_eq!(t.chapter_file, "<title> [<id>] - <ch# 0> - <ch title>");
     }

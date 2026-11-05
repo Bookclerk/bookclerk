@@ -585,9 +585,8 @@ impl LibraryStore {
     /// `stem` itself, `stem` with an extension in the same folder
     /// (`stem.cue`), or one of its part files (`stem — Part 1.m4b`).
     /// Another edition's files already live under that name, so an acquire
-    /// of `owner` names its files apart. A longer name that only starts
-    /// with `stem` (`stem (Narrator).m4b`, `stem Peaks.m4b`) is not the
-    /// same name.
+    /// of `owner` is refused rather than overwrite them. A longer name that
+    /// only starts with `stem` (`stem Peaks.m4b`) is not the same name.
     ///
     /// # Errors
     ///

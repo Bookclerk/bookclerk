@@ -10,6 +10,11 @@ settings and your naming templates, so you do not start from scratch.
   file naming templates.
 - The list of your accounts.
 
+Bookclerk adds its library id (`[<library id>]`) to the end of your
+folder template when your templates don't include it, so two editions of
+a book never share a folder. Books Libation already saved keep their
+names and are matched where they are.
+
 If this Bookclerk has already been started, its output settings stay as
 they are. When they differ from Libation's, the import warns you, so check
 **Settings → Output** afterward.

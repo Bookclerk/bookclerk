@@ -406,6 +406,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     write_destinations: None,
                     job_id: None,
                     temp_quota_bytes: None,
+                    library_id: None,
+                    parent_library_id: None,
                 };
                 let key = bookclerk_acquire::planned_storage_key(&store, &req).await;
                 let key = if pdf {

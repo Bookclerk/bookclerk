@@ -538,6 +538,21 @@ impl OutputSettingsV1 {
                 }
             }
         }
+        // Two editions of a book must never share a path, whatever the
+        // templates; a destination's own overrides are checked when an
+        // acquire plans its names.
+        let templates = bookclerk_config::ResolvedNamingTemplates::resolve(
+            self.naming_profile,
+            self.folder_template.as_deref(),
+            self.file_template.as_deref(),
+            self.chapter_file_template.as_deref(),
+        );
+        bookclerk_naming::require_library_id(
+            &templates.folder,
+            &templates.file,
+            &templates.chapter_file,
+        )
+        .map_err(|err| invalid(&err.to_string()))?;
         let cover = self.cover_size.as_str();
         let cover_ok = cover == "native"
             || cover
@@ -1243,7 +1258,12 @@ mod tests {
         );
         body.set("output.bad_book_action", "Abort").unwrap();
         assert_eq!(body.get("output.bad_book_action").as_deref(), Some("abort"));
-        body.set("output.folder_template", "<author>").unwrap();
+        body.set("output.folder_template", "<author> [<library id>]")
+            .unwrap();
+        assert!(body
+            .clone()
+            .set("output.folder_template", "<author>")
+            .is_err());
         body.set("output.folder_template", "").unwrap();
         assert_eq!(body.folder_template, None);
         body.set(
