@@ -1,4 +1,5 @@
-//! Runs exactly one media job inside a jail derived from that job.
+//! Runs exactly one media job inside a jail derived from that job, or, as
+//! `bookclerk-media-worker covers`, serves cover images (see [`covers`]).
 //!
 //! The process reads a JSON [`MediaJob`] on stdin, confines itself to the paths
 //! the job declared, runs it, and writes a JSON [`MediaJobReply`] to stdout.
@@ -26,6 +27,8 @@
     clippy::unwrap_used
 )]
 
+mod covers;
+
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
@@ -33,6 +36,12 @@ use bookclerk_media::{Confinement, MediaJob, MediaJobReply, WORKER_ENFORCEMENT_E
 use bookclerk_sandbox::{Enforcement, NetPolicy, Policy};
 
 fn main() -> ExitCode {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == covers::ARG)
+    {
+        return covers::main();
+    }
     let job = match read_job() {
         Ok(job) => job,
         Err(err) => return fail(&format!("could not read job: {err}")),
@@ -65,6 +74,23 @@ fn read_job() -> Result<MediaJob, String> {
 
 /// Build the jail from what the job declared and apply it.
 fn confine(job: &MediaJob) -> Result<(), String> {
+    confine_to(
+        &format!("media-worker:{}", job.label()),
+        job.read_paths(),
+        job.write_dirs(),
+    )
+}
+
+/// Applies a jail that may read `reads`, write `writes`, and nothing else.
+///
+/// # Errors
+///
+/// The reason, when confinement is required and could not be applied.
+fn confine_to(
+    label: &str,
+    reads: Vec<std::path::PathBuf>,
+    writes: Vec<std::path::PathBuf>,
+) -> Result<(), String> {
     let requested = std::env::var(WORKER_ENFORCEMENT_ENV)
         .ok()
         .and_then(|value| Confinement::from_env_value(&value))
@@ -94,9 +120,9 @@ fn confine(job: &MediaJob) -> Result<(), String> {
         return Ok(());
     }
 
-    let policy = Policy::new(format!("media-worker:{}", job.label()))
-        .reads(job.read_paths())
-        .writes(job.write_dirs())
+    let policy = Policy::new(label)
+        .reads(reads)
+        .writes(writes)
         // Codecs read and write local files. They have no reason to reach the
         // network, and the host already fetched everything they need.
         .net(NetPolicy::Deny)

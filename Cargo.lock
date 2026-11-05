@@ -1575,6 +1575,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-cover"
+version = "0.1.0"
+dependencies = [
+ "fast_image_resize",
+ "image",
+ "jpeg-encoder",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bookclerk-db-exec"
 version = "0.1.0"
 dependencies = [
@@ -1782,6 +1792,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bookclerk-config",
+ "bookclerk-cover",
  "bookclerk-mp4",
  "bookclerk-sandbox",
  "fdk-aac",
@@ -1801,8 +1812,10 @@ dependencies = [
 name = "bookclerk-media-worker"
 version = "0.1.0"
 dependencies = [
+ "bookclerk-cover",
  "bookclerk-media",
  "bookclerk-sandbox",
+ "rayon",
  "serde_json",
  "tempfile",
  "tokio",
@@ -4094,6 +4107,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fast_image_resize"
+version = "5.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbc7fe45cf92b43817ff62a3723e862b85bd1d06288f63007f7645d1d2f7a060"
+dependencies = [
+ "cfg-if",
+ "document-features",
+ "num-traits",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "fastdivide"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5078,10 +5103,23 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error 2.0.1",
 ]
 
 [[package]]
@@ -5333,6 +5371,12 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
 ]
+
+[[package]]
+name = "jpeg-encoder"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b454d911ac55068f53495488d8ccd0646eaa540c033a28ee15b07838afafb01f"
 
 [[package]]
 name = "js-sys"

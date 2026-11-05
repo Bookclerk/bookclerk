@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-media-worker"
-description = "Confined child process that runs one Bookclerk media job"
+description = "Confined child process that runs one Bookclerk media job, or serves cover images"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,9 +13,12 @@ name = "bookclerk-media-worker"
 path = "src/main.rs"
 
 [dependencies]
+bookclerk-cover.workspace = true
 bookclerk-media.workspace = true
 bookclerk-sandbox.workspace = true
 serde_json.workspace = true
+# Cover mode only: one bounded pool decodes several covers at once.
+rayon = "1"
 
 [dev-dependencies]
 bookclerk-sandbox.workspace = true
