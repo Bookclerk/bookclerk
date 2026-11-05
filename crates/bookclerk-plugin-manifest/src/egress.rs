@@ -817,7 +817,31 @@ mod tests {
         );
         assert!(encoded.len() <= MAX_FETCH_URL_BYTES);
         assert!(https_url_on_hosts(&encoded, &cdn).is_none());
+        // Punycode grows each non-ASCII host label the same way.
+        let idn = format!(
+            "https://{}ssl-images-amazon.com/c.jpg",
+            "a\u{472}.".repeat(1000)
+        );
+        assert!(idn.len() <= MAX_FETCH_URL_BYTES);
+        let serialized = url::Url::parse(&idn).map(String::from).unwrap_or_default();
+        assert!(
+            serialized.len() > MAX_FETCH_URL_BYTES,
+            "{}",
+            serialized.len()
+        );
+        assert!(https_url_on_hosts(&idn, &["*.ssl-images-amazon.com"]).is_none());
         assert!(https_url_on_hosts("https://m.media-amazon.com/a.jpg", &[]).is_none());
+        // A restricted name stays refused even when a pattern lists it.
+        for (url, pattern) in [
+            ("https://localhost/a.jpg", "localhost"),
+            ("https://localhost./a.jpg", "localhost"),
+            (
+                "https://metadata.google.internal/a.jpg",
+                "metadata.google.internal",
+            ),
+        ] {
+            assert!(https_url_on_hosts(url, &[pattern]).is_none(), "{url}");
+        }
     }
 
     #[test]
