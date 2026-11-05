@@ -1,6 +1,6 @@
-//! Replays the checked-in `cover_process` and `cover_wire` fuzz corpora in PR
-//! CI (no libFuzzer required), so an input that once broke the cover
-//! pipeline or the worker frames stays fixed
+//! Replays the checked-in `cover_process`, `cover_wire` and `cover_token`
+//! fuzz corpora in PR CI (no libFuzzer required), so an input that once broke
+//! the cover pipeline, the worker frames or the token check stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
 //! `UPDATE_FUZZ_SEEDS=1` rewrites the generated seeds; without it the test
@@ -24,6 +24,9 @@ mod cover_process_oracle;
 
 #[path = "../../../fuzz/oracles/cover_wire.rs"]
 mod cover_wire_oracle;
+
+#[path = "../../../fuzz/oracles/cover_token.rs"]
+mod cover_token_oracle;
 
 /// `fuzz/corpus/<target>`.
 fn corpus_dir(target: &str) -> PathBuf {
@@ -141,6 +144,35 @@ fn wire_seeds() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+/// The generated `cover_token` seeds: tokens under the oracle's key, and
+/// URL inputs (first byte picks the byte to flip, the rest is the URL).
+fn token_seeds() -> Vec<(&'static str, Vec<u8>)> {
+    use base64::Engine as _;
+    let key = bookclerk_cover::token::TokenKey::from_bytes([0x5a; 32]);
+    let url = "https://m.media-amazon.com/images/I/51abc.jpg";
+    let token = bookclerk_cover::token::sign(&key, url).expect("token");
+    let (encoded, tag) = token.split_once('.').expect("dot");
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let http = engine.encode("http://img.example/a.jpg");
+    vec![
+        ("valid.txt", token.clone().into_bytes()),
+        (
+            "short_tag.txt",
+            format!("{encoded}.{}", &tag[..8]).into_bytes(),
+        ),
+        ("long_tag.txt", format!("{token}AA").into_bytes()),
+        ("no_dot.txt", encoded.as_bytes().to_vec()),
+        ("swapped_url.txt", format!("{http}.{tag}").into_bytes()),
+        ("padded.txt", format!("{encoded}=.{tag}").into_bytes()),
+        ("url_https.bin", [b"".as_slice(), url.as_bytes()].concat()),
+        ("url_http.bin", b"http://img.example/a.jpg".to_vec()),
+        (
+            "url_userinfo.bin",
+            b"https://u:p@img.example:8443/a?b#c".to_vec(),
+        ),
+    ]
+}
+
 #[test]
 fn generated_seeds_are_current() {
     for (name, bytes) in process_seeds() {
@@ -148,6 +180,9 @@ fn generated_seeds_are_current() {
     }
     for (name, bytes) in wire_seeds() {
         seed("cover_wire", name, &bytes);
+    }
+    for (name, bytes) in token_seeds() {
+        seed("cover_token", name, &bytes);
     }
 }
 
@@ -168,4 +203,22 @@ fn fuzz_corpus_cover_wire_holds_invariants() {
     for path in corpus_files("cover_wire") {
         cover_wire_oracle::check(&std::fs::read(&path).expect("read"));
     }
+}
+
+#[test]
+fn fuzz_corpus_cover_token_holds_invariants() {
+    let key = bookclerk_cover::token::TokenKey::from_bytes([0x5a; 32]);
+    let mut opened = 0;
+    for path in corpus_files("cover_token") {
+        let data = std::fs::read(&path).expect("read");
+        cover_token_oracle::check(&data);
+        opened += usize::from(
+            std::str::from_utf8(&data)
+                .ok()
+                .and_then(|token| bookclerk_cover::token::open(&key, token))
+                .is_some(),
+        );
+    }
+    // Only the one valid token in the corpus opens.
+    assert_eq!(opened, 1);
 }

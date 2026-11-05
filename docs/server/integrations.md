@@ -228,6 +228,8 @@ The first request for a cover:
 Later requests are served from that cache, with a one-year `immutable`
 cache header. Search results and Discover warm their first 24 covers in
 the background, so thumbnails are usually ready before the browser asks.
+At most two of these batches download at once, and a cover already in
+one batch isn't downloaded again by another.
 A cover that fails isn't retried for 10 minutes. The cache keeps about
 256 MiB and drops the covers served least recently first.
 

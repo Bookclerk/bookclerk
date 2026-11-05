@@ -14,6 +14,11 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 fast_image_resize = "5"
 jpeg-encoder = "0.6"
 thiserror.workspace = true
+# Cover tokens (`token`).
+base64.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+url.workspace = true
 
 [lints]
 workspace = true

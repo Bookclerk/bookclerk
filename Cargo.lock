@@ -1578,10 +1578,14 @@ dependencies = [
 name = "bookclerk-cover"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "fast_image_resize",
+ "hmac 0.13.0",
  "image",
  "jpeg-encoder",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
+ "url",
 ]
 
 [[package]]
@@ -2492,7 +2496,6 @@ dependencies = [
  "clap",
  "futures",
  "hex",
- "hmac 0.13.0",
  "http-body-util",
  "indexmap 2.14.2",
  "jsonschema",

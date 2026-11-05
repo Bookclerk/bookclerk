@@ -19,16 +19,15 @@
 //!   request per URL does the work while the others wait for it, and a URL
 //!   that failed is not retried for [`FAILURE_TTL`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use base64::Engine as _;
+use bookclerk_cover::token::{self, is_coverable, TokenKey};
 use bookclerk_media::{CoverSet, CoverSize};
-use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 /// Where the API mounts cover paths.
@@ -46,11 +45,9 @@ pub(crate) const FAILURE_TTL: Duration = Duration::from_secs(10 * 60);
 /// Most covers one search response warms in the background.
 pub(crate) const PREFETCH_LIMIT: usize = 24;
 
-/// Longest remote URL a token may carry.
-const MAX_URL_BYTES: usize = 2048;
-
-/// Bytes of the HMAC kept in a token.
-const MAC_BYTES: usize = 16;
+/// Background prefetch batches downloading at once; a search while both are
+/// busy prefetches nothing and its covers load on request.
+const PREFETCH_BATCHES: usize = 2;
 
 /// Failures remembered at once; older ones are dropped first when full.
 const MAX_FAILURES: usize = 4096;
@@ -64,9 +61,6 @@ const KEY_FILE: &str = "token.key";
 /// Directory, inside the cache, where entries are assembled before they are
 /// renamed into place.
 const STAGING_DIR: &str = ".staging";
-
-/// HMAC-SHA256 keyed with the node's cover token key.
-type TokenMac = Hmac<Sha256>;
 
 /// Why a cover could not be served.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +175,11 @@ pub(crate) struct CoverService {
     flights: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Recent failures by cache key: when, and why.
     failures: Mutex<HashMap<String, (Instant, CoverFailure)>>,
+    /// Cache keys a background batch is downloading, so overlapping
+    /// searches do not download them again.
+    prefetching: Mutex<HashSet<String>>,
+    /// One permit per background batch, at most [`PREFETCH_BATCHES`].
+    batches: Arc<tokio::sync::Semaphore>,
 }
 
 impl std::fmt::Debug for CoverService {
@@ -225,6 +224,8 @@ impl CoverService {
             budget,
             flights: Mutex::default(),
             failures: Mutex::default(),
+            prefetching: Mutex::default(),
+            batches: Arc::new(tokio::sync::Semaphore::new(PREFETCH_BATCHES)),
         }
     }
 
@@ -240,9 +241,8 @@ impl CoverService {
         if !is_coverable(url) {
             return None;
         }
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(url);
-        let mac = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(self.mac(url));
-        Some(format!("{ROUTE_PREFIX}/{encoded}.{mac}"))
+        let token = token::sign(&self.key, url)?;
+        Some(format!("{ROUTE_PREFIX}/{token}"))
     }
 
     /// Fills `path` from `url` for one response item.
@@ -252,29 +252,7 @@ impl CoverService {
 
     /// The remote URL a token names, when this node issued it.
     pub(crate) fn open_token(&self, token: &str) -> Option<String> {
-        let (encoded, mac) = token.split_once('.')?;
-        if encoded.len() > MAX_URL_BYTES.div_ceil(3) * 4 {
-            return None;
-        }
-        let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        let url = String::from_utf8(engine.decode(encoded).ok()?).ok()?;
-        let mac = engine.decode(mac).ok()?;
-        let mut expected = TokenMac::new_from_slice(&self.key.0).ok()?;
-        expected.update(url.as_bytes());
-        expected.verify_truncated_left(&mac).ok()?;
-        // `verify_truncated_left` accepts any prefix; insist on the full tag.
-        (mac.len() == MAC_BYTES && is_coverable(&url)).then_some(url)
-    }
-
-    /// The truncated HMAC of `url`.
-    fn mac(&self, url: &str) -> [u8; MAC_BYTES] {
-        #[allow(clippy::expect_used)] // HMAC accepts a key of any length.
-        let mut mac = TokenMac::new_from_slice(&self.key.0).expect("hmac key");
-        mac.update(url.as_bytes());
-        let tag = mac.finalize().into_bytes();
-        let mut out = [0u8; MAC_BYTES];
-        out.copy_from_slice(&tag[..MAC_BYTES]);
-        out
+        token::open(&self.key, token)
     }
 
     /// The JPEG for `size` of the cover a token names, fetching and processing
@@ -355,8 +333,9 @@ impl CoverService {
     /// Warms the cache for up to [`PREFETCH_LIMIT`] of `urls` in the
     /// background, in one download batch.
     ///
-    /// Skips covers already cached, recently failed, or being processed by
-    /// a request.
+    /// Skips covers already cached, recently failed, being processed by a
+    /// request or downloading in another batch, and does nothing while
+    /// [`PREFETCH_BATCHES`] batches are already running.
     pub(crate) fn prefetch<B: CoverBackend>(
         self: &Arc<Self>,
         backend: Arc<B>,
@@ -365,7 +344,7 @@ impl CoverService {
         let Some(dir) = self.dir.clone() else {
             return;
         };
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         let wanted: Vec<String> = urls
             .into_iter()
             .map(|url| url.trim().to_owned())
@@ -375,8 +354,12 @@ impl CoverService {
         if wanted.is_empty() {
             return;
         }
+        let Ok(permit) = Arc::clone(&self.batches).try_acquire_owned() else {
+            return;
+        };
         let service = Arc::clone(self);
         tokio::spawn(async move {
+            let _permit = permit;
             let mut todo = Vec::new();
             for url in wanted {
                 let key = cache_key(&url);
@@ -385,6 +368,8 @@ impl CoverService {
                     todo.push((url, key));
                 }
             }
+            // Claim the keys no other batch is downloading.
+            let reserved = Reserved::claim(&service, &mut todo);
             if todo.is_empty() {
                 return;
             }
@@ -425,6 +410,7 @@ impl CoverService {
                 });
             }
             while work.join_next().await.is_some() {}
+            drop(reserved);
         });
     }
 
@@ -534,12 +520,34 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Whether `url` may be turned into a cover path: absolute `https` with a
-/// host, at most [`MAX_URL_BYTES`].
-fn is_coverable(url: &str) -> bool {
-    url.len() <= MAX_URL_BYTES
-        && url::Url::parse(url)
-            .is_ok_and(|parsed| parsed.scheme() == "https" && parsed.host_str().is_some())
+/// Cache keys one prefetch batch claimed; released when it is dropped.
+struct Reserved {
+    /// The service whose `prefetching` set holds the keys.
+    service: Arc<CoverService>,
+    /// The claimed keys.
+    keys: Vec<String>,
+}
+
+impl Reserved {
+    /// Keeps in `todo` only the covers no other batch is downloading, and
+    /// claims them.
+    fn claim(service: &Arc<CoverService>, todo: &mut Vec<(String, String)>) -> Self {
+        let mut prefetching = lock(&service.prefetching);
+        todo.retain(|(_, key)| prefetching.insert(key.clone()));
+        Self {
+            service: Arc::clone(service),
+            keys: todo.iter().map(|(_, key)| key.clone()).collect(),
+        }
+    }
+}
+
+impl Drop for Reserved {
+    fn drop(&mut self) {
+        let mut prefetching = lock(&self.service.prefetching);
+        for key in &self.keys {
+            prefetching.remove(key);
+        }
+    }
 }
 
 /// The cache directory name for `url`: lowercase hex SHA-256.
@@ -661,18 +669,9 @@ fn sweep(dir: &Path, budget: u64) -> u64 {
     total
 }
 
-/// The node's secret for signing cover tokens; never printed.
-struct TokenKey([u8; 32]);
-
-impl std::fmt::Debug for TokenKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("TokenKey(..)")
-    }
-}
-
 /// A fresh token key from the thread-local CSPRNG (ChaCha seeded from the OS).
 fn random_key() -> TokenKey {
-    TokenKey(rand::random())
+    TokenKey::from_bytes(rand::random())
 }
 
 /// Reads the token key, or creates it (owner-only on Unix).
@@ -680,7 +679,7 @@ fn load_or_create_key(path: &Path) -> std::io::Result<TokenKey> {
     match std::fs::read(path) {
         Ok(bytes) => {
             if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
-                return Ok(TokenKey(key));
+                return Ok(TokenKey::from_bytes(key));
             }
             // A truncated or foreign file: replace it.
         }
@@ -697,7 +696,7 @@ fn load_or_create_key(path: &Path) -> std::io::Result<TokenKey> {
         options.mode(0o600);
     }
     let mut file = options.open(path)?;
-    std::io::Write::write_all(&mut file, &key.0)?;
+    std::io::Write::write_all(&mut file, key.as_bytes())?;
     Ok(key)
 }
 
@@ -817,6 +816,7 @@ pub(crate) fn prefetch(state: &crate::api::AppState, urls: impl IntoIterator<Ite
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
     use std::sync::atomic::AtomicUsize;
 
     /// A 1×1 opaque PNG.
@@ -913,7 +913,10 @@ mod tests {
             assert_eq!(service.path_for(refused), None, "{refused}");
         }
         assert_eq!(
-            service.path_for(&format!("https://a.example/{}", "x".repeat(MAX_URL_BYTES))),
+            service.path_for(&format!(
+                "https://a.example/{}",
+                "x".repeat(token::MAX_URL_BYTES)
+            )),
             None
         );
 
@@ -946,7 +949,7 @@ mod tests {
         let short = temp.path().join("short");
         std::fs::write(&short, b"too short").expect("write");
         let key = load_or_create_key(&short).expect("replaced");
-        assert_eq!(std::fs::read(&short).expect("read"), key.0);
+        assert_eq!(std::fs::read(&short).expect("read"), *key.as_bytes());
         assert_eq!(format!("{key:?}"), "TokenKey(..)");
     }
 
@@ -1072,6 +1075,35 @@ mod tests {
         service.prefetch(Arc::clone(&backend), [urls[0].to_owned()]);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn overlapping_prefetches_download_each_cover_once_and_are_bounded() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = service(temp.path());
+        let backend = Arc::new(Fake::default());
+        let page = |n: usize| (0..3).map(move |i| format!("https://img.example/ok-{n}-{i}.png"));
+        // The first batch is still downloading when the second search asks
+        // for the same covers, and two batches are already running when the
+        // third arrives.
+        service.prefetch(Arc::clone(&backend), page(1));
+        tokio::task::yield_now().await;
+        service.prefetch(Arc::clone(&backend), page(1).chain(page(2)));
+        service.prefetch(Arc::clone(&backend), page(3));
+        let dir = temp.path().join("covers");
+        for _ in 0..200 {
+            if page(1)
+                .chain(page(2))
+                .all(|url| dir.join(cache_key(&url)).is_dir())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(backend.fetched.load(Ordering::SeqCst), 6);
+        assert!(lock(&service.prefetching).is_empty());
+        assert!(page(3).all(|url| !dir.join(cache_key(&url)).exists()));
     }
 
     #[test]

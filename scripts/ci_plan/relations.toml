@@ -116,6 +116,8 @@ paths = [
     "fuzz/oracles/cover_process.rs",
     "fuzz/corpus/cover_wire/**",
     "fuzz/oracles/cover_wire.rs",
+    "fuzz/corpus/cover_token/**",
+    "fuzz/oracles/cover_token.rs",
 ]
 
 [[test_input]]

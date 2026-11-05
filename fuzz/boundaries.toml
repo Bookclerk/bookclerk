@@ -111,6 +111,13 @@ input_from = "any website"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.cover_token]
+crate = "bookclerk-cover"
+boundary = "Cover tokens in /api/covers request paths (which remote URL the route may fetch)"
+input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.cover_wire]
 crate = "bookclerk-cover"
 boundary = "Cover worker frames (requests the worker reads, replies the host reads)"

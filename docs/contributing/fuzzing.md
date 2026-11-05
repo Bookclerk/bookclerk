@@ -31,6 +31,7 @@ boundary extends it.
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
 | `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
+| `cover_token` | Cover tokens in `/api/covers` paths: which remote URL the route may fetch | `bookclerk-cover::token` |
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
@@ -94,6 +95,11 @@ only that. The others check:
   360 and 128 px that never grow from one size to the next. The shared
   oracle is `fuzz/oracles/cover_process.rs`, replayed from
   `bookclerk-cover`, whose replay test also regenerates the image seeds.
+- **`cover_token`**: a token opens only when an independent HMAC-SHA256
+  re-signing of its URL reproduces it byte for byte, and the URL is `https`
+  with a host; a signed URL round-trips, never opens under another key, and
+  a one-byte change is refused. The shared oracle is
+  `fuzz/oracles/cover_token.rs`, replayed from `bookclerk-cover`.
 - **`cover_wire`**: the first byte picks the request or the reply decoder.
   An accepted frame re-encodes to exactly its own bytes, and an accepted
   reply carries only JPEG-signed images and a nonzero size. The shared
