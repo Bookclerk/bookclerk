@@ -39,6 +39,7 @@ Cloudflare may also set its own cookies on any of these sites when it needs to p
 
 The [live demo]({{demoUrl}}) starts a private copy of Bookclerk just for you, on Cloudflare's servers. No account or email address is needed.
 
+- **Analytics.** The demo's own pages, such as the start page, are counted with Cloudflare Web Analytics like this website. Your copy of the app is not: no analytics script is added to it.
 - **Bot check.** Before your copy starts, [Cloudflare Turnstile](https://www.cloudflare.com/turnstile-privacy-policy/) checks that you are a person. It runs a few tests in your browser and sends the result to Cloudflare. It does not read what you type.
 - **Limits.** To share the demo fairly, we count how many demos each visitor starts. We do not store your IP address: we store a scrambled code made from it that changes every day, so it cannot be turned back into your address or linked across days.
 - **Your copy.** Your copy never learns your IP address. If you sign in to a store, your password or sign-in goes only to your copy and to that store. Your copy, your store sign-ins and anything you scanned are deleted when you press **Start over**, after 10 minutes without activity, or after 30 minutes. Before that, Bookclerk signs your store accounts out.
