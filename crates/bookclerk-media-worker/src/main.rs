@@ -1,5 +1,5 @@
 //! Runs exactly one media job inside a jail derived from that job, or, as
-//! `bookclerk-media-worker covers`, serves cover images (see [`covers`]).
+//! `bookclerk-media-worker covers`, serves cover images (see the `covers` module).
 //!
 //! The process reads a JSON [`MediaJob`] on stdin, confines itself to the paths
 //! the job declared, runs it, and writes a JSON [`MediaJobReply`] to stdout.
