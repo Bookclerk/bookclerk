@@ -26,12 +26,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use bookclerk_cover::token::{self, is_coverable, TokenKey};
+use bookclerk_cover::token::{self, gravatar_url, is_coverable, TokenKey};
 use bookclerk_media::{CoverSet, CoverSize};
 use sha2::{Digest, Sha256};
 
 /// Where the API mounts cover paths.
 pub(crate) const ROUTE_PREFIX: &str = "/api/covers";
+
+/// Where the API mounts signed images that are not covers (profile
+/// pictures, remote logos): the same tokens, served as a 128 px JPEG with a
+/// daily cache header because the remote image can change in place.
+pub(crate) const IMAGE_PREFIX: &str = "/api/images";
 
 /// Bytes of processed covers kept on disk before the least recently served
 /// are evicted. Three JPEGs per cover average well under 300 KiB, so this
@@ -252,14 +257,20 @@ impl CoverService {
 
     /// The same-origin 128 px source for a remote image that is not a cover
     /// (a store icon, a sign-in provider's profile picture), so the web app
-    /// can show it under an `img-src 'self'` policy.
+    /// can show it under an `img-src 'self'` policy. It is served by
+    /// [`get_image`], which the browser re-checks daily, unlike a cover path.
     ///
     /// # Returns
     ///
-    /// `None` when [`Self::path_for`] refuses the URL.
+    /// `None` for anything but an absolute `https` URL with a host, or one
+    /// over 2048 bytes.
     pub(crate) fn thumb_src(&self, url: &str) -> Option<String> {
-        self.path_for(url)
-            .map(|path| format!("{path}/{}", CoverSize::Thumb.as_str()))
+        let url = url.trim();
+        if !is_coverable(url) {
+            return None;
+        }
+        let token = token::sign(&self.key, url)?;
+        Some(format!("{IMAGE_PREFIX}/{token}"))
     }
 
     /// An image source the web app may load under `img-src 'self'`: a
@@ -842,18 +853,31 @@ async fn serve(
     }
 }
 
-/// The Gravatar address for a hash, or `None` unless `hash` is the 64
-/// lowercase hex digits of a SHA-256, so only `www.gravatar.com` is ever
-/// asked for.
+/// Serves a signed image that is not a cover as a 128 px JPEG.
 ///
-/// `d=404` makes Gravatar answer 404 for an email with no picture, which the
-/// route reports as 502 and the web app turns into a monogram.
-pub(crate) fn gravatar_url(hash: &str) -> Option<String> {
-    let valid = hash.len() == 64
-        && hash
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    valid.then(|| format!("https://www.gravatar.com/avatar/{hash}?d=404&s=360"))
+/// The path comes from a `picture_path` or `logo` field: a sign-in
+/// provider's profile picture or a plugin's remote logo. It is fetched and
+/// processed like a cover, but the browser re-checks it daily because the
+/// remote image can change at the same address.
+#[utoipa::path(
+    get,
+    path = "/api/images/{token}",
+    params(
+        ("token" = String, Path, description = "Signed token from a `picture_path` or `logo` field."),
+    ),
+    responses(
+        (status = 200, description = "The image as a JPEG.", content_type = "image/jpeg"),
+        (status = 404, description = "The token was not issued by this node."),
+        (status = 502, description = "The image could not be downloaded or is not a supported image."),
+        (status = 503, description = "This node cannot fetch or process images right now."),
+    ),
+)]
+pub(crate) async fn get_image(
+    axum::extract::State(state): axum::extract::State<Arc<crate::api::AppState>>,
+    axum::extract::Path(token): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let url = state.covers.open_token(&token);
+    serve(&state, url, CoverSize::Thumb, DAILY).await
 }
 
 /// Serves a user's Gravatar as a 128 px JPEG through the cover service.
@@ -1105,9 +1129,8 @@ mod tests {
 
         let thumb = service.thumb_src(url).expect("signed");
         let token = thumb
-            .strip_prefix("/api/covers/")
-            .and_then(|rest| rest.strip_suffix("/128"))
-            .expect("a 128 px cover path");
+            .strip_prefix("/api/images/")
+            .expect("an image path, not an immutable cover path");
         assert_eq!(service.open_token(token).as_deref(), Some(url));
         assert_eq!(service.thumb_src("http://avatars.example/u/7.png"), None);
 

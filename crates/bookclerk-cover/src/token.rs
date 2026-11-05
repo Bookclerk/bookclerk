@@ -74,6 +74,29 @@ pub fn is_coverable(url: &str) -> bool {
             .is_ok_and(|parsed| parsed.scheme() == "https" && parsed.host_str().is_some())
 }
 
+/// Hex digits in a Gravatar hash: the SHA-256 of an email address.
+pub const GRAVATAR_HASH_LEN: usize = 64;
+
+/// The Gravatar address the avatar route may fetch for a hash taken from a
+/// request path.
+///
+/// `d=404` makes Gravatar answer 404 for an email with no picture, and
+/// `s=360` asks for enough pixels for the 128 px copy.
+///
+/// # Returns
+///
+/// `None` unless `hash` is exactly [`GRAVATAR_HASH_LEN`] lowercase hex
+/// digits, so the URL is always on `www.gravatar.com` with nothing else in
+/// it.
+#[must_use]
+pub fn gravatar_url(hash: &str) -> Option<String> {
+    let valid = hash.len() == GRAVATAR_HASH_LEN
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    valid.then(|| format!("https://www.gravatar.com/avatar/{hash}?d=404&s=360"))
+}
+
 /// The token for `url`.
 ///
 /// # Returns

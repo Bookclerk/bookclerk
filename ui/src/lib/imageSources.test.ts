@@ -18,14 +18,14 @@ describe("same-origin image sources", () => {
       identity_id: 3,
       provider: "oidc:google",
       picture_url: "https://lh3.example/a.png",
-      picture_path: "/api/covers/abc.def/128",
+      picture_path: "/api/images/abc.def",
     };
     const unsigned = { ...signed, identity_id: 4, picture_path: null };
-    expect(ssoPictureSrc(signed)).toBe("/api/covers/abc.def/128");
+    expect(ssoPictureSrc(signed)).toBe("/api/images/abc.def");
     expect(ssoPictureSrc(unsigned)).toBeUndefined();
     expect(resolveAvatar({ sso_pictures: [unsigned, signed] })).toEqual({
       kind: "sso",
-      src: "/api/covers/abc.def/128",
+      src: "/api/images/abc.def",
       identityId: 3,
     });
     expect(resolveAvatar({ sso_pictures: [unsigned], avatar_source: "sso:4" })).toEqual({

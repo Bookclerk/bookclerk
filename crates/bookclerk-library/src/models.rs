@@ -1103,7 +1103,7 @@ pub struct QueueWisher {
     /// (filled by the daemon; never stored).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(
-        example = "/api/covers/aHR0cHM6Ly9hY2NvdW50cy5leGFtcGxlLmNvbS91L2RhbmEvcGljdHVyZS5wbmc.Qm9va2NsZXJr/128"
+        example = "/api/images/aHR0cHM6Ly9hY2NvdW50cy5leGFtcGxlLmNvbS91L2RhbmEvcGljdHVyZS5wbmc.Qm9va2NsZXJr"
     )]
     pub picture_path: Option<String>,
 }

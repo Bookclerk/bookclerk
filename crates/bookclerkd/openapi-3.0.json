@@ -14002,6 +14002,143 @@
         "x-bookclerk-access": "The operator, or any library session."
       }
     },
+    "/api/images/{token}": {
+      "get": {
+        "tags": [
+          "Discover"
+        ],
+        "summary": "Serves a signed image that is not a cover as a 128 px JPEG.",
+        "description": "The path comes from a `picture_path` or `logo` field: a sign-in\nprovider's profile picture or a plugin's remote logo. It is fetched and\nprocessed like a cover, but the browser re-checks it daily because the\nremote image can change at the same address.",
+        "operationId": "get_image",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Signed token from a `picture_path` or `logo` field.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The image as a JPEG.",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The token was not issued by this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "not_found",
+                  "message": "That page or resource was not found.",
+                  "status": 404
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The image could not be downloaded or is not a supported image.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "bad_gateway",
+                  "message": "An upstream service failed.",
+                  "status": 502
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This node cannot fetch or process images right now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "service_unavailable",
+                  "message": "The Bookclerk daemon is not ready to handle this request.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      }
+    },
     "/api/avatars/gravatar/{hash}": {
       "get": {
         "tags": [
@@ -24380,7 +24517,7 @@
           "picture_path": {
             "type": "string",
             "description": "Same-origin 128 px copy of `picture_url` for the web app to show,\nwhen this node can sign it.",
-            "example": "/api/covers/aHR0cHM6Ly9saDMuZ29vZ2xldXNlcmNvbnRlbnQuY29tL2EvZXhhbXBsZT1zOTYtYw.3fA9c2Qx8bLm1kZr/128",
+            "example": "/api/images/aHR0cHM6Ly9saDMuZ29vZ2xldXNlcmNvbnRlbnQuY29tL2EvZXhhbXBsZT1zOTYtYw.3fA9c2Qx8bLm1kZr",
             "nullable": true
           },
           "last_used_at": {
@@ -25234,7 +25371,7 @@
           "logo": {
             "type": "string",
             "description": "Same-origin logo image (a 128 px copy of the brand's icon), or empty\nwhen there is none.",
-            "example": "/api/covers/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr/128"
+            "example": "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr"
           }
         }
       },
@@ -26063,7 +26200,7 @@
               "logo": {
                 "type": "string",
                 "description": "Same-origin logo image (a 128 px copy of the brand's icon), or empty\nwhen there is none.",
-                "example": "/api/covers/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr/128"
+                "example": "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr"
               }
             },
             "nullable": true
@@ -32765,7 +32902,7 @@
           "logo": {
             "type": "string",
             "description": "Same-origin logo for Settings list rows: the plugin's embedded logo,\nor a 128 px copy of the remote logo its manifest names.",
-            "example": "/api/covers/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr/128",
+            "example": "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr",
             "nullable": true
           },
           "settings": {
@@ -34119,7 +34256,7 @@
           "picture_path": {
             "type": "string",
             "description": "Same-origin 128 px copy of `picture_url` for the web app to show\n(filled by the daemon; never stored).",
-            "example": "/api/covers/aHR0cHM6Ly9hY2NvdW50cy5leGFtcGxlLmNvbS91L2RhbmEvcGljdHVyZS5wbmc.Qm9va2NsZXJr/128",
+            "example": "/api/images/aHR0cHM6Ly9hY2NvdW50cy5leGFtcGxlLmNvbS91L2RhbmEvcGljdHVyZS5wbmc.Qm9va2NsZXJr",
             "nullable": true
           }
         }
@@ -37244,7 +37381,7 @@
           "picture_path": {
             "type": "string",
             "description": "Same-origin 128 px copy of `picture_url` for the web app to show,\nwhen this node can sign it.",
-            "example": "/api/covers/aHR0cHM6Ly9hdmF0YXJzLmdpdGh1YnVzZXJjb250ZW50LmNvbS91Lzg2NzUzMDk.Qm9va2NsZXJr/128",
+            "example": "/api/images/aHR0cHM6Ly9hdmF0YXJzLmdpdGh1YnVzZXJjb250ZW50LmNvbS91Lzg2NzUzMDk.Qm9va2NsZXJr",
             "nullable": true
           },
           "last_used_at": {

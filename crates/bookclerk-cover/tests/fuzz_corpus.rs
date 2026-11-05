@@ -1,6 +1,7 @@
 //! Replays the checked-in `cover_process`, `cover_wire` and `cover_token`
 //! fuzz corpora in PR CI (no libFuzzer required), so an input that once broke
-//! the cover pipeline, the worker frames or the token check stays fixed
+//! the cover pipeline, the worker frames or the token and Gravatar checks
+//! stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
 //! `UPDATE_FUZZ_SEEDS=1` rewrites the generated seeds; without it the test
@@ -169,6 +170,23 @@ fn token_seeds() -> Vec<(&'static str, Vec<u8>)> {
         (
             "url_userinfo.bin",
             b"https://u:p@img.example:8443/a?b#c".to_vec(),
+        ),
+        // Gravatar hashes from the avatar route's path.
+        (
+            "gravatar_valid.txt",
+            "0123456789abcdef".repeat(4).into_bytes(),
+        ),
+        (
+            "gravatar_upper.txt",
+            "0123456789ABCDEF".repeat(4).into_bytes(),
+        ),
+        (
+            "gravatar_short.txt",
+            "0123456789abcdef".repeat(4).as_bytes()[1..].to_vec(),
+        ),
+        (
+            "gravatar_query.txt",
+            format!("{}?s=1&d=x", &"0123456789abcdef".repeat(4)[..56]).into_bytes(),
         ),
     ]
 }

@@ -251,12 +251,14 @@ somewhere else, as a 128 px JPEG:
 
 - **Store icons** at `GET /api/stores/{id}/icon`, the icon a deployed
   storefront or integration names for its sign-in button. Accounts,
-  Settings and plugin consent show plugin logos the same way, through a
-  signed path.
+  Settings and plugin consent show plugin logos through a signed path
+  (below).
 - **Gravatars** at `GET /api/avatars/gravatar/{hash}`, where `hash` is a
   user's `gravatar_hash`.
 - **Sign-in provider pictures** through the `picture_path` next to each
-  `picture_url` (`/api/auth/me`, `/api/users` and wishers).
+  `picture_url` (`/api/auth/me`, `/api/users` and wishers), a signed
+  `/api/images/<token>` path. Remote plugin logos use the same kind of
+  path.
 
 These answer with a one-day cache header instead of `immutable`, because
 the image behind the address can change. Without a deployed cover fetcher

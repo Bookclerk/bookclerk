@@ -180,6 +180,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   // Same-origin Gravatars (fixed host, validated hash) and store icons (from
   // a deployed plugin's brand), through the same cover service.
   ["GET", "/api/avatars/gravatar/{hash}", "allow"],
+  // Signed profile pictures and remote logos, like a cover token.
+  ["GET", "/api/images/{token}", "allow"],
   ["GET", "/api/stores/{id}/icon", "allow"],
   ["POST", "/api/library/scan", "allow"],
   ["GET", "/api/live", "allow"],

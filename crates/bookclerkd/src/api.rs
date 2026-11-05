@@ -495,7 +495,7 @@ struct PluginSettingsGroup {
     /// or a 128 px copy of the remote logo its manifest names.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(
-        example = "/api/covers/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr/128"
+        example = "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr"
     )]
     logo: Option<String>,
     /// Editable options for this plugin, including `.enabled`.
@@ -1167,6 +1167,7 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(get_book))
         .routes(routes!(get_book_cover))
         .routes(routes!(crate::covers::get_cover))
+        .routes(routes!(crate::covers::get_image))
         .routes(routes!(crate::covers::get_gravatar))
         .routes(routes!(crate::covers::get_store_icon))
         .routes(routes!(discover_recommendations))
@@ -8521,6 +8522,16 @@ mode = "deny"
         let gravatar = |hash: &str| {
             crate::covers::get_gravatar(State(state.clone()), axum::extract::Path(hash.to_owned()))
         };
+        assert_eq!(
+            status(
+                crate::covers::get_image(
+                    State(state.clone()),
+                    axum::extract::Path("forged.token".into())
+                )
+                .await
+            ),
+            axum::http::StatusCode::NOT_FOUND
+        );
         assert_eq!(
             status(gravatar("not-a-hash").await),
             axum::http::StatusCode::NOT_FOUND
