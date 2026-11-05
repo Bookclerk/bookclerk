@@ -5,6 +5,8 @@
 //! destination. It is deliberately narrow:
 //!
 //! - it accepts `put` only, and only for the keys `0..slots`, each once;
+//! - a put reserves its slot before reading the body, so competing puts for
+//!   one key fail at once instead of buffering in parallel;
 //! - it refuses a body over the call's byte cap while reading it, so a guest
 //!   can never make the host buffer more than `slots * max_bytes`;
 //! - every other `Destination` method is `unsupported`.
@@ -24,12 +26,23 @@ use bookclerk_plugin_sdk::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+/// State of one sink slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Slot {
+    /// No put has claimed the slot yet (or the last claim failed).
+    Empty,
+    /// A put is reading its body into this slot.
+    Writing,
+    /// The body the guest stored.
+    Filled(Vec<u8>),
+}
+
 /// Shared state of one `fetchCovers` call's sink.
 pub(crate) struct CoverSink {
     /// Largest body accepted for one key, in bytes.
     max_bytes: u32,
-    /// Body stored under each index; `None` until the guest puts it.
-    slots: RefCell<Vec<Option<Vec<u8>>>>,
+    /// State of each index.
+    slots: RefCell<Vec<Slot>>,
 }
 
 impl CoverSink {
@@ -42,7 +55,7 @@ impl CoverSink {
     pub(crate) fn new(slots: usize, max_bytes: u32) -> Rc<Self> {
         Rc::new(Self {
             max_bytes,
-            slots: RefCell::new(vec![None; slots]),
+            slots: RefCell::new(vec![Slot::Empty; slots]),
         })
     }
 
@@ -71,7 +84,12 @@ impl CoverSink {
             .into_iter()
             .enumerate()
             .map(|(index, image)| {
-                let body = slots.get_mut(index).and_then(Option::take);
+                let body = slots.get_mut(index).and_then(|slot| {
+                    match std::mem::replace(slot, Slot::Empty) {
+                        Slot::Filled(body) => Some(body),
+                        Slot::Empty | Slot::Writing => None,
+                    }
+                });
                 let (body, error) = match (image.stored, body) {
                     (true, Some(body)) => (Some(body), None),
                     (true, None) => (None, Some("plugin reported a body it never sent".into())),
@@ -90,21 +108,66 @@ impl CoverSink {
             .collect()
     }
 
-    /// Parses `key` as a slot index that has not been filled yet.
+    /// Parses `key` as an empty slot index and reserves it for one put.
+    ///
+    /// # Returns
+    ///
+    /// A guard that puts the slot back to empty when dropped, unless the put
+    /// fills it first.
     ///
     /// # Errors
     ///
-    /// `invalid_params` for a key that is not a decimal index in range, and
-    /// `already_exists`-style `invalid_params` for a slot already filled.
-    fn open_slot(&self, key: &str) -> Result<usize, PluginError> {
-        let index = cover_sink_slot(key, self.slots.borrow().len())
+    /// `invalid_params` for a key that is not a decimal index in range, or a
+    /// slot another put is writing or has filled.
+    fn reserve(self: &Rc<Self>, key: &str) -> Result<Reservation, PluginError> {
+        let mut slots = self.slots.borrow_mut();
+        let index = cover_sink_slot(key, slots.len())
             .ok_or_else(|| PluginError::invalid_params(format!("cover sink has no key {key:?}")))?;
-        if self.slots.borrow()[index].is_some() {
-            return Err(PluginError::invalid_params(format!(
-                "cover sink key {key:?} was already written"
-            )));
+        match slots[index] {
+            Slot::Empty => {}
+            Slot::Writing => {
+                return Err(PluginError::invalid_params(format!(
+                    "cover sink key {key:?} is already being written"
+                )))
+            }
+            Slot::Filled(_) => {
+                return Err(PluginError::invalid_params(format!(
+                    "cover sink key {key:?} was already written"
+                )))
+            }
         }
-        Ok(index)
+        slots[index] = Slot::Writing;
+        Ok(Reservation {
+            sink: Rc::clone(self),
+            index,
+            filled: false,
+        })
+    }
+}
+
+/// One put's claim on a slot; releases it on failure or cancellation.
+struct Reservation {
+    /// The sink the slot belongs to.
+    sink: Rc<CoverSink>,
+    /// Index of the reserved slot.
+    index: usize,
+    /// Whether [`Reservation::fill`] stored a body.
+    filled: bool,
+}
+
+impl Reservation {
+    /// Stores `body` in the reserved slot.
+    fn fill(mut self, body: Vec<u8>) {
+        self.sink.slots.borrow_mut()[self.index] = Slot::Filled(body);
+        self.filled = true;
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if !self.filled {
+            self.sink.slots.borrow_mut()[self.index] = Slot::Empty;
+        }
     }
 }
 
@@ -134,7 +197,7 @@ impl Destination for SinkHandle {
         if options.stage_only {
             return Err(PluginError::unsupported("staged cover writes"));
         }
-        let index = self.0.open_slot(key)?;
+        let reservation = self.0.reserve(key)?;
         let max = u64::from(self.0.max_bytes);
         if options.content_length.is_some_and(|len| len > max) {
             return Err(too_large(max));
@@ -149,15 +212,7 @@ impl Destination for SinkHandle {
             return Err(too_large(max));
         }
         let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        // A concurrent put for the same key may have landed while this one
-        // was reading; the first write wins.
-        let mut slots = self.0.slots.borrow_mut();
-        if slots[index].is_some() {
-            return Err(PluginError::invalid_params(format!(
-                "cover sink key {key:?} was already written"
-            )));
-        }
-        slots[index] = Some(bytes);
+        reservation.fill(bytes);
         Ok(PutResult {
             key: key.to_string(),
             bytes_written: size,
@@ -182,6 +237,11 @@ fn too_large(max: u64) -> PluginError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Polls `fut` once with a no-op waker.
+    fn poll_once<F: std::future::Future>(fut: Pin<&mut F>) -> std::task::Poll<F::Output> {
+        fut.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    }
 
     fn body(bytes: &'static [u8]) -> Pin<Box<dyn AsyncRead + Send>> {
         Box::pin(bytes)
@@ -288,6 +348,48 @@ mod tests {
         // A body the guest did not claim is dropped.
         assert_eq!(fetched[1].body, None);
         assert_eq!(fetched[1].error.as_deref(), Some("not fetched"));
+    }
+
+    #[tokio::test]
+    async fn a_put_reserves_its_slot_until_it_ends() {
+        let sink = CoverSink::new(1, 8);
+        let dest = sink.destination();
+        let (mut writer, reader) = tokio::io::duplex(16);
+        let first = dest.put("0", Box::pin(reader), WriteOptions::default());
+        tokio::pin!(first);
+        // Start the first put; it blocks waiting for the rest of the body.
+        assert!(poll_once(first.as_mut()).is_pending());
+        let competing = dest
+            .put("0", body(b"x"), WriteOptions::default())
+            .await
+            .expect_err("slot is in flight");
+        assert!(competing.message.contains("being written"));
+        use tokio::io::AsyncWriteExt;
+        writer.write_all(b"abc").await.expect("write");
+        drop(writer);
+        first.await.expect("first put lands");
+        assert_eq!(
+            sink.take_fetched(vec![image("https://a", true, None)])[0]
+                .body
+                .as_deref(),
+            Some(&b"abc"[..])
+        );
+
+        // A failed or cancelled put releases the slot for a retry.
+        let sink = CoverSink::new(1, 2);
+        let dest = sink.destination();
+        dest.put("0", body(b"abc"), WriteOptions::default())
+            .await
+            .expect_err("too large");
+        let (_writer, reader) = tokio::io::duplex(16);
+        {
+            let pending = dest.put("0", Box::pin(reader), WriteOptions::default());
+            tokio::pin!(pending);
+            assert!(poll_once(pending.as_mut()).is_pending());
+        }
+        dest.put("0", body(b"ok"), WriteOptions::default())
+            .await
+            .expect("retry after failure and cancellation");
     }
 
     #[tokio::test]
