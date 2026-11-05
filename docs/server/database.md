@@ -673,8 +673,11 @@ library holds as works, expressions and editions:
   `bitrate_kbps`) stay empty until uploads carry a file's quality.
 
 A book is acquired once per edition: the account rows of one edition share
-its keys, and a book not resolved to an edition yet is neither acquired
-nor uploaded until the next scan resolves it.
+its files, and an acquire of one is marked acquired at another's key when
+every destination already holds it. A host upload never replaces a file of
+its edition that another account's acquire or upload wrote. A book with
+no edition (a listing the resolver refused) is still acquired, with its
+keys unrecorded; a host upload of it is refused (`unresolved_title`).
 
 Every stored title is linked into its work, expression, edition,
 identifiers, listing and holding in one guarded batch (`linkListing`); a

@@ -1320,6 +1320,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_edition_files_owner ON edition_files(owner_kind, owner_id)",
     ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_edition_files_writer ON edition_files(writer)",
+    ),
     // The live socket's revision reads take each table's newest change
     // stamp every couple of seconds; an index makes that a lookup.
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_books_updated ON books(updated_at)"),

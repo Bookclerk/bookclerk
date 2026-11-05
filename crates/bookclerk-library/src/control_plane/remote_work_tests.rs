@@ -21,7 +21,7 @@ use crate::models::{EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload, JobReso
 use crate::secrets::{
     build_sealed_record, get_secret, secret_account_type, secret_kind, unseal_secret, upsert_secret,
 };
-use crate::store::{FileOwner, FileRole, LibraryStore};
+use crate::store::{FileOwner, FileRole, LibraryStore, ACQUIRE_WRITER};
 
 const PLUGIN: &str = "path:file:///tmp/store#store";
 const HOST: &str = "host-riley";
@@ -3560,11 +3560,12 @@ async fn grant_title(
     .unwrap()
 }
 
-/// The account rows of one edition share its files: a key another
-/// account's acquire of the same edition recorded is granted to this
-/// title's upload, and the claim keeps it the edition's.
+/// The account rows of one edition share its files, but one account's
+/// node may not replace them: a key another account's acquire of the same
+/// edition recorded is refused to this title's upload, while the title's
+/// own keys are claimed for the edition with their role and digest.
 #[tokio::test]
-async fn an_upload_may_write_a_key_its_edition_already_holds() {
+async fn an_upload_never_replaces_its_editions_file_another_account_wrote() {
     let _guard = master_key_test_lock_async().await;
     let w = world().await;
     let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
@@ -3585,32 +3586,36 @@ async fn an_upload_may_write_a_key_its_edition_already_holds() {
         .await
         .unwrap();
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
-    let granted = grant_title(
-        &w.store,
-        &job_id,
-        fence,
-        &book_uuid,
-        &with_local_file(&files, "Author/Title/cover.jpg"),
-    )
-    .await;
-    let UploadGrant::Granted { upload_id, .. } = granted else {
-        panic!("a key of the title's own edition is granted: {granted:?}");
-    };
+    assert!(matches!(
+        grant_title(
+            &w.store,
+            &job_id,
+            fence,
+            &book_uuid,
+            &with_local_file(&files, "Author/Title/cover.jpg"),
+        )
+        .await,
+        UploadGrant::Refused("key_of_another_book")
+    ));
     let cover = w
         .store
         .edition_file("local", "Author/Title/cover.jpg")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(cover.owner, owner);
-    assert_eq!(cover.writer, upload_id);
-    assert_eq!(cover.role, FileRole::Cover);
+    assert_eq!(cover.writer, ACQUIRE_WRITER, "the acquired file stays");
+    let granted = grant_title(&w.store, &job_id, fence, &book_uuid, &files).await;
+    let UploadGrant::Granted { upload_id, .. } = granted else {
+        panic!("the title's own keys are granted: {granted:?}");
+    };
     let audio = w
         .store
         .edition_file("local", "Author/Title/Title.m4b")
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(audio.owner, owner);
+    assert_eq!(audio.writer, upload_id);
     assert_eq!(audio.role, FileRole::Audio);
     assert_eq!(audio.sha256.as_deref(), Some("ab".repeat(32).as_str()));
 }

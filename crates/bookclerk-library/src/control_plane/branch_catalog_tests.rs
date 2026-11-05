@@ -1255,7 +1255,8 @@ async fn a_shared_titles_keys_stay_its_own() {
                 FileRole::Audio,
                 None,
                 held.as_ref(),
-                true
+                true,
+                None
             )
             .await
             .unwrap(),
@@ -1272,7 +1273,8 @@ async fn a_shared_titles_keys_stay_its_own() {
                 FileRole::Audio,
                 None,
                 held.as_ref(),
-                false
+                false,
+                Some(book.as_str())
             )
             .await
             .unwrap(),

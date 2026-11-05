@@ -31,7 +31,9 @@ use sea_orm::sea_query::{Expr, OnConflict, Query};
 use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter};
 
 use super::{now_str, LibraryStore};
-use crate::entities::{books, branch_titles, edition_files, editions, store_listings};
+use crate::entities::{
+    books, branch_titles, edition_files, editions, node_upload_sessions, store_listings,
+};
 use crate::error::{LibraryError, Result};
 
 /// The `writer` of a key an acquire run on this node wrote.
@@ -352,6 +354,12 @@ impl LibraryStore {
     /// * `role`, `sha256` - What the file is and its declared digest.
     /// * `expected` - The record read before the claim.
     /// * `branch_titles_hold` - True for a catalog upload's claim.
+    /// * `title` - The library title (`books.uuid`) a job upload writes
+    ///   for. A key its edition already holds is taken over only when this
+    ///   upload or an earlier upload of the same title wrote it, never one
+    ///   an acquire or another account's upload wrote: the edition's files
+    ///   are shared, so one account's node cannot replace them. `None` for
+    ///   a catalog upload, whose branch title holds its keys alone.
     ///
     /// # Errors
     ///
@@ -367,6 +375,7 @@ impl LibraryStore {
         sha256: Option<&str>,
         expected: Option<&EditionFile>,
         branch_titles_hold: bool,
+        title: Option<&str>,
     ) -> Result<bool> {
         let now = now_str();
         // Only a key read as unrecorded is inserted: a claim expecting a
@@ -425,9 +434,24 @@ impl LibraryStore {
                     ),
             );
         }
-        let mine = Condition::all()
+        let mut mine = Condition::all()
             .add(edition_files::Column::OwnerKind.eq(owner.kind()))
             .add(edition_files::Column::OwnerId.eq(owner.id()));
+        if let Some(title) = title {
+            mine = mine.add(
+                Condition::any()
+                    .add(edition_files::Column::Writer.eq(writer))
+                    .add(
+                        edition_files::Column::Writer.in_subquery(
+                            Query::select()
+                                .column(node_upload_sessions::Column::UploadId)
+                                .from(node_upload_sessions::Entity)
+                                .and_where(node_upload_sessions::Column::BookUuid.eq(title))
+                                .to_owned(),
+                        ),
+                    ),
+            );
+        }
         let claimed = edition_files::Entity::update_many()
             .col_expr(edition_files::Column::OwnerKind, Expr::value(owner.kind()))
             .col_expr(edition_files::Column::OwnerId, Expr::value(owner.id()))
@@ -558,10 +582,12 @@ impl LibraryStore {
 
     /// True when another owner's file is recorded, on any destination, at
     /// the name `stem` (a planned key without its extension): the key
-    /// `stem` itself, or `stem` followed by an extension (`stem.cue`) or by
-    /// a suffix after a space (`stem - Part 1.m4b`). Another edition's
-    /// files already live under that name, so an acquire of `owner` names
-    /// its files apart.
+    /// `stem` itself, `stem` with an extension in the same folder
+    /// (`stem.cue`), or one of its part files (`stem — Part 1.m4b`).
+    /// Another edition's files already live under that name, so an acquire
+    /// of `owner` names its files apart. A longer name that only starts
+    /// with `stem` (`stem (Narrator).m4b`, `stem Peaks.m4b`) is not the
+    /// same name.
     ///
     /// # Errors
     ///
@@ -570,16 +596,28 @@ impl LibraryStore {
         use sea_orm::sea_query::LikeExpr;
         use sea_orm::PaginatorTrait as _;
         let base = like_escaped(stem);
-        let named = Condition::any()
-            .add(edition_files::Column::StorageKey.eq(stem))
+        let with_extension = Condition::all()
             .add(
                 edition_files::Column::StorageKey
                     .like(LikeExpr::new(format!("{base}.%")).escape('\\')),
             )
             .add(
                 edition_files::Column::StorageKey
-                    .like(LikeExpr::new(format!("{base} %")).escape('\\')),
+                    .not_like(LikeExpr::new(format!("{base}.%/%")).escape('\\')),
             );
+        let part = Condition::all()
+            .add(
+                edition_files::Column::StorageKey
+                    .like(LikeExpr::new(format!("{base} — %")).escape('\\')),
+            )
+            .add(
+                edition_files::Column::StorageKey
+                    .not_like(LikeExpr::new(format!("{base} — %/%")).escape('\\')),
+            );
+        let named = Condition::any()
+            .add(edition_files::Column::StorageKey.eq(stem))
+            .add(with_extension)
+            .add(part);
         let mine = Condition::all()
             .add(edition_files::Column::OwnerKind.eq(owner.kind()))
             .add(edition_files::Column::OwnerId.eq(owner.id()));

@@ -11,6 +11,7 @@
 
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use bookclerk_library::{FileOwner, FileRole, LibraryStore};
@@ -33,24 +34,40 @@ pub(crate) struct RecordingBackend {
     destination: &'static str,
     /// The edition the acquire writes.
     owner: FileOwner,
+    /// The first audio key this run wrote here: its primary audio. Every
+    /// later audio key (another part or chapter file) is a
+    /// [`FileRole::Part`].
+    primary: Arc<Mutex<Option<String>>>,
 }
 
 impl RecordingBackend {
+    /// The role of `key` ([`FileRole::for_key`]): the first audio key
+    /// written is the primary audio, and becomes the reference that makes
+    /// every later audio key a part.
+    fn role_of(&self, key: &str) -> FileRole {
+        // A poisoned lock still holds the key it last stored.
+        let mut primary = self
+            .primary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let role = FileRole::for_key(key, primary.as_deref());
+        if role == FileRole::Audio && primary.is_none() {
+            *primary = Some(key.to_owned());
+        }
+        role
+    }
+
     /// Records `key` for the edition before it is written, with the role
-    /// its extension names ([`FileRole::for_key`]).
+    /// [`Self::role_of`] gives it.
     ///
     /// # Errors
     ///
     /// Returns [`StorageError::Other`] when the record cannot be written;
     /// the write is then not attempted, so no file goes unrecorded.
     async fn record(&self, key: &str) -> bookclerk_storage::Result<()> {
+        let role = self.role_of(key);
         self.library
-            .record_edition_file(
-                self.destination,
-                key,
-                &self.owner,
-                FileRole::for_key(key, None),
-            )
+            .record_edition_file(self.destination, key, &self.owner, role)
             .await
             .map_err(|err| {
                 StorageError::Other(anyhow::anyhow!("could not record a title's file: {err}"))
@@ -77,6 +94,7 @@ pub(crate) fn recording_destinations(
                     library: library.clone(),
                     destination: destination_id(item.kind),
                     owner: owner.clone(),
+                    primary: Arc::default(),
                 }),
                 None => item.backend.clone_box(),
             },
@@ -110,6 +128,7 @@ impl StorageBackend for RecordingBackend {
             library: self.library.clone(),
             destination: self.destination,
             owner: self.owner.clone(),
+            primary: Arc::clone(&self.primary),
         })
     }
 

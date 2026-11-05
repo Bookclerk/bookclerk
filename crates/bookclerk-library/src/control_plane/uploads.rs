@@ -536,9 +536,9 @@ const KEY_PROBES_PER_READ: usize = 32;
 /// on any destination is refused, failing closed. The destination-scoped
 /// record of every file an edition wrote is checked by `claim_upload_keys`.
 ///
-/// `siblings` are the titles whose keys are the uploader's own: the
-/// title itself and every other account's row of the same edition, which
-/// share its files.
+/// `siblings` are the titles whose keys are the uploader's own (a job
+/// upload passes its title alone; another account's row of the same
+/// edition shares its files but is not this node's to replace).
 ///
 /// Only the other titles' keys that could match are read, so the read
 /// stays small (and under the guest's result-row cap) however many titles
@@ -629,15 +629,17 @@ struct ClaimedKey<'a> {
     prior: Option<EditionFile>,
 }
 
-/// Claims every copy of `files` for `owner` with `upload_id` as its writer
+/// Claims every copy of `files` of the title `book_uuid` for `owner` with
+/// `upload_id` as its writer
 /// ([`LibraryStore::claim_edition_file`]); answers false as soon as one is
 /// a key another edition holds on that destination (one its acquire wrote,
 /// or another edition's upload claimed), so a folder several titles share
 /// never lets one overwrite another's chapter, part or sidecar files.
 /// `primary` is the upload's primary audio key, which gives each file its
-/// role ([`FileRole::for_key`]). A `catalog` upload (a branch title's) is refused keys a
-/// branch title holds as well; a Host job's upload of a book takes those
-/// over, as an acquire on this node would.
+/// role ([`FileRole::for_key`]). A catalog upload (`owner` is a
+/// [`FileOwner::BranchTitle`]) is refused keys another branch title holds
+/// as well; a Host job's upload of a book takes those over, as an acquire
+/// on this node would.
 ///
 /// Every key claimed (or possibly claimed, when a write fails) is pushed
 /// onto `claimed` with its prior record, so a grant that is then refused or
@@ -648,11 +650,11 @@ struct ClaimedKey<'a> {
 /// Returns an error when a read or write fails.
 async fn claim_upload_keys<'a>(
     store: &LibraryStore,
+    book_uuid: &str,
     owner: &FileOwner,
     primary: &str,
     upload_id: &str,
     files: &'a [UploadFile],
-    catalog: bool,
     claimed: &mut Vec<ClaimedKey<'a>>,
 ) -> Result<bool> {
     // Collected first: an iterator adapter held across the awaits below
@@ -661,6 +663,12 @@ async fn claim_upload_keys<'a>(
     for file in files {
         copies.extend(file.copies.iter().map(|copy| (file, copy)));
     }
+    // A job upload takes over its edition's keys only from uploads of its
+    // own title ([`LibraryStore::claim_edition_file`]).
+    let (title, catalog) = match owner {
+        FileOwner::Edition(_) => (Some(book_uuid), false),
+        FileOwner::BranchTitle(_) => (None, true),
+    };
     'copies: for (file, copy) in copies {
         let role = FileRole::for_key(&copy.key, Some(primary));
         let mut prior = store.edition_file(&copy.destination, &copy.key).await?;
@@ -682,6 +690,7 @@ async fn claim_upload_keys<'a>(
                     Some(file.sha256.as_str()),
                     prior.as_ref(),
                     catalog,
+                    title,
                 )
                 .await?
             {
@@ -880,13 +889,10 @@ pub async fn grant_upload(
             }
             NodeTrust::Nothing => return Ok(UploadGrant::Lost),
         }
-        // Every account's row of the title's edition shares its files.
-        let Some(edition) = store.edition_of_book(&book.uuid).await? else {
-            return Ok(UploadGrant::Refused("unresolved_title"));
-        };
-        let mut siblings = store.books_of_edition(&edition).await?;
-        siblings.insert(book.uuid.clone());
-        if claims_another_books_key(store, &siblings, req.files).await? {
+        // Only the title's own keys: another account's row of the same
+        // edition holds files this node's owner may not replace.
+        let own = BTreeSet::from([book.uuid.clone()]);
+        if claims_another_books_key(store, &own, req.files).await? {
             return Ok(UploadGrant::Refused("key_of_another_book"));
         }
     }
@@ -985,11 +991,11 @@ pub(super) async fn open_upload_session(
     if let Some(owner) = &owner {
         match claim_upload_keys(
             store,
+            req.book_uuid,
             owner,
             req.primary_key,
             &upload_id,
             req.files,
-            catalog,
             &mut claimed,
         )
         .await
@@ -1048,11 +1054,11 @@ pub(super) async fn open_upload_session(
     if let (Some(owner), false) = (&owner, superseded.is_empty()) {
         match claim_upload_keys(
             store,
+            req.book_uuid,
             owner,
             req.primary_key,
             &upload_id,
             req.files,
-            catalog,
             &mut claimed,
         )
         .await

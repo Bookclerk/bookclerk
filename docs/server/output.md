@@ -168,7 +168,7 @@ The tag goes on the folder too when the folder is named after the title.
 
 Copies of one edition on several accounts (the same book bought twice)
 share their files. The edition is downloaded once, and every account's
-copy is marked acquired at its path.
+copy is marked acquired at its path once each destination holds it.
 
 **Path sanitization** cleans up characters a file system can't store. Set
 `output.path_sanitization` to `auto`, `windows`, `posix`, `s3` or `none`,

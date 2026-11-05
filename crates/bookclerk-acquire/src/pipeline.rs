@@ -197,7 +197,8 @@ async fn acquire_book_recorded(
                     matched_existing: true,
                 });
             }
-            if let Some(primary_key) = acquired_sibling_key(library, &book).await? {
+            if let Some(sibling) = acquired_sibling(library, destinations, &book).await? {
+                let primary_key = sibling.storage_key.clone().unwrap_or_default();
                 tracing::info!(
                     asin = %req.asin,
                     key = %primary_key,
@@ -212,6 +213,18 @@ async fn acquire_book_recorded(
                         None,
                     )
                     .await?;
+                // The edition's companion PDF is shared too, so it is not
+                // fetched again for this book.
+                if companion_pdf_is_stored(&sibling) {
+                    library
+                        .set_pdf_status(
+                            status_key(&req),
+                            &req.account_id,
+                            AcquireStatus::Acquired,
+                            sibling.pdf_storage_key.as_deref(),
+                        )
+                        .await?;
+                }
                 resume_missing_companion_pdf(library, destinations, &req, source).await?;
                 return Ok(AcquireResult {
                     asin: req.asin,
@@ -2648,7 +2661,8 @@ pub async fn planned_title_names(
         // Plain parts: the file template with the part's title and a
         // `-pNNN` id (as `planned_plain_part_storage_key` names them).
         let mut part_ctx = file_ctx.clone();
-        part_ctx.title = format!("{} — {TITLE_SENTINEL}", variant.title);
+        // The file context's title carries the edition discriminator.
+        part_ctx.title = format!("{} — {TITLE_SENTINEL}", file_ctx.title);
         part_ctx.asin = format!("{}-p{NUMBER_SENTINEL}", variant.asin);
         part_ctx.chapter_number = Some(NUMBER_SENTINEL);
         part_ctx.chapter_title = Some(TITLE_SENTINEL.into());
@@ -2736,22 +2750,30 @@ async fn name_held_elsewhere(library: &LibraryStore, key: &str, owner: &FileOwne
         })
 }
 
-/// The primary key of another book of `book`'s edition that is already
-/// acquired, so this book shares its files instead of fetching them again.
+/// Another book of `book`'s edition that is already acquired, with its
+/// primary key present on every one of `destinations`, so this book shares
+/// its files instead of fetching them again.
 ///
 /// # Returns
 ///
-/// `None` when the book has no edition yet or no other book of its edition
-/// is acquired with a stored key.
+/// `None` when the book has no edition yet, or no other book of its
+/// edition is acquired with a stored key that every destination holds (a
+/// destination deployed since, another node's layout, or a file removed
+/// since); the acquire then plans as usual and syncs or fetches what is
+/// missing.
 ///
 /// # Errors
 ///
-/// Returns an error when a library lookup fails.
-async fn acquired_sibling_key(library: &LibraryStore, book: &BookRecord) -> Result<Option<String>> {
+/// Returns an error when a library lookup or a destination probe fails.
+async fn acquired_sibling(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    book: &BookRecord,
+) -> Result<Option<BookRecord>> {
     let Some(edition) = library.edition_of_book(&book.uuid).await? else {
         return Ok(None);
     };
-    for uuid in library.books_of_edition(&edition).await? {
+    'siblings: for uuid in library.books_of_edition(&edition).await? {
         if uuid == book.uuid {
             continue;
         }
@@ -2761,9 +2783,15 @@ async fn acquired_sibling_key(library: &LibraryStore, book: &BookRecord) -> Resu
         if sibling.acquire_status != AcquireStatus::Acquired {
             continue;
         }
-        if let Some(key) = sibling.storage_key.filter(|key| !key.is_empty()) {
-            return Ok(Some(key));
+        let Some(key) = sibling.storage_key.as_deref().filter(|key| !key.is_empty()) else {
+            continue;
+        };
+        for item in &destinations.items {
+            if !item.backend.exists(key).await? {
+                continue 'siblings;
+            }
         }
+        return Ok(Some(sibling));
     }
     Ok(None)
 }
@@ -2772,14 +2800,13 @@ async fn acquired_sibling_key(library: &LibraryStore, book: &BookRecord) -> Resu
 ///
 /// # Returns
 ///
-/// `None` when the title has no library row (nothing to record the files
-/// for); otherwise the book's [`FileOwner::Edition`].
+/// The book's [`FileOwner::Edition`]; `None` when the title has no library
+/// row or no edition (a listing the resolver refused), so there is no
+/// edition to record the files for.
 ///
 /// # Errors
 ///
-/// Returns [`AcquireError::Other`] when the book has not been resolved to an
-/// edition yet, so no file is written without an owner that guards its key,
-/// and when the library lookup fails.
+/// Returns an error when the library lookup fails.
 async fn file_owner_of_request(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -2787,13 +2814,17 @@ async fn file_owner_of_request(
     let Some(book) = resolve_book(library, req).await else {
         return Ok(None);
     };
-    match library.file_owner_of_book(&book.uuid).await? {
-        Some(owner) => Ok(Some(owner)),
-        None => Err(AcquireError::Other(anyhow::anyhow!(
-            "{} is not resolved to an edition yet; the next scan resolves it again",
-            book.uuid
-        ))),
+    let owner = library.file_owner_of_book(&book.uuid).await?;
+    if owner.is_none() {
+        // A listing the resolver refuses (an oversized title or credit
+        // list) never gets an edition; it still acquires, as a title with
+        // no library row does, with its keys unrecorded.
+        tracing::warn!(
+            book = %book.uuid,
+            "title has no edition; its files are written without an edition record"
+        );
     }
+    Ok(owner)
 }
 
 /// [`acquire_pdf_only`] against destinations whose writes are already
@@ -3705,6 +3736,46 @@ mod tests {
             3,
             "no edition overwrote another"
         );
+        // The first edition keeps its plain name when planned again: the
+        // others' longer names are not its name.
+        let mut again = edition_req(&cache, job, "B00ONE", "user-1", &first_uuid);
+        again.options = destinations.primary_destination().options.clone();
+        assert!(planned_storage_key(&store, &again)
+            .await
+            .starts_with("Twin/Twin."));
+    }
+
+    #[tokio::test]
+    async fn a_sibling_whose_file_is_gone_is_fetched_again() {
+        let store = test_store().await;
+        let first_uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let dest = tmp.path().join("dest");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&dest, puts.clone());
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job.clone(), "B00SAME", "user-1", &first_uuid);
+        let first = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        tokio::fs::remove_file(dest.join(&first.storage_key))
+            .await
+            .unwrap();
+        let req = edition_req(&cache, job, "B00SAME", "user-2", &second_uuid);
+        let second = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert!(!second.matched_existing, "a missing file is not shared");
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        assert!(dest.join(&second.storage_key).exists());
     }
 
     #[tokio::test]

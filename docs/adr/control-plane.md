@@ -1554,9 +1554,11 @@ the handed credentials only. There is no in-process fallback.
   edition. A key recorded for another edition on that destination is
   refused (`key_of_another_book`), so a folder several titles share (a
   template without the title, podcast episodes in the parent's folder, a
-  flat layout) never lets one title overwrite another's files. The account
-  rows of one edition share its keys. A title not resolved to an edition
-  yet is refused (`unresolved_title`) until a scan resolves it. The claim is one conditional write per key, so of two uploads of
+  flat layout) never lets one title overwrite another's files. A key its
+  own edition holds is claimed only when an earlier upload of the same
+  title wrote it, so one account's node never replaces files another
+  account's row of the edition acquired. A title with no edition is
+  refused (`unresolved_title`). The claim is one conditional write per key, so of two uploads of
   different titles racing for one key only one is granted.
 - **Host paths.** The Host uses the owner's job and title ids as work
   directory names only when each is one plain segment (ASCII letters,
