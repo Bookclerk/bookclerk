@@ -39,6 +39,7 @@ Entrypoint = Literal[
     "cli",
     "oidc",
     "metadata",
+    "covers",
 ]
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
@@ -469,6 +470,8 @@ class Entrypoints(TypedDict):
             Null when the guest does not export this capability.
         metadata: `metadata` entrypoint. Null when the guest does not export this
             capability.
+        covers: `covers` entrypoint. Null when the guest does not export this
+            capability.
     """
 
     eventConsumer: NotRequired[EventConsumer | None]
@@ -482,6 +485,7 @@ class Entrypoints(TypedDict):
     queueConsumer: NotRequired[QueueConsumer | None]
     scheduledHandler: NotRequired[ScheduledHandler | None]
     metadata: NotRequired[MetadataProvider | None]
+    covers: NotRequired[CoverFetcher | None]
 
 
 class EntrypointsReplyOk(TypedDict):
@@ -2157,6 +2161,38 @@ class MetadataProvider(Protocol):
 
         Returns:
             ``MetadataChaptersReply``
+        """
+        ...
+
+
+class CoverFetcher(Protocol):
+    """`covers` entrypoint: downloads cover images on the host's behalf, so the
+    host itself never makes an outbound request to a URL a plugin or a store
+    supplied. The fetcher only transports bytes: the host sniffs, decodes and
+    re-encodes every image in its media worker before anything stores or
+    serves it. Network access is limited to what the manifest's
+    `[capabilities.network]` declares.
+    """
+
+    async def health(self) -> HealthReply:
+        """Liveness / readiness probe.
+
+        Returns:
+            ``HealthReply``
+        """
+        ...
+
+    async def fetch_covers(self, params: CoverFetchParams, sink: Destination) -> CoverImagesReply:
+        """Fetches every URL concurrently and streams each body into `sink` under
+        its index in `params.urls` (`"0"`, `"1"`, ...). The reply says, per URL,
+        whether its body was stored.
+
+        Args:
+            params: URLs and the per-image byte cap.
+            sink: Host-served store that accepts only those keys.
+
+        Returns:
+            ``CoverImagesReply``
         """
         ...
 
@@ -4386,6 +4422,83 @@ MetadataChaptersReply = Union[
 """Result union of `MetadataProvider.chapters`."""
 
 
+class CoverFetchParams(TypedDict):
+    """Params of `CoverFetcher.fetchCovers`.
+
+    Attributes:
+        urls: Absolute `https://` URLs to fetch, at most `maxCoverUrls`; never empty.
+            The host has already checked each one against its URL policy.
+        maxBytes: Largest body, in bytes, the host accepts for one image; at most
+            `maxCoverBytes`. The sink refuses a larger body, which fails that URL only.
+    """
+
+    urls: list[str]
+    maxBytes: int
+
+
+class CoverImage(TypedDict):
+    """What happened to one requested URL.
+
+    Attributes:
+        url: The requested URL, verbatim.
+        stored: Whether the body was put into the sink under this URL's index.
+        contentType: `Content-Type` the server sent. Advisory: the host sniffs the
+            bytes. Omitted when absent (wire zero value).
+        error: Why nothing was stored (HTTP status, size cap, timeout, refused host).
+            Omitted when absent (wire zero value).
+    """
+
+    url: str
+    stored: bool
+    contentType: NotRequired[str]
+    error: NotRequired[str]
+
+
+class CoverImages(TypedDict):
+    """Success payload of `CoverFetcher.fetchCovers`.
+
+    Attributes:
+        images: One entry per requested URL, in request order.
+    """
+
+    images: list[CoverImage]
+
+
+class CoverImagesReplyOk(TypedDict):
+    """``CoverImagesReply`` member ``ok``.
+
+    Success: one entry per requested URL.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: one entry per requested URL.
+    """
+
+    kind: Literal["ok"]
+    value: CoverImages
+
+
+class CoverImagesReplyErr(TypedDict):
+    """``CoverImagesReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+CoverImagesReply = Union[
+    CoverImagesReplyOk,
+    CoverImagesReplyErr,
+]
+"""Result union of `CoverFetcher.fetchCovers`."""
+
+
 class DbValueNull(TypedDict):
     """``DbValue`` member ``null``.
 
@@ -5648,6 +5761,7 @@ __all__ = [
     "PluginCli",
     "Oidc",
     "MetadataProvider",
+    "CoverFetcher",
     "EventConsumerSpec",
     "PluginCapabilities",
     "Brand",
@@ -5792,6 +5906,12 @@ __all__ = [
     "MetadataChaptersReplyOk",
     "MetadataChaptersReplyErr",
     "MetadataChaptersReply",
+    "CoverFetchParams",
+    "CoverImage",
+    "CoverImages",
+    "CoverImagesReplyOk",
+    "CoverImagesReplyErr",
+    "CoverImagesReply",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",

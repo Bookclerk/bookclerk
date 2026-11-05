@@ -34,6 +34,7 @@ ALL = (
     "cli",
     "oidc",
     "metadata",
+    "covers",
 )
 
 

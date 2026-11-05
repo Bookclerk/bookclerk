@@ -207,6 +207,13 @@ impl ExternalIntegration {
                 .await?;
             health_result(ok)?;
         }
+        if self.session.has_entrypoint(crate::Entrypoint::Covers) {
+            let ok = self
+                .session
+                .covers(|fetcher| async move { fetcher.health().await })
+                .await?;
+            health_result(ok)?;
+        }
         Ok(())
     }
 
@@ -453,6 +460,13 @@ impl Integration for ExternalIntegration {
                     .await?,
             );
         }
+        if self.session.has_entrypoint(crate::Entrypoint::Covers) {
+            reports.push(
+                self.session
+                    .covers(|fetcher| async move { fetcher.health().await })
+                    .await?,
+            );
+        }
         let (ok, detail) = combine_health(reports);
         Ok(IntegrationHealth {
             id: self.id().to_string(),
@@ -528,6 +542,30 @@ impl Integration for ExternalIntegration {
 
     fn supports_metadata(&self) -> bool {
         self.session.has_entrypoint(crate::Entrypoint::Metadata)
+    }
+
+    fn supports_covers(&self) -> bool {
+        self.session.has_entrypoint(crate::Entrypoint::Covers)
+    }
+
+    async fn fetch_covers(
+        &self,
+        urls: Vec<String>,
+        max_bytes: u32,
+    ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::FetchedCover>> {
+        Ok(self
+            .session
+            .covers(move |fetcher| async move {
+                let sink = super::cover_sink::CoverSink::new(urls.len(), max_bytes);
+                let images = fetcher
+                    .fetch_covers(
+                        bookclerk_plugin_sdk::CoverFetchParams { urls, max_bytes },
+                        sink.destination(),
+                    )
+                    .await?;
+                Ok(sink.take_fetched(images))
+            })
+            .await?)
     }
 
     async fn metadata_lookup(

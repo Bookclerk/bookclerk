@@ -59,6 +59,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "cover_sink_key"
+path = "fuzz_targets/cover_sink_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "egress_policy"
 path = "fuzz_targets/egress_policy.rs"
 test = false

@@ -231,6 +231,16 @@ impl IntegrationRegistry {
             .collect()
     }
 
+    /// Integrations that export the `covers` entrypoint, in registration order.
+    #[must_use]
+    pub fn cover_fetchers(&self) -> Vec<Arc<dyn Integration>> {
+        self.integrations
+            .iter()
+            .filter(|i| i.supports_covers())
+            .cloned()
+            .collect()
+    }
+
     /// Sync listening progress from every capable integration into the library DB.
     ///
     /// Individual failures are recorded in the summary and do not abort siblings.
@@ -311,6 +321,10 @@ mod tests {
             self.instance
         }
 
+        fn supports_covers(&self) -> bool {
+            self.instance == Some("covers")
+        }
+
         async fn start(&self, _ctx: IntegrationContext) -> crate::error::Result<()> {
             Ok(())
         }
@@ -347,5 +361,17 @@ mod tests {
         assert_eq!(registry.all().len(), 1);
         assert_eq!(registry.all()[0].plugin_instance_id(), Some("instance-b"));
         assert!(registry.take_instance("instance-a").is_empty());
+    }
+
+    #[test]
+    fn cover_fetchers_lists_only_covers_exporters() {
+        let mut registry = IntegrationRegistry::new();
+        registry.register(Arc::new(Stub { instance: None }));
+        registry.register(Arc::new(Stub {
+            instance: Some("covers"),
+        }));
+        let fetchers = registry.cover_fetchers();
+        assert_eq!(fetchers.len(), 1);
+        assert_eq!(fetchers[0].plugin_instance_id(), Some("covers"));
     }
 }

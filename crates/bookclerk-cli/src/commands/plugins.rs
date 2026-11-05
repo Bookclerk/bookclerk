@@ -1365,6 +1365,15 @@ async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<Str
         }
         probed = true;
     }
+    if session.has_entrypoint(Entrypoint::Covers) {
+        let health = session
+            .covers(|fetcher| async move { fetcher.health().await })
+            .await?;
+        if !health.ok {
+            anyhow::bail!("covers health failed: {}", health.detail);
+        }
+        probed = true;
+    }
     if session.has_entrypoint(Entrypoint::DatabaseAdapter) {
         probe_database(&session, config, &plugin).await?;
         probed = true;

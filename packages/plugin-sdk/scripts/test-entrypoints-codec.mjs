@@ -52,6 +52,7 @@ const ALL = [
   "cli",
   "oidc",
   "metadata",
+  "covers",
 ];
 
 {
@@ -84,6 +85,7 @@ const ALL = [
     "remoteLibrary",
     "oidc",
     "metadata",
+    "covers",
   ]);
 }
 

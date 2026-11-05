@@ -464,6 +464,9 @@ def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("metadata") is not None:
         if v["metadata"] is not None:
             s.set_cap(10, caps.export_cap(v["metadata"]))
+    if v.get("covers") is not None:
+        if v["covers"] is not None:
+            s.set_cap(11, caps.export_cap(v["covers"]))
 
 
 def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
@@ -502,18 +505,21 @@ def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
     metadata = caps.import_cap(s.get_cap_index(10))
     if not (metadata is None):
         out["metadata"] = metadata
+    covers = caps.import_cap(s.get_cap_index(11))
+    if not (covers is None):
+        out["covers"] = covers
     return out
 
 
-_entrypoints_codec = _Codec(0, 11, _write_entrypoints, _read_entrypoints)
-"""Wire codec for ``Entrypoints`` (0 data words, 11 pointers)."""
+_entrypoints_codec = _Codec(0, 12, _write_entrypoints, _read_entrypoints)
+"""Wire codec for ``Entrypoints`` (0 data words, 12 pointers)."""
 
 
 def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _entrypoints_codec.write(s.init_struct(0, 0, 11), v["value"], caps)
+        _entrypoints_codec.write(s.init_struct(0, 0, 12), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
@@ -524,7 +530,7 @@ def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_entrypoints_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 11), caps)}
+        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 12), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
     raise ValueError(f"unknown EntrypointsReply union member: {disc}")
@@ -3954,6 +3960,90 @@ _metadata_chapters_reply_codec = _Codec(1, 1, _write_metadata_chapters_reply, _r
 """Wire codec for ``MetadataChaptersReply`` (1 data words, 1 pointers)."""
 
 
+def _write_cover_fetch_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text_list(0, v["urls"])
+    s.set_u32(0, v["maxBytes"])
+
+
+def _read_cover_fetch_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "urls": s.get_text_list(0),
+        "maxBytes": s.get_u32(0),
+    }
+
+
+_cover_fetch_params_codec = _Codec(1, 1, _write_cover_fetch_params, _read_cover_fetch_params)
+"""Wire codec for ``CoverFetchParams`` (1 data words, 1 pointers)."""
+
+
+def _write_cover_image(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["url"])
+    s.set_bool(0, v["stored"])
+    if v.get("contentType") is not None:
+        s.set_text(1, v["contentType"])
+    if v.get("error") is not None:
+        s.set_text(2, v["error"])
+
+
+def _read_cover_image(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "url": s.get_text(0),
+        "stored": s.get_bool(0),
+    }
+    content_type = s.get_text(1)
+    if not (content_type == ""):
+        out["contentType"] = content_type
+    error = s.get_text(2)
+    if not (error == ""):
+        out["error"] = error
+    return out
+
+
+_cover_image_codec = _Codec(1, 3, _write_cover_image, _read_cover_image)
+"""Wire codec for ``CoverImage`` (1 data words, 3 pointers)."""
+
+
+def _write_cover_images(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["images"]), 1, 3)
+    for item, elem in zip(items, v["images"], strict=True):
+        _cover_image_codec.write(item, elem, caps)
+
+
+def _read_cover_images(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "images": [_cover_image_codec.read(item, caps) for item in s.get_struct_list(0, 1, 3)],
+    }
+
+
+_cover_images_codec = _Codec(0, 1, _write_cover_images, _read_cover_images)
+"""Wire codec for ``CoverImages`` (0 data words, 1 pointers)."""
+
+
+def _write_cover_images_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _cover_images_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown CoverImagesReply union member: {kind}")
+
+
+def _read_cover_images_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _cover_images_codec.read(s.get_struct(0, 0, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+    raise ValueError(f"unknown CoverImagesReply union member: {disc}")
+
+
+_cover_images_reply_codec = _Codec(1, 1, _write_cover_images_reply, _read_cover_images_reply)
+"""Wire codec for ``CoverImagesReply`` (1 data words, 1 pointers)."""
+
+
 def _write_db_value(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "null":
@@ -6275,6 +6365,67 @@ def _read_metadata_provider_chapters_results(s: _StructReader, caps: _CapTable) 
 
 _metadata_provider_chapters_results_codec = _Codec(0, 1, _write_metadata_provider_chapters_results, _read_metadata_provider_chapters_results)
 """Wire codec for ``MetadataProviderChaptersResults`` (0 data words, 1 pointers)."""
+
+
+def _write_cover_fetcher_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    pass
+
+
+def _read_cover_fetcher_health_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {}
+
+
+_cover_fetcher_health_params_codec = _Codec(0, 0, _write_cover_fetcher_health_params, _read_cover_fetcher_health_params)
+"""Wire codec for ``CoverFetcherHealthParams`` (0 data words, 0 pointers)."""
+
+
+def _write_cover_fetcher_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_cover_fetcher_health_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _health_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_cover_fetcher_health_results_codec = _Codec(0, 1, _write_cover_fetcher_health_results, _read_cover_fetcher_health_results)
+"""Wire codec for ``CoverFetcherHealthResults`` (0 data words, 1 pointers)."""
+
+
+def _write_cover_fetcher_fetch_covers_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _cover_fetch_params_codec.write(s.init_struct(0, 1, 1), v["params"], caps)
+    if v.get("sink") is not None:
+        if v["sink"] is not None:
+            s.set_cap(1, caps.export_cap(v["sink"]))
+
+
+def _read_cover_fetcher_fetch_covers_params(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "params": _cover_fetch_params_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+    sink = caps.import_cap(s.get_cap_index(1))
+    if not (sink is None):
+        out["sink"] = sink
+    return out
+
+
+_cover_fetcher_fetch_covers_params_codec = _Codec(0, 2, _write_cover_fetcher_fetch_covers_params, _read_cover_fetcher_fetch_covers_params)
+"""Wire codec for ``CoverFetcherFetchCoversParams`` (0 data words, 2 pointers)."""
+
+
+def _write_cover_fetcher_fetch_covers_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _cover_images_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_cover_fetcher_fetch_covers_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _cover_images_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_cover_fetcher_fetch_covers_results_codec = _Codec(0, 1, _write_cover_fetcher_fetch_covers_results, _read_cover_fetcher_fetch_covers_results)
+"""Wire codec for ``CoverFetcherFetchCoversResults`` (0 data words, 1 pointers)."""
 
 
 def _write_database_open_session_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

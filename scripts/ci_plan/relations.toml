@@ -68,6 +68,8 @@ paths = [
     "fuzz/corpus/sql_parse/**",
     "fuzz/corpus/abi_decode/**",
     "fuzz/corpus/abi_roundtrip/**",
+    "fuzz/corpus/cover_sink_key/**",
+    "fuzz/oracles/cover_sink_key.rs",
 ]
 
 # The guest SQL authorizer oracle is shared by the fuzz target and the

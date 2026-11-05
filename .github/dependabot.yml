@@ -108,6 +108,7 @@ updates:
   # shipped modules/ import nothing from npm.
   - package-ecosystem: npm
     directories:
+      - "/crates/bookclerk-plugins/optional/covers"
       - "/crates/bookclerk-plugins/optional/metadata-audnexus"
       - "/crates/bookclerk-plugins/optional/metadata-openlibrary"
     schedule:

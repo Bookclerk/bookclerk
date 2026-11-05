@@ -4,6 +4,7 @@ import { CpuCoresSlider } from "@/components/CpuCoresSlider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { PluginConsentResponse } from "@/lib/api";
+import { domainLabel, fetchHostsSummary } from "@/lib/networkGrant";
 import { cn } from "@/lib/utils";
 
 export type PluginConsentGrantDraft = {
@@ -242,11 +243,7 @@ export function PluginConsentDialog({
     if (networkMode === "deny") return "No network access";
     const parts: string[] = [];
     if (isWorkerd) {
-      parts.push(
-        selectedDomains.length === 0
-          ? "no fetch hosts"
-          : `${selectedDomains.length} fetch host${selectedDomains.length === 1 ? "" : "s"}`,
-      );
+      parts.push(fetchHostsSummary(selectedDomains));
     }
     if (tcp.length > 0) {
       parts.push(`${tcp.length} TCP grant${tcp.length === 1 ? "" : "s"}`);
@@ -268,7 +265,7 @@ export function PluginConsentDialog({
     addressCidrs.length,
     isWorkerd,
     networkMode,
-    selectedDomains.length,
+    selectedDomains,
     tcp.length,
   ]);
 
@@ -277,7 +274,7 @@ export function PluginConsentDialog({
       <ul className="space-y-1 text-sm text-ink/70">
         {selectedDomains.map((domain) => (
           <li key={domain} className="font-mono text-[13px] leading-snug">
-            {domain}
+            {domainLabel(domain)}
           </li>
         ))}
       </ul>
@@ -533,7 +530,7 @@ export function PluginConsentDialog({
                           )
                         }
                       >
-                        {domain}
+                        {domainLabel(domain)}
                         {extra ? " +" : ""}
                       </button>
                     );

@@ -8,6 +8,7 @@ from bookclerk_plugin_sdk.workerd import (
     AdapterDatabaseSession,
     BookclerkEntrypoint,
     CliEntrypoint,
+    CoverEntrypoint,
     DatabaseAdapterEntrypoint,
     EventBatch,
     EventMessage,
@@ -326,6 +327,20 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PluginError) as ctx:
             await metadata.bookclerkInvoke({}, "search", {"title": "Dune"})
         self.assertEqual(ctx.exception.code, "unsupported")
+
+    async def test_cover_defaults_and_dispatch(self) -> None:
+        covers = CoverEntrypoint()
+        self.assertEqual(await covers.health(), {"ok": True, "detail": ""})
+        with self.assertRaises(PluginError) as ctx:
+            await covers.fetchCovers({"urls": [], "maxBytes": 1}, object())
+        self.assertEqual(ctx.exception.code, "unsupported")
+
+        class Covers(CoverEntrypoint):
+            async def fetchCovers(self, params: dict, sink: object) -> list[dict]:
+                return [{"url": u, "stored": False, "error": repr(sink)} for u in params["urls"]]
+
+        images = await Covers().bookclerkInvoke({}, "fetchCovers", {"urls": ["https://a/"]}, "sink")
+        self.assertEqual(images, [{"url": "https://a/", "stored": False, "error": "'sink'"}])
 
     async def test_open_session_unsupported_by_default(self) -> None:
         with self.assertRaises(PluginError) as ctx:

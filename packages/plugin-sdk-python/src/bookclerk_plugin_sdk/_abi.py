@@ -38,6 +38,12 @@ MAX_KV_VALUE_BYTES: int = 1048576
 its own cap but never raise it past this.
 """
 
+MAX_COVER_URLS: int = 32
+"""Most URLs in one `CoverFetcher.fetchCovers` call."""
+
+MAX_COVER_BYTES: int = 10485760
+"""Largest image body `CoverFetcher.fetchCovers` may return for one URL."""
+
 MAX_KV_KEY_BYTES: int = 512
 """Longest `KvNamespace` key in UTF-8 bytes."""
 
@@ -70,7 +76,7 @@ code.
 Wire strings of ``PluginErrorCode`` in ordinal order (snake_case ``Text`` codes).
 """
 
-ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata")
+ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers")
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
 the default entrypoint (`event`, `job`) are declared separately.
@@ -197,6 +203,8 @@ __all__ = [
     "MAX_CONFIG_PAYLOAD_BYTES",
     "MAX_EVENT_PAYLOAD_BYTES",
     "MAX_KV_VALUE_BYTES",
+    "MAX_COVER_URLS",
+    "MAX_COVER_BYTES",
     "MAX_KV_KEY_BYTES",
     "MAX_KV_METADATA_BYTES",
     "MAX_PLUGIN_MIGRATION_OPS",

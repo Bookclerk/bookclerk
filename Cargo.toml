@@ -58,6 +58,7 @@ default-members = [
 exclude = [
     "third_party/audible-rs",
     "fuzz",
+    "crates/bookclerk-plugins/optional/covers",
     "crates/bookclerk-plugins/optional/metadata-audnexus",
     "crates/bookclerk-plugins/optional/metadata-openlibrary",
 ]

@@ -15,8 +15,8 @@ An **integration** is an outbound plugin. It can:
 
 There is no plugin `kind = "integration"`. An integration plugin exports
 `remoteLibrary`, declares `[[events.consumers]]`, or both, and may
-declare `oidc` and `cli`. A metadata provider (`metadata`) also shows in
-the integration family. See [Plugins](../plugins/README.md).
+declare `oidc` and `cli`. A metadata provider (`metadata`) and a cover
+fetcher (`covers`) also show in the integration family. See [Plugins](../plugins/README.md).
 
 Third-party integrations install as external plugins; see
 [Turning on a third-party integration](#turning-on-a-third-party-integration).
@@ -173,6 +173,43 @@ To turn one on:
 
 Each call makes at most one request to Open Library, or one per ASIN (up
 to five) to Audnexus. Their health checks make no request at all.
+
+## Cover images
+
+The optional `covers` plugin downloads cover art for Bookclerk. Bookclerk
+never fetches a cover URL from a store or catalog itself; it asks a
+deployed cover fetcher, which streams each image back to the host.
+Bookclerk treats every image as untrusted: it checks the real file type,
+decodes it with size limits and re-encodes it before storing or showing
+it.
+
+Cover art lives on each store's and catalog's own servers, so this plugin
+asks for **any public website** (`*`) rather than a list of hosts. That
+grant never reaches IP addresses, `localhost`, or private, loopback or
+cloud-metadata addresses, even through a public name that resolves to
+one.
+
+To turn it on, install it as
+[Installing plugins](plugins.md#installing-plugins) describes, then:
+
+1. Approve its network access:
+
+   ```sh
+   bookclerk plugins approve covers --yes
+   ```
+
+2. Deploy it:
+
+   ```sh
+   bookclerk plugins deploy covers
+   ```
+
+Each call fetches at most 32 images, four at a time, each capped in size
+and time. Its health check makes no request.
+
+> [!NOTE]
+> Bookclerk doesn't call the cover fetcher yet. The cover cache, and the
+> search and library views that use it, follow in later releases.
 
 ## Claim tickets and Accounts
 

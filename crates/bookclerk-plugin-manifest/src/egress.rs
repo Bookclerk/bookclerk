@@ -4,8 +4,9 @@
 //! in `docs/plugins/README.md`:
 //!
 //! - **Initial** request hosts must match [`EgressPolicy::domains`] (`*.`
-//!   prefix wildcards). Hosts and patterns are IDNA ToASCII–normalized;
-//!   percent-encoded hosts fail closed.
+//!   prefix wildcards, or [`ANY_PUBLIC_HOST`] for every public hostname).
+//!   Hosts and patterns are IDNA ToASCII–normalized; percent-encoded hosts
+//!   fail closed.
 //! - **Redirect** hops must stay on the fetch allowlist unless the operator
 //!   grants [`EgressPolicy::allow_undeclared_public_redirects`]. That flag
 //!   never implies loopback, RFC1918, link-local, or metadata.
@@ -28,6 +29,15 @@ use crate::types::{NetworkCapabilities, NetworkMode, PluginManifest};
 /// Matches workerd policy injection (`maxRedirects = 10`). Wire JSON uses
 /// camelCase `maxRedirects`.
 pub const DEFAULT_MAX_REDIRECTS: u32 = 10;
+
+/// The `domains` entry that grants every public hostname (`"*"`).
+///
+/// It matches any hostname but never an IP literal, and never a restricted
+/// name such as `localhost` without an address grant. The resolved-address
+/// layer still refuses private, loopback, link-local and metadata addresses,
+/// so a public name that resolves to a private address stays unreachable.
+/// It is a fetch grant only: a TCP grant cannot use it.
+pub const ANY_PUBLIC_HOST: &str = "*";
 
 /// Hosts Pyodide / Cloudflare Python Workers commonly fetch on first boot
 /// (runtime index + micropip).
@@ -149,7 +159,7 @@ impl EgressPolicy {
         let domains = normalize_domain_list(&caps.domains)?;
         let mut tcp = Vec::new();
         for t in &caps.tcp {
-            let Some(host) = normalize_domain_pattern(&t.host) else {
+            let Some(host) = normalize_tcp_host(&t.host) else {
                 return Err(format!("invalid TCP host `{}`", t.host));
             };
             let mut ports = t.ports.clone();
@@ -367,9 +377,13 @@ impl EgressPolicy {
         if is_restricted_hostname(&host) && !self.hostname_address_ok(&host) {
             return false;
         }
-        self.tcp
-            .iter()
-            .any(|grant| host_matches_normalized(&host, &grant.host) && grant.ports.contains(&port))
+        // `*` is a fetch grant only; a wire policy that carries it as a TCP
+        // host (never one this crate builds) grants nothing.
+        self.tcp.iter().any(|grant| {
+            grant.host != ANY_PUBLIC_HOST
+                && host_matches_normalized(&host, &grant.host)
+                && grant.ports.contains(&port)
+        })
     }
 
     /// Returns whether a redirect hop is allowed.
@@ -568,10 +582,12 @@ pub fn normalize_hostname(host: &str) -> Option<String> {
         .map(|c| c.into_owned())
 }
 
-/// Normalizes an allowlist pattern (`*.example.com` or exact host) via IDNA.
+/// Normalizes an allowlist pattern (`*.example.com`, exact host, or
+/// [`ANY_PUBLIC_HOST`]) via IDNA.
 ///
-/// The `*.` prefix is preserved; only the suffix is ToASCII-normalized.
-/// Percent-encoded patterns and empty patterns return `None`.
+/// The `*.` prefix is preserved; only the suffix is ToASCII-normalized. A bare
+/// `*` stays [`ANY_PUBLIC_HOST`]. Percent-encoded patterns and empty patterns
+/// return `None`.
 ///
 /// # Arguments
 ///
@@ -588,12 +604,30 @@ pub fn normalize_domain_pattern(pattern: &str) -> Option<String> {
     if pattern.is_empty() || pattern.contains('%') {
         return None;
     }
+    if pattern == ANY_PUBLIC_HOST {
+        return Some(ANY_PUBLIC_HOST.to_string());
+    }
     if let Some(rest) = pattern.strip_prefix("*.") {
         let ascii = normalize_hostname(rest)?;
         Some(format!("*.{ascii}"))
     } else {
         normalize_hostname(pattern)
     }
+}
+
+/// Normalizes a TCP grant host: an exact host or `*.` wildcard, never
+/// [`ANY_PUBLIC_HOST`] (raw sockets are granted host by host).
+///
+/// # Arguments
+///
+/// * `host` - Author-supplied `capabilities.network.tcp` host.
+///
+/// # Returns
+///
+/// The normalized pattern, or `None` when it is invalid or `*`.
+#[must_use]
+pub fn normalize_tcp_host(host: &str) -> Option<String> {
+    normalize_domain_pattern(host).filter(|pattern| pattern != ANY_PUBLIC_HOST)
 }
 
 /// True when an IDNA-normalized request host is covered by an allowlist pattern.
@@ -760,10 +794,15 @@ fn classify_host(host: &str) -> HostKind {
     }
 }
 
-/// Exact or `*.suffix` match on already-normalized host and pattern strings.
+/// Exact, `*.suffix` or [`ANY_PUBLIC_HOST`] match on already-normalized host
+/// and pattern strings.
 fn host_matches_normalized(host: &str, pattern: &str) -> bool {
     // `host` and policy `domains` are already IDNA-normalized by callers
     // (`allows_initial` / `try_from_network`). Do not re-run IDNA here.
+    if pattern == ANY_PUBLIC_HOST {
+        // Hostnames only: an IP literal needs its own entry.
+        return host.parse::<std::net::IpAddr>().is_err();
+    }
     if let Some(rest) = pattern.strip_prefix("*.") {
         host == rest || host.ends_with(&format!(".{rest}"))
     } else {
@@ -1094,6 +1133,74 @@ mod tests {
         assert!(!policy.allows_initial("metadata.google.internal"));
         policy.address_cidrs.push("169.254.169.254/32".into());
         assert!(policy.allows_initial("metadata.google.internal"));
+    }
+
+    #[test]
+    fn any_public_host_grants_public_names_only() {
+        let policy = EgressPolicy::from_network(&NetworkCapabilities {
+            mode: NetworkMode::Outbound,
+            domains: vec!["*".into()],
+            ..NetworkCapabilities::default()
+        });
+        assert_eq!(policy.domains(), ["*"]);
+        for host in ["covers.openlibrary.org", "m.media-amazon.com.", "bücher.de"] {
+            assert!(policy.allows_initial(host), "{host}");
+            assert!(policy.allows_redirect(host, 0), "{host}");
+        }
+        for host in [
+            "localhost",
+            "a.localhost",
+            "LOCALHOST.",
+            "metadata.google.internal",
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "[::1]",
+            "8.8.8.8",
+            "0x7f.0.0.1",
+            "127.1",
+            "exa%6dple.com",
+            "",
+        ] {
+            assert!(!policy.allows_initial(host), "{host}");
+            assert!(!policy.allows_redirect(host, 0), "{host}");
+        }
+        assert!(
+            !policy.allows_tcp("example.com", 443),
+            "fetch grants never imply TCP"
+        );
+        assert!(host_matches("example.com", "*"));
+        assert!(!host_matches("1.1.1.1", "*"));
+        assert_eq!(normalize_domain_pattern(" * "), Some("*".into()));
+        assert_eq!(normalize_tcp_host("*"), None);
+        assert_eq!(
+            normalize_tcp_host("db.example.com"),
+            Some("db.example.com".into())
+        );
+        let tcp_star = EgressPolicy::try_from_network(&NetworkCapabilities {
+            mode: NetworkMode::Outbound,
+            tcp: vec![crate::types::TcpCapability {
+                host: "*".into(),
+                ports: vec![443],
+            }],
+            ..NetworkCapabilities::default()
+        });
+        assert!(tcp_star.is_err(), "a TCP grant cannot be `*`");
+        let mut wire = policy.clone();
+        wire.tcp = vec![TcpGrant {
+            host: "*".into(),
+            ports: vec![443],
+        }];
+        assert!(
+            !wire.allows_tcp("example.com", 443),
+            "a wire `*` TCP grant grants nothing"
+        );
+        assert!(
+            https_url_on_hosts("https://covers.example/x.jpg", &["*"]).is_some(),
+            "host-side URL checks accept `*` too"
+        );
+        assert!(https_url_on_hosts("https://127.0.0.1/x.jpg", &["*"]).is_none());
+        assert!(https_url_on_hosts("https://localhost/x.jpg", &["*"]).is_none());
     }
 
     #[test]

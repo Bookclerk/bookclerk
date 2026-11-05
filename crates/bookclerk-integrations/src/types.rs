@@ -15,6 +15,23 @@ pub struct IntegrationHealth {
     pub detail: Option<String>,
 }
 
+/// One image a `covers` plugin downloaded, or why it could not.
+///
+/// The body is untrusted bytes as the remote server sent them: callers must
+/// sniff, decode and re-encode it before storing or serving it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FetchedCover {
+    /// The requested URL, verbatim.
+    pub url: String,
+    /// Response body, at most the `max_bytes` the call asked for; `None` when
+    /// nothing was stored.
+    pub body: Option<Vec<u8>>,
+    /// `Content-Type` the server sent. Advisory only.
+    pub content_type: Option<String>,
+    /// Why there is no body, as the plugin or the host sink reported it.
+    pub error: Option<String>,
+}
+
 /// External user resolved via integration credential login or watcher.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalUser {

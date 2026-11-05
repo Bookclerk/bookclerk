@@ -29,6 +29,7 @@ boundary extends it.
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
 | `https_url_policy` | URLs from plugin output the host fetches itself (a metadata provider's cover URL) | `bookclerk-plugin-manifest::https_url_on_hosts` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
+| `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
@@ -61,6 +62,7 @@ only that. The others check:
 - **`egress_policy`**: deny allows nothing. Loopback, private and metadata
   addresses need a CIDR in every spelling (trailing dot, fullwidth digits,
   legacy `127.1`, hex and octal IPv4). `*.suffix` never matches `xsuffix`,
+  `*` never matches an IP literal and never grants a socket,
   percent-encoded hosts never match, and the JSON round-trips.
 - **`plugin_manifest`**: `format_manifest` round-trips, and a deny manifest
   yields a deny policy.
@@ -75,6 +77,13 @@ only that. The others check:
   is `fuzz/oracles/https_url_policy.rs`, replayed from
   `bookclerk-plugin-manifest`.
 - **`abi_decode`**: the traversal budget is derived from the input size.
+  Structured seeds cover the book records, the metadata replies and the
+  cover request and reply (`structured_*.bin`).
+- **`cover_sink_key`**: a key names a slot exactly when it is the
+  canonical decimal spelling of an index below the URL count, read digit
+  by digit without `str::parse`, so no two keys name one slot. The shared
+  oracle is `fuzz/oracles/cover_sink_key.rs`, replayed from
+  `bookclerk-plugin-abi`.
 - **`abi_roundtrip`**: a value the decoder accepts re-encodes, re-decodes
   and compares equal (`read(write(v)) == v`).
 - **`guest_sql_authz`**: every table, column, function and schema action

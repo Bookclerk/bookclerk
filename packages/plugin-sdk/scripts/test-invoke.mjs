@@ -37,6 +37,7 @@ const {
   CliEntrypoint,
   DatabaseAdapterEntrypoint,
   MetadataEntrypoint,
+  CoverEntrypoint,
   PluginError,
   StorageEntrypoint,
   StorefrontEntrypoint,
@@ -235,6 +236,27 @@ class Metadata extends MetadataEntrypoint {
   }
 }
 
+class Covers extends CoverEntrypoint {
+  async fetchCovers(params, sink) {
+    // The wire envelope is not a valid return value.
+    if (params.urls[0] === "https://wrapped.example/") return { images: [] };
+    const images = [];
+    for (const [i, url] of params.urls.entries()) {
+      if (url.endsWith("/missing.jpg")) {
+        images.push({ url, stored: false, error: "HTTP 404" });
+        continue;
+      }
+      const bytes = new TextEncoder().encode(`img:${i}`);
+      await sink.put(String(i), new Blob([bytes]).stream(), {
+        contentType: "image/jpeg",
+        contentLength: bytes.length,
+      });
+      images.push({ url, stored: true, contentType: "image/jpeg" });
+    }
+    return images;
+  }
+}
+
 // --- Granted channel fake -------------------------------------------------
 
 const granted = {
@@ -249,6 +271,11 @@ const granted = {
       body: init.body,
     });
     if (u.pathname === "/progress") return new Response(null, { status: 200 });
+    if (u.pathname === "/put") {
+      const bytes = new Uint8Array(await new Response(init.body).arrayBuffer());
+      this.puts = [...(this.puts ?? []), { key: u.searchParams.get("key"), bytes }];
+      return Response.json({ key: u.searchParams.get("key"), bytesWritten: bytes.length });
+    }
     if (u.pathname.startsWith("/kv/")) {
       const body = JSON.parse(init.body);
       const store = (this.kv ??= new Map());
@@ -323,6 +350,7 @@ const env = {
   PLUGIN_DATABASE_ADAPTER: new DatabaseAdapter({}, {}),
   PLUGIN_CLI: new Cli({}, {}),
   PLUGIN_METADATA: new Metadata({}, {}),
+  PLUGIN_COVERS: new Covers({}, {}),
   GRANTED: granted,
   BRIDGE_TOKEN: "t",
 };
@@ -1025,6 +1053,78 @@ const jobParams = (commandType) => ({
     W.MetadataProviderChaptersResultsCodec,
   );
   assert.equal(missing.value.found, false);
+}
+
+// --- CoverFetcher --------------------------------------------------------
+
+{
+  const health = decodeReply(
+    await invoke("CoverFetcher", "health", W.CoverFetcherHealthParamsCodec, {}),
+    W.CoverFetcherHealthResultsCodec,
+  );
+  assert.deepEqual(health, { kind: "ok", value: { ok: true, detail: "" } });
+
+  granted.requests.length = 0;
+  granted.puts = [];
+  const fetched = decodeReply(
+    await invoke(
+      "CoverFetcher",
+      "fetchCovers",
+      W.CoverFetcherFetchCoversParamsCodec,
+      {
+        params: {
+          urls: ["https://a.example/1.jpg", "https://a.example/missing.jpg", "https://b.example/3"],
+          maxBytes: 1024,
+        },
+        sink: "sink",
+      },
+      { caps: [{ kind: "destination", token: "tok-sink" }] },
+    ),
+    W.CoverFetcherFetchCoversResultsCodec,
+  );
+  assert.equal(fetched.kind, "ok");
+  assert.deepEqual(
+    fetched.value.images.map((i) => [i.url, i.stored, i.error ?? ""]),
+    [
+      ["https://a.example/1.jpg", true, ""],
+      ["https://a.example/missing.jpg", false, "HTTP 404"],
+      ["https://b.example/3", true, ""],
+    ],
+  );
+  assert.deepEqual(
+    granted.puts.map((p) => [p.key, new TextDecoder().decode(p.bytes)]),
+    [
+      ["0", "img:0"],
+      ["2", "img:2"],
+    ],
+    "bodies go to the sink under their index",
+  );
+  const put = granted.requests.find((r) => r.path === "/put");
+  assert.equal(put.headers.Authorization, "Bearer tok-sink");
+  assert.equal(put.headers["content-type"], "image/jpeg");
+
+  const wrapped = decodeReply(
+    await invoke(
+      "CoverFetcher",
+      "fetchCovers",
+      W.CoverFetcherFetchCoversParamsCodec,
+      { params: { urls: ["https://wrapped.example/"], maxBytes: 1 }, sink: "sink" },
+      { caps: [{ kind: "destination", token: "tok-sink" }] },
+    ),
+    W.CoverFetcherFetchCoversResultsCodec,
+  );
+  assert.equal(wrapped.kind, "err");
+  assert.equal(wrapped.value.code, "internal");
+  assert.match(wrapped.value.message, /CoverImage\[\]/);
+
+  const noSink = decodeReply(
+    await invoke("CoverFetcher", "fetchCovers", W.CoverFetcherFetchCoversParamsCodec, {
+      params: { urls: ["https://a.example/1.jpg"], maxBytes: 1 },
+    }),
+    W.CoverFetcherFetchCoversResultsCodec,
+  );
+  assert.equal(noSink.kind, "err");
+  assert.equal(noSink.value.code, "invalid_params");
 }
 
 // --- Transport failures ---------------------------------------------------

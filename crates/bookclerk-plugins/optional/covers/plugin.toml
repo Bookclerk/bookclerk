@@ -1,0 +1,44 @@
+api_version = 3
+id = "covers"
+name = "Cover images"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["covers"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 10000
+# One request per URL, at most 32 per call (redirect hops are counted by the
+# egress gate, per request).
+subrequests = 40
+
+# Emitted from `src/` by `npm run build`; CI fails when they drift.
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "fetcher.js"
+path = "fetcher.js"
+type = "js"
+
+[[modules]]
+name = "version.js"
+path = "version.js"
+type = "js"
+
+[capabilities.network]
+mode = "outbound"
+# Cover art lives on any store or catalog CDN, so this grants every public
+# hostname. IP literals and private, loopback and metadata addresses stay
+# refused, and the host checks and re-encodes every body.
+domains = ["*"]
+
+[vars]

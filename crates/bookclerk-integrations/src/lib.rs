@@ -42,6 +42,6 @@ pub use traits::{
     ScheduledInvocation,
 };
 pub use types::{
-    ExternalUser, IntegrationHealth, ListeningProgressSnapshot, SyncListeningProviderResult,
-    SyncListeningSummary,
+    ExternalUser, FetchedCover, IntegrationHealth, ListeningProgressSnapshot,
+    SyncListeningProviderResult, SyncListeningSummary,
 };

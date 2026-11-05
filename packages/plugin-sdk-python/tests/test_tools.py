@@ -1330,6 +1330,10 @@ def test_smoke_health_codecs_cover_every_health_interface() -> None:
     for _, iface in _HEALTH_INTERFACES:
         params, results = _health_codecs(iface)
         assert params is not None and results is not None
+    assert _health_codecs("CoverFetcher") == (
+        _wire._cover_fetcher_health_params_codec,
+        _wire._cover_fetcher_health_results_codec,
+    )
     assert _health_codecs("MetadataProvider") == (
         _wire._metadata_provider_health_params_codec,
         _wire._metadata_provider_health_results_codec,

@@ -30,6 +30,7 @@ export class DatabaseAdapter extends DatabaseAdapterEntrypoint<Env> { /* openSes
 export class Cli extends CliEntrypoint<Env> { /* describe, invoke */ }
 export class Oidc extends OidcEntrypoint<Env> { /* clients, authenticateUser */ }
 export class Metadata extends MetadataEntrypoint<Env> { /* health, lookup, search, chapters */ }
+export class Covers extends CoverEntrypoint<Env> { /* health, fetchCovers */ }
 
 export default class MyPlugin extends BookclerkEntrypoint<Env> { /* … */ }
 ```
@@ -817,6 +818,59 @@ during scans, Discover title details, the acquire chapter overlay, and
 from every provider; `chapters` stops at the first layout with `found`
 set. A provider that fails is logged and skipped
 ([integrations](../server/integrations.md#open-library-and-audnexus)).
+
+### Cover fetchers
+
+Export `covers` to download cover images for the host. The host never
+fetches a cover URL itself: it hands the URLs to a cover fetcher, then
+checks each body's real type, decodes it with limits and re-encodes it
+before it stores or serves anything.
+
+The typed methods on `CoverFetcher` and `CoverEntrypoint` are:
+
+| Method | Notes |
+| --- | --- |
+| `health` | Liveness and readiness |
+| `fetchCovers` | `({ urls, maxBytes }, sink)` → `CoverImage[]`. Fetch each URL and put its body into `sink` under the key `String(i)`, where `i` is the URL's index. Answer one `CoverImage` per URL, in request order: `{ url, stored, contentType?, error? }` |
+
+- `urls` holds 1 to `MAX_COVER_URLS` (32) absolute `https` URLs, and
+  `maxBytes` is at most `MAX_COVER_BYTES` (10 MiB).
+- `sink` is a host-served `Destination` that accepts only `put`, only for
+  the keys `0` to `urls.length - 1`, each once. A body over `maxBytes`
+  fails that `put` with `payload_too_large`; every other method is
+  `unsupported`.
+- Answer a failed URL with `stored: false` and an `error` such as
+  `HTTP 404`. Throw only when the whole request is malformed.
+- The host checks the answer: one entry per URL, the URLs as asked, and a
+  body for every `stored: true`. A `stored` answer with no body becomes an
+  error.
+
+Bodies go to the sink rather than into the reply, because a reply is
+capped well below one image (see the
+[workerd bridge](../internals/workerd-bridge.md#post-invoke)).
+
+```ts
+export class Covers extends CoverEntrypoint<Env> {
+  async fetchCovers(params: CoverFetchParams, sink: Destination): Promise<CoverImage[]> {
+    const out: CoverImage[] = [];
+    for (const [i, url] of params.urls.entries()) {
+      const res = await fetch(url);
+      if (!res.ok || res.body === null) {
+        out.push({ url, stored: false, error: `HTTP ${res.status}` });
+        continue;
+      }
+      await sink.put(String(i), res.body);
+      out.push({ url, stored: true });
+    }
+    return out;
+  }
+}
+```
+
+The first-party `covers` plugin (`crates/bookclerk-plugins/optional/covers`)
+is the complete fetcher. It holds the `*`
+[any public website](capabilities.md#network-rules) grant, because cover
+art lives on every catalog's own CDN.
 
 ### Storage entrypoints
 
