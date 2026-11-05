@@ -1050,17 +1050,23 @@ def source_doc_links(src_dirs: list[Path], root: Path = ROOT) -> list[str]:
             rel = rs.relative_to(src)
             if rel.parts[0] == "bin" or rel.name == "main.rs":
                 continue
-            in_fence = False
+            fence: Fence | None = None
             for number, raw in enumerate(rs.read_text(encoding="utf-8").splitlines(), start=1):
                 m = DOC_COMMENT_RE.match(raw)
                 if not m:
-                    in_fence = False
+                    fence = None
                     continue
                 line = m.group(1)
-                if FENCE_RE.match(line):
-                    in_fence = not in_fence
-                    continue
-                if in_fence:
+                if fence is not None:
+                    closing = closes_fence(line, fence)
+                    if closing is False:
+                        continue
+                    fence = None
+                    if closing:
+                        continue
+                opened = opening_fence(line)
+                if opened is not None:
+                    fence = opened
                     continue
                 spans = rustdoc_markdown.code_spans(line)
                 hrefs = [
@@ -1072,6 +1078,8 @@ def source_doc_links(src_dirs: list[Path], root: Path = ROOT) -> list[str]:
                 if definition:
                     hrefs.append(definition.group(1))
                 for href in hrefs:
+                    if href.startswith("<") and href.endswith(">"):
+                        href = href[1:-1]
                     if re.match(r"^[a-z][a-z0-9+.-]*:", href) or href.startswith(("#", "/")):
                         continue
                     target = href.split("#", 1)[0]

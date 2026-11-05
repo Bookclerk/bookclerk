@@ -380,6 +380,8 @@ class TreeTest(unittest.TestCase):
             "//! [adr](../../../docs/adr/a.md) [item](crate::a::B) [web](https://example.com/x.md)\n"
             "//! [site](/docs/x) [anchor](#x) `[code](c.md)` [readme](README.md#top)\n"
             "//! ```text\n//! [fenced](f.md)\n//! ```\n"
+            "//! ````text\n//! ```\n//! [nested](n.md)\n//! ````\n"
+            "//! [angle](<https://example.com/x.md>) [rel](<../y.md>)\n"
             "/// [def]: ../other.rs\n"
             "//// [not a doc comment](n.md)\n"
             "// [plain comment](p.md)\n"
@@ -391,7 +393,8 @@ class TreeTest(unittest.TestCase):
             [
                 "crates/x/src/lib.rs:1: ../../../docs/adr/a.md",
                 "crates/x/src/lib.rs:2: README.md#top",
-                "crates/x/src/lib.rs:6: ../other.rs",
+                "crates/x/src/lib.rs:10: ../y.md",
+                "crates/x/src/lib.rs:11: ../other.rs",
             ],
         )
 
