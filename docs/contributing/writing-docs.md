@@ -43,6 +43,10 @@ URL layout:
   build checks every relative link in the tree.
 - A new page is listed in [`docs/README.md`](../README.md), in its shelf's
   `README.md` and in the site navigation (`NAV` in `tools/site/render.ts`).
+  The sidebar nests pages the way the folders go: a page listed after a
+  folder's `README.md` and inside that folder sits beneath it, and the
+  breadcrumb names every folder above a page. List a folder's `README.md`
+  before the pages in it.
 
 ## Know who is reading
 

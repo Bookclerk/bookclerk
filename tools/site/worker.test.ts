@@ -796,7 +796,7 @@ test("an SDK's module pages sit beneath its guide in the sidebar and the breadcr
   );
   assert.match(
     html,
-    /<li><a href="\/docs\/plugins\/sdk\/python">Python plugin SDK<\/a><\/li><li><a href="\/docs\/plugins\/sdk\/python\/workerd" aria-current="page">/,
+    /<li><a href="\/docs\/plugins\/sdk">Plugin SDKs<\/a><\/li><li><a href="\/docs\/plugins\/sdk\/python">Python plugin SDK<\/a><\/li><li><a href="\/docs\/plugins\/sdk\/python\/workerd" aria-current="page">/,
   );
   assert.ok(
     html.includes(
@@ -810,7 +810,13 @@ test("an SDK's module pages sit beneath its guide in the sidebar and the breadcr
       '<a href="/docs/plugins/sdk/python" aria-current="page">Python plugin SDK</a><ul class="nav-sub"><li><a href="/docs/plugins/sdk/python/workerd"><code>workerd</code></a></li></ul>',
     ),
   );
-  // Without the manifest every page is hand-written: no list, a docs/ source.
+  // The sidebar nests the guide under "Plugin SDKs", the way the folders go.
+  assert.ok(
+    html.includes(
+      '<li><a href="/docs/plugins/sdk">Plugin SDKs</a><ul class="nav-sub"><li><a href="/docs/plugins/sdk/typescript">TypeScript plugin SDK</a></li><li><a href="/docs/plugins/sdk/python">Python plugin SDK</a><ul class="nav-sub">',
+    ),
+  );
+  // Without the manifest every page is hand-written: no module list, a docs/ source.
   const noManifest: DocsFetch = async (url, init) =>
     url.endsWith("/generated.json")
       ? new Response("404: Not Found", { status: 404 })
@@ -825,7 +831,7 @@ test("an SDK's module pages sit beneath its guide in the sidebar and the breadcr
   assert.equal(plain.status, 200);
   assert.equal(plain.headers.get("Cache-Control"), "public, max-age=300, s-maxage=86400");
   const plainHtml = await plain.text();
-  assert.ok(!plainHtml.includes("nav-sub"));
+  assert.ok(!plainHtml.includes("<code>workerd</code>"));
   assert.ok(plainHtml.includes("docs/plugins/sdk/python/workerd.md"));
   // A manifest that cannot be read keeps the page out of the edge cache.
   const broken: DocsFetch = async (url, init) =>
@@ -978,6 +984,15 @@ test("a Markdown request does not read the dates file", async () => {
   fetched.length = 0;
   assert.equal((await get("/docs/plugins", "text/markdown")).status, 200);
   assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/plugins/README.md`]);
+});
+
+test("a crate's page opens its shelf's group and runs its breadcrumb through the crate", async () => {
+  const html = await (await get("/docs/internals/crates/demo", BROWSER)).text();
+  assert.match(html, /<details class="nav-group" open><summary>How it works<\/summary>/);
+  assert.match(
+    html,
+    /<li><a href="\/docs\/internals\/crates">Rust crates<\/a><\/li><li><a href="\/docs\/internals\/crates\/demo" aria-current="page">/,
+  );
 });
 
 test("a folder's page is served at the folder, with its Markdown copy as index.md under it", async () => {

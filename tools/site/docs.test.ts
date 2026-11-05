@@ -20,6 +20,7 @@ import {
   siteMarkdown,
   slugify,
 } from "./docs.ts";
+import { parseGenerated } from "./generated.ts";
 import { highlight } from "./highlight.ts";
 import {
   formatDate,
@@ -37,8 +38,11 @@ import {
   crumbTrail,
   docMarkdownUrl,
   fillShell,
+  navAncestors,
   navHtml,
+  navParent,
   navPlace,
+  navTree,
   normalizePath,
   pagerHtml,
   renderDoc,
@@ -429,6 +433,95 @@ test("the sidebar opens only the current group and places a doc for its breadcru
     '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs">Docs</a></li><li><a href="/docs/guide/a">Use</a></li>' +
       '<li><a href="/docs/guide/b" aria-current="page">B &amp; C</a></li></ol></nav>',
   );
+});
+
+test("the sidebar nests a group's pages by folder and the breadcrumb follows the folders", () => {
+  const nav = [
+    {
+      title: "Build plugins",
+      pages: [
+        { key: "plugins/README", title: "Dynamic plugins" },
+        { key: "plugins/manifest", title: "Manifest" },
+        { key: "plugins/sql-contract/README", title: "SQL contract" },
+        { key: "plugins/sql-contract/v1", title: "SQL contract v1" },
+        { key: "plugins/sdk/README", title: "Plugin SDKs" },
+        { key: "plugins/sdk/python/README", title: "Python plugin SDK" },
+        { key: "plugins/sdk/rust/README", title: "Rust plugin SDK" },
+        { key: "plugins/registry", title: "Registry" },
+      ],
+    },
+  ];
+  // The shelf's README heads the group; the SDK guides sit under "Plugin SDKs".
+  assert.deepEqual(navTree(nav[0]?.pages ?? []), [
+    { key: "plugins/README", title: "Dynamic plugins", children: [] },
+    { key: "plugins/manifest", title: "Manifest", children: [] },
+    {
+      key: "plugins/sql-contract/README",
+      title: "SQL contract",
+      children: [{ key: "plugins/sql-contract/v1", title: "SQL contract v1", children: [] }],
+    },
+    {
+      key: "plugins/sdk/README",
+      title: "Plugin SDKs",
+      children: [
+        { key: "plugins/sdk/python/README", title: "Python plugin SDK", children: [] },
+        { key: "plugins/sdk/rust/README", title: "Rust plugin SDK", children: [] },
+      ],
+    },
+    { key: "plugins/registry", title: "Registry", children: [] },
+  ]);
+  const html = navHtml(nav, "plugins/sdk/rust/README", "/docs/");
+  assert.ok(
+    html.includes(
+      '<li><a href="/docs/plugins/sdk">Plugin SDKs</a><ul class="nav-sub"><li><a href="/docs/plugins/sdk/python">Python plugin SDK</a></li>' +
+        '<li><a href="/docs/plugins/sdk/rust" aria-current="page">Rust plugin SDK</a></li></ul></li><li><a href="/docs/plugins/registry">Registry</a></li>',
+    ),
+  );
+  // Previous and next still read the group as one list.
+  assert.deepEqual(navPlace(nav, "plugins/sdk/README").next, {
+    key: "plugins/sdk/python/README",
+    title: "Python plugin SDK",
+  });
+  // The breadcrumb names every folder above the page, the shelf's README aside.
+  assert.deepEqual(navAncestors(nav, "plugins/sdk/rust/README", null), [
+    { key: "plugins/sdk/README", title: "Plugin SDKs" },
+  ]);
+  assert.deepEqual(navAncestors(nav, "plugins/manifest", null), []);
+  assert.deepEqual(navAncestors(nav, "plugins/README", null), []);
+  assert.equal(
+    crumbsHtml(crumbTrail(nav, "plugins/sql-contract/v1", "SQL contract v1"), "/docs/"),
+    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs">Docs</a></li><li><a href="/docs/plugins">Build plugins</a></li>' +
+      '<li><a href="/docs/plugins/sql-contract">SQL contract</a></li><li><a href="/docs/plugins/sql-contract/v1" aria-current="page">SQL contract v1</a></li></ol></nav>',
+  );
+  // A generated module runs through its guide and the pages above the guide.
+  const manifest = parseGenerated(
+    JSON.stringify({
+      version: 1,
+      references: [
+        {
+          folder: "plugins/sdk/rust",
+          kind: "rust-sdk",
+          title: "Rust plugin SDK",
+          source: "crates/bookclerk-plugin-sdk",
+          landing: true,
+          pages: [
+            "plugins/sdk/rust/http",
+            "plugins/sdk/rust/net/README",
+            "plugins/sdk/rust/net/tls",
+          ],
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(navAncestors(nav, "plugins/sdk/rust/net/tls", manifest), [
+    { key: "plugins/sdk/README", title: "Plugin SDKs" },
+    { key: "plugins/sdk/rust/README", title: "Rust plugin SDK" },
+    { key: "plugins/sdk/rust/net/README", title: "net" },
+  ]);
+  assert.deepEqual(navParent(nav, "plugins/sdk/rust/http", manifest), {
+    key: "plugins/sdk/rust/README",
+    title: "Rust plugin SDK",
+  });
 });
 
 test("code blocks and tables can be scrolled from the keyboard", () => {

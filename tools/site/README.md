@@ -148,6 +148,10 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   `render.ts` renders them (shared by the build and the Worker), and
   `docs.ts` reads the local `docs/` for the build. `NAV` in `render.ts`
   orders the sidebar; a doc in `docs/` missing from it is listed under "More".
+  Within a group the sidebar nests pages by folder (`navTree`): a page
+  listed after the `README` of a folder holding it sits beneath that
+  page, so the SDK guides sit under "Plugin SDKs" and the SQL contract's
+  versions under "SQL contract".
   The layout follows developers.cloudflare.com's measurements: a slim sticky
   header, a sticky sidebar whose groups fold (only the current page's group
   opens) pinned left, a reading column of about 88 characters centred
@@ -160,10 +164,12 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   ends with Source on GitHub (for a generated page, what it is generated
   from, read from the version's `generated.json`) and Report a problem, and comes with a
   breadcrumb and previous and next links taken from `NAV`. Every crumb is a
-  link: a sidebar group links to its first page, and a page of a generated
-  reference (a Web API route group, an SDK module) runs through the landing
-  page it sits under, which lists the reference's pages beneath its sidebar
-  entry. Below 1200px the
+  link: a sidebar group links to its first page, then every folder above
+  the page that is a page itself follows (`navAncestors`), whether the
+  sidebar lists it ("Plugin SDKs" above an SDK guide) or the build wrote it
+  (a crate above its modules). A page of a generated reference (a Web API
+  route group, an SDK module) runs through the landing page it sits under,
+  which lists the reference's pages beneath its sidebar entry. Below 1200px the
   rail becomes an "On this page" menu over the page, and below 900px the
   sidebar becomes a second menu beside it (`<details>`, so they work
   without a script). They share a `name`,

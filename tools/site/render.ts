@@ -1034,13 +1034,53 @@ export function buildNav(titles: ReadonlyMap<string, string>): NavGroup[] {
   return nav;
 }
 
+/** A sidebar page with the pages nested beneath it (see navTree). */
+export interface NavNode {
+  /** The doc's key. */
+  key: string;
+  /** Its sidebar title. */
+  title: string;
+  /** The group's pages that sit in its folder, in sidebar order. */
+  children: NavNode[];
+}
+
+/**
+ * Nests a group's pages by folder: a page sits under the nearest page
+ * before it in the group that is the `README` of a folder holding it, so
+ * the sidebar shows the shape of the docs tree. The group's first page
+ * (the shelf's own `README`) heads the group rather than holding the
+ * rest, and stays a leaf.
+ *
+ * @param pages - The group's pages, in sidebar order.
+ * @returns The same pages as a tree, in the same order.
+ */
+export function navTree(pages: readonly { key: string; title: string }[]): NavNode[] {
+  const roots: NavNode[] = [];
+  /** The folders whose `README` is open above the page being placed, innermost last. */
+  const open: { folder: string; node: NavNode }[] = [];
+  pages.forEach((page, i) => {
+    while (open.length > 0 && !page.key.startsWith(`${open[open.length - 1]?.folder ?? ""}/`))
+      open.pop();
+    const node: NavNode = { key: page.key, title: page.title, children: [] };
+    (open[open.length - 1]?.node.children ?? roots).push(node);
+    if (i > 0 && page.key.endsWith("/README"))
+      open.push({ folder: page.key.slice(0, -"/README".length), node });
+  });
+  return roots;
+}
+
 /**
  * Renders the sidebar for one page.
  *
  * @param nav - The sidebar groups.
  * @param current - Key of the page being shown.
  * @param base - URL prefix of the docs version, ending in `/`.
- * @returns One heading and list per group.
+ * @param nested - A list to show under one page: the current reference's
+ *   route groups or modules (see apiNavNested and referenceNavNested).
+ * @returns One heading and list per group, each group's pages nested by
+ *   folder (see navTree). The group holding the current page opens: the
+ *   one listing it, the one listing the page it sits under, or the one
+ *   whose folder it is in (a crate's page under "Rust crates").
  */
 export function navHtml(
   nav: readonly NavGroup[],
@@ -1048,16 +1088,24 @@ export function navHtml(
   base: string,
   nested: NavNested | null = null,
 ): string {
+  const item = (node: NavNode): string => {
+    const mark = node.key === current ? ' aria-current="page"' : "";
+    const inner = nested !== null && nested.under === node.key ? nested.html : "";
+    const children =
+      node.children.length === 0
+        ? ""
+        : `<ul class="nav-sub">${node.children.map(item).join("")}</ul>`;
+    return `<li><a href="${escapeHtml(docUrl(node.key, base))}"${mark}>${escapeHtml(node.title)}</a>${inner}${children}</li>`;
+  };
   return nav
     .map((group) => {
-      const links = group.pages
-        .map((p) => {
-          const mark = p.key === current ? ' aria-current="page"' : "";
-          const inner = nested !== null && nested.under === p.key ? nested.html : "";
-          return `<li><a href="${escapeHtml(docUrl(p.key, base))}"${mark}>${escapeHtml(p.title)}</a>${inner}</li>`;
-        })
-        .join("");
-      const open = group.pages.some((p) => p.key === current || p.key === nested?.under)
+      const links = navTree(group.pages).map(item).join("");
+      const open = group.pages.some(
+        (p) =>
+          p.key === current ||
+          p.key === nested?.under ||
+          (p.key.endsWith("/README") && current.startsWith(p.key.slice(0, -"README".length))),
+      )
         ? " open"
         : "";
       return `<details class="nav-group"${open}><summary>${escapeHtml(group.title)}</summary><ul>${links}</ul></details>`;
@@ -1221,36 +1269,67 @@ export function navPlace(nav: readonly NavGroup[], key: string): NavPlace {
   return { group, groupFirst, previous: pick(at - 1), next: pick(at + 1) };
 }
 
-/** A sidebar page that a doc the sidebar does not list sits under. */
+/** A page a doc sits under in the docs tree. */
 export interface NavParent {
-  /** The sidebar page's key. */
+  /** The page's key. */
   key: string;
-  /** Its sidebar title. */
+  /** Its title. */
   title: string;
 }
 
 /**
- * Finds the sidebar page a generated page sits under, which its breadcrumb
- * names: the sidebar lists only a reference's landing page (the Web API
- * index, an SDK's guide), and its module, route group and schema pages
- * sit beneath it.
+ * Finds the pages a doc sits under, which its breadcrumb names, outermost
+ * first: the `README` of each folder above it that is a page, whether the
+ * sidebar lists it (an SDK's guide under "Plugin SDKs", the SQL contract)
+ * or the build wrote it (a crate's page above its modules). The shelf's
+ * own `README`, which the sidebar group links to, is left out, as is the
+ * doc itself.
  *
  * @param nav - The sidebar.
  * @param key - The doc's key.
  * @param manifest - The docs version's generated.json, or null.
- * @returns The landing page of the reference that holds the doc, when the
- *   sidebar lists it and the doc is not the landing page itself, else null.
+ * @returns The ancestors, outermost first; empty for a top-level page.
+ */
+export function navAncestors(
+  nav: readonly NavGroup[],
+  key: string,
+  manifest: GeneratedManifest | null,
+): NavParent[] {
+  const titles = new Map<string, string>();
+  for (const group of nav) {
+    group.pages.forEach((p, i) => {
+      if (i > 0) titles.set(p.key, p.title);
+    });
+  }
+  const generated = new Set(manifest?.references.flatMap((r) => r.pages) ?? []);
+  const reference = referenceOf(manifest, key);
+  const out: NavParent[] = [];
+  for (let at = key.indexOf("/"); at > 0; at = key.indexOf("/", at + 1)) {
+    const folder = key.slice(0, at);
+    const readme = `${folder}/README`;
+    if (readme === key) break;
+    const title = titles.get(readme);
+    if (title !== undefined) out.push({ key: readme, title });
+    else if (generated.has(readme) || (reference !== null && readme === landingKey(reference)))
+      out.push({ key: readme, title: folder.slice(folder.lastIndexOf("/") + 1) });
+  }
+  return out;
+}
+
+/**
+ * Finds the page a doc sits directly under (see navAncestors).
+ *
+ * @param nav - The sidebar.
+ * @param key - The doc's key.
+ * @param manifest - The docs version's generated.json, or null.
+ * @returns The nearest ancestor, or null for a top-level page.
  */
 export function navParent(
   nav: readonly NavGroup[],
   key: string,
   manifest: GeneratedManifest | null,
 ): NavParent | null {
-  const reference = referenceOf(manifest, key);
-  if (reference === null || key === landingKey(reference)) return null;
-  const landing = landingKey(reference);
-  const page = nav.flatMap((g) => g.pages).find((p) => p.key === landing);
-  return page === undefined ? null : { key: page.key, title: page.title };
+  return navAncestors(nav, key, manifest).at(-1) ?? null;
 }
 
 /** One step of a breadcrumb trail. */
@@ -1264,7 +1343,7 @@ export interface Crumb {
 /**
  * Works out a doc's breadcrumb trail, which the page shows and its JSON-LD
  * repeats: Docs, the sidebar group (linking to the group's first page), the
- * sidebar page it sits under (see navParent), then the doc itself.
+ * pages it sits under (see navAncestors), then the doc itself.
  *
  * @param nav - The sidebar.
  * @param key - The doc's key.
@@ -1278,13 +1357,12 @@ export function crumbTrail(
   title: string,
   manifest: GeneratedManifest | null = null,
 ): Crumb[] {
-  const parent = navParent(nav, key, manifest);
-  const place = navPlace(nav, parent?.key ?? key);
+  const ancestors = navAncestors(nav, key, manifest);
+  const place = navPlace(nav, ancestors[0]?.key ?? key);
   const trail: Crumb[] = [{ title: "Docs", key: null }];
   if (place.group !== null && place.groupFirst !== null)
     trail.push({ title: place.group, key: place.groupFirst });
-  if (parent !== null) trail.push(parent);
-  trail.push({ title, key });
+  trail.push(...ancestors, { title, key });
   return trail;
 }
 
