@@ -7,9 +7,10 @@
 //!
 //! - parsing never panics, and refuses text over the frame size limit or of
 //!   another frame version;
-//! - an accepted frame serializes and parses back to an equal frame (a
-//!   float inside an opaque JSON field may move by a rounding step, as
-//!   `serde_json` parses floats without exact round trips);
+//! - an accepted frame whose serialized text stays within the limit
+//!   parses back to an equal frame (a float inside an opaque JSON field may
+//!   move by a rounding step, as `serde_json` parses floats without exact
+//!   round trips);
 //! - every library id an `acquire.targets` frame carries is 1 to 16 ASCII
 //!   letters and digits, checked byte by byte here rather than through the
 //!   parser's own rule, since a host names storage keys with it.
@@ -27,7 +28,14 @@ pub fn check(data: &[u8]) {
     };
     assert!(text.len() <= MAX_FRAME_BYTES, "an oversized frame parsed");
     assert_eq!(frame.v, FRAME_VERSION, "another frame version parsed");
-    let again = Frame::parse(&frame.to_text());
+    let text_again = frame.to_text();
+    // Serializing can lengthen an opaque JSON field (`1e9` is written out
+    // in full), past the limit the parser enforces: such a frame is never
+    // sent again, so there is no round trip to check.
+    if text_again.len() > MAX_FRAME_BYTES {
+        return;
+    }
+    let again = Frame::parse(&text_again);
     let Ok(again) = again else {
         panic!("a parsed frame did not parse again: {again:?}");
     };

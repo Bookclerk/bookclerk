@@ -93,7 +93,8 @@ only that. The others check:
   once no other work holds it. The oracle is
   `bookclerk_resolve::fuzzing::run_case`, replayed from `bookclerk-resolve`.
 - **`node_frame`**: an accepted frame is within the size limit and the
-  frame version, and serializes and parses back to an equal frame. Every
+  frame version, and serializes and parses back to an equal frame (unless
+  its serialized text grows past the limit, as `1e9` written out does). Every
   library id in `acquire.targets` is 1 to 16 ASCII letters and digits,
   checked byte by byte. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.

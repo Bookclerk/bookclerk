@@ -300,6 +300,11 @@ impl Default for OutputSettingsV1 {
 /// Copies one bounded field from the second document onto the first.
 type CopyField = fn(&mut OutputSettingsV1, &OutputSettingsV1);
 
+/// The [`SEED_FIELDS`] judged together in
+/// [`OutputSettingsV1::from_seed_lenient`]: whether one writes
+/// `<library id>` depends on the others.
+const NAMING_SET: &[&str] = &["folder_template", "file_template", "chapter_file_template"];
+
 /// Every field [`OutputSettingsV1::validate`] bounds, by `output.*` name,
 /// for [`OutputSettingsV1::from_seed_lenient`].
 const SEED_FIELDS: &[(&str, CopyField)] = &[
@@ -401,6 +406,9 @@ impl OutputSettingsV1 {
         let mut settings = seed.clone();
         let mut replaced = Vec::new();
         for (name, copy) in SEED_FIELDS {
+            if NAMING_SET.contains(name) {
+                continue;
+            }
             // Each field is judged alone: the defaults are valid, so a
             // candidate that differs from them only in this field fails
             // validation only for this field.
@@ -409,6 +417,34 @@ impl OutputSettingsV1 {
             if candidate.validate().is_err() {
                 copy(&mut settings, &defaults);
                 replaced.push(*name);
+            }
+        }
+        // The naming templates are judged as one set, after the other
+        // fields: `<library id>` may sit in the folder or in both file
+        // templates, so a template is valid or not only beside the others
+        // (and the seed's naming profile). The whole set is kept when it
+        // validates; otherwise the first single override whose default
+        // makes it valid is dropped, or failing that all three are.
+        if settings.validate().is_err() {
+            let naming = SEED_FIELDS
+                .iter()
+                .filter(|(name, _)| NAMING_SET.contains(name));
+            let fixed = naming.clone().find_map(|(name, copy)| {
+                let mut candidate = settings.clone();
+                copy(&mut candidate, &defaults);
+                candidate.validate().is_ok().then_some((*name, candidate))
+            });
+            match fixed {
+                Some((name, candidate)) => {
+                    settings = candidate;
+                    replaced.push(name);
+                }
+                None => {
+                    for (name, copy) in naming {
+                        copy(&mut settings, &defaults);
+                        replaced.push(*name);
+                    }
+                }
             }
         }
         (settings, replaced)

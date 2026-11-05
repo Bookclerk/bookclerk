@@ -726,7 +726,7 @@ async fn acquire_titles<G: HostGuests>(
     let mut attempted = BTreeSet::new();
     let mut acquired = 0u32;
     let mut failed = 0u32;
-    loop {
+    'plan: loop {
         let (targets, planned) = with_retries(|| host.acquire_plan())
             .await
             .map_err(|err| owner_error("the acquire plan", &err))?;
@@ -744,11 +744,13 @@ async fn acquire_titles<G: HostGuests>(
         if fresh.is_empty() {
             return Ok((acquired, failed));
         }
-        for target in fresh {
+        let mut fresh = fresh.into_iter();
+        while let Some(target) = fresh.next() {
             if ctx.is_cancelled() {
                 anyhow::bail!("cancelled");
             }
             attempted.insert(target.book_uuid.clone());
+            let library_id = target.library_id.clone();
             if target.plugin_key != bindings.plugin_key {
                 failed += 1;
                 continue;
@@ -819,7 +821,21 @@ async fn acquire_titles<G: HostGuests>(
             let _ = tokio::fs::remove_dir_all(&outbox).await;
             let _ = tokio::fs::remove_dir_all(title_cache_dir(&outbox)).await;
             match uploaded {
-                Ok(()) => acquired += 1,
+                Ok(()) => {
+                    acquired += 1;
+                    // Another account's title of the same edition is
+                    // planned too: ask again, so the owner shares the files
+                    // just uploaded rather than this host fetching and
+                    // uploading the same edition a second time.
+                    if library_id.is_some()
+                        && fresh
+                            .as_slice()
+                            .iter()
+                            .any(|next| next.library_id == library_id)
+                    {
+                        continue 'plan;
+                    }
+                }
                 Err(err) if ctx.is_cancelled() => return Err(err),
                 Err(err) => {
                     tracing::warn!(job_id = %host.job.job.id, book_uuid = %title.book.uuid, error = %err, "a title failed on the host");

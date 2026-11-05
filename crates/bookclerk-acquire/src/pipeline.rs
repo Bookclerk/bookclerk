@@ -141,13 +141,31 @@ pub async fn acquire_book(
 pub async fn acquire_book_indexed(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
-    req: AcquireRequest,
+    mut req: AcquireRequest,
     index: Option<&mut StorageIndex>,
     source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
     let owner = file_owner_of_request(library, &req).await?;
+    pin_library_id(&mut req, owner.as_ref());
     let recorded = recording_destinations(library, destinations, owner.as_ref());
     acquire_book_recorded(library, &recorded, req, index, source).await
+}
+
+/// Names the whole acquire with the library id of the edition `owner`
+/// read once at its start, so no later naming step re-reads the edition
+/// and, on a failed read, names a file differently from the others.
+/// A library id the request already carries (an owner's, for a host) is
+/// kept.
+fn pin_library_id(req: &mut AcquireRequest, owner: Option<&FileOwner>) {
+    if req.library_id.is_some() {
+        return;
+    }
+    match owner {
+        Some(FileOwner::Edition(edition)) => {
+            req.library_id = bookclerk_library::library_id(edition)
+        }
+        Some(FileOwner::BranchTitle(_)) | None => {}
+    }
 }
 
 /// [`acquire_book_indexed`] against destinations whose writes are recorded
@@ -204,10 +222,10 @@ async fn acquire_book_recorded(
                     matched_existing: true,
                 });
             }
-            let backends: Vec<&dyn StorageBackend> = destinations
+            let backends: Vec<(&str, &dyn StorageBackend)> = destinations
                 .items
                 .iter()
-                .map(|item| item.backend.as_ref())
+                .map(|item| (destination_id(item.kind), item.backend.as_ref()))
                 .collect();
             if let Some(primary_key) = share_acquired_sibling(library, &backends, &book).await? {
                 tracing::info!(
@@ -2284,7 +2302,7 @@ async fn base_naming_ctx(library: &LibraryStore, req: &AcquireRequest) -> Naming
     let book = resolve_book(library, req).await;
     let library_id = match (&req.library_id, &book) {
         (Some(id), _) => Some(id.clone()),
-        (None, Some(book)) => library_id_of(library, &book.uuid).await,
+        (None, Some(book)) => library_id_or_none(library, &book.uuid).await,
         (None, None) => None,
     };
     NamingContext {
@@ -2360,7 +2378,7 @@ async fn base_folder_naming_ctx(
         content_kind: Some(parent.content_kind.clone()),
         library_id: match &req.parent_library_id {
             Some(id) => Some(id.clone()),
-            None => library_id_of(library, &parent.uuid).await,
+            None => library_id_or_none(library, &parent.uuid).await,
         },
         ..Default::default()
     }
@@ -2371,16 +2389,32 @@ async fn base_folder_naming_ctx(
 ///
 /// # Returns
 ///
-/// `None` when the title has no edition (or the read fails, which is
-/// logged); its names then use its product id instead.
-pub async fn library_id_of(library: &LibraryStore, book_uuid: &str) -> Option<String> {
-    match library.edition_of_book(book_uuid).await {
-        Ok(edition) => bookclerk_library::library_id(&edition?),
-        Err(err) => {
+/// `None` when the title has no edition.
+///
+/// # Errors
+///
+/// Returns an error when the edition cannot be read.
+pub async fn library_id_of(
+    library: &LibraryStore,
+    book_uuid: &str,
+) -> bookclerk_library::Result<Option<String>> {
+    Ok(library
+        .edition_of_book(book_uuid)
+        .await?
+        .and_then(|edition| bookclerk_library::library_id(&edition)))
+}
+
+/// [`library_id_of`] for naming outside an acquire's pinned id
+/// ([`pin_library_id`]): a planned key a caller only compares (a preview,
+/// a scan pattern). A failed read is logged and names by product id; an
+/// acquire never reaches here for its own title, whose id it pinned.
+async fn library_id_or_none(library: &LibraryStore, book_uuid: &str) -> Option<String> {
+    library_id_of(library, book_uuid)
+        .await
+        .unwrap_or_else(|err| {
             tracing::warn!(error = %err, "could not read a title's edition for naming");
             None
-        }
-    }
+        })
 }
 
 /// The folder and file naming contexts of `req`. Both carry the edition's
@@ -2584,7 +2618,8 @@ pub async fn planned_title_names(
             variant.options.path_limits,
         );
         // The folder is the title's own only when every other title probed
-        // (other id, title and subtitle) would be filed elsewhere: one
+        // (other product and library id, title and subtitle) would be filed
+        // elsewhere: one
         // wholly different, and one that only extends this title's fields
         // (`Dune: Messiah: …`), which a template using part of a field
         // (`<title short>`, a leading slice) files in the same folder.
@@ -2595,6 +2630,7 @@ pub async fn planned_title_names(
         let filed_apart = probes.iter().all(|probe| {
             let mut other = folder_ctx.clone();
             other.asin = probe(&folder_ctx.asin);
+            other.library_id = folder_ctx.library_id.as_deref().map(probe);
             other.title = probe(&folder_ctx.title);
             other.subtitle = Some(probe(folder_ctx.subtitle.as_deref().unwrap_or_default()));
             let other_key = storage_key_with_contexts(
@@ -2673,8 +2709,10 @@ pub async fn acquire_pdf_only(
     source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
     let owner = file_owner_of_request(library, req).await?;
+    let mut req = req.clone();
+    pin_library_id(&mut req, owner.as_ref());
     let recorded = recording_destinations(library, destinations, owner.as_ref());
-    acquire_pdf_only_recorded(library, &recorded, req, source).await
+    acquire_pdf_only_recorded(library, &recorded, &req, source).await
 }
 
 /// Refuses an acquire whose files could land on another edition's: every
@@ -2757,17 +2795,29 @@ async fn name_held_elsewhere(library: &LibraryStore, key: &str, owner: &FileOwne
 }
 
 /// Marks `book` acquired at the files of another book of its edition, when
-/// one is already acquired with its primary key present on every one of
-/// `backends`, so the edition is not fetched again. The edition's
-/// companion PDF is shared too when that book has one.
+/// one is already acquired and every destination holds its copy, so the
+/// edition is not fetched again. The edition's companion PDF is shared too
+/// when that book has one.
+///
+/// A destination holds the copy when the sibling's primary key there is
+/// the edition's own (unrecorded, as storage matching adopts it, or
+/// recorded for this edition, never another's: a listing that moved
+/// editions leaves its old files with the old one) and every audio key
+/// recorded for the edition there (parts, chapters) is present.
+///
+/// # Arguments
+///
+/// * `destinations` - Each destination's id ([`destination_id`]) and
+///   backend.
+/// * `book` - The book to mark acquired.
 ///
 /// # Returns
 ///
 /// The shared primary key; `None` when the book has no edition yet, or no
-/// other book of its edition is acquired with a stored key that every
-/// backend holds (a destination deployed since, another node's layout, or
-/// a file removed since). The acquire then plans as usual and syncs or
-/// fetches what is missing.
+/// other book of its edition is acquired with a copy every destination
+/// holds (a destination deployed since, another node's layout, or a file
+/// removed since). The acquire then plans as usual and syncs or fetches
+/// what is missing.
 ///
 /// # Errors
 ///
@@ -2775,12 +2825,13 @@ async fn name_held_elsewhere(library: &LibraryStore, key: &str, owner: &FileOwne
 /// fails.
 pub async fn share_acquired_sibling(
     library: &LibraryStore,
-    backends: &[&dyn StorageBackend],
+    destinations: &[(&str, &dyn StorageBackend)],
     book: &BookRecord,
 ) -> Result<Option<String>> {
     let Some(edition) = library.edition_of_book(&book.uuid).await? else {
         return Ok(None);
     };
+    let owner = FileOwner::Edition(edition.clone());
     'siblings: for uuid in library.books_of_edition(&edition).await? {
         if uuid == book.uuid {
             continue;
@@ -2794,9 +2845,18 @@ pub async fn share_acquired_sibling(
         let Some(key) = sibling.storage_key.as_deref().filter(|key| !key.is_empty()) else {
             continue;
         };
-        for backend in backends {
+        for (destination, backend) in destinations {
+            let recorded = library.edition_file(destination, key).await?;
+            if recorded.is_some_and(|file| file.owner != owner) {
+                continue 'siblings;
+            }
             if !backend.exists(key).await? {
                 continue 'siblings;
+            }
+            for audio in library.audio_keys_of(destination, &owner).await? {
+                if !backend.exists(&audio).await? {
+                    continue 'siblings;
+                }
             }
         }
         library
@@ -2808,7 +2868,9 @@ pub async fn share_acquired_sibling(
                 None,
             )
             .await?;
-        if companion_pdf_is_stored(&sibling) {
+        if companion_pdf_is_stored(&sibling)
+            && sibling_pdf_is_present(destinations, sibling.pdf_storage_key.as_deref()).await?
+        {
             library
                 .set_pdf_status(
                     &book.uuid,
@@ -2821,6 +2883,27 @@ pub async fn share_acquired_sibling(
         return Ok(Some(key.to_string()));
     }
     Ok(None)
+}
+
+/// True when the sibling's companion PDF `key` is present on every
+/// destination, so the sharing title can record it as acquired.
+///
+/// # Errors
+///
+/// Returns an error when a destination cannot be checked.
+async fn sibling_pdf_is_present(
+    destinations: &[(&str, &dyn StorageBackend)],
+    key: Option<&str>,
+) -> Result<bool> {
+    let Some(key) = key.filter(|key| !key.is_empty()) else {
+        return Ok(false);
+    };
+    for (_, backend) in destinations {
+        if !backend.exists(key).await? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// The owner the files of `req`'s book are recorded under: its edition.
@@ -3815,6 +3898,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_padded_product_id_still_finds_its_edition() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, " B00PAD ", "user-1", "Padded", None).await;
+        assert!(
+            store.file_owner_of_book(&uuid).await.unwrap().is_some(),
+            "the title row's raw product id finds the trimmed listing"
+        );
+    }
+
+    #[tokio::test]
     async fn a_book_without_an_edition_acquires_nothing() {
         let store = test_store().await;
         // A title over the resolver's 4 KiB text limit is stored but never gets
@@ -3947,6 +4040,109 @@ mod tests {
         assert!(!second.matched_existing, "a missing file is not shared");
         assert_eq!(fetches.load(Ordering::SeqCst), 2);
         assert!(dest.join(&second.storage_key).exists());
+    }
+
+    #[tokio::test]
+    async fn a_sibling_missing_a_part_is_not_shared() {
+        let store = test_store().await;
+        let first_uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let dest = tmp.path().join("dest");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&dest, puts);
+        let source = CountingSource {
+            fetches: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job, "B00SAME", "user-1", &first_uuid);
+        let first = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        let backends: Vec<(&str, &dyn StorageBackend)> = destinations
+            .items
+            .iter()
+            .map(|item| (destination_id(item.kind), item.backend.as_ref()))
+            .collect();
+        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        // The edition also recorded a part file, since removed.
+        let owner = store
+            .file_owner_of_book(&first_uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        let folder = first.storage_key.rsplit_once('/').unwrap().0;
+        assert!(store
+            .record_edition_file(
+                "local",
+                &format!("{folder}/Twin — Part 2.m4b"),
+                &owner,
+                bookclerk_library::FileRole::Part,
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            share_acquired_sibling(&store, &backends, &second)
+                .await
+                .unwrap(),
+            None,
+            "a copy missing a part is not shared"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sibling_pdf_that_is_gone_is_not_shared() {
+        let store = test_store().await;
+        let first_uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let dest = tmp.path().join("dest");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&dest, puts);
+        let source = CountingSource {
+            fetches: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job, "B00SAME", "user-1", &first_uuid);
+        let first = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        // The sibling's row says its PDF is stored, but the file is gone.
+        store
+            .set_pdf_status(
+                &first_uuid,
+                "user-1",
+                AcquireStatus::Acquired,
+                Some("Twin/gone.pdf"),
+            )
+            .await
+            .unwrap();
+        let backends: Vec<(&str, &dyn StorageBackend)> = destinations
+            .items
+            .iter()
+            .map(|item| (destination_id(item.kind), item.backend.as_ref()))
+            .collect();
+        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        assert_eq!(
+            share_acquired_sibling(&store, &backends, &second)
+                .await
+                .unwrap(),
+            Some(first.storage_key),
+            "the audio is still shared"
+        );
+        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        assert_eq!(second.acquire_status, AcquireStatus::Acquired);
+        assert_ne!(
+            second.pdf_status,
+            AcquireStatus::Acquired,
+            "a missing PDF is not recorded as acquired"
+        );
     }
 
     #[tokio::test]
@@ -4096,6 +4292,15 @@ mod tests {
         let names = planned_title_names(&store, &own).await;
         assert_eq!(names.folders, vec!["Ann Author/One".to_string()]);
         assert!(names.own_folder, "a folder named for the title is its own");
+        // So is one named only for the edition.
+        let mut by_id = upload_naming_req(tmp.path(), "B00ONE", "One", "<library id>");
+        by_id.library_id = Some("hd4j63pc".into());
+        let names = planned_title_names(&store, &by_id).await;
+        assert_eq!(names.folders, vec!["hd4j63pc".to_string()]);
+        assert!(
+            names.own_folder,
+            "a folder named for the edition is its own"
+        );
     }
 
     /// A folder that uses only part of the title (`<title short>`, a

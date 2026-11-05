@@ -318,3 +318,48 @@ fn a_legacy_seed_keeps_valid_values_and_defaults_out_of_range_ones() {
     assert!(none.is_empty());
     assert_eq!(clean, defaults);
 }
+
+#[test]
+fn a_legacy_seed_keeps_naming_templates_that_are_valid_together() {
+    // The id is in both file templates, not the folder: valid as a set.
+    let together = OutputConfig {
+        folder_template: Some("<author>".into()),
+        file_template: Some("<title> [<library id>]".into()),
+        chapter_file_template: Some("<ch#> [<library id>]".into()),
+        ..OutputConfig::default()
+    };
+    let (settings, replaced) = OutputSettingsV1::from_seed_lenient(&together);
+    settings.validate().expect("the set is valid");
+    assert!(replaced.is_empty(), "{replaced:?}");
+    assert_eq!(
+        settings.file_template.as_deref(),
+        Some("<title> [<library id>]")
+    );
+
+    // A classic seed whose folder override drops the id loses only that
+    // override: the classic folder default carries it.
+    let classic = OutputConfig {
+        naming_profile: NamingProfile::Classic,
+        folder_template: Some("<title>".into()),
+        ..OutputConfig::default()
+    };
+    let (settings, replaced) = OutputSettingsV1::from_seed_lenient(&classic);
+    settings.validate().expect("a lenient seed is valid");
+    assert_eq!(replaced, vec!["folder_template"]);
+    assert_eq!(settings.folder_template, None);
+
+    // No single default saves a set with the id nowhere and a folder of
+    // its own: every naming override goes.
+    let none = OutputConfig {
+        folder_template: Some("<title>".into()),
+        file_template: Some("<title>".into()),
+        chapter_file_template: Some("<ch#>".into()),
+        ..OutputConfig::default()
+    };
+    let (settings, replaced) = OutputSettingsV1::from_seed_lenient(&none);
+    settings.validate().expect("a lenient seed is valid");
+    assert_eq!(
+        replaced,
+        vec!["folder_template", "file_template", "chapter_file_template"]
+    );
+}

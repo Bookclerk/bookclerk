@@ -165,9 +165,9 @@ pub(super) async fn acquire_plan(
         // Another account's copy of the edition is already here: this title
         // shares its files, as a local acquire would, rather than send the
         // host to fetch keys that title holds.
-        let backends: Vec<&dyn StorageBackend> = destinations
+        let backends: Vec<(&str, &dyn StorageBackend)> = destinations
             .iter()
-            .map(|destination| destination.backend.as_ref())
+            .map(|destination| (destination.id.as_str(), destination.backend.as_ref()))
             .collect();
         match bookclerk_acquire::share_acquired_sibling(library, &backends, &book).await {
             Ok(Some(_)) => continue,
@@ -178,10 +178,11 @@ pub(super) async fn acquire_plan(
         }
         let parent = podcast_parent(library, &book).await?;
         // The host names with this library's edition ids, so it plans the
-        // same keys this node grants.
-        let library_id = owner_library_id(library, &book.uuid).await;
+        // same keys this node grants; a failed read fails the plan rather
+        // than send the host names this node would not grant.
+        let library_id = owner_library_id(library, &book.uuid).await?;
         let parent_library_id = match &parent {
-            Some(parent) => owner_library_id(library, &parent.uuid).await,
+            Some(parent) => owner_library_id(library, &parent.uuid).await?,
             None => None,
         };
         targets.push(AcquireTarget {
@@ -223,9 +224,17 @@ pub(super) async fn acquire_plan(
 
 /// The library id of title `book_uuid` in this node's library, as the
 /// `<library id>` naming tag writes it, or `None` when it has no edition.
-async fn owner_library_id(library: &LibraryStore, book_uuid: &str) -> Option<LibraryId> {
-    let id = bookclerk_acquire::library_id_of(library, book_uuid).await?;
-    LibraryId::try_from(id).ok()
+///
+/// # Errors
+///
+/// Returns an error when the edition cannot be read.
+async fn owner_library_id(
+    library: &LibraryStore,
+    book_uuid: &str,
+) -> bookclerk_library::Result<Option<LibraryId>> {
+    Ok(bookclerk_acquire::library_id_of(library, book_uuid)
+        .await?
+        .and_then(|id| LibraryId::try_from(id).ok()))
 }
 
 /// This node's destinations with the key scope of the title `book_uuid`

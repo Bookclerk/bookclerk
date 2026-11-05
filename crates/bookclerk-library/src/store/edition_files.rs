@@ -28,7 +28,7 @@
 use std::collections::BTreeSet;
 
 use sea_orm::sea_query::{Expr, OnConflict, Query};
-use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter};
+use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder};
 
 use super::{now_str, LibraryStore};
 use crate::entities::{
@@ -223,7 +223,10 @@ impl LibraryStore {
                 store_listings::Column::Marketplace
                     .eq(bookclerk_resolve::stored_marketplace(&book.marketplace)),
             )
-            .filter(store_listings::Column::ProductId.eq(book.product_id))
+            .filter(
+                store_listings::Column::ProductId
+                    .eq(bookclerk_resolve::stored_product_id(&book.product_id)),
+            )
             .one(self.db())
             .await
             .map_err(LibraryError::Orm)?
@@ -615,6 +618,30 @@ impl LibraryStore {
                 sha256: None,
             })
         }))
+    }
+
+    /// The audio keys (primary audio, parts and chapters) recorded for
+    /// `owner` on `destination`, in key order: every file a copy of the
+    /// edition's recording there needs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn audio_keys_of(&self, destination: &str, owner: &FileOwner) -> Result<Vec<String>> {
+        let rows = edition_files::Entity::find()
+            .filter(edition_files::Column::Destination.eq(destination))
+            .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .filter(edition_files::Column::OwnerId.eq(owner.id()))
+            .filter(edition_files::Column::Role.is_in([
+                FileRole::Audio.as_str(),
+                FileRole::Part.as_str(),
+                FileRole::Chapter.as_str(),
+            ]))
+            .order_by_asc(edition_files::Column::StorageKey)
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(rows.into_iter().map(|row| row.storage_key).collect())
     }
 
     /// True when another live edition's file is recorded, on any

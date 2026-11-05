@@ -427,6 +427,8 @@ async fn run_template(command: TemplateCommand, config: &Config) -> anyhow::Resu
                 length_minutes: book.length_minutes,
                 is_abridged: book.is_abridged,
                 content_kind: Some(book.content_kind.clone()),
+                // The edition's id, as an acquire of this title names it.
+                library_id: bookclerk_acquire::library_id_of(&store, &book.uuid).await?,
                 ..Default::default()
             };
             let naming_profile = profile

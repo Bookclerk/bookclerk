@@ -1411,6 +1411,7 @@ mod results_and_uploads {
     async fn library_id(library: &LibraryStore, book_uuid: &str) -> String {
         bookclerk_acquire::library_id_of(library, book_uuid)
             .await
+            .unwrap()
             .expect("the title has an edition")
     }
 
@@ -1981,6 +1982,96 @@ mod results_and_uploads {
             "the host fetched nothing"
         );
         assert_eq!(std::fs::read(owner_out.path().join(key)).unwrap(), b"audio");
+    }
+
+    /// Two of the member's accounts own the same edition, and one job
+    /// covers both: the host fetches
+    /// and uploads it once, then asks for a new plan, in which the owner
+    /// shares the uploaded files with the second account's title.
+    #[tokio::test]
+    async fn a_host_fetches_an_edition_two_accounts_own_once() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let riley = world
+            .owner
+            .list_users()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|user| user.display_name.as_deref() == Some("Riley"))
+            .unwrap();
+        world
+            .owner
+            .upsert_account(PLUGIN, "kim-acct", "us", Some("riley-acct"), true, "test")
+            .await
+            .unwrap();
+        let identity = world
+            .owner
+            .ensure_local_portal_identity(riley.id, None)
+            .await
+            .unwrap();
+        world
+            .owner
+            .link_account(identity.id, PLUGIN, "kim-acct", "test")
+            .await
+            .unwrap();
+        let record = build_sealed_record(
+            b"kim-token-v1",
+            secret_kind::SOURCE_AUTH,
+            PLUGIN,
+            secret_account_type::INTEGRATION,
+            "kim-acct",
+            "kim-acct.auth",
+        )
+        .unwrap();
+        upsert_secret(world.owner.db(), &record).await.unwrap();
+        let mut books = Vec::new();
+        for account in ["riley-acct", "kim-acct"] {
+            books.push(
+                world
+                    .owner
+                    .scope(PLUGIN, "test")
+                    .upsert_book(&owner_book(account, "t1"))
+                    .await
+                    .unwrap(),
+            );
+        }
+        let guests = StubGuests {
+            payload: Arc::new(b"fetched".to_vec()),
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests.clone()).await;
+
+        // The second account carries the first one's id as its label, so
+        // one job names both.
+        let job_id = enqueue_acquire(&world.owner).await;
+        eventually("the host acquire to complete", || async {
+            job(&world.owner, &job_id).await.state == JobState::Succeeded
+        })
+        .await;
+        let mut keys = Vec::new();
+        for book in &books {
+            let acquired = world
+                .owner
+                .get_book_by_uuid(&book.uuid)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                acquired.acquire_status,
+                bookclerk_library::AcquireStatus::Acquired
+            );
+            keys.push(acquired.storage_key.unwrap_or_default());
+        }
+        assert_eq!(keys[0], keys[1], "both titles share one copy");
+        assert_eq!(
+            guests.credentials.lock().unwrap().len(),
+            1,
+            "the host fetched the edition once"
+        );
     }
 
     /// An owner node with two destinations whose naming templates differ
@@ -3639,7 +3730,9 @@ mod results_and_uploads {
             .unwrap()
             .remove(0)
             .options;
-        let short = bookclerk_acquire::library_id_of(&world.owner, &book.uuid).await;
+        let short = bookclerk_acquire::library_id_of(&world.owner, &book.uuid)
+            .await
+            .unwrap();
         let key = planned_key(&book, short.as_deref(), &options);
         record_for_book(&world.owner, "local", &key, &other.uuid)
             .await

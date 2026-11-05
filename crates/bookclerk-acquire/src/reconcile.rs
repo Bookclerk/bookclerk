@@ -493,6 +493,7 @@ pub async fn find_existing_for_request(
             series: req.series.clone(),
             series_index: req.series_index.clone(),
             account_id: Some(req.account_id.clone()),
+            library_id: req.library_id.clone(),
             ..Default::default()
         };
         for alt in planned_extensions() {
