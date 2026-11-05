@@ -155,6 +155,7 @@ useful stays a review responsibility (see GitHub issue #157).
 | UI smoke | `npm run lint` + `npm run test:safe-html` when the UI is affected |
 | CLI reference | `cli_reference_is_current` in `bookclerk-cli` (see below) |
 | Web API reference | `the_committed_document_is_current` and `the_committed_v30_document_is_current` in `bookclerkd` (see below) |
+| Rust doc comment file links | `python3 scripts/tests/test_docs_markdown.py` (no relative file links in library doc comments; see [docs publishing](automation.md#docs-publishing)) |
 | Private-docs regression | `python3 scripts/tests/test_private_docs_lint.py` (every workspace package has `[lints] workspace = true`) |
 
 Some of these need more than a cell:

@@ -989,6 +989,97 @@ def broken_links(out: Path) -> list[str]:
     return broken
 
 
+
+# A Rust doc comment line: `//!` or `///` (not `////`), and its text.
+DOC_COMMENT_RE = re.compile(r"^\s*//(?:!|/(?!/))\s?(.*)$")
+# A reference definition (`[label]: target`) in a doc comment.
+LINK_DEFINITION_RE = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*(\S+)")
+# The end of a file name: a dot and an extension. Intra-doc targets are Rust
+# paths (`crate::a::B`), which never contain one or a `/`.
+FILE_SUFFIX_RE = re.compile(r"\.[A-Za-z0-9]+$")
+
+
+def library_source_dirs() -> list[Path]:
+    """Return the source directory of each workspace library target.
+
+    Returns:
+        The directory holding each library's root module (``lib.rs``),
+        sorted.
+    """
+    result = subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    meta = json.loads(result.stdout)
+    dirs = {
+        Path(target["src_path"]).parent
+        for package in meta["packages"]
+        for target in package["targets"]
+        if set(target["kind"]) & {"lib", "proc-macro", "rlib"}
+    }
+    return sorted(dirs)
+
+
+def source_doc_links(src_dirs: list[Path], root: Path = ROOT) -> list[str]:
+    """Find relative file links in the doc comments of Rust libraries.
+
+    The Rust reference puts a module's docs at a different depth than its
+    source file, so a link written relative to the source (to an ADR, a
+    README, another source file) points out of the published tree, and
+    :func:`broken_links` fails the docs build after the change has landed.
+    Run before the slow build, and from the tests on every pull request, this
+    catches such a link first. Write the path in a code span or link an
+    absolute URL instead. Intra-doc links (Rust paths), absolute URLs,
+    site-absolute paths and anchors are allowed; links in code are ignored.
+    ``main.rs`` and ``src/bin/`` are skipped: binaries are not in the
+    reference.
+
+    Args:
+        src_dirs: Library source directories (see :func:`library_source_dirs`).
+        root: What the reported paths are relative to.
+
+    Returns:
+        ``file:line: target`` for each relative file link.
+    """
+    found = []
+    for src in src_dirs:
+        for rs in sorted(src.rglob("*.rs")):
+            rel = rs.relative_to(src)
+            if rel.parts[0] == "bin" or rel.name == "main.rs":
+                continue
+            in_fence = False
+            for number, raw in enumerate(rs.read_text(encoding="utf-8").splitlines(), start=1):
+                m = DOC_COMMENT_RE.match(raw)
+                if not m:
+                    in_fence = False
+                    continue
+                line = m.group(1)
+                if FENCE_RE.match(line):
+                    in_fence = not in_fence
+                    continue
+                if in_fence:
+                    continue
+                spans = rustdoc_markdown.code_spans(line)
+                hrefs = [
+                    match.group(1)
+                    for match in LINK_RE.finditer(line)
+                    if not any(s <= match.start() < e for s, e in spans)
+                ]
+                definition = LINK_DEFINITION_RE.match(line)
+                if definition:
+                    hrefs.append(definition.group(1))
+                for href in hrefs:
+                    if re.match(r"^[a-z][a-z0-9+.-]*:", href) or href.startswith(("#", "/")):
+                        continue
+                    target = href.split("#", 1)[0]
+                    if "/" in target or FILE_SUFFIX_RE.search(target):
+                        found.append(f"{rs.relative_to(root).as_posix()}:{number}: {href}")
+    return found
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI.
 
@@ -1047,6 +1138,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"==> Web API: {operations} operations")
 
         if not args.skip_rust:
+            relative = source_doc_links(library_source_dirs())
+            if relative:
+                for line in relative[:50]:
+                    print(f"relative link in a doc comment: {line}", file=sys.stderr)
+                raise BuildError(f"{len(relative)} relative file links in Rust doc comments")
             json_dir = args.rust_json_dir.resolve() if args.rust_json_dir else build_rust_json(scratch / "cargo-target")
             crates = convert_rust(json_dir, api / "rust", workspace_libraries())
             print(f"==> Rust: {len(crates)} crates")
