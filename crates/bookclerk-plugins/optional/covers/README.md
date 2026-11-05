@@ -5,7 +5,8 @@ runs in `workerd` and may reach any public website, because cover art lives
 on every store's and catalog's own CDN.
 
 - `fetchCovers` takes up to 32 `https` URLs and a per-image byte cap. It
-  fetches four at a time, with a 15 second limit each, and streams each
+  fetches four at a time, with a 15 second limit each, follows up to five
+  redirects only to URLs that pass the same `https` check, and streams each
   body into the sink the host passes, under the URL's index. It answers
   one entry per URL: stored, or why not (HTTP status, not an image, over
   the cap, refused URL).

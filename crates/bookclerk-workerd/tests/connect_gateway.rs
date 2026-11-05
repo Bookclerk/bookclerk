@@ -230,6 +230,55 @@ async fn workerd_redirect_to_private_denied_even_with_public_redirect_flag() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn workerd_manual_redirect_returns_the_3xx_unfollowed() {
+    let Some(workerd) = find_workerd() else {
+        panic!(
+            "pinned workerd binary missing; run `cargo ensure-workerd`. Do not set BOOKCLERK_SKIP_WORKERD."
+        );
+    };
+    let http = TcpListener::bind("127.0.0.1:0").await.expect("http bind");
+    let http_port = http.local_addr().expect("http addr").port();
+    let location = b"HTTP/1.1 302 Found\r\nlocation: http://127.0.0.1:9/next\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+    tokio::spawn(async move { http_once(http, location).await });
+
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sockets");
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let grant = serde_json::to_string(&policy(1, false)).expect("policy json");
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"))
+                .env("BOOKCLERK_PLUGIN_ROOT", &fixture)
+                .env("BOOKCLERK_WORKERD_BIN", &workerd)
+                .env("TMPDIR", tmp.path())
+                .env(GRANT_POLICY_ENV, &grant)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn bookclerk-workerd");
+            let stdin = child.stdin.take().expect("stdin");
+            let stdout = child.stdout.take().expect("stdout");
+            let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
+            tokio::task::spawn_local(rpc);
+            tokio::time::timeout(Duration::from_secs(90), client.describe())
+                .await
+                .expect("describe timed out")
+                .expect("describe");
+            let dest = open_storage(&client).await;
+            // The plugin asked to vet hops itself, so the gate hands back the
+            // 302 instead of following it.
+            let answer = get_text(&dest, &format!("manual:http://127.0.0.1:{http_port}/"))
+                .await
+                .expect("manual redirect");
+            assert_eq!(answer, "302\nhttp://127.0.0.1:9/next");
+            let _ = child.kill().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn workerd_any_public_host_matches_names_but_not_addresses() {
     let Some(workerd) = find_workerd() else {
         panic!(

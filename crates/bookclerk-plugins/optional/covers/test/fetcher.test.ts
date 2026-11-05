@@ -10,6 +10,7 @@ import {
   CONCURRENCY,
   CoverFailure,
   MAX_BYTES,
+  MAX_REDIRECTS,
   MAX_URLS,
   capped,
   checkParams,
@@ -299,4 +300,57 @@ test("fetchOne turns every failure into an answer", async () => {
   );
   assert.deepEqual(untyped, { url: "https://a.example/x", stored: true });
   assert.deepEqual(stored[0]?.options, {});
+});
+
+test("fetchOne follows redirects itself and vets every hop", async () => {
+  const redirect = (location: string | null, status = 302): Response => {
+    const headers = new Headers();
+    if (location !== null) headers.set("location", location);
+    return new Response(null, { status, headers });
+  };
+  const run = async (reply: (url: string) => Response) => {
+    const { options, seen } = scripted(reply);
+    const { sink, stored } = recordingSink();
+    const answer = await fetchOne(options, "https://a.example/start", 0, 8, sink);
+    return { answer, seen, stored };
+  };
+
+  const followed = await run((url) =>
+    url === "https://a.example/start" ? redirect("/img.png", 301) : image(new Uint8Array([7])),
+  );
+  assert.deepEqual(followed.answer, {
+    url: "https://a.example/start",
+    stored: true,
+    contentType: "image/jpeg",
+  });
+  assert.deepEqual(
+    followed.seen.map((s) => [s.url, s.init.redirect]),
+    [
+      ["https://a.example/start", "manual"],
+      ["https://a.example/img.png", "manual"],
+    ],
+  );
+  assert.deepEqual([...(followed.stored[0]?.bytes ?? [])], [7]);
+
+  for (const location of [
+    "http://a.example/img.png",
+    "https://a.example:8443/img.png",
+    "https://127.0.0.1/img.png",
+    "https://[",
+  ]) {
+    const refused = await run(() => redirect(location));
+    assert.equal(
+      refused.answer.error,
+      "redirect to a URL that is not https on a public hostname",
+      location,
+    );
+    assert.equal(refused.seen.length, 1, location);
+    assert.equal(refused.stored.length, 0, location);
+  }
+
+  assert.equal((await run(() => redirect(null, 307))).answer.error, "HTTP 307 without a location");
+
+  const loop = await run(() => redirect("/again"));
+  assert.equal(loop.answer.error, "too many redirects");
+  assert.equal(loop.seen.length, MAX_REDIRECTS + 1);
 });

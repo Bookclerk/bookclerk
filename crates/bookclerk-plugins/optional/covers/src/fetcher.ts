@@ -231,6 +231,12 @@ function reason(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Most redirects followed for one URL. */
+export const MAX_REDIRECTS = 5;
+
+/** Statuses that redirect to their `Location`. */
+const REDIRECTS: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+
 /**
  * Fetches one URL and puts its body into the sink under `index`.
  *
@@ -252,18 +258,37 @@ export async function fetchOne(
   const target = checkUrl(url);
   if (target === undefined) return failed("not an https URL on a public hostname");
   let response: Response;
-  try {
-    response = await options.fetch(target, {
-      method: "GET",
-      headers: {
-        accept: "image/*",
-        "user-agent": `Bookclerk-Covers/${options.version} (+https://bookclerk.app)`,
-      },
-      redirect: "follow",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch (err) {
-    return failed(`request failed: ${reason(err)}`);
+  const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  let current = target;
+  for (let hop = 0; ; hop += 1) {
+    try {
+      response = await options.fetch(current, {
+        method: "GET",
+        headers: {
+          accept: "image/*",
+          "user-agent": `Bookclerk-Covers/${options.version} (+https://bookclerk.app)`,
+        },
+        // Each hop must pass `checkUrl` too, so redirects are followed here.
+        redirect: "manual",
+        signal,
+      });
+    } catch (err) {
+      return failed(`request failed: ${reason(err)}`);
+    }
+    if (!REDIRECTS.has(response.status)) break;
+    await drop(response);
+    if (hop >= MAX_REDIRECTS) return failed("too many redirects");
+    const location = response.headers.get("location");
+    if (location === null) return failed(`HTTP ${response.status} without a location`);
+    let next: string | undefined;
+    try {
+      next = checkUrl(new URL(location, current).href);
+    } catch {
+      next = undefined;
+    }
+    if (next === undefined)
+      return failed("redirect to a URL that is not https on a public hostname");
+    current = next;
   }
   if (!response.ok) {
     await drop(response);

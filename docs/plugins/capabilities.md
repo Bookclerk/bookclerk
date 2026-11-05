@@ -109,6 +109,9 @@ Workerd egress is matched by the shared `EgressPolicy` and
   301 and 302 convert **POST to GET** only; 303 converts non-GET/HEAD to
   GET; 307 and 308 keep the method and body. `AbortSignal` and other
   RequestInit metadata survive hops.
+- **Manual redirects.** `fetch(url, { redirect: "manual" })` gets the 3xx
+  back unfollowed, as on Cloudflare, so a plugin can vet each hop itself.
+  The gate still checks the host of every request the plugin sends.
 - **Python and outbound.** Workerd Python guests also need the Pyodide and
   CDN hosts (`cdn.jsdelivr.net`, `pypi.org`, `files.pythonhosted.org`) in
   the consent grant. Materializing uses the same set and doesn't widen

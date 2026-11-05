@@ -351,6 +351,10 @@ export default {
       }
       const response = await fetch(toFetch, { redirect: "manual" });
       if (response.status >= 300 && response.status < 400) {
+        // `redirect: "manual"` hands the 3xx back so the plugin can vet
+        // each hop itself (as on Cloudflare); this gate still checked the
+        // host it was sent to.
+        if (request.redirect === "manual") return response;
         const location = response.headers.get("location");
         if (!location) return response;
         hop += 1;
