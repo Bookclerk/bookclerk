@@ -39,6 +39,11 @@ pub fn check(data: &[u8]) {
     let Some(accepted) = https_url_on_hosts(text, PATTERNS) else {
         return;
     };
+    assert!(
+        accepted.len() <= MAX_FETCH_URL_BYTES,
+        "accepted {} bytes, over the limit, for {text:?}",
+        accepted.len()
+    );
     let lead = text.trim();
     assert!(
         !lead.bytes().any(|b| b <= b' ' || b == 0x7f),

@@ -128,7 +128,7 @@ change your library on their own.
 Bookclerk asks every deployed metadata provider, in turn, when it:
 
 - matches non-Audible books to an Audible ASIN during a scan
-  (`discovery.enrich_from_audible`), looking each Audible catalog
+  (`library.enrich_from_audible`), looking each Audible catalog
   candidate up by ASIN;
 - fills in title details in Discover;
 - overlays an Audible chapter layout, cover and tags onto plain audio
@@ -136,9 +136,15 @@ Bookclerk asks every deployed metadata provider, in turn, when it:
 - fills gaps (subjects, description, cover, language) on owned books with
   `bookclerk discover enrich-metadata`, or during `discover recommend`.
 
-With no provider deployed, these steps find nothing and leave your library
-as it is; Bookclerk has no built-in lookups to fall back to. A provider
-that fails is logged and skipped, and the next one is asked.
+With no provider deployed, ASIN matching, the acquire overlay and gap
+filling find nothing and leave your library as it is; Bookclerk has no
+built-in lookups to fall back to. Discover title details still fill what
+they can from the Libro.fm catalog when a deployed `libro` source finds the
+book's ISBN. A provider that fails, or gives no answer within 30 seconds, is
+logged and skipped, and the next one is asked.
+
+The acquire overlay asks the providers deployed on the node that runs the
+download, so in a cluster deploy them wherever acquires run.
 
 These plugins are optional, so they aren't installed by default. Install
 the plugin first, as [Installing plugins](plugins.md#installing-plugins)

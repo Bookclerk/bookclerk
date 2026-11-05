@@ -696,7 +696,10 @@ pub fn https_url_on_hosts(url: &str, patterns: &[&str]) -> Option<String> {
     if is_restricted_hostname(host) || !patterns.iter().any(|pattern| host_matches(host, pattern)) {
         return None;
     }
-    Some(parsed.into())
+    // Serializing percent-encodes non-ASCII path bytes, so the URL handed
+    // back can be longer than the input; the bound holds for what is fetched.
+    let serialized: String = parsed.into();
+    (serialized.len() <= MAX_FETCH_URL_BYTES).then_some(serialized)
 }
 
 /// `host` without URL-form IPv6 brackets (`[::1]` → `::1`), so an address a
@@ -807,6 +810,13 @@ mod tests {
             "a".repeat(MAX_FETCH_URL_BYTES)
         );
         assert!(https_url_on_hosts(&long, &cdn).is_none());
+        // Short enough as written, too long once percent-encoded.
+        let encoded = format!(
+            "https://m.media-amazon.com/{}",
+            "\u{e9}".repeat(MAX_FETCH_URL_BYTES / 4)
+        );
+        assert!(encoded.len() <= MAX_FETCH_URL_BYTES);
+        assert!(https_url_on_hosts(&encoded, &cdn).is_none());
         assert!(https_url_on_hosts("https://m.media-amazon.com/a.jpg", &[]).is_none());
     }
 

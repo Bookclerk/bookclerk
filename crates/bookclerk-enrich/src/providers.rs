@@ -170,9 +170,9 @@ pub fn record_identifier(record: &MetadataRecord, scheme: IdentifierScheme) -> O
     record
         .identifiers
         .iter()
-        .find(|id| id.scheme == scheme)
+        .filter(|id| id.scheme == scheme)
         .map(|id| id.value.trim())
-        .filter(|v| !v.is_empty())
+        .find(|v| !v.is_empty())
 }
 
 /// Deepest chapter nesting [`chapter_info_from_layout`] builds. A provider's
@@ -187,7 +187,8 @@ pub const MAX_CHAPTER_DEPTH: usize = 8;
 /// Each node carries both the camelCase keys Audnexus uses and the
 /// snake_case keys of Audible's own API, as the pipeline accepts either.
 /// A chapter whose `depth` skips a level is attached to the deepest open
-/// parent, so a malformed list still nests without losing a chapter, and
+/// shallower chapter, so a malformed list still nests without losing a
+/// chapter, chapters of equal depth stay siblings, and
 /// nesting stops at [`MAX_CHAPTER_DEPTH`] levels.
 ///
 /// # Arguments
@@ -200,8 +201,10 @@ pub const MAX_CHAPTER_DEPTH: usize = 8;
 /// known, and `isAccurate`.
 #[must_use]
 pub fn chapter_info_from_layout(layout: &MetadataChapters) -> Value {
-    // Each stack entry is one open chapter at depth = its index.
-    let mut stack: Vec<Map<String, Value>> = Vec::new();
+    // Open chapters with their declared (clamped) depths, strictly increasing
+    // from the bottom, so the stack never holds more than
+    // MAX_CHAPTER_DEPTH entries.
+    let mut stack: Vec<(usize, Map<String, Value>)> = Vec::new();
     let mut roots: Vec<Value> = Vec::new();
     for chapter in &layout.chapters {
         // The layout is plugin output, and the tree is walked recursively
@@ -209,7 +212,10 @@ pub fn chapter_info_from_layout(layout: &MetadataChapters) -> Value {
         let depth = usize::try_from(chapter.depth)
             .unwrap_or(usize::MAX)
             .min(MAX_CHAPTER_DEPTH - 1);
-        while stack.len() > depth {
+        // Close every open chapter at this depth or deeper: what stays open
+        // is a shallower chapter, this one's parent. Comparing declared
+        // depths keeps siblings together after a skipped level.
+        while stack.last().is_some_and(|(open, _)| *open >= depth) {
             close_top(&mut stack, &mut roots);
         }
         let mut node = Map::new();
@@ -223,7 +229,7 @@ pub fn chapter_info_from_layout(layout: &MetadataChapters) -> Value {
         if let Some(len) = chapter.length_ms {
             mirror(&mut node, "lengthMs", "length_ms", len);
         }
-        stack.push(node);
+        stack.push((depth, node));
     }
     while !stack.is_empty() {
         close_top(&mut stack, &mut roots);
@@ -256,12 +262,12 @@ pub fn chapter_info_from_layout(layout: &MetadataChapters) -> Value {
 
 /// Pops the deepest open chapter and attaches it to its parent, or to the
 /// top-level list when it has none.
-fn close_top(stack: &mut Vec<Map<String, Value>>, roots: &mut Vec<Value>) {
-    let Some(node) = stack.pop() else {
+fn close_top(stack: &mut Vec<(usize, Map<String, Value>)>, roots: &mut Vec<Value>) {
+    let Some((_, node)) = stack.pop() else {
         return;
     };
     match stack.last_mut() {
-        Some(parent) => {
+        Some((_, parent)) => {
             let children = parent
                 .entry("chapters")
                 .or_insert_with(|| Value::Array(Vec::new()));
@@ -315,6 +321,32 @@ mod tests {
         }
         assert_eq!(levels, MAX_CHAPTER_DEPTH);
         assert_eq!(count, 200, "every chapter is kept");
+    }
+
+    #[test]
+    fn equal_depths_after_a_skip_stay_siblings() {
+        let layout = MetadataChapters {
+            found: true,
+            chapters: vec![
+                chapter("Root", 0, 0),
+                chapter("A", 10, 3),
+                chapter("B", 20, 3),
+                chapter("C", 30, 2),
+                chapter("Next", 40, 0),
+            ],
+            ..MetadataChapters::default()
+        };
+        let info = chapter_info_from_layout(&layout);
+        let titles = |v: &Value| -> Vec<String> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n["title"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(titles(&info["chapters"]), ["Root", "Next"]);
+        assert_eq!(titles(&info["chapters"][0]["chapters"]), ["A", "B", "C"]);
+        assert!(info["chapters"][0]["chapters"][0].get("chapters").is_none());
     }
 
     #[test]
@@ -413,6 +445,13 @@ mod tests {
             Some("B00ABC1234")
         );
         assert_eq!(record_identifier(&record, IdentifierScheme::Isbn), None);
+        let mut later = record.clone();
+        later.identifiers.push(isbn);
+        assert_eq!(
+            record_identifier(&later, IdentifierScheme::Isbn),
+            Some("9780000000002"),
+            "a blank value does not hide a later one"
+        );
     }
 
     #[tokio::test]

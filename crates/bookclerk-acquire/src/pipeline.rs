@@ -1997,13 +1997,25 @@ fn release_year(date: &str) -> Option<String> {
 /// image CDN, where Audible catalog covers live.
 const OVERLAY_COVER_HOSTS: &[&str] = &["*.media-amazon.com", "*.ssl-images-amazon.com"];
 
+/// Largest provider cover the overlay saves, in bytes. Catalog covers are a
+/// few hundred KiB; anything far larger is not a cover.
+const MAX_OVERLAY_COVER_BYTES: u64 = 10 * 1024 * 1024;
+
 /// Downloads a provider's cover image into the work directory.
 ///
-/// A provider record is plugin output, so the host only follows its cover URL
-/// over `https` to Audible's image CDN ([`OVERLAY_COVER_HOSTS`], checked by
-/// [`bookclerk_plugin_manifest::https_url_on_hosts`]) and does not follow
-/// redirects: never to a host outside the plugin's own network grant, such as
-/// a loopback or private address.
+/// A provider record is plugin output, and this is the one place the host
+/// itself fetches a URL a plugin handed it, outside that plugin's own network
+/// grant. So the host only follows the cover URL over `https` to Audible's
+/// image CDN ([`OVERLAY_COVER_HOSTS`], checked by
+/// [`bookclerk_plugin_manifest::https_url_on_hosts`]), does not follow
+/// redirects, and saves at most [`MAX_OVERLAY_COVER_BYTES`]. A loopback,
+/// private or any other address is never requested.
+///
+/// # Arguments
+///
+/// * `url` - The provider's cover URL.
+/// * `audible_asin` - ASIN naming the saved file.
+/// * `work_dir` - The title's scratch directory.
 ///
 /// # Returns
 ///
@@ -2027,23 +2039,43 @@ async fn download_overlay_cover(url: &str, audible_asin: &str, work_dir: &Path) 
         }
     };
     match http.get(checked).send().await {
-        Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-            Ok(bytes) if !bytes.is_empty() => {
-                let path = work_dir.join(format!("{audible_asin}.provider-cover.jpg"));
-                tokio::fs::write(&path, &bytes).await.ok().map(|()| path)
-            }
-            Ok(_) => None,
-            Err(err) => {
-                tracing::debug!(error = %err, "provider cover body read failed");
-                None
-            }
-        },
         Ok(resp) => {
-            tracing::debug!(status = %resp.status(), "provider cover HTTP non-success");
-            None
+            let path = work_dir.join(format!("{audible_asin}.provider-cover.jpg"));
+            save_overlay_cover(resp, &path).await
         }
         Err(err) => {
             tracing::debug!(error = %err, "provider cover download failed");
+            None
+        }
+    }
+}
+
+/// Saves a cover response's body to `path`, capped at
+/// [`MAX_OVERLAY_COVER_BYTES`].
+///
+/// # Arguments
+///
+/// * `resp` - The cover response.
+/// * `path` - Where to write the image.
+///
+/// # Returns
+///
+/// `path` once a non-empty body is written; `None` for a non-success status,
+/// an empty or oversized body, or a write failure (nothing is left behind).
+async fn save_overlay_cover(resp: reqwest::Response, path: &Path) -> Option<PathBuf> {
+    if !resp.status().is_success() {
+        tracing::debug!(status = %resp.status(), "provider cover HTTP non-success");
+        return None;
+    }
+    match write_http_body_capped(resp, path, MAX_OVERLAY_COVER_BYTES).await {
+        Ok(written) if written > 0 => Some(path.to_path_buf()),
+        Ok(_) => {
+            let _ = tokio::fs::remove_file(path).await;
+            None
+        }
+        Err(err) => {
+            tracing::debug!(error = %err, "provider cover not saved");
+            let _ = tokio::fs::remove_file(path).await;
             None
         }
     }
@@ -2723,16 +2755,52 @@ mod tests {
     use bookclerk_library::{EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload};
 
     #[tokio::test]
-    async fn refused_cover_urls_are_not_downloaded() {
-        let dir = std::env::temp_dir();
-        assert!(download_overlay_cover("not a url", "B00TEST001", &dir)
-            .await
-            .is_none());
-        assert!(
-            download_overlay_cover("https://127.0.0.1/c.jpg", "B00TEST001", &dir)
-                .await
-                .is_none()
-        );
+    async fn refused_cover_urls_are_never_requested() {
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let served = serve_http_body_loop(b"jpeg".to_vec(), Arc::clone(&hits)).await;
+        let addr = served
+            .strip_prefix("http://")
+            .and_then(|rest| rest.split('/').next())
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for refused in [
+            "not a url".to_string(),
+            served.clone(),
+            format!("https://{addr}/c.jpg"),
+            "https://127.0.0.1/c.jpg".to_string(),
+        ] {
+            assert!(
+                download_overlay_cover(&refused, "B00TEST001", dir.path())
+                    .await
+                    .is_none(),
+                "{refused}"
+            );
+        }
+        // The server is reachable, so a request that slipped past the host
+        // check would have been counted.
+        reqwest::get(&served).await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn overlay_covers_are_saved_within_the_size_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("cover.jpg");
+        let small = serve_http_body(b"jpeg".to_vec()).await;
+        let resp = reqwest::get(&small).await.unwrap();
+        assert_eq!(save_overlay_cover(resp, &path).await, Some(path.clone()));
+        assert_eq!(std::fs::read(&path).unwrap(), b"jpeg");
+
+        let empty = serve_http_body(Vec::new()).await;
+        let resp = reqwest::get(&empty).await.unwrap();
+        assert_eq!(save_overlay_cover(resp, &path).await, None);
+        assert!(!path.exists());
+
+        let cap = usize::try_from(MAX_OVERLAY_COVER_BYTES).unwrap();
+        let huge = serve_http_body(vec![0u8; cap + 1]).await;
+        let resp = reqwest::get(&huge).await.unwrap();
+        assert_eq!(save_overlay_cover(resp, &path).await, None);
+        assert!(!path.exists());
     }
 
     #[test]

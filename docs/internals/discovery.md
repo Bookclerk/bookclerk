@@ -60,6 +60,10 @@ Per [Open Library API guidelines](https://openlibrary.org/developers/api):
 - The `openlibrary` plugin identifies itself with its `contact_email`
   setting ([integrations](../server/integrations.md#open-library-and-audnexus))
 - The host spaces rows about 400 ms apart and stops after 25 rows per run
+- A row with an ISBN is looked up by ISBN; one without is searched by title
+  and author, and only a result with the same title (ignoring case and
+  punctuation) is used. The first record that fills a gap wins, and the
+  title's work only takes the fields it lacks
 - Rows already enriched are skipped (`enrich_source` `metadata:<provider>`,
   or the legacy `openlibrary`) — provenance cache. The work record is written
   before the row is marked, so a failure leaves the row to retry

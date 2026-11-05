@@ -18,7 +18,9 @@ use bookclerk_enrich::{
     ProvidedRecord,
 };
 use bookclerk_library::{BookRecord, CatalogEnrichmentFields, LibraryStore, WorkEnrichment};
-use bookclerk_plugin_sdk::{IdentifierScheme, MetadataLookupParams, MetadataSearchParams};
+use bookclerk_plugin_sdk::{
+    IdentifierScheme, MetadataLookupParams, MetadataRecord, MetadataSearchParams,
+};
 use chrono::Utc;
 use tokio::time::sleep;
 
@@ -87,6 +89,16 @@ impl Gaps {
     fn any(self) -> bool {
         self.subjects || self.description || self.cover || self.language
     }
+
+    /// True when `record` has a non-blank value for at least one gap.
+    fn filled_by(self, record: &MetadataRecord) -> bool {
+        let has =
+            |gap: bool, value: Option<&String>| gap && value.is_some_and(|v| !v.trim().is_empty());
+        has(self.subjects, record.categories.as_ref())
+            || has(self.description, record.description.as_ref())
+            || has(self.cover, record.cover_url.as_ref())
+            || has(self.language, record.language.as_ref())
+    }
 }
 
 /// Fills missing description, subjects, cover and language from the
@@ -151,7 +163,11 @@ pub async fn enrich_books_from_metadata(
                         limit: Some(1),
                     })
                     .await;
-                let matched = answer.records.first().cloned();
+                let matched = answer
+                    .records
+                    .iter()
+                    .find(|provided| gaps.filled_by(&provided.record))
+                    .cloned();
                 (answer, matched)
             }
             None => {
@@ -168,7 +184,7 @@ pub async fn enrich_books_from_metadata(
                         limit: Some(SEARCH_LIMIT),
                     })
                     .await;
-                let matched = first_title_match(&answer, &book.title);
+                let matched = first_title_match(&answer, &book.title, gaps);
                 (answer, matched)
             }
         };
@@ -204,10 +220,13 @@ fn already_enriched(book: &BookRecord) -> bool {
     })
 }
 
-/// The first search hit whose title contains, or is contained in, `title`
-/// (case-insensitive).
-fn first_title_match(answer: &MetadataAnswer, title: &str) -> Option<ProvidedRecord> {
-    let wanted = title.trim().to_lowercase();
+/// The first search hit with the same title as `title`, once both are
+/// normalized, that fills one of `gaps`.
+///
+/// Titles must be equal, not merely overlap: `Foundation` must not take the
+/// blurb, cover and work id of `Foundation and Empire`.
+fn first_title_match(answer: &MetadataAnswer, title: &str, gaps: Gaps) -> Option<ProvidedRecord> {
+    let wanted = normalized_title(title);
     if wanted.is_empty() {
         return None;
     }
@@ -215,10 +234,20 @@ fn first_title_match(answer: &MetadataAnswer, title: &str) -> Option<ProvidedRec
         .records
         .iter()
         .find(|provided| {
-            let got = provided.record.title.trim().to_lowercase();
-            !got.is_empty() && (got.contains(&wanted) || wanted.contains(&got))
+            normalized_title(&provided.record.title) == wanted && gaps.filled_by(&provided.record)
         })
         .cloned()
+}
+
+/// `title` lower-cased, with punctuation dropped and whitespace collapsed,
+/// so `Dune: Messiah` and `dune  messiah` compare equal.
+fn normalized_title(title: &str) -> String {
+    title
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Writes the fields `matched` fills: the work first, then the title.
@@ -248,15 +277,38 @@ async fn apply_record(
     }
 
     // The work first: if one of its writes fails, the title stays unmarked
-    // and the next run asks again (#640).
-    if let Some(work_id) = library.work_id_for_book(&book.uuid).await? {
-        let work = WorkEnrichment {
-            description: description.clone().or_else(|| book.description.clone()),
-            subjects: subjects.clone().or_else(|| book.subjects.clone()),
-            categories: book.categories.clone(),
-            cover_url: cover_url.clone().or_else(|| book.cover_url.clone()),
+    // and the next run asks again (#640). The work only takes what it lacks,
+    // so a work another edition already described keeps its own values. A
+    // title not resolved to a work yet is still filled: resolving it later
+    // copies the title's fields onto its work.
+    let work_id = library.work_id_for_book(&book.uuid).await?;
+    let work = match &work_id {
+        Some(id) => library.get_work(id).await?,
+        None => None,
+    };
+    if let Some(work) = work {
+        let lacking = |stored: &Option<String>, offered: Option<String>| {
+            offered.filter(|_| stored.as_deref().is_none_or(|v| v.trim().is_empty()))
         };
-        library.set_work_enrichment(&work_id, &work).await?;
+        let fill = WorkEnrichment {
+            description: lacking(
+                &work.description,
+                description.clone().or_else(|| book.description.clone()),
+            ),
+            subjects: lacking(
+                &work.subjects,
+                subjects.clone().or_else(|| book.subjects.clone()),
+            ),
+            categories: lacking(&work.categories, book.categories.clone()),
+            cover_url: lacking(
+                &work.cover_url,
+                cover_url.clone().or_else(|| book.cover_url.clone()),
+            ),
+        };
+        let work_id = work.id;
+        if !fill.is_empty() {
+            library.set_work_enrichment(&work_id, &fill).await?;
+        }
         if let Some(ol) = record_identifier(record, IdentifierScheme::OpenLibraryWork) {
             library
                 .add_work_identifier(
@@ -304,7 +356,7 @@ mod tests {
     use async_trait::async_trait;
     use bookclerk_enrich::{ChaptersAnswer, ProviderFailure};
     use bookclerk_library::NewBook;
-    use bookclerk_plugin_sdk::{Identifier, MetadataChaptersParams, MetadataRecord};
+    use bookclerk_plugin_sdk::{Identifier, MetadataChaptersParams};
 
     use super::*;
 
@@ -442,20 +494,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn titles_without_isbn_are_searched_and_must_overlap() {
+    async fn titles_without_isbn_are_searched_and_must_match_exactly() {
         let (store, uuids) =
             store_with(&[("p1", "Foundation", None), ("p2", "Unrelated Book", None)]).await;
+        let mut sequel = ol_record("Foundation and Empire");
+        sequel.description = Some("The sequel's blurb".into());
         let providers = Fixed {
             search: vec![
                 ol_record("Something Else"),
-                ol_record("Foundation and Empire"),
+                sequel,
+                ol_record(" FOUNDATION. "),
             ],
             ..Fixed::default()
         };
         let n = enrich_books_from_metadata(&store, &providers, &opts(5))
             .await
             .unwrap();
-        assert_eq!(n, 1, "only the overlapping title is filled");
+        assert_eq!(n, 1, "only the exactly matching title is filled");
         let filled = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
         assert_eq!(filled.description.as_deref(), Some("A blurb"));
         let skipped = store.get_book_by_uuid(&uuids[1]).await.unwrap().unwrap();
@@ -589,10 +644,82 @@ mod tests {
             }],
             failures: Vec::new(),
         };
+        let all = Gaps {
+            subjects: true,
+            description: true,
+            cover: true,
+            language: true,
+        };
         assert!(
-            first_title_match(&answer, "Dune").is_none(),
+            first_title_match(&answer, "Dune", all).is_none(),
             "blank hit titles never match"
         );
-        assert!(first_title_match(&answer, "  ").is_none());
+        assert!(first_title_match(&answer, "  ", all).is_none());
+        assert_eq!(normalized_title("  Dune:  Messiah! "), "dune messiah");
+    }
+
+    #[tokio::test]
+    async fn the_first_record_that_fills_a_gap_is_used() {
+        let (store, uuids) = store_with(&[("p1", "Dune", Some("9780441172719"))]).await;
+        let providers = Fixed {
+            by_isbn: vec![
+                (
+                    "9780441172719".into(),
+                    MetadataRecord {
+                        title: "Dune".into(),
+                        ..MetadataRecord::default()
+                    },
+                ),
+                ("9780441172719".into(), ol_record("Dune")),
+            ],
+            ..Fixed::default()
+        };
+        assert_eq!(
+            enrich_books_from_metadata(&store, &providers, &opts(5))
+                .await
+                .unwrap(),
+            1
+        );
+        let book = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
+        assert_eq!(book.description.as_deref(), Some("A blurb"));
+    }
+
+    #[tokio::test]
+    async fn a_described_work_keeps_its_own_values() {
+        let (store, uuids) = store_with(&[("p1", "Dune", Some("9780441172719"))]).await;
+        let work_id = store
+            .work_id_for_book(&uuids[0])
+            .await
+            .unwrap()
+            .expect("upsert resolves a work");
+        store
+            .set_work_enrichment(
+                &work_id,
+                &WorkEnrichment {
+                    description: Some("Another edition's blurb".into()),
+                    ..WorkEnrichment::default()
+                },
+            )
+            .await
+            .unwrap();
+        let providers = Fixed {
+            by_isbn: vec![("9780441172719".into(), ol_record("Dune"))],
+            ..Fixed::default()
+        };
+        assert_eq!(
+            enrich_books_from_metadata(&store, &providers, &opts(5))
+                .await
+                .unwrap(),
+            1
+        );
+        let work = store.get_work(&work_id).await.unwrap().expect("work");
+        assert_eq!(work.description.as_deref(), Some("Another edition's blurb"));
+        assert_eq!(
+            work.cover_url.as_deref(),
+            Some("https://covers.openlibrary.org/b/id/1-L.jpg"),
+            "the work still takes what it lacked"
+        );
+        let book = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
+        assert_eq!(book.description.as_deref(), Some("A blurb"));
     }
 }

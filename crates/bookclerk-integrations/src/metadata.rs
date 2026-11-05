@@ -2,7 +2,12 @@
 //!
 //! Every registered integration that exports the `metadata` entrypoint is a
 //! provider. Calls go to each one in registration order; one that fails is
-//! reported in the answer and does not stop the rest.
+//! reported in the answer and does not stop the rest. Each call is bounded by
+//! [`PROVIDER_CALL_TIMEOUT`], so a provider that hangs is reported as failed
+//! and the next one is still asked.
+
+use std::future::Future;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bookclerk_enrich::{
@@ -12,8 +17,34 @@ use bookclerk_enrich::{
 use bookclerk_plugin_abi::{MetadataChaptersParams, MetadataLookupParams, MetadataSearchParams};
 use tracing::warn;
 
+use crate::error::{IntegrationError, Result};
 use crate::registry::IntegrationRegistry;
 use crate::traits::Integration;
+
+/// Longest one metadata provider call may take before the host gives up on
+/// it and asks the next provider. Covers the plugin's own outbound requests
+/// (Open Library can take several seconds) with room to spare.
+pub const PROVIDER_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Runs one provider call, failing it once [`PROVIDER_CALL_TIMEOUT`] passes.
+///
+/// # Arguments
+///
+/// * `call` - The provider call.
+///
+/// # Errors
+///
+/// The call's own error, or a timeout error when it did not finish in time.
+async fn bounded<T>(call: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(PROVIDER_CALL_TIMEOUT, call)
+        .await
+        .unwrap_or_else(|_| {
+            Err(IntegrationError::message(format!(
+                "no answer within {} s",
+                PROVIDER_CALL_TIMEOUT.as_secs()
+            )))
+        })
+}
 
 /// Records a failed provider call in `failures` and logs it.
 fn failed(
@@ -39,7 +70,7 @@ impl MetadataProviders for IntegrationRegistry {
     async fn lookup(&self, params: &MetadataLookupParams) -> MetadataAnswer {
         let mut answer = MetadataAnswer::default();
         for integration in self.metadata_providers() {
-            match integration.metadata_lookup(params.clone()).await {
+            match bounded(integration.metadata_lookup(params.clone())).await {
                 Ok(found) => {
                     answer
                         .records
@@ -57,7 +88,7 @@ impl MetadataProviders for IntegrationRegistry {
     async fn search(&self, params: &MetadataSearchParams) -> MetadataAnswer {
         let mut answer = MetadataAnswer::default();
         for integration in self.metadata_providers() {
-            match integration.metadata_search(params.clone()).await {
+            match bounded(integration.metadata_search(params.clone())).await {
                 Ok(found) => {
                     answer
                         .records
@@ -75,7 +106,7 @@ impl MetadataProviders for IntegrationRegistry {
     async fn chapters(&self, params: &MetadataChaptersParams) -> ChaptersAnswer {
         let mut answer = ChaptersAnswer::default();
         for integration in self.metadata_providers() {
-            match integration.metadata_chapters(params.clone()).await {
+            match bounded(integration.metadata_chapters(params.clone())).await {
                 Ok(layout) if layout.found => {
                     answer.found = Some(ProvidedChapters {
                         provider: integration.plugin_key().to_string(),
@@ -118,6 +149,8 @@ mod tests {
         Empty,
         /// Fails every call.
         Fails,
+        /// Never answers.
+        Hangs,
     }
 
     struct Fake {
@@ -134,6 +167,14 @@ mod tests {
                 }]),
                 Mode::Empty | Mode::NotProvider => Ok(Vec::new()),
                 Mode::Fails => Err(IntegrationError::message("boom")),
+                Mode::Hangs => unreachable!("hanging fakes never get here"),
+            }
+        }
+
+        /// Waits forever when this fake hangs.
+        async fn maybe_hang(&self) {
+            if matches!(self.mode, Mode::Hangs) {
+                std::future::pending::<()>().await;
             }
         }
     }
@@ -169,6 +210,7 @@ mod tests {
             &self,
             _params: MetadataLookupParams,
         ) -> Result<Vec<MetadataRecord>> {
+            self.maybe_hang().await;
             self.records()
         }
 
@@ -176,6 +218,7 @@ mod tests {
             &self,
             _params: MetadataSearchParams,
         ) -> Result<Vec<MetadataRecord>> {
+            self.maybe_hang().await;
             self.records()
         }
 
@@ -183,6 +226,7 @@ mod tests {
             &self,
             _params: MetadataChaptersParams,
         ) -> Result<MetadataChapters> {
+            self.maybe_hang().await;
             match self.mode {
                 Mode::Answers => Ok(MetadataChapters {
                     found: true,
@@ -194,6 +238,7 @@ mod tests {
                 }),
                 Mode::Empty | Mode::NotProvider => Ok(MetadataChapters::default()),
                 Mode::Fails => Err(IntegrationError::message("boom")),
+                Mode::Hangs => unreachable!("hanging fakes never get here"),
             }
         }
     }
@@ -243,6 +288,33 @@ mod tests {
             assert!(answer.failures[0].message.contains("boom"));
             assert!(answer.incomplete());
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hanging_provider_times_out_and_the_next_is_still_asked() {
+        let registry = registry(vec![
+            Fake {
+                key: "stuck",
+                mode: Mode::Hangs,
+            },
+            Fake {
+                key: "first",
+                mode: Mode::Answers,
+            },
+        ]);
+        for answer in [
+            registry.lookup(&MetadataLookupParams::default()).await,
+            registry.search(&MetadataSearchParams::default()).await,
+        ] {
+            assert_eq!(answer.records.len(), 1);
+            assert_eq!(answer.records[0].provider, "first");
+            assert_eq!(answer.failures.len(), 1);
+            assert_eq!(answer.failures[0].provider, "stuck");
+            assert!(answer.failures[0].message.contains("no answer"));
+        }
+        let chapters = registry.chapters(&MetadataChaptersParams::default()).await;
+        assert_eq!(chapters.found.map(|c| c.provider).as_deref(), Some("first"));
+        assert_eq!(chapters.failures[0].provider, "stuck");
     }
 
     #[tokio::test]
