@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Download, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { coverUrl, type AcquireStatus, type BookRecord } from "@/lib/api";
+import { coverSrc, coverUrl, type AcquireStatus, type BookRecord } from "@/lib/api";
 import { formatDate, formatDuration } from "@/lib/libraryFilters";
 import { cn } from "@/lib/utils";
 
@@ -16,16 +16,11 @@ const statusStyles: Record<AcquireStatus, string> = {
   error: "bg-brick/15 text-brick",
 };
 
-function absoluteCoverUrl(raw: string): string {
-  const trimmed = raw.trim();
-  if (trimmed.startsWith("//")) return `https:${trimmed}`;
-  return trimmed;
-}
-
 function coverCandidates(book: BookRecord): string[] {
   const out: string[] = [coverUrl(book.uuid)];
-  const remote = book.cover_url?.trim();
-  if (remote) out.push(absoluteCoverUrl(remote));
+  // The storefront's cover only through the daemon, never from its own site.
+  const remote = coverSrc(book.cover_path, "full");
+  if (remote) out.push(remote);
   out.push(FALLBACK_COVER);
   return out;
 }

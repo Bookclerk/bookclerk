@@ -68,6 +68,17 @@ Details: [Operations → Reverse proxy](operations.md#reverse-proxy--tls).
 Hosts of one library talk to each other over TLS, except on loopback.
 Details: [Libraries and branches](cluster-hosts.md).
 
+### Leave the web app's policy in place
+
+The web app is served with a Content-Security-Policy. Pages run only
+Bookclerk's own scripts, load images only from Bookclerk, talk only to
+Bookclerk, and can't be framed by another site. Covers, store icons and
+profile pictures are downloaded by Bookclerk and served from its own
+address ([How covers are served](integrations.md#how-covers-are-served)).
+If your proxy adds its own `Content-Security-Policy` header, it must still
+allow Bookclerk's own scripts, images and connections. A stricter header,
+such as `script-src 'none'`, stops the app from loading.
+
 ## Sign-in
 
 - **Ask for a second factor** on password sign-ins: **Settings → Sign-in**,

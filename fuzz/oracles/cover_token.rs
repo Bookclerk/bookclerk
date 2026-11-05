@@ -10,9 +10,14 @@
 //! is an `https` URL with a host; and a token signed under one key never
 //! opens under another. The input is read both as a token and, from its
 //! second byte on, as a URL to round-trip.
+//!
+//! The avatar route's other way to name a URL, a Gravatar hash from the
+//! request path, is checked on the same input: `gravatar_url` answers only
+//! for exactly 64 lowercase hex digits, decided here byte by byte, and the
+//! URL it builds is that hash on `www.gravatar.com` and nothing else.
 
 use base64::Engine as _;
-use bookclerk_cover::token::{open, sign, TokenKey, MAC_BYTES, MAX_URL_BYTES};
+use bookclerk_cover::token::{gravatar_url, open, sign, TokenKey, MAC_BYTES, MAX_URL_BYTES};
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
@@ -49,6 +54,30 @@ fn independent_token(key: &[u8; 32], url: &str) -> String {
     )
 }
 
+/// Whether `hash` is a Gravatar hash, decided without the crate under test.
+fn is_gravatar_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|b| b"0123456789abcdef".contains(&b))
+}
+
+/// `gravatar_url` names a URL exactly for a Gravatar hash, and only that
+/// hash's picture on `www.gravatar.com`.
+fn check_gravatar(hash: &str) {
+    let url = gravatar_url(hash);
+    assert_eq!(
+        url.is_some(),
+        is_gravatar_hash(hash),
+        "gravatar hash {hash:?}"
+    );
+    if let Some(url) = url {
+        let parsed = url::Url::parse(&url).expect("gravatar URL parses");
+        assert_eq!(parsed.scheme(), "https");
+        assert_eq!(parsed.host_str(), Some("www.gravatar.com"));
+        assert_eq!(parsed.path(), format!("/avatar/{hash}"));
+        assert_eq!(parsed.query(), Some("d=404&s=360"));
+        assert!(parsed.username().is_empty() && parsed.port().is_none());
+    }
+}
+
 /// Runs the oracle on one input.
 ///
 /// # Panics
@@ -62,6 +91,9 @@ pub fn check(data: &[u8]) {
     let key_bytes = key_bytes();
     let key = TokenKey::from_bytes(key_bytes);
     let other = TokenKey::from_bytes(other_key_bytes());
+    if let Ok(text) = std::str::from_utf8(data) {
+        check_gravatar(text);
+    }
     if let Ok(token) = std::str::from_utf8(data) {
         if let Some(url) = open(&key, token) {
             assert_eq!(

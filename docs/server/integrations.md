@@ -209,8 +209,8 @@ and time. Its health check makes no request.
 
 ### How covers are served
 
-Discover, catalog search, title details, the wishlist and the request
-queue give each cover two fields: `cover_url`, the remote address the
+Library titles, Discover, catalog search, title details, the wishlist and
+the request queue give each cover two fields: `cover_url`, the remote address the
 store or catalog named, and `cover_path`, a same-origin path such as
 `/api/covers/<token>`. Add `/128`, `/360` or `/full` to the path for a
 thumbnail, a card or the full image.
@@ -239,9 +239,34 @@ The acquire overlay gets its cover the same way, so Bookclerk itself
 never requests a cover URL. Without a deployed cover fetcher, covers
 answer `503` and the overlay keeps the store's own cover.
 
-> [!NOTE]
-> The web app still shows `cover_url` directly. It switches to
-> `cover_path` in a later release.
+The web app loads covers only through `cover_path`, so a browser never
+contacts the store's or catalog's image host. It shows a placeholder until
+a cover arrives, loads covers as they scroll into view, and cancels a
+download when its cover leaves the page.
+
+### Other images
+
+The same service serves every other image the web app shows from
+somewhere else, as a 128 px JPEG:
+
+- **Store icons** at `GET /api/stores/{id}/icon`, the icon a deployed
+  storefront or integration names for its sign-in button. Accounts,
+  Settings and plugin consent show plugin logos through a signed path
+  (below).
+- **Gravatars** at `GET /api/avatars/gravatar/{hash}`, where `hash` is a
+  user's `gravatar_hash`.
+- **Sign-in provider pictures** through the `picture_path` next to each
+  `picture_url` (`/api/auth/me`, `/api/users` and wishers), a signed
+  `/api/images/<token>` path. Remote plugin logos use the same kind of
+  path.
+
+These answer with a one-day browser cache header instead of `immutable`,
+because the image behind the address can change. Bookclerk itself keeps
+serving its cached copy until the cache evicts it, so a changed picture
+can take longer to appear. Without a deployed cover fetcher they answer
+`503` and the web app shows a monogram. Gravatars are downloaded at most
+four at a time, since anyone signed in can name a new hash; a request
+over that limit also answers `503`.
 
 ## Claim tickets and Accounts
 

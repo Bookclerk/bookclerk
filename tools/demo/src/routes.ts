@@ -177,6 +177,12 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/library/books/{uuid}/cover", "allow"],
   // Same-origin cover images; the token only names URLs the API handed out.
   ["GET", "/api/covers/{token}/{size}", "allow"],
+  // Same-origin Gravatars (fixed host, validated hash) and store icons (from
+  // a deployed plugin's brand), through the same cover service.
+  ["GET", "/api/avatars/gravatar/{hash}", "allow"],
+  // Signed profile pictures and remote logos, like a cover token.
+  ["GET", "/api/images/{token}", "allow"],
+  ["GET", "/api/stores/{id}/icon", "allow"],
   ["POST", "/api/library/scan", "allow"],
   ["GET", "/api/live", "allow"],
   ["GET", "/api/queues", "allow"],

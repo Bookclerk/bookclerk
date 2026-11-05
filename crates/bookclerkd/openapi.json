@@ -13865,6 +13865,417 @@
         "x-bookclerk-access": "The operator, or any library session."
       }
     },
+    "/api/images/{token}": {
+      "get": {
+        "tags": [
+          "Discover"
+        ],
+        "summary": "Serves a signed image that is not a cover as a 128 px JPEG.",
+        "description": "The path comes from a `picture_path` or `logo` field: a sign-in\nprovider's profile picture or a plugin's remote logo. It is fetched and\nprocessed like a cover, but answers with a daily browser cache header\ninstead of `immutable`, because the remote image can change at the same\naddress. Bookclerk keeps serving its cached copy until it is evicted.",
+        "operationId": "get_image",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Signed token from a `picture_path` or `logo` field.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The image as a JPEG.",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The token was not issued by this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "not_found",
+                  "message": "That page or resource was not found.",
+                  "status": 404
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The image could not be downloaded or is not a supported image.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "bad_gateway",
+                  "message": "An upstream service failed.",
+                  "status": 502
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This node cannot fetch or process images right now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "service_unavailable",
+                  "message": "The Bookclerk daemon is not ready to handle this request.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      }
+    },
+    "/api/avatars/gravatar/{hash}": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Serves a user's Gravatar as a 128 px JPEG through the cover service.",
+        "description": "The `gravatar_hash` of a user (from `/api/auth/me` or `/api/users`) names\nthe picture. Bookclerk downloads it through the `covers` plugin, so the\nbrowser never contacts Gravatar.",
+        "operationId": "get_gravatar",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "path",
+            "description": "A user's `gravatar_hash`: SHA-256 of the email, 64 lowercase hex digits.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The picture as a JPEG.",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The hash is not 64 lowercase hex digits.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "not_found",
+                  "message": "That page or resource was not found.",
+                  "status": 404
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The email has no Gravatar, or the image is not a supported image.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "bad_gateway",
+                  "message": "An upstream service failed.",
+                  "status": 502
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This node cannot fetch or process images right now, or too many Gravatars are downloading at once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "service_unavailable",
+                  "message": "The Bookclerk daemon is not ready to handle this request.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      }
+    },
+    "/api/stores/{id}/icon": {
+      "get": {
+        "tags": [
+          "Discover"
+        ],
+        "summary": "Serves a storefront's or integration's icon as a 128 px JPEG through the\ncover service.",
+        "description": "The icon is the one the plugin names for its sign-in button. A plugin\nthat is not deployed on this node, or names no icon, is a 404.",
+        "operationId": "get_store_icon",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Storefront or integration id (`audible`, `libro`, `audiobookshelf`, …).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The icon as a JPEG.",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No deployed storefront or integration has this id, or it names no icon.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "not_found",
+                  "message": "That page or resource was not found.",
+                  "status": 404
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The icon could not be downloaded or is not a supported image.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "bad_gateway",
+                  "message": "An upstream service failed.",
+                  "status": 502
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This node cannot fetch or process images right now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "service_unavailable",
+                  "message": "The Bookclerk daemon is not ready to handle this request.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      }
+    },
     "/api/discover/recommendations": {
       "get": {
         "tags": [
@@ -23687,6 +24098,14 @@
             "description": "HTTPS URL to display.",
             "example": "https://lh3.googleusercontent.com/a/example=s96-c"
           },
+          "picture_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin 128 px copy of `picture_url` for the web app to show,\nwhen this node can sign it.",
+            "example": "/api/images/aHR0cHM6Ly9saDMuZ29vZ2xldXNlcmNvbnRlbnQuY29tL2EvZXhhbXBsZT1zOTYtYw.N14rqh66Bok9-eCqJKBNoQ"
+          },
           "last_used_at": {
             "type": [
               "string",
@@ -24015,6 +24434,14 @@
             ],
             "description": "HTTPS URL for cover art when known.",
             "example": "https://images.example.com/covers/9780441478125.jpg"
+          },
+          "cover_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen `cover_url` is an `https` URL; never stored. Append `/128`\n(thumbnail), `/360` (card) or `/full`, so a client can show covers\nwithout loading `cover_url` from another site.",
+            "example": "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
           },
           "subjects": {
             "type": [
@@ -24542,8 +24969,8 @@
           },
           "logo": {
             "type": "string",
-            "description": "Logo image href (often a favicon URL).",
-            "example": "https://www.google.com/s2/favicons?domain=libro.fm&sz=128"
+            "description": "Same-origin logo image (a 128 px copy of the brand's icon), or empty\nwhen there is none.",
+            "example": "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.N14rqh66Bok9-eCqJKBNoQ"
           }
         }
       },
@@ -30347,8 +30774,8 @@
               "string",
               "null"
             ],
-            "description": "Logo URL or host-served embed path.",
-            "example": "/api/plugins/libro/logo"
+            "description": "Same-origin logo: the host-served embed path, or a 128 px copy of\nthe remote logo the plugin names.",
+            "example": "/api/plugins/source/libro/logo"
           }
         }
       },
@@ -31542,8 +31969,8 @@
               "string",
               "null"
             ],
-            "description": "Google favicon (or portal brand) URL for Settings list rows.",
-            "example": "https://www.google.com/s2/favicons?domain=libro.fm&sz=64"
+            "description": "Same-origin logo for Settings list rows: the plugin's embedded logo,\nor a 128 px copy of the remote logo its manifest names.",
+            "example": "/api/images/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.N14rqh66Bok9-eCqJKBNoQ"
           },
           "settings": {
             "type": "array",
@@ -32793,6 +33220,14 @@
             ],
             "description": "HTTPS picture from the wishing identity, when any.",
             "example": "https://accounts.example.com/u/dana/picture.png"
+          },
+          "picture_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin 128 px copy of `picture_url` for the web app to show\n(filled by the daemon; never stored).",
+            "example": "/api/images/aHR0cHM6Ly9hY2NvdW50cy5leGFtcGxlLmNvbS91L2RhbmEvcGljdHVyZS5wbmc.N14rqh66Bok9-eCqJKBNoQ"
           }
         }
       },
@@ -36019,6 +36454,14 @@
             "type": "string",
             "description": "HTTPS URL of the picture at the provider or its CDN.",
             "example": "https://avatars.githubusercontent.com/u/8675309"
+          },
+          "picture_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin 128 px copy of `picture_url` for the web app to show,\nwhen this node can sign it.",
+            "example": "/api/images/aHR0cHM6Ly9hdmF0YXJzLmdpdGh1YnVzZXJjb250ZW50LmNvbS91Lzg2NzUzMDk.N14rqh66Bok9-eCqJKBNoQ"
           },
           "last_used_at": {
             "type": [

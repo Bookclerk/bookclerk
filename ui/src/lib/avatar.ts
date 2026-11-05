@@ -3,12 +3,15 @@
  */
 
 /**
- * HTTPS picture supplied by a linked identity provider.
+ * Picture supplied by a linked identity provider.
  */
 export type SsoPicture = {
   identity_id: number;
   provider: string;
+  /** The provider's own HTTPS address; never loaded by the web app. */
   picture_url: string;
+  /** Same-origin 128 px copy of `picture_url`, when the server signed one. */
+  picture_path?: string | null;
   last_used_at?: string | null;
 };
 
@@ -32,14 +35,29 @@ export type ResolvedAvatar =
   | { kind: "sso"; src: string; identityId: number };
 
 /**
- * Gravatar image URL that 404s when the email has no Gravatar.
+ * Same-origin Gravatar picture: Bookclerk downloads it, so the browser never
+ * contacts Gravatar. The route fails when the email has no Gravatar.
  *
  * @param hash - SHA-256 hex of the trimmed lowercase email.
- * @param size - Pixel size requested from Gravatar.
- * @returns Image URL.
+ * @returns Image path.
  */
-export function gravatarUrl(hash: string, size = 128): string {
-  return `https://www.gravatar.com/avatar/${hash}?d=404&s=${size}`;
+export function gravatarUrl(hash: string): string {
+  return `/api/avatars/gravatar/${encodeURIComponent(hash)}`;
+}
+
+/**
+ * The same-origin source of an identity picture, if the server signed one.
+ *
+ * @param picture - Picture from `/me`, `/api/users` or a wisher.
+ * @returns Image path, or undefined.
+ */
+export function ssoPictureSrc(picture: SsoPicture | undefined): string | undefined {
+  const path = picture?.picture_path?.trim();
+  // Only a same-origin path: the app's CSP would block anything else.
+  if (!path || !path.startsWith("/") || path.startsWith("//") || path.startsWith("/\\")) {
+    return undefined;
+  }
+  return path;
 }
 
 /**
@@ -49,7 +67,7 @@ export function gravatarUrl(hash: string, size = 128): string {
  * @returns Last-used picture, or undefined when none exist.
  */
 export function lastUsedSso(pictures: SsoPicture[] | undefined): SsoPicture | undefined {
-  const pics = (pictures ?? []).filter((p) => p.picture_url.trim());
+  const pics = (pictures ?? []).filter((p) => ssoPictureSrc(p));
   if (pics.length === 0) return undefined;
   return [...pics].sort((a, b) => {
     const ta = a.last_used_at ? Date.parse(a.last_used_at) : 0;
@@ -121,8 +139,9 @@ export function selectedSourceKey(resolved: ResolvedAvatar): string {
 function autoChoice(fields: AvatarFields): ResolvedAvatar {
   if (fields.has_avatar) return { kind: "upload" };
   const sso = lastUsedSso(fields.sso_pictures);
-  if (sso) {
-    return { kind: "sso", src: sso.picture_url, identityId: sso.identity_id };
+  const ssoSrc = ssoPictureSrc(sso);
+  if (sso && ssoSrc) {
+    return { kind: "sso", src: ssoSrc, identityId: sso.identity_id };
   }
   if (fields.gravatar_hash) {
     return { kind: "gravatar", src: gravatarUrl(fields.gravatar_hash) };
@@ -141,8 +160,9 @@ function choiceFor(source: string, fields: AvatarFields): ResolvedAvatar | null 
   if (source.startsWith("sso:")) {
     const id = Number(source.slice(4));
     const pic = fields.sso_pictures?.find((p) => p.identity_id === id);
-    if (pic?.picture_url) {
-      return { kind: "sso", src: pic.picture_url, identityId: id };
+    const src = ssoPictureSrc(pic);
+    if (src) {
+      return { kind: "sso", src, identityId: id };
     }
   }
   return null;

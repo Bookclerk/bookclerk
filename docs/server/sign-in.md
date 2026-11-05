@@ -282,6 +282,9 @@ disabled while impersonating.
 (when there is an email), SSO pictures or an upload. Automatic choice
 prefers an upload, then the last SSO picture, then Gravatar
 (`https://www.gravatar.com/avatar/{sha256}?d=404`), then the monogram.
+Gravatar and SSO pictures are downloaded by Bookclerk and served from its
+own address, so the browser never contacts Gravatar or the provider (see
+[Other images](integrations.md#other-images)).
 
 - Uploads are JPEG, PNG or WebP, saved as
   `$BOOKCLERK_FILES_DIR/avatars/{id}.{ext}`.

@@ -54,6 +54,13 @@ process is stopped; when the process stops or dies, the next cover starts
 a new one. With `media.isolation = "off"`
 covers are processed in the daemon, like media jobs.
 
+A page of covers fits a one-core node: the `budget` test in
+`bookclerk-cover` processes a 20-cover page, one large cover among them,
+one after another and fails when an optimized build takes longer than
+2 seconds. Run it with
+`cargo test --release -p bookclerk-cover --test budget -- --nocapture`
+to see the time on your hardware.
+
 ## Install the worker
 
 Build the worker and ship it with the hosts, beside the plugin jail's

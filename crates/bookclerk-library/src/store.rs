@@ -6684,6 +6684,7 @@ fn queue_wisher_for(
             .filter(|s| !s.is_empty())
             .map(crate::gravatar_hash),
         picture_url,
+        picture_path: None,
     }
 }
 
@@ -7003,6 +7004,7 @@ fn map_book(m: books::Model) -> Result<BookRecord> {
         description: m.description,
         language: m.language,
         cover_url: m.cover_url,
+        cover_path: None,
         subjects: m.subjects,
         enrich_source: m.enrich_source,
         enrich_confidence: m.enrich_confidence,

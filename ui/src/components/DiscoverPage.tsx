@@ -755,7 +755,7 @@ export function DiscoverPage({
                           setSelected(catalogTitleFromHit(hit, wishlistUuidForHit(wishlist, hit)));
                         }}
                       >
-                        <CoverThumb url={hit.cover_url} />
+                        <CoverThumb path={hit.cover_path} />
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium text-ink">{hit.title}</p>
                           <p className="truncate text-xs text-ink/50">
@@ -1155,7 +1155,7 @@ function ResultRow({
         onClick={onOpen}
         aria-label={`Open details for ${title.title}`}
       >
-        <CoverThumb url={title.cover_url} className="h-14 w-14 sm:h-16 sm:w-16" />
+        <CoverThumb path={title.cover_path} className="h-14 w-14 sm:h-16 sm:w-16" />
       </button>
       <button type="button" className="min-w-0 text-left" onClick={onOpen}>
         <h2 className="line-clamp-2 font-display text-base font-semibold leading-tight text-ink hover:underline sm:line-clamp-1 sm:text-lg">
@@ -1369,7 +1369,11 @@ function ShelfCard({
       className="w-40 shrink-0 snap-start rounded-lg bg-card-mid p-2.5 shadow-sm ring-1 ring-ink/5 sm:w-44"
     >
       <button type="button" className="w-full text-left" onClick={() => onOpen(title)}>
-        <CoverThumb url={title.cover_url} className="aspect-square w-full rounded-md shadow-sm" />
+        <CoverThumb
+          path={title.cover_path}
+          size={360}
+          className="aspect-square w-full rounded-md shadow-sm"
+        />
         <p className="mt-2.5 line-clamp-2 text-sm font-semibold leading-snug text-ink hover:underline">
           {title.title}
         </p>
@@ -1381,7 +1385,7 @@ function ShelfCard({
               .join(" · ")}
           </p>
         ) : null}
-        {!title.cover_url && (blurb || rec.reasons[0]) ? (
+        {!title.cover_path && (blurb || rec.reasons[0]) ? (
           <p className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-ink/45">
             {blurb || rec.reasons[0]}
           </p>
