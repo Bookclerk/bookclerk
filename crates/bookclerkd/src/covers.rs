@@ -1,8 +1,8 @@
 //! Same-origin cover images: `GET /api/covers/{token}/{size}`.
 //!
-//! Storefront and metadata responses name covers by remote URL. The browser
-//! never loads those: the API hands out a same-origin path instead, and this
-//! module turns a request for that path into a JPEG.
+//! Storefront and metadata responses name covers by remote URL. Next to each,
+//! the API hands out a same-origin path so a client need not load the remote
+//! URL, and this module turns a request for that path into a JPEG.
 //!
 //! - **Tokens.** A cover path carries the remote URL and an HMAC of it under a
 //!   key that never leaves this node, so the route only ever fetches URLs the
@@ -262,6 +262,7 @@ impl CoverService {
     ///
     /// [`CoverFailure::UnknownToken`] for a token this node did not issue,
     /// and the cached or fresh failure otherwise.
+    #[cfg(test)]
     pub(crate) async fn image(
         &self,
         backend: &impl CoverBackend,
@@ -270,6 +271,30 @@ impl CoverService {
     ) -> Result<Vec<u8>, CoverFailure> {
         let url = self.open_token(token).ok_or(CoverFailure::UnknownToken)?;
         self.image_for_url(backend, url, size).await
+    }
+
+    /// [`Self::image_for_url`] in its own task, so a caller that is dropped
+    /// (a request past its deadline, a cancelled acquire) never abandons a
+    /// flight: the cover is still fetched, cached and its flight released,
+    /// and the next request is served from disk.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::image_for_url`].
+    pub(crate) async fn image_detached<B: CoverBackend>(
+        self: &Arc<Self>,
+        backend: Arc<B>,
+        url: String,
+        size: CoverSize,
+    ) -> Result<Vec<u8>, CoverFailure> {
+        let service = Arc::clone(self);
+        tokio::spawn(async move { service.image_for_url(&*backend, url, size).await })
+            .await
+            .unwrap_or_else(|err| {
+                Err(CoverFailure::Unavailable(format!(
+                    "cover task failed: {err}"
+                )))
+            })
     }
 
     /// The JPEG for `size` of the cover at `url`, fetching and processing it
@@ -731,10 +756,14 @@ pub(crate) async fn get_cover(
     let Some(size) = CoverSize::parse(&size) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let backend = LiveBackend {
+    let backend = Arc::new(LiveBackend {
         integrations: Arc::clone(&state.integrations),
+    });
+    let outcome = match state.covers.open_token(&token) {
+        Some(url) => state.covers.image_detached(backend, url, size).await,
+        None => Err(CoverFailure::UnknownToken),
     };
-    match state.covers.image(&backend, &token, size).await {
+    match outcome {
         Ok(bytes) => (
             StatusCode::OK,
             [
@@ -771,7 +800,7 @@ pub(crate) struct AcquireCovers {
     /// The node's cover service.
     pub(crate) service: Arc<CoverService>,
     /// Fetches and processes for it.
-    pub(crate) backend: LiveBackend,
+    pub(crate) backend: Arc<LiveBackend>,
 }
 
 #[async_trait::async_trait]
@@ -779,7 +808,11 @@ impl bookclerk_acquire::CoverImages for AcquireCovers {
     async fn full_cover(&self, url: &str) -> Option<Vec<u8>> {
         match self
             .service
-            .image_for_url(&self.backend, url.trim().to_owned(), CoverSize::Full)
+            .image_detached(
+                Arc::clone(&self.backend),
+                url.trim().to_owned(),
+                CoverSize::Full,
+            )
             .await
         {
             Ok(jpeg) => Some(jpeg),
@@ -799,9 +832,9 @@ pub(crate) async fn acquire_metadata(
     bookclerk_acquire::AcquireMetadata::new(Arc::new(state.integrations.read().await.clone()))
         .with_covers(Arc::new(AcquireCovers {
             service: Arc::clone(&state.covers),
-            backend: LiveBackend {
+            backend: Arc::new(LiveBackend {
                 integrations: Arc::clone(&state.integrations),
-            },
+            }),
         }))
 }
 
@@ -951,6 +984,36 @@ mod tests {
         let key = load_or_create_key(&short).expect("replaced");
         assert_eq!(std::fs::read(&short).expect("read"), *key.as_bytes());
         assert_eq!(format!("{key:?}"), "TokenKey(..)");
+    }
+
+    #[tokio::test]
+    async fn a_dropped_caller_still_caches_the_cover_and_releases_its_flight() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = service(temp.path());
+        let backend = Arc::new(Fake::default());
+        let url = "https://img.example/ok-dropped.png".to_owned();
+        // The caller gives up while the download is still sleeping.
+        let gave_up = tokio::time::timeout(
+            Duration::from_millis(1),
+            service.image_detached(Arc::clone(&backend), url.clone(), CoverSize::Card),
+        )
+        .await;
+        assert!(gave_up.is_err());
+        let entry = temp.path().join("covers").join(cache_key(&url));
+        for _ in 0..200 {
+            if entry.join("full.jpg").is_file() && lock(&service.flights).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(entry.join("full.jpg").is_file());
+        assert!(lock(&service.flights).is_empty());
+        let bytes = service
+            .image_detached(Arc::clone(&backend), url, CoverSize::Full)
+            .await
+            .expect("cached");
+        assert!(bytes.starts_with(&[0xFF, 0xD8, 0xFF]));
+        assert_eq!(backend.fetched.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

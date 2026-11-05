@@ -129,12 +129,23 @@ impl CoverWorker {
                 job: LABEL,
                 detail: detail.clone(),
             }),
-            CoverRunner::InProcess => tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                bookclerk_cover::process(&cover).map_err(|err| MediaError::Cover(err.to_string()))
-            })
-            .await
-            .map_err(|err| worker_error(format!("in-process cover panicked: {err}")))?,
+            CoverRunner::InProcess => {
+                // The permit stays with the decode, which cannot be stopped,
+                // so a stalled one keeps its slot even after it is refused.
+                let decode = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    bookclerk_cover::process(&cover)
+                        .map_err(|err| MediaError::Cover(err.to_string()))
+                });
+                match tokio::time::timeout(COVER_TIMEOUT, decode).await {
+                    Ok(done) => done
+                        .map_err(|err| worker_error(format!("in-process cover panicked: {err}")))?,
+                    Err(_) => Err(MediaError::Cover(format!(
+                        "decoding took longer than {}s",
+                        COVER_TIMEOUT.as_secs()
+                    ))),
+                }
+            }
             CoverRunner::Worker {
                 launch,
                 confinement,

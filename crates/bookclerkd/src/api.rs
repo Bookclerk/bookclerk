@@ -5828,7 +5828,11 @@ async fn create_wishlist(
     headers: HeaderMap,
     Json(body): Json<CreateRequestBody>,
 ) -> Result<Json<TitleRequestRecord>, (StatusCode, String)> {
-    create_request_inner(&state, &headers, body).await
+    let Json(mut row) = create_request_inner(&state, &headers, body).await?;
+    state
+        .covers
+        .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+    Ok(Json(row))
 }
 
 /// Cancels an open wishlist item the caller owns; others get 403.
@@ -5885,15 +5889,18 @@ async fn delete_wishlist(
         .update_title_request_status(&uuid, RequestStatus::Cancelled, None)
         .await
         .map_err(internal_err)?;
-    library
+    let mut row = library
         .get_title_request_by_uuid(&uuid)
         .await
         .map_err(internal_err)?
-        .map(Json)
         .ok_or((
             StatusCode::NOT_FOUND,
             format!("wishlist item not found: {uuid}"),
-        ))
+        ))?;
+    state
+        .covers
+        .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+    Ok(Json(row))
 }
 
 /// Marks whether each wisher has an uploaded avatar under `$BOOKCLERK_FILES_DIR`.

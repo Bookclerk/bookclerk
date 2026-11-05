@@ -24699,7 +24699,7 @@
               "string",
               "null"
             ],
-            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen `cover_url` is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`; the browser never loads\n`cover_url` itself.",
+            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen `cover_url` is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`, so a client can show covers\nwithout loading `cover_url` from another site.",
             "example": "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
           },
           "store_editions": {
@@ -32858,7 +32858,7 @@
               "string",
               "null"
             ],
-            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen `cover_url` is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`; the browser never loads\n`cover_url` itself.",
+            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen `cover_url` is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`, so a client can show covers\nwithout loading `cover_url` from another site.",
             "example": "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
           },
           "wish_count": {
@@ -33090,7 +33090,7 @@
               "string",
               "null"
             ],
-            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen `cover_url` is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`; the browser never loads\n`cover_url` itself.",
+            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen `cover_url` is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`, so a client can show covers\nwithout loading `cover_url` from another site.",
             "example": "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
           },
           "subtitle": {
@@ -34505,7 +34505,7 @@
               "string",
               "null"
             ],
-            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen `cover_url` is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`; the browser never loads\n`cover_url` itself.",
+            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen `cover_url` is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`, so a client can show covers\nwithout loading `cover_url` from another site.",
             "example": "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
           },
           "description": {
@@ -34819,7 +34819,7 @@
               "string",
               "null"
             ],
-            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen `cover_url` is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`; the browser never loads\n`cover_url` itself.",
+            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen `cover_url` is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`, so a client can show covers\nwithout loading `cover_url` from another site.",
             "example": "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
           },
           "sources": {
