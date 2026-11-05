@@ -983,6 +983,15 @@ pub struct TitleRequestRecord {
     /// HTTPS URL for cover art when known.
     #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
+    /// Same-origin path of this cover's processed images, set by the daemon
+    /// when `cover_url` is an `https` URL. Append `/128`
+    /// (thumbnail), `/360` (card) or `/full`, so a client can show covers
+    /// without loading `cover_url` from another site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
+    )]
+    pub cover_path: Option<String>,
     /// Per-storefront snapshots (empty for legacy rows).
     #[serde(default)]
     pub sources: Vec<TitleRequestSourceRecord>,

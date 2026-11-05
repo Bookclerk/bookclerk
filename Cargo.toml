@@ -4,6 +4,7 @@ members = [
     "crates/bookclerk-acquire",
     "crates/bookclerk-cli",
     "crates/bookclerk-config",
+    "crates/bookclerk-cover",
     "crates/bookclerk-db-exec",
     "crates/bookclerk-db-guest",
     "crates/bookclerk-demo-seed",
@@ -93,6 +94,7 @@ bookclerk-enrich = { path = "crates/bookclerk-enrich" }
 bookclerk-sandbox = { path = "crates/bookclerk-sandbox" }
 bookclerk-jail = { path = "crates/bookclerk-jail" }
 bookclerk-mp4 = { path = "crates/bookclerk-mp4" }
+bookclerk-cover = { path = "crates/bookclerk-cover" }
 bookclerk-media = { path = "crates/bookclerk-media" }
 bookclerk-media-worker = { path = "crates/bookclerk-media-worker" }
 bookclerk-storage = { path = "crates/bookclerk-storage" }

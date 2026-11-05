@@ -2319,6 +2319,7 @@ mod http_tests {
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
+            covers: Arc::new(crate::covers::CoverService::detached()),
         });
         let app = crate::api::router(state.clone(), None);
         (state, app, library)

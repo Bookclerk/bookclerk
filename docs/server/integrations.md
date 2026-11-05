@@ -207,9 +207,41 @@ To turn it on, install it as
 Each call fetches at most 32 images, four at a time, each capped in size
 and time. Its health check makes no request.
 
+### How covers are served
+
+Discover, catalog search, title details, the wishlist and the request
+queue give each cover two fields: `cover_url`, the remote address the
+store or catalog named, and `cover_path`, a same-origin path such as
+`/api/covers/<token>`. Add `/128`, `/360` or `/full` to the path for a
+thumbnail, a card or the full image.
+
+The first request for a cover:
+
+1. checks the token. It carries the remote URL and a signature only this
+   node can make, so the route never fetches a URL the API didn't hand
+   out;
+2. downloads the image through the first deployed cover fetcher;
+3. re-encodes it in the confined media worker (see
+   [Cover images](media.md#cover-images));
+4. stores the three JPEGs under `cache/covers/` in the files directory.
+
+Later requests are served from that cache, with a one-year `immutable`
+cache header. Search results and Discover warm their first 24 covers in
+the background, so thumbnails are usually ready before the browser asks.
+
+At most two of these batches download at once, and a cover already in
+one batch isn't downloaded again by another.
+
+A cover that fails isn't retried for 10 minutes. The cache keeps about
+256 MiB and drops the covers served least recently first.
+
+The acquire overlay gets its cover the same way, so Bookclerk itself
+never requests a cover URL. Without a deployed cover fetcher, covers
+answer `503` and the overlay keeps the store's own cover.
+
 > [!NOTE]
-> Bookclerk doesn't call the cover fetcher yet. The cover cache, and the
-> search and library views that use it, follow in later releases.
+> The web app still shows `cover_url` directly. It switches to
+> `cover_path` in a later release.
 
 ## Claim tickets and Accounts
 

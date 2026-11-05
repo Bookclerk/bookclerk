@@ -6825,6 +6825,7 @@ fn map_listening(m: listening_progress::Model) -> ListeningProgressRecord {
 /// Maps a `title_requests` row; storefront sources are filled later by attach helpers.
 fn map_request(m: title_requests::Model) -> TitleRequestRecord {
     TitleRequestRecord {
+        cover_path: None,
         id: m.id,
         uuid: m.uuid,
         identity_id: m.identity_id,

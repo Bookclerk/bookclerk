@@ -212,6 +212,7 @@ const TAGS: &[(&str, &str, &str)] = &[
     ("Users", "/api/users", "Library users and their claim tickets."),
     ("Library", "/api/library", "Books in the library, scans and acquires."),
     ("Discover", "/api/discover", "Recommendations, catalog search and title metadata."),
+    ("Discover", "/api/covers", "Recommendations, catalog search and title metadata."),
     ("Wishlist", "/api/wishlist", "Titles users have asked for."),
     ("Wishlist", "/api/request-queue", "Titles users have asked for."),
     ("Jobs", "/api/jobs", "Queued and running control-plane jobs."),

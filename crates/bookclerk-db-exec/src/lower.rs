@@ -333,10 +333,16 @@ fn skip_sql_atom(sql: &str, start: usize) -> usize {
             return skip_sql_atom(sql, after_sign);
         }
     }
-    if sql
-        .as_bytes()
-        .get(i)
-        .is_some_and(|b| b.is_ascii_digit() || *b == b'-' || *b == b'+')
+    // A number may start with its decimal point (`.5`); stopping before the
+    // point would leave the whole number outside the GLOB wrap (found by the
+    // guest_sql_authz fuzz target).
+    let leading_point = sql.as_bytes().get(i) == Some(&b'.')
+        && sql.as_bytes().get(i + 1).is_some_and(u8::is_ascii_digit);
+    if leading_point
+        || sql
+            .as_bytes()
+            .get(i)
+            .is_some_and(|b| b.is_ascii_digit() || *b == b'-' || *b == b'+')
     {
         let start = i;
         if sql.as_bytes().get(i) == Some(&b'-') || sql.as_bytes().get(i) == Some(&b'+') {
@@ -352,6 +358,27 @@ fn skip_sql_atom(sql: &str, start: usize) -> usize {
             i += 1;
             while i < sql.len() && sql.as_bytes()[i].is_ascii_digit() {
                 i += 1;
+            }
+        }
+        // The exponent (`1e5`, `2.5E-3`) belongs to the same number.
+        if sql
+            .as_bytes()
+            .get(i)
+            .is_some_and(|b| *b == b'e' || *b == b'E')
+        {
+            let mut j = i + 1;
+            if sql
+                .as_bytes()
+                .get(j)
+                .is_some_and(|b| *b == b'-' || *b == b'+')
+            {
+                j += 1;
+            }
+            if sql.as_bytes().get(j).is_some_and(u8::is_ascii_digit) {
+                i = j;
+                while i < sql.len() && sql.as_bytes()[i].is_ascii_digit() {
+                    i += 1;
+                }
             }
         }
         return if i > start { i } else { start };
@@ -2906,13 +2933,16 @@ mod tests {
         );
         assert!(glob_na.contains("GLOB "), "{glob_na}");
         assert!(!glob_na.contains(" LIKE "), "{glob_na}");
-        // A signed pattern atom is wrapped whole, never split after the sign.
+        // A signed or numeric pattern atom is wrapped whole, never split.
         for (sql, wrapped) in [
             ("SELECT 1 FROM t WHERE a LIKE -?", "((-?),"),
             ("SELECT 1 FROM t WHERE a LIKE -(?)", "((-(?)),"),
             ("SELECT 1 FROM t WHERE a LIKE - b || ?", "((- b || ?),"),
             ("SELECT 1 FROM t WHERE a LIKE -1", "((-1),"),
             ("SELECT 1 FROM t WHERE a LIKE -\r\r 1", "((-\r\r 1),"),
+            ("SELECT 1 FROM t WHERE a LIKE .5", "((.5),"),
+            ("SELECT 1 FROM t WHERE a LIKE 1e5", "((1e5),"),
+            ("SELECT 1 FROM t WHERE a LIKE 2.5E-3", "((2.5E-3),"),
         ] {
             let signed = lower_canonical_sql(DatabaseBackend::Sqlite, sql);
             assert!(signed.contains(wrapped), "{sql}: {signed}");

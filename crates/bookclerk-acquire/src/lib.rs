@@ -40,7 +40,7 @@ pub use pipeline::{
     acquire_book, acquire_book_indexed, acquire_pdf_only, library_id_of, planned_storage_key,
     planned_storage_key_for, planned_storage_key_with_rules, planned_title_folders,
     planned_title_names, share_acquired_sibling, AcquireMetadata, AcquireRequest, AcquireResult,
-    PlannedTitleNames, NAME_WILDCARD, NUMBER_WILDCARD,
+    CoverImages, PlannedTitleNames, NAME_WILDCARD, NUMBER_WILDCARD,
 };
 pub use reconcile::{
     extract_asins_from_key, find_existing_for_book, find_existing_for_request, reconcile_library,

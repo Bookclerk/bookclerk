@@ -111,6 +111,9 @@ pub struct AppState {
     /// the cluster-link supervisor restarts its host clients on the new
     /// store.
     pub library_swaps: tokio::sync::watch::Sender<u64>,
+    /// Signs cover URLs into same-origin paths and serves the processed
+    /// images (`GET /api/covers/{token}/{size}`).
+    pub covers: Arc<crate::covers::CoverService>,
 }
 
 /// In-process tray Open Bookclerk ticket: hash of a one-time code plus expiry.
@@ -1153,6 +1156,7 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(list_books))
         .routes(routes!(get_book))
         .routes(routes!(get_book_cover))
+        .routes(routes!(crate::covers::get_cover))
         .routes(routes!(discover_recommendations))
         .routes(routes!(discover_purchase_hints))
         .routes(routes!(discover_purchase_hints_batch))
@@ -5342,8 +5346,17 @@ async fn discover_recommendations(
     for shelf in &mut feed.shelves {
         for item in &mut shelf.items {
             hydrate_queue_wishers(&mut item.wishers, files.as_deref());
+            state
+                .covers
+                .decorate(item.cover_url.as_deref(), &mut item.cover_path);
         }
     }
+    crate::covers::prefetch(
+        &state,
+        feed.shelves
+            .iter()
+            .flat_map(|shelf| shelf.items.iter().filter_map(|item| item.cover_url.clone())),
+    );
     Ok(Json(feed))
 }
 
@@ -5470,9 +5483,14 @@ async fn discover_title_meta(
     let providers: Arc<dyn bookclerk_enrich::MetadataProviders> =
         Arc::new(state.integrations.read().await.clone());
     let sources = state.sources.read().await;
-    let meta = bookclerk_discover::resolve_title_meta(&body, providers, Some(&sources))
+    let mut meta = bookclerk_discover::resolve_title_meta(&body, providers, Some(&sources))
         .await
         .map_err(internal_err)?;
+    if let Some(meta) = meta.as_mut() {
+        state
+            .covers
+            .decorate(meta.cover_url.as_deref(), &mut meta.cover_path);
+    }
     Ok(Json(meta))
 }
 
@@ -5555,6 +5573,12 @@ async fn discover_title_meta_batch(
             }
         })
         .collect();
+    let mut results: Vec<Option<bookclerk_discover::TitleMeta>> = results;
+    for meta in results.iter_mut().flatten() {
+        state
+            .covers
+            .decorate(meta.cover_url.as_deref(), &mut meta.cover_path);
+    }
     Ok(Json(TitleMetaBatchResponse { results }))
 }
 
@@ -5707,6 +5731,18 @@ async fn discover_catalog_search(
         )
     })?
     .map_err(internal_err)?;
+    let mut page = page;
+    for hit in &mut page.items {
+        state
+            .covers
+            .decorate(hit.cover_url.as_deref(), &mut hit.cover_path);
+    }
+    // Search results are what users scroll first: warm their thumbnails
+    // before the browser asks.
+    crate::covers::prefetch(
+        &state,
+        page.items.iter().filter_map(|hit| hit.cover_url.clone()),
+    );
     Ok(Json(page))
 }
 
@@ -5763,10 +5799,15 @@ async fn list_wishlist(
         .await
         .map(|identity| identity.id);
     let library = state.library_snapshot().await;
-    let rows = library
+    let mut rows = library
         .list_wishlist(identity_id)
         .await
         .map_err(internal_err)?;
+    for row in &mut rows {
+        state
+            .covers
+            .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+    }
     Ok(Json(rows))
 }
 
@@ -5787,7 +5828,11 @@ async fn create_wishlist(
     headers: HeaderMap,
     Json(body): Json<CreateRequestBody>,
 ) -> Result<Json<TitleRequestRecord>, (StatusCode, String)> {
-    create_request_inner(&state, &headers, body).await
+    let Json(mut row) = create_request_inner(&state, &headers, body).await?;
+    state
+        .covers
+        .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+    Ok(Json(row))
 }
 
 /// Cancels an open wishlist item the caller owns; others get 403.
@@ -5844,15 +5889,18 @@ async fn delete_wishlist(
         .update_title_request_status(&uuid, RequestStatus::Cancelled, None)
         .await
         .map_err(internal_err)?;
-    library
+    let mut row = library
         .get_title_request_by_uuid(&uuid)
         .await
         .map_err(internal_err)?
-        .map(Json)
         .ok_or((
             StatusCode::NOT_FOUND,
             format!("wishlist item not found: {uuid}"),
-        ))
+        ))?;
+    state
+        .covers
+        .decorate(row.cover_url.as_deref(), &mut row.cover_path);
+    Ok(Json(row))
 }
 
 /// Marks whether each wisher has an uploaded avatar under `$BOOKCLERK_FILES_DIR`.
@@ -5933,6 +5981,9 @@ async fn list_request_queue(
     let files = crate::profile::files_dir(&state).await;
     for row in &mut rows {
         hydrate_queue_wishers(&mut row.wishers, files.as_deref());
+        state
+            .covers
+            .decorate(row.cover_url.as_deref(), &mut row.cover_path);
     }
     Ok(Json(rows))
 }
@@ -7418,6 +7469,7 @@ mode = "deny"
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
+            covers: Arc::new(crate::covers::CoverService::detached()),
         });
 
         let app = Router::new()
@@ -7519,6 +7571,7 @@ mode = "deny"
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
+            covers: Arc::new(crate::covers::CoverService::detached()),
         });
 
         let app = Router::new()
@@ -7678,6 +7731,7 @@ mode = "deny"
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
+            covers: Arc::new(crate::covers::CoverService::detached()),
         });
         let scan = || {
             Request::builder()
@@ -8301,6 +8355,7 @@ mode = "deny"
             deployment_runtime: std::sync::OnceLock::new(),
             node_api_tls_bound: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
+            covers: Arc::new(crate::covers::CoverService::detached()),
         });
 
         let page = super::list_books(

@@ -1,8 +1,9 @@
 # Media worker pool
 
 This page explains the media worker: the confined helper process that
-decodes, encodes and packages audio. It covers how to install and
-configure it, and what to check when media work fails.
+decodes, encodes and packages audio, and re-encodes cover images. It
+covers how to install and configure it, and what to check when media work
+fails.
 
 ## What it does
 
@@ -29,6 +30,29 @@ Moving the work out gives three properties:
 - **You choose the concurrency.** `media.workers` caps how many codec jobs
   run at once, instead of however many threads tokio's blocking pool
   grows under load.
+
+### Cover images
+
+Cover art is downloaded from any public website, so Bookclerk never shows
+or stores the downloaded bytes. One long-lived `bookclerk-media-worker
+covers` process turns each download into the JPEGs Bookclerk serves:
+
+1. It checks the file signature and refuses anything but JPEG, PNG and
+   WebP (no SVG, GIF or HTML).
+2. It decodes with pure-Rust codecs under limits: at most 10 MiB in,
+   5000 px a side and 128 MiB of decode memory.
+3. It resizes with a Lanczos filter and writes three 4:4:4 JPEGs: 128 px
+   and 360 px (quality 85) and the full image up to 2400 px (quality 90,
+   progressive).
+
+Unlike a media job, a cover needs no file, so this process is confined to
+no path and no network before it reads its first image, and then serves
+covers until the daemon stops. It decodes on `media.workers` threads,
+covers don't wait for a job slot, and a cover that panics the decoder
+fails alone. A cover that takes longer than 30 seconds is refused and the
+process is stopped; when the process stops or dies, the next cover starts
+a new one. With `media.isolation = "off"`
+covers are processed in the daemon, like media jobs.
 
 ## Install the worker
 
@@ -207,6 +231,7 @@ through `bookclerk-jail`, the launcher plugins use:
 | `fixup` | The input file and cover art | The output's folder |
 | `package_m4b` | Every part | The output's folder |
 | `align_chapters` | The input file | Nothing |
+| `covers` | Nothing (images arrive on stdin) | Nothing |
 
 Write grants are folders, not single files, because codecs stage output
 in temporary files beside the destination. Packaging can't know the final

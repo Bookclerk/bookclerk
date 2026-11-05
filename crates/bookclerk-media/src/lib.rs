@@ -35,6 +35,7 @@
 mod brand;
 mod chapter_align;
 mod chapters_mp4;
+mod cover_worker;
 /// Media-worker error types (`MediaError`) for remux, encode, and pool failures.
 mod error;
 mod job;
@@ -47,6 +48,7 @@ mod native;
 mod package_m4b;
 mod pool;
 
+pub use bookclerk_cover::{CoverSet, CoverSize};
 /// Container plumbing lives in [`bookclerk_mp4`]; these are re-exported so
 /// callers of this crate do not need a second dependency to read an M4B.
 pub use bookclerk_mp4::{
@@ -57,6 +59,7 @@ pub use brand::{
     runtime_length_ms_from_chapter_info, BrandDurations,
 };
 pub use chapter_align::{align_chapter_starts, scale_chapters_to_duration, ChapterAlignOptions};
+pub use cover_worker::{COVER_THREADS_ENV, COVER_WORKER_ARG};
 pub use error::{MediaError, Result};
 pub use job::{MediaJob, MediaJobOutput, MediaJobReply};
 pub use metadata::{bookclerk_tool_tag, fixup_audiobook, FixupRequest, BOOKCLERK_TOOL_NAME};

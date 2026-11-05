@@ -22,6 +22,12 @@ bookclerk-workerd = { path = "../crates/bookclerk-workerd" }
 bookclerk-plugin-sdk = { path = "../crates/bookclerk-plugin-sdk" }
 bookclerk-resolve = { path = "../crates/bookclerk-resolve" }
 bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
+bookclerk-cover = { path = "../crates/bookclerk-cover" }
+# Independent re-signing oracle for cover_token.
+base64 = "0.23"
+hmac = "0.13"
+sha2 = "0.11"
+url = "2"
 sea-orm = { version = "2.0.0", default-features = false }
 # Runtime for mux_peer: the mux is driven through tokio reader and writer tasks.
 tokio = { version = "1", features = ["rt", "time", "io-util"] }
@@ -132,6 +138,27 @@ bench = false
 [[bin]]
 name = "node_frame"
 path = "fuzz_targets/node_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cover_process"
+path = "fuzz_targets/cover_process.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cover_token"
+path = "fuzz_targets/cover_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cover_wire"
+path = "fuzz_targets/cover_wire.rs"
 test = false
 doc = false
 bench = false

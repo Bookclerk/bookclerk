@@ -84,10 +84,29 @@ pub struct AcquireRequest {
     pub metadata: AcquireMetadata,
 }
 
+/// Turns a cover URL a metadata provider named into an image the acquire can
+/// embed, without the acquire itself requesting the URL.
+///
+/// The daemon implements this with its cover service: a `covers` plugin
+/// downloads the image and the confined media worker re-encodes it, so what
+/// reaches the tagger is a JPEG the host produced.
+#[async_trait::async_trait]
+pub trait CoverImages: Send + Sync {
+    /// The full-size JPEG for `url`, or `None` when it cannot be fetched or
+    /// is not an image.
+    async fn full_cover(&self, url: &str) -> Option<Vec<u8>>;
+}
+
 /// The deployed metadata providers an acquire asks for the plain-audio
-/// overlay (catalog tags, cover and chapter layout of an enriched ASIN).
+/// overlay (catalog tags, cover and chapter layout of an enriched ASIN), and
+/// what turns the overlay's cover URL into an image.
 #[derive(Clone)]
-pub struct AcquireMetadata(Arc<dyn MetadataProviders>);
+pub struct AcquireMetadata {
+    /// Providers asked for the overlay record.
+    providers: Arc<dyn MetadataProviders>,
+    /// Fetches the record's cover; without one the overlay has no cover.
+    covers: Option<Arc<dyn CoverImages>>,
+}
 
 impl AcquireMetadata {
     /// Wraps the providers an acquire should ask.
@@ -97,19 +116,29 @@ impl AcquireMetadata {
     /// * `providers` - Usually the daemon's or CLI's integration registry.
     #[must_use]
     pub fn new(providers: Arc<dyn MetadataProviders>) -> Self {
-        Self(providers)
+        Self {
+            providers,
+            covers: None,
+        }
+    }
+
+    /// The same providers, with `covers` fetching the overlay's cover.
+    #[must_use]
+    pub fn with_covers(mut self, covers: Arc<dyn CoverImages>) -> Self {
+        self.covers = Some(covers);
+        self
     }
 
     /// The wrapped providers.
     #[must_use]
     pub fn providers(&self) -> &dyn MetadataProviders {
-        self.0.as_ref()
+        self.providers.as_ref()
     }
 }
 
 impl Default for AcquireMetadata {
     fn default() -> Self {
-        Self(Arc::new(bookclerk_enrich::NoMetadataProviders))
+        Self::new(Arc::new(bookclerk_enrich::NoMetadataProviders))
     }
 }
 
@@ -2015,9 +2044,9 @@ async fn fetch_plain_catalog_overlay(
         );
         return PlainAudibleCatalog::default();
     };
-    let cover_path = match record.cover_url.as_deref() {
-        Some(url) => download_overlay_cover(url, &audible_asin, work_dir).await,
-        None => None,
+    let cover_path = match (record.cover_url.as_deref(), req.metadata.covers.as_deref()) {
+        (Some(url), Some(covers)) => save_overlay_cover(covers, url, &audible_asin, work_dir).await,
+        _ => None,
     };
     PlainAudibleCatalog {
         title: Some(record.title),
@@ -2053,89 +2082,38 @@ fn release_year(date: &str) -> Option<String> {
         .then(|| year.to_string())
 }
 
-/// Hosts the plain-audio overlay downloads a provider's cover from: Audible's
-/// image CDN, where Audible catalog covers live.
-const OVERLAY_COVER_HOSTS: &[&str] = &["*.media-amazon.com", "*.ssl-images-amazon.com"];
-
-/// Largest provider cover the overlay saves, in bytes. Catalog covers are a
-/// few hundred KiB; anything far larger is not a cover.
-const MAX_OVERLAY_COVER_BYTES: u64 = 10 * 1024 * 1024;
-
-/// Downloads a provider's cover image into the work directory.
+/// Saves the provider's cover, as the host's cover service re-encoded it,
+/// into the work directory.
 ///
-/// A provider record is plugin output, and this is the one place the host
-/// itself fetches a URL a plugin handed it, outside that plugin's own network
-/// grant. So the host only follows the cover URL over `https` to Audible's
-/// image CDN ([`OVERLAY_COVER_HOSTS`], checked by
-/// [`bookclerk_plugin_manifest::https_url_on_hosts`]), does not follow
-/// redirects, and saves at most [`MAX_OVERLAY_COVER_BYTES`]. A loopback,
-/// private or any other address is never requested.
+/// The URL is plugin output, so the host never requests it: `covers` has a
+/// `covers` plugin download it and the confined media worker turn it into a
+/// JPEG.
 ///
 /// # Arguments
 ///
+/// * `covers` - The host's cover service.
 /// * `url` - The provider's cover URL.
 /// * `audible_asin` - ASIN naming the saved file.
 /// * `work_dir` - The title's scratch directory.
 ///
 /// # Returns
 ///
-/// The saved path, or `None` when the URL is refused or the download fails.
-async fn download_overlay_cover(url: &str, audible_asin: &str, work_dir: &Path) -> Option<PathBuf> {
-    let Some(checked) = bookclerk_plugin_manifest::https_url_on_hosts(url, OVERLAY_COVER_HOSTS)
-    else {
-        tracing::debug!(%url, "provider cover URL is not on the Audible image CDN; skipped");
+/// The saved path, or `None` when there is no image or it cannot be written.
+async fn save_overlay_cover(
+    covers: &dyn CoverImages,
+    url: &str,
+    audible_asin: &str,
+    work_dir: &Path,
+) -> Option<PathBuf> {
+    let Some(jpeg) = covers.full_cover(url).await else {
+        tracing::debug!(%url, "provider cover unavailable; overlay keeps the store cover");
         return None;
     };
-    let http = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!("bookclerk/", env!("CARGO_PKG_VERSION")))
-        .build()
-    {
-        Ok(http) => http,
-        Err(err) => {
-            tracing::warn!(error = %err, "cover HTTP client init failed");
-            return None;
-        }
-    };
-    match http.get(checked).send().await {
-        Ok(resp) => {
-            let path = work_dir.join(format!("{audible_asin}.provider-cover.jpg"));
-            save_overlay_cover(resp, &path).await
-        }
-        Err(err) => {
-            tracing::debug!(error = %err, "provider cover download failed");
-            None
-        }
-    }
-}
-
-/// Saves a cover response's body to `path`, capped at
-/// [`MAX_OVERLAY_COVER_BYTES`].
-///
-/// # Arguments
-///
-/// * `resp` - The cover response.
-/// * `path` - Where to write the image.
-///
-/// # Returns
-///
-/// `path` once a non-empty body is written; `None` for a non-success status,
-/// an empty or oversized body, or a write failure (nothing is left behind).
-async fn save_overlay_cover(resp: reqwest::Response, path: &Path) -> Option<PathBuf> {
-    if !resp.status().is_success() {
-        tracing::debug!(status = %resp.status(), "provider cover HTTP non-success");
-        return None;
-    }
-    match write_http_body_capped(resp, path, MAX_OVERLAY_COVER_BYTES).await {
-        Ok(written) if written > 0 => Some(path.to_path_buf()),
-        Ok(_) => {
-            let _ = tokio::fs::remove_file(path).await;
-            None
-        }
+    let path = work_dir.join(format!("{audible_asin}.provider-cover.jpg"));
+    match tokio::fs::write(&path, &jpeg).await {
+        Ok(()) => Some(path),
         Err(err) => {
             tracing::debug!(error = %err, "provider cover not saved");
-            let _ = tokio::fs::remove_file(path).await;
             None
         }
     }
@@ -3108,53 +3086,53 @@ mod tests {
     use super::*;
     use bookclerk_library::{EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload};
 
-    #[tokio::test]
-    async fn refused_cover_urls_are_never_requested() {
-        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let served = serve_http_body_loop(b"jpeg".to_vec(), Arc::clone(&hits)).await;
-        let addr = served
-            .strip_prefix("http://")
-            .and_then(|rest| rest.split('/').next())
-            .unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        for refused in [
-            "not a url".to_string(),
-            served.clone(),
-            format!("https://{addr}/c.jpg"),
-            "https://127.0.0.1/c.jpg".to_string(),
-        ] {
-            assert!(
-                download_overlay_cover(&refused, "B00TEST001", dir.path())
-                    .await
-                    .is_none(),
-                "{refused}"
-            );
+    /// Answers every URL containing `ok` with a fixed JPEG.
+    struct FixedCovers;
+
+    #[async_trait::async_trait]
+    impl CoverImages for FixedCovers {
+        async fn full_cover(&self, url: &str) -> Option<Vec<u8>> {
+            url.contains("ok").then(|| b"\xFF\xD8\xFFjpeg".to_vec())
         }
-        // The server is reachable, so a request that slipped past the host
-        // check would have been counted.
-        reqwest::get(&served).await.unwrap();
-        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
-    async fn overlay_covers_are_saved_within_the_size_cap() {
+    async fn overlay_covers_come_from_the_cover_service() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("cover.jpg");
-        let small = serve_http_body(b"jpeg".to_vec()).await;
-        let resp = reqwest::get(&small).await.unwrap();
-        assert_eq!(save_overlay_cover(resp, &path).await, Some(path.clone()));
-        assert_eq!(std::fs::read(&path).unwrap(), b"jpeg");
-
-        let empty = serve_http_body(Vec::new()).await;
-        let resp = reqwest::get(&empty).await.unwrap();
-        assert_eq!(save_overlay_cover(resp, &path).await, None);
-        assert!(!path.exists());
-
-        let cap = usize::try_from(MAX_OVERLAY_COVER_BYTES).unwrap();
-        let huge = serve_http_body(vec![0u8; cap + 1]).await;
-        let resp = reqwest::get(&huge).await.unwrap();
-        assert_eq!(save_overlay_cover(resp, &path).await, None);
-        assert!(!path.exists());
+        let path = save_overlay_cover(
+            &FixedCovers,
+            "https://img.example/ok.jpg",
+            "B00TEST001",
+            tmp.path(),
+        )
+        .await
+        .expect("saved");
+        assert_eq!(path, tmp.path().join("B00TEST001.provider-cover.jpg"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"\xFF\xD8\xFFjpeg");
+        assert_eq!(
+            save_overlay_cover(
+                &FixedCovers,
+                "https://img.example/no.jpg",
+                "B00TEST002",
+                tmp.path()
+            )
+            .await,
+            None
+        );
+        // A missing work directory is a write failure, not a panic.
+        assert_eq!(
+            save_overlay_cover(
+                &FixedCovers,
+                "https://img.example/ok.jpg",
+                "B00TEST003",
+                &tmp.path().join("gone")
+            )
+            .await,
+            None
+        );
+        let metadata = AcquireMetadata::default();
+        assert!(metadata.covers.is_none());
+        assert!(metadata.with_covers(Arc::new(FixedCovers)).covers.is_some());
     }
 
     #[test]

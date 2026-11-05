@@ -175,6 +175,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/library/books", "allow"],
   ["GET", "/api/library/books/{uuid}", "allow"],
   ["GET", "/api/library/books/{uuid}/cover", "allow"],
+  // Same-origin cover images; the token only names URLs the API handed out.
+  ["GET", "/api/covers/{token}/{size}", "allow"],
   ["POST", "/api/library/scan", "allow"],
   ["GET", "/api/live", "allow"],
   ["GET", "/api/queues", "allow"],
