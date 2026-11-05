@@ -139,7 +139,9 @@ pub(crate) struct WorkerLaunch {
 #[derive(Debug)]
 enum Runner {
     /// Spawn the worker binary (optionally through `bookclerk-jail`) per job.
-    Worker(WorkerLaunch),
+    /// Boxed behind an `Arc` so `MediaPool` stays small on Windows, where
+    /// paths are larger.
+    Worker(Arc<WorkerLaunch>),
     /// Run on a blocking thread in this process, unconfined. Only reached when
     /// the operator turned isolation off.
     InProcess,
@@ -190,7 +192,7 @@ impl MediaPool {
             // since that is a packaging error and would put codecs back in the
             // host process either way.
             mode => match resolve_runner(mode, config.worker_bin.as_deref()) {
-                Ok(launch) => Runner::Worker(launch),
+                Ok(launch) => Runner::Worker(Arc::new(launch)),
                 Err(detail) => {
                     tracing::error!(
                         confinement = mode.as_env_value(),
@@ -203,7 +205,7 @@ impl MediaPool {
 
         let cover_runner = match &runner {
             Runner::Worker(launch) => CoverRunner::Worker {
-                launch: launch.clone(),
+                launch: WorkerLaunch::clone(launch),
                 confinement: config.confinement,
             },
             Runner::InProcess => CoverRunner::InProcess,
@@ -340,7 +342,7 @@ impl MediaPool {
             })?;
 
         match &self.runner {
-            Runner::Worker(launch) => self.run_in_worker(launch.clone(), job).await,
+            Runner::Worker(launch) => self.run_in_worker(WorkerLaunch::clone(launch), job).await,
             Runner::InProcess => run_in_process(job).await,
             Runner::Refuse(detail) => Err(MediaError::NotIsolated {
                 job: label,
