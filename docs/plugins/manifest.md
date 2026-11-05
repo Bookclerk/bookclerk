@@ -248,7 +248,10 @@ crons = ["*/30 * * * *", "0 3 * * MON-FRI"]    # scheduled(controller), UTC
 
 An optional top-level `logo` sets the Settings favicon. It is either:
 
-- an `https://` or `http://` URL, which the browser loads directly; or
+- an `https://` or `http://` URL. The host downloads an `https://` logo
+  through its cover service and serves a 128 px copy (see
+  [Other images](../server/integrations.md#other-images)); the browser
+  never loads it directly, and an `http://` logo isn't shown; or
 - a relative image path under the plugin install root, which the host
   serves at `GET /api/plugins/{kind}/{id}/logo`.
 

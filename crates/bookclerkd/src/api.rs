@@ -275,10 +275,16 @@ async fn invite_page(
 async fn serve_invite_spa(index: &Path) -> Response {
     match tokio::fs::read(index).await {
         Ok(bytes) if !bytes.is_empty() => (
-            [(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/html; charset=utf-8"),
-            )],
+            [
+                (
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/html; charset=utf-8"),
+                ),
+                (
+                    header::CONTENT_SECURITY_POLICY,
+                    HeaderValue::from_static(SPA_CSP),
+                ),
+            ],
             bytes,
         )
             .into_response(),
@@ -485,9 +491,12 @@ struct PluginSettingsGroup {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "platform_bundled")]
     provenance: Option<String>,
-    /// Google favicon (or portal brand) URL for Settings list rows.
+    /// Same-origin logo for Settings list rows: the plugin's embedded logo,
+    /// or a 128 px copy of the remote logo its manifest names.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(example = "https://www.google.com/s2/favicons?domain=libro.fm&sz=64")]
+    #[schema(
+        example = "/api/covers/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr/128"
+    )]
     logo: Option<String>,
     /// Editable options for this plugin, including `.enabled`.
     settings: Vec<PluginSettingOption>,
@@ -563,8 +572,9 @@ struct PluginConsentBrand {
     /// Accent CSS color from the portal brand, when known.
     #[schema(example = "#f4b400")]
     accent: Option<String>,
-    /// Logo URL or host-served embed path.
-    #[schema(example = "/api/plugins/libro/logo")]
+    /// Same-origin logo: the host-served embed path, or a 128 px copy of
+    /// the remote logo the plugin names.
+    #[schema(example = "/api/plugins/source/libro/logo")]
     logo: Option<String>,
 }
 
@@ -1157,6 +1167,8 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(get_book))
         .routes(routes!(get_book_cover))
         .routes(routes!(crate::covers::get_cover))
+        .routes(routes!(crate::covers::get_gravatar))
+        .routes(routes!(crate::covers::get_store_icon))
         .routes(routes!(discover_recommendations))
         .routes(routes!(discover_purchase_hints))
         .routes(routes!(discover_purchase_hints_batch))
@@ -1299,6 +1311,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         library: state.library.clone(),
         integrations: state.integrations.clone(),
         sources: state.sources.clone(),
+        image_src: {
+            let covers = Arc::clone(&state.covers);
+            Arc::new(move |url: &str| covers.thumb_src(url))
+        },
     };
 
     // The document is built from the same route groups the router serves.
@@ -1372,10 +1388,14 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 "/join/approve",
                 "/join/callback",
             ];
+            let spa_index = axum::routing::get_service(ServeFile::new(index.clone()))
+                .layer(middleware::from_fn(spa_document_csp));
             for path in SPA_DOC_PATHS {
-                app = app.route_service(path, ServeFile::new(index.clone()));
+                app = app.route_service(path, spa_index.clone());
             }
-            app = app.fallback_service(ServeDir::new(dist));
+            let spa_files = axum::routing::get_service(ServeDir::new(dist))
+                .layer(middleware::from_fn(spa_document_csp));
+            app = app.fallback_service(spa_files);
         } else {
             tracing::warn!(
                 path = %dist.display(),
@@ -1450,6 +1470,40 @@ async fn open_embedder_blocking(
         )
     })?
     .map_err(internal_err)
+}
+
+/// Content-Security-Policy of the web app's document.
+///
+/// Scripts, styles, fonts, connections, workers and the manifest come only
+/// from this origin; no plugin, object or frame content is allowed, and no
+/// other site may frame the app. Images are same-origin too: covers, store
+/// icons, plugin logos, Gravatars and sign-in provider pictures all come
+/// through the cover service (`/api/covers/…`, `/api/stores/…/icon`,
+/// `/api/avatars/gravatar/…`), so the browser contacts no other site.
+/// `style-src` keeps `'unsafe-inline'` for style attributes in sanitized
+/// store blurbs.
+pub(crate) const SPA_CSP: &str = "default-src 'self'; script-src 'self'; \
+     style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; \
+     font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; \
+     manifest-src 'self'; object-src 'none'; frame-src 'none'; \
+     base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+
+/// Adds [`SPA_CSP`] to HTML documents served from the web app's build
+/// (its `index.html` on every app route, and any HTML file under `ui/dist`).
+async fn spa_document_csp(req: Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    let is_html = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("text/html"));
+    if is_html {
+        res.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(SPA_CSP),
+        );
+    }
+    res
 }
 
 /// Sets HTML cache headers. `/invite` is `no-store` because the same URL can
@@ -3116,6 +3170,10 @@ async fn plugin_consent_brand(
     {
         None
     } else {
+        brand.logo = brand
+            .logo
+            .take()
+            .and_then(|logo| state.covers.same_origin_src(&logo));
         Some(brand)
     }
 }
@@ -3440,10 +3498,17 @@ async fn get_settings(
     if let Some(revision) = cfg.output_revision {
         effective.insert("output.revision".into(), revision.to_string());
     }
+    let mut plugins = plugin_settings_snapshot(&cfg, &library, &node_id, &discovered_plugins).await;
+    for group in &mut plugins {
+        group.logo = group
+            .logo
+            .take()
+            .and_then(|logo| state.covers.same_origin_src(&logo));
+    }
     Ok(Json(SettingsResponse {
         settings,
         effective,
-        plugins: plugin_settings_snapshot(&cfg, &library, &node_id, &discovered_plugins).await,
+        plugins,
         host_cpu_cores_max: host_cpu_cores_max(),
         jail_cpu_cores: cfg
             .plugins
@@ -5007,8 +5072,14 @@ async fn list_books(
             .await
             .map_err(books_query_error)?
     };
+    let mut books = page.books;
+    for book in &mut books {
+        state
+            .covers
+            .decorate(book.cover_url.as_deref(), &mut book.cover_path);
+    }
     Ok(Json(BooksResponse {
-        books: page.books,
+        books,
         total: page.total,
         limit,
         offset,
@@ -5044,12 +5115,15 @@ async fn get_book(
     AxumPath(uuid): AxumPath<String>,
 ) -> Result<Json<BookRecord>, StatusCode> {
     let library = state.library_snapshot().await;
-    library
+    let mut book = library
         .get_book_by_uuid(&uuid)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .map(Json)
-        .ok_or(StatusCode::NOT_FOUND)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    state
+        .covers
+        .decorate(book.cover_url.as_deref(), &mut book.cover_path);
+    Ok(Json(book))
 }
 
 /// Serves the JPEG cover sidecar from the deployed local destination, or 404
@@ -5345,7 +5419,7 @@ async fn discover_recommendations(
     let files = crate::profile::files_dir(&state).await;
     for shelf in &mut feed.shelves {
         for item in &mut shelf.items {
-            hydrate_queue_wishers(&mut item.wishers, files.as_deref());
+            hydrate_queue_wishers(&mut item.wishers, files.as_deref(), &state.covers);
             state
                 .covers
                 .decorate(item.cover_url.as_deref(), &mut item.cover_path);
@@ -5903,9 +5977,18 @@ async fn delete_wishlist(
     Ok(Json(row))
 }
 
-/// Marks whether each wisher has an uploaded avatar under `$BOOKCLERK_FILES_DIR`.
-fn hydrate_queue_wishers(wishers: &mut [QueueWisher], files: Option<&Path>) {
+/// Marks whether each wisher has an uploaded avatar under `$BOOKCLERK_FILES_DIR`,
+/// and signs the same-origin copy of each identity picture.
+fn hydrate_queue_wishers(
+    wishers: &mut [QueueWisher],
+    files: Option<&Path>,
+    covers: &crate::covers::CoverService,
+) {
     for wisher in wishers {
+        wisher.picture_path = wisher
+            .picture_url
+            .as_deref()
+            .and_then(|url| covers.thumb_src(url));
         if let Some(id) = wisher.user_id {
             wisher.has_avatar = files.is_some_and(|d| crate::profile::avatar_exists(d, id));
             wisher.avatar_source = Some(crate::profile::avatar_source_wire(
@@ -5980,7 +6063,7 @@ async fn list_request_queue(
         .map_err(internal_err)?;
     let files = crate::profile::files_dir(&state).await;
     for row in &mut rows {
-        hydrate_queue_wishers(&mut row.wishers, files.as_deref());
+        hydrate_queue_wishers(&mut row.wishers, files.as_deref(), &state.covers);
         state
             .covers
             .decorate(row.cover_url.as_deref(), &mut row.cover_path);
@@ -8276,6 +8359,23 @@ mode = "deny"
         assert_eq!(loaded.body.retention_days, retention);
     }
 
+    /// A live invite serves the app's document under its policy, and a
+    /// missing build is a 404.
+    #[tokio::test]
+    async fn the_invite_page_serves_the_app_under_its_policy() {
+        let dist = tempfile::tempdir().unwrap();
+        let index = dist.path().join("index.html");
+        std::fs::write(&index, "<!doctype html><title>SPA</title>").unwrap();
+        let res = super::serve_invite_spa(&index).await;
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            res.headers()[axum::http::header::CONTENT_SECURITY_POLICY],
+            super::SPA_CSP
+        );
+        let missing = super::serve_invite_spa(&dist.path().join("gone.html")).await;
+        assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
     /// Library pages filter, sort, and paginate in SQL, including the search path.
     #[tokio::test]
     async fn library_books_page_filters_in_sql_and_limits_search_hydration() {
@@ -8322,6 +8422,18 @@ mode = "deny"
                 .set_acquire_status(&saved.uuid, &saved.account_id, status, None, None)
                 .await
                 .unwrap();
+            if i == 0 {
+                store
+                    .update_catalog_enrichment(
+                        &saved.uuid,
+                        &bookclerk_library::CatalogEnrichmentFields {
+                            cover_url: Some("https://img.example/c.jpg".into()),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
         }
         SearchEngine::open(&cfg.paths().search_index_dir)
             .unwrap()
@@ -8376,6 +8488,57 @@ mode = "deny"
         assert_eq!(page.limit, 5);
         assert_eq!(page.books[0].title, "Title 00000");
         assert!(page.books[0].title < page.books[4].title);
+        // A remote cover gets a same-origin path; a title without one doesn't.
+        let first = &page.books[0];
+        let path = first.cover_path.as_deref().expect("cover path");
+        assert!(path.starts_with("/api/covers/"), "{path}");
+        assert_eq!(
+            state
+                .covers
+                .open_token(&path["/api/covers/".len()..])
+                .as_deref(),
+            Some("https://img.example/c.jpg")
+        );
+        assert_eq!(page.books[1].cover_path, None);
+        let one = super::get_book(
+            State(state.clone()),
+            axum::extract::Path(first.uuid.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(one.cover_path.as_deref(), Some(path));
+        assert_eq!(
+            super::get_book(State(state.clone()), axum::extract::Path("missing".into()))
+                .await
+                .map(|_| ())
+                .unwrap_err(),
+            axum::http::StatusCode::NOT_FOUND
+        );
+        // Gravatars and store icons come through the same service: a hash
+        // that is not a SHA-256 or a store nobody deployed is a 404, and a
+        // node with no cover cache answers 503.
+        let status = |res: axum::response::Response| res.status();
+        let gravatar = |hash: &str| {
+            crate::covers::get_gravatar(State(state.clone()), axum::extract::Path(hash.to_owned()))
+        };
+        assert_eq!(
+            status(gravatar("not-a-hash").await),
+            axum::http::StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status(gravatar(&"a".repeat(64)).await),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            status(
+                crate::covers::get_store_icon(
+                    State(state.clone()),
+                    axum::extract::Path("nowhere".into())
+                )
+                .await
+            ),
+            axum::http::StatusCode::NOT_FOUND
+        );
 
         let acquired = super::list_books(
             State(state.clone()),

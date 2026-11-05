@@ -250,6 +250,34 @@ impl CoverService {
         *path = url.and_then(|url| self.path_for(url));
     }
 
+    /// The same-origin 128 px source for a remote image that is not a cover
+    /// (a store icon, a sign-in provider's profile picture), so the web app
+    /// can show it under an `img-src 'self'` policy.
+    ///
+    /// # Returns
+    ///
+    /// `None` when [`Self::path_for`] refuses the URL.
+    pub(crate) fn thumb_src(&self, url: &str) -> Option<String> {
+        self.path_for(url)
+            .map(|path| format!("{path}/{}", CoverSize::Thumb.as_str()))
+    }
+
+    /// An image source the web app may load under `img-src 'self'`: a
+    /// same-origin path as is, a remote `https` URL as its
+    /// [`Self::thumb_src`].
+    ///
+    /// # Returns
+    ///
+    /// `None` for anything else (a protocol-relative URL, plain `http`).
+    pub(crate) fn same_origin_src(&self, src: &str) -> Option<String> {
+        let src = src.trim();
+        if src.starts_with('/') && !src.starts_with("//") && !src.starts_with("/\\") {
+            Some(src.to_owned())
+        } else {
+            self.thumb_src(src)
+        }
+    }
+
     /// The remote URL a token names, when this node issued it.
     pub(crate) fn open_token(&self, token: &str) -> Option<String> {
         token::open(&self.key, token)
@@ -750,16 +778,45 @@ pub(crate) async fn get_cover(
     axum::extract::State(state): axum::extract::State<Arc<crate::api::AppState>>,
     axum::extract::Path((token, size)): axum::extract::Path<(String, String)>,
 ) -> axum::response::Response {
-    use axum::http::{header, StatusCode};
+    use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
     let Some(size) = CoverSize::parse(&size) else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    let url = state.covers.open_token(&token);
+    serve(&state, url, size, IMMUTABLE).await
+}
+
+/// `Cache-Control` for a cover path, which always names the same image.
+const IMMUTABLE: &str = "private, max-age=31536000, immutable";
+
+/// `Cache-Control` for an image whose remote copy can change under the same
+/// address (a Gravatar, a store icon): the browser checks again daily.
+const DAILY: &str = "private, max-age=86400";
+
+/// Serves one size of the image at `url` through the cover service.
+///
+/// # Arguments
+///
+/// * `state` - Daemon state holding the cover service and the plugins that
+///   fetch for it.
+/// * `url` - The remote image; `None` is a 404.
+/// * `size` - The size to serve.
+/// * `cache_control` - `Cache-Control` for a successful answer.
+async fn serve(
+    state: &crate::api::AppState,
+    url: Option<String>,
+    size: CoverSize,
+    cache_control: &'static str,
+) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+
     let backend = Arc::new(LiveBackend {
         integrations: Arc::clone(&state.integrations),
     });
-    let outcome = match state.covers.open_token(&token) {
+    let outcome = match url {
         Some(url) => state.covers.image_detached(backend, url, size).await,
         None => Err(CoverFailure::UnknownToken),
     };
@@ -768,10 +825,7 @@ pub(crate) async fn get_cover(
             StatusCode::OK,
             [
                 (header::CONTENT_TYPE, "image/jpeg"),
-                (
-                    header::CACHE_CONTROL,
-                    "private, max-age=31536000, immutable",
-                ),
+                (header::CACHE_CONTROL, cache_control),
             ],
             bytes,
         )
@@ -786,6 +840,89 @@ pub(crate) async fn get_cover(
             failure_response(StatusCode::SERVICE_UNAVAILABLE)
         }
     }
+}
+
+/// The Gravatar address for a hash, or `None` unless `hash` is the 64
+/// lowercase hex digits of a SHA-256, so only `www.gravatar.com` is ever
+/// asked for.
+///
+/// `d=404` makes Gravatar answer 404 for an email with no picture, which the
+/// route reports as 502 and the web app turns into a monogram.
+pub(crate) fn gravatar_url(hash: &str) -> Option<String> {
+    let valid = hash.len() == 64
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    valid.then(|| format!("https://www.gravatar.com/avatar/{hash}?d=404&s=360"))
+}
+
+/// Serves a user's Gravatar as a 128 px JPEG through the cover service.
+///
+/// The `gravatar_hash` of a user (from `/api/auth/me` or `/api/users`) names
+/// the picture. Bookclerk downloads it through the `covers` plugin, so the
+/// browser never contacts Gravatar.
+#[utoipa::path(
+    get,
+    path = "/api/avatars/gravatar/{hash}",
+    params(
+        ("hash" = String, Path, description = "A user's `gravatar_hash`: SHA-256 of the email, 64 lowercase hex digits."),
+    ),
+    responses(
+        (status = 200, description = "The picture as a JPEG.", content_type = "image/jpeg"),
+        (status = 404, description = "The hash is not 64 lowercase hex digits."),
+        (status = 502, description = "The email has no Gravatar, or the image is not a supported image."),
+        (status = 503, description = "This node cannot fetch or process images right now."),
+    ),
+)]
+pub(crate) async fn get_gravatar(
+    axum::extract::State(state): axum::extract::State<Arc<crate::api::AppState>>,
+    axum::extract::Path(hash): axum::extract::Path<String>,
+) -> axum::response::Response {
+    serve(&state, gravatar_url(&hash), CoverSize::Thumb, DAILY).await
+}
+
+/// Serves a storefront's or integration's icon as a 128 px JPEG through the
+/// cover service.
+///
+/// The icon is the one the plugin names for its sign-in button. A plugin
+/// that is not deployed on this node, or names no icon, is a 404.
+#[utoipa::path(
+    get,
+    path = "/api/stores/{id}/icon",
+    params(
+        ("id" = String, Path, description = "Storefront or integration id (`audible`, `libro`, `audiobookshelf`, …)."),
+    ),
+    responses(
+        (status = 200, description = "The icon as a JPEG.", content_type = "image/jpeg"),
+        (status = 404, description = "No deployed storefront or integration has this id, or it names no icon."),
+        (status = 502, description = "The icon could not be downloaded or is not a supported image."),
+        (status = 503, description = "This node cannot fetch or process images right now."),
+    ),
+)]
+pub(crate) async fn get_store_icon(
+    axum::extract::State(state): axum::extract::State<Arc<crate::api::AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let url = store_icon_url(&state, &id).await;
+    serve(&state, url, CoverSize::Thumb, DAILY).await
+}
+
+/// The icon a deployed storefront, or failing that an integration, names
+/// for `id`.
+async fn store_icon_url(state: &crate::api::AppState, id: &str) -> Option<String> {
+    let source = state.sources.read().await.get(id);
+    let href = match source {
+        Some(source) => source.portal_brand().logo_href().to_owned(),
+        None => {
+            let integration = state.integrations.read().await.get(id);
+            integration
+                .and_then(|integration| integration.portal_brand())?
+                .logo_href()
+                .to_owned()
+        }
+    };
+    let href = href.trim();
+    (!href.is_empty()).then(|| href.to_owned())
 }
 
 /// A failed cover answer the browser may retry after a while, not cache.
@@ -958,6 +1095,56 @@ mod tests {
         assert_eq!(path, None);
         service.decorate(Some(url), &mut path);
         assert!(path.is_some_and(|path| path.starts_with("/api/covers/")));
+    }
+
+    #[test]
+    fn image_sources_stay_on_this_origin() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = service(temp.path());
+        let url = "https://avatars.example/u/7.png";
+
+        let thumb = service.thumb_src(url).expect("signed");
+        let token = thumb
+            .strip_prefix("/api/covers/")
+            .and_then(|rest| rest.strip_suffix("/128"))
+            .expect("a 128 px cover path");
+        assert_eq!(service.open_token(token).as_deref(), Some(url));
+        assert_eq!(service.thumb_src("http://avatars.example/u/7.png"), None);
+
+        assert_eq!(service.same_origin_src(url), Some(thumb));
+        assert_eq!(
+            service
+                .same_origin_src(" /api/plugins/source/libro/logo ")
+                .as_deref(),
+            Some("/api/plugins/source/libro/logo")
+        );
+        for refused in [
+            "//evil.example/x.png",
+            "/\\evil.example/x.png",
+            "data:image/png,x",
+            "",
+        ] {
+            assert_eq!(service.same_origin_src(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn only_a_sha256_names_a_gravatar() {
+        let hash = "0123456789abcdef".repeat(4);
+        assert_eq!(
+            gravatar_url(&hash).as_deref(),
+            Some(format!("https://www.gravatar.com/avatar/{hash}?d=404&s=360").as_str())
+        );
+        for refused in [
+            String::new(),
+            hash.to_uppercase(),
+            hash[1..].to_owned(),
+            format!("{hash}0"),
+            format!("{}/../x", &hash[..60]),
+            format!("{}?s=1", &hash[..60]),
+        ] {
+            assert_eq!(gravatar_url(&refused), None, "{refused}");
+        }
     }
 
     #[test]

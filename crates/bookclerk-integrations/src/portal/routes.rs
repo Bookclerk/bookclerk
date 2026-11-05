@@ -51,7 +51,14 @@ pub struct PortalState {
     pub integrations: Arc<RwLock<IntegrationRegistry>>,
     /// Content-source registry used for portal store connect / OAuth.
     pub sources: Arc<RwLock<SourceRegistry>>,
+    /// Turns a brand's remote logo URL into a source the web app may load
+    /// from its own origin, or `None` when it cannot; the daemon signs it
+    /// through its cover service.
+    pub image_src: ImageSrc,
 }
+
+/// See [`PortalState::image_src`].
+pub type ImageSrc = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 impl PortalState {
     /// Clones the current library store so a handler can drop the state lock.
@@ -432,7 +439,7 @@ async fn sources(State(state): State<PortalState>) -> Json<SourcesResponse> {
                 bg: brand.bg.into(),
                 fg: brand.fg.into(),
                 accent: brand.accent.into(),
-                logo: brand.logo_href().into(),
+                logo: (state.image_src)(brand.logo_href()).unwrap_or_default(),
             },
         });
     }
@@ -501,8 +508,11 @@ struct BrandInfo {
     /// Accent color (`#RRGGBB`).
     #[schema(example = "#2F6B53")]
     accent: String,
-    /// Logo image href (often a favicon URL).
-    #[schema(example = "https://www.google.com/s2/favicons?domain=libro.fm&sz=128")]
+    /// Same-origin logo image (a 128 px copy of the brand's icon), or empty
+    /// when there is none.
+    #[schema(
+        example = "/api/covers/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS9zMi9mYXZpY29ucz9kb21haW49bGlicm8uZm0mc3o9MTI4.Qm9va2NsZXJr/128"
+    )]
     logo: String,
 }
 
@@ -807,7 +817,7 @@ async fn connections(
                 bg: b.bg.into(),
                 fg: b.fg.into(),
                 accent: b.accent.into(),
-                logo: b.logo_href().into(),
+                logo: (state.image_src)(b.logo_href()).unwrap_or_default(),
             }),
         });
     }

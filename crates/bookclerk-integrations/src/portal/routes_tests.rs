@@ -170,6 +170,7 @@ async fn harness(sources: Vec<Arc<dyn ContentSource>>) -> (Router, LibraryStore,
         library: Arc::new(RwLock::new(library.clone())),
         integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
         sources: Arc::new(RwLock::new(registry)),
+        image_src: Arc::new(|url: &str| Some(format!("/signed/{url}"))),
     };
     let app = portal_spa_router(state);
     (app, library, format!("{SESSION_COOKIE}={session}"))
@@ -275,6 +276,18 @@ async fn password_login_connects_the_account_and_revoke_unlinks_it() {
     let (status, _, body) = call(&app, "GET", "/connections", Some(&cookie), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["connections"].as_array().map(Vec::len), Some(1));
+    // Brand logos go out through the daemon's image hook, never as the
+    // plugin's remote URL.
+    assert_eq!(
+        body["connections"][0]["brand"]["logo"],
+        "/signed/https://example.invalid/icon"
+    );
+    let (status, _, body) = call(&app, "GET", "/sources", Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["sources"][0]["brand"]["logo"],
+        "/signed/https://example.invalid/icon"
+    );
 
     let (status, _, body) = call(
         &app,

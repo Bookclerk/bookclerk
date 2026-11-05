@@ -495,6 +495,13 @@ pub struct AuthSsoPicture {
     /// HTTPS URL to display.
     #[schema(example = "https://lh3.googleusercontent.com/a/example=s96-c")]
     pub picture_url: String,
+    /// Same-origin 128 px copy of `picture_url` for the web app to show,
+    /// when this node can sign it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "/api/covers/aHR0cHM6Ly9saDMuZ29vZ2xldXNlcmNvbnRlbnQuY29tL2EvZXhhbXBsZT1zOTYtYw.3fA9c2Qx8bLm1kZr/128"
+    )]
+    pub picture_path: Option<String>,
     /// RFC 3339 last portal-session activity for this identity, when any.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "2026-10-29T08:15:00Z")]
@@ -1366,9 +1373,10 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
                     impersonating,
                     portal,
                     user: match user {
-                        Some(u) => {
-                            Some(attach_avatar_fields(&library, u, files_dir.as_deref()).await)
-                        }
+                        Some(u) => Some(
+                            attach_avatar_fields(&library, &state.covers, u, files_dir.as_deref())
+                                .await,
+                        ),
                         None => None,
                     },
                     second_factor: second_factor_for(&state, &library, Some(target_id)).await,
@@ -1379,7 +1387,13 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
         let user = if let Some(uid) = op.elevated_from_user_id {
             match timeout(AUTH_DB_TIMEOUT, library.get_user(uid)).await {
                 Ok(Ok(Some(u))) => Some(
-                    attach_avatar_fields(&library, auth_me_user(&u), files_dir.as_deref()).await,
+                    attach_avatar_fields(
+                        &library,
+                        &state.covers,
+                        auth_me_user(&u),
+                        files_dir.as_deref(),
+                    )
+                    .await,
                 ),
                 _ => None,
             }
@@ -1442,7 +1456,10 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
                     label: identity.label,
                 }),
                 user: match user {
-                    Some(u) => Some(attach_avatar_fields(&library, u, files_dir.as_deref()).await),
+                    Some(u) => Some(
+                        attach_avatar_fields(&library, &state.covers, u, files_dir.as_deref())
+                            .await,
+                    ),
                     None => None,
                 },
                 second_factor: second_factor_for(&state, &library, identity.user_id).await,
@@ -1959,8 +1976,16 @@ pub(crate) fn auth_me_user(user: &bookclerk_library::UserRecord) -> AuthMeUser {
 }
 
 /// Sets stored-upload and SSO picture fields on a `/me` user object.
+///
+/// # Arguments
+///
+/// * `library` - Store holding the user's linked identities.
+/// * `covers` - Signs each SSO picture's same-origin `picture_path`.
+/// * `user` - The `/me` object to fill.
+/// * `files_dir` - Where uploaded avatars live, when known.
 pub(crate) async fn attach_avatar_fields(
     library: &bookclerk_library::LibraryStore,
+    covers: &crate::covers::CoverService,
     mut user: AuthMeUser,
     files_dir: Option<&std::path::Path>,
 ) -> AuthMeUser {
@@ -1973,6 +1998,7 @@ pub(crate) async fn attach_avatar_fields(
         .map(|p| AuthSsoPicture {
             identity_id: p.identity_id,
             provider: p.provider,
+            picture_path: covers.thumb_src(&p.picture_url),
             picture_url: p.picture_url,
             last_used_at: p.last_used_at.map(|t| t.to_rfc3339()),
         })
@@ -2631,7 +2657,7 @@ pub async fn list_users(
             gravatar_hash: crate::profile::gravatar_hash_for(u.email.as_deref()),
             sso_pictures: sso_pictures
                 .iter()
-                .map(UserSsoPictureSummary::from_record)
+                .map(|picture| UserSsoPictureSummary::from_record(picture, &state.covers))
                 .collect(),
             listening: extra.and_then(|e| e.listening.clone()),
             integrations: extra.map(|e| e.integrations.clone()).unwrap_or_default(),
@@ -3707,6 +3733,12 @@ pub struct UserSsoPictureSummary {
     /// HTTPS URL of the picture at the provider or its CDN.
     #[schema(example = "https://avatars.githubusercontent.com/u/8675309")]
     pub picture_url: String,
+    /// Same-origin 128 px copy of `picture_url` for the web app to show,
+    /// when this node can sign it.
+    #[schema(
+        example = "/api/covers/aHR0cHM6Ly9hdmF0YXJzLmdpdGh1YnVzZXJjb250ZW50LmNvbS91Lzg2NzUzMDk.Qm9va2NsZXJr/128"
+    )]
+    pub picture_path: Option<String>,
     /// RFC 3339 time the identity last signed in, when it has.
     #[schema(example = "2026-10-27T18:40:02+00:00")]
     pub last_used_at: Option<String>,
@@ -3718,11 +3750,16 @@ impl UserSsoPictureSummary {
     /// # Arguments
     ///
     /// * `picture` - The row to restate.
-    fn from_record(picture: &bookclerk_library::UserSsoPicture) -> Self {
+    /// * `covers` - Signs the same-origin `picture_path`.
+    fn from_record(
+        picture: &bookclerk_library::UserSsoPicture,
+        covers: &crate::covers::CoverService,
+    ) -> Self {
         Self {
             identity_id: picture.identity_id,
             provider: picture.provider.clone(),
             picture_url: picture.picture_url.clone(),
+            picture_path: covers.thumb_src(&picture.picture_url),
             last_used_at: picture.last_used_at.map(|t| t.to_rfc3339()),
         }
     }
@@ -7062,8 +7099,28 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(page.status(), StatusCode::OK);
+        assert_eq!(
+            page.headers()[axum::http::header::CONTENT_SECURITY_POLICY],
+            crate::api::SPA_CSP
+        );
         let body = page.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("<title>SPA</title>"));
+        // HTML straight from the build gets the policy; other files don't.
+        std::fs::write(dist.path().join("theme-init.js"), "void 0;").unwrap();
+        for (uri, html) in [("/index.html", true), ("/theme-init.js", false)] {
+            let res = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{uri}");
+            assert_eq!(
+                res.headers()
+                    .contains_key(axum::http::header::CONTENT_SECURITY_POLICY),
+                html,
+                "{uri}"
+            );
+        }
         let legacy = app
             .oneshot(
                 Request::builder()

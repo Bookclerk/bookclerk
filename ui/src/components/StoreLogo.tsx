@@ -1,15 +1,16 @@
 import { useState } from "react";
-import { storeFaviconUrl, storeLabel } from "@/lib/catalogTitle";
+import { storeIconSrc, storeLabel } from "@/lib/catalogTitle";
 import { cn } from "@/lib/utils";
 
 /**
- * Storefront favicon/logo badge for a source id.
+ * Storefront icon badge for a source id, served from Bookclerk itself, over a
+ * monogram when there is none.
  *
  * @param props - Store id and optional className.
  */
 export function StoreLogo({ source, className }: { source: string; className?: string }) {
   const [failed, setFailed] = useState(false);
-  const src = storeFaviconUrl(source);
+  const src = storeIconSrc(source);
   const label = storeLabel(source);
   if (!src || failed) {
     return (

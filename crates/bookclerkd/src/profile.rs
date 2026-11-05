@@ -294,10 +294,11 @@ pub struct AvatarChanged {
 /// Profile snapshot including resolved avatar choices.
 pub(crate) async fn profile_user(
     library: &bookclerk_library::LibraryStore,
+    covers: &crate::covers::CoverService,
     user: &bookclerk_library::UserRecord,
     files: Option<&Path>,
 ) -> auth::AuthMeUser {
-    auth::attach_avatar_fields(library, auth::auth_me_user(user), files).await
+    auth::attach_avatar_fields(library, covers, auth::auth_me_user(user), files).await
 }
 
 /// Resolves the signed-in first-party user; impersonation and operator-only sessions are refused.
@@ -420,7 +421,7 @@ pub async fn patch_profile(
     let files = files_dir(&state).await;
     Ok(Json(ProfileChanged {
         ok: true,
-        user: profile_user(&library, &user, files.as_deref()).await,
+        user: profile_user(&library, &state.covers, &user, files.as_deref()).await,
     })
     .into_response())
 }

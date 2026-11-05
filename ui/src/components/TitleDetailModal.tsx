@@ -4,6 +4,7 @@ import { StarRating } from "@/components/StarRating";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  coverSrc,
   coverUrl,
   fetchBooks,
   fetchPurchaseHints,
@@ -44,12 +45,6 @@ const statusStyles: Record<AcquireStatus, string> = {
   downloading: "bg-teal/25 text-ink",
   error: "bg-brick/15 text-brick",
 };
-
-function absoluteCoverUrl(raw: string): string {
-  const trimmed = raw.trim();
-  if (trimmed.startsWith("//")) return `https:${trimmed}`;
-  return trimmed;
-}
 
 /**
  * Browse/search target for linked metadata in the detail dialog.
@@ -193,8 +188,9 @@ function GenreTagsRow({
 function coversFor(detail: TitleDetail): string[] {
   const out: string[] = [];
   if (detail.library_uuid) out.push(coverUrl(detail.library_uuid));
-  const remote = detail.cover_url?.trim();
-  if (remote) out.push(absoluteCoverUrl(remote));
+  // The storefront's cover only through the daemon, never from its own site.
+  const remote = coverSrc(detail.cover_path, "full");
+  if (remote) out.push(remote);
   out.push(FALLBACK_COVER);
   return out;
 }
@@ -218,6 +214,7 @@ function mergeLibraryBook(detail: TitleDetail, book: BookRecord): TitleDetail {
     rating_performance: detail.rating_performance ?? book.rating_performance,
     rating_story: detail.rating_story ?? book.rating_story,
     cover_url: detail.cover_url ?? book.cover_url,
+    cover_path: detail.cover_url ? detail.cover_path : book.cover_path,
     library_uuid: detail.library_uuid ?? book.uuid,
     asin: detail.asin ?? book.asin,
     isbn: detail.isbn ?? book.isbn,
@@ -255,6 +252,7 @@ function mergePublicMeta(detail: TitleDetail, meta: TitleMeta): TitleDetail {
     language: nonempty(detail.language) ?? meta.language,
     is_abridged: detail.is_abridged ?? meta.is_abridged ?? null,
     cover_url: nonempty(detail.cover_url) ?? meta.cover_url,
+    cover_path: nonempty(detail.cover_url) ? detail.cover_path : meta.cover_path,
     asin,
     isbn,
     rating_overall: detail.rating_overall ?? meta.rating_overall ?? null,

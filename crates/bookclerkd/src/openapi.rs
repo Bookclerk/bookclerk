@@ -210,9 +210,11 @@ const TAGS: &[(&str, &str, &str)] = &[
     ("Spec", v30::OPENAPI_V30_PATH, "This document."),
     ("Auth", "/api/auth", "Sign-in, sessions, passkeys, TOTP and the operator's elevation."),
     ("Users", "/api/users", "Library users and their claim tickets."),
+    ("Users", "/api/avatars", "Library users and their claim tickets."),
     ("Library", "/api/library", "Books in the library, scans and acquires."),
     ("Discover", "/api/discover", "Recommendations, catalog search and title metadata."),
     ("Discover", "/api/covers", "Recommendations, catalog search and title metadata."),
+    ("Discover", "/api/stores", "Recommendations, catalog search and title metadata."),
     ("Wishlist", "/api/wishlist", "Titles users have asked for."),
     ("Wishlist", "/api/request-queue", "Titles users have asked for."),
     ("Jobs", "/api/jobs", "Queued and running control-plane jobs."),
@@ -1611,11 +1613,8 @@ mod tests {
     /// `file: snippet` pairs: the invite page and the SPA's static files.
     const UNDOCUMENTED_ROUTES: &[(&str, &str)] = &[
         ("src/api.rs", ".route(\"/invite\", get(invite_page))"),
-        (
-            "src/api.rs",
-            ".route_service(path, ServeFile::new(index.clone()))",
-        ),
-        ("src/api.rs", ".fallback_service(ServeDir::new(dist))"),
+        ("src/api.rs", ".route_service(path, spa_index.clone())"),
+        ("src/api.rs", ".fallback_service(spa_files)"),
     ];
 
     /// The document as JSON, for walking.

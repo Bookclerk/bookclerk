@@ -4,6 +4,7 @@ import { UserAvatar } from "@/components/UserAvatar";
 import { Button } from "@/components/ui/button";
 import {
   gravatarUrl,
+  ssoPictureSrc,
   resolveAvatar,
   selectedSourceKey,
   ssoProviderLabel,
@@ -40,7 +41,7 @@ export function AvatarPickerDialog({
   const titleId = useId();
   const fileRef = useRef<HTMLInputElement>(null);
   const selected = selectedSourceKey(resolveAvatar(fields));
-  const pictures = fields.sso_pictures ?? [];
+  const pictures = (fields.sso_pictures ?? []).filter((pic) => ssoPictureSrc(pic));
 
   if (!open) return null;
 
@@ -83,7 +84,7 @@ export function AvatarPickerDialog({
               label="Gravatar"
               onClick={() => void onSelectSource("gravatar")}
             >
-              <RemotePreview src={gravatarUrl(fields.gravatar_hash, 128)} />
+              <RemotePreview src={gravatarUrl(fields.gravatar_hash)} />
             </ChoiceButton>
           ) : null}
           {pictures.map((pic) => (
@@ -94,7 +95,7 @@ export function AvatarPickerDialog({
               label={ssoProviderLabel(pic.provider)}
               onClick={() => void onSelectSource(`sso:${pic.identity_id}`)}
             >
-              <RemotePreview src={pic.picture_url} />
+              <RemotePreview src={ssoPictureSrc(pic) ?? ""} />
             </ChoiceButton>
           ))}
           <ChoiceButton
