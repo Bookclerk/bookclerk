@@ -669,6 +669,27 @@ tree and on its text, in `npm test` (the `workerd_guests` check).
   `MAX_CHAPTERS`. `found` exactly when that walk finds any. Durations are
   positive safe integers.
 
+### Cover fetcher guest
+
+The `covers` guest decides which URLs it requests: the host's URLs and every
+redirect `Location` an upstream server sends. Its `test/fuzz.test.ts` replays
+`fuzz/url/` and `fuzz/location/` and runs seeded text mutations in
+`npm test` (the `workerd_guests` check); `FUZZ_SEED` and `FUZZ_ITERATIONS`
+pick another run.
+
+- **Cover URL policy** (`checkUrl` in
+  `crates/bookclerk-plugins/optional/covers/src/fetcher.ts`). Oracle,
+  written from the policy and the WHATWG URL rules: accept exactly an
+  `https` URL with the default port, no credentials, no control characters
+  or spaces, at most 4096 code units, and a hostname whose labels are
+  non-empty and whose last label is not a number (the URL parser's IPv4
+  test) or a bracketed address. Accepted URLs are canonical and
+  idempotent.
+- **Redirect chains** (`fetchOne`). Mutated `Location` chains: every
+  request is a policy URL, each hop is the previous `Location` resolved
+  against the URL that sent it, no more than `MAX_REDIRECTS` are followed,
+  and a body is stored only after a chain the policy allowed in full.
+
 ## Still to add
 
 These are tracked in the fuzzing ADR's follow-ups:

@@ -114,9 +114,10 @@ export function checkParams(params: unknown): CoverRequest {
 
 /**
  * Whether `url` is one the fetcher will request: absolute `https`, the
- * default port, no user name or password, a hostname rather than an address,
- * and no longer than `MAX_URL_BYTES`. The egress gate enforces the address
- * rules too; checking here gives a clear per-URL error instead.
+ * default port, no user name or password, a hostname (no empty labels)
+ * rather than an address, and no longer than `MAX_URL_BYTES`. The egress
+ * gate enforces the address rules too; checking here gives a clear per-URL
+ * error instead. The fetcher applies it to every redirect hop as well.
  *
  * @param url - The requested URL.
  * @returns The URL as the parser serialized it, or `undefined` when refused.
@@ -133,7 +134,12 @@ export function checkUrl(url: string): string | undefined {
     return undefined;
   }
   const host = parsed.hostname;
-  if (host === "" || host.startsWith("[") || /^[0-9.]+$/.test(host)) return undefined;
+  if (host.startsWith("[")) return undefined;
+  // One trailing dot is a fully qualified name; any other empty label is no
+  // real hostname. A numeric last label is how the URL parser spots IPv4.
+  const labels = (host.endsWith(".") ? host.slice(0, -1) : host).split(".");
+  const last = labels[labels.length - 1] ?? "";
+  if (labels.includes("") || /^(?:\d+|0x[0-9a-f]*)$/i.test(last)) return undefined;
   return parsed.href;
 }
 
