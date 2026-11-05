@@ -5467,8 +5467,10 @@ async fn discover_title_meta(
     Json(body): Json<bookclerk_discover::TitleMetaQuery>,
 ) -> Result<Json<Option<bookclerk_discover::TitleMeta>>, (StatusCode, String)> {
     validate_title_meta_query(&body)?;
+    let providers: Arc<dyn bookclerk_enrich::MetadataProviders> =
+        Arc::new(state.integrations.read().await.clone());
     let sources = state.sources.read().await;
-    let meta = bookclerk_discover::resolve_title_meta(&body, Some(&sources))
+    let meta = bookclerk_discover::resolve_title_meta(&body, providers, Some(&sources))
         .await
         .map_err(internal_err)?;
     Ok(Json(meta))
@@ -5535,8 +5537,11 @@ async fn discover_title_meta_batch(
         validate_title_meta_query(q)?;
     }
     let resolved = {
+        let providers: Arc<dyn bookclerk_enrich::MetadataProviders> =
+            Arc::new(state.integrations.read().await.clone());
         let sources = state.sources.read().await;
-        bookclerk_discover::resolve_title_meta_batch(&body.queries, 4, Some(&sources)).await
+        bookclerk_discover::resolve_title_meta_batch(&body.queries, 4, providers, Some(&sources))
+            .await
     };
     // Per-query enrichment failures must not 500 the whole batch — Discover
     // search already has hits; missing meta is optional.

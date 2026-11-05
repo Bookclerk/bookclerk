@@ -1492,6 +1492,7 @@ dependencies = [
  "bookclerk-naming",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-database-sqlite",
+ "bookclerk-plugin-manifest",
  "bookclerk-source",
  "bookclerk-storage",
  "bytes",
@@ -1652,10 +1653,12 @@ name = "bookclerk-discover"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bookclerk-config",
  "bookclerk-enrich",
  "bookclerk-library",
  "bookclerk-plugin-database-sqlite",
+ "bookclerk-plugin-sdk",
  "bookclerk-resolve",
  "bookclerk-source",
  "chrono",
@@ -1679,6 +1682,7 @@ dependencies = [
 name = "bookclerk-enrich"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bookclerk-library",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
@@ -1699,6 +1703,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bookclerk-config",
+ "bookclerk-enrich",
  "bookclerk-library",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-database-sqlite",

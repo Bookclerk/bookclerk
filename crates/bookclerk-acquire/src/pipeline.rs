@@ -8,13 +8,14 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use bookclerk_config::{FileTimestampMode, MultiDestinationMode, OutputBackendKind};
-use bookclerk_enrich::{fetch_audnexus_book, fetch_public_chapter_info};
+use bookclerk_enrich::{asin_identifier, chapter_info_from_layout, MetadataProviders};
 use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
 use bookclerk_media::{
     align_chapter_starts_async, bookclerk_tool_tag, encode_to_mp3, fixup_audiobook,
     package_m4b_from_mp3, parse_mp4, track_duration_ms, ChapterAlignOptions, FixupRequest,
     PackageM4bRequest,
 };
+use bookclerk_plugin_abi::MetadataChaptersParams;
 use bookclerk_source::{ContentSource, DownloadOptions, FetchOptions, PlainFetch};
 use bookclerk_storage::{ObjectMeta, StorageBackend};
 use chrono::Datelike;
@@ -71,6 +72,44 @@ pub struct AcquireRequest {
     pub job_id: Option<String>,
     /// Refuse a new scratch dir when registered temps already exceed this.
     pub temp_quota_bytes: Option<u64>,
+    /// Metadata providers asked for the plain-audio catalog and chapter
+    /// overlay. The default has none, so plain audio keeps its store tags.
+    pub metadata: AcquireMetadata,
+}
+
+/// The deployed metadata providers an acquire asks for the plain-audio
+/// overlay (catalog tags, cover and chapter layout of an enriched ASIN).
+#[derive(Clone)]
+pub struct AcquireMetadata(Arc<dyn MetadataProviders>);
+
+impl AcquireMetadata {
+    /// Wraps the providers an acquire should ask.
+    ///
+    /// # Arguments
+    ///
+    /// * `providers` - Usually the daemon's or CLI's integration registry.
+    #[must_use]
+    pub fn new(providers: Arc<dyn MetadataProviders>) -> Self {
+        Self(providers)
+    }
+
+    /// The wrapped providers.
+    #[must_use]
+    pub fn providers(&self) -> &dyn MetadataProviders {
+        self.0.as_ref()
+    }
+}
+
+impl Default for AcquireMetadata {
+    fn default() -> Self {
+        Self(Arc::new(bookclerk_enrich::NoMetadataProviders))
+    }
+}
+
+impl std::fmt::Debug for AcquireMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AcquireMetadata(..)")
+    }
 }
 
 /// Result after a successful acquire.
@@ -1354,7 +1393,7 @@ async fn store_plain_fetch(
     }
 
     // Flat sidecars for players/tools that ignore embedded Nero/QuickTime chapters;
-    // also persist the nested Audnexus tree (timestamp-adjusted) when available.
+    // also persist the provider's nested chapter tree (timestamp-adjusted) when available.
     for stored in &stored_keys.keys {
         if let Some(dest) = destinations.destination(stored.kind) {
             let dest_req = request_for_destination(req, dest);
@@ -1657,7 +1696,7 @@ fn companion_pdf_is_stored(book: &BookRecord) -> bool {
             .is_some_and(|key| !key.is_empty())
 }
 
-/// Persist nested `chapters.tree.json` (Audnexus layout with adjusted timestamps).
+/// Persist nested `chapters.tree.json` (provider layout with adjusted timestamps).
 async fn store_chapter_tree_sidecar(
     storage: &dyn StorageBackend,
     req: &AcquireRequest,
@@ -1847,31 +1886,31 @@ fn fallback_audio_ext(options: &DownloadOptions) -> &'static str {
 }
 
 #[derive(Debug, Clone, Default)]
-/// Optional Audnexus catalog overlay applied to plain-audio metadata and tags.
+/// Optional provider catalog overlay applied to plain-audio metadata and tags.
 struct PlainAudibleCatalog {
     /// Catalog title used for tags when the store title is empty or less specific.
     title: Option<String>,
-    /// Comma-joined author names from Audnexus.
+    /// Comma-joined author names from the provider record.
     authors: Option<String>,
-    /// Comma-joined narrator names from Audnexus.
+    /// Comma-joined narrator names from the provider record.
     narrators: Option<String>,
-    /// Primary series name from Audnexus `seriesPrimary`.
+    /// Primary series name from the provider record.
     series: Option<String>,
-    /// Series position string from Audnexus (may be non-integer).
+    /// Series position string from the provider record (may be non-integer).
     series_index: Option<String>,
-    /// Subtitle from Audnexus, when present.
+    /// Subtitle from the provider record, when present.
     subtitle: Option<String>,
-    /// Publisher display name from Audnexus.
+    /// Publisher display name from the provider record.
     publisher: Option<String>,
-    /// ISBN-13 when Audnexus reports one.
+    /// ISBN when the provider record carries one.
     isbn: Option<String>,
-    /// Semicolon-joined genre/tag names from Audnexus.
+    /// Semicolon-joined genre/tag names from the provider record.
     categories: Option<String>,
-    /// Four-digit publication year derived from the Audnexus release date.
+    /// Four-digit publication year derived from the provider's release date.
     year: Option<String>,
-    /// Long description or summary from Audnexus.
+    /// Long description or summary from the provider record.
     description: Option<String>,
-    /// Content language from Audnexus (for example `english`).
+    /// Content language from the provider record (for example `english`).
     language: Option<String>,
     /// Downloaded cover image used for tagging when the source omitted one.
     cover_path: Option<PathBuf>,
@@ -1893,7 +1932,7 @@ async fn plain_source_has_audible_asin(library: &LibraryStore, req: &AcquireRequ
         .is_some()
 }
 
-/// Fetch Audnexus catalog extras for plain acquire (chapters fetched separately).
+/// Fetch provider catalog extras for plain acquire (chapters fetched separately).
 async fn fetch_plain_catalog_overlay(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -1905,142 +1944,145 @@ async fn fetch_plain_catalog_overlay(
     let Some(audible_asin) = book.audible_asin().map(str::to_string) else {
         return PlainAudibleCatalog::default();
     };
-    let region = if book.marketplace.trim().is_empty() {
-        "us"
-    } else {
-        book.marketplace.as_str()
+    let region = book_region(&book);
+    let Some(record) =
+        bookclerk_enrich::enrichment_for_asin(req.metadata.providers(), &audible_asin, region)
+            .await
+    else {
+        tracing::debug!(
+            audible_asin = %audible_asin,
+            "no metadata provider record for plain acquire overlay"
+        );
+        return PlainAudibleCatalog::default();
     };
-    let http = match bookclerk_enrich::public_http_client() {
-        Ok(http) => http,
-        Err(err) => {
-            tracing::warn!(error = %err, "Audnexus HTTP client init failed");
-            return PlainAudibleCatalog::default();
-        }
+    let cover_path = match record.cover_url.as_deref() {
+        Some(url) => download_overlay_cover(url, &audible_asin, work_dir).await,
+        None => None,
     };
-    let item = match fetch_audnexus_book(&http, &audible_asin, region).await {
-        Ok(Some(item)) => item,
-        Ok(None) => return PlainAudibleCatalog::default(),
-        Err(err) => {
-            tracing::warn!(
-                audible_asin = %audible_asin,
-                error = %err,
-                "Audnexus book fetch failed for plain acquire overlay"
-            );
-            return PlainAudibleCatalog::default();
-        }
-    };
-
-    let str_field = |key: &str| -> Option<String> {
-        item.get(key)
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    let join_people = |key: &str| -> Option<String> {
-        let arr = item.get(key)?.as_array()?;
-        let names: Vec<&str> = arr
-            .iter()
-            .filter_map(|e| e.get("name").and_then(|v| v.as_str()))
-            .filter(|n| !n.is_empty())
-            .collect();
-        if names.is_empty() {
-            None
-        } else {
-            Some(names.join(", "))
-        }
-    };
-    let series = item
-        .get("seriesPrimary")
-        .and_then(|s| s.get("name"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let series_index = item
-        .get("seriesPrimary")
-        .and_then(|s| s.get("position"))
-        .and_then(|v| {
-            v.as_str()
-                .map(str::to_string)
-                .or_else(|| v.as_i64().map(|n| n.to_string()))
-                .or_else(|| v.as_f64().map(|n| n.to_string()))
-        })
-        .filter(|s| !s.is_empty());
-    let categories = item
-        .get("genres")
-        .and_then(|g| g.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|e| e.get("name").and_then(|v| v.as_str()))
-                .filter(|n| !n.is_empty())
-                .collect::<Vec<_>>()
-                .join("; ")
-        })
-        .filter(|s| !s.is_empty());
-    let year = str_field("releaseDate").and_then(|d| {
-        if d.len() >= 4 {
-            Some(d[..4].to_string())
-        } else {
-            None
-        }
-    });
-    let description = str_field("description").or_else(|| str_field("summary"));
-    let isbn = item
-        .get("isbn")
-        .and_then(|v| {
-            v.as_str()
-                .map(str::to_string)
-                .or_else(|| v.as_i64().map(|n| n.to_string()))
-                .or_else(|| v.as_u64().map(|n| n.to_string()))
-        })
-        .filter(|s| !s.is_empty());
-
-    let mut cover_path = None;
-    if let Some(url) = item
-        .get("image")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        match http.get(url).send().await {
-            Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-                Ok(bytes) if !bytes.is_empty() => {
-                    let path = work_dir.join(format!("{audible_asin}.audnexus-cover.jpg"));
-                    if tokio::fs::write(&path, &bytes).await.is_ok() {
-                        cover_path = Some(path);
-                    }
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    tracing::debug!(error = %err, "Audnexus cover body read failed");
-                }
-            },
-            Ok(resp) => {
-                tracing::debug!(status = %resp.status(), "Audnexus cover HTTP non-success");
-            }
-            Err(err) => {
-                tracing::debug!(error = %err, "Audnexus cover download failed");
-            }
-        }
-    }
-
     PlainAudibleCatalog {
-        title: str_field("title"),
-        authors: join_people("authors"),
-        narrators: join_people("narrators"),
-        series,
-        series_index,
-        subtitle: str_field("subtitle"),
-        publisher: str_field("publisherName"),
-        isbn,
-        categories,
-        year,
-        description,
-        language: str_field("language"),
+        title: Some(record.title),
+        authors: record.authors,
+        narrators: record.narrators,
+        series: record.series,
+        series_index: record.series_index,
+        subtitle: record.subtitle,
+        publisher: record.publisher,
+        isbn: record.isbn,
+        categories: record.categories,
+        year: record.published_at.as_deref().and_then(release_year),
+        description: record.description,
+        language: record.language,
         cover_path,
     }
 }
 
+/// Marketplace of a library row, `us` when blank.
+fn book_region(book: &BookRecord) -> &str {
+    if book.marketplace.trim().is_empty() {
+        "us"
+    } else {
+        book.marketplace.as_str()
+    }
+}
+
+/// Four-digit year at the start of a provider's release date.
+fn release_year(date: &str) -> Option<String> {
+    let year = date.trim().get(..4)?;
+    year.bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| year.to_string())
+}
+
+/// Hosts the plain-audio overlay downloads a provider's cover from: Audible's
+/// image CDN, where Audible catalog covers live.
+const OVERLAY_COVER_HOSTS: &[&str] = &["*.media-amazon.com", "*.ssl-images-amazon.com"];
+
+/// Largest provider cover the overlay saves, in bytes. Catalog covers are a
+/// few hundred KiB; anything far larger is not a cover.
+const MAX_OVERLAY_COVER_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Downloads a provider's cover image into the work directory.
+///
+/// A provider record is plugin output, and this is the one place the host
+/// itself fetches a URL a plugin handed it, outside that plugin's own network
+/// grant. So the host only follows the cover URL over `https` to Audible's
+/// image CDN ([`OVERLAY_COVER_HOSTS`], checked by
+/// [`bookclerk_plugin_manifest::https_url_on_hosts`]), does not follow
+/// redirects, and saves at most [`MAX_OVERLAY_COVER_BYTES`]. A loopback,
+/// private or any other address is never requested.
+///
+/// # Arguments
+///
+/// * `url` - The provider's cover URL.
+/// * `audible_asin` - ASIN naming the saved file.
+/// * `work_dir` - The title's scratch directory.
+///
+/// # Returns
+///
+/// The saved path, or `None` when the URL is refused or the download fails.
+async fn download_overlay_cover(url: &str, audible_asin: &str, work_dir: &Path) -> Option<PathBuf> {
+    let Some(checked) = bookclerk_plugin_manifest::https_url_on_hosts(url, OVERLAY_COVER_HOSTS)
+    else {
+        tracing::debug!(%url, "provider cover URL is not on the Audible image CDN; skipped");
+        return None;
+    };
+    let http = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("bookclerk/", env!("CARGO_PKG_VERSION")))
+        .build()
+    {
+        Ok(http) => http,
+        Err(err) => {
+            tracing::warn!(error = %err, "cover HTTP client init failed");
+            return None;
+        }
+    };
+    match http.get(checked).send().await {
+        Ok(resp) => {
+            let path = work_dir.join(format!("{audible_asin}.provider-cover.jpg"));
+            save_overlay_cover(resp, &path).await
+        }
+        Err(err) => {
+            tracing::debug!(error = %err, "provider cover download failed");
+            None
+        }
+    }
+}
+
+/// Saves a cover response's body to `path`, capped at
+/// [`MAX_OVERLAY_COVER_BYTES`].
+///
+/// # Arguments
+///
+/// * `resp` - The cover response.
+/// * `path` - Where to write the image.
+///
+/// # Returns
+///
+/// `path` once a non-empty body is written; `None` for a non-success status,
+/// an empty or oversized body, or a write failure (nothing is left behind).
+async fn save_overlay_cover(resp: reqwest::Response, path: &Path) -> Option<PathBuf> {
+    if !resp.status().is_success() {
+        tracing::debug!(status = %resp.status(), "provider cover HTTP non-success");
+        return None;
+    }
+    match write_http_body_capped(resp, path, MAX_OVERLAY_COVER_BYTES).await {
+        Ok(written) if written > 0 => Some(path.to_path_buf()),
+        Ok(_) => {
+            let _ = tokio::fs::remove_file(path).await;
+            None
+        }
+        Err(err) => {
+            tracing::debug!(error = %err, "provider cover not saved");
+            let _ = tokio::fs::remove_file(path).await;
+            None
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-/// Builds a media fix-up request, preferring Audnexus overlay fields over the library row.
+/// Builds a media fix-up request, preferring provider overlay fields over the library row.
 async fn build_fixup_request(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -2166,13 +2208,13 @@ async fn resolve_book(
         .flatten()
 }
 
-/// When liberating plain audio that was enriched with an Audible ASIN, fetch
-/// Audible's chapter tree (Audnexus, no login) and rebase starts for missing
-/// brand intro/outro.
+/// When liberating plain audio that was enriched with an Audible ASIN, ask the
+/// metadata providers for Audible's chapter layout (the Audnexus plugin) and
+/// rebase starts for missing brand intro/outro.
 ///
 /// `plain_audio_duration_ms` is the probed duration of the plain file (no brand
-/// segments). When Audnexus omits runtime, it reconstructs the Audible timeline
-/// so outro chapters can still be trimmed.
+/// segments). When the layout omits runtime, it reconstructs the Audible
+/// timeline so outro chapters can still be trimmed.
 async fn overlay_audible_chapters_for_plain(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -2180,29 +2222,31 @@ async fn overlay_audible_chapters_for_plain(
 ) -> Option<(Vec<(String, u64)>, Value)> {
     let book = resolve_book(library, req).await?;
     let audible_asin = book.audible_asin()?.to_string();
-    let region = if book.marketplace.trim().is_empty() {
-        "us"
-    } else {
-        book.marketplace.as_str()
+    let region = book_region(&book).to_string();
+    let answer = req
+        .metadata
+        .providers()
+        .chapters(&MetadataChaptersParams {
+            identifiers: vec![asin_identifier(&audible_asin, &region)],
+            marketplace: Some(region),
+        })
+        .await;
+    for failure in &answer.failures {
+        tracing::warn!(
+            audible_asin = %audible_asin,
+            provider = %failure.provider,
+            error = %failure.message,
+            "chapter layout lookup failed for plain-audio overlay"
+        );
+    }
+    let Some(found) = answer.found else {
+        tracing::debug!(
+            audible_asin = %audible_asin,
+            "no provider chapter layout for plain-audio overlay"
+        );
+        return None;
     };
-    let info = match fetch_public_chapter_info(&audible_asin, region).await {
-        Ok(Some(info)) => info,
-        Ok(None) => {
-            tracing::debug!(
-                audible_asin = %audible_asin,
-                "Audnexus returned no chapters for plain-audio overlay"
-            );
-            return None;
-        }
-        Err(err) => {
-            tracing::warn!(
-                audible_asin = %audible_asin,
-                error = %err,
-                "Audnexus chapter fetch failed for plain-audio overlay"
-            );
-            return None;
-        }
-    };
+    let info = chapter_info_from_layout(&found.chapters);
     let chapters = chapters_from_catalog_info_for_plain_audio(
         &info,
         req.options.combine_nested_chapter_titles,
@@ -2710,6 +2754,63 @@ mod tests {
     use super::*;
     use bookclerk_library::{EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload};
 
+    #[tokio::test]
+    async fn refused_cover_urls_are_never_requested() {
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let served = serve_http_body_loop(b"jpeg".to_vec(), Arc::clone(&hits)).await;
+        let addr = served
+            .strip_prefix("http://")
+            .and_then(|rest| rest.split('/').next())
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for refused in [
+            "not a url".to_string(),
+            served.clone(),
+            format!("https://{addr}/c.jpg"),
+            "https://127.0.0.1/c.jpg".to_string(),
+        ] {
+            assert!(
+                download_overlay_cover(&refused, "B00TEST001", dir.path())
+                    .await
+                    .is_none(),
+                "{refused}"
+            );
+        }
+        // The server is reachable, so a request that slipped past the host
+        // check would have been counted.
+        reqwest::get(&served).await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn overlay_covers_are_saved_within_the_size_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("cover.jpg");
+        let small = serve_http_body(b"jpeg".to_vec()).await;
+        let resp = reqwest::get(&small).await.unwrap();
+        assert_eq!(save_overlay_cover(resp, &path).await, Some(path.clone()));
+        assert_eq!(std::fs::read(&path).unwrap(), b"jpeg");
+
+        let empty = serve_http_body(Vec::new()).await;
+        let resp = reqwest::get(&empty).await.unwrap();
+        assert_eq!(save_overlay_cover(resp, &path).await, None);
+        assert!(!path.exists());
+
+        let cap = usize::try_from(MAX_OVERLAY_COVER_BYTES).unwrap();
+        let huge = serve_http_body(vec![0u8; cap + 1]).await;
+        let resp = reqwest::get(&huge).await.unwrap();
+        assert_eq!(save_overlay_cover(resp, &path).await, None);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn release_years_need_four_leading_digits() {
+        assert_eq!(release_year(" 2021-05-04").as_deref(), Some("2021"));
+        assert_eq!(release_year("2021").as_deref(), Some("2021"));
+        assert_eq!(release_year("21-05"), None);
+        assert_eq!(release_year("May 2021"), None);
+    }
+
     async fn test_store() -> LibraryStore {
         LibraryStore::from_connection(
             bookclerk_plugin_database_sqlite::open_memory()
@@ -2754,6 +2855,7 @@ mod tests {
             write_destinations: None,
             job_id,
             temp_quota_bytes: quota,
+            metadata: AcquireMetadata::default(),
         }
     }
 

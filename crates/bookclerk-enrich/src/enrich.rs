@@ -1,27 +1,31 @@
 //! Audible metadata enrichment for non-Audible ownership rows.
 //!
 //! Matching follows AudioBookshelf: public catalog title/author search, then
-//! Audnexus enrichment, then confidence scoring (duration / title / author),
-//! with ISBN / narrator / subtitle signals when available.
-//! No Audible account is required.
+//! a metadata-provider lookup of each candidate ASIN (the Audnexus plugin),
+//! then confidence scoring (duration / title / author), with ISBN / narrator
+//! / subtitle signals when available. No Audible account is required.
 
 use bookclerk_library::{LibraryStore, NewBook};
 use bookclerk_plugin_sdk::http::Client;
+use bookclerk_plugin_sdk::{
+    CreditRole, IdentifierScheme, MediaKind, MetadataLookupParams, MetadataRecord,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{EnrichError, Result};
 use crate::match_score::{
-    calculate_match_confidence, is_asin_title, normalize_isbn, MatchQuery, ScoreInput,
+    calculate_match_confidence, is_asin_title, is_valid_asin, normalize_isbn, MatchQuery,
+    ScoreInput,
 };
+use crate::providers::{asin_identifier, record_identifier, MetadataProviders};
 use crate::public_meta::{
-    fetch_audnexus_book, normalize_region, public_http_client, search_catalog_asins,
-    search_catalog_keywords,
+    normalize_region, public_http_client, search_catalog_asins, search_catalog_keywords,
 };
 
 /// Default minimum confidence percent (AudioBookshelf-style 0–100 scale).
 pub const DEFAULT_ENRICH_MIN_CONFIDENCE: u8 = 90;
 
-/// Metadata pulled from Audible / Audnexus for a confident match.
+/// Metadata pulled from the Audible catalog and a metadata provider for a confident match.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Enrichment {
     /// Audible / Amazon ASIN when this edition is sold on Audible.
@@ -70,50 +74,57 @@ pub struct ScoredMatch {
     pub confidence: f64,
 }
 
-/// Look up the best Audible match for the given query metadata via public APIs.
+/// Look up the best Audible match for the given query metadata.
 ///
-/// Returns [`None`] when no candidate meets `min_confidence` (0.0–1.0).
+/// Candidate ASINs come from the public Audible catalog search; each one's
+/// record comes from the deployed metadata providers. Returns [`None`] when
+/// no candidate meets `min_confidence` (0.0–1.0), or when no provider has a
+/// record for any candidate.
 ///
 /// # Arguments
 ///
-/// * `query` - Query vector or free-text search string.
+/// * `providers` - Deployed metadata providers asked for each candidate.
+/// * `query` - Title, author, ISBN and runtime of the row to match.
 /// * `region` - Marketplace / region code (`us`, `uk`, …).
 /// * `min_confidence` - Minimum match confidence in `[0.0, 1.0]` to apply enrichment.
 ///
 /// # Returns
 ///
-/// On success, the inner `Option<ScoredMatch>` value.
+/// The highest-scoring candidate at or above `min_confidence`.
 ///
 /// # Errors
 ///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
+/// Returns an error when the HTTP client cannot be built or a catalog search fails.
 pub async fn lookup_by_metadata(
+    providers: &dyn MetadataProviders,
     query: &MatchQuery<'_>,
     region: &str,
     min_confidence: f64,
 ) -> Result<Option<ScoredMatch>> {
     let http = public_http_client()?;
-    lookup_by_metadata_with_client(&http, query, region, min_confidence).await
+    lookup_by_metadata_with_client(&http, providers, query, region, min_confidence).await
 }
 
-/// Catalog + Audnexus lookup against an already-built HTTP client.
+/// Catalog search + provider lookup against an already-built HTTP client.
 ///
 /// # Arguments
 ///
-/// * `http` - `http` input for this call.
-/// * `query` - Query vector or free-text search string.
+/// * `http` - Client for the public Audible catalog search.
+/// * `providers` - Deployed metadata providers asked for each candidate.
+/// * `query` - Title, author, ISBN and runtime of the row to match.
 /// * `region` - Marketplace / region code (`us`, `uk`, …).
 /// * `min_confidence` - Minimum match confidence in `[0.0, 1.0]` to apply enrichment.
 ///
 /// # Returns
 ///
-/// On success, the inner `Option<ScoredMatch>` value.
+/// The highest-scoring candidate at or above `min_confidence`.
 ///
 /// # Errors
 ///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
+/// Returns an error when a catalog search fails.
 pub async fn lookup_by_metadata_with_client(
     http: &Client,
+    providers: &dyn MetadataProviders,
     query: &MatchQuery<'_>,
     region: &str,
     min_confidence: f64,
@@ -151,46 +162,71 @@ pub async fn lookup_by_metadata_with_client(
 
     let mut best: Option<ScoredMatch> = None;
     for asin in asins {
-        let Some(item) = fetch_audnexus_book(http, &asin, &region).await? else {
-            continue;
-        };
-        let Some((mut enrichment, candidate_isbn)) = enrichment_from_audnexus(&item) else {
-            continue;
-        };
-        let score_input = ScoreInput {
-            title: enrichment.title.as_str(),
-            subtitle: enrichment.subtitle.as_deref(),
-            author: enrichment.authors.as_deref(),
-            narrator: enrichment.narrators.as_deref(),
-            isbn: candidate_isbn.as_deref(),
-            duration_minutes: enrichment.length_minutes.map(|n| n as f64),
-        };
-        let confidence = calculate_match_confidence(&score_input, query);
-        enrichment.confidence = Some(confidence);
-        if confidence < min_confidence {
-            tracing::debug!(
-                asin = %enrichment.asin,
-                confidence,
-                min_confidence,
-                isbn_match = crate::match_score::isbn_exact_match(
-                    query.isbn,
-                    candidate_isbn.as_deref()
-                ),
-                "Audible candidate below confidence threshold"
-            );
-            continue;
-        }
-        match &best {
-            Some(prev) if prev.confidence >= confidence => {}
-            _ => {
-                best = Some(ScoredMatch {
-                    enrichment,
-                    confidence,
-                });
-            }
+        // Every provider's audiobook record for this ASIN is scored, so a
+        // sparse first record cannot hide a complete later one. Ebook and
+        // print records never describe the Audible edition being matched.
+        let candidates = records_for_asin(providers, &asin, &region)
+            .await
+            .into_iter()
+            .filter(|record| record.media_kind == MediaKind::Audiobook)
+            .filter_map(|record| enrichment_from_record(&record, &asin));
+        for enrichment in candidates {
+            best = better_match(best, enrichment, query, min_confidence);
         }
     }
     Ok(best)
+}
+
+/// Scores `enrichment` against `query` and keeps it when it clears
+/// `min_confidence` and beats `best`.
+///
+/// # Arguments
+///
+/// * `best` - The best match so far.
+/// * `enrichment` - A candidate record's fields.
+/// * `query` - The library row being matched.
+/// * `min_confidence` - Lowest accepted confidence (0.0–1.0).
+///
+/// # Returns
+///
+/// The better of `best` and the scored candidate.
+fn better_match(
+    best: Option<ScoredMatch>,
+    mut enrichment: Enrichment,
+    query: &MatchQuery<'_>,
+    min_confidence: f64,
+) -> Option<ScoredMatch> {
+    let candidate_isbn = enrichment.isbn.clone();
+    let score_input = ScoreInput {
+        title: enrichment.title.as_str(),
+        subtitle: enrichment.subtitle.as_deref(),
+        author: enrichment.authors.as_deref(),
+        narrator: enrichment.narrators.as_deref(),
+        isbn: candidate_isbn.as_deref(),
+        duration_minutes: enrichment.length_minutes.map(|n| n as f64),
+    };
+    let confidence = calculate_match_confidence(&score_input, query);
+    enrichment.confidence = Some(confidence);
+    if confidence < min_confidence {
+        tracing::debug!(
+            asin = %enrichment.asin,
+            confidence,
+            min_confidence,
+            isbn_match = crate::match_score::isbn_exact_match(
+                query.isbn,
+                candidate_isbn.as_deref()
+            ),
+            "Audible candidate below confidence threshold"
+        );
+        return best;
+    }
+    match best {
+        Some(prev) if prev.confidence >= confidence => Some(prev),
+        _ => Some(ScoredMatch {
+            enrichment,
+            confidence,
+        }),
+    }
 }
 
 /// Apply a confident Audible catalog match onto a non-Audible ownership row.
@@ -299,16 +335,19 @@ pub async fn apply_enrichment_to_book(
         .ok_or_else(|| EnrichError::Sync(format!("book not found after enrich: {book_uuid}")))
 }
 
-/// Enrich library rows that lack an ASIN via public Audible catalog + Audnexus.
+/// Enrich library rows that lack an ASIN via the public Audible catalog and
+/// the deployed metadata providers.
 ///
 /// Source-agnostic: any non-`audible` row with title and/or ISBN is considered.
 /// Uses title, author, narrator, subtitle, ISBN, and duration when present.
 /// `min_confidence_percent` is 0–100 (default [`DEFAULT_ENRICH_MIN_CONFIDENCE`]).
+/// With no provider that answers ASIN lookups, nothing matches.
 ///
 /// # Arguments
 ///
 /// * `library` - Open library store used for reads/writes.
-/// * `min_confidence_percent` - `min_confidence_percent` input for this call.
+/// * `providers` - Deployed metadata providers asked for each candidate ASIN.
+/// * `min_confidence_percent` - Minimum match confidence, 0–100.
 ///
 /// # Returns
 ///
@@ -319,6 +358,7 @@ pub async fn apply_enrichment_to_book(
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn enrich_books_from_audible(
     library: &LibraryStore,
+    providers: &dyn MetadataProviders,
     min_confidence_percent: u8,
 ) -> Result<usize> {
     let min_confidence = (min_confidence_percent.min(100) as f64) / 100.0;
@@ -346,7 +386,9 @@ pub async fn enrich_books_from_audible(
             isbn: book.isbn.as_deref(),
             duration_minutes: book.length_minutes.map(|n| n as f64),
         };
-        match lookup_by_metadata_with_client(&http, &query, region, min_confidence).await? {
+        match lookup_by_metadata_with_client(&http, providers, &query, region, min_confidence)
+            .await?
+        {
             Some(matched) => {
                 apply_enrichment_to_book(library, &book.uuid, &matched.enrichment).await?;
                 enriched += 1;
@@ -390,185 +432,139 @@ pub fn confidence_percent_to_fraction(percent: u8) -> f64 {
     f64::from(percent.min(100)) / 100.0
 }
 
-/// Fetch Audnexus metadata for a known ASIN (no confidence scoring).
+/// Provider metadata for a known ASIN (no confidence scoring).
 ///
 /// Used by Discover / Wishlist / Library detail views to surface description,
 /// runtime, publisher, and related fields without requiring a library row.
+/// The first provider record that carries a title wins.
 ///
 /// # Arguments
 ///
-/// * `asin` - Optional Audible / Amazon ASIN.
+/// * `providers` - Deployed metadata providers.
+/// * `asin` - Audible / Amazon ASIN.
 /// * `region` - Marketplace / region code (`us`, `uk`, …).
 ///
 /// # Returns
 ///
-/// On success, the inner `Option<Enrichment>` value.
-///
-/// # Errors
-///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
-pub async fn enrichment_for_asin(asin: &str, region: &str) -> Result<Option<Enrichment>> {
-    let http = public_http_client()?;
-    enrichment_for_asin_with_client(&http, asin, region).await
-}
-
-/// Same as [`enrichment_for_asin`] with a shared HTTP client.
-///
-/// # Arguments
-///
-/// * `http` - `http` input for this call.
-/// * `asin` - Optional Audible / Amazon ASIN.
-/// * `region` - Marketplace / region code (`us`, `uk`, …).
-///
-/// # Returns
-///
-/// On success, the inner `Option<Enrichment>` value.
-///
-/// # Errors
-///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
-pub async fn enrichment_for_asin_with_client(
-    http: &Client,
+/// The record's fields, or `None` when the ASIN is malformed or no provider
+/// has a record. A provider failure is logged and treated as no record.
+pub async fn enrichment_for_asin(
+    providers: &dyn MetadataProviders,
     asin: &str,
     region: &str,
-) -> Result<Option<Enrichment>> {
-    let Some(item) = fetch_audnexus_book(http, asin, region).await? else {
-        return Ok(None);
-    };
-    Ok(enrichment_from_audnexus(&item).map(|(e, _)| e))
+) -> Option<Enrichment> {
+    let asin = asin.trim().to_ascii_uppercase();
+    if !is_valid_asin(&asin) {
+        return None;
+    }
+    records_for_asin(providers, &asin, region)
+        .await
+        .iter()
+        .find_map(|record| enrichment_from_record(record, &asin))
 }
 
-/// Maps an Audnexus book JSON object into enrichment fields; missing ASIN/title yields `None`.
-fn enrichment_from_audnexus(item: &serde_json::Value) -> Option<(Enrichment, Option<String>)> {
-    let asin = item.get("asin")?.as_str()?.to_string();
-    let title = item
-        .get("title")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())?
-        .to_string();
-    let authors = join_named_people(item, "authors");
-    let narrators = join_named_people(item, "narrators");
-    let series = item
-        .get("seriesPrimary")
-        .and_then(|s| s.get("name"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let series_index = item
-        .get("seriesPrimary")
-        .and_then(|s| s.get("position"))
-        .and_then(|v| {
-            v.as_str()
-                .map(str::to_string)
-                .or_else(|| v.as_i64().map(|n| n.to_string()))
-                .or_else(|| v.as_f64().map(|n| n.to_string()))
+/// Every provider record for `asin`, in provider order, without those that
+/// name a different ASIN.
+///
+/// A record that names no ASIN is kept: the provider answered a lookup by
+/// this ASIN. A record that names another one describes another edition and
+/// would store the wrong ASIN on the matched row.
+///
+/// # Arguments
+///
+/// * `providers` - Deployed metadata providers.
+/// * `asin` - Upper-case ASIN, already validated.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+///
+/// # Returns
+///
+/// The matching records. A provider failure is logged and contributes none.
+async fn records_for_asin(
+    providers: &dyn MetadataProviders,
+    asin: &str,
+    region: &str,
+) -> Vec<MetadataRecord> {
+    let region = normalize_region(region);
+    let answer = providers
+        .lookup(&MetadataLookupParams {
+            identifiers: vec![asin_identifier(asin, &region)],
+            marketplace: Some(region.clone()),
+            limit: Some(1),
         })
-        .filter(|s| !s.is_empty());
-    let series_asin = item
-        .get("seriesPrimary")
-        .and_then(|s| s.get("asin"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let length_minutes = item
-        .get("runtimeLengthMin")
-        .and_then(|v| v.as_i64())
-        .or_else(|| {
-            item.get("runtimeLengthMin")
-                .and_then(|v| v.as_f64())
-                .map(|n| n.round() as i64)
-        });
-    let publisher = item
-        .get("publisherName")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let subtitle = item
-        .get("subtitle")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let cover_url = item
-        .get("image")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let isbn = item
-        .get("isbn")
-        .and_then(|v| {
-            v.as_str()
-                .map(str::to_string)
-                .or_else(|| v.as_i64().map(|n| n.to_string()))
-                .or_else(|| v.as_u64().map(|n| n.to_string()))
+        .await;
+    for failure in &answer.failures {
+        tracing::debug!(
+            provider = %failure.provider,
+            asin = %asin,
+            error = %failure.message,
+            "metadata provider lookup failed"
+        );
+    }
+    answer
+        .records
+        .into_iter()
+        .map(|provided| provided.record)
+        .filter(|record| {
+            record_identifier(record, IdentifierScheme::Asin)
+                .is_none_or(|named| named.eq_ignore_ascii_case(asin))
         })
-        .filter(|s| !s.is_empty());
-    let published_at = item
-        .get("releaseDate")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let categories = genres_from_audnexus(item);
-    let description = item
-        .get("description")
-        .and_then(|v| v.as_str())
+        .collect()
+}
+
+/// Maps a provider record into enrichment fields.
+///
+/// # Arguments
+///
+/// * `record` - The provider's record.
+/// * `asin` - ASIN asked for; used when the record does not name one.
+///
+/// # Returns
+///
+/// `None` when the record has no title.
+#[must_use]
+pub fn enrichment_from_record(record: &MetadataRecord, asin: &str) -> Option<Enrichment> {
+    let title = non_empty(Some(record.title.as_str()))?;
+    let series = record.series_entries.first();
+    Some(Enrichment {
+        asin: record_identifier(record, IdentifierScheme::Asin)
+            .map_or_else(|| asin.to_string(), str::to_string),
+        title,
+        authors: join_credits(record, CreditRole::Author),
+        narrators: join_credits(record, CreditRole::Narrator),
+        series: series.and_then(|s| non_empty(Some(s.name.as_str()))),
+        series_index: series.and_then(|s| non_empty(s.position.as_deref())),
+        series_asin: series.and_then(|s| non_empty(s.store_series_id.as_deref())),
+        length_minutes: record.length_minutes.map(i64::from),
+        publisher: non_empty(record.publisher.as_deref()),
+        subtitle: non_empty(record.subtitle.as_deref()),
+        cover_url: non_empty(record.cover_url.as_deref()),
+        isbn: record_identifier(record, IdentifierScheme::Isbn).map(str::to_string),
+        published_at: non_empty(record.published_at.as_deref()),
+        categories: non_empty(record.categories.as_deref()),
+        description: non_empty(record.description.as_deref()),
+        language: non_empty(record.language.as_deref()),
+        confidence: None,
+    })
+}
+
+/// Trimmed copy of `value`, or `None` when it is absent or blank.
+fn non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(|| {
-            item.get("summary")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        });
-    let language = item
-        .get("language")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-
-    Some((
-        Enrichment {
-            asin,
-            title,
-            authors,
-            narrators,
-            series,
-            series_index,
-            series_asin,
-            length_minutes,
-            publisher,
-            subtitle,
-            cover_url,
-            isbn: isbn.clone(),
-            published_at,
-            categories,
-            description,
-            language,
-            confidence: None,
-        },
-        isbn,
-    ))
 }
 
-/// Joins unique Audnexus genre/tag names with `; `; empty lists become `None`.
-fn genres_from_audnexus(item: &serde_json::Value) -> Option<String> {
-    let arr = item.get("genres")?.as_array()?;
-    let mut names = Vec::new();
-    for entry in arr {
-        let kind = entry
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("genre");
-        // Prefer catalog genres; still accept tags when no genres present.
-        if kind.eq_ignore_ascii_case("genre") || kind.eq_ignore_ascii_case("tag") {
-            if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
-                if !name.is_empty() && !names.iter().any(|n| n == name) {
-                    names.push(name.to_string());
-                }
-            }
-        }
-    }
-    if names.is_empty() {
-        None
-    } else {
-        Some(names.join("; "))
-    }
+/// Joins the names credited with `role`, in billing order, with `, `.
+fn join_credits(record: &MetadataRecord, role: CreditRole) -> Option<String> {
+    let names: Vec<&str> = record
+        .credits
+        .iter()
+        .filter(|c| c.role == role)
+        .map(|c| c.name.trim())
+        .filter(|n| !n.is_empty())
+        .collect();
+    (!names.is_empty()).then(|| names.join(", "))
 }
 
 /// Parses RFC 3339 or `YYYY-MM-DD` release dates as UTC midnight; empty/invalid yield `None`.
@@ -580,26 +576,11 @@ fn parse_release_date(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
         return Some(dt.with_timezone(&chrono::Utc));
     }
-    // Audnexus sometimes returns `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS.sssZ` variants.
-    if let Ok(dt) = chrono::NaiveDate::parse_from_str(&raw[..raw.len().min(10)], "%Y-%m-%d") {
+    // Providers sometimes print `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS.sssZ` variants.
+    if let Ok(dt) = chrono::NaiveDate::parse_from_str(raw.get(..10).unwrap_or(raw), "%Y-%m-%d") {
         return dt.and_hms_opt(0, 0, 0).map(|naive| naive.and_utc());
     }
     None
-}
-
-/// Joins `{name}` entries from an Audnexus people array with `, `.
-fn join_named_people(item: &serde_json::Value, field: &str) -> Option<String> {
-    let arr = item.get(field)?.as_array()?;
-    let names: Vec<&str> = arr
-        .iter()
-        .filter_map(|entry| entry.get("name").and_then(|v| v.as_str()))
-        .filter(|n| !n.is_empty())
-        .collect();
-    if names.is_empty() {
-        None
-    } else {
-        Some(names.join(", "))
-    }
 }
 
 /// First author from a comma-separated list (for catalog search query).
@@ -615,7 +596,11 @@ fn primary_author(authors: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::{
+        ChaptersAnswer, MetadataAnswer, NoMetadataProviders, ProvidedRecord, ProviderFailure,
+    };
     use bookclerk_library::NewBook;
+    use bookclerk_plugin_sdk::{Credit, MetadataChaptersParams, MetadataSearchParams, SeriesEntry};
 
     #[tokio::test]
     async fn enrichment_keeps_libro_runtime_over_audible() {
@@ -711,36 +696,89 @@ mod tests {
         assert_eq!(updated.title, "Audible Title");
     }
 
-    #[test]
-    fn audnexus_parse_extracts_fields() {
-        let item = serde_json::json!({
-            "asin": "B00TEST01",
-            "title": "Test Title",
-            "subtitle": "A Subtitle",
-            "publisherName": "Pub Co",
-            "runtimeLengthMin": 320,
-            "isbn": "9781234567890",
-            "releaseDate": "2019-12-03T00:00:00.000Z",
-            "language": "english",
-            "description": "A long blurb",
-            "authors": [{"name": "Ann Author"}],
-            "narrators": [{"name": "Ned Narrator"}],
-            "seriesPrimary": {"name": "Series A", "position": "1", "asin": "B00SER01"},
-            "genres": [
-                {"name": "Literature & Fiction", "type": "genre"},
-                {"name": "Adventure", "type": "tag"}
+    /// Answers each ASIN lookup with the record registered for it.
+    struct ByAsin(Vec<(String, MetadataRecord)>);
+
+    #[async_trait::async_trait]
+    impl MetadataProviders for ByAsin {
+        async fn lookup(&self, params: &MetadataLookupParams) -> MetadataAnswer {
+            let asin = &params.identifiers[0].value;
+            MetadataAnswer {
+                records: self
+                    .0
+                    .iter()
+                    .filter(|(a, _)| a == asin)
+                    .map(|(_, record)| ProvidedRecord {
+                        provider: "audnexus".into(),
+                        record: record.clone(),
+                    })
+                    .collect(),
+                failures: vec![ProviderFailure {
+                    provider: "broken".into(),
+                    message: "down".into(),
+                }],
+            }
+        }
+
+        async fn search(&self, _params: &MetadataSearchParams) -> MetadataAnswer {
+            MetadataAnswer::default()
+        }
+
+        async fn chapters(&self, _params: &MetadataChaptersParams) -> ChaptersAnswer {
+            ChaptersAnswer::default()
+        }
+    }
+
+    fn credit(name: &str, role: CreditRole) -> Credit {
+        Credit {
+            name: name.into(),
+            role,
+            ..Credit::default()
+        }
+    }
+
+    fn full_record() -> MetadataRecord {
+        MetadataRecord {
+            title: "Test Title".into(),
+            subtitle: Some("A Subtitle".into()),
+            publisher: Some("Pub Co".into()),
+            length_minutes: Some(320),
+            published_at: Some("2019-12-03T00:00:00.000Z".into()),
+            language: Some("english".into()),
+            description: Some("A long blurb".into()),
+            categories: Some("Literature & Fiction; Adventure".into()),
+            cover_url: Some("https://img.example/cover.jpg".into()),
+            identifiers: vec![
+                asin_identifier("B00TEST001", "us"),
+                crate::providers::isbn_identifier("9781234567890"),
             ],
-            "image": "https://img.example/cover.jpg"
-        });
-        let (e, isbn) = enrichment_from_audnexus(&item).unwrap();
-        assert_eq!(e.asin, "B00TEST01");
+            credits: vec![
+                credit("Ann Author", CreditRole::Author),
+                credit("Ned Narrator", CreditRole::Narrator),
+                credit(" ", CreditRole::Author),
+                credit("Bea Author", CreditRole::Author),
+            ],
+            series_entries: vec![SeriesEntry {
+                name: "Series A".into(),
+                position: Some("1".into()),
+                store_series_id: Some("B00SER0001".into()),
+            }],
+            ..MetadataRecord::default()
+        }
+    }
+
+    #[test]
+    fn record_maps_to_enrichment() {
+        let e = enrichment_from_record(&full_record(), "B00ASKED01").unwrap();
+        assert_eq!(e.asin, "B00TEST001");
         assert_eq!(e.title, "Test Title");
-        assert_eq!(e.authors.as_deref(), Some("Ann Author"));
+        assert_eq!(e.authors.as_deref(), Some("Ann Author, Bea Author"));
         assert_eq!(e.narrators.as_deref(), Some("Ned Narrator"));
         assert_eq!(e.length_minutes, Some(320));
         assert_eq!(e.series.as_deref(), Some("Series A"));
         assert_eq!(e.series_index.as_deref(), Some("1"));
-        assert_eq!(e.series_asin.as_deref(), Some("B00SER01"));
+        assert_eq!(e.series_asin.as_deref(), Some("B00SER0001"));
+        assert_eq!(e.publisher.as_deref(), Some("Pub Co"));
         assert_eq!(
             e.categories.as_deref(),
             Some("Literature & Fiction; Adventure")
@@ -751,8 +789,94 @@ mod tests {
             e.cover_url.as_deref(),
             Some("https://img.example/cover.jpg")
         );
-        assert_eq!(isbn.as_deref(), Some("9781234567890"));
         assert_eq!(e.isbn.as_deref(), Some("9781234567890"));
+        assert_eq!(e.confidence, None);
+    }
+
+    #[test]
+    fn sparse_record_falls_back_to_the_asked_asin() {
+        let record = MetadataRecord {
+            title: " Bare ".into(),
+            subtitle: Some("  ".into()),
+            ..MetadataRecord::default()
+        };
+        let e = enrichment_from_record(&record, "B00ASKED01").unwrap();
+        assert_eq!(e.asin, "B00ASKED01");
+        assert_eq!(e.title, "Bare");
+        assert_eq!(e.subtitle, None);
+        assert_eq!(e.authors, None);
+        assert_eq!(e.series, None);
+        assert!(enrichment_from_record(&MetadataRecord::default(), "B00ASKED01").is_none());
+    }
+
+    #[tokio::test]
+    async fn asin_lookup_uses_the_first_titled_record() {
+        let untitled = MetadataRecord::default();
+        let providers = ByAsin(vec![
+            ("B00TEST001".into(), untitled),
+            ("B00TEST001".into(), full_record()),
+        ]);
+        let e = enrichment_for_asin(&providers, " b00test001 ", "us")
+            .await
+            .unwrap();
+        assert_eq!(e.title, "Test Title");
+        assert!(enrichment_for_asin(&providers, "B00OTHER01", "us")
+            .await
+            .is_none());
+        assert!(enrichment_for_asin(&providers, "not an asin", "us")
+            .await
+            .is_none());
+        assert!(
+            enrichment_for_asin(&NoMetadataProviders, "B00TEST001", "us")
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn asin_titles_are_scored_without_catalog_search() {
+        let providers = ByAsin(vec![("B00TEST001".into(), full_record())]);
+        let http = public_http_client().unwrap();
+        let query = MatchQuery {
+            title: "B00TEST001",
+            subtitle: None,
+            author: Some("Ann Author"),
+            narrator: None,
+            isbn: None,
+            duration_minutes: Some(320.0),
+        };
+        let matched = lookup_by_metadata_with_client(&http, &providers, &query, "us", 0.0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(matched.enrichment.asin, "B00TEST001");
+        assert_eq!(matched.enrichment.confidence, Some(matched.confidence));
+        let none = lookup_by_metadata_with_client(&http, &providers, &query, "us", 1.01)
+            .await
+            .unwrap();
+        assert!(none.is_none(), "nothing reaches a confidence above 1");
+        let blank = MatchQuery {
+            title: "  ",
+            subtitle: None,
+            author: None,
+            narrator: None,
+            isbn: None,
+            duration_minutes: None,
+        };
+        assert!(
+            lookup_by_metadata_with_client(&http, &providers, &blank, "us", 0.0)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn release_dates_parse_both_shapes() {
+        assert!(parse_release_date("2019-12-03T00:00:00.000Z").is_some());
+        assert!(parse_release_date("2019-12-03").is_some());
+        assert!(parse_release_date("  ").is_none());
+        assert!(parse_release_date("soon").is_none());
     }
 
     #[test]
@@ -762,7 +886,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "network: public Audible catalog + Audnexus"]
+    #[ignore = "network: public Audible catalog; needs a provider that answers ASINs"]
     async fn live_forward_the_foundation_matches_above_90() {
         let query = MatchQuery {
             title: "Forward the Foundation",
@@ -772,15 +896,108 @@ mod tests {
             isbn: Some("9780307970626"),
             duration_minutes: Some(970.0),
         };
-        let matched = lookup_by_metadata(&query, "us", 0.90)
+        // A provider that knows the book under whichever ASIN the catalog
+        // search offers, so the scoring itself is what is tested.
+        let record = MetadataRecord {
+            title: "Forward the Foundation".into(),
+            length_minutes: Some(970),
+            identifiers: vec![crate::providers::isbn_identifier("9780307970626")],
+            credits: vec![
+                credit("Isaac Asimov", CreditRole::Author),
+                credit("Larry McKeever", CreditRole::Narrator),
+            ],
+            ..MetadataRecord::default()
+        };
+        let matched = lookup_by_metadata(&EveryAsin(record), &query, "us", 0.90)
             .await
             .expect("lookup")
-            .expect("should match");
-        assert_eq!(matched.enrichment.asin, "B005WWT30E");
+            .expect("a match above 0.90");
+        assert!(matched.confidence >= 0.90, "{}", matched.confidence);
+        assert!(is_valid_asin(&matched.enrichment.asin));
+    }
+
+    /// Answers every ASIN lookup with one record, under the asked ASIN.
+    struct EveryAsin(MetadataRecord);
+
+    #[async_trait::async_trait]
+    impl MetadataProviders for EveryAsin {
+        async fn lookup(&self, _params: &MetadataLookupParams) -> MetadataAnswer {
+            MetadataAnswer {
+                records: vec![ProvidedRecord {
+                    provider: "fake".into(),
+                    record: self.0.clone(),
+                }],
+                failures: Vec::new(),
+            }
+        }
+
+        async fn search(&self, _params: &MetadataSearchParams) -> MetadataAnswer {
+            MetadataAnswer::default()
+        }
+
+        async fn chapters(&self, _params: &MetadataChaptersParams) -> ChaptersAnswer {
+            ChaptersAnswer::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn asin_matching_skips_other_asins_and_non_audiobooks_and_scores_every_record() {
+        let http = public_http_client().unwrap();
+        let query = MatchQuery {
+            title: "B00TEST001",
+            subtitle: None,
+            author: Some("Ann Author"),
+            narrator: Some("Ned Narrator"),
+            isbn: None,
+            duration_minutes: Some(320.0),
+        };
+        let mut other_asin = full_record();
+        other_asin.identifiers = vec![asin_identifier("B00OTHER01", "us")];
+        let mut ebook = full_record();
+        ebook.media_kind = MediaKind::Ebook;
+        for refused in [other_asin.clone(), ebook] {
+            let providers = ByAsin(vec![("B00TEST001".into(), refused)]);
+            assert!(
+                lookup_by_metadata_with_client(&http, &providers, &query, "us", 0.0)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
         assert!(
-            matched.confidence >= 0.90,
-            "confidence={}",
-            matched.confidence
+            enrichment_for_asin(
+                &ByAsin(vec![("B00TEST001".into(), other_asin)]),
+                "B00TEST001",
+                "us"
+            )
+            .await
+            .is_none(),
+            "Discover ignores a record for another ASIN too"
+        );
+
+        // A sparse first record does not hide a complete later one.
+        let sparse = MetadataRecord {
+            title: "Unrelated".into(),
+            ..MetadataRecord::default()
+        };
+        let providers = ByAsin(vec![
+            ("B00TEST001".into(), sparse),
+            ("B00TEST001".into(), full_record()),
+        ]);
+        let matched = lookup_by_metadata_with_client(&http, &providers, &query, "us", 0.0)
+            .await
+            .unwrap()
+            .expect("a record matches");
+        let full_only = ByAsin(vec![("B00TEST001".into(), full_record())]);
+        let full = lookup_by_metadata_with_client(&http, &full_only, &query, "us", 0.0)
+            .await
+            .unwrap()
+            .expect("the complete record matches");
+        assert!(
+            matched.confidence >= full.confidence,
+            "{} < {}",
+            matched.confidence,
+            full.confidence
         );
     }
 }

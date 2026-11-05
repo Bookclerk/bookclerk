@@ -397,9 +397,6 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
                 config.discovery.embed_intra_threads = n.max(1);
             }
         }
-        "discovery.openlibrary_enabled" => {
-            config.discovery.openlibrary_enabled = parse_bool(v).unwrap_or(true);
-        }
         "discovery.listen_sync_interval_minutes" => {
             if let Ok(n) = v.parse() {
                 config.discovery.listen_sync_interval_minutes = n;

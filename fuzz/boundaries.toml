@@ -76,6 +76,13 @@ input_from = "plugin package"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.https_url_policy]
+crate = "bookclerk-plugin-manifest"
+boundary = "URLs from plugin output the host fetches itself"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.cron_schedule]
 crate = "bookclerk-plugin-manifest"
 boundary = "[triggers] crons parse and fire-time search"

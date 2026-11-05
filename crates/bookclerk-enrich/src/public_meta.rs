@@ -1,7 +1,9 @@
-//! Unauthenticated Audible catalog + Audnexus metadata (AudioBookshelf-style).
+//! Unauthenticated Audible catalog metadata (AudioBookshelf-style).
 //!
 //! ABS uses the public `api.audible{tld}` catalog for title/author search, then
-//! enriches each ASIN via `https://api.audnex.us` — no Audible login required.
+//! enriches each ASIN from Audnexus; here that second step is a lookup through
+//! the deployed metadata providers ([`crate::MetadataProviders`]). No Audible
+//! login is required.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -13,7 +15,7 @@ use serde_json::Value;
 use crate::error::{EnrichError, Result};
 use crate::match_score::is_valid_asin;
 
-/// Timeout for unauthenticated Audible catalog and Audnexus HTTP (15 seconds).
+/// Timeout for unauthenticated Audible catalog HTTP (15 seconds).
 const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Per-region flattened Audible Genres browse nodes (categories change rarely).
@@ -58,7 +60,7 @@ pub fn region_tld(region: &str) -> &'static str {
     }
 }
 
-/// Normalize a marketplace string to an Audnexus `region` query value.
+/// Normalize a marketplace string to an Audible / Audnexus `region` value.
 ///
 /// # Arguments
 ///
@@ -1616,158 +1618,6 @@ fn json_i64(v: &Value) -> Option<i64> {
         .or_else(|| v.as_f64().map(|n| n as i64))
 }
 
-/// Fetch book metadata from Audnexus (no Audible account).
-///
-/// # Arguments
-///
-/// * `http` - `http` input for this call.
-/// * `asin` - Optional Audible / Amazon ASIN.
-/// * `region` - Marketplace / region code (`us`, `uk`, …).
-///
-/// # Returns
-///
-/// On success, the inner `Option<Value>` value.
-///
-/// # Errors
-///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
-pub async fn fetch_audnexus_book(http: &Client, asin: &str, region: &str) -> Result<Option<Value>> {
-    let asin = asin.trim().to_ascii_uppercase();
-    if !is_valid_asin(&asin) {
-        return Ok(None);
-    }
-    let region = normalize_region(region);
-    let url = format!("https://api.audnex.us/books/{asin}");
-    let response = http
-        .get(&url)
-        .query(&[("region", region.as_str())])
-        .send()
-        .await
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
-    if response.status() == StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    let response = response
-        .error_for_status()
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
-    if body.get("asin").and_then(Value::as_str).is_none() {
-        return Ok(None);
-    }
-    Ok(Some(body))
-}
-
-/// Fetch chapter metadata from Audnexus and normalize to Audible `chapter_info` shape.
-///
-/// Audnexus uses camelCase (`startOffsetMs`, `brandIntroDurationMs`). Callers that
-/// already accept both casings can use the raw body; this helper also mirrors
-/// snake_case keys for code that only reads Audible API field names.
-///
-/// # Arguments
-///
-/// * `http` - `http` input for this call.
-/// * `asin` - Optional Audible / Amazon ASIN.
-/// * `region` - Marketplace / region code (`us`, `uk`, …).
-///
-/// # Returns
-///
-/// On success, the inner `Option<Value>` value.
-///
-/// # Errors
-///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
-pub async fn fetch_audnexus_chapters(
-    http: &Client,
-    asin: &str,
-    region: &str,
-) -> Result<Option<Value>> {
-    let asin = asin.trim().to_ascii_uppercase();
-    if !is_valid_asin(&asin) {
-        return Ok(None);
-    }
-    let region = normalize_region(region);
-    let url = format!("https://api.audnex.us/books/{asin}/chapters");
-    let response = http
-        .get(&url)
-        .query(&[("region", region.as_str())])
-        .send()
-        .await
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
-    if response.status() == StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    let response = response
-        .error_for_status()
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
-    let mut body: Value = response
-        .json()
-        .await
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
-    normalize_chapter_info_casings(&mut body);
-    Ok(Some(body))
-}
-
-/// Convenience: public chapter fetch with a fresh HTTP client.
-///
-/// # Arguments
-///
-/// * `asin` - Optional Audible / Amazon ASIN.
-/// * `region` - Marketplace / region code (`us`, `uk`, …).
-///
-/// # Returns
-///
-/// On success, the inner `Option<Value>` value.
-///
-/// # Errors
-///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
-pub async fn fetch_public_chapter_info(asin: &str, region: &str) -> Result<Option<Value>> {
-    let http = public_http_client()?;
-    fetch_audnexus_chapters(&http, asin, region).await
-}
-
-/// Mirrors camelCase chapter-info duration fields onto snake_case keys used by the host.
-fn normalize_chapter_info_casings(info: &mut Value) {
-    let Some(obj) = info.as_object_mut() else {
-        return;
-    };
-    mirror_u64(obj, "brandIntroDurationMs", "brand_intro_duration_ms");
-    mirror_u64(obj, "brandOutroDurationMs", "brand_outro_duration_ms");
-    mirror_u64(obj, "runtimeLengthMs", "runtime_length_ms");
-    if let Some(chapters) = obj.get_mut("chapters").and_then(Value::as_array_mut) {
-        for chapter in chapters.iter_mut() {
-            normalize_chapter_node(chapter);
-        }
-    }
-}
-
-/// Mirrors camelCase offsets/lengths on a chapter node and walks nested children.
-fn normalize_chapter_node(node: &mut Value) {
-    let Some(obj) = node.as_object_mut() else {
-        return;
-    };
-    mirror_u64(obj, "startOffsetMs", "start_offset_ms");
-    mirror_u64(obj, "lengthMs", "length_ms");
-    if let Some(nested) = obj.get_mut("chapters").and_then(Value::as_array_mut) {
-        for child in nested.iter_mut() {
-            normalize_chapter_node(child);
-        }
-    }
-}
-
-/// Copies `camel` onto `snake` when the snake_case key is absent.
-fn mirror_u64(obj: &mut serde_json::Map<String, Value>, camel: &str, snake: &str) {
-    if obj.contains_key(snake) {
-        return;
-    }
-    if let Some(v) = obj.get(camel).cloned() {
-        obj.insert(snake.to_string(), v);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1805,19 +1655,6 @@ mod tests {
         assert!(is_audible_podcast_product(&podcast));
         assert!(!is_audible_podcast_product(&book));
         assert!(!is_audible_podcast_product(&lecture));
-    }
-
-    #[test]
-    fn normalize_chapters_mirrors_snake_case() {
-        let mut info = serde_json::json!({
-            "brandIntroDurationMs": 1904,
-            "brandOutroDurationMs": 4969,
-            "runtimeLengthMs": 1000,
-            "chapters": [{"title": "Opening", "startOffsetMs": 0, "lengthMs": 10}]
-        });
-        normalize_chapter_info_casings(&mut info);
-        assert_eq!(info["brand_intro_duration_ms"], 1904);
-        assert_eq!(info["chapters"][0]["start_offset_ms"], 0);
     }
 
     #[test]
