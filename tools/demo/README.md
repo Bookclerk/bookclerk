@@ -75,12 +75,16 @@ every content signal to `no` (`use=immediate`).
 
 `packaging/demo/Dockerfile` starts from the production builder and image
 built from the same commit, so every crate and plugin is the version that
-commit ships. It adds the Audible, Libro.fm, Chirp and GraphicAudio plugins,
-and removes `bookclerk-media-worker` and the `local` output plugin, so the
-host has nothing to acquire with even if a request got through. Plugins run
-with `isolation = "best-effort"` because the Containers kernel has no
-Landlock; this is a demo-only exception (each visitor's VM is the boundary)
-and shipped builds keep `"required"`. Media isolation stays `"required"`.
+commit ships. It adds the Audible, Libro.fm, Chirp, GraphicAudio and
+`covers` plugins, and removes the `local` output plugin, so the host has
+nowhere to acquire to even if a request got through. `covers` downloads
+covers, store icons and avatars, and `bookclerk-media-worker` re-encodes
+them, so the web app loads every image from the demo's own origin.
+
+Plugins and the media worker run with `isolation = "best-effort"` because
+the Containers kernel has no Landlock. This is a demo-only exception: each
+visitor's VM is the boundary, seccomp and network policy still apply, and
+shipped builds keep `"required"`.
 
 ## Limits
 

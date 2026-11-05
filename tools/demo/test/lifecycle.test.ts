@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import {
+  DEMO_PLUGINS,
   enableStorefronts,
   signInVisitor,
   signOutStores,
@@ -179,6 +180,31 @@ describe("enableStorefronts", () => {
     for (const s of seen) assert.equal(s.init.headers.Authorization, "Bearer op");
     assert.deepEqual(JSON.parse(seen[0]!.init.body), { approve: true });
     assert.deepEqual(JSON.parse(seen[3]!.init.body), { desired: "present" });
+  });
+
+  it("enables the covers plugin with the storefronts by default", async () => {
+    assert.deepEqual(DEMO_PLUGINS, ["audible", "libro", "chirp", "graphicaudio", "covers"]);
+    const routes: Record<string, (init: RequestInit) => Response> = {
+      "GET /api/config/plugin-instances": () =>
+        Response.json({
+          node_id: "node-1",
+          instances: DEMO_PLUGINS.map((id) => ({
+            plugin_instance_id: `i-${id}`,
+            alias: id,
+            is_default: true,
+          })),
+        }),
+    };
+    for (const id of DEMO_PLUGINS) {
+      routes[`POST /api/plugins/${id}/consent`] = () => Response.json({});
+      routes[`PUT /api/config/plugin-instances/i-${id}/deployments/node-1`] = () =>
+        Response.json({});
+    }
+    const { call, seen } = scripted(routes);
+    await enableStorefronts(call, "op");
+    const keys = seen.map((s) => s.key);
+    assert.ok(keys.includes("POST /api/plugins/covers/consent"));
+    assert.ok(keys.includes("PUT /api/config/plugin-instances/i-covers/deployments/node-1"));
   });
 
   it("fails when a storefront is missing or refused", async () => {

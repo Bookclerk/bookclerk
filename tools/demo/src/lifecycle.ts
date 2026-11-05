@@ -27,6 +27,13 @@ import {
 export const STOREFRONTS = ["audible", "libro", "chirp", "graphicaudio"];
 
 /**
+ * Every plugin a session enables: the storefronts, and `covers`, which
+ * downloads the images the web app shows (covers, store icons, avatars) so
+ * they load from the demo's own origin.
+ */
+export const DEMO_PLUGINS = [...STOREFRONTS, "covers"];
+
+/**
  * Sends one request to bookclerkd in the container.
  *
  * @param path - Path and query, starting with `/`.
@@ -115,7 +122,7 @@ export async function signInVisitor(call: ContainerCall, operatorToken: string):
 }
 
 /**
- * Approves each storefront's requested grant as the operator and deploys its
+ * Approves each demo plugin's requested grant (the storefronts and `covers`) as the operator and deploys its
  * default instance on this node, as an operator would in Settings. Visitors
  * cannot do either: the Worker refuses those routes.
  *
@@ -129,7 +136,7 @@ export async function signInVisitor(call: ContainerCall, operatorToken: string):
 export async function enableStorefronts(
   call: ContainerCall,
   operatorToken: string,
-  ids: string[] = STOREFRONTS,
+  ids: string[] = DEMO_PLUGINS,
 ): Promise<void> {
   const json = { Authorization: `Bearer ${operatorToken}`, "Content-Type": "application/json" };
   for (const id of ids) {
