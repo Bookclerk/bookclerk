@@ -1158,11 +1158,12 @@ export function apiNavNested(
 }
 
 /**
- * The sidebar list for a page of a generated reference with a hand-written
- * guide (a plugin SDK, the web UI library), shown beneath the guide's
- * entry: the reference's modules, one level below its folder, with the
- * page being read marked. The guide itself shows the list too, so a reader
- * sees the modules before scrolling to the reference.
+ * The sidebar list for a page of a generated reference other than the web
+ * API (a plugin SDK, the web UI library, the Rust crates), shown beneath
+ * the reference's landing page: its modules, one level below its folder,
+ * with the page being read marked, or the module whose folder holds it.
+ * The landing page shows the list too, so a reader sees the modules before
+ * scrolling to the reference. The web API's list is apiNavNested.
  *
  * @param manifest - The docs version's generated.json, or null.
  * @param key - The page's key.
@@ -1176,13 +1177,13 @@ export function referenceNavNested(
   base: string,
 ): NavNested | null {
   const reference = referenceOf(manifest, key);
-  if (reference === null || !reference.landing) return null;
+  if (reference === null || reference.kind === "web-api") return null;
   const modules = referenceModules(reference);
   if (modules.length === 0) return null;
-  const here = docUrl(key, base);
   const items = modules.map((m) => {
-    const href = docUrl(m.key, base);
-    return `<li><a href="${escapeHtml(href)}"${href === here ? ' aria-current="page"' : ""}><code>${escapeHtml(m.title)}</code></a></li>`;
+    const holds = m.key.endsWith("/README") && key.startsWith(m.key.slice(0, -"README".length));
+    const mark = m.key === key ? ' aria-current="page"' : holds ? ' aria-current="location"' : "";
+    return `<li><a href="${escapeHtml(docUrl(m.key, base))}"${mark}><code>${escapeHtml(m.title)}</code></a></li>`;
   });
   return { under: landingKey(reference), html: `<ul class="nav-sub">${items.join("")}</ul>` };
 }

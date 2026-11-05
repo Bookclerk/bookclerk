@@ -986,9 +986,14 @@ test("a Markdown request does not read the dates file", async () => {
   assert.deepEqual(fetched, [`${DOCS_RAW_BASE}v0.2.0/plugins/README.md`]);
 });
 
-test("a crate's page opens its shelf's group and runs its breadcrumb through the crate", async () => {
+test("a crate's page opens its shelf's group, lists the crates and runs its breadcrumb through the crate", async () => {
   const html = await (await get("/docs/internals/crates/demo", BROWSER)).text();
   assert.match(html, /<details class="nav-group" open><summary>How it works<\/summary>/);
+  assert.ok(
+    html.includes(
+      '<a href="/docs/internals/crates">Rust crates</a><ul class="nav-sub"><li><a href="/docs/internals/crates/demo" aria-current="page"><code>demo</code></a></li></ul>',
+    ),
+  );
   assert.match(
     html,
     /<li><a href="\/docs\/internals\/crates">Rust crates<\/a><\/li><li><a href="\/docs\/internals\/crates\/demo" aria-current="page">/,

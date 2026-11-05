@@ -28,16 +28,16 @@ release exists, the workflow passes its tag to the build: the notices go, the
 download page links to that release, and `/docs/` shows that release's docs
 instead of `main`'s.
 
-| Variable | Meaning |
-| --- | --- |
-| `SITE_RELEASE_TAG` | newest release tag (`v1.2.3`); empty means no release |
-| `SITE_RELEASE_DATE` | that release's date, `YYYY-MM-DD` |
-| `SITE_DOCS_VERSIONS` | the release tags whose docs bookclerk-docs has tagged, whitespace-separated, newest first, for the docs version picker; needs `SITE_RELEASE_TAG` |
-| `SITE_COMMIT` | commit the site is built from |
-| `SITE_BUILT_ON` | build date, `YYYY-MM-DD` (default: today) |
-| `SITE_ORIGIN` | `https://<host>` the site is served from, for canonical and preview URLs (default `https://bookclerk.app`) |
-| `SITE_INDEXNOW_KEY` | the site's IndexNow key, written to `/<key>.txt`; empty means no key file. The workflow passes the `INDEXNOW_KEY` variable (see [IndexNow](../../docs/contributing/automation.md#indexnow)) |
-| `SITE_DEMO_URL` | `https://<host>` of the hosted demo ([`tools/demo`](../demo/README.md)); empty means no demo, and the pages leave out every demo link. The workflow uses `https://demo.<DOMAIN>`, else the `DEMO_URL` variable, and none when `DEMO_URL` is `none` |
+| Variable             | Meaning                                                                                                                                                                                                                                            |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SITE_RELEASE_TAG`   | newest release tag (`v1.2.3`); empty means no release                                                                                                                                                                                              |
+| `SITE_RELEASE_DATE`  | that release's date, `YYYY-MM-DD`                                                                                                                                                                                                                  |
+| `SITE_DOCS_VERSIONS` | the release tags whose docs bookclerk-docs has tagged, whitespace-separated, newest first, for the docs version picker; needs `SITE_RELEASE_TAG`                                                                                                   |
+| `SITE_COMMIT`        | commit the site is built from                                                                                                                                                                                                                      |
+| `SITE_BUILT_ON`      | build date, `YYYY-MM-DD` (default: today)                                                                                                                                                                                                          |
+| `SITE_ORIGIN`        | `https://<host>` the site is served from, for canonical and preview URLs (default `https://bookclerk.app`)                                                                                                                                         |
+| `SITE_INDEXNOW_KEY`  | the site's IndexNow key, written to `/<key>.txt`; empty means no key file. The workflow passes the `INDEXNOW_KEY` variable (see [IndexNow](../../docs/contributing/automation.md#indexnow))                                                        |
+| `SITE_DEMO_URL`      | `https://<host>` of the hosted demo ([`tools/demo`](../demo/README.md)); empty means no demo, and the pages leave out every demo link. The workflow uses `https://demo.<DOMAIN>`, else the `DEMO_URL` variable, and none when `DEMO_URL` is `none` |
 
 ## Local preview
 
@@ -168,8 +168,10 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   the page that is a page itself follows (`navAncestors`), whether the
   sidebar lists it ("Plugin SDKs" above an SDK guide) or the build wrote it
   (a crate above its modules). A page of a generated reference (a Web API
-  route group, an SDK module) runs through the landing page it sits under,
-  which lists the reference's pages beneath its sidebar entry. Below 1200px the
+  route group, an SDK module, a crate) runs through the landing page it
+  sits under, which lists the reference's pages beneath its sidebar entry
+  (the Web API's route groups, an SDK's modules, every crate), marking the
+  one being read or the one whose folder holds it. Below 1200px the
   rail becomes an "On this page" menu over the page, and below 900px the
   sidebar becomes a second menu beside it (`<details>`, so they work
   without a script). They share a `name`,
@@ -213,7 +215,7 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   `fuzz/last_updated/` and fuzzes mutations against an independent oracle.
 - `sitemap.ts` – writes sitemaps and sitemap indexes, for the build's
   fallback copy and for the Worker's sectioned one (see "Search engines, link previews and agents").
-- `diagram.ts` – draws each ```` ```mermaid ```` fence as inline SVG with
+- `diagram.ts` – draws each ` ```mermaid ` fence as inline SVG with
   [beautiful-mermaid](https://github.com/lukilabs/beautiful-mermaid), which
   lays diagrams out without a DOM, so pages need no client-side script and
   the docs' Markdown stays what GitHub renders. Flowcharts, state, sequence,
@@ -410,7 +412,7 @@ versions.
   serve at their URL are left out, and each sitemap lists at most 50,000
   URLs. `robots.txt` allows all crawlers, points to `/sitemap.xml` and
   carries a `Content-Signal` line (`search=yes, ai-input=yes, ai-train=yes,
-  use=reference`: index, excerpt, and link back to the source page) under
+use=reference`: index, excerpt, and link back to the source page) under
   the Content Signals policy text. Cloudflare prepends its own managed rules
   to this file when Bot Preference Sync is on with a blocking AI bot policy,
   so keep that setting off for bookclerk.app.
@@ -428,7 +430,7 @@ versions.
   is `/sitemap.md` (and `Accept: text/markdown`). When the dates file cannot
   be read it lists the sidebar's docs without dates, for a minute.
 - Every sitemap starts with `<?xml-stylesheet type="text/css"
-  href="/sitemap.css"?>`, so a person who opens one sees it in the site's
+href="/sitemap.css"?>`, so a person who opens one sees it in the site's
   colors and fonts with a pointer to `/sitemap`. CSS cannot make the URLs
   clickable, which is why `/sitemap` exists. XSLT is not used because
   browsers are removing it (Chrome from November 2026), and the XML is the
