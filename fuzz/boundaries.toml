@@ -97,6 +97,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk", "rust-sdk"]
 
+[targets.cover_sink_key]
+crate = "bookclerk-plugin-abi"
+boundary = "CoverFetcher.fetchCovers sink keys (guest-chosen put key to URL index)"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.guest_sql_authz]
 crate = "bookclerk-plugin-abi"
 boundary = "Guest SQL authorization under every host-issued policy shape"
