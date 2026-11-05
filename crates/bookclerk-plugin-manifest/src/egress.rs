@@ -631,6 +631,77 @@ pub fn host_matches(host: &str, pattern: &str) -> bool {
     host_matches_normalized(&host, &pattern)
 }
 
+/// Longest URL [`https_url_on_hosts`] accepts, in bytes.
+pub const MAX_FETCH_URL_BYTES: usize = 4096;
+
+/// Checks a URL from untrusted output (a plugin's record, for example) before
+/// the host fetches it itself, outside any guest's egress policy.
+///
+/// The URL is accepted only when it parses, is `https` on the default port,
+/// carries no user name or password, names a hostname (never an IP literal or
+/// a restricted name such as `localhost`), and that hostname matches one of
+/// `patterns` as [`host_matches`] matches allowlist entries.
+///
+/// # Arguments
+///
+/// * `url` - The untrusted URL; surrounding whitespace is ignored.
+/// * `patterns` - Exact hosts or `*.` wildcard patterns the host may fetch from.
+///
+/// # Returns
+///
+/// The URL as the parser serialized it, which is what the caller must fetch
+/// so the request goes where this check looked, or `None` when it is refused.
+///
+/// # Examples
+///
+/// ```
+/// use bookclerk_plugin_manifest::https_url_on_hosts;
+///
+/// let cdn = ["*.media-amazon.com"];
+/// assert!(https_url_on_hosts("https://m.media-amazon.com/i.jpg", &cdn).is_some());
+/// assert!(https_url_on_hosts("http://m.media-amazon.com/i.jpg", &cdn).is_none());
+/// assert!(https_url_on_hosts("https://127.0.0.1/i.jpg", &cdn).is_none());
+/// ```
+#[must_use]
+pub fn https_url_on_hosts(url: &str, patterns: &[&str]) -> Option<String> {
+    let url = url.trim();
+    // The URL parser silently drops tabs and newlines anywhere in its input
+    // (`http\ts://…` parses as `https://…`), so refuse control bytes and
+    // inner whitespace outright: what is checked is then what was written.
+    if url.len() > MAX_FETCH_URL_BYTES || url.bytes().any(|b| b <= b' ' || b == 0x7f) {
+        return None;
+    }
+    let parsed = url::Url::parse(url).ok()?;
+    if parsed.scheme() != "https"
+        || parsed.port().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return None;
+    }
+    let url::Host::Domain(host) = parsed.host()? else {
+        return None;
+    };
+    // Every label must be non-empty (one trailing dot is the root, not a
+    // label): `.cdn.example.com` or `cdn..example.com` is no real host, but
+    // a wildcard pattern would still match its suffix.
+    if host
+        .strip_suffix('.')
+        .unwrap_or(host)
+        .split('.')
+        .any(str::is_empty)
+    {
+        return None;
+    }
+    if is_restricted_hostname(host) || !patterns.iter().any(|pattern| host_matches(host, pattern)) {
+        return None;
+    }
+    // Serializing percent-encodes non-ASCII path bytes, so the URL handed
+    // back can be longer than the input; the bound holds for what is fetched.
+    let serialized: String = parsed.into();
+    (serialized.len() <= MAX_FETCH_URL_BYTES).then_some(serialized)
+}
+
 /// `host` without URL-form IPv6 brackets (`[::1]` → `::1`), so an address a
 /// URL parser hands over in brackets is judged as the address it is rather
 /// than as an unknown hostname (which the undeclared-public-redirect path
@@ -704,6 +775,74 @@ fn host_matches_normalized(host: &str, pattern: &str) -> bool {
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn https_urls_are_accepted_only_on_the_listed_hosts() {
+        let cdn = ["*.media-amazon.com", "*.ssl-images-amazon.com"];
+        assert_eq!(
+            https_url_on_hosts(" https://M.Media-Amazon.com/images/I/a.jpg ", &cdn).as_deref(),
+            Some("https://m.media-amazon.com/images/I/a.jpg")
+        );
+        assert!(https_url_on_hosts("https://m.media-amazon.com:443/a.jpg", &cdn).is_some());
+        for refused in [
+            "http://m.media-amazon.com/a.jpg",
+            "https://m.media-amazon.com:8443/a.jpg",
+            "https://user@m.media-amazon.com/a.jpg",
+            "https://u:p@m.media-amazon.com/a.jpg",
+            "https://media-amazon.com.evil.example/a.jpg",
+            "https://xmedia-amazon.com/a.jpg",
+            // Found by the `https_url_policy` oracle: an empty first label.
+            "  HTTPS:/.ssl-images-amazon.com/a.jpg",
+            "https://m..media-amazon.com/a.jpg",
+            // Found by the oracle: the parser drops the tab.
+            "http\ts://m.media-amazon.com/a.jpg",
+            "https://m.media-amazon.com/a b.jpg",
+            "https://127.0.0.1/a.jpg",
+            "https://[::1]/a.jpg",
+            "https://localhost/a.jpg",
+            "file:///etc/passwd",
+            "not a url",
+        ] {
+            assert!(https_url_on_hosts(refused, &cdn).is_none(), "{refused}");
+        }
+        let long = format!(
+            "https://m.media-amazon.com/{}",
+            "a".repeat(MAX_FETCH_URL_BYTES)
+        );
+        assert!(https_url_on_hosts(&long, &cdn).is_none());
+        // Short enough as written, too long once percent-encoded.
+        let encoded = format!(
+            "https://m.media-amazon.com/{}",
+            "\u{e9}".repeat(MAX_FETCH_URL_BYTES / 4)
+        );
+        assert!(encoded.len() <= MAX_FETCH_URL_BYTES);
+        assert!(https_url_on_hosts(&encoded, &cdn).is_none());
+        // Punycode grows each non-ASCII host label the same way.
+        let idn = format!(
+            "https://{}ssl-images-amazon.com/c.jpg",
+            "a\u{472}.".repeat(1000)
+        );
+        assert!(idn.len() <= MAX_FETCH_URL_BYTES);
+        let serialized = url::Url::parse(&idn).map(String::from).unwrap_or_default();
+        assert!(
+            serialized.len() > MAX_FETCH_URL_BYTES,
+            "{}",
+            serialized.len()
+        );
+        assert!(https_url_on_hosts(&idn, &["*.ssl-images-amazon.com"]).is_none());
+        assert!(https_url_on_hosts("https://m.media-amazon.com/a.jpg", &[]).is_none());
+        // A restricted name stays refused even when a pattern lists it.
+        for (url, pattern) in [
+            ("https://localhost/a.jpg", "localhost"),
+            ("https://localhost./a.jpg", "localhost"),
+            (
+                "https://metadata.google.internal/a.jpg",
+                "metadata.google.internal",
+            ),
+        ] {
+            assert!(https_url_on_hosts(url, &[pattern]).is_none(), "{url}");
+        }
+    }
 
     #[test]
     fn bracketed_ipv6_is_judged_as_an_address() {

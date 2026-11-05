@@ -48,17 +48,25 @@ alone. Scope with optional `external_user_id` / `?user=` and/or
 `--listening-provider` / `?listening_providers=` for multi-user or multi-integration
 libraries.
 
-## Open Library (compliance)
+## Metadata gap-fill (Open Library compliance)
 
-Used only for **low-volume metadata gap-fill** on owned rows (subjects /
-description / cover), never as a bulk catalog backend.
+`discover enrich-metadata` (and `discover recommend`) fill **low-volume
+metadata gaps** on owned rows (subjects / description / cover / language)
+from the deployed metadata-provider plugins, such as `openlibrary`. It is
+never a bulk catalog backend.
 
 Per [Open Library API guidelines](https://openlibrary.org/developers/api):
 
-- Identify with `User-Agent: Bookclerk/<ver> (<email>; …)` via
-  `discovery.openlibrary_contact_email`
-- Space requests (~400 ms); cap `openlibrary_max_requests_per_run` (default 25)
-- Skip rows already enriched (`enrich_source = openlibrary`) — provenance cache
+- The `openlibrary` plugin identifies itself with its `contact_email`
+  setting ([integrations](../server/integrations.md#open-library-and-audnexus))
+- The host spaces rows about 400 ms apart and stops after 25 rows per run
+- A row with an ISBN is looked up by ISBN; one without is searched by title
+  and author, and only a result with the same title (ignoring case and
+  punctuation) is used. The first record that fills a gap wins, and the
+  title's work only takes the fields it lacks
+- Rows already enriched are skipped (`enrich_source` `metadata:<provider>`,
+  or the legacy `openlibrary`) — provenance cache. The work record is written
+  before the row is marked, so a failure leaves the row to retry
 - For bulk data, use [monthly dumps](https://openlibrary.org/data), not the API
 
 WorldCat remains reserved (API key + ToS).
@@ -131,7 +139,7 @@ title is **not** in the household library.
   `source` + `product_id`), then soft-resolves live prices to fill additional
   stores. `GET /api/wishlist` / request-queue merge those rows for the richest
   blurb and multi-store Where-to-buy links (legacy thin rows still fall back to
-  Audnexus title-meta). Title detail loads Audible reviews via paginated
+  provider title-meta). Title detail loads Audible reviews via paginated
   `POST /api/discover/title-reviews` (`sort_by=MostHelpful|MostRecent`,
   infinite scroll seeds helpful then continues recent); title-meta carries
   ratings/counts only.   For ISBN-only storefront hits (notably Libro.fm),
@@ -155,9 +163,6 @@ storefront_candidates = true
 storefront_seed_limit = 8
 storefront_max_remote_calls = 32
 # exclude_graphicaudio_series_sets = true  # opt-in; default keeps Magento series sets
-openlibrary_enabled = true
-# openlibrary_contact_email = "you@example.com"
-openlibrary_max_requests_per_run = 25
 listen_sync_interval_minutes = 60  # 0 disables daemon listening sync
 recommend_limit = 20
 ```

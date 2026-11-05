@@ -74,6 +74,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "https_url_policy"
+path = "fuzz_targets/https_url_policy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cron_schedule"
 path = "fuzz_targets/cron_schedule.rs"
 test = false

@@ -690,6 +690,7 @@ pub(crate) fn request_from_book(book: &BookRecord, download: &DownloadOptions) -
         temp_quota_bytes: None,
         library_id: None,
         parent_library_id: None,
+        metadata: crate::AcquireMetadata::default(),
     }
 }
 

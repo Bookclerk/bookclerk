@@ -12,6 +12,7 @@ mod error;
 mod factory;
 mod hooks;
 mod listening;
+mod metadata;
 mod portal;
 mod registry;
 mod tickets;

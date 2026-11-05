@@ -28,21 +28,6 @@ pub fn check(data: &[u8]) {
     };
     assert!(text.len() <= MAX_FRAME_BYTES, "an oversized frame parsed");
     assert_eq!(frame.v, FRAME_VERSION, "another frame version parsed");
-    let text_again = frame.to_text();
-    // Serializing can lengthen an opaque JSON field (`1e9` is written out
-    // in full), past the limit the parser enforces: such a frame is never
-    // sent again, so there is no round trip to check.
-    if text_again.len() > MAX_FRAME_BYTES {
-        return;
-    }
-    let again = Frame::parse(&text_again);
-    let Ok(again) = again else {
-        panic!("a parsed frame did not parse again: {again:?}");
-    };
-    assert!(
-        same(&json(&again), &json(&frame)),
-        "a frame changed across a round trip: {frame:?} became {again:?}"
-    );
     if let Body::AcquireTargets { targets, .. } = &frame.body {
         for target in targets {
             for id in [&target.library_id, &target.parent_library_id]
@@ -59,6 +44,21 @@ pub fn check(data: &[u8]) {
             }
         }
     }
+    let text_again = frame.to_text();
+    // Serializing can lengthen an opaque JSON field (`1e9` is written out
+    // in full), past the limit the parser enforces: such a frame is never
+    // sent again, so there is no round trip to check.
+    if text_again.len() > MAX_FRAME_BYTES {
+        return;
+    }
+    let again = Frame::parse(&text_again);
+    let Ok(again) = again else {
+        panic!("a parsed frame did not parse again: {again:?}");
+    };
+    assert!(
+        same(&json(&again), &json(&frame)),
+        "a frame changed across a round trip: {frame:?} became {again:?}"
+    );
 }
 
 /// `frame` as a JSON tree.

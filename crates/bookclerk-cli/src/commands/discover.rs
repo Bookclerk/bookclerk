@@ -28,8 +28,10 @@ pub enum DiscoverCommand {
         #[arg(long = "listening-provider", value_name = "ID")]
         listening_providers: Vec<String>,
     },
-    /// Run Open Library enrichment for metadata gaps.
-    EnrichOpenlibrary,
+    /// Fill metadata gaps (description, subjects, cover, language) from the
+    /// deployed metadata-provider plugins, such as Open Library.
+    #[command(alias = "enrich-openlibrary")]
+    EnrichMetadata,
     /// Embed dirty works.
     Embed {
         /// Force the local-hash embedder (no ONNX download).
@@ -82,14 +84,18 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
     let registry = crate::registry::sources(&host).await?;
 
     match command {
-        DiscoverCommand::EnrichOpenlibrary => {
-            let opts = bookclerk_discover::OpenLibraryOptions {
-                contact_email: cfg.discovery.openlibrary_contact_email.clone(),
-                max_requests: cfg.discovery.openlibrary_max_requests_per_run.max(1),
-                ..Default::default()
-            };
-            let n = bookclerk_discover::enrich_books_from_openlibrary_with(&library, &opts).await?;
-            format_out::line(format!("open library enriched {n} book(s)"));
+        DiscoverCommand::EnrichMetadata => {
+            let providers = crate::registry::integrations(&host).await?;
+            if providers.metadata_providers().is_empty() {
+                eprintln!("no metadata-provider plugin is deployed; nothing to ask");
+            }
+            let n = bookclerk_discover::enrich_books_from_metadata(
+                &library,
+                &providers,
+                &bookclerk_discover::MetadataEnrichOptions::default(),
+            )
+            .await?;
+            format_out::line(format!("metadata providers filled {n} book(s)"));
         }
         DiscoverCommand::Embed { hash } => {
             let n = embed_works(cfg, &library, !hash && cfg.discovery.embeddings_enabled).await?;
@@ -128,13 +134,17 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
             let model_id = embedder.model_id().to_string();
 
             // Enrich first, so the works it changes are embedded this run.
-            if cfg.discovery.openlibrary_enabled {
-                let ol = bookclerk_discover::OpenLibraryOptions {
-                    contact_email: cfg.discovery.openlibrary_contact_email.clone(),
-                    max_requests: cfg.discovery.openlibrary_max_requests_per_run.max(1),
-                    ..Default::default()
-                };
-                let _ = bookclerk_discover::enrich_books_from_openlibrary_with(&library, &ol).await;
+            let providers = crate::registry::integrations(&host).await?;
+            if !providers.metadata_providers().is_empty() {
+                if let Err(err) = bookclerk_discover::enrich_books_from_metadata(
+                    &library,
+                    &providers,
+                    &bookclerk_discover::MetadataEnrichOptions::default(),
+                )
+                .await
+                {
+                    tracing::warn!(error = %err, "metadata enrichment failed");
+                }
             }
             let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut()).await?;
 

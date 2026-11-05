@@ -337,7 +337,7 @@ bookclerk discover [OPTIONS] <COMMAND>
 Commands:
 
 - [`bookclerk discover recommend`](#bookclerk-discover-recommend): Optionally enrich + embed works, then print recommendations
-- [`bookclerk discover enrich-openlibrary`](#bookclerk-discover-enrich-openlibrary): Run Open Library enrichment for metadata gaps
+- [`bookclerk discover enrich-metadata`](#bookclerk-discover-enrich-metadata): Fill metadata gaps (description, subjects, cover, language) from the deployed metadata-provider plugins, such as Open Library
 - [`bookclerk discover embed`](#bookclerk-discover-embed): Embed dirty works
 - [`bookclerk discover sync-listening`](#bookclerk-discover-sync-listening): Sync listening progress from all capable integrations into the library DB
 - [`bookclerk discover wishlist`](#bookclerk-discover-wishlist): Personal wishlist helpers (also feed the shared global queue)
@@ -358,12 +358,12 @@ Options:
 - `--no-listening`: Ignore listening_progress entirely (owned-library taste only)
 - `--listening-provider <ID>`: Only use listening rows from these integration ids (repeatable)
 
-### `bookclerk discover enrich-openlibrary`
+### `bookclerk discover enrich-metadata`
 
-Run Open Library enrichment for metadata gaps
+Fill metadata gaps (description, subjects, cover, language) from the deployed metadata-provider plugins, such as Open Library
 
 ```text
-bookclerk discover enrich-openlibrary [OPTIONS]
+bookclerk discover enrich-metadata [OPTIONS]
 ```
 
 ### `bookclerk discover embed`

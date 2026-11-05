@@ -312,6 +312,10 @@ impl HostGuests for GuestHost {
         let scratch_dir = outbox.with_extension("library");
         tokio::fs::create_dir_all(&scratch_dir).await?;
         let scratch = scratch_library(&cfg, &scratch_dir).await?;
+        // This host's own metadata providers fill the plain-audio overlay.
+        let metadata = bookclerk_acquire::AcquireMetadata::new(Arc::new(
+            self.state.integrations.read().await.clone(),
+        ));
         let result = acquire_into(
             &scratch.store,
             &cfg,
@@ -319,6 +323,7 @@ impl HostGuests for GuestHost {
             title,
             outbox,
             &title_cache_dir(outbox),
+            metadata,
         )
         .await;
         drop(scratch);
@@ -423,6 +428,7 @@ pub fn acquire_request(
         temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
         library_id: None,
         parent_library_id: None,
+        metadata: bookclerk_acquire::AcquireMetadata::default(),
     }
 }
 
@@ -438,7 +444,8 @@ pub fn title_cache_dir(outbox: &Path) -> PathBuf {
 }
 
 /// Runs the acquire pipeline for `title` against `scratch`, writing only
-/// to `outbox`, with its scratch under `cache_dir`.
+/// to `outbox`, with its scratch under `cache_dir`, asking `metadata` for the
+/// plain-audio overlay.
 async fn acquire_into(
     scratch: &LibraryStore,
     cfg: &bookclerk_config::Config,
@@ -446,6 +453,7 @@ async fn acquire_into(
     title: &HostTitle,
     outbox: &Path,
     cache_dir: &Path,
+    metadata: bookclerk_acquire::AcquireMetadata,
 ) -> anyhow::Result<AcquiredTitle> {
     let book = &title.book;
     scratch
@@ -484,6 +492,7 @@ async fn acquire_into(
     request
         .parent_library_id
         .clone_from(&title.parent_library_id);
+    request.metadata = metadata;
     let result =
         bookclerk_acquire::acquire_book_indexed(scratch, &destinations, request, None, source)
             .await?;

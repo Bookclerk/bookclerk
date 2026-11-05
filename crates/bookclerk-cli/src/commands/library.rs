@@ -408,6 +408,8 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     temp_quota_bytes: None,
                     library_id: None,
                     parent_library_id: None,
+                    // Only plans the storage key; nothing is fetched.
+                    metadata: bookclerk_acquire::AcquireMetadata::default(),
                 };
                 let key = bookclerk_acquire::planned_storage_key(&store, &req).await;
                 let key = if pdf {

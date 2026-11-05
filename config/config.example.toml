@@ -231,11 +231,9 @@ storefront_max_remote_calls = 32
 # exclude_graphicaudio_series_sets = true
 # Shelf visibility + default view are per-user DB prefs (GET/PATCH /api/preferences),
 # not TOML — see docs/server/sign-in.md and docs/internals/discovery.md.
-# Open Library: low-volume gap-fill only (not bulk). Set a contact email so
-# requests are identified per https://openlibrary.org/developers/api
-openlibrary_enabled = true
-# openlibrary_contact_email = "you@example.com"
-openlibrary_max_requests_per_run = 25
+# Open Library and Audnexus lookups run in the optional `openlibrary` and
+# `audnexus` metadata plugins, configured in the database (see
+# docs/server/integrations.md), not here.
 # worldcat_enabled = false  # reserved; needs API key
 # How often bookclerkd syncs listening progress from capable integrations (0 = off).
 listen_sync_interval_minutes = 60

@@ -80,7 +80,7 @@ test_results = "python-sdk/junit.xml"
 root = "."
 paths = ["packages/plugin-sdk-python/src/"]
 suffixes = [".py"]
-floor = 75
+floor = 77
 
 [areas.workerd-guests]
 report = "workerd-guests/lcov.info"
@@ -88,4 +88,4 @@ test_results = "workerd-guests/junit.xml"
 root = "."
 paths = ["crates/bookclerk-plugins/"]
 suffixes = [".ts"]
-floor = 97
+floor = 99

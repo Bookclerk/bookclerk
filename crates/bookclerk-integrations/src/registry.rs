@@ -221,6 +221,16 @@ impl IntegrationRegistry {
             .collect()
     }
 
+    /// Integrations that export the `metadata` entrypoint, in registration order.
+    #[must_use]
+    pub fn metadata_providers(&self) -> Vec<Arc<dyn Integration>> {
+        self.integrations
+            .iter()
+            .filter(|i| i.supports_metadata())
+            .cloned()
+            .collect()
+    }
+
     /// Sync listening progress from every capable integration into the library DB.
     ///
     /// Individual failures are recorded in the summary and do not abort siblings.
