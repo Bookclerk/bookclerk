@@ -109,6 +109,16 @@ paths = [
 ]
 
 [[test_input]]
+package = "bookclerk-cover"
+# The cover oracles are shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/cover_process/**",
+    "fuzz/oracles/cover_process.rs",
+    "fuzz/corpus/cover_wire/**",
+    "fuzz/oracles/cover_wire.rs",
+]
+
+[[test_input]]
 package = "bookclerk-resolve"
 paths = ["fuzz/corpus/library_resolve/**"]
 

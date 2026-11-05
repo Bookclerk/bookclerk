@@ -27,9 +27,11 @@ boundary extends it.
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
-| `https_url_policy` | URLs from plugin output the host fetches itself (a metadata provider's cover URL) | `bookclerk-plugin-manifest::https_url_on_hosts` |
+| `https_url_policy` | URLs from untrusted output checked against a host allowlist (no caller since covers moved to the cover service) | `bookclerk-plugin-manifest::https_url_on_hosts` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
 | `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
+| `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
+| `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
@@ -85,6 +87,17 @@ only that. The others check:
   by digit without `str::parse`, so no two keys name one slot. The shared
   oracle is `fuzz/oracles/cover_sink_key.rs`, replayed from
   `bookclerk-plugin-abi`.
+- **`cover_process`**: an input without a JPEG, PNG or WebP signature is
+  refused. An accepted cover yields three JPEGs whose markers and frame
+  headers, read byte by byte rather than by the `image` crate, show 4:4:4
+  sampling, the reported size for the full image, and edges within 2400,
+  360 and 128 px that never grow from one size to the next. The shared
+  oracle is `fuzz/oracles/cover_process.rs`, replayed from
+  `bookclerk-cover`, whose replay test also regenerates the image seeds.
+- **`cover_wire`**: the first byte picks the request or the reply decoder.
+  An accepted frame re-encodes to exactly its own bytes, and an accepted
+  reply carries only JPEG-signed images and a nonzero size. The shared
+  oracle is `fuzz/oracles/cover_wire.rs`, replayed from `bookclerk-cover`.
 - **`abi_roundtrip`**: a value the decoder accepts re-encodes, re-decodes
   and compares equal (`read(write(v)) == v`).
 - **`guest_sql_authz`**: every table, column, function and schema action

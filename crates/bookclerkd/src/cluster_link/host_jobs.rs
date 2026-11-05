@@ -313,9 +313,7 @@ impl HostGuests for GuestHost {
         tokio::fs::create_dir_all(&scratch_dir).await?;
         let scratch = scratch_library(&cfg, &scratch_dir).await?;
         // This host's own metadata providers fill the plain-audio overlay.
-        let metadata = bookclerk_acquire::AcquireMetadata::new(Arc::new(
-            self.state.integrations.read().await.clone(),
-        ));
+        let metadata = crate::covers::acquire_metadata(&self.state).await;
         let result = acquire_into(
             &scratch.store,
             &cfg,

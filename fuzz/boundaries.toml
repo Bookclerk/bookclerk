@@ -104,6 +104,20 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.cover_process]
+crate = "bookclerk-cover"
+boundary = "Cover images downloaded from any public website (sniff, decode, resize, re-encode)"
+input_from = "any website"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.cover_wire]
+crate = "bookclerk-cover"
+boundary = "Cover worker frames (requests the worker reads, replies the host reads)"
+input_from = "media worker"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.guest_sql_authz]
 crate = "bookclerk-plugin-abi"
 boundary = "Guest SQL authorization under every host-issued policy shape"

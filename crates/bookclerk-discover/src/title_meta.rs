@@ -100,6 +100,15 @@ pub struct TitleMeta {
     /// HTTPS URL for cover art when the catalog exposes one.
     #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
+    /// Same-origin path of this cover's processed images, set by the daemon
+    /// when [`cover_url`](Self::cover_url) is an `https` URL. Append `/128`
+    /// (thumbnail), `/360` (card) or `/full`; the browser never loads
+    /// `cover_url` itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
+    )]
+    pub cover_path: Option<String>,
     /// Publisher or storefront synopsis; may be truncated for embeddings.
     #[schema(
         example = "An envoy to the planet Gethen must win the trust of a people who have no fixed gender."
@@ -259,6 +268,7 @@ impl TitleMeta {
     /// Copies Audnexus / catalog enrichment into a detail-panel payload (ratings stay unset).
     fn from_enrichment(e: Enrichment) -> Self {
         Self {
+            cover_path: None,
             asin: Some(e.asin).filter(|s| !s.is_empty()),
             title: Some(e.title).filter(|s| !s.is_empty()),
             subtitle: e.subtitle,
@@ -301,6 +311,7 @@ impl TitleMeta {
         let (series, series_index) = (hit.series(), hit.series_index());
         let (asin, isbn) = (hit.asin(), hit.isbn());
         Self {
+            cover_path: None,
             asin: asin.filter(|s| !s.is_empty()),
             title: Some(hit.title).filter(|s| !s.is_empty()),
             subtitle: hit.subtitle,

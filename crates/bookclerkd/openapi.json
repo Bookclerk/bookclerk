@@ -13719,6 +13719,152 @@
         "x-bookclerk-access": "The operator, or any library session."
       }
     },
+    "/api/covers/{token}/{size}": {
+      "get": {
+        "tags": [
+          "Discover"
+        ],
+        "summary": "Serves one size of a cover the API linked to.",
+        "description": "The path comes from a `cover_path` field in a Discover or catalog\nresponse; append `/128`, `/360` or `/full`. The first request fetches the\nimage through the `covers` plugin and re-encodes it in the confined media\nworker; later ones are served from the node's cover cache. Responses are\nimmutable: a path always names the same image.",
+        "operationId": "get_cover",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Signed cover token from a `cover_path` field.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "size",
+            "in": "path",
+            "description": "`128` (thumbnail), `360` (card) or `full`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The cover as a JPEG.",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The token was not issued by this node, or the size is unknown.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "not_found",
+                  "message": "That page or resource was not found.",
+                  "status": 404
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The image could not be downloaded or is not a supported image.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "bad_gateway",
+                  "message": "An upstream service failed.",
+                  "status": 502
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This node cannot fetch or process covers right now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "service_unavailable",
+                  "message": "The Bookclerk daemon is not ready to handle this request.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      }
+    },
     "/api/discover/recommendations": {
       "get": {
         "tags": [
@@ -24548,6 +24694,14 @@
             "description": "HTTPS URL for cover art when the catalog exposes one.",
             "example": "https://images.example.com/covers/9780441478125.jpg"
           },
+          "cover_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen [`cover_url`](Self::cover_url) is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`; the browser never loads\n`cover_url` itself.",
+            "example": "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
+          },
           "store_editions": {
             "type": "array",
             "items": {
@@ -32699,6 +32853,14 @@
             "description": "HTTPS URL for cover art when the catalog exposes one.",
             "example": "https://images.example.com/covers/9780441478125.jpg"
           },
+          "cover_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen [`cover_url`](Self::cover_url) is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`; the browser never loads\n`cover_url` itself.",
+            "example": "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
+          },
           "wish_count": {
             "type": "integer",
             "format": "int64",
@@ -32922,6 +33084,14 @@
             ],
             "description": "Cover art URL when known from a storefront catalog hit or wishlist row.",
             "example": "https://images.example.com/covers/9780441478125.jpg"
+          },
+          "cover_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen [`cover_url`](Self::cover_url) is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`; the browser never loads\n`cover_url` itself.",
+            "example": "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
           },
           "subtitle": {
             "type": [
@@ -34330,6 +34500,14 @@
             "description": "HTTPS URL for cover art when the catalog exposes one.",
             "example": "https://images.example.com/covers/9780441478125.jpg"
           },
+          "cover_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen [`cover_url`](Self::cover_url) is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`; the browser never loads\n`cover_url` itself.",
+            "example": "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
+          },
           "description": {
             "type": [
               "string",
@@ -34635,6 +34813,14 @@
             ],
             "description": "HTTPS URL for cover art when known.",
             "example": "https://images.example.com/covers/9780441478125.jpg"
+          },
+          "cover_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin path of this cover's processed images, set by the daemon\nwhen [`cover_url`](Self::cover_url) is an `https` URL. Append `/128`\n(thumbnail), `/360` (card) or `/full`; the browser never loads\n`cover_url` itself.",
+            "example": "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
           },
           "sources": {
             "type": "array",

@@ -14,6 +14,7 @@ mod api;
 mod auth;
 mod cluster_link;
 mod config_authority;
+mod covers;
 mod cron_worker;
 mod csrf;
 mod event_worker;
@@ -287,6 +288,7 @@ async fn main() -> anyhow::Result<()> {
         deployment_runtime: std::sync::OnceLock::new(),
         node_api_tls_bound: std::sync::OnceLock::new(),
         library_swaps: tokio::sync::watch::Sender::new(0),
+        covers: Arc::new(open_cover_service(&paths.cache_dir)),
     });
 
     bookclerk_plugin_host::spawn_grant_watcher(paths.files_dir.clone());
@@ -420,6 +422,17 @@ async fn main() -> anyhow::Result<()> {
         restart::reexec()?;
     }
     Ok(())
+}
+
+/// The cover service caching under `<cache>/covers`, or a detached one that
+/// serves no covers (logged) when that directory cannot be prepared.
+fn open_cover_service(cache_dir: &std::path::Path) -> covers::CoverService {
+    covers::CoverService::open(cache_dir.join("covers"), covers::CACHE_BUDGET_BYTES).unwrap_or_else(
+        |err| {
+            tracing::error!(error = %err, "cover cache unavailable; covers will not be served");
+            covers::CoverService::detached()
+        },
+    )
 }
 
 /// Completes when the process should exit or listeners must rebind after a config reload.
