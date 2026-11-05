@@ -81,8 +81,14 @@ const CREDIT_BATCH_STATEMENTS: usize = 30;
 const _: () = assert!(2 * resolve::listing::MAX_SERIES <= CREDIT_BATCH_STATEMENTS);
 
 /// Fresh UUIDs for new rows; an edition's is derived from the listing that
-/// first named it ([`edition_id_for_listing`]).
-struct UuidIds;
+/// first named it ([`edition_id_for_listing`]) unless `random_editions`.
+#[derive(Default)]
+struct UuidIds {
+    /// Mint random edition ids too: the derived id is already taken (the
+    /// listing's first edition still holds other listings after the
+    /// listing was moved off it).
+    random_editions: bool,
+}
 
 impl resolve::IdSource for UuidIds {
     fn next_id(&mut self, _kind: resolve::EntityKind) -> String {
@@ -90,7 +96,11 @@ impl resolve::IdSource for UuidIds {
     }
 
     fn edition_id(&mut self, key: &resolve::listing::ListingKey) -> String {
-        edition_id_for_listing(key)
+        if self.random_editions {
+            self.next_id(resolve::EntityKind::Edition)
+        } else {
+            edition_id_for_listing(key)
+        }
     }
 }
 
@@ -652,6 +662,20 @@ impl LibraryStore {
         lookup_chunk(self.max_binds)
     }
 
+    /// True when an edition with id `edition_id` is in the library.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    async fn edition_exists(&self, edition_id: &str) -> Result<bool> {
+        use sea_orm::PaginatorTrait as _;
+        let found = editions::Entity::find_by_id(edition_id.to_string())
+            .count(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(found > 0)
+    }
+
     /// Resolves `listing` into the library and records `holding` of it.
     ///
     /// # Arguments
@@ -683,7 +707,19 @@ impl LibraryStore {
                     listing.key.product_id
                 )));
             }
-            let plan = resolve::resolve(listing, holding, &snapshot, &mut UuidIds);
+            let mut plan = resolve::resolve(listing, holding, &snapshot, &mut UuidIds::default());
+            if let Some(edition) = &plan.new_edition {
+                if self.edition_exists(&edition.id).await? {
+                    plan = resolve::resolve(
+                        listing,
+                        holding,
+                        &snapshot,
+                        &mut UuidIds {
+                            random_editions: true,
+                        },
+                    );
+                }
+            }
             let refresh = stored_row
                 .as_ref()
                 .is_some_and(|row| listing_needs_refresh(row, listing, Utc::now()));
@@ -1679,6 +1715,80 @@ mod store_tests {
     }
 
     #[tokio::test]
+    async fn a_taken_derived_edition_id_falls_back_to_a_random_one() {
+        use crate::entities::store_listings;
+        let store = self::store().await;
+        let mut draft = dune("audible", "B001");
+        draft.identifiers.clear();
+        let listing = resolve::Listing::from_draft(&draft).unwrap();
+        let first = store
+            .record_listing(&listing, &account("a1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            first.listing.edition_id,
+            edition_id_for_listing(&listing.key)
+        );
+        // The listing leaves the library while its edition stays, so the
+        // next resolve mints an edition whose derived id is taken.
+        holdings::Entity::delete_many()
+            .filter(holdings::Column::ListingId.eq(first.listing.id.clone()))
+            .exec(&store.db)
+            .await
+            .unwrap();
+        store_listings::Entity::delete_by_id(first.listing.id.clone())
+            .exec(&store.db)
+            .await
+            .unwrap();
+        let again = store
+            .record_listing(&listing, &account("a1"))
+            .await
+            .unwrap();
+        let minted = again.new_edition.expect("a new edition");
+        assert_ne!(minted.id, first.listing.edition_id);
+        assert_eq!(Uuid::parse_str(&minted.id).unwrap().get_version_num(), 4);
+    }
+
+    #[tokio::test]
+    async fn only_a_live_editions_file_holds_a_name() {
+        use crate::{FileOwner, FileRole};
+        let store = self::store().await;
+        let dune = resolve::Listing::from_draft(&dune("audible", "B001")).unwrap();
+        let linked = store.record_listing(&dune, &account("a1")).await.unwrap();
+        let held = FileOwner::Edition(linked.listing.edition_id.clone());
+        let mine = FileOwner::Edition("another-edition".into());
+        let record = |key: &'static str, owner: FileOwner| {
+            let store = store.clone();
+            async move {
+                store
+                    .record_edition_file("local", key, &owner, FileRole::Audio)
+                    .await
+                    .unwrap();
+            }
+        };
+        record("A/Live.m4b", held.clone()).await;
+        record("A/Gone.m4b", FileOwner::Edition("removed-edition".into())).await;
+        record("A/Branch.m4b", FileOwner::BranchTitle("shared".into())).await;
+        assert!(store
+            .name_held_by_another_owner("A/Live", &mine)
+            .await
+            .unwrap());
+        assert!(!store
+            .name_held_by_another_owner("A/Live", &held)
+            .await
+            .unwrap());
+        for stale in ["A/Gone", "A/Branch"] {
+            assert!(
+                !store
+                    .name_held_by_another_owner(stale, &mine)
+                    .await
+                    .unwrap(),
+                "{stale}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn two_accounts_and_two_stores_share_one_edition() {
         let store = store().await;
         let audible = resolve::Listing::from_draft(&dune("audible", "B001")).unwrap();
@@ -1838,7 +1948,7 @@ mod store_tests {
         let listing = resolve::Listing::from_draft(&draft).unwrap();
         let holder = resolve::Holder::Account("a1".into());
         let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert_eq!(
             store
                 .run_link_listing(link_params(&listing, &plan, &snapshot))
@@ -2002,7 +2112,7 @@ mod store_tests {
             .listing_snapshot(&listing, &resolve::Holder::Account("a1".into()))
             .await
             .unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         let mut params = link_params(&listing, &plan, &snapshot);
         assert_eq!(
             params.stored_edition_id.as_deref(),
@@ -2057,7 +2167,7 @@ mod store_tests {
         let listing = resolve::Listing::from_draft(&with_asin).unwrap();
         let holder = resolve::Holder::Account("a1".into());
         let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert_eq!(plan.link, resolve::LinkReason::WeakIdentifier);
         assert_eq!(plan.listing.edition_id, edition);
 
@@ -2131,7 +2241,7 @@ mod store_tests {
         let listing = resolve::Listing::from_draft(&with_asin).unwrap();
         let holder = resolve::Holder::Account("a1".into());
         let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert_eq!(plan.listing.edition_id, isbn_only.listing.edition_id);
 
         // Meanwhile the ASIN is claimed by the other edition.
@@ -2186,7 +2296,7 @@ mod store_tests {
         let listing = resolve::Listing::from_draft(&with_asin).unwrap();
         let holder = resolve::Holder::Account("a1".into());
         let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert_eq!(plan.listing.edition_id, isbn_only.listing.edition_id);
 
         // Meanwhile another scan stores the same product, described
@@ -2226,7 +2336,7 @@ mod store_tests {
         let listing = resolve::Listing::from_draft(&draft).unwrap();
         let holder = resolve::Holder::Account("a1".into());
         let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert!(plan.new_work.is_some());
 
         // Meanwhile another store's listing of the same book is stored.
@@ -2276,7 +2386,7 @@ mod store_tests {
             .listing_snapshot(&listing, &resolve::Holder::Account("a1".into()))
             .await
             .unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert!(plan.edition_update.is_some());
         // The plan believes the listing sold another edition, as it would
         // after a concurrent relink; its fill must not land.
@@ -2318,7 +2428,7 @@ mod store_tests {
         let listing = resolve::Listing::from_draft(&draft).unwrap();
         let holder = resolve::Holder::Account("a1".into());
         let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert!(plan.new_work.is_some());
         assert_eq!(plan.work_identifiers.len(), 1);
 
@@ -2632,7 +2742,7 @@ mod store_tests {
             &listing,
             &account("a1"),
             &resolve::Snapshot::default(),
-            &mut UuidIds,
+            &mut UuidIds::default(),
         );
         let batches = credit_batches(&plan);
         let with_series: Vec<_> = batches
@@ -2660,7 +2770,7 @@ mod store_tests {
             &listing,
             &account("a1"),
             &resolve::Snapshot::default(),
-            &mut UuidIds,
+            &mut UuidIds::default(),
         );
         let batches = credit_batches(&plan);
         assert!(batches.len() > 1);

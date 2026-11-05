@@ -29,6 +29,7 @@ use bookclerk_node_proto::{
     seal_upload_token, AcquireTarget, Body, Frame, LibraryId, PlanDestination, MAX_FRAME_BYTES,
     MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
 };
+use bookclerk_storage::StorageBackend;
 use rand::RngCore as _;
 use zeroize::Zeroize as _;
 
@@ -160,6 +161,20 @@ pub(super) async fn acquire_plan(
         // a missing PDF is a soft failure that never keeps a job open.
         if !crate::jobs::acquire_job_includes_book(&book, false, download_episodes) {
             continue;
+        }
+        // Another account's copy of the edition is already here: this title
+        // shares its files, as a local acquire would, rather than send the
+        // host to fetch keys that title holds.
+        let backends: Vec<&dyn StorageBackend> = destinations
+            .iter()
+            .map(|destination| destination.backend.as_ref())
+            .collect();
+        match bookclerk_acquire::share_acquired_sibling(library, &backends, &book).await {
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(error = %err, book = %book.uuid, "could not share an acquired copy of the edition");
+            }
         }
         let parent = podcast_parent(library, &book).await?;
         // The host names with this library's edition ids, so it plans the

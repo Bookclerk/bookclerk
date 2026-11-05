@@ -48,11 +48,12 @@ pub trait IdSource {
 
     /// The id for a new edition first seen through the listing `key`.
     ///
-    /// The resolver mints an edition only for a listing with no stored
-    /// edition, so an id derived from `key` alone is never handed out twice
-    /// while its edition exists. The store derives it that way, so every
-    /// node that resolves the same listing first mints the same edition id;
-    /// the default is [`IdSource::next_id`].
+    /// The store derives it from `key`, so every node that resolves the same
+    /// listing first mints the same edition id. The resolver mints an
+    /// edition only for a listing with no stored edition, but that
+    /// listing's first edition can outlive it (holding other listings), so
+    /// a caller deriving ids must check the id is free; the store mints a
+    /// random one when it is not. The default is [`IdSource::next_id`].
     fn edition_id(&mut self, key: &ListingKey) -> String {
         let _ = key;
         self.next_id(EntityKind::Edition)

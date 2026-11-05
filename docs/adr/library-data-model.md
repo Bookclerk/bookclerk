@@ -331,8 +331,9 @@ have no ISBN or ASIN. An edition's id is a version 5 UUID over the store
 listing that first named it (plugin key, marketplace, product id), so
 libraries that see the same listing first agree on its id and its
 `<library id>`, which is the first 40 bits of that UUID in Crockford
-base32. The resolver mints an edition only for a listing with no stored
-edition, so the derived id is never reused while its edition exists.
+base32. If that id is already taken (the listing left the library while
+its first edition stayed, holding other listings), the new edition gets a
+random id instead.
 
 Step 5 takes the quality comparison, because node frames do not carry a
 file's quality yet: storefronts may declare a file's format and quality,

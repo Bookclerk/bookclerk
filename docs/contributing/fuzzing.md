@@ -32,6 +32,7 @@ boundary extends it.
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
+| `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
 
 Some boundaries need more than a cell:
 
@@ -88,8 +89,14 @@ only that. The others check:
   is recorded; a work found by identifier or text match has the listing's
   kind, and an episode's work shares its show. Resolving any listing
   again changes nothing, except that an episode recorded before its show
-  gains the show once. The oracle is
+  gains the show once, and a work stored without a matcher key gains one
+  once no other work holds it. The oracle is
   `bookclerk_resolve::fuzzing::run_case`, replayed from `bookclerk-resolve`.
+- **`node_frame`**: an accepted frame is within the size limit and the
+  frame version, and serializes and parses back to an equal frame. Every
+  library id in `acquire.targets` is 1 to 16 ASCII letters and digits,
+  checked byte by byte. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  replayed from `bookclerk-node-proto`.
 
 ## Boundaries outside the Rust workspace
 
@@ -663,7 +670,8 @@ These are tracked in the fuzzing ADR's follow-ups:
 - Audible CENC/DASH parsing;
 - package extraction;
 - naming paths;
-- node frames;
+- the node frames' per-body checks beyond parsing (upload manifests,
+  storage keys) and the frames' HTTP side;
 - media chapter math;
 - backup import.
 

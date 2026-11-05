@@ -1911,6 +1911,78 @@ mod results_and_uploads {
         }
     }
 
+    /// A title whose edition another account's copy already holds on every
+    /// owner destination shares those files when the owner plans the host
+    /// acquire: the host is not sent to fetch it, and the job completes
+    /// with the title acquired at the shared key.
+    #[tokio::test]
+    async fn a_host_is_not_sent_for_an_edition_the_owner_already_holds() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        world
+            .owner
+            .scope(PLUGIN, "test")
+            .ensure_account("kim-acct", "us", None)
+            .await
+            .unwrap();
+        let held = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("kim-acct", "t1"))
+            .await
+            .unwrap();
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let key = "Author/Title t1/Title t1.m4b";
+        std::fs::create_dir_all(owner_out.path().join("Author/Title t1")).unwrap();
+        std::fs::write(owner_out.path().join(key), b"audio").unwrap();
+        world
+            .owner
+            .set_acquire_status(
+                &held.uuid,
+                "kim-acct",
+                bookclerk_library::AcquireStatus::Acquired,
+                Some(key),
+                None,
+            )
+            .await
+            .unwrap();
+        let guests = StubGuests {
+            payload: Arc::new(b"fetched".to_vec()),
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests.clone()).await;
+
+        let job_id = enqueue_acquire(&world.owner).await;
+        eventually("the host acquire to complete", || async {
+            job(&world.owner, &job_id).await.state == JobState::Succeeded
+        })
+        .await;
+        let shared = world
+            .owner
+            .get_book_by_uuid(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            shared.acquire_status,
+            bookclerk_library::AcquireStatus::Acquired
+        );
+        assert_eq!(shared.storage_key.as_deref(), Some(key));
+        assert!(
+            guests.credentials.lock().unwrap().is_empty(),
+            "the host fetched nothing"
+        );
+        assert_eq!(std::fs::read(owner_out.path().join(key)).unwrap(), b"audio");
+    }
+
     /// An owner node with two destinations whose naming templates differ
     /// gets each destination written under its own key, as a local
     /// acquire would: the plan carries both destinations' options, the

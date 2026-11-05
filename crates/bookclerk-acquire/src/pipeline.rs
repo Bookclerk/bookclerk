@@ -204,34 +204,17 @@ async fn acquire_book_recorded(
                     matched_existing: true,
                 });
             }
-            if let Some(sibling) = acquired_sibling(library, destinations, &book).await? {
-                let primary_key = sibling.storage_key.clone().unwrap_or_default();
+            let backends: Vec<&dyn StorageBackend> = destinations
+                .items
+                .iter()
+                .map(|item| item.backend.as_ref())
+                .collect();
+            if let Some(primary_key) = share_acquired_sibling(library, &backends, &book).await? {
                 tracing::info!(
                     asin = %req.asin,
                     key = %primary_key,
                     "skipping download — another book of this edition is already acquired"
                 );
-                library
-                    .set_acquire_status(
-                        status_key(&req),
-                        &req.account_id,
-                        AcquireStatus::Acquired,
-                        Some(&primary_key),
-                        None,
-                    )
-                    .await?;
-                // The edition's companion PDF is shared too, so it is not
-                // fetched again for this book.
-                if companion_pdf_is_stored(&sibling) {
-                    library
-                        .set_pdf_status(
-                            status_key(&req),
-                            &req.account_id,
-                            AcquireStatus::Acquired,
-                            sibling.pdf_storage_key.as_deref(),
-                        )
-                        .await?;
-                }
                 resume_missing_companion_pdf(library, destinations, &req, source).await?;
                 return Ok(AcquireResult {
                     asin: req.asin,
@@ -2715,7 +2698,7 @@ async fn check_edition_paths(
         };
         let (folder_ctx, file_ctx) = naming_contexts(library, &dest_req).await;
         let key = planned_audio_key(&dest_req, &folder_ctx, &file_ctx);
-        if name_held_elsewhere(library, &key, owner).await {
+        if name_held_elsewhere(library, &key, owner).await? {
             return Err(AcquireError::Other(anyhow::anyhow!(
                 "another edition's files already use {key}; nothing was written"
             )));
@@ -2742,42 +2725,42 @@ fn planned_audio_key(req: &AcquireRequest, folder: &NamingContext, file: &Naming
 /// True when another owner's file already lives under the name of the
 /// planned `key` ([`LibraryStore::name_held_by_another_owner`]). The
 /// written key can differ from the planned one in its extension and in a
-/// part suffix, so the probe is the key without its extension. A failed
-/// read answers false and is logged.
-async fn name_held_elsewhere(library: &LibraryStore, key: &str, owner: &FileOwner) -> bool {
+/// part suffix, so the probe is the key without its extension.
+///
+/// # Errors
+///
+/// Returns an error when the read fails, so the acquire stops rather than
+/// risk writing over another edition's files.
+async fn name_held_elsewhere(library: &LibraryStore, key: &str, owner: &FileOwner) -> Result<bool> {
     let stem = key
         .rsplit_once('.')
         .filter(|(stem, ext)| !ext.contains('/') && !stem.ends_with('/'))
         .map_or(key, |(stem, _)| stem);
-    library
-        .name_held_by_another_owner(stem, owner)
-        .await
-        .unwrap_or_else(|err| {
-            tracing::warn!(error = %err, "could not read who holds a planned key");
-            false
-        })
+    Ok(library.name_held_by_another_owner(stem, owner).await?)
 }
 
-/// Another book of `book`'s edition that is already acquired, with its
-/// primary key present on every one of `destinations`, so this book shares
-/// its files instead of fetching them again.
+/// Marks `book` acquired at the files of another book of its edition, when
+/// one is already acquired with its primary key present on every one of
+/// `backends`, so the edition is not fetched again. The edition's
+/// companion PDF is shared too when that book has one.
 ///
 /// # Returns
 ///
-/// `None` when the book has no edition yet, or no other book of its
-/// edition is acquired with a stored key that every destination holds (a
-/// destination deployed since, another node's layout, or a file removed
-/// since); the acquire then plans as usual and syncs or fetches what is
-/// missing.
+/// The shared primary key; `None` when the book has no edition yet, or no
+/// other book of its edition is acquired with a stored key that every
+/// backend holds (a destination deployed since, another node's layout, or
+/// a file removed since). The acquire then plans as usual and syncs or
+/// fetches what is missing.
 ///
 /// # Errors
 ///
-/// Returns an error when a library lookup or a destination probe fails.
-async fn acquired_sibling(
+/// Returns an error when a library lookup or write, or a backend probe,
+/// fails.
+pub async fn share_acquired_sibling(
     library: &LibraryStore,
-    destinations: &AcquireDestinations,
+    backends: &[&dyn StorageBackend],
     book: &BookRecord,
-) -> Result<Option<BookRecord>> {
+) -> Result<Option<String>> {
     let Some(edition) = library.edition_of_book(&book.uuid).await? else {
         return Ok(None);
     };
@@ -2794,12 +2777,31 @@ async fn acquired_sibling(
         let Some(key) = sibling.storage_key.as_deref().filter(|key| !key.is_empty()) else {
             continue;
         };
-        for item in &destinations.items {
-            if !item.backend.exists(key).await? {
+        for backend in backends {
+            if !backend.exists(key).await? {
                 continue 'siblings;
             }
         }
-        return Ok(Some(sibling));
+        library
+            .set_acquire_status(
+                &book.uuid,
+                &book.account_id,
+                AcquireStatus::Acquired,
+                Some(key),
+                None,
+            )
+            .await?;
+        if companion_pdf_is_stored(&sibling) {
+            library
+                .set_pdf_status(
+                    &book.uuid,
+                    &book.account_id,
+                    AcquireStatus::Acquired,
+                    sibling.pdf_storage_key.as_deref(),
+                )
+                .await?;
+        }
+        return Ok(Some(key.to_string()));
     }
     Ok(None)
 }

@@ -580,13 +580,16 @@ impl LibraryStore {
         }))
     }
 
-    /// True when another owner's file is recorded, on any destination, at
-    /// the name `stem` (a planned key without its extension): the key
-    /// `stem` itself, `stem` with an extension in the same folder
-    /// (`stem.cue`), or one of its part files (`stem — Part 1.m4b`).
-    /// Another edition's files already live under that name, so an acquire
-    /// of `owner` is refused rather than overwrite them. A longer name that
-    /// only starts with `stem` (`stem Peaks.m4b`) is not the same name.
+    /// True when another live edition's file is recorded, on any
+    /// destination, at the name `stem` (a planned key without its
+    /// extension): the key `stem` itself, `stem` with an extension in the
+    /// same folder (`stem.cue`), or one of its part files
+    /// (`stem — Part 1.m4b`). Another edition's files already live under
+    /// that name, so an acquire of `owner` is refused rather than overwrite
+    /// them. A longer name that only starts with `stem` (`stem Peaks.m4b`)
+    /// is not the same name. A branch title's file, or a file of an edition
+    /// no longer in the library, does not count: an acquire takes those
+    /// keys over, as [`LibraryStore::claim_edition_file`] does.
     ///
     /// # Errors
     ///
@@ -620,9 +623,20 @@ impl LibraryStore {
         let mine = Condition::all()
             .add(edition_files::Column::OwnerKind.eq(owner.kind()))
             .add(edition_files::Column::OwnerId.eq(owner.id()));
+        let live_edition = Condition::all()
+            .add(edition_files::Column::OwnerKind.eq("edition"))
+            .add(
+                edition_files::Column::OwnerId.in_subquery(
+                    Query::select()
+                        .column(editions::Column::Id)
+                        .from(editions::Entity)
+                        .to_owned(),
+                ),
+            );
         let others = edition_files::Entity::find()
             .filter(named)
             .filter(mine.not())
+            .filter(live_edition)
             .count(self.db())
             .await
             .map_err(LibraryError::Orm)?;
