@@ -632,28 +632,37 @@ pub fn resolve(
 
     // A work first stored from a listing without an author has no matcher
     // key; it gains one from a later listing that names the author, unless
-    // another work already holds that key.
+    // another work already holds that key. An episode gaining its show in
+    // this plan is judged under that show, so the key comes in the same
+    // plan rather than on the next scan.
     let work_match_key = if new_work.is_none() {
         let key = listing.work_match_key();
         snapshot
             .work(&work_id)
             .filter(|w| w.match_key.is_empty() && w.kind == listing.work_kind && !key.is_empty())
-            .filter(|w| {
+            .map(|w| {
+                let parent = match &work_parent {
+                    Some(late) if late.work_id == w.id => Some(late.parent_work_id.clone()),
+                    _ => w.parent_work_id.clone(),
+                };
+                (w, parent)
+            })
+            .filter(|(w, parent)| {
                 !snapshot.works.iter().any(|other| {
                     other.id != w.id
                         && other.match_key == key
                         && other.kind == w.kind
                         && match w.kind {
-                            WorkKind::PodcastEpisode => other.parent_work_id == w.parent_work_id,
+                            WorkKind::PodcastEpisode => other.parent_work_id == *parent,
                             WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => true,
                         }
                 })
             })
-            .map(|w| WorkMatchKey {
+            .map(|(w, parent)| WorkMatchKey {
                 work_id: w.id.clone(),
                 kind: w.kind,
                 parent_work_id: match w.kind {
-                    WorkKind::PodcastEpisode => w.parent_work_id.clone(),
+                    WorkKind::PodcastEpisode => parent,
                     WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => None,
                 },
                 match_key: key,
