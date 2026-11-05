@@ -11,7 +11,8 @@
 //! - checking never panics, and an accepted URL is accepted again unchanged
 //!   (the check is idempotent);
 //! - an accepted URL is `https://`, its authority has no user info, port or
-//!   IP literal, and its host is a CDN suffix or a subdomain of one;
+//!   IP literal, its host has no empty label, and it is a CDN suffix or a
+//!   subdomain of one;
 //! - an input that does not start with `https:` (ignoring case and leading
 //!   whitespace or control bytes) is refused.
 
@@ -56,7 +57,11 @@ pub fn check(data: &[u8]) {
         !authority.contains(['@', ':', '[', ']', '%']),
         "authority {authority:?} carries user info, a port or an IP literal"
     );
-    let host = authority.trim_end_matches('.');
+    let host = authority.strip_suffix('.').unwrap_or(authority);
+    assert!(
+        !host.split('.').any(str::is_empty),
+        "host {host:?} has an empty label for {text:?}"
+    );
     assert!(
         SUFFIXES.iter().any(|suffix| {
             host == *suffix

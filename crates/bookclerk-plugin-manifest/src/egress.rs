@@ -679,6 +679,17 @@ pub fn https_url_on_hosts(url: &str, patterns: &[&str]) -> Option<String> {
     let url::Host::Domain(host) = parsed.host()? else {
         return None;
     };
+    // Every label must be non-empty (one trailing dot is the root, not a
+    // label): `.cdn.example.com` or `cdn..example.com` is no real host, but
+    // a wildcard pattern would still match its suffix.
+    if host
+        .strip_suffix('.')
+        .unwrap_or(host)
+        .split('.')
+        .any(str::is_empty)
+    {
+        return None;
+    }
     if is_restricted_hostname(host) || !patterns.iter().any(|pattern| host_matches(host, pattern)) {
         return None;
     }
@@ -774,6 +785,9 @@ mod tests {
             "https://u:p@m.media-amazon.com/a.jpg",
             "https://media-amazon.com.evil.example/a.jpg",
             "https://xmedia-amazon.com/a.jpg",
+            // Found by the `https_url_policy` oracle: an empty first label.
+            "  HTTPS:/.ssl-images-amazon.com/a.jpg",
+            "https://m..media-amazon.com/a.jpg",
             "https://127.0.0.1/a.jpg",
             "https://[::1]/a.jpg",
             "https://localhost/a.jpg",
