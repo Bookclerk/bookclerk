@@ -393,7 +393,8 @@ Dependabot and the workerd pin). For uv it also resolves the image digest
 and rewrites every Dockerfile that builds from the image. It opens one pull
 request for every tool due that day, on the `deps/tool-versions` branch, with
 the [automation App](automation.md#automation-app), and turns on auto-merge. Dependabot ignores the uv image and Node.js majors, so
-the two never race.
+the two never race. Its ignore names the uv image `astral-sh/uv`, without the
+`ghcr.io` host, because that is the name Dependabot matches ignores against.
 
 > [!NOTE]
 > The Rust toolchain keeps its own pin in `rust-toolchain.toml`, and the
