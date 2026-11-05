@@ -148,7 +148,7 @@ fn wire_seeds() -> Vec<(&'static str, Vec<u8>)> {
 /// URL inputs (first byte picks the byte to flip, the rest is the URL).
 fn token_seeds() -> Vec<(&'static str, Vec<u8>)> {
     use base64::Engine as _;
-    let key = bookclerk_cover::token::TokenKey::from_bytes([0x5a; 32]);
+    let key = bookclerk_cover::token::TokenKey::from_bytes(cover_token_oracle::key_bytes());
     let url = "https://m.media-amazon.com/images/I/51abc.jpg";
     let token = bookclerk_cover::token::sign(&key, url).expect("token");
     let (encoded, tag) = token.split_once('.').expect("dot");
@@ -207,7 +207,7 @@ fn fuzz_corpus_cover_wire_holds_invariants() {
 
 #[test]
 fn fuzz_corpus_cover_token_holds_invariants() {
-    let key = bookclerk_cover::token::TokenKey::from_bytes([0x5a; 32]);
+    let key = bookclerk_cover::token::TokenKey::from_bytes(cover_token_oracle::key_bytes());
     let mut opened = 0;
     for path in corpus_files("cover_token") {
         let data = std::fs::read(&path).expect("read");
