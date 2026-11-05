@@ -22,30 +22,31 @@ use crate::generated::{
     read_authenticate_user_params, read_brand, read_catalog_detail_params,
     read_catalog_detail_reply, read_catalog_hits_reply, read_cli_invoke_params,
     read_cli_invoke_reply, read_cli_schema, read_cli_schema_reply, read_config_option,
-    read_database_adapter_config, read_diagnose_reply, read_event_poll_reply,
-    read_expand_candidates_params, read_external_user_reply, read_fetch_title_params,
-    read_fetch_title_reply, read_invocation, read_list_deals_params, read_login_complete_params,
-    read_login_params, read_login_reply, read_login_start_reply, read_metadata_chapters_params,
-    read_metadata_chapters_reply, read_metadata_lookup_params, read_metadata_records_reply,
-    read_metadata_search_params, read_plugin_event, read_publish_reply, read_purchase_hint_params,
-    read_purchase_hint_reply, read_revoke_account_params, read_scan_library_params,
-    read_scan_params, read_scan_reply, read_search_catalog_params, read_source_accounts_reply,
-    read_sync_listening_reply, write_authenticate_user_params, write_brand,
-    write_catalog_detail_params, write_catalog_detail_reply, write_catalog_hits_reply,
-    write_cli_invoke_params, write_cli_invoke_reply, write_cli_schema, write_cli_schema_reply,
-    write_config_option, write_database_adapter_config, write_diagnose_reply,
-    write_event_poll_reply, write_expand_candidates_params, write_external_user_reply,
-    write_fetch_title_params, write_fetch_title_reply, write_invocation, write_list_deals_params,
-    write_login_complete_params, write_login_params, write_login_reply, write_login_start_reply,
-    write_metadata_chapters_params, write_metadata_chapters_reply, write_metadata_lookup_params,
-    write_metadata_records_reply, write_metadata_search_params, write_plugin_event,
-    write_publish_reply, write_purchase_hint_params, write_purchase_hint_reply,
+    read_cover_fetch_params, read_cover_images_reply, read_database_adapter_config,
+    read_diagnose_reply, read_event_poll_reply, read_expand_candidates_params,
+    read_external_user_reply, read_fetch_title_params, read_fetch_title_reply, read_invocation,
+    read_list_deals_params, read_login_complete_params, read_login_params, read_login_reply,
+    read_login_start_reply, read_metadata_chapters_params, read_metadata_chapters_reply,
+    read_metadata_lookup_params, read_metadata_records_reply, read_metadata_search_params,
+    read_plugin_event, read_publish_reply, read_purchase_hint_params, read_purchase_hint_reply,
+    read_revoke_account_params, read_scan_library_params, read_scan_params, read_scan_reply,
+    read_search_catalog_params, read_source_accounts_reply, read_sync_listening_reply,
+    write_authenticate_user_params, write_brand, write_catalog_detail_params,
+    write_catalog_detail_reply, write_catalog_hits_reply, write_cli_invoke_params,
+    write_cli_invoke_reply, write_cli_schema, write_cli_schema_reply, write_config_option,
+    write_cover_fetch_params, write_cover_images_reply, write_database_adapter_config,
+    write_diagnose_reply, write_event_poll_reply, write_expand_candidates_params,
+    write_external_user_reply, write_fetch_title_params, write_fetch_title_reply, write_invocation,
+    write_list_deals_params, write_login_complete_params, write_login_params, write_login_reply,
+    write_login_start_reply, write_metadata_chapters_params, write_metadata_chapters_reply,
+    write_metadata_lookup_params, write_metadata_records_reply, write_metadata_search_params,
+    write_plugin_event, write_publish_reply, write_purchase_hint_params, write_purchase_hint_reply,
     write_revoke_account_params, write_scan_library_params, write_scan_params, write_scan_reply,
     write_search_catalog_params, write_source_accounts_reply, write_sync_listening_reply,
-    CatalogDetail, CatalogHits, DiagnoseResult, EventPollResult, Invocation, MetadataChapters,
-    MetadataChaptersParams, MetadataLookupParams, MetadataRecord, MetadataRecords,
-    MetadataSearchParams, PluginEvent, PublishOk, PurchaseHintResult, SourceAccounts,
-    SyncListeningResult,
+    CatalogDetail, CatalogHits, CoverFetchParams, CoverImage, CoverImages, DiagnoseResult,
+    EventPollResult, Invocation, MetadataChapters, MetadataChaptersParams, MetadataLookupParams,
+    MetadataRecord, MetadataRecords, MetadataSearchParams, PluginEvent, PublishOk,
+    PurchaseHintResult, SourceAccounts, SyncListeningResult,
 };
 #[cfg(feature = "host")]
 use crate::host_roles::HostAdapterDatabaseSession;
@@ -58,12 +59,12 @@ use crate::limits::{
 use crate::plugin_capnp::{
     adapter_database_session as adapter_database_session_capnp, adapter_session_reply, bindings,
     byte_source, cancellation, content_source as content_source_capnp, copy_reply,
-    database as database_capnp, describe_reply, destination as dest_iface, domain_event,
-    empty_reply, entrypoints, entrypoints_reply, event_batch_reply,
-    event_consumer as event_consumer_capnp, event_publisher as event_publisher_capnp,
-    event_result as event_result_capnp, get_reply, guest_database as guest_database_capnp,
-    handle_reply, head_reply, health_reply, job_invocation, job_outcome,
-    job_runner as job_runner_capnp, kv_namespace as kv_namespace_capnp, list_reply,
+    cover_fetcher as cover_fetcher_capnp, database as database_capnp, describe_reply,
+    destination as dest_iface, domain_event, empty_reply, entrypoints, entrypoints_reply,
+    event_batch_reply, event_consumer as event_consumer_capnp,
+    event_publisher as event_publisher_capnp, event_result as event_result_capnp, get_reply,
+    guest_database as guest_database_capnp, handle_reply, head_reply, health_reply, job_invocation,
+    job_outcome, job_runner as job_runner_capnp, kv_namespace as kv_namespace_capnp, list_reply,
     metadata_provider as metadata_provider_capnp, object_metadata, oidc as oidc_capnp,
     oidc_client_template, oidc_clients_reply, open_reply, plugin_cli as plugin_cli_capnp,
     plugin_describe, plugin_error, plugin_migration, plugin_migration_op, plugin_migrations_ok,
@@ -76,7 +77,7 @@ use crate::plugin_capnp::{
 use crate::plugin_host_capnp::host_adapter_database_session as host_adapter_database_session_capnp;
 use crate::roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
-    Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
+    CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
     JobController, JobRunner, KvNamespace, MetadataProvider, NamedKvBinding, NamedQueueBinding,
     NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer,
     ReadResult, RemoteLibrary, ScheduledHandler, Source,
@@ -1631,6 +1632,12 @@ fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u
             inner: Arc::from(x),
         }));
     }
+    if let Some(x) = eps.covers {
+        b.set_covers(capnp_rpc::new_client(CoverFetcherServer {
+            inner: Arc::from(x),
+            window,
+        }));
+    }
 }
 
 /// Encode plugin OIDC client templates into a Cap'n Proto `oidcClients` ok payload.
@@ -2289,6 +2296,43 @@ impl metadata_provider_capnp::Server for MetadataProviderServer {
         let params = read_metadata_chapters_params(params.get()?.get_params()?)?;
         let outcome = self.inner.chapters(params).await;
         write_metadata_chapters_reply(results.get().init_result(), &outcome)
+    }
+}
+
+/// Serves a guest's [`CoverFetcher`] as the Cap'n Proto `CoverFetcher`.
+struct CoverFetcherServer {
+    /// The guest implementation every method forwards to.
+    inner: Arc<dyn CoverFetcher>,
+    /// Stream window for the host sink handed to the guest.
+    window: u32,
+}
+
+impl cover_fetcher_capnp::Server for CoverFetcherServer {
+    async fn health(
+        self: Rc<Self>,
+        _params: cover_fetcher_capnp::HealthParams,
+        mut results: cover_fetcher_capnp::HealthResults,
+    ) -> capnp::Result<()> {
+        write_health_reply(results.get().init_result(), self.inner.health().await);
+        Ok(())
+    }
+
+    async fn fetch_covers(
+        self: Rc<Self>,
+        params: cover_fetcher_capnp::FetchCoversParams,
+        mut results: cover_fetcher_capnp::FetchCoversResults,
+    ) -> capnp::Result<()> {
+        let p = params.get()?;
+        let request = read_cover_fetch_params(p.get_params()?)?;
+        let sink = p
+            .get_sink()
+            .map_err(|_| capnp::Error::failed("missing cover sink".into()))?;
+        let outcome = self
+            .inner
+            .fetch_covers(request, Box::new(DestinationClient::new(sink, self.window)))
+            .await
+            .map(|images| CoverImages { images });
+        write_cover_images_reply(results.get().init_result(), &outcome)
     }
 }
 
@@ -3131,6 +3175,8 @@ pub struct OpenedEntrypoints {
     pub scheduled_handler: Option<ScheduledHandlerClient>,
     /// `metadata` entrypoint.
     pub metadata: Option<MetadataProviderClient>,
+    /// `covers` entrypoint.
+    pub covers: Option<CoverFetcherClient>,
 }
 
 /// Host bootstrap client for a plugin vat.
@@ -3362,6 +3408,11 @@ impl PluginClient {
                 Some(MetadataProviderClient {
                     client: eps.get_metadata()?,
                 })
+            } else {
+                None
+            },
+            covers: if eps.has_covers() {
+                Some(CoverFetcherClient::new(eps.get_covers()?, self.window))
             } else {
                 None
             },
@@ -3654,6 +3705,143 @@ impl MetadataProvider for MetadataProviderClient {
         write_metadata_chapters_params(req.get().init_params(), &params).map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_metadata_chapters_reply(reply_result!(reply)).map_err(from_capnp)?
+    }
+}
+
+/// Cap'n Proto client for [`CoverFetcher`].
+///
+/// The client checks the guest's reply against the request: exactly one
+/// [`CoverImage`] per requested URL, in order, each naming its URL. Anything
+/// else is an `internal` error, so callers can index the reply by request
+/// position.
+#[derive(Clone)]
+pub struct CoverFetcherClient {
+    /// The guest's `CoverFetcher` capability.
+    client: cover_fetcher_capnp::Client,
+    /// Stream window for the sink served to the guest.
+    window: u32,
+}
+
+impl CoverFetcherClient {
+    /// Wraps a `CoverFetcher` capability client (any transport that yields
+    /// one, including the bookclerk-workerd `/invoke` hook).
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - The guest's `CoverFetcher` capability.
+    /// * `window` - Stream window for the host sink, clamped to
+    ///   `1..=MAX_STREAM_WINDOW_BYTES`.
+    #[must_use]
+    pub fn new(client: cover_fetcher_capnp::Client, window: u32) -> Self {
+        Self {
+            client,
+            window: window.clamp(1, MAX_STREAM_WINDOW_BYTES),
+        }
+    }
+
+    /// `fetchCovers` with a ready-made sink capability, for transports that
+    /// pass the sink by reference rather than serving it here (the
+    /// bookclerk-workerd launcher hands the isolate a grant capability).
+    ///
+    /// # Arguments
+    ///
+    /// * `params` - URLs and the per-image byte cap.
+    /// * `sink` - The `Destination` capability the guest puts bodies into.
+    ///
+    /// # Returns
+    ///
+    /// One answer per URL, in request order.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` when `params` breaks the ABI bounds, the guest's own
+    /// error, or `internal` when the reply does not answer the request one
+    /// for one.
+    pub async fn fetch_covers_with_sink(
+        &self,
+        params: CoverFetchParams,
+        sink: dest_iface::Client,
+    ) -> Result<Vec<CoverImage>> {
+        check_cover_request(&params)?;
+        let mut req = self.client.fetch_covers_request();
+        {
+            let mut b = req.get();
+            write_cover_fetch_params(b.reborrow().init_params(), &params).map_err(from_capnp)?;
+            b.set_sink(sink);
+        }
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let images = read_cover_images_reply(reply_result!(reply))
+            .map_err(from_capnp)?
+            .map(|ok| ok.images)?;
+        check_cover_reply(&params.urls, &images)?;
+        Ok(images)
+    }
+}
+
+/// Fails unless `params` is a request the ABI allows: 1 to `MAX_COVER_URLS`
+/// URLs and a byte cap of 1 to `MAX_COVER_BYTES`.
+///
+/// # Errors
+///
+/// `invalid_params` naming the bound that was broken.
+fn check_cover_request(params: &CoverFetchParams) -> Result<()> {
+    let urls = params.urls.len();
+    if urls == 0 || urls > crate::MAX_COVER_URLS as usize {
+        return Err(PluginError::invalid_params(format!(
+            "fetchCovers takes 1 to {} urls, not {urls}",
+            crate::MAX_COVER_URLS
+        )));
+    }
+    if params.max_bytes == 0 || params.max_bytes > crate::MAX_COVER_BYTES {
+        return Err(PluginError::invalid_params(format!(
+            "fetchCovers maxBytes must be 1 to {}, not {}",
+            crate::MAX_COVER_BYTES,
+            params.max_bytes
+        )));
+    }
+    Ok(())
+}
+
+/// Fails unless `images` answers `urls` one for one, in order.
+///
+/// # Errors
+///
+/// `internal` when the counts or any URL differ.
+fn check_cover_reply(urls: &[String], images: &[CoverImage]) -> Result<()> {
+    if images.len() != urls.len() {
+        return Err(PluginError::internal(format!(
+            "fetchCovers answered {} of {} urls",
+            images.len(),
+            urls.len()
+        )));
+    }
+    if let Some(index) = urls
+        .iter()
+        .zip(images)
+        .position(|(url, image)| *url != image.url)
+    {
+        return Err(PluginError::internal(format!(
+            "fetchCovers reply {index} names a different url"
+        )));
+    }
+    Ok(())
+}
+
+#[async_trait::async_trait(?Send)]
+impl CoverFetcher for CoverFetcherClient {
+    async fn health(&self) -> Result<HealthOk> {
+        let req = self.client.health_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_health_reply(reply_result!(reply))
+    }
+
+    async fn fetch_covers(
+        &self,
+        params: CoverFetchParams,
+        sink: Box<dyn Destination>,
+    ) -> Result<Vec<CoverImage>> {
+        let sink = capnp_rpc::new_client(DestinationServer::new(Arc::from(sink), self.window));
+        self.fetch_covers_with_sink(params, sink).await
     }
 }
 
@@ -4675,7 +4863,12 @@ mod tests {
                 api_version: PRODUCT_API_VERSION,
                 id: "native_test".into(),
                 capabilities: PluginCapabilities {
-                    entrypoints: vec![Entrypoint::Storage, Entrypoint::Oidc, Entrypoint::Metadata],
+                    entrypoints: vec![
+                        Entrypoint::Storage,
+                        Entrypoint::Oidc,
+                        Entrypoint::Metadata,
+                        Entrypoint::Covers,
+                    ],
                     ..PluginCapabilities::default()
                 },
                 display_name: None,
@@ -4690,6 +4883,7 @@ mod tests {
                 storage: Some(Box::new(DestClone(Arc::clone(&self.dest)))),
                 oidc: Some(Box::new(TestOidc)),
                 metadata: Some(Box::new(TestMetadata)),
+                covers: Some(Box::new(TestCovers)),
                 ..Entrypoints::default()
             })
         }
@@ -5866,6 +6060,186 @@ mod tests {
             .lookup(MetadataLookupParams::default())
             .await
             .expect_err("lookup over capnp");
+        assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
+    }
+
+    /// Cover fetcher that stores each URL's own text as its body, except
+    /// URLs containing `missing`, which fail.
+    struct TestCovers;
+
+    #[async_trait::async_trait(?Send)]
+    impl CoverFetcher for TestCovers {
+        async fn fetch_covers(
+            &self,
+            params: CoverFetchParams,
+            sink: Box<dyn Destination>,
+        ) -> Result<Vec<CoverImage>> {
+            let mut images = Vec::new();
+            for (index, url) in params.urls.iter().enumerate() {
+                if url.contains("missing") {
+                    images.push(CoverImage {
+                        url: url.clone(),
+                        error: Some("HTTP 404".into()),
+                        ..CoverImage::default()
+                    });
+                    continue;
+                }
+                let body = url.as_bytes().to_vec();
+                sink.put(
+                    &index.to_string(),
+                    Box::pin(std::io::Cursor::new(body)),
+                    WriteOptions::default(),
+                )
+                .await?;
+                images.push(CoverImage {
+                    url: url.clone(),
+                    stored: true,
+                    content_type: Some("image/jpeg".into()),
+                    error: None,
+                });
+            }
+            Ok(images)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cover_fetcher_roundtrip_streams_bodies_into_the_sink() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (client_end, server_end) = duplex(64 * 1024);
+                let (server_r, server_w) = tokio::io::split(server_end);
+                let (client_r, client_w) = tokio::io::split(client_end);
+                let plugin = Arc::new(TestPlugin {
+                    dest: Arc::new(MemDest {
+                        store: Mutex::new(HashMap::new()),
+                    }),
+                    migrations: None,
+                });
+                tokio::task::spawn_local(async move {
+                    let _ = serve_plugin(plugin, server_r, server_w, 64 * 1024).await;
+                });
+                let (client, rpc) = connect_plugin(client_r, client_w, 64 * 1024);
+                tokio::task::spawn_local(rpc);
+                let opened = open_default(&client).await;
+                let covers = opened.covers.expect("covers exported");
+                assert!(covers.health().await.expect("health").ok);
+
+                let sink = Arc::new(MemDest {
+                    store: Mutex::new(HashMap::new()),
+                });
+                let urls = vec![
+                    "https://img.example/a.jpg".to_string(),
+                    "https://img.example/missing.jpg".to_string(),
+                    "https://img.example/c.jpg".to_string(),
+                ];
+                let images = covers
+                    .fetch_covers(
+                        CoverFetchParams {
+                            urls: urls.clone(),
+                            max_bytes: 1024,
+                        },
+                        Box::new(DestClone(Arc::clone(&sink))),
+                    )
+                    .await
+                    .expect("fetchCovers");
+                assert_eq!(images.len(), 3);
+                assert!(images[0].stored && images[2].stored);
+                assert!(!images[1].stored);
+                assert_eq!(images[1].error.as_deref(), Some("HTTP 404"));
+                assert_eq!(images[0].content_type.as_deref(), Some("image/jpeg"));
+                let store = sink.store.lock().expect("lock");
+                assert_eq!(store.get("0").map(Vec::as_slice), Some(urls[0].as_bytes()));
+                assert_eq!(store.get("2").map(Vec::as_slice), Some(urls[2].as_bytes()));
+                assert!(!store.contains_key("1"));
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cover_fetcher_client_refuses_replies_that_do_not_match_the_request() {
+        /// Answers every call with one entry for an unrelated URL.
+        struct Wrong;
+        #[async_trait::async_trait(?Send)]
+        impl CoverFetcher for Wrong {
+            async fn fetch_covers(
+                &self,
+                params: CoverFetchParams,
+                _sink: Box<dyn Destination>,
+            ) -> Result<Vec<CoverImage>> {
+                Ok(params
+                    .urls
+                    .iter()
+                    .take(1)
+                    .map(|_| CoverImage {
+                        url: "https://elsewhere.example/x.jpg".into(),
+                        ..CoverImage::default()
+                    })
+                    .collect())
+            }
+        }
+        struct Bare;
+        impl CoverFetcher for Bare {}
+
+        let client = |inner: Arc<dyn CoverFetcher>| {
+            CoverFetcherClient::new(
+                capnp_rpc::new_client(CoverFetcherServer {
+                    inner,
+                    window: 4096,
+                }),
+                4096,
+            )
+        };
+        let sink = || -> Box<dyn Destination> {
+            Box::new(MemDest {
+                store: Mutex::new(HashMap::new()),
+            })
+        };
+        let params = |n: usize| CoverFetchParams {
+            urls: (0..n)
+                .map(|i| format!("https://img.example/{i}.jpg"))
+                .collect(),
+            max_bytes: 1024,
+        };
+
+        let wrong = client(Arc::new(Wrong));
+        let short = wrong
+            .fetch_covers(params(2), sink())
+            .await
+            .expect_err("one answer for two urls");
+        assert_eq!(short.code, crate::PluginErrorCode::Internal);
+        assert!(short.message.contains("1 of 2"));
+        let renamed = wrong
+            .fetch_covers(params(1), sink())
+            .await
+            .expect_err("answer names another url");
+        assert!(renamed.message.contains("different url"));
+
+        for bad in [
+            params(0),
+            params(crate::MAX_COVER_URLS as usize + 1),
+            CoverFetchParams {
+                max_bytes: 0,
+                ..params(1)
+            },
+            CoverFetchParams {
+                max_bytes: crate::MAX_COVER_BYTES + 1,
+                ..params(1)
+            },
+        ] {
+            let err = wrong
+                .fetch_covers(bad, sink())
+                .await
+                .expect_err("out-of-bounds request");
+            assert_eq!(err.code, crate::PluginErrorCode::InvalidParams);
+        }
+
+        let bare = client(Arc::new(Bare));
+        assert!(bare.health().await.expect("default health").ok);
+        let err = bare
+            .fetch_covers(params(1), sink())
+            .await
+            .expect_err("default fetchCovers");
         assert_eq!(err.code, crate::PluginErrorCode::Unsupported);
     }
 

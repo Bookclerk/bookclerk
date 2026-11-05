@@ -29,6 +29,7 @@ boundary extends it.
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
 | `https_url_policy` | URLs from plugin output the host fetches itself (a metadata provider's cover URL) | `bookclerk-plugin-manifest::https_url_on_hosts` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
+| `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
@@ -62,6 +63,7 @@ only that. The others check:
 - **`egress_policy`**: deny allows nothing. Loopback, private and metadata
   addresses need a CIDR in every spelling (trailing dot, fullwidth digits,
   legacy `127.1`, hex and octal IPv4). `*.suffix` never matches `xsuffix`,
+  `*` never matches an IP literal and never grants a socket,
   percent-encoded hosts never match, and the JSON round-trips.
 - **`plugin_manifest`**: `format_manifest` round-trips, and a deny manifest
   yields a deny policy.
@@ -76,6 +78,13 @@ only that. The others check:
   is `fuzz/oracles/https_url_policy.rs`, replayed from
   `bookclerk-plugin-manifest`.
 - **`abi_decode`**: the traversal budget is derived from the input size.
+  Structured seeds cover the book records, the metadata replies and the
+  cover request and reply (`structured_*.bin`).
+- **`cover_sink_key`**: a key names a slot exactly when it is the
+  canonical decimal spelling of an index below the URL count, read digit
+  by digit without `str::parse`, so no two keys name one slot. The shared
+  oracle is `fuzz/oracles/cover_sink_key.rs`, replayed from
+  `bookclerk-plugin-abi`.
 - **`abi_roundtrip`**: a value the decoder accepts re-encodes, re-decodes
   and compares equal (`read(write(v)) == v`).
 - **`guest_sql_authz`**: every table, column, function and schema action
@@ -667,6 +676,27 @@ tree and on its text, in `npm test` (the `workerd_guests` check).
   explicit-stack pre-order walk of the body, down to `MAX_DEPTH` and up to
   `MAX_CHAPTERS`. `found` exactly when that walk finds any. Durations are
   positive safe integers.
+
+### Cover fetcher guest
+
+The `covers` guest decides which URLs it requests: the host's URLs and every
+redirect `Location` an upstream server sends. Its `test/fuzz.test.ts` replays
+`fuzz/url/` and `fuzz/location/` and runs seeded text mutations in
+`npm test` (the `workerd_guests` check); `FUZZ_SEED` and `FUZZ_ITERATIONS`
+pick another run.
+
+- **Cover URL policy** (`checkUrl` in
+  `crates/bookclerk-plugins/optional/covers/src/fetcher.ts`). Oracle,
+  written from the policy and the WHATWG URL rules: accept exactly an
+  `https` URL with the default port, no credentials, no control characters
+  or spaces, at most 4096 code units, and a hostname whose labels are
+  non-empty and whose last label is not a number (the URL parser's IPv4
+  test) or a bracketed address. Accepted URLs are canonical and
+  idempotent.
+- **Redirect chains** (`fetchOne`). Mutated `Location` chains: every
+  request is a policy URL, each hop is the previous `Location` resolved
+  against the URL that sent it, no more than `MAX_REDIRECTS` are followed,
+  and a body is stored only after a chain the policy allowed in full.
 
 ## Still to add
 

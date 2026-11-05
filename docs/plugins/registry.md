@@ -396,7 +396,7 @@ This is the preferred portable path:
 1. Extend `BookclerkEntrypoint` for event and job triggers.
 2. Export one `*Entrypoint` subclass per named entrypoint (`Storefront`,
    `Storage`, `RemoteLibrary`, `DatabaseAdapter`, `Cli`, `Oidc`,
-   `Metadata`).
+   `Metadata`, `Covers`).
 3. Ship `plugin.toml` + `modules/`.
 
 Start from

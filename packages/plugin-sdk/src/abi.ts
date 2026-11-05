@@ -38,6 +38,12 @@ export const MAX_EVENT_PAYLOAD_BYTES = 65536 as const;
  */
 export const MAX_KV_VALUE_BYTES = 1048576 as const;
 
+/** Most URLs in one `CoverFetcher.fetchCovers` call. */
+export const MAX_COVER_URLS = 32 as const;
+
+/** Largest image body `CoverFetcher.fetchCovers` may return for one URL. */
+export const MAX_COVER_BYTES = 10485760 as const;
+
 /** Longest `KvNamespace` key in UTF-8 bytes. */
 export const MAX_KV_KEY_BYTES = 512 as const;
 
@@ -83,7 +89,7 @@ export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];
  *
  * Ordinal-ordered `Entrypoint` wire names (index = Cap'n Proto ordinal).
  */
-export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata"] as const;
+export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers"] as const;
 
 /** Union of `ENTRYPOINTS` wire names. */
 export type Entrypoint = (typeof ENTRYPOINTS)[number];

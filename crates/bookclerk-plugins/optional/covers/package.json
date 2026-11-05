@@ -1,0 +1,21 @@
+{
+  "name": "bookclerk-plugin-covers",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cover image fetcher for Bookclerk (workerd guest)",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "node --test --experimental-test-module-mocks --experimental-test-coverage \"test/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@bookclerk/plugin-sdk": "file:../../../../packages/plugin-sdk",
+    "@types/node": "26.6.5",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=26"
+  },
+  "license": "AGPL-3.0-or-later"
+}

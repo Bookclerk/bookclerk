@@ -61,12 +61,15 @@ pub const CANCEL_POLL_WINDOW: std::time::Duration = std::time::Duration::from_se
 const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// One grant token's host stubs (vat-thread only): a `JobRunner.job`
-/// invocation, a named database binding, or an `EVENTS` publisher.
+/// invocation, a `CoverFetcher.fetchCovers` sink, a named database binding,
+/// or an `EVENTS` publisher.
 pub struct GrantedSlot {
     /// Host-granted input source.
     pub input: Option<Box<dyn Source>>,
-    /// Host-granted output destination.
-    pub output: Option<Box<dyn Destination>>,
+    /// Host-granted output destination. Shared, so several `PUT /put`
+    /// requests on one grant may stream at once (a cover fetcher puts each
+    /// image as it arrives).
+    pub output: Option<Rc<dyn Destination>>,
     /// Progress sink.
     pub progress: Option<Box<dyn ProgressSink>>,
     /// Host cancellation stub behind the `/cancel` long poll.
@@ -118,6 +121,29 @@ impl GrantedSlot {
             events: None,
             queue: None,
             kv: Some(kv),
+        }
+    }
+
+    /// A grant that only streams bodies into one host destination over
+    /// `PUT /put` (no source, progress, database, events or KV).
+    #[must_use]
+    pub fn output_only(output: Rc<dyn Destination>, expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: Some(output),
+            progress: None,
+            cancel: None,
+            expires,
+            allow_open: false,
+            allow_put: true,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: 0,
+            events: None,
+            queue: None,
+            kv: None,
         }
     }
 
@@ -582,8 +608,8 @@ async fn dispatch_put(
             return Err("put not permitted on this grant".into());
         }
         slot.output
-            .take()
-            .ok_or_else(|| "destination already in use".to_string())?
+            .clone()
+            .ok_or_else(|| "put not permitted on this grant".to_string())?
     };
     let body: Pin<Box<dyn AsyncRead + Send>> = Box::pin(ChannelReader {
         rx: body_rx,
@@ -593,12 +619,6 @@ async fn dispatch_put(
         .put(&key, body, options)
         .await
         .map_err(|err| err.to_string())?;
-    {
-        let mut table = table.borrow_mut();
-        if let Some(slot) = table.get_mut(&invocation) {
-            slot.output = Some(output);
-        }
-    }
     Ok(PutOk {
         key: put.key,
         bytes_written: put.bytes_written,

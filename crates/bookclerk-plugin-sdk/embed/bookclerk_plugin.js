@@ -4926,6 +4926,104 @@ var MetadataChaptersReplyCodec = {
     }
   }
 };
+var CoverFetchParamsCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.urls ?? []);
+    s.setUint32(0, v.maxBytes ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      urls: s.getTextList(0),
+      maxBytes: s.getUint32(0)
+    };
+  }
+};
+var CoverImageCodec = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.url ?? "");
+    s.setBool(0, v.stored ?? false);
+    if (v.contentType !== void 0) {
+      s.setText(1, v.contentType ?? "");
+    }
+    if (v.error !== void 0) {
+      s.setText(2, v.error ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      url: s.getText(0),
+      stored: s.getBool(0)
+    };
+    const contentTypeValue = s.getText(1);
+    if (!(contentTypeValue === "")) {
+      out.contentType = contentTypeValue;
+    }
+    const errorValue = s.getText(2);
+    if (!(errorValue === "")) {
+      out.error = errorValue;
+    }
+    return out;
+  }
+};
+var CoverImagesCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.images ?? [];
+      const items = s.initStructList(0, list.length, 1, 3);
+      for (let i = 0; i < items.length; i++) {
+        CoverImageCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      images: s.getStructList(0, 1, 3).map((item) => CoverImageCodec.read(item, caps))
+    };
+  }
+};
+var CoverImagesReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          CoverImagesCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("CoverImagesReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: CoverImagesCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("CoverImagesReply", disc);
+    }
+  }
+};
 var DbValueCodec = {
   dataWords: 2,
   pointerCount: 1,
@@ -6987,6 +7085,70 @@ var MetadataProviderChaptersResultsCodec = {
     };
   }
 };
+var CoverFetcherHealthParamsCodec = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  }
+};
+var CoverFetcherHealthResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: HealthReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var CoverFetcherFetchCoversParamsCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.params != null) {
+      CoverFetchParamsCodec.write(s.initStruct(0, 1, 1), v.params, caps);
+    }
+    if (v.sink != null) {
+      s.setCap(1, caps.exportCap(v.sink));
+    }
+  },
+  read(s, caps) {
+    const out = {
+      params: CoverFetchParamsCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+    const sinkValue = caps.importCap(s.getCapIndex(1));
+    if (!(sinkValue == null)) {
+      out.sink = sinkValue;
+    }
+    return out;
+  }
+};
+var CoverFetcherFetchCoversResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      CoverImagesReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: CoverImagesReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var DatabaseOpenSessionParamsCodec = {
   dataWords: 0,
   pointerCount: 0,
@@ -7407,6 +7569,12 @@ var okRecords = (value) => {
   }
   return okValue({ records: value });
 };
+var okCoverImages = (value) => {
+  if (!Array.isArray(value)) {
+    throw PluginError.fromWire("internal", "cover fetcher must return a CoverImage[]");
+  }
+  return okValue({ images: value });
+};
 var okLines = (value) => okValue({ lines: asList(value).map((l) => String(l)) });
 var okHealth = (value) => {
   const v = value ?? {};
@@ -7684,6 +7852,21 @@ var METHODS = {
     lookup: withParams("metadata", "lookup", MetadataProviderLookupParamsCodec, MetadataProviderLookupResultsCodec, okRecords),
     search: withParams("metadata", "search", MetadataProviderSearchParamsCodec, MetadataProviderSearchResultsCodec, okRecords),
     chapters: withParams("metadata", "chapters", MetadataProviderChaptersParamsCodec, MetadataProviderChaptersResultsCodec, okPass)
+  },
+  CoverFetcher: {
+    health: withoutParams("covers", "health", CoverFetcherHealthParamsCodec, CoverFetcherHealthResultsCodec, okHealth),
+    fetchCovers: spec({
+      params: CoverFetcherFetchCoversParamsCodec,
+      results: CoverFetcherFetchCoversResultsCodec,
+      stub: "covers",
+      call: (s, p, cx) => {
+        if (!p.sink) {
+          throw PluginError.fromWire("invalid_params", "fetchCovers needs a sink");
+        }
+        return named(s, cx.host.bindContext(cx.ctx), "fetchCovers", [p.params, p.sink]);
+      },
+      ok: okCoverImages
+    })
   },
   Database: {
     openSession: spec({
@@ -9279,6 +9462,27 @@ var MetadataEntrypoint = class extends NamedEntrypoint {
     return Promise.reject(unsupported("chapters"));
   }
 };
+var CoverEntrypoint = class extends NamedEntrypoint {
+  static bookclerkMethods = Object.freeze(["health", "fetchCovers"]);
+  /**
+   * Reports whether the fetcher can answer.
+   *
+   * @returns Health flag plus detail.
+   */
+  health() {
+    return Promise.resolve({ ok: true, detail: "" });
+  }
+  /**
+   * Fetches each URL and streams its body into `sink` under its index.
+   *
+   * @param _params - URLs (absolute `https://`) and the per-body byte cap.
+   * @param _sink - Host destination; accepts `put` for keys `0..urls.length`.
+   * @returns One entry per URL, in request order.
+   */
+  fetchCovers(_params, _sink) {
+    return Promise.reject(unsupported("fetchCovers"));
+  }
+};
 var ENTRYPOINT_BINDINGS = Object.freeze({
   storefront: "PLUGIN_STOREFRONT",
   storage: "PLUGIN_STORAGE",
@@ -9286,7 +9490,8 @@ var ENTRYPOINT_BINDINGS = Object.freeze({
   remoteLibrary: "PLUGIN_REMOTE_LIBRARY",
   cli: "PLUGIN_CLI",
   oidc: "PLUGIN_OIDC",
-  metadata: "PLUGIN_METADATA"
+  metadata: "PLUGIN_METADATA",
+  covers: "PLUGIN_COVERS"
 });
 var ENTRYPOINT_CLASSES = Object.freeze({
   storefront: "Storefront",
@@ -9295,7 +9500,8 @@ var ENTRYPOINT_CLASSES = Object.freeze({
   remoteLibrary: "RemoteLibrary",
   cli: "Cli",
   oidc: "Oidc",
-  metadata: "Metadata"
+  metadata: "Metadata",
+  covers: "Covers"
 });
 function exactLengthBody(body, expected) {
   if (body == null || expected == null || !Number.isFinite(expected)) {
@@ -10146,6 +10352,7 @@ export {
   AdapterDatabaseSession,
   BookclerkEntrypoint,
   CliEntrypoint,
+  CoverEntrypoint,
   DatabaseAdapterEntrypoint,
   Destination,
   ENTRYPOINT_BINDINGS,

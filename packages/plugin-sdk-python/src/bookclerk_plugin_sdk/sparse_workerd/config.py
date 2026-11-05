@@ -62,6 +62,7 @@ ENTRYPOINT_SERVICE_BINDINGS: dict[str, tuple[str, str]] = {
     "cli": ("PLUGIN_CLI", "Cli"),
     "oidc": ("PLUGIN_OIDC", "Oidc"),
     "metadata": ("PLUGIN_METADATA", "Metadata"),
+    "covers": ("PLUGIN_COVERS", "Covers"),
 }
 """``(binding, exported class)`` the adapter receives per manifest entrypoint."""
 

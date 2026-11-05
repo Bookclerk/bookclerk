@@ -7,12 +7,12 @@ use tokio::io::AsyncRead;
 
 use crate::generated::{
     AuthenticateUserParams, CatalogDetailParams, CatalogHit, CliInvokeParams, CliInvokeResult,
-    CliSchema, DatabaseAdapterConfig, ExpandCandidatesParams, ExternalUser, FetchTitleParams,
-    Invocation, ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
-    LoginStartResult, MetadataChapters, MetadataChaptersParams, MetadataLookupParams,
-    MetadataRecord, MetadataSearchParams, PlainFetch, PluginEvent, PublishOk, PurchaseHint,
-    PurchaseHintParams, RevokeAccountParams, ScanLibraryParams, ScanParams, ScanSummary,
-    SearchCatalogParams, SourceAccount,
+    CliSchema, CoverFetchParams, CoverImage, DatabaseAdapterConfig, ExpandCandidatesParams,
+    ExternalUser, FetchTitleParams, Invocation, ListDealsParams, ListeningProgress,
+    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MetadataChapters,
+    MetadataChaptersParams, MetadataLookupParams, MetadataRecord, MetadataSearchParams, PlainFetch,
+    PluginEvent, PublishOk, PurchaseHint, PurchaseHintParams, RevokeAccountParams,
+    ScanLibraryParams, ScanParams, ScanSummary, SearchCatalogParams, SourceAccount,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -418,6 +418,34 @@ pub trait MetadataProvider {
     }
 }
 
+/// `covers` entrypoint: downloads cover images on the host's behalf.
+///
+/// The fetcher only transports bytes. Each body goes into `sink` under its
+/// index in `params.urls` (`"0"`, `"1"`, ...), and the host sniffs, decodes and
+/// re-encodes it before anything stores or serves it.
+#[async_trait::async_trait(?Send)]
+pub trait CoverFetcher {
+    /// Liveness / readiness probe.
+    async fn health(&self) -> Result<crate::rpc_types::HealthOk> {
+        Ok(crate::rpc_types::HealthOk {
+            ok: true,
+            detail: String::new(),
+        })
+    }
+
+    /// Fetches every URL in `params.urls` and puts each body into `sink` under
+    /// its index. Returns one [`CoverImage`] per URL, in request order; a URL
+    /// that failed carries `error` and `stored = false` rather than failing the
+    /// whole call.
+    async fn fetch_covers(
+        &self,
+        _params: CoverFetchParams,
+        _sink: Box<dyn Destination>,
+    ) -> Result<Vec<CoverImage>> {
+        Err(PluginError::unsupported("fetchCovers"))
+    }
+}
+
 /// `cli` entrypoint: guest commands under `bookclerk plugins <id> <command>`.
 #[async_trait::async_trait(?Send)]
 pub trait PluginCli {
@@ -678,6 +706,8 @@ pub struct Entrypoints {
     pub scheduled_handler: Option<Box<dyn ScheduledHandler>>,
     /// `metadata` entrypoint.
     pub metadata: Option<Box<dyn MetadataProvider>>,
+    /// `covers` entrypoint.
+    pub covers: Option<Box<dyn CoverFetcher>>,
 }
 
 /// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).

@@ -20,6 +20,7 @@ import {
   setBranchSharing,
 } from "@/lib/join";
 import { backoffDelay, useLiveRefresh } from "@/lib/live";
+import { domainLabel } from "@/lib/networkGrant";
 import { cn } from "@/lib/utils";
 
 /** Poll interval while the live socket is down. */
@@ -357,7 +358,7 @@ function ConsentRow({
                     }
                   />
                   <span className="text-ink/45">Deny</span>
-                  <span className="font-mono text-[12px]">{domain}</span>
+                  <span className="font-mono text-[12px]">{domainLabel(domain)}</span>
                 </label>
               ))
             )}
@@ -388,8 +389,8 @@ function ConsentRow({
       {approved && row.grant ? (
         <p className="text-xs text-ink/55">
           Granted now: network {row.grant.networkMode ?? "deny"}
-          {row.grant.domains?.length ? ` (${row.grant.domains.join(", ")})` : ""}; bindings{" "}
-          {row.grant.bindings?.length ? row.grant.bindings.join(", ") : "none"}
+          {row.grant.domains?.length ? ` (${row.grant.domains.map(domainLabel).join(", ")})` : ""};
+          bindings {row.grant.bindings?.length ? row.grant.bindings.join(", ") : "none"}
         </p>
       ) : null}
 

@@ -409,7 +409,7 @@ pub struct PluginGrant {
     /// Display / CLI alias from `plugin.toml` (not security authoritative).
     pub plugin_id: String,
     /// Approved named entrypoints (wire names: `storefront`, `storage`,
-    /// `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`).
+    /// `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`, `covers`).
     #[serde(default)]
     pub entrypoints: BTreeSet<String>,
     /// Approved event types the plugin may publish through its events binding.
@@ -1094,10 +1094,28 @@ pub fn consent_summary(grant: &PluginGrant) -> Vec<String> {
         );
     }
     if !grant.domains.is_empty() {
-        lines.push(format!(
-            "Workerd initial outbound domains: {}",
-            grant.domains.iter().cloned().collect::<Vec<_>>().join(", ")
-        ));
+        if grant
+            .domains
+            .contains(bookclerk_plugin_manifest::ANY_PUBLIC_HOST)
+        {
+            lines.push(
+                "Workerd initial outbound domains: any public website (`*`); IP literals, \
+                 private and loopback addresses stay refused."
+                    .into(),
+            );
+        }
+        let named: Vec<String> = grant
+            .domains
+            .iter()
+            .filter(|d| d.as_str() != bookclerk_plugin_manifest::ANY_PUBLIC_HOST)
+            .cloned()
+            .collect();
+        if !named.is_empty() {
+            lines.push(format!(
+                "Workerd initial outbound domains: {}",
+                named.join(", ")
+            ));
+        }
         if !grant.operator_added_domains.is_empty() {
             lines.push(format!(
                 "Operator-added destinations: {}",
@@ -3034,6 +3052,19 @@ jobs = ["stream_copy"]
             summary.iter().any(|l| l.contains("Job triggers")),
             "{summary:?}"
         );
+    }
+
+    #[test]
+    fn any_public_host_reads_plainly_in_the_consent_summary() {
+        let star = sample_grant(&["*", "api.example.com"], &[], &[]);
+        let summary = consent_summary(&star).join("\n");
+        assert!(summary.contains("any public website"), "{summary}");
+        assert!(
+            summary.contains("Workerd initial outbound domains: api.example.com"),
+            "{summary}"
+        );
+        let only_star = consent_summary(&sample_grant(&["*"], &[], &[])).join("\n");
+        assert!(!only_star.contains("domains: *"), "{only_star}");
     }
 
     #[test]

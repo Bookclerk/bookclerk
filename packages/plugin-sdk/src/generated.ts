@@ -368,6 +368,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   metadata?: MetadataProvider | null;
+  /**
+   * `covers` entrypoint.
+   * Null when the guest does not export this capability.
+   */
+  covers?: CoverFetcher | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -1222,6 +1227,33 @@ export interface MetadataProvider {
    * @returns {@link MetadataChaptersReply}
    */
   chapters(params: MetadataChaptersParams): Promise<MetadataChaptersReply>;
+}
+
+/**
+ * `covers` entrypoint: downloads cover images on the host's behalf, so the
+ * host itself never makes an outbound request to a URL a plugin or a store
+ * supplied. The fetcher only transports bytes: the host sniffs, decodes and
+ * re-encodes every image in its media worker before anything stores or
+ * serves it. Network access is limited to what the manifest's
+ * `[capabilities.network]` declares.
+ */
+export interface CoverFetcher {
+  /**
+   * Liveness / readiness probe.
+   *
+   * @returns {@link HealthReply}
+   */
+  health(): Promise<HealthReply>;
+  /**
+   * Fetches every URL concurrently and streams each body into `sink` under
+   * its index in `params.urls` (`"0"`, `"1"`, ...). The reply says, per URL,
+   * whether its body was stored.
+   *
+   * @param params - URLs and the per-image byte cap.
+   * @param sink - Host-served store that accepts only those keys.
+   * @returns {@link CoverImagesReply}
+   */
+  fetchCovers(params: CoverFetchParams, sink: Destination): Promise<CoverImagesReply>;
 }
 
 /**
@@ -2758,6 +2790,50 @@ export interface MetadataChapters {
 /** Result union of `MetadataProvider.chapters`. */
 export type MetadataChaptersReply =
   | { kind: "ok"; value: MetadataChapters } // Success: chapter layout or not-found marker.
+  | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Params of `CoverFetcher.fetchCovers`. */
+export interface CoverFetchParams {
+  /**
+   * Absolute `https://` URLs to fetch, at most `maxCoverUrls`; never empty.
+   * The host has already checked each one against its URL policy.
+   */
+  urls: string[];
+  /**
+   * Largest body, in bytes, the host accepts for one image; at most
+   * `maxCoverBytes`. The sink refuses a larger body, which fails that URL
+   * only.
+   */
+  maxBytes: number;
+}
+
+/** What happened to one requested URL. */
+export interface CoverImage {
+  /** The requested URL, verbatim. */
+  url: string;
+  /** Whether the body was put into the sink under this URL's index. */
+  stored: boolean;
+  /**
+   * `Content-Type` the server sent. Advisory: the host sniffs the bytes.
+   * Omitted when absent (wire zero value).
+   */
+  contentType?: string;
+  /**
+   * Why nothing was stored (HTTP status, size cap, timeout, refused host).
+   * Omitted when absent (wire zero value).
+   */
+  error?: string;
+}
+
+/** Success payload of `CoverFetcher.fetchCovers`. */
+export interface CoverImages {
+  /** One entry per requested URL, in request order. */
+  images: CoverImage[];
+}
+
+/** Result union of `CoverFetcher.fetchCovers`. */
+export type CoverImagesReply =
+  | { kind: "ok"; value: CoverImages } // Success: one entry per requested URL.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /** One typed SQL cell or bind parameter. */

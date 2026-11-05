@@ -5,7 +5,7 @@
 //! `describe()` advertises typed [`PluginCapabilities`], then
 //! `open(invocation, bindings)` returns the exported [`Entrypoints`]
 //! (`storefront`, `storage`, `databaseAdapter`, `remoteLibrary`, `cli`,
-//! `oidc`, `metadata`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
+//! `oidc`, `metadata`, `covers`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
 //! [`Bindings`] carry `CONFIG` / `SECRETS`, the `EVENTS` publisher, and named
 //! `[[databases]]` sessions — the Workers `env` idiom.
 //!
@@ -229,14 +229,14 @@ pub use features::{
 };
 pub use jobs::{read_all, stream_copy_keys, StreamCopyHandler, StreamCopySpec};
 pub use limits::{
-    ScalarLimits, MAX_CRON_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES,
-    MAX_KV_VALUE_BYTES, MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS,
-    MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES, MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES,
-    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    cover_sink_slot, ScalarLimits, MAX_COVER_BYTES, MAX_COVER_URLS, MAX_CRON_BYTES,
+    MAX_EVENT_PAYLOAD_BYTES, MAX_KV_KEY_BYTES, MAX_KV_METADATA_BYTES, MAX_KV_VALUE_BYTES,
+    MAX_LIST_PAGE, MAX_PLUGIN_MIGRATION_OPS, MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
+    MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 pub use roles::{
     AdapterDatabaseSession, BindingValues, Bindings, ByteRange, Cancellation, ContentSource,
-    Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
+    CoverFetcher, Database, Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase,
     JobController, JobRunner, KvNamespace, MetadataProvider, NamedKvBinding, NamedQueueBinding,
     NeverCancel, Oidc, PluginCli, PluginWorker, ProgressSink, QueueConsumer, QueueProducer,
     ReadResult, RemoteLibrary, ScheduledHandler, Source,
@@ -245,10 +245,10 @@ pub use roles::{
 pub use rpc::AdapterSessionHandle;
 pub use rpc::{
     byte_source_from_async_read, connect_plugin, pull_byte_source_to_writer, serve_plugin,
-    serve_plugin_stdio, ContentSourceClient, DatabaseClient, DestinationClient, DestinationServer,
-    EventConsumerClient, EventPublisherClient, HostBindings, JobRunnerClient, KvNamespaceClient,
-    MetadataProviderClient, OidcClient, OpenedEntrypoints, PluginCliClient, PluginClient,
-    PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
+    serve_plugin_stdio, ContentSourceClient, CoverFetcherClient, DatabaseClient, DestinationClient,
+    DestinationServer, EventConsumerClient, EventPublisherClient, HostBindings, JobRunnerClient,
+    KvNamespaceClient, MetadataProviderClient, OidcClient, OpenedEntrypoints, PluginCliClient,
+    PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient, RemoteLibraryClient,
     ScheduledHandlerClient, SourceClient, SourceServer,
 };
 pub use rpc_types::{

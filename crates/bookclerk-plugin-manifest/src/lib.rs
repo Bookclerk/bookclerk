@@ -67,8 +67,9 @@ pub use address::{
 pub use cron::{CronError, CronSchedule, UnixMinute, MAX_CRON_SOURCE_BYTES};
 pub use egress::{
     consent_domains_for, host_matches, https_url_on_hosts, manifest_needs_python,
-    normalize_domain_pattern, normalize_hostname, with_python_runtime_hosts, EgressPolicy,
-    TcpGrant, DEFAULT_MAX_REDIRECTS, MAX_FETCH_URL_BYTES, PYODIDE_EGRESS_HOSTS,
+    normalize_domain_pattern, normalize_hostname, normalize_tcp_host, with_python_runtime_hosts,
+    EgressPolicy, TcpGrant, ANY_PUBLIC_HOST, DEFAULT_MAX_REDIRECTS, MAX_FETCH_URL_BYTES,
+    PYODIDE_EGRESS_HOSTS,
 };
 pub use error::{Error, Result};
 pub use fmt::format_manifest;

@@ -78,6 +78,9 @@ type RemoteLibraryCall = Box<
 /// Typed metadata call against the opened `metadata` entrypoint.
 type MetadataCall = EntrypointCall<dyn bookclerk_plugin_sdk::MetadataProvider>;
 
+/// Typed cover-fetch call against the opened `covers` entrypoint.
+type CoversCall = EntrypointCall<dyn bookclerk_plugin_sdk::CoverFetcher>;
+
 /// `!Send` boxed future pinned for the vat's `LocalSet`.
 type LocalBoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 
@@ -170,6 +173,11 @@ enum Work {
     Metadata {
         /// Typed call; replies through the sender it captured.
         call: MetadataCall,
+    },
+    /// One typed `covers` method on the opened primary entrypoints.
+    Covers {
+        /// Typed call; replies through the sender it captured.
+        call: CoversCall,
     },
     /// One typed `remoteLibrary` method on the opened primary entrypoints.
     RemoteLibrary {
@@ -1254,6 +1262,26 @@ impl PluginSession {
             + 'static,
     {
         self.entrypoint_call(call, |call| Work::Metadata { call })
+            .await
+    }
+
+    /// One typed `covers` method on the opened primary entrypoints.
+    ///
+    /// `call` runs on the vat thread; its output crosses back to the caller's
+    /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `covers` or the
+    /// method fails.
+    pub async fn covers<T, F, Fut>(&self, call: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::CoverFetcher>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        self.entrypoint_call(call, |call| Work::Covers { call })
             .await
     }
 
@@ -3104,6 +3132,22 @@ fn vat_thread(
                                 |eps| {
                                     eps.metadata.clone().map(|stub| {
                                         Box::new(stub) as Box<dyn bookclerk_plugin_sdk::MetadataProvider>
+                                    })
+                                },
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
+                        }
+                        Work::Covers { call } => {
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "covers",
+                                |eps| {
+                                    eps.covers.clone().map(|stub| {
+                                        Box::new(stub) as Box<dyn bookclerk_plugin_sdk::CoverFetcher>
                                     })
                                 },
                                 call,

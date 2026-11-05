@@ -28,6 +28,7 @@ export {
   QueueBatch,
   QueueMessage,
   JobController,
+  CoverEntrypoint,
   MetadataEntrypoint,
   NamedEntrypoint,
   OidcEntrypoint,

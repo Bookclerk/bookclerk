@@ -8,14 +8,14 @@
   },
   {
     "entrypoints": [],
-    "error": "index.js: `BookclerkPlugin` was removed in api_version 3; extend `BookclerkEntrypoint` (default export with event()/job() triggers) and export named entrypoint classes (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata)",
+    "error": "index.js: `BookclerkPlugin` was removed in api_version 3; extend `BookclerkEntrypoint` (default export with event()/job() triggers) and export named entrypoint classes (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers)",
     "language": "js",
     "name": "js removed base",
     "src": "import { BookclerkPlugin } from \"@bookclerk/plugin-sdk\";\n"
   },
   {
     "entrypoints": [],
-    "error": "main.py: `BookclerkPlugin` was removed in api_version 3; extend `BookclerkEntrypoint` (default export with event()/job() triggers) and export named entrypoint classes (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata)",
+    "error": "main.py: `BookclerkPlugin` was removed in api_version 3; extend `BookclerkEntrypoint` (default export with event()/job() triggers) and export named entrypoint classes (Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers)",
     "language": "python",
     "name": "py removed base",
     "src": "from bookclerk_plugin_sdk import BookclerkPlugin\n"

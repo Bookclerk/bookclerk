@@ -9,7 +9,7 @@ The default export is a module-level ``Default`` class extending
 :class:`BookclerkEntrypoint` with optional ``event(batch)`` / ``job(job)``
 triggers. Named entrypoints from ``plugin.toml`` ``entrypoints`` are module-level
 classes named after the wire name (``Storefront``, ``Storage``, ``RemoteLibrary``,
-``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``) extending the matching ``*Entrypoint``
+``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``Covers``) extending the matching ``*Entrypoint``
 base. The launcher's adapter isolate reaches them only through the
 ``bookclerk*`` dispatch methods; authors neither call nor override those.
 
@@ -102,6 +102,7 @@ __all__ = [
     "GuestDatabase",
     "JobController",
     "KvNamespace",
+    "CoverEntrypoint",
     "MetadataEntrypoint",
     "NamedEntrypoint",
     "OidcEntrypoint",
@@ -1668,6 +1669,25 @@ class MetadataEntrypoint(NamedEntrypoint):
     async def chapters(self, _params: abi.MetadataChaptersParams) -> abi.MetadataChapters:
         """Chapter layout of one edition (``MetadataChapters``)."""
         raise _unsupported("chapters")
+
+
+class CoverEntrypoint(NamedEntrypoint):
+    """``covers`` entrypoint: downloads cover images for the host.
+
+    The host passes a ``sink`` destination; put the body for ``urls[i]`` under
+    the key ``str(i)`` and return one ``CoverImage`` per URL, in request
+    order. The host sniffs, decodes and re-encodes every body.
+    """
+
+    bookclerk_methods = ("health", "fetchCovers")
+
+    async def health(self) -> abi.HealthOk:
+        """Liveness / readiness probe (``HealthOk``)."""
+        return {"ok": True, "detail": ""}
+
+    async def fetchCovers(self, _params: abi.CoverFetchParams, _sink: Any) -> list[abi.CoverImage]:
+        """Fetch each URL into ``_sink`` under its index (list of ``CoverImage``)."""
+        raise _unsupported("fetchCovers")
 
 
 # ---------------------------------------------------------------------------
