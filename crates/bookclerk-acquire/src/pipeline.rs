@@ -2881,6 +2881,10 @@ async fn acquire_pdf_only_recorded(
         }
     }
 
+    // The companion PDF is named by the same templates as the audio, so it
+    // gets the same refusals before anything is fetched or written.
+    check_edition_paths(library, destinations, req).await?;
+
     let work_dir = primary_req
         .cache_dir
         .join("acquire-pdf")
@@ -3854,11 +3858,16 @@ mod tests {
         };
         let job = job_id(&store).await;
         let req = edition_req(&cache, job, "B00ONE", "user-1", &uuid);
-        let err = acquire_book(&store, &destinations, req, &source)
+        let err = acquire_book(&store, &destinations, req.clone(), &source)
             .await
             .expect_err("a template that can share a path is refused");
         assert!(err.to_string().contains("<library id>"), "{err}");
         assert!(err.to_string().contains("local"), "{err}");
+        // The companion PDF alone is refused the same way.
+        let err = acquire_pdf_only(&store, &destinations, &req, &source)
+            .await
+            .expect_err("a PDF-only acquire with such a template is refused");
+        assert!(err.to_string().contains("<library id>"), "{err}");
         assert_eq!(fetches.load(Ordering::SeqCst), 0);
         assert_eq!(puts.load(Ordering::SeqCst), 0);
     }
@@ -3890,7 +3899,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        store
+        assert!(store
             .record_edition_file(
                 "local",
                 &planned,
@@ -3898,7 +3907,7 @@ mod tests {
                 bookclerk_library::FileRole::Audio,
             )
             .await
-            .unwrap();
+            .unwrap());
         let err = acquire_book(&store, &destinations, req, &source)
             .await
             .expect_err("another edition's name is refused");

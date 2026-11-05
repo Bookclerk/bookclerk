@@ -277,19 +277,31 @@ impl LibraryStore {
     /// Records that `owner` writes `key` on `destination` (an acquire run
     /// on this node, just before the write).
     ///
-    /// The record is replaced unconditionally: the file is this edition's
-    /// once written, whichever edition held the key before.
+    /// The record is taken when the key is unrecorded, already `owner`'s,
+    /// or held by an owner no longer live (a removed edition, or a title a
+    /// branch shares here, whose keys an acquire on this node takes over).
+    /// Another live edition's key is refused, changing nothing: two
+    /// editions whose short ids collide can plan one chapter or sidecar
+    /// name the audio-name check does not see, and the write must not
+    /// replace that edition's file. Each record is one conditional write,
+    /// so of two acquires racing for one key only one wins.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the key is now `owner`'s; `false` when another live
+    /// edition holds it.
     ///
     /// # Errors
     ///
-    /// Returns an error when the write fails.
+    /// Returns an error when a write fails.
     pub async fn record_edition_file(
         &self,
         destination: &str,
         key: &str,
         owner: &FileOwner,
         role: FileRole,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        let now = now_str();
         edition_files::Entity::insert(edition_files::ActiveModel {
             destination: Set(destination.to_string()),
             storage_key: Set(key.to_string()),
@@ -300,29 +312,54 @@ impl LibraryStore {
             bitrate_kbps: Set(None),
             sha256: Set(None),
             writer: Set(ACQUIRE_WRITER.to_string()),
-            written_at: Set(now_str()),
+            written_at: Set(now.clone()),
         })
         .on_conflict(
             OnConflict::columns([
                 edition_files::Column::Destination,
                 edition_files::Column::StorageKey,
             ])
-            .update_columns([
-                edition_files::Column::OwnerKind,
-                edition_files::Column::OwnerId,
-                edition_files::Column::Role,
-                edition_files::Column::Lossless,
-                edition_files::Column::BitrateKbps,
-                edition_files::Column::Sha256,
-                edition_files::Column::Writer,
-                edition_files::Column::WrittenAt,
-            ])
+            .do_nothing()
             .to_owned(),
         )
         .exec_without_returning(self.db())
         .await
         .map_err(LibraryError::Orm)?;
-        Ok(())
+        let live_edition = Condition::all()
+            .add(edition_files::Column::OwnerKind.eq("edition"))
+            .add(
+                edition_files::Column::OwnerId.in_subquery(
+                    Query::select()
+                        .column(editions::Column::Id)
+                        .from(editions::Entity)
+                        .to_owned(),
+                ),
+            );
+        let mine = Condition::all()
+            .add(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .add(edition_files::Column::OwnerId.eq(owner.id()));
+        let recorded = edition_files::Entity::update_many()
+            .col_expr(edition_files::Column::OwnerKind, Expr::value(owner.kind()))
+            .col_expr(edition_files::Column::OwnerId, Expr::value(owner.id()))
+            .col_expr(edition_files::Column::Role, Expr::value(role.as_str()))
+            .col_expr(edition_files::Column::Lossless, Expr::value(0))
+            .col_expr(
+                edition_files::Column::BitrateKbps,
+                Expr::value(Option::<i64>::None),
+            )
+            .col_expr(
+                edition_files::Column::Sha256,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(edition_files::Column::Writer, Expr::value(ACQUIRE_WRITER))
+            .col_expr(edition_files::Column::WrittenAt, Expr::value(now))
+            .filter(edition_files::Column::Destination.eq(destination))
+            .filter(edition_files::Column::StorageKey.eq(key))
+            .filter(Condition::any().add(mine).add(live_edition.not()))
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(recorded.rows_affected > 0)
     }
 
     /// Claims `key` on `destination` for `owner`, with `writer` (a host

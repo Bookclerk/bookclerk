@@ -2230,10 +2230,10 @@ mod results_and_uploads {
         else {
             panic!("granted");
         };
-        // A local acquire of another title records the key, then writes it.
-        record_for_book(&world.owner, "local", KEY, &other.uuid)
-            .await
-            .unwrap();
+        // The grant's claim is given back and a local acquire of another
+        // title records the key, then writes it (an acquire never takes a
+        // key a live edition holds).
+        take_granted_key(&world.owner, KEY, &upload_id, &other.uuid).await;
         let mut tcp = tokio::net::TcpStream::connect(world.addr).await.unwrap();
         let head = format!(
             "PUT /api/node/v1/uploads/{upload_id}/files/0 HTTP/1.1\r\n\
@@ -2687,9 +2687,7 @@ mod results_and_uploads {
             !files_under(local_out.path()).is_empty()
         })
         .await;
-        record_for_book(&world.owner, "local", KEY, &other.uuid)
-            .await
-            .unwrap();
+        take_granted_key(&world.owner, KEY, &upload_id, &other.uuid).await;
         std::fs::write(local_out.path().join(KEY), b"xyz").unwrap();
         let answer = put_finish(tcp, b"c").await;
         assert!(answer.starts_with("HTTP/1.1 422"), "{answer}");
@@ -3992,6 +3990,24 @@ async fn a_guarded_task_is_aborted_with_its_guard() {
 
 /// Records `key` on `destination` as a local acquire of `book_uuid`'s
 /// edition wrote it.
+/// Gives back the claim upload `upload_id` holds on `key` on the local
+/// destination, then records `key` for `book_uuid`'s edition: another
+/// title's acquire taking a key once the grant no longer holds it.
+async fn take_granted_key(
+    store: &bookclerk_library::LibraryStore,
+    key: &str,
+    upload_id: &str,
+    book_uuid: &str,
+) {
+    store
+        .release_edition_file("local", key, upload_id, None)
+        .await
+        .unwrap();
+    record_for_book(store, "local", key, book_uuid)
+        .await
+        .unwrap();
+}
+
 async fn record_for_book(
     store: &bookclerk_library::LibraryStore,
     destination: &str,
@@ -4010,4 +4026,5 @@ async fn record_for_book(
             bookclerk_library::FileRole::for_key(key, None),
         )
         .await
+        .map(|recorded| assert!(recorded, "{key} is another edition's"))
 }

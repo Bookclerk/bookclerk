@@ -62,16 +62,26 @@ impl RecordingBackend {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::Other`] when the record cannot be written;
-    /// the write is then not attempted, so no file goes unrecorded.
+    /// Returns [`StorageError::Other`] when the record cannot be written,
+    /// or when another live edition holds `key`; the write is then not
+    /// attempted, so no file goes unrecorded and no edition's file is
+    /// replaced by another's.
     async fn record(&self, key: &str) -> bookclerk_storage::Result<()> {
         let role = self.role_of(key);
-        self.library
+        let recorded = self
+            .library
             .record_edition_file(self.destination, key, &self.owner, role)
             .await
             .map_err(|err| {
                 StorageError::Other(anyhow::anyhow!("could not record a title's file: {err}"))
-            })
+            })?;
+        if recorded {
+            Ok(())
+        } else {
+            Err(StorageError::Other(anyhow::anyhow!(
+                "{key} is another edition's file; refusing to replace it"
+            )))
+        }
     }
 }
 

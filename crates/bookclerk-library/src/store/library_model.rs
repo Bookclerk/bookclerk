@@ -1760,10 +1760,10 @@ mod store_tests {
         let record = |key: &'static str, owner: FileOwner| {
             let store = store.clone();
             async move {
-                store
+                assert!(store
                     .record_edition_file("local", key, &owner, FileRole::Audio)
                     .await
-                    .unwrap();
+                    .unwrap());
             }
         };
         record("A/Live.m4b", held.clone()).await;
@@ -1781,6 +1781,30 @@ mod store_tests {
             assert!(
                 !store
                     .name_held_by_another_owner(stale, &mine)
+                    .await
+                    .unwrap(),
+                "{stale}"
+            );
+        }
+        // An acquire's record refuses a live edition's key and takes over
+        // a stale holder's.
+        assert!(!store
+            .record_edition_file("local", "A/Live.m4b", &mine, FileRole::Audio)
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .edition_file("local", "A/Live.m4b")
+                .await
+                .unwrap()
+                .unwrap()
+                .owner,
+            held
+        );
+        for stale in ["A/Gone.m4b", "A/Branch.m4b"] {
+            assert!(
+                store
+                    .record_edition_file("local", stale, &mine, FileRole::Audio)
                     .await
                     .unwrap(),
                 "{stale}"

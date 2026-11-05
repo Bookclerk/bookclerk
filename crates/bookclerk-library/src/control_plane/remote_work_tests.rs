@@ -4086,4 +4086,5 @@ async fn record_for_book(
     store
         .record_edition_file(destination, key, &owner, FileRole::for_key(key, None))
         .await
+        .map(|recorded| assert!(recorded, "{key} is another edition's"))
 }
