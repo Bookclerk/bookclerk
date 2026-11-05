@@ -34,7 +34,7 @@ pub use match_score::{
 pub use providers::{
     asin_identifier, chapter_info_from_layout, isbn_identifier, record_identifier, ChaptersAnswer,
     MetadataAnswer, MetadataProviders, NoMetadataProviders, ProvidedChapters, ProvidedRecord,
-    ProviderFailure,
+    ProviderFailure, MAX_CHAPTER_DEPTH,
 };
 pub use public_meta::{
     fetch_audible_catalog_rating, fetch_audible_catalog_reviews,

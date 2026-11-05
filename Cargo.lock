@@ -1492,6 +1492,7 @@ dependencies = [
  "bookclerk-naming",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-database-sqlite",
+ "bookclerk-plugin-manifest",
  "bookclerk-source",
  "bookclerk-storage",
  "bytes",

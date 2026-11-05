@@ -27,6 +27,7 @@ boundary extends it.
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
+| `https_url_policy` | URLs from plugin output the host fetches itself (a metadata provider's cover URL) | `bookclerk-plugin-manifest::https_url_on_hosts` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
@@ -67,6 +68,11 @@ only that. The others check:
   normalized source, and `next_after` / `latest_at_or_before` agree with a
   minute-by-minute scan of `matches`. The shared oracle is
   `fuzz/oracles/cron_schedule.rs`, replayed from
+  `bookclerk-plugin-manifest`.
+- **`https_url_policy`**: the check is idempotent, and an accepted URL is
+  `https://` with no user info, port or IP literal, on a host the patterns
+  cover, read byte by byte rather than by the URL parser. The shared oracle
+  is `fuzz/oracles/https_url_policy.rs`, replayed from
   `bookclerk-plugin-manifest`.
 - **`abi_decode`**: the traversal budget is derived from the input size.
 - **`abi_roundtrip`**: a value the decoder accepts re-encodes, re-decodes

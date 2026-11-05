@@ -175,13 +175,20 @@ pub fn record_identifier(record: &MetadataRecord, scheme: IdentifierScheme) -> O
         .filter(|v| !v.is_empty())
 }
 
+/// Deepest chapter nesting [`chapter_info_from_layout`] builds. A provider's
+/// layout is plugin output and the tree is later walked recursively, so a
+/// deeper `depth` is clamped to this level. Audible itself nests at most a few
+/// levels.
+pub const MAX_CHAPTER_DEPTH: usize = 8;
+
 /// Rebuilds a provider's flat pre-order chapter list as the nested Audible
 /// `chapter_info` object the acquire pipeline reads.
 ///
 /// Each node carries both the camelCase keys Audnexus uses and the
 /// snake_case keys of Audible's own API, as the pipeline accepts either.
 /// A chapter whose `depth` skips a level is attached to the deepest open
-/// parent, so a malformed list still nests without losing a chapter.
+/// parent, so a malformed list still nests without losing a chapter, and
+/// nesting stops at [`MAX_CHAPTER_DEPTH`] levels.
 ///
 /// # Arguments
 ///
@@ -197,7 +204,11 @@ pub fn chapter_info_from_layout(layout: &MetadataChapters) -> Value {
     let mut stack: Vec<Map<String, Value>> = Vec::new();
     let mut roots: Vec<Value> = Vec::new();
     for chapter in &layout.chapters {
-        let depth = usize::try_from(chapter.depth).unwrap_or(usize::MAX);
+        // The layout is plugin output, and the tree is walked recursively
+        // later; deeper chapters become the last allowed level's children.
+        let depth = usize::try_from(chapter.depth)
+            .unwrap_or(usize::MAX)
+            .min(MAX_CHAPTER_DEPTH - 1);
         while stack.len() > depth {
             close_top(&mut stack, &mut roots);
         }
@@ -281,6 +292,29 @@ mod tests {
             length_ms: Some(1000),
             depth,
         }
+    }
+
+    #[test]
+    fn nesting_stops_at_the_depth_limit() {
+        let layout = MetadataChapters {
+            found: true,
+            chapters: (0..200u32)
+                .map(|depth| chapter(&format!("c{depth}"), u64::from(depth), depth))
+                .collect(),
+            ..MetadataChapters::default()
+        };
+        let info = chapter_info_from_layout(&layout);
+        let mut levels = 0;
+        let mut count = 0;
+        let mut node = &info;
+        while let Some(children) = node.get("chapters").and_then(Value::as_array) {
+            let Some(first) = children.first() else { break };
+            levels += 1;
+            count += children.len();
+            node = first;
+        }
+        assert_eq!(levels, MAX_CHAPTER_DEPTH);
+        assert_eq!(count, 200, "every chapter is kept");
     }
 
     #[test]

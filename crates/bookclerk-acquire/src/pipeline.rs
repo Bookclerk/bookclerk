@@ -1995,40 +1995,25 @@ fn release_year(date: &str) -> Option<String> {
 
 /// Hosts the plain-audio overlay downloads a provider's cover from: Audible's
 /// image CDN, where Audible catalog covers live.
-const OVERLAY_COVER_HOST_SUFFIXES: &[&str] = &[".media-amazon.com", ".ssl-images-amazon.com"];
-
-/// Whether `url` is an `https` URL on Audible's image CDN.
-///
-/// A provider record is plugin output, so the host only follows its cover URL
-/// to the CDN an Audible overlay needs, never to a host outside the plugin's
-/// own network grant (a loopback or private address, for example).
-fn overlay_cover_url_allowed(url: &reqwest::Url) -> bool {
-    url.scheme() == "https"
-        && url.port().is_none()
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.host_str().is_some_and(|host| {
-            let host = host.to_ascii_lowercase();
-            OVERLAY_COVER_HOST_SUFFIXES
-                .iter()
-                .any(|suffix| host.ends_with(suffix))
-        })
-}
+const OVERLAY_COVER_HOSTS: &[&str] = &["*.media-amazon.com", "*.ssl-images-amazon.com"];
 
 /// Downloads a provider's cover image into the work directory.
 ///
-/// Only `https` URLs on Audible's image CDN are fetched, and redirects are
-/// not followed (see [`overlay_cover_url_allowed`]).
+/// A provider record is plugin output, so the host only follows its cover URL
+/// over `https` to Audible's image CDN ([`OVERLAY_COVER_HOSTS`], checked by
+/// [`bookclerk_plugin_manifest::https_url_on_hosts`]) and does not follow
+/// redirects: never to a host outside the plugin's own network grant, such as
+/// a loopback or private address.
 ///
 /// # Returns
 ///
 /// The saved path, or `None` when the URL is refused or the download fails.
 async fn download_overlay_cover(url: &str, audible_asin: &str, work_dir: &Path) -> Option<PathBuf> {
-    let parsed = reqwest::Url::parse(url.trim()).ok()?;
-    if !overlay_cover_url_allowed(&parsed) {
+    let Some(checked) = bookclerk_plugin_manifest::https_url_on_hosts(url, OVERLAY_COVER_HOSTS)
+    else {
         tracing::debug!(%url, "provider cover URL is not on the Audible image CDN; skipped");
         return None;
-    }
+    };
     let http = match reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
@@ -2041,7 +2026,7 @@ async fn download_overlay_cover(url: &str, audible_asin: &str, work_dir: &Path) 
             return None;
         }
     };
-    match http.get(parsed).send().await {
+    match http.get(checked).send().await {
         Ok(resp) if resp.status().is_success() => match resp.bytes().await {
             Ok(bytes) if !bytes.is_empty() => {
                 let path = work_dir.join(format!("{audible_asin}.provider-cover.jpg"));
@@ -2736,26 +2721,6 @@ async fn download_and_store_companion_pdf(
 mod tests {
     use super::*;
     use bookclerk_library::{EnqueueJobSpec, EnqueueOutcome, JobKind, JobPayload};
-
-    #[test]
-    fn overlay_covers_come_only_from_the_audible_image_cdn() {
-        let allowed = |url: &str| overlay_cover_url_allowed(&reqwest::Url::parse(url).unwrap());
-        assert!(allowed("https://m.media-amazon.com/images/I/abc.jpg"));
-        assert!(allowed(
-            "https://images-na.ssl-images-amazon.com/images/I/abc.jpg"
-        ));
-        for refused in [
-            "http://m.media-amazon.com/images/I/abc.jpg",
-            "https://m.media-amazon.com:8443/abc.jpg",
-            "https://user@m.media-amazon.com/abc.jpg",
-            "https://media-amazon.com.evil.example/abc.jpg",
-            "https://127.0.0.1/abc.jpg",
-            "https://localhost/abc.jpg",
-            "file:///etc/passwd",
-        ] {
-            assert!(!allowed(refused), "{refused}");
-        }
-    }
 
     #[tokio::test]
     async fn refused_cover_urls_are_not_downloaded() {
