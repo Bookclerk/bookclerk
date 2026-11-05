@@ -67,6 +67,10 @@ pub enum ContentKind {
 pub struct BookContext {
     /// Canonical title id (ISBN / ASIN fallback) — used by `<id>`.
     pub isbn: String,
+    /// The edition's short Bookclerk id — used by `<library id>`. Unique per
+    /// edition in the library, and shared by every store copy of it, so a
+    /// path that carries it never names two editions.
+    pub library_id: String,
     /// Audible title (no subtitle) — used by `<audible title>` and `<title short>`.
     pub title: Option<String>,
     /// Audible subtitle — used by `<audible subtitle>`.

@@ -29,6 +29,14 @@ pub fn stored_marketplace(raw: &str) -> String {
     }
 }
 
+/// The stored spelling of a product id a source reported: its words
+/// joined by single spaces, as a listing keeps it, so a title row holding
+/// the raw value still finds its listing.
+#[must_use]
+pub fn stored_product_id(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Longest text field accepted, in bytes.
 pub const MAX_TEXT_BYTES: usize = 4096;
 /// Most identifiers one listing may carry; keeps one listing's link

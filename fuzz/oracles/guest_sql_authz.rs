@@ -472,6 +472,12 @@ fn accesses_of(sql: &str, lowered: &str) -> Vec<Access> {
                         table: table.trim().to_ascii_lowercase(),
                         column: None,
                     });
+                } else if rest.contains(" values for ") && rest.ends_with(" columns") {
+                    // "table T has N values for M columns": a CTE column
+                    // list whose arity differs from its body. Like INSERT
+                    // arity this is a semantic error SQLite refuses before
+                    // running anything, not a token-level defect, and the
+                    // accesses authorized before it are already recorded.
                 } else {
                     out.push(Access::Unprepared(message));
                 }

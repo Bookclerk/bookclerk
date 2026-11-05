@@ -124,3 +124,10 @@ boundary = "Store listings resolved into works, expressions and editions"
 input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
+
+[targets.node_frame]
+crate = "bookclerk-node-proto"
+boundary = "Node-to-node frames on the cluster socket"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]

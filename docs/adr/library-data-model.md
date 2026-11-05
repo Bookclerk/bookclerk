@@ -1,6 +1,6 @@
 # ADR: Library data model (works, expressions, editions, holdings)
 
-- **Status:** Accepted; steps 1 to 3 implemented (see [Status of the work](#status-of-the-work))
+- **Status:** Accepted; steps 1 to 4 implemented, with file quality moved to step 5 and the naming discriminator replaced by a required `<library id>` tag (see [Status of the work](#status-of-the-work))
 - **Date:** 2026-11-04
 - **Related:** [Schema versioning](schema-versioning.md),
   [SQL database contract](sql-database-contract.md),
@@ -137,7 +137,7 @@ write at a key that is already recorded:
 | Same edition, same role | Better quality (higher bitrate or a lossless source) | Replace |
 | Same edition, same role | Same or worse quality | Keep; the upload is refused |
 | Same edition, another role | A sidecar, PDF or transcript | Add at its own key |
-| Another edition | Anything | Disambiguate: naming appends an edition discriminator to the path |
+| Another edition | Anything | Never written there: naming templates must write the edition's `<library id>`, so its path is its own |
 
 This is the rule [#300](https://github.com/Bookclerk/bookclerk/issues/300)
 asks for. Keys a title will write are derived from its edition and the
@@ -302,7 +302,7 @@ Planned as separate pull requests, in this order:
    maps the structured fields onto the current `books` row.
 3. Schema and resolver, with its fuzz target.
 4. Acquire and files: per-edition acquisition, `edition_files`, and the
-   naming discriminator.
+   required `<library id>` naming tag.
 5. Cluster: branch titles become holdings; node frames carry identifiers and
    media kind.
 6. Web API and UI.
@@ -317,6 +317,31 @@ new tables fill as titles are scanned or imported. `holding_removed` and
 files. The old tables are dropped by
 the step that moves their last reader off them: `title_files` with step 4,
 `branch_titles` with step 5 and `books` with step 6.
+
+Step 4 records every file in `edition_files` with its edition and role,
+and acquires an edition once for all its account rows from one store.
+Instead of a discriminator appended on a clash, naming templates must
+write the edition's short `<library id>` (in the folder template, or in
+both file templates), so two editions never plan one path; the built-in
+profiles carry it, saving templates without it is refused, and an acquire
+whose name another edition still holds is refused rather than overwrite
+it. The store product id does not qualify, since one edition sold by two
+stores has two, and podcast feeds, some storefronts and imported files
+have no ISBN or ASIN. An edition's id is a version 5 UUID over the store
+listing that first named it (plugin key, marketplace, product id), so
+libraries that see the same listing first agree on its id and its
+`<library id>`, which is the first 40 bits of that UUID in Crockford
+base32. If that id is already taken (the listing left the library while
+its first edition stayed, holding other listings), the new edition gets a
+random id instead.
+
+Step 5 takes the quality comparison, because node frames do not carry a
+file's quality yet: storefronts may declare a file's format and quality,
+and the media worker probes each file and records it (`lossless`,
+`bitrate_kbps` stay empty until then). The same edition from another
+store is then acquired anyway, the better audio kept and the sidecars
+merged, and both copies marked acquired. `edition_files_written` comes
+with step 5 too.
 
 User-facing pages (the glossary, *Where books go*, *Branches*, the plugin ABI
 reference) change with the step that changes their behaviour.

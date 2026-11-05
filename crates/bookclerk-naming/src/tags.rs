@@ -11,6 +11,7 @@ use crate::value::Value;
 pub fn property_tags() -> &'static [(&'static str, bool)] {
     &[
         ("id", false),
+        ("library id", false),
         ("title short", true),
         ("audible title", true),
         ("audible subtitle", true),
@@ -165,6 +166,7 @@ pub(crate) fn eval_display(
 
     Some(match name {
         "id" => book.isbn.clone(),
+        "libraryid" => book.library_id.clone(),
         "title" => s(book.full_title()),
         "titleshort" => s(book.title_short()),
         "audibletitle" => s(book.title.clone()),
@@ -282,6 +284,7 @@ pub(crate) fn eval_object(
 
     Some(match name {
         "id" => Value::Str(book.isbn.clone()),
+        "libraryid" => Value::Str(book.library_id.clone()),
         "title" => s(book.full_title()),
         "titleshort" => s(book.title_short()),
         "audibletitle" => s(book.title.clone()),

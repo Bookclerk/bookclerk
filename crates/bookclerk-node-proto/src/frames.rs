@@ -708,6 +708,62 @@ pub struct AcquireTarget {
     /// from it, as an acquire on the owner would.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<serde_json::Value>,
+    /// The title's library id on the owner (the short id of its edition
+    /// there), which the `<library id>` naming tag writes. A host acquires
+    /// into a scratch library whose edition ids differ, so it names with
+    /// this one to plan the same keys the owner grants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_id: Option<LibraryId>,
+    /// The podcast parent's library id on the owner, for a destination that
+    /// saves episodes to the parent's folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_library_id: Option<LibraryId>,
+}
+
+/// Longest library id (see [`LibraryId`]).
+pub const MAX_LIBRARY_ID_BYTES: usize = 16;
+
+/// A title's short library id as the owner names it: 1 to
+/// [`MAX_LIBRARY_ID_BYTES`] ASCII letters and digits, so it is safe in any
+/// storage key segment. Deserializing anything else fails, which refuses
+/// the whole frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct LibraryId(String);
+
+impl LibraryId {
+    /// The id as text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for LibraryId {
+    type Error = &'static str;
+
+    /// Accepts `value` when it is 1 to [`MAX_LIBRARY_ID_BYTES`] ASCII
+    /// letters and digits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the rule when `value` breaks it.
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty()
+            || value.len() > MAX_LIBRARY_ID_BYTES
+            || !value.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            return Err("a library id is 1 to 16 ASCII letters and digits");
+        }
+        Ok(Self(value))
+    }
+}
+
+impl From<LibraryId> for String {
+    /// The id as text.
+    fn from(id: LibraryId) -> Self {
+        id.0
+    }
 }
 
 /// One output destination of the owner node that answered an acquire plan
@@ -925,6 +981,50 @@ impl Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_library_id_is_short_ascii_alphanumeric_or_the_frame_is_refused() {
+        let target = |id: &str| {
+            serde_json::json!({
+                "book_uuid": "b",
+                "plugin_key": "store",
+                "account_id": "a",
+                "book": {},
+                "library_id": id,
+            })
+        };
+        let ok: AcquireTarget = serde_json::from_value(target("Ab12cd34")).unwrap();
+        assert_eq!(
+            ok.library_id.as_ref().map(LibraryId::as_str),
+            Some("Ab12cd34")
+        );
+        assert_eq!(
+            serde_json::to_value(&ok).unwrap()["library_id"],
+            serde_json::json!("Ab12cd34")
+        );
+        for bad in [
+            "",
+            "a/b",
+            "..",
+            "a b",
+            "ab-cd",
+            "x".repeat(17).as_str(),
+            "é",
+        ] {
+            assert!(
+                serde_json::from_value::<AcquireTarget>(target(bad)).is_err(),
+                "{bad:?}"
+            );
+        }
+        let absent: AcquireTarget = serde_json::from_value(serde_json::json!({
+            "book_uuid": "b", "plugin_key": "store", "account_id": "a", "book": {},
+        }))
+        .unwrap();
+        assert_eq!(absent.library_id, None);
+        assert!(!serde_json::to_string(&absent)
+            .unwrap()
+            .contains("library_id"));
+    }
 
     #[test]
     fn upload_files_must_be_relative_keys_with_hex_digests() {
@@ -1245,6 +1345,8 @@ mod tests {
                         account_id: "a".into(),
                         book: serde_json::json!({}),
                         parent: None,
+                        library_id: Some(LibraryId::try_from("abc12345".to_string()).unwrap()),
+                        parent_library_id: None,
                     }],
                     destinations: vec![PlanDestination {
                         id: "local".into(),

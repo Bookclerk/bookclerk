@@ -21,6 +21,7 @@ bookclerk-mp4 = { path = "../crates/bookclerk-mp4" }
 bookclerk-workerd = { path = "../crates/bookclerk-workerd" }
 bookclerk-plugin-sdk = { path = "../crates/bookclerk-plugin-sdk" }
 bookclerk-resolve = { path = "../crates/bookclerk-resolve" }
+bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 sea-orm = { version = "2.0.0", default-features = false }
 # Runtime for mux_peer: the mux is driven through tokio reader and writer tasks.
 tokio = { version = "1", features = ["rt", "time", "io-util"] }
@@ -117,6 +118,13 @@ bench = false
 [[bin]]
 name = "library_resolve"
 path = "fuzz_targets/library_resolve.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "node_frame"
+path = "fuzz_targets/node_frame.rs"
 test = false
 doc = false
 bench = false

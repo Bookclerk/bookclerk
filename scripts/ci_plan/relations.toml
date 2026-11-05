@@ -111,6 +111,11 @@ package = "bookclerk-resolve"
 paths = ["fuzz/corpus/library_resolve/**"]
 
 [[test_input]]
+package = "bookclerk-node-proto"
+# The frame oracle is shared with the replay test through `#[path]`.
+paths = ["fuzz/corpus/node_frame/**", "fuzz/oracles/node_frame.rs"]
+
+[[test_input]]
 package = "bookclerk-cli"
 paths = ["crates/bookclerk-plugins/platform/database-sqlite/plugin.toml"]
 

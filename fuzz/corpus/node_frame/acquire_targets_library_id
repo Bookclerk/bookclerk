@@ -1,0 +1,1 @@
+{"v":1,"id":"r1","type":"acquire.targets","targets":[{"book_uuid":"b1","plugin_key":"store","account_id":"a1","book":{"title":"Dune"},"library_id":"hd4j63pc","parent_library_id":"04hmasw9"}],"destinations":[{"id":"local","options":{}}]}

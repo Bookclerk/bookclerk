@@ -146,6 +146,7 @@ pub fn apply_settings_json(config: &mut Config, settings: &Value) -> ClassicPlug
     if let Some(v) = string_at(settings, "ChapterTitleTemplate") {
         config.output.chapter_title_template = Some(v.to_string());
     }
+    ensure_library_id(&mut config.output);
     if let Some(v) = settings.get("MinimumFileDuration").and_then(Value::as_i64) {
         config.output.minimum_file_duration_minutes = v as u32;
     }
@@ -397,6 +398,30 @@ pub fn config_to_settings_json(config: &Config, plugin_settings: &ClassicPluginS
     Value::Object(map)
 }
 
+/// Adds `<library id>` to the end of the imported folder template when the
+/// imported templates never write it: Libation's templates name a book by
+/// its product id, which two editions of a book (or one edition from two
+/// stores) do not share, and Bookclerk refuses templates that can put two
+/// editions at one path ([`bookclerk_naming::require_library_id`]). Files
+/// Libation already wrote keep their names; storage matching finds them.
+fn ensure_library_id(output: &mut bookclerk_config::OutputConfig) {
+    let templates = bookclerk_config::ResolvedNamingTemplates::resolve(
+        output.naming_profile,
+        output.folder_template.as_deref(),
+        output.file_template.as_deref(),
+        output.chapter_file_template.as_deref(),
+    );
+    if bookclerk_naming::require_library_id(
+        &templates.folder,
+        &templates.file,
+        &templates.chapter_file,
+    )
+    .is_err()
+    {
+        output.folder_template = Some(format!("{} [<library id>]", templates.folder.trim_end()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,7 +459,8 @@ mod tests {
         assert!(!cfg.output.save_metadata_json);
         assert_eq!(
             cfg.output.folder_template.as_deref(),
-            Some("<author>/<title>")
+            Some("<author>/<title> [<library id>]"),
+            "the library id is added where the imported templates lack it"
         );
         assert_eq!(
             cfg.output.file_template.as_deref(),

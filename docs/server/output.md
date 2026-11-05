@@ -128,14 +128,14 @@ you need to:
 ```toml
 [output]
 naming_profile = "audiobookshelf"
-# folder_template = "<author>/<title>"
-# file_template = "<title> [<asin>]"
+# folder_template = "<first author>/<title short>"
+# file_template = "<title> [<library id>]"
 ```
 
 | Profile | Layout |
 | --- | --- |
-| `audiobookshelf` (default) | Author, series and year folders that suit Audiobookshelf |
-| `classic` | Libation's desktop defaults, such as `<title short> [<id>]` |
+| `audiobookshelf` (default) | `Author/Series/1 - Title/Title [library id].m4b`, or `Author/Title/Title [library id].m4b` outside a series, which Audiobookshelf scans as author, series and book |
+| `classic` | Libation's desktop defaults with the library id added: `<title short> [<id>] [<library id>]` |
 
 Each destination can override the naming too, with its own
 `naming_profile`, `folder_template`, `file_template` and
@@ -151,6 +151,43 @@ bookclerk config template preview <asin>
 ```
 
 Replace `<asin>` with a book's ASIN.
+
+### The library id
+
+Every template set must include `<library id>`: in the folder template,
+or in both the file and the chapter file templates. The tag must be
+written for every book, so a `<library id>` inside any condition
+(`<has series->…<-has>`, or `<!has series->…<-has>`) doesn't count. It is a short id for the
+edition, such as `1a2b3c4d`, so two editions of a book (an abridged and an
+unabridged recording, two narrators' readings) never share a path, while
+every store's copy of the same edition does.
+
+The id is eight lower-case letters and digits (Crockford base32, so never
+`i`, `l`, `o` or `u`). It is worked out from the store listing that first
+brought the edition into the library: its store, marketplace and product
+id. Two libraries, or one library rebuilt from a fresh scan, that see the
+same listing first give the edition the same id, so its files keep their
+names.
+
+The `audiobookshelf` profile puts the id in the file names rather than the
+folder, because Audiobookshelf reads a bracketed value in a folder name as
+an ASIN. When a book is saved as its separate source tracks, each track's
+name carries the id with its track number, such as `hd4j63pc-p002`, so two
+tracks with the same title never share a name.
+
+Bookclerk refuses to save naming settings without it. A destination's own
+naming overrides are checked when a book is acquired: an acquire whose
+templates lack the tag stops before downloading anything and names the
+destination to fix. The store product id (`<id>`, `<asin>`) doesn't count,
+because the same edition bought from two stores has two product ids, and
+not every book has an ISBN or ASIN.
+
+Files you already have keep their names: storage matching marks them
+acquired where they are, whether or not their path has a library id.
+
+Copies of one edition on several accounts (the same book bought twice)
+share their files. The edition is downloaded once, and every account's
+copy is marked acquired at its path once each destination holds it.
 
 **Path sanitization** cleans up characters a file system can't store. Set
 `output.path_sanitization` to `auto`, `windows`, `posix`, `s3` or `none`,

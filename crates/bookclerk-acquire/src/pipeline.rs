@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use bookclerk_config::{FileTimestampMode, MultiDestinationMode, OutputBackendKind};
 use bookclerk_enrich::{asin_identifier, chapter_info_from_layout, MetadataProviders};
-use bookclerk_library::{AcquireStatus, BookRecord, LibraryStore};
+use bookclerk_library::{AcquireStatus, BookRecord, FileOwner, LibraryStore};
 use bookclerk_media::{
     align_chapter_starts_async, bookclerk_tool_tag, encode_to_mp3, fixup_audiobook,
     package_m4b_from_mp3, parse_mp4, track_duration_ms, ChapterAlignOptions, FixupRequest,
@@ -26,7 +26,7 @@ use crate::cue::{
     apply_start_map_to_chapter_tree, chapters_from_catalog_info_for_plain_audio,
     rebase_chapter_tree_for_plain_audio, write_cue, FlatChapter,
 };
-use crate::destinations::{AcquireDestination, AcquireDestinations};
+use crate::destinations::{destination_id, AcquireDestination, AcquireDestinations};
 use crate::error::{AcquireError, Result};
 use crate::naming::{
     audio_basename, chapter_storage_key_with_folder, sidecar_key, storage_key_with_contexts,
@@ -72,6 +72,13 @@ pub struct AcquireRequest {
     pub job_id: Option<String>,
     /// Refuse a new scratch dir when registered temps already exceed this.
     pub temp_quota_bytes: Option<u64>,
+    /// The `<library id>` to name the title by instead of its edition in
+    /// `library`: a host acquiring for an owner node names the title as the
+    /// owner does, since its scratch library's edition ids are its own.
+    pub library_id: Option<String>,
+    /// Likewise for the title's podcast parent, whose folder an episode
+    /// may be saved in.
+    pub parent_library_id: Option<String>,
     /// Metadata providers asked for the plain-audio catalog and chapter
     /// overlay. The default has none, so plain audio keeps its store tags.
     pub metadata: AcquireMetadata,
@@ -159,9 +166,13 @@ pub async fn acquire_book(
 /// Audible decrypts Adrm/CENC inside the plugin before returning).
 ///
 /// Every key the run writes on a destination (audio, chapter or part
-/// files, sidecars, the companion PDF) is recorded for the title in the
-/// library's `title_files` just before it is written, so a host upload of
-/// another title is never granted it.
+/// files, sidecars, the companion PDF) is recorded for the book's edition
+/// in the library's `edition_files`, with its role, just before it is
+/// written, so a host upload of another edition is never granted it.
+///
+/// A book whose edition another book has already acquired (the same
+/// edition bought on two accounts, say) is marked acquired at that book's
+/// key without fetching it again.
 ///
 /// # Errors
 ///
@@ -169,13 +180,31 @@ pub async fn acquire_book(
 pub async fn acquire_book_indexed(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
-    req: AcquireRequest,
+    mut req: AcquireRequest,
     index: Option<&mut StorageIndex>,
     source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
-    let book_uuid = resolve_book(library, &req).await.map(|book| book.uuid);
-    let recorded = recording_destinations(library, destinations, book_uuid.as_deref());
+    let owner = file_owner_of_request(library, &req).await?;
+    pin_library_id(&mut req, owner.as_ref());
+    let recorded = recording_destinations(library, destinations, owner.as_ref());
     acquire_book_recorded(library, &recorded, req, index, source).await
+}
+
+/// Names the whole acquire with the library id of the edition `owner`
+/// read once at its start, so no later naming step re-reads the edition
+/// and, on a failed read, names a file differently from the others.
+/// A library id the request already carries (an owner's, for a host) is
+/// kept.
+fn pin_library_id(req: &mut AcquireRequest, owner: Option<&FileOwner>) {
+    if req.library_id.is_some() {
+        return;
+    }
+    match owner {
+        Some(FileOwner::Edition(edition)) => {
+            req.library_id = bookclerk_library::library_id(edition)
+        }
+        Some(FileOwner::BranchTitle(_)) | None => {}
+    }
 }
 
 /// [`acquire_book_indexed`] against destinations whose writes are recorded
@@ -232,7 +261,30 @@ async fn acquire_book_recorded(
                     matched_existing: true,
                 });
             }
+            let backends: Vec<(&str, &dyn StorageBackend)> = destinations
+                .items
+                .iter()
+                .map(|item| (destination_id(item.kind), item.backend.as_ref()))
+                .collect();
+            if let Some(primary_key) = share_acquired_sibling(library, &backends, &book).await? {
+                tracing::info!(
+                    asin = %req.asin,
+                    key = %primary_key,
+                    "skipping download — another book of this edition is already acquired"
+                );
+                resume_missing_companion_pdf(library, destinations, &req, source).await?;
+                return Ok(AcquireResult {
+                    asin: req.asin,
+                    storage_key: primary_key,
+                    written_keys: Vec::new(),
+                    matched_existing: true,
+                });
+            }
         }
+        // Before accepting media already at the planned name: a file there
+        // may be another edition's (two editions whose short ids collide),
+        // and adopting it would point this edition at that recording.
+        check_edition_paths(library, destinations, &req).await?;
         match plan_existing_destinations(library, destinations, &req, index.as_deref()).await? {
             ExistingPlan::Skip { primary_key } => {
                 tracing::info!(
@@ -313,6 +365,11 @@ async fn acquire_book_recorded(
                 // Full acquire into every destination (refetch_all, or nothing present).
             }
         }
+    }
+
+    if req.force || req.options.overwrite_existing {
+        // The existing-media path above has already checked.
+        check_edition_paths(library, destinations, &req).await?;
     }
 
     library
@@ -995,8 +1052,7 @@ async fn planned_chapter_storage_key(
     file: &PreparedAudioFile,
 ) -> String {
     let templates = req.options.naming_templates();
-    let folder_ctx = folder_naming_ctx(library, req).await;
-    let file_ctx = naming_ctx(library, req).await;
+    let (folder_ctx, file_ctx) = naming_contexts(library, req).await;
     chapter_storage_key_with_folder(
         &folder_ctx,
         &file_ctx,
@@ -1017,11 +1073,16 @@ async fn planned_plain_part_storage_key(
     idx: usize,
     file: &PreparedAudioFile,
 ) -> String {
-    let file_ctx = naming_ctx(library, req).await;
-    let folder_ctx = folder_naming_ctx(library, req).await;
+    let (folder_ctx, file_ctx) = naming_contexts(library, req).await;
     let mut part_ctx = file_ctx;
     part_ctx.title = format!("{} — {}", req.title, file.title);
     part_ctx.asin = format!("{}-p{:03}", req.asin, idx + 1);
+    // The default file templates name a title by `<library id>`, not
+    // `<asin>`, so the part number goes on the id too: two parts with one
+    // title must not share a name.
+    part_ctx.library_id = part_ctx
+        .library_id
+        .map(|id| format!("{id}-p{:03}", idx + 1));
     part_ctx.chapter_number = Some(u32::try_from(idx + 1).unwrap_or(1));
     part_ctx.chapter_title = Some(file.title.clone());
     let templates = req.options.naming_templates();
@@ -1291,8 +1352,7 @@ async fn store_plain_fetch(
             })
             .unwrap_or(3_600_000);
         let split_dir = work_dir.join("chapters");
-        let file_ctx = naming_ctx(library, req).await;
-        let folder_ctx = folder_naming_ctx(library, req).await;
+        let (folder_ctx, file_ctx) = naming_contexts(library, req).await;
         let split_chapters = split_audio_by_chapters(
             &acquired_path,
             &split_dir,
@@ -2282,9 +2342,15 @@ fn probe_audio_duration_ms(path: &Path) -> Option<u64> {
 }
 
 /// Builds a naming context from the request, filling gaps from the library row.
-async fn naming_ctx(library: &LibraryStore, req: &AcquireRequest) -> NamingContext {
+async fn base_naming_ctx(library: &LibraryStore, req: &AcquireRequest) -> NamingContext {
     let book = resolve_book(library, req).await;
+    let library_id = match (&req.library_id, &book) {
+        (Some(id), _) => Some(id.clone()),
+        (None, Some(book)) => library_id_or_none(library, &book.uuid).await,
+        (None, None) => None,
+    };
     NamingContext {
+        library_id,
         asin: book
             .as_ref()
             .map(|b| b.asin_or_isbn().to_string())
@@ -2319,8 +2385,11 @@ async fn naming_ctx(library: &LibraryStore, req: &AcquireRequest) -> NamingConte
 
 /// Folder naming context: when saving podcasts to the parent folder, evaluate
 /// the folder template against the podcast parent (classic Libation behavior).
-async fn folder_naming_ctx(library: &LibraryStore, req: &AcquireRequest) -> NamingContext {
-    let episode = naming_ctx(library, req).await;
+async fn base_folder_naming_ctx(
+    library: &LibraryStore,
+    req: &AcquireRequest,
+    episode: NamingContext,
+) -> NamingContext {
     if !req.options.save_podcasts_to_parent_folder {
         return episode;
     }
@@ -2351,8 +2420,58 @@ async fn folder_naming_ctx(library: &LibraryStore, req: &AcquireRequest) -> Nami
         length_minutes: parent.length_minutes,
         is_abridged: parent.is_abridged,
         content_kind: Some(parent.content_kind.clone()),
+        library_id: match &req.parent_library_id {
+            Some(id) => Some(id.clone()),
+            None => library_id_or_none(library, &parent.uuid).await,
+        },
         ..Default::default()
     }
+}
+
+/// The short Bookclerk id of the edition `book_uuid` resolves to, for
+/// `<library id>` ([`bookclerk_library::library_id`]).
+///
+/// # Returns
+///
+/// `None` when the title has no edition.
+///
+/// # Errors
+///
+/// Returns an error when the edition cannot be read.
+pub async fn library_id_of(
+    library: &LibraryStore,
+    book_uuid: &str,
+) -> bookclerk_library::Result<Option<String>> {
+    Ok(library
+        .edition_of_book(book_uuid)
+        .await?
+        .and_then(|edition| bookclerk_library::library_id(&edition)))
+}
+
+/// [`library_id_of`] for naming outside an acquire's pinned id
+/// ([`pin_library_id`]): a planned key a caller only compares (a preview,
+/// a scan pattern). A failed read is logged and names by product id; an
+/// acquire never reaches here for its own title, whose id it pinned.
+async fn library_id_or_none(library: &LibraryStore, book_uuid: &str) -> Option<String> {
+    library_id_of(library, book_uuid)
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "could not read a title's edition for naming");
+            None
+        })
+}
+
+/// The folder and file naming contexts of `req`. Both carry the edition's
+/// `<library id>`, which the templates must write
+/// ([`bookclerk_naming::require_library_id`]), so two editions of one work
+/// never share a path.
+async fn naming_contexts(
+    library: &LibraryStore,
+    req: &AcquireRequest,
+) -> (NamingContext, NamingContext) {
+    let file = base_naming_ctx(library, req).await;
+    let folder = base_folder_naming_ctx(library, req, file.clone()).await;
+    (folder, file)
 }
 
 /// Planned audio storage key for `ext`, honoring folder/file templates and
@@ -2374,8 +2493,7 @@ pub async fn planned_storage_key_with_rules(
     replacement_rules: &[bookclerk_config::ReplacementRule],
 ) -> String {
     let templates = req.options.naming_templates();
-    let folder_ctx = folder_naming_ctx(library, req).await;
-    let file_ctx = naming_ctx(library, req).await;
+    let (folder_ctx, file_ctx) = naming_contexts(library, req).await;
     storage_key_with_contexts(
         &folder_ctx,
         &file_ctx,
@@ -2533,8 +2651,7 @@ pub async fn planned_title_names(
     };
     let mut own_folder = true;
     for variant in &variants {
-        let folder_ctx = folder_naming_ctx(library, variant).await;
-        let file_ctx = naming_ctx(library, variant).await;
+        let (folder_ctx, file_ctx) = naming_contexts(library, variant).await;
         let key = storage_key_with_contexts(
             &folder_ctx,
             &file_ctx,
@@ -2545,7 +2662,8 @@ pub async fn planned_title_names(
             variant.options.path_limits,
         );
         // The folder is the title's own only when every other title probed
-        // (other id, title and subtitle) would be filed elsewhere: one
+        // (other product and library id, title and subtitle) would be filed
+        // elsewhere: one
         // wholly different, and one that only extends this title's fields
         // (`Dune: Messiah: …`), which a template using part of a field
         // (`<title short>`, a leading slice) files in the same folder.
@@ -2556,6 +2674,7 @@ pub async fn planned_title_names(
         let filed_apart = probes.iter().all(|probe| {
             let mut other = folder_ctx.clone();
             other.asin = probe(&folder_ctx.asin);
+            other.library_id = folder_ctx.library_id.as_deref().map(probe);
             other.title = probe(&folder_ctx.title);
             other.subtitle = Some(probe(folder_ctx.subtitle.as_deref().unwrap_or_default()));
             let other_key = storage_key_with_contexts(
@@ -2578,10 +2697,14 @@ pub async fn planned_title_names(
             names.audio_stems.push(stem);
         }
         // Plain parts: the file template with the part's title and a
-        // `-pNNN` id (as `planned_plain_part_storage_key` names them).
+        // `-pNNN` product and library id (as `planned_plain_part_storage_key`
+        // names them).
         let mut part_ctx = file_ctx.clone();
         part_ctx.title = format!("{} — {TITLE_SENTINEL}", variant.title);
         part_ctx.asin = format!("{}-p{NUMBER_SENTINEL}", variant.asin);
+        part_ctx.library_id = part_ctx
+            .library_id
+            .map(|id| format!("{id}-p{NUMBER_SENTINEL}"));
         part_ctx.chapter_number = Some(NUMBER_SENTINEL);
         part_ctx.chapter_title = Some(TITLE_SENTINEL.into());
         let part = storage_key_with_contexts(
@@ -2618,7 +2741,7 @@ pub async fn planned_title_names(
 /// Download and store companion PDF only (classic `acquire --pdf`).
 ///
 /// Fetches via [`ContentSource::fetch_title`]; requires `PlainFetch.pdf_url`, then HTTP GETs that URL.
-/// Each PDF key written is recorded for the title in `title_files`.
+/// Each PDF key written is recorded for the book's edition in `edition_files`.
 ///
 /// # Errors
 ///
@@ -2629,9 +2752,236 @@ pub async fn acquire_pdf_only(
     req: &AcquireRequest,
     source: &dyn ContentSource,
 ) -> Result<AcquireResult> {
-    let book_uuid = resolve_book(library, req).await.map(|book| book.uuid);
-    let recorded = recording_destinations(library, destinations, book_uuid.as_deref());
-    acquire_pdf_only_recorded(library, &recorded, req, source).await
+    let owner = file_owner_of_request(library, req).await?;
+    let mut req = req.clone();
+    pin_library_id(&mut req, owner.as_ref());
+    let recorded = recording_destinations(library, destinations, owner.as_ref());
+    acquire_pdf_only_recorded(library, &recorded, &req, source).await
+}
+
+/// Refuses an acquire whose files could land on another edition's: every
+/// destination's templates must write `<library id>`
+/// ([`bookclerk_naming::require_library_id`]), and the planned audio name
+/// must not already hold another edition's file (two edition ids that share
+/// their short id). Nothing is fetched or overwritten when either fails.
+///
+/// # Errors
+///
+/// Returns [`AcquireError::Other`] naming the destination whose templates
+/// lack the tag, or the planned key another edition holds.
+async fn check_edition_paths(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    req: &AcquireRequest,
+) -> Result<()> {
+    let owner = match resolve_book(library, req).await {
+        Some(book) => library.file_owner_of_book(&book.uuid).await?,
+        None => None,
+    };
+    for item in &destinations.items {
+        let dest_req = request_for_destination(req, item);
+        let templates = dest_req.options.naming_templates();
+        bookclerk_naming::require_library_id(
+            &templates.folder,
+            &templates.file,
+            &templates.chapter_file,
+        )
+        .map_err(|err| {
+            AcquireError::Other(anyhow::anyhow!(
+                "{err} (the {} destination); fix it in Settings → Output",
+                destination_id(item.kind)
+            ))
+        })?;
+        let Some(owner) = &owner else {
+            continue;
+        };
+        let (folder_ctx, file_ctx) = naming_contexts(library, &dest_req).await;
+        let key = planned_audio_key(&dest_req, &folder_ctx, &file_ctx);
+        if name_held_elsewhere(library, &key, owner).await? {
+            return Err(AcquireError::Other(anyhow::anyhow!(
+                "another edition's files already use {key}; nothing was written"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The audio key `req` plans with these naming contexts, on its fallback
+/// audio extension.
+fn planned_audio_key(req: &AcquireRequest, folder: &NamingContext, file: &NamingContext) -> String {
+    let templates = req.options.naming_templates();
+    storage_key_with_contexts(
+        folder,
+        file,
+        Some(templates.folder.as_str()),
+        Some(templates.file.as_str()),
+        fallback_audio_ext(&req.options),
+        &req.options.replacement_characters,
+        req.options.path_limits,
+    )
+}
+
+/// True when another owner's file already lives under the name of the
+/// planned `key` ([`LibraryStore::name_held_by_another_owner`]). The
+/// written key can differ from the planned one in its extension and in a
+/// part suffix, so the probe is the key without its extension.
+///
+/// # Errors
+///
+/// Returns an error when the read fails, so the acquire stops rather than
+/// risk writing over another edition's files.
+async fn name_held_elsewhere(library: &LibraryStore, key: &str, owner: &FileOwner) -> Result<bool> {
+    let stem = key
+        .rsplit_once('.')
+        .filter(|(stem, ext)| !ext.contains('/') && !stem.ends_with('/'))
+        .map_or(key, |(stem, _)| stem);
+    Ok(library.name_held_by_another_owner(stem, owner).await?)
+}
+
+/// Marks `book` acquired at the files of another book of its edition, when
+/// one is already acquired and every destination holds its copy, so the
+/// edition is not fetched again. The edition's companion PDF is shared too
+/// when that book has one.
+///
+/// A destination holds the copy when the sibling's primary key there is
+/// the edition's own (unrecorded, as storage matching adopts it, or
+/// recorded for this edition, never another's: a listing that moved
+/// editions leaves its old files with the old one) and every audio key
+/// recorded for the edition there (parts, chapters) is present.
+///
+/// # Arguments
+///
+/// * `destinations` - Each destination's id ([`destination_id`]) and
+///   backend.
+/// * `book` - The book to mark acquired.
+///
+/// # Returns
+///
+/// The shared primary key; `None` when the book has no edition yet, or no
+/// other book of its edition is acquired with a copy every destination
+/// holds (a destination deployed since, another node's layout, or a file
+/// removed since). The acquire then plans as usual and syncs or fetches
+/// what is missing.
+///
+/// # Errors
+///
+/// Returns an error when a library lookup or write, or a backend probe,
+/// fails.
+pub async fn share_acquired_sibling(
+    library: &LibraryStore,
+    destinations: &[(&str, &dyn StorageBackend)],
+    book: &BookRecord,
+) -> Result<Option<String>> {
+    let Some(edition) = library.edition_of_book(&book.uuid).await? else {
+        return Ok(None);
+    };
+    let owner = FileOwner::Edition(edition.clone());
+    'siblings: for uuid in library.books_of_edition(&edition).await? {
+        if uuid == book.uuid {
+            continue;
+        }
+        let Some(sibling) = library.get_book_by_uuid(&uuid).await? else {
+            continue;
+        };
+        if sibling.acquire_status != AcquireStatus::Acquired {
+            continue;
+        }
+        let Some(key) = sibling.storage_key.as_deref().filter(|key| !key.is_empty()) else {
+            continue;
+        };
+        // The book row's key names the primary destination's file; another
+        // destination may name the same audio differently, so it is judged
+        // by the keys the edition recorded there.
+        for (index, (destination, backend)) in destinations.iter().enumerate() {
+            let recorded = library.audio_keys_of(destination, &owner).await?;
+            if index == 0 {
+                let holder = library.edition_file(destination, key).await?;
+                if holder.is_some_and(|file| file.owner != owner) {
+                    continue 'siblings;
+                }
+                if !backend.exists(key).await? {
+                    continue 'siblings;
+                }
+            } else if recorded.is_empty() && !backend.exists(key).await? {
+                continue 'siblings;
+            }
+            for audio in recorded {
+                if !backend.exists(&audio).await? {
+                    continue 'siblings;
+                }
+            }
+        }
+        library
+            .set_acquire_status(
+                &book.uuid,
+                &book.account_id,
+                AcquireStatus::Acquired,
+                Some(key),
+                None,
+            )
+            .await?;
+        if companion_pdf_is_stored(&sibling)
+            && sibling_pdf_is_present(destinations.first(), sibling.pdf_storage_key.as_deref())
+                .await?
+        {
+            library
+                .set_pdf_status(
+                    &book.uuid,
+                    &book.account_id,
+                    AcquireStatus::Acquired,
+                    sibling.pdf_storage_key.as_deref(),
+                )
+                .await?;
+        }
+        return Ok(Some(key.to_string()));
+    }
+    Ok(None)
+}
+
+/// True when the sibling's companion PDF `key` is present on the primary
+/// destination, whose key the book row records, so the sharing title can
+/// record it as acquired.
+///
+/// # Errors
+///
+/// Returns an error when the destination cannot be checked.
+async fn sibling_pdf_is_present(
+    primary: Option<&(&str, &dyn StorageBackend)>,
+    key: Option<&str>,
+) -> Result<bool> {
+    let (Some((_, backend)), Some(key)) = (primary, key.filter(|key| !key.is_empty())) else {
+        return Ok(false);
+    };
+    backend.exists(key).await.map_err(Into::into)
+}
+
+/// The owner the files of `req`'s book are recorded under: its edition.
+///
+/// # Returns
+///
+/// The book's [`FileOwner::Edition`]; `None` when the title has no library
+/// row at all, so there is nothing to record the files for.
+///
+/// # Errors
+///
+/// Returns an error when the library lookup fails, and refuses a book whose
+/// row has no edition yet (a listing the resolver refused or has not
+/// resolved): its files would be written without an ownership record and
+/// named without a library id, so it waits for a scan to resolve it.
+async fn file_owner_of_request(
+    library: &LibraryStore,
+    req: &AcquireRequest,
+) -> Result<Option<FileOwner>> {
+    let Some(book) = resolve_book(library, req).await else {
+        return Ok(None);
+    };
+    match library.file_owner_of_book(&book.uuid).await? {
+        Some(owner) => Ok(Some(owner)),
+        None => Err(AcquireError::Other(anyhow::anyhow!(
+            "title {} has no edition yet; rescan its account before acquiring it",
+            book.uuid
+        ))),
+    }
 }
 
 /// [`acquire_pdf_only`] against destinations whose writes are already
@@ -2662,6 +3012,10 @@ async fn acquire_pdf_only_recorded(
             }
         }
     }
+
+    // The companion PDF is named by the same templates as the audio, so it
+    // gets the same refusals before anything is fetched or written.
+    check_edition_paths(library, destinations, req).await?;
 
     let work_dir = primary_req
         .cache_dir
@@ -2855,6 +3209,8 @@ mod tests {
             write_destinations: None,
             job_id,
             temp_quota_bytes: quota,
+            library_id: None,
+            parent_library_id: None,
             metadata: AcquireMetadata::default(),
         }
     }
@@ -3373,13 +3729,19 @@ mod tests {
             .expect("first acquire must write the destination");
             assert!(!first.matched_existing);
             assert_eq!(puts.load(Ordering::SeqCst), 1);
-            // The written key is recorded for the title on its destination.
+            // The written key is recorded for the book's edition on its
+            // destination, with its role.
             let recorded = store
-                .title_file("local", &first.storage_key)
+                .edition_file("local", &first.storage_key)
                 .await
                 .unwrap()
                 .expect("the acquire records the key it wrote");
-            assert_eq!(recorded.book_uuid, book_uuid_for_record);
+            let owner = store
+                .file_owner_of_book(&book_uuid_for_record)
+                .await
+                .unwrap()
+                .expect("the upsert resolves the book to an edition");
+            assert_eq!(recorded.owner, owner);
             assert_eq!(recorded.writer, bookclerk_library::ACQUIRE_WRITER);
             assert_eq!(fetches.load(Ordering::SeqCst), 1);
 
@@ -3433,6 +3795,514 @@ mod tests {
             .complete_job(&retry.fence().expect("fence"), Some("acquired=1"))
             .await
             .unwrap());
+    }
+
+    /// Upserts `product_id` as `title` on `account` (creating the account)
+    /// and returns the book's uuid.
+    async fn edition_book(
+        store: &LibraryStore,
+        product_id: &str,
+        account: &str,
+        title: &str,
+        narrators: Option<&str>,
+    ) -> String {
+        store
+            .upsert_account("audible", account, "us", None, true, "audible")
+            .await
+            .unwrap();
+        let mut book = bookclerk_library::NewBook::minimal(product_id, account, "us", title);
+        book.narrators = narrators.map(str::to_owned);
+        store.upsert_book(&book).await.unwrap().uuid
+    }
+
+    /// A request for `uuid` (`product_id` on `account`) named by `<title>`
+    /// alone, so two editions of one title plan the same key.
+    fn edition_req(
+        cache: &Path,
+        job: String,
+        product_id: &str,
+        account: &str,
+        uuid: &str,
+    ) -> AcquireRequest {
+        let mut req = dummy_req(cache, Some(job), None);
+        req.asin = product_id.into();
+        req.account_id = account.into();
+        req.book_uuid = Some(uuid.into());
+        req.title = "Twin".into();
+        req
+    }
+
+    /// Destinations writing to `root` with titles named
+    /// `<title> [<library id>]/<title>`.
+    fn title_named_destinations(
+        root: &Path,
+        puts: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> AcquireDestinations {
+        let mut destinations = counting_destinations(root, puts);
+        for item in &mut destinations.items {
+            item.options.folder_template = Some("<title> [<library id>]".into());
+            item.options.file_template = Some("<title>".into());
+        }
+        destinations
+    }
+
+    /// The `<library id>` of `uuid`'s edition.
+    async fn short_id(store: &LibraryStore, uuid: &str) -> String {
+        store
+            .edition_of_book(uuid)
+            .await
+            .unwrap()
+            .map(|edition| bookclerk_library::library_id(&edition).unwrap())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_book_of_an_acquired_edition_shares_its_files_without_a_fetch() {
+        let store = test_store().await;
+        // One edition bought on two accounts.
+        let first_uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
+        let edition = store.edition_of_book(&first_uuid).await.unwrap();
+        assert!(edition.is_some());
+        assert_eq!(store.edition_of_book(&second_uuid).await.unwrap(), edition);
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&tmp.path().join("dest"), puts.clone());
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+
+        let req = edition_req(&cache, job.clone(), "B00SAME", "user-1", &first_uuid);
+        let first = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert!(!first.matched_existing);
+        let req = edition_req(&cache, job.clone(), "B00SAME", "user-2", &second_uuid);
+        let second = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert!(second.matched_existing);
+        assert_eq!(second.storage_key, first.storage_key);
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            1,
+            "the edition is fetched once"
+        );
+        assert_eq!(puts.load(Ordering::SeqCst), 1);
+        let shared = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        assert_eq!(shared.acquire_status, AcquireStatus::Acquired);
+        assert_eq!(
+            shared.storage_key.as_deref(),
+            Some(first.storage_key.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn another_edition_of_a_title_gets_its_own_folder() {
+        let store = test_store().await;
+        // Two editions (two products) of one title.
+        let first_uuid = edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00TWO", "user-1", "Twin", Some("Ada")).await;
+        assert_ne!(
+            store.edition_of_book(&first_uuid).await.unwrap(),
+            store.edition_of_book(&second_uuid).await.unwrap()
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&tmp.path().join("dest"), puts.clone());
+        let source = CountingSource {
+            fetches: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        for (product, uuid) in [("B00ONE", &first_uuid), ("B00TWO", &second_uuid)] {
+            let req = edition_req(&cache, job.clone(), product, "user-1", uuid);
+            let acquired = acquire_book(&store, &destinations, req, &source)
+                .await
+                .unwrap();
+            assert!(!acquired.matched_existing, "{product}");
+            let short = short_id(&store, uuid).await;
+            assert!(
+                acquired
+                    .storage_key
+                    .starts_with(&format!("Twin [{short}]/Twin")),
+                "{}",
+                acquired.storage_key
+            );
+            let owner = store.file_owner_of_book(uuid).await.unwrap().unwrap();
+            let recorded = store
+                .edition_file("local", &acquired.storage_key)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(recorded.owner, owner, "{product}");
+            assert_eq!(recorded.role, bookclerk_library::FileRole::Audio);
+        }
+        assert_eq!(
+            puts.load(Ordering::SeqCst),
+            2,
+            "no edition overwrote another"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_parts_with_one_title_get_two_names() {
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut req = dummy_req(tmp.path(), None, None);
+        req.library_id = Some("hd4j63pc".into());
+        let part = |n: &str| PreparedAudioFile {
+            path: tmp.path().join(n),
+            title: "Introduction".into(),
+            ext: "mp3".into(),
+        };
+        let first = planned_plain_part_storage_key(&store, &req, 0, &part("a.mp3")).await;
+        let second = planned_plain_part_storage_key(&store, &req, 1, &part("b.mp3")).await;
+        assert_ne!(first, second, "parts with one title share {first}");
+        assert!(first.contains("hd4j63pc-p001"), "{first}");
+        assert!(second.contains("hd4j63pc-p002"), "{second}");
+    }
+
+    #[tokio::test]
+    async fn another_editions_file_at_the_planned_name_is_not_adopted() {
+        let store = test_store().await;
+        let first_uuid = edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00TWO", "user-1", "Twin", Some("Ada")).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&tmp.path().join("dest"), puts.clone());
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        // Two editions whose short ids collide plan one name.
+        let mut first = edition_req(&cache, job.clone(), "B00ONE", "user-1", &first_uuid);
+        first.library_id = Some("samesame".into());
+        acquire_book(&store, &destinations, first, &source)
+            .await
+            .unwrap();
+        let mut second = edition_req(&cache, job, "B00TWO", "user-1", &second_uuid);
+        second.library_id = Some("samesame".into());
+        let refused = acquire_book(&store, &destinations, second, &source).await;
+        assert!(
+            refused.is_err(),
+            "the second edition adopted the first's file"
+        );
+        let book = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        assert_ne!(book.acquire_status, AcquireStatus::Acquired);
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_padded_product_id_still_finds_its_edition() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, " B00PAD ", "user-1", "Padded", None).await;
+        assert!(
+            store.file_owner_of_book(&uuid).await.unwrap().is_some(),
+            "the title row's raw product id finds the trimmed listing"
+        );
+        let edition = store.edition_of_book(&uuid).await.unwrap().unwrap();
+        assert!(
+            store
+                .books_of_edition(&edition)
+                .await
+                .unwrap()
+                .contains(&uuid),
+            "the edition finds the padded row back"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_book_without_an_edition_acquires_nothing() {
+        let store = test_store().await;
+        // A title over the resolver's 4 KiB text limit is stored but never gets
+        // an edition.
+        let long_title = "T".repeat(8 * 1024);
+        let uuid = edition_book(&store, "B00LONG", "user-1", &long_title, None).await;
+        assert!(store.file_owner_of_book(&uuid).await.unwrap().is_none());
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&tmp.path().join("dest"), puts.clone());
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job, "B00LONG", "user-1", &uuid);
+        let refused = acquire_book(&store, &destinations, req, &source).await;
+        assert!(refused.is_err(), "an unresolved title must not acquire");
+        assert_eq!(fetches.load(Ordering::SeqCst), 0);
+        assert_eq!(puts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn templates_without_the_library_id_acquire_nothing() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut destinations = counting_destinations(&tmp.path().join("dest"), puts.clone());
+        destinations.items[0].options.folder_template = Some("<title>".into());
+        destinations.items[0].options.file_template = Some("<title>".into());
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job, "B00ONE", "user-1", &uuid);
+        let err = acquire_book(&store, &destinations, req.clone(), &source)
+            .await
+            .expect_err("a template that can share a path is refused");
+        assert!(err.to_string().contains("<library id>"), "{err}");
+        assert!(err.to_string().contains("local"), "{err}");
+        // The companion PDF alone is refused the same way.
+        let err = acquire_pdf_only(&store, &destinations, &req, &source)
+            .await
+            .expect_err("a PDF-only acquire with such a template is refused");
+        assert!(err.to_string().contains("<library id>"), "{err}");
+        assert_eq!(fetches.load(Ordering::SeqCst), 0);
+        assert_eq!(puts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_name_another_edition_holds_is_never_overwritten() {
+        let store = test_store().await;
+        let first_uuid = edition_book(&store, "B00ONE", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00TWO", "user-1", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&tmp.path().join("dest"), puts.clone());
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        // Another edition's file at the first edition's planned name (two
+        // edition ids that share their short id).
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job, "B00ONE", "user-1", &first_uuid);
+        let mut planned_req = req.clone();
+        planned_req.options = destinations.primary_destination().options.clone();
+        let planned = planned_storage_key(&store, &planned_req).await;
+        let other = store
+            .file_owner_of_book(&second_uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .record_edition_file(
+                "local",
+                &planned,
+                &other,
+                bookclerk_library::FileRole::Audio,
+            )
+            .await
+            .unwrap());
+        let err = acquire_book(&store, &destinations, req, &source)
+            .await
+            .expect_err("another edition's name is refused");
+        assert!(err.to_string().contains("another edition"), "{err}");
+        assert_eq!(fetches.load(Ordering::SeqCst), 0);
+        assert_eq!(puts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_sibling_whose_file_is_gone_is_fetched_again() {
+        let store = test_store().await;
+        let first_uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let dest = tmp.path().join("dest");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&dest, puts.clone());
+        let source = CountingSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job.clone(), "B00SAME", "user-1", &first_uuid);
+        let first = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        tokio::fs::remove_file(dest.join(&first.storage_key))
+            .await
+            .unwrap();
+        let req = edition_req(&cache, job, "B00SAME", "user-2", &second_uuid);
+        let second = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert!(!second.matched_existing, "a missing file is not shared");
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        assert!(dest.join(&second.storage_key).exists());
+    }
+
+    #[tokio::test]
+    async fn a_sibling_missing_a_part_is_not_shared() {
+        let store = test_store().await;
+        let first_uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let dest = tmp.path().join("dest");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&dest, puts);
+        let source = CountingSource {
+            fetches: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job, "B00SAME", "user-1", &first_uuid);
+        let first = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        let backends: Vec<(&str, &dyn StorageBackend)> = destinations
+            .items
+            .iter()
+            .map(|item| (destination_id(item.kind), item.backend.as_ref()))
+            .collect();
+        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        // The edition also recorded a part file, since removed.
+        let owner = store
+            .file_owner_of_book(&first_uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        let folder = first.storage_key.rsplit_once('/').unwrap().0;
+        assert!(store
+            .record_edition_file(
+                "local",
+                &format!("{folder}/Twin — Part 2.m4b"),
+                &owner,
+                bookclerk_library::FileRole::Part,
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            share_acquired_sibling(&store, &backends, &second)
+                .await
+                .unwrap(),
+            None,
+            "a copy missing a part is not shared"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sibling_named_differently_per_destination_is_shared() {
+        let store = test_store().await;
+        let first_uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let local = tmp.path().join("local");
+        let archive = tmp.path().join("archive");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut destinations = title_named_destinations(&local, puts.clone());
+        let mut second_destination = title_named_destinations(&archive, puts).items.remove(0);
+        second_destination.kind = OutputBackendKind::S3;
+        second_destination.options.folder_template = Some("Archive/<title> [<library id>]".into());
+        destinations.items.push(second_destination);
+        let source = CountingSource {
+            fetches: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job, "B00SAME", "user-1", &first_uuid);
+        let first = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert!(
+            !archive.join(&first.storage_key).exists(),
+            "the archive names the file differently"
+        );
+        let backends: Vec<(&str, &dyn StorageBackend)> = destinations
+            .items
+            .iter()
+            .map(|item| (destination_id(item.kind), item.backend.as_ref()))
+            .collect();
+        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        assert_eq!(
+            share_acquired_sibling(&store, &backends, &second)
+                .await
+                .unwrap(),
+            Some(first.storage_key),
+            "each destination is judged by its own recorded keys"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sibling_pdf_that_is_gone_is_not_shared() {
+        let store = test_store().await;
+        let first_uuid = edition_book(&store, "B00SAME", "user-1", "Twin", None).await;
+        let second_uuid = edition_book(&store, "B00SAME", "user-2", "Twin", None).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let dest = tmp.path().join("dest");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let destinations = title_named_destinations(&dest, puts);
+        let source = CountingSource {
+            fetches: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            pdf_url: None,
+        };
+        let job = job_id(&store).await;
+        let req = edition_req(&cache, job, "B00SAME", "user-1", &first_uuid);
+        let first = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        // The sibling's row says its PDF is stored, but the file is gone.
+        store
+            .set_pdf_status(
+                &first_uuid,
+                "user-1",
+                AcquireStatus::Acquired,
+                Some("Twin/gone.pdf"),
+            )
+            .await
+            .unwrap();
+        let backends: Vec<(&str, &dyn StorageBackend)> = destinations
+            .items
+            .iter()
+            .map(|item| (destination_id(item.kind), item.backend.as_ref()))
+            .collect();
+        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        assert_eq!(
+            share_acquired_sibling(&store, &backends, &second)
+                .await
+                .unwrap(),
+            Some(first.storage_key),
+            "the audio is still shared"
+        );
+        let second = store.get_book_by_uuid(&second_uuid).await.unwrap().unwrap();
+        assert_eq!(second.acquire_status, AcquireStatus::Acquired);
+        assert_ne!(
+            second.pdf_status,
+            AcquireStatus::Acquired,
+            "a missing PDF is not recorded as acquired"
+        );
     }
 
     #[tokio::test]
@@ -3582,6 +4452,15 @@ mod tests {
         let names = planned_title_names(&store, &own).await;
         assert_eq!(names.folders, vec!["Ann Author/One".to_string()]);
         assert!(names.own_folder, "a folder named for the title is its own");
+        // So is one named only for the edition.
+        let mut by_id = upload_naming_req(tmp.path(), "B00ONE", "One", "<library id>");
+        by_id.library_id = Some("hd4j63pc".into());
+        let names = planned_title_names(&store, &by_id).await;
+        assert_eq!(names.folders, vec!["hd4j63pc".to_string()]);
+        assert!(
+            names.own_folder,
+            "a folder named for the edition is its own"
+        );
     }
 
     /// A folder that uses only part of the title (`<title short>`, a

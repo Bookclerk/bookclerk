@@ -1385,19 +1385,34 @@ mod results_and_uploads {
     use super::*;
 
     /// The key an acquire names `book`'s audio with under `options`.
-    fn planned_key(book: &bookclerk_library::BookRecord, options: &DownloadOptions) -> String {
+    fn planned_key(
+        book: &bookclerk_library::BookRecord,
+        library_id: Option<&str>,
+        options: &DownloadOptions,
+    ) -> String {
         let templates = options.naming_templates();
         bookclerk_acquire::storage_key(
             &bookclerk_acquire::NamingContext {
                 asin: book.product_id.clone(),
                 title: book.title.clone(),
                 authors: book.authors.clone(),
+                library_id: library_id.map(str::to_string),
                 ..Default::default()
             },
             Some(templates.folder.as_str()),
             Some(templates.file.as_str()),
             "m4b",
         )
+    }
+
+    /// Title `book_uuid`'s library id in `library`, which the default
+    /// naming profile writes into its file names
+    /// (`Author/Title <id>/Title <id> [<library id>].m4b`).
+    async fn library_id(library: &LibraryStore, book_uuid: &str) -> String {
+        bookclerk_acquire::library_id_of(library, book_uuid)
+            .await
+            .unwrap()
+            .expect("the title has an edition")
     }
 
     /// The owner's one `local` destination, its title scope `folder`.
@@ -1486,7 +1501,11 @@ mod results_and_uploads {
             self.note(bindings);
             let mut keys = Vec::new();
             for (index, destination) in title.destinations.iter().enumerate() {
-                let key = planned_key(&title.book, &destination.options);
+                let key = planned_key(
+                    &title.book,
+                    title.library_id.as_deref(),
+                    &destination.options,
+                );
                 let path = destination_outbox(outbox, index).join(&key);
                 tokio::fs::create_dir_all(path.parent().unwrap()).await?;
                 tokio::fs::write(&path, self.payload.as_slice()).await?;
@@ -1833,8 +1852,10 @@ mod results_and_uploads {
             bookclerk_library::AcquireStatus::Acquired
         );
         let key = acquired.storage_key.clone().unwrap_or_default();
-        assert!(
-            key.starts_with("Author/Title t1/"),
+        let id = library_id(&world.owner, &book.uuid).await;
+        assert_eq!(
+            key,
+            format!("Author/Title t1/Title t1 [{id}].m4b"),
             "named as a local acquire would: {key}"
         );
         assert_eq!(
@@ -1889,6 +1910,168 @@ mod results_and_uploads {
                 "{value} reached the logs as base64"
             );
         }
+    }
+
+    /// A title whose edition another account's copy already holds on every
+    /// owner destination shares those files when the owner plans the host
+    /// acquire: the host is not sent to fetch it, and the job completes
+    /// with the title acquired at the shared key.
+    #[tokio::test]
+    async fn a_host_is_not_sent_for_an_edition_the_owner_already_holds() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        world
+            .owner
+            .scope(PLUGIN, "test")
+            .ensure_account("kim-acct", "us", None)
+            .await
+            .unwrap();
+        let held = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("kim-acct", "t1"))
+            .await
+            .unwrap();
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let key = "Author/Title t1/Title t1.m4b";
+        std::fs::create_dir_all(owner_out.path().join("Author/Title t1")).unwrap();
+        std::fs::write(owner_out.path().join(key), b"audio").unwrap();
+        world
+            .owner
+            .set_acquire_status(
+                &held.uuid,
+                "kim-acct",
+                bookclerk_library::AcquireStatus::Acquired,
+                Some(key),
+                None,
+            )
+            .await
+            .unwrap();
+        let guests = StubGuests {
+            payload: Arc::new(b"fetched".to_vec()),
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests.clone()).await;
+
+        let job_id = enqueue_acquire(&world.owner).await;
+        eventually("the host acquire to complete", || async {
+            job(&world.owner, &job_id).await.state == JobState::Succeeded
+        })
+        .await;
+        let shared = world
+            .owner
+            .get_book_by_uuid(&book.uuid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            shared.acquire_status,
+            bookclerk_library::AcquireStatus::Acquired
+        );
+        assert_eq!(shared.storage_key.as_deref(), Some(key));
+        assert!(
+            guests.credentials.lock().unwrap().is_empty(),
+            "the host fetched nothing"
+        );
+        assert_eq!(std::fs::read(owner_out.path().join(key)).unwrap(), b"audio");
+    }
+
+    /// Two of the member's accounts own the same edition, and one job
+    /// covers both: the host fetches
+    /// and uploads it once, then asks for a new plan, in which the owner
+    /// shares the uploaded files with the second account's title.
+    #[tokio::test]
+    async fn a_host_fetches_an_edition_two_accounts_own_once() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let riley = world
+            .owner
+            .list_users()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|user| user.display_name.as_deref() == Some("Riley"))
+            .unwrap();
+        world
+            .owner
+            .upsert_account(PLUGIN, "kim-acct", "us", Some("riley-acct"), true, "test")
+            .await
+            .unwrap();
+        let identity = world
+            .owner
+            .ensure_local_portal_identity(riley.id, None)
+            .await
+            .unwrap();
+        world
+            .owner
+            .link_account(identity.id, PLUGIN, "kim-acct", "test")
+            .await
+            .unwrap();
+        let record = build_sealed_record(
+            b"kim-token-v1",
+            secret_kind::SOURCE_AUTH,
+            PLUGIN,
+            secret_account_type::INTEGRATION,
+            "kim-acct",
+            "kim-acct.auth",
+        )
+        .unwrap();
+        upsert_secret(world.owner.db(), &record).await.unwrap();
+        let mut books = Vec::new();
+        for account in ["riley-acct", "kim-acct"] {
+            books.push(
+                world
+                    .owner
+                    .scope(PLUGIN, "test")
+                    .upsert_book(&owner_book(account, "t1"))
+                    .await
+                    .unwrap(),
+            );
+        }
+        let guests = StubGuests {
+            payload: Arc::new(b"fetched".to_vec()),
+            work: world.host_files.path().join("cluster-work"),
+            ..StubGuests::default()
+        };
+        let (_handle, _stop) = start(&world, guests.clone()).await;
+
+        // The second account carries the first one's id as its label, so
+        // one job names both.
+        let job_id = enqueue_acquire(&world.owner).await;
+        eventually("the host acquire to complete", || async {
+            job(&world.owner, &job_id).await.state == JobState::Succeeded
+        })
+        .await;
+        let mut keys = Vec::new();
+        for book in &books {
+            let acquired = world
+                .owner
+                .get_book_by_uuid(&book.uuid)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                acquired.acquire_status,
+                bookclerk_library::AcquireStatus::Acquired
+            );
+            keys.push(acquired.storage_key.unwrap_or_default());
+        }
+        assert_eq!(keys[0], keys[1], "both titles share one copy");
+        assert_eq!(
+            guests.credentials.lock().unwrap().len(),
+            1,
+            "the host fetched the edition once"
+        );
     }
 
     /// An owner node with two destinations whose naming templates differ
@@ -2138,12 +2321,10 @@ mod results_and_uploads {
         else {
             panic!("granted");
         };
-        // A local acquire of another title records the key, then writes it.
-        world
-            .owner
-            .record_title_file("local", KEY, &other.uuid)
-            .await
-            .unwrap();
+        // The grant's claim is given back and a local acquire of another
+        // title records the key, then writes it (an acquire never takes a
+        // key a live edition holds).
+        take_granted_key(&world.owner, KEY, &upload_id, &other.uuid).await;
         let mut tcp = tokio::net::TcpStream::connect(world.addr).await.unwrap();
         let head = format!(
             "PUT /api/node/v1/uploads/{upload_id}/files/0 HTTP/1.1\r\n\
@@ -2597,11 +2778,7 @@ mod results_and_uploads {
             !files_under(local_out.path()).is_empty()
         })
         .await;
-        world
-            .owner
-            .record_title_file("local", KEY, &other.uuid)
-            .await
-            .unwrap();
+        take_granted_key(&world.owner, KEY, &upload_id, &other.uuid).await;
         std::fs::write(local_out.path().join(KEY), b"xyz").unwrap();
         let answer = put_finish(tcp, b"c").await;
         assert!(answer.starts_with("HTTP/1.1 422"), "{answer}");
@@ -2919,11 +3096,13 @@ mod results_and_uploads {
             .upsert_book(&owner_book("riley-acct", "t1"))
             .await
             .unwrap();
+        let dir = "Author/Title t1";
+        let id = library_id(&world.owner, &book.uuid).await;
         let job_id = enqueue_acquire(&world.owner).await;
         let fence = claim_acquire(&world, 60).await;
         let files = vec![
-            local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
-            local_file("Author/Title t1/Title t1 [t1].jpg", b"jpeg"),
+            local_file(&format!("{dir}/Title t1 [{id}].m4b"), b"audio"),
+            local_file(&format!("{dir}/Title t1 [{id}].jpg"), b"jpeg"),
         ];
         let UploadGrant::Granted {
             upload_id, token, ..
@@ -2935,10 +3114,10 @@ mod results_and_uploads {
             &owner_node_id(&world),
             &UploadGrantRequest {
                 book_uuid: &book.uuid,
-                primary_key: "Author/Title t1/Title t1 [t1].m4b",
+                primary_key: &format!("{dir}/Title t1 [{id}].m4b"),
                 pdf_key: None,
                 files: &files,
-                destinations: &local_scope("Author/Title t1"),
+                destinations: &local_scope(dir),
             },
         )
         .await
@@ -2950,7 +3129,7 @@ mod results_and_uploads {
         assert!(first.starts_with("HTTP/1.1 200"), "{first}");
         assert!(owner_out
             .path()
-            .join("Author/Title t1/Title t1 [t1].jpg")
+            .join(format!("{dir}/Title t1 [{id}].jpg"))
             .is_file());
 
         // The host (connected now; the job is already running) re-sends
@@ -2961,7 +3140,7 @@ mod results_and_uploads {
                 job_id: job_id.clone(),
                 fence,
                 book_uuid: book.uuid.clone(),
-                primary_key: "Author/Title t1/Title t1 [t1].m4b".into(),
+                primary_key: format!("{dir}/Title t1 [{id}].m4b"),
                 pdf_key: None,
                 files: vec![files[0].clone()],
             })
@@ -3065,6 +3244,8 @@ mod results_and_uploads {
             .upsert_book(&owner_book("riley-acct", "t1"))
             .await
             .unwrap();
+        let dir = "Author/Title t1";
+        let id = library_id(&world.owner, &book.uuid).await;
         let other = world
             .owner
             .scope(PLUGIN, "test")
@@ -3130,30 +3311,33 @@ mod results_and_uploads {
             )
             .await
             .unwrap();
-        world
-            .owner
-            .record_title_file("local", "Author/Title t1/Title t1 [t1].cue", &other.uuid)
-            .await
-            .unwrap();
-        // The folder template (`<title short>`) is shared, so only the
-        // title's planned names are in scope there: another title's names
-        // are refused by name, and a planned name another title holds by
-        // its claim.
+        record_for_book(
+            &world.owner,
+            "local",
+            &format!("{dir}/Title t1 [{id}].cue"),
+            &other.uuid,
+        )
+        .await
+        .unwrap();
+        // The folder template uses `<title short>`, so the scope treats the
+        // folder as shared and only the title's planned names are in scope
+        // there: another title's names are refused by name, and a planned
+        // name another title holds by its claim.
         for (key, reason) in [
-            ("Author/Title t1/Title t2.m4b", "key_out_of_scope"),
-            ("Author/Title t1/Title t2.jpg", "key_out_of_scope"),
-            ("Author/Title t1/Title t1 [t1].cue", "key_of_another_book"),
+            (format!("{dir}/Title t2.m4b"), "key_out_of_scope"),
+            (format!("{dir}/Title t2.jpg"), "key_out_of_scope"),
+            (format!("{dir}/Title t1 [{id}].cue"), "key_of_another_book"),
         ] {
             let body = grant(vec![
-                local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
-                local_file(key, b"other"),
+                local_file(&format!("{dir}/Title t1 [{id}].m4b"), b"audio"),
+                local_file(&key, b"other"),
             ])
             .await;
             assert_eq!(refusal(&body), reason, "{key}");
         }
         let body = grant(vec![
-            local_file("Author/Title t1/Title t1 [t1].m4b", b"audio"),
-            local_file("Author/Title t1/Title t1 [t1].jpg", b"jpeg"),
+            local_file(&format!("{dir}/Title t1 [{id}].m4b"), b"audio"),
+            local_file(&format!("{dir}/Title t1 [{id}].jpg"), b"jpeg"),
         ])
         .await;
         assert!(matches!(body, Body::UploadGranted { .. }), "{body:?}");
@@ -3546,10 +3730,11 @@ mod results_and_uploads {
             .unwrap()
             .remove(0)
             .options;
-        let key = planned_key(&book, &options);
-        world
-            .owner
-            .record_title_file("local", &key, &other.uuid)
+        let short = bookclerk_acquire::library_id_of(&world.owner, &book.uuid)
+            .await
+            .unwrap();
+        let key = planned_key(&book, short.as_deref(), &options);
+        record_for_book(&world.owner, "local", &key, &other.uuid)
             .await
             .unwrap();
         let guests = StubGuests {
@@ -3894,4 +4079,45 @@ async fn a_guarded_task_is_aborted_with_its_guard() {
     assert!(!waited.is_finished());
     wait.abort();
     finished(&waited).await;
+}
+
+/// Records `key` on `destination` as a local acquire of `book_uuid`'s
+/// edition wrote it.
+/// Gives back the claim upload `upload_id` holds on `key` on the local
+/// destination, then records `key` for `book_uuid`'s edition: another
+/// title's acquire taking a key once the grant no longer holds it.
+async fn take_granted_key(
+    store: &bookclerk_library::LibraryStore,
+    key: &str,
+    upload_id: &str,
+    book_uuid: &str,
+) {
+    store
+        .release_edition_file("local", key, upload_id, None)
+        .await
+        .unwrap();
+    record_for_book(store, "local", key, book_uuid)
+        .await
+        .unwrap();
+}
+
+async fn record_for_book(
+    store: &bookclerk_library::LibraryStore,
+    destination: &str,
+    key: &str,
+    book_uuid: &str,
+) -> bookclerk_library::Result<()> {
+    let owner = store
+        .file_owner_of_book(book_uuid)
+        .await?
+        .expect("the book resolves to an edition");
+    store
+        .record_edition_file(
+            destination,
+            key,
+            &owner,
+            bookclerk_library::FileRole::for_key(key, None),
+        )
+        .await
+        .map(|recorded| assert!(recorded, "{key} is another edition's"))
 }

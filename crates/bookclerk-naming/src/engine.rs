@@ -686,6 +686,36 @@ fn top_level_tokens(t: &str) -> Vec<(usize, usize)> {
 // Evaluation
 // ---------------------------------------------------------------------------
 
+/// True when a top-level `<tag>` node (outside every conditional) renders
+/// a value containing `probe` for `book`: the tag is written for every
+/// title, whatever its other fields, as long as its own value survives the
+/// node's format specifier.
+///
+/// # Arguments
+///
+/// * `template` - The parsed template.
+/// * `canon` - The canonical tag name to look for (`libraryid`).
+/// * `book` - A context whose `canon` value is `probe`.
+/// * `probe` - The value the tag must write.
+pub(crate) fn always_writes_property(
+    template: &Template,
+    canon: &str,
+    book: &BookContext,
+    probe: &str,
+) -> bool {
+    template.nodes.iter().any(|node| match node {
+        Node::Property {
+            canon: name,
+            format,
+        } => {
+            name == canon
+                && eval_display(name, format.as_deref(), book, None)
+                    .is_some_and(|value| value.contains(probe))
+        }
+        Node::Literal(_) | Node::Conditional { .. } => false,
+    })
+}
+
 /// Evaluates the AST against book/chapter context into literal and tag fragments.
 pub(crate) fn evaluate_parts(
     template: &Template,

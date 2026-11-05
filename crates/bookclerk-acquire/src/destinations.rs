@@ -7,7 +7,7 @@ use bookclerk_storage::{FanoutBackend, StorageBackend};
 use crate::error::Result;
 
 /// The id of the output destination of `kind`, as plans, upload manifests
-/// and `title_files` name it: its lowercase kind name (a node deploys at
+/// and `edition_files` name it: its lowercase kind name (a node deploys at
 /// most one destination per kind).
 #[must_use]
 pub fn destination_id(kind: OutputBackendKind) -> &'static str {

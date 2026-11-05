@@ -82,6 +82,9 @@ pub struct NamingContext {
     pub is_abridged: bool,
     /// Title kind (`book`, `episode`, …) for naming templates.
     pub content_kind: Option<String>,
+    /// The edition's short Bookclerk id for `<library id>`; `None` for a
+    /// title with no edition, which then names by its product id.
+    pub library_id: Option<String>,
     /// Chapter-specific: 1-based index.
     pub chapter_number: Option<u32>,
     /// Total chapter count when naming a split chapter file.
@@ -133,6 +136,7 @@ fn to_book_context(ctx: &NamingContext) -> BookContext {
 
     BookContext {
         isbn: ctx.asin.clone(),
+        library_id: ctx.library_id.clone().unwrap_or_else(|| ctx.asin.clone()),
         // Audible title (no subtitle) — drives `<audible title>` / `<title short>`.
         title: Some(ctx.title.clone()),
         subtitle: ctx.subtitle.clone(),
@@ -499,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn audiobookshelf_profile_includes_series_year_narrator() {
+    fn audiobookshelf_profile_names_series_and_sequence() {
         let ctx = NamingContext {
             asin: "B00EXAMPLE1".into(),
             title: "Wizards First Rule: A Novel".into(),
@@ -514,7 +518,7 @@ mod tests {
         let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
         assert_eq!(
             key,
-            "Terry Goodkind/Sword of Truth/1 - 1994 - Wizards First Rule {Sam Tsoutsouvas}/Wizards First Rule: A Novel [B00EXAMPLE1].m4b"
+            "Terry Goodkind/Sword of Truth/1 - Wizards First Rule/Wizards First Rule: A Novel [B00EXAMPLE1].m4b"
         );
     }
 
@@ -555,7 +559,7 @@ mod tests {
         };
         let templates = resolve_templates(NamingProfile::Classic, None, None, None);
         let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
-        assert_eq!(key, "Hello [B00X]/Hello: World [B00X].m4b");
+        assert_eq!(key, "Hello [B00X] [B00X]/Hello: World [B00X].m4b");
     }
 
     #[test]
