@@ -458,3 +458,29 @@ fn validate_manifest_matches_shared_cases() {
         assert_eq!(got, case["error"], "{}", case["name"]);
     }
 }
+
+/// Every main module in `main-module-cases.json` passes the author-model
+/// check, or fails with the exact message the case names. The Python and
+/// TypeScript checkers read the same file.
+#[test]
+fn check_main_module_source_matches_shared_cases() {
+    use bookclerk_plugin_manifest::Entrypoint;
+    use bookclerk_plugin_tools::{check_main_module_source, MainModuleLanguage};
+
+    let cases = shared_cases("main-module-cases.json");
+    for case in cases.as_array().expect("an array of cases") {
+        let (language, main) = match case["language"].as_str() {
+            Some("js") => (MainModuleLanguage::Js, "index.js"),
+            Some("python") => (MainModuleLanguage::Python, "main.py"),
+            other => panic!("unknown language {other:?}"),
+        };
+        let entrypoints: Vec<Entrypoint> =
+            serde_json::from_value(case["entrypoints"].clone()).expect("entrypoint names");
+        let src = case["src"].as_str().expect("src");
+        let got = match check_main_module_source(main, src, &entrypoints, language) {
+            Ok(()) => serde_json::Value::Null,
+            Err(err) => err.to_string().into(),
+        };
+        assert_eq!(got, case["error"], "{}", case["name"]);
+    }
+}

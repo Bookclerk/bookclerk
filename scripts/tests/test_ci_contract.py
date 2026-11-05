@@ -423,7 +423,7 @@ class WorkflowContractTests(unittest.TestCase):
             for s in job["steps"]
             if str(s.get("uses", "")).startswith("actions/upload-artifact@") and s["with"]["name"].startswith("coverage-")
         }
-        self.assertEqual(set(uploads), {"coverage-rust", "coverage-python-sdk", "coverage-workers"})
+        self.assertEqual(set(uploads), {"coverage-rust", "coverage-check", "coverage-workers"})
         for artifact, (job, step) in uploads.items():
             self.assertEqual(step["with"]["path"], "${{ runner.temp }}/coverage", artifact)
             # Not for an unpublished OSV remediation bump (see the plan job).

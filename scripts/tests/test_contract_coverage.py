@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -205,13 +206,37 @@ class FloorTest(unittest.TestCase):
 
 class MainTest(unittest.TestCase):
     def run_script(self, *args: str) -> subprocess.CompletedProcess[str]:
+        # Without `--summary` the script appends to $GITHUB_STEP_SUMMARY; under
+        # CI that is the plan job's own summary, which these runs must not fill
+        # with test reports.
+        env = {key: value for key, value in os.environ.items() if key != "GITHUB_STEP_SUMMARY"}
         return subprocess.run(
             [sys.executable, "-I", str(ROOT / "scripts" / "contract_coverage.py"), *args],
             capture_output=True,
             text=True,
             cwd=ROOT,
+            env=env,
             check=False,
         )
+
+    def test_runs_leave_the_callers_step_summary_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = Path(tmp) / "outer-summary.md"
+            outer.write_text("", encoding="utf-8")
+            reports = Path(tmp) / "reports"
+            reports.mkdir()
+            (reports / "1.jsonl").write_text(line("get", "/api/jobs", 200, "application/json", "declared") + "\n", encoding="utf-8")
+            previous = os.environ.get("GITHUB_STEP_SUMMARY")
+            os.environ["GITHUB_STEP_SUMMARY"] = str(outer)
+            try:
+                result = self.run_script("--reports", str(reports), "--floor", "0")
+            finally:
+                if previous is None:
+                    del os.environ["GITHUB_STEP_SUMMARY"]
+                else:
+                    os.environ["GITHUB_STEP_SUMMARY"] = previous
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(outer.read_text(encoding="utf-8"), "")
 
     def test_report_mode_summarizes_and_enforce_mode_fails_on_a_disagreement(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

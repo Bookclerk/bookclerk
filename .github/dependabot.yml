@@ -104,6 +104,22 @@ updates:
     cooldown:
       default-days: 7
 
+  # Type-check and test tooling of the first-party workerd guests; their
+  # shipped modules/ import nothing from npm.
+  - package-ecosystem: npm
+    directories:
+      - "/crates/bookclerk-plugins/optional/metadata-audnexus"
+      - "/crates/bookclerk-plugins/optional/metadata-openlibrary"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      workerd-guests-tooling:
+        patterns:
+          - "*"
+
   # Web UI bundled into ui/dist and served by bookclerkd.
   - package-ecosystem: npm
     directory: "/ui"

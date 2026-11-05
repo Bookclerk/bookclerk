@@ -81,6 +81,7 @@ jobs:
       check_ui: ${{ steps.resolve.outputs.check_ui }}
       check_plugin_sdk_abi: ${{ steps.resolve.outputs.check_plugin_sdk_abi }}
       check_python_sdk: ${{ steps.resolve.outputs.check_python_sdk }}
+      check_workerd_guests: ${{ steps.resolve.outputs.check_workerd_guests }}
       check_author_surface: ${{ steps.resolve.outputs.check_author_surface }}
       check_fmt: ${{ steps.resolve.outputs.check_fmt }}
       check_clippy: ${{ steps.resolve.outputs.check_clippy }}
@@ -157,9 +158,13 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ci-venv"
           "$RUNNER_TEMP/ci-venv/bin/pip" install --require-hashes -r scripts/tests/requirements.txt
 
+      # The scripts under test append to $GITHUB_STEP_SUMMARY by default;
+      # their tests' runs are not this job's results, so none reach its
+      # summary (the Web API contract report belongs to CI Gate alone).
       - name: Planner, executor and workflow-contract tests
         run: |
           set -euo pipefail
+          unset GITHUB_STEP_SUMMARY
           PY="$RUNNER_TEMP/ci-venv/bin/python"
           "$PY" scripts/tests/test_ci_plan.py
           "$PY" scripts/tests/test_ci_relations.py
@@ -297,6 +302,8 @@ jobs:
             tools/lint/package-lock.json
             ui/package-lock.json
             packages/plugin-sdk/package-lock.json
+            crates/bookclerk-plugins/optional/metadata-audnexus/package-lock.json
+            crates/bookclerk-plugins/optional/metadata-openlibrary/package-lock.json
 
       # The Python SDK check and its API docs install from
       # packages/plugin-sdk-python/uv.lock. No uv cache: nothing from an
@@ -375,14 +382,21 @@ jobs:
           CI_COVERAGE_DIR: ${{ runner.temp }}/coverage
         run: python3 scripts/ci-exec.py run python_sdk
 
-      # The coverage report, and the JUnit report Codecov Test Analytics
-      # reads. Failed tests still upload their test results. A build-only
-      # main push runs no tests, so there is no report.
-      - name: Upload the Python SDK coverage report
-        if: ${{ !cancelled() && env.CI_BUILD_ONLY != 'true' && needs.plan.outputs.check_python_sdk == 'true' && !inputs.private-head }}
+      - name: First-party workerd guests
+        if: needs.plan.outputs.check_workerd_guests == 'true'
+        env:
+          CI_COVERAGE_DIR: ${{ runner.temp }}/coverage
+        run: python3 scripts/ci-exec.py run workerd_guests
+
+      # The Python SDK's and the guests' coverage reports, and the JUnit
+      # reports Codecov Test Analytics reads. Failed tests still upload their
+      # test results. A build-only main push runs no tests, so there is no
+      # report.
+      - name: Upload the Python SDK and workerd guests coverage reports
+        if: ${{ !cancelled() && env.CI_BUILD_ONLY != 'true' && (needs.plan.outputs.check_python_sdk == 'true' || needs.plan.outputs.check_workerd_guests == 'true') && !inputs.private-head }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: coverage-python-sdk
+          name: coverage-check
           path: ${{ runner.temp }}/coverage
           if-no-files-found: ${{ job.status == 'success' && 'error' || 'ignore' }}
           retention-days: 7
