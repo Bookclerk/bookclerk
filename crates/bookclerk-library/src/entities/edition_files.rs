@@ -1,6 +1,6 @@
 //! SeaORM entity for `edition_files`: every file key an acquire or a host
 //! upload wrote, per output destination, and the edition it belongs to
-//! ([library data model ADR](../../../../docs/adr/library-data-model.md),
+//! (library data model ADR, `docs/adr/library-data-model.md`,
 //! section 3). Written by the acquire pipeline
 //! ([`crate::LibraryStore::record_edition_file`]) and by
 //! `control_plane::uploads`, which refuses an upload a key another edition

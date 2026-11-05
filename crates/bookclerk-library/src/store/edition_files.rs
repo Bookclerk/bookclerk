@@ -1,7 +1,7 @@
 //! Every file key an edition has, per output destination (`edition_files`).
 //!
 //! Files belong to editions, not to the account rows that hold them
-//! ([library data model ADR](../../../../docs/adr/library-data-model.md),
+//! (library data model ADR, `docs/adr/library-data-model.md`,
 //! section 3): two accounts holding one edition share its files, and an
 //! acquire of one of them serves both. Library rows record only a title's
 //! primary audio and PDF keys, but an acquire also writes chapter or part
