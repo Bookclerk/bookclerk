@@ -668,9 +668,16 @@ class RatchetTest(unittest.TestCase):
         self.assertEqual(job["concurrency"]["group"], "coverage-floors")
         steps = {s.get("name"): s for s in job["steps"]}
         self.assertEqual(steps["Find the merge group run"]["env"]["TRIGGER_RUN"], "${{ github.event.workflow_run.id }}")
-        # The floors are raised on the commit the merge group measured, not on
-        # whatever main's tip was when the event fired (#692).
-        self.assertEqual(job["steps"][0]["with"]["ref"], "${{ github.event.workflow_run.head_sha || github.sha }}")
+        # Only landed code runs next to the App token: the checkout is main,
+        # never the merge group's commit, and the floors are raised once main
+        # contains the measured commit, not on whatever main's tip was when
+        # the event fired (#692).
+        self.assertNotIn("ref", job["steps"][0]["with"])
+        landed = steps["Wait for the measured commit on main"]
+        self.assertEqual(landed["env"]["MEASURED"], "${{ github.event.workflow_run.head_sha }}")
+        self.assertIn('git checkout --quiet --detach "$tip"', landed["run"])
+        self.assertIn("on-main=false", landed["run"])
+        self.assertEqual(steps["Find the merge group run"]["if"], "steps.landed.outputs.on-main != 'false'")
         self.assertEqual(steps["Create or update pull request"]["with"]["base"], "main")
 
 
