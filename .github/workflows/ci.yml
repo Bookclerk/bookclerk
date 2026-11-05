@@ -485,6 +485,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
 
+      # A full-suite coverage build fills most of a hosted runner's disk, and
+      # a partial cache restore adds stale dependencies on top, which ran
+      # merge groups out of space. Drop the preinstalled SDKs this job never
+      # uses, as the mutation job does (docs/contributing/ci.md#test-runner-and-retries).
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h / "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
+
       # Build-only main push: the dependency cache key covers Cargo.lock, the
       # manifests, the toolchain and the CI env, not this repository's
       # sources, so on most merges this job's key is already saved and the

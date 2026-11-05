@@ -89,6 +89,11 @@ That job runs no repository code and is the only one with
 end (nextest's `--no-fail-fast`, and no cancelling job), so one round shows
 every failure among them.
 
+The job frees the preinstalled SDKs it never uses (Android, .NET, GHC and
+the CodeQL bundle) before it builds. A full-suite coverage build fills most
+of a hosted runner's disk, and when the dependency cache only partly
+matches, the stale dependencies it restores can push the build out of space.
+
 Test targets with `harness = false` whose `main` doesn't answer libtest's
 `--list` protocol would list zero tests under nextest. So they are excluded
 from the nextest run and run with `cargo test --test`
