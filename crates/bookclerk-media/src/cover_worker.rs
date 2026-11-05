@@ -163,20 +163,37 @@ impl CoverWorker {
     }
 
     /// Sends one cover and waits for its reply.
-    async fn ask(&self, running: &Running, cover: Vec<u8>) -> Result<CoverSet> {
+    async fn ask(&self, running: &Arc<Running>, cover: Vec<u8>) -> Result<CoverSet> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let frame = wire::encode_request(&Request { id, cover })
             .map_err(|err| MediaError::Cover(err.to_string()))?;
         let (tx, rx) = oneshot::channel();
         lock(&running.pending).insert(id, tx);
-        let sent = {
-            let mut stdin = running.stdin.lock().await;
-            stdin.write_all(&frame).await.and(stdin.flush().await)
+        // The frame is written by its own task, so a caller that is dropped
+        // mid-write (a cancelled acquire) never leaves half a frame in the
+        // pipe for the next cover to be read against.
+        let writer = Arc::clone(running);
+        let send = tokio::spawn(async move {
+            let mut stdin = writer.stdin.lock().await;
+            stdin.write_all(&frame).await?;
+            stdin.flush().await
+        });
+        // Waiting for stdin and writing get their own deadline: a worker
+        // that stops reading must not hold covers forever.
+        let sent = match tokio::time::timeout(COVER_TIMEOUT, send).await {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(err))) => Err(format!("could not send cover: {err}")),
+            Ok(Err(err)) => Err(format!("could not send cover: {err}")),
+            Err(_) => Err(format!(
+                "cover worker did not take a cover within {}s",
+                COVER_TIMEOUT.as_secs()
+            )),
         };
-        if let Err(err) = sent {
+        if let Err(detail) = sent {
             lock(&running.pending).remove(&id);
-            running.alive.store(false, Ordering::Release);
-            return Err(worker_error(format!("could not send cover: {err}")));
+            // Its input may now end in a partial frame.
+            running.stop();
+            return Err(worker_error(detail));
         }
         match tokio::time::timeout(COVER_TIMEOUT, rx).await {
             Ok(Ok(reply)) => reply,
@@ -186,12 +203,7 @@ impl CoverWorker {
                 // A worker stuck on one cover is killed now, so it stops
                 // burning a decode thread, and restarted for the next. The
                 // covers it was also working on fail as a worker error.
-                running.alive.store(false, Ordering::Release);
-                let _ = running
-                    .child
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .start_kill();
+                running.stop();
                 // Only this cover ran out its time, so it is the one refused
                 // (and remembered as refused by the caller).
                 Err(MediaError::Cover(format!(
@@ -200,6 +212,18 @@ impl CoverWorker {
                 )))
             }
         }
+    }
+}
+
+impl Running {
+    /// Marks the worker dead and kills it; the next cover starts a new one.
+    fn stop(&self) {
+        self.alive.store(false, Ordering::Release);
+        let _ = self
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .start_kill();
     }
 }
 
