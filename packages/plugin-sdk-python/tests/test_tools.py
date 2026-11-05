@@ -1416,3 +1416,189 @@ def test_check_main_module_source_matches_shared_cases(case: dict[str, Any]) -> 
         with pytest.raises(ValueError) as err:
             check_main_module_source(*args)
         assert str(err.value) == case["error"]
+
+
+def _python_workerd_plugin(tmp_path: Path) -> Path:
+    staging = tmp_path / "plugin"
+    staging.mkdir()
+    shutil.copyfile(ECHO_PY / "plugin.toml", staging / "plugin.toml")
+    return staging
+
+
+def test_sync_embed_writes_the_sdk_package(tmp_path: Path) -> None:
+    from bookclerk_plugin_sdk.tools import _sdk_workerd_embed_src
+
+    staging = _python_workerd_plugin(tmp_path)
+    pkg = staging / "modules" / "bookclerk_plugin_sdk"
+    assert sync_embed(staging) == f"synced {pkg / 'workerd.py'}"
+    assert (pkg / "workerd.py").read_bytes() == _sdk_workerd_embed_src().read_bytes()
+    assert (pkg / "__init__.py").read_text(encoding="utf-8") == (
+        '"""Bookclerk plugin SDK (vendored for workerd). Prefer .workerd."""\n'
+    )
+    assert sorted(p.name for p in pkg.iterdir()) == ["__init__.py", "workerd.py"]
+
+
+def test_sync_embed_keeps_an_existing_init(tmp_path: Path) -> None:
+    staging = _python_workerd_plugin(tmp_path)
+    pkg = staging / "modules" / "bookclerk_plugin_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("# the author's own\n", encoding="utf-8")
+    sync_embed(staging)
+    assert (pkg / "__init__.py").read_text(encoding="utf-8") == "# the author's own\n"
+
+
+def test_sync_embed_refuses_a_native_plugin(tmp_path: Path) -> None:
+    staging = tmp_path / "plugin"
+    shutil.copytree(FIXTURES / "valid-native", staging)
+    with pytest.raises(ValueError) as err:
+        sync_embed(staging)
+    assert str(err.value) == 'sync-embed requires runtime = "workerd"'
+    assert not (staging / "modules").exists()
+
+
+def test_sync_embed_refuses_a_javascript_plugin(tmp_path: Path) -> None:
+    staging = tmp_path / "plugin"
+    shutil.copytree(FIXTURES / "valid-workerd", staging)
+    with pytest.raises(ValueError) as err:
+        sync_embed(staging)
+    assert str(err.value) == (
+        "sync-embed (Python SDK): main_module must end with .py (got 'index.js')"
+    )
+    assert not (staging / "modules" / "bookclerk_plugin_sdk").exists()
+
+
+@pytest.mark.parametrize(
+    ("sysname", "machine", "target"),
+    [
+        ("linux", "x86_64", "linux-x64-gnu"),
+        ("linux", "AMD64", "linux-x64-gnu"),
+        ("linux", "aarch64", "linux-arm64"),
+        ("linux", "ARM64", "linux-arm64"),
+        ("darwin", "arm64", "macos-arm64"),
+        ("darwin", "aarch64", "macos-arm64"),
+        ("darwin", "x86_64", "macos-x64"),
+        ("darwin", "amd64", "macos-x64"),
+        ("win32", "AMD64", "windows-x64"),
+        ("win32", "x86_64", "windows-x64"),
+        ("win32", "ARM64", "win32-arm64"),
+        ("linux", "riscv64", "linux-riscv64"),
+        ("freebsd14", "amd64", "freebsd14-amd64"),
+        ("darwinish", "arm64", "darwinish-arm64"),
+    ],
+)
+def test_host_target_names_each_platform(
+    monkeypatch: pytest.MonkeyPatch, sysname: str, machine: str, target: str
+) -> None:
+    import platform
+    import sys
+
+    from bookclerk_plugin_sdk.tools import _host_target
+
+    monkeypatch.setattr(sys, "platform", sysname)
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+    assert _host_target() == target
+
+
+def _copy_fixture(tmp_path: Path, name: str) -> Path:
+    staging = tmp_path / name
+    shutil.copytree(FIXTURES / name, staging)
+    return staging
+
+
+def _rewrite(path: Path, old: str, new: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    assert old in text
+    path.write_text(text.replace(old, new), encoding="utf-8")
+
+
+def test_check_plugin_reports_every_entrypoint(tmp_path: Path) -> None:
+    staging = _copy_fixture(tmp_path, "valid-workerd")
+    _rewrite(staging / "plugin.toml", 'entrypoints = ["cli"]', 'entrypoints = ["cli", "storage"]')
+    _rewrite(
+        staging / "modules" / "index.js",
+        "export class Cli",
+        "export class Storage extends StorageEntrypoint {}\nexport class Cli",
+    )
+    assert (
+        check_plugin(staging) == "ok id=echo_workerd_tools entrypoints=cli,storage runtime=workerd"
+    )
+
+
+def test_check_plugin_runs_the_author_model_check_on_js(tmp_path: Path) -> None:
+    staging = _copy_fixture(tmp_path, "valid-workerd")
+    _rewrite(staging / "modules" / "index.js", "export class Cli", "class Cli")
+    with pytest.raises(ValueError) as err:
+        check_plugin(staging)
+    assert str(err.value) == (
+        'index.js: entrypoints = ["cli"] requires `export class Cli extends CliEntrypoint`'
+    )
+
+
+def test_check_plugin_runs_the_author_model_check_on_mjs(tmp_path: Path) -> None:
+    staging = _copy_fixture(tmp_path, "valid-workerd")
+    _rewrite(staging / "plugin.toml", 'main_module = "index.js"', 'main_module = "index.mjs"')
+    main = staging / "modules" / "index.mjs"
+    (staging / "modules" / "index.js").rename(main)
+    _rewrite(main, "export class Cli", "class Cli")
+    with pytest.raises(ValueError) as err:
+        check_plugin(staging)
+    assert str(err.value).startswith('index.mjs: entrypoints = ["cli"] requires `export class')
+
+
+def test_check_plugin_names_a_missing_modules_dir(tmp_path: Path) -> None:
+    staging = _copy_fixture(tmp_path, "valid-workerd")
+    shutil.rmtree(staging / "modules")
+    with pytest.raises(FileNotFoundError) as err:
+        check_plugin(staging)
+    assert str(err.value) == f"workerd modules_dir missing: {staging / 'modules'}"
+
+
+def test_check_plugin_names_a_missing_main_module(tmp_path: Path) -> None:
+    staging = _copy_fixture(tmp_path, "valid-workerd")
+    (staging / "modules" / "index.js").unlink()
+    with pytest.raises(FileNotFoundError) as err:
+        check_plugin(staging)
+    assert str(err.value) == f"workerd main_module missing: {staging / 'modules' / 'index.js'}"
+
+
+def test_check_plugin_names_a_missing_embedded_logo(tmp_path: Path) -> None:
+    staging = _copy_fixture(tmp_path, "valid-logo-path")
+    (staging / "assets" / "logo.png").unlink()
+    with pytest.raises(FileNotFoundError) as err:
+        check_plugin(staging)
+    assert str(err.value) == f"embedded logo missing: {staging / 'assets' / 'logo.png'}"
+
+
+def test_check_plugin_does_not_look_for_a_remote_logo(tmp_path: Path) -> None:
+    staging = _copy_fixture(tmp_path, "valid-logo-url")
+    assert check_plugin(staging).startswith("ok id=")
+
+
+def test_check_plugin_native_binary_is_optional_by_default(tmp_path: Path) -> None:
+    staging = _copy_fixture(tmp_path, "valid-native")
+    assert check_plugin(staging) == "ok id=echo_tools entrypoints=cli runtime=native"
+
+
+def test_check_plugin_require_binary_refuses_a_missing_command(tmp_path: Path) -> None:
+    staging = _copy_fixture(tmp_path, "valid-native")
+    (staging / ".require-binary").touch()
+    with pytest.raises(FileNotFoundError) as err:
+        check_plugin(staging)
+    assert str(err.value) == f"native command not found: {staging / 'echo-tools'}"
+    (staging / "echo-tools").touch()
+    assert check_plugin(staging) == "ok id=echo_tools entrypoints=cli runtime=native"
+
+
+def test_check_plugin_require_binary_resolves_an_absolute_command(tmp_path: Path) -> None:
+    staging = _copy_fixture(tmp_path, "valid-native")
+    binary = tmp_path / "elsewhere" / "echo-tools"
+    _rewrite(
+        staging / "plugin.toml", 'command = "./echo-tools"', f'command = "{binary.as_posix()}"'
+    )
+    (staging / ".require-binary").touch()
+    with pytest.raises(FileNotFoundError) as err:
+        check_plugin(staging)
+    assert str(err.value) == f"native command not found: {binary}"
+    binary.parent.mkdir()
+    binary.touch()
+    assert check_plugin(staging).startswith("ok id=echo_tools")
