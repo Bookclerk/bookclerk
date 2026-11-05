@@ -48,6 +48,11 @@ pub enum MediaError {
         detail: String,
     },
 
+    /// A cover image was refused: not a supported image, too large, or
+    /// undecodable. The message comes from the cover pipeline.
+    #[error("cover image refused: {0}")]
+    Cover(String),
+
     /// Local filesystem I/O failure.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

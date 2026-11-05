@@ -1,0 +1,1 @@
+{"v":1,"id":"r3","type":"acquire.targets","targets":[{"book_uuid":"b1","plugin_key":"store","account_id":"a1","book":{}}],"destinations":[{"id":"s3","options":{"folder_template":"<title>"}}]}

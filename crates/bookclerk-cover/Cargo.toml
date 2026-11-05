@@ -1,0 +1,24 @@
+[package]
+name = "bookclerk-cover"
+description = "Cover image pipeline: sniff, decode under limits, resize and re-encode untrusted cover art as JPEG"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Pure-Rust codecs only: no C decoder ever sees an untrusted cover.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+fast_image_resize = "5"
+jpeg-encoder = "0.6"
+thiserror.workspace = true
+# Cover tokens (`token`).
+base64.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

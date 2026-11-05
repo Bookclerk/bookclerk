@@ -54,12 +54,46 @@ jobs:
       # Find the merge group run and download its artifacts.
       actions: read
     steps:
+      # Only code that has landed on main runs here, because later steps hold
+      # the automation App token: never check out the merge group's own
+      # commit, which has not landed yet.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # The workflow_run event's commit is main's tip when CI finished, which
+      # can still be the commit before the merge group that was measured, so
+      # the ratchet re-proposed the raise that group had just made (#692
+      # repeated #686). Wait until main contains the measured commit and
+      # raise the floors on that main; if the group never lands, skip.
+      - name: Wait for the measured commit on main
+        id: landed
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MEASURED: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$MEASURED" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Unexpected head SHA."; exit 1; }
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            git fetch --quiet --no-tags --depth=1 origin main
+            tip="$(git rev-parse FETCH_HEAD)"
+            status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${MEASURED}...${tip}" --jq .status)"
+            if [[ "$status" == identical || "$status" == ahead ]]; then
+              git checkout --quiet --detach "$tip"
+              echo "Raising floors on main at $tip, which contains $MEASURED."
+              echo "on-main=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "main ($tip) does not contain $MEASURED yet ($status); attempt $attempt of 10."
+            sleep 30
+          done
+          echo "$MEASURED did not reach main within 5 minutes; leaving the floors to the next merge."
+          echo "on-main=false" >> "$GITHUB_OUTPUT"
+
       - name: Find the merge group run
         id: run
+        if: steps.landed.outputs.on-main != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           TRIGGER_RUN: ${{ github.event.workflow_run.id }}
@@ -159,6 +193,8 @@ jobs:
             Each floor rises to just under the coverage of the latest merge
             group run (scripts/coverage_gate.py --ratchet).
           branch: ci/coverage-floors
+          # The checkout can be a detached commit of main, so the base is named.
+          base: main
           delete-branch: true
           title: "ci: raise the coverage floors"
           body-path: ${{ runner.temp }}/body.md

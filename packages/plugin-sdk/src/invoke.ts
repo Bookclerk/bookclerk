@@ -27,6 +27,7 @@ import type {
   JobController as WireJobController,
   JobOutcome,
   ListeningProgress,
+  CoverImage,
   MetadataRecord,
   ObjectMetadata as WireObjectMetadata,
   OidcClientTemplate,
@@ -233,6 +234,20 @@ const okRecords = (value: unknown) => {
     throw PluginError.fromWire("internal", "metadata provider must return a MetadataRecord[]");
   }
   return okValue({ records: value as MetadataRecord[] });
+};
+/**
+ * Wraps a cover fetcher's `fetchCovers` return as `CoverImages`. The Rust
+ * client checks the count and URLs against the request.
+ *
+ * @param value - The author method's return value.
+ * @returns The `ok` arm carrying the per-URL answers.
+ * @throws {PluginError} `internal` when `value` is not an array.
+ */
+const okCoverImages = (value: unknown) => {
+  if (!Array.isArray(value)) {
+    throw PluginError.fromWire("internal", "cover fetcher must return a CoverImage[]");
+  }
+  return okValue({ images: value as CoverImage[] });
 };
 const okLines = (value: unknown) =>
   okValue({ lines: asList<unknown>(value).map((l) => String(l)) });
@@ -735,6 +750,27 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.MetadataProviderChaptersResultsCodec,
       okPass,
     ),
+  },
+  CoverFetcher: {
+    health: withoutParams(
+      "covers",
+      "health",
+      W.CoverFetcherHealthParamsCodec,
+      W.CoverFetcherHealthResultsCodec,
+      okHealth,
+    ),
+    fetchCovers: spec<W.CoverFetcherFetchCoversParams, W.CoverFetcherFetchCoversResults["result"]>({
+      params: W.CoverFetcherFetchCoversParamsCodec,
+      results: W.CoverFetcherFetchCoversResultsCodec,
+      stub: "covers",
+      call: (s, p, cx) => {
+        if (!p.sink) {
+          throw PluginError.fromWire("invalid_params", "fetchCovers needs a sink");
+        }
+        return named(s, cx.host.bindContext(cx.ctx), "fetchCovers", [p.params, p.sink]);
+      },
+      ok: okCoverImages,
+    }),
   },
   Database: {
     openSession: spec<W.DatabaseOpenSessionParams, W.DatabaseOpenSessionResults["result"]>({

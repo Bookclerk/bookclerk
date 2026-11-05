@@ -233,7 +233,7 @@ export function WishlistPage({
                       className="flex min-w-0 flex-1 items-center gap-3 text-left"
                       onClick={() => setSelected(title)}
                     >
-                      <CoverThumb url={title.cover_url} className="h-14 w-14" />
+                      <CoverThumb path={title.cover_path} className="h-14 w-14" />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-2">
                           <p className="font-medium text-ink hover:underline">{title.title}</p>
@@ -312,7 +312,7 @@ export function WishlistPage({
                         <span className="w-5 shrink-0 pt-1 text-xs tabular-nums text-ink/40">
                           {i + 1}
                         </span>
-                        <CoverThumb url={title.cover_url} className="h-12 w-12" />
+                        <CoverThumb path={title.cover_path} className="h-12 w-12" />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center justify-between gap-2">
                             <p className="truncate font-medium text-ink hover:underline">

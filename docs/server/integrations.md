@@ -15,8 +15,8 @@ An **integration** is an outbound plugin. It can:
 
 There is no plugin `kind = "integration"`. An integration plugin exports
 `remoteLibrary`, declares `[[events.consumers]]`, or both, and may
-declare `oidc` and `cli`. A metadata provider (`metadata`) also shows in
-the integration family. See [Plugins](../plugins/README.md).
+declare `oidc` and `cli`. A metadata provider (`metadata`) and a cover
+fetcher (`covers`) also show in the integration family. See [Plugins](../plugins/README.md).
 
 Third-party integrations install as external plugins; see
 [Turning on a third-party integration](#turning-on-a-third-party-integration).
@@ -173,6 +173,100 @@ To turn one on:
 
 Each call makes at most one request to Open Library, or one per ASIN (up
 to five) to Audnexus. Their health checks make no request at all.
+
+## Cover images
+
+The optional `covers` plugin downloads cover art for Bookclerk. Bookclerk
+never fetches a cover URL from a store or catalog itself; it asks a
+deployed cover fetcher, which streams each image back to the host.
+Bookclerk treats every image as untrusted: it checks the real file type,
+decodes it with size limits and re-encodes it before storing or showing
+it.
+
+Cover art lives on each store's and catalog's own servers, so this plugin
+asks for **any public website** (`*`) rather than a list of hosts. That
+grant never reaches IP addresses, `localhost`, or private, loopback or
+cloud-metadata addresses, even through a public name that resolves to
+one.
+
+To turn it on, install it as
+[Installing plugins](plugins.md#installing-plugins) describes, then:
+
+1. Approve its network access:
+
+   ```sh
+   bookclerk plugins approve covers --yes
+   ```
+
+2. Deploy it:
+
+   ```sh
+   bookclerk plugins deploy covers
+   ```
+
+Each call fetches at most 32 images, four at a time, each capped in size
+and time. Its health check makes no request.
+
+### How covers are served
+
+Library titles, Discover, catalog search, title details, the wishlist and
+the request queue give each cover two fields: `cover_url`, the remote address the
+store or catalog named, and `cover_path`, a same-origin path such as
+`/api/covers/<token>`. Add `/128`, `/360` or `/full` to the path for a
+thumbnail, a card or the full image.
+
+The first request for a cover:
+
+1. checks the token. It carries the remote URL and a signature only this
+   node can make, so the route never fetches a URL the API didn't hand
+   out;
+2. downloads the image through the first deployed cover fetcher;
+3. re-encodes it in the confined media worker (see
+   [Cover images](media.md#cover-images));
+4. stores the three JPEGs under `cache/covers/` in the files directory.
+
+Later requests are served from that cache, with a one-year `immutable`
+cache header. Search results and Discover warm their first 24 covers in
+the background, so thumbnails are usually ready before the browser asks.
+
+At most two of these batches download at once, and a cover already in
+one batch isn't downloaded again by another.
+
+A cover that fails isn't retried for 10 minutes. The cache keeps about
+256 MiB and drops the covers served least recently first.
+
+The acquire overlay gets its cover the same way, so Bookclerk itself
+never requests a cover URL. Without a deployed cover fetcher, covers
+answer `503` and the overlay keeps the store's own cover.
+
+The web app loads covers only through `cover_path`, so a browser never
+contacts the store's or catalog's image host. It shows a placeholder until
+a cover arrives, loads covers as they scroll into view, and cancels a
+download when its cover leaves the page.
+
+### Other images
+
+The same service serves every other image the web app shows from
+somewhere else, as a 128 px JPEG:
+
+- **Store icons** at `GET /api/stores/{id}/icon`, the icon a deployed
+  storefront or integration names for its sign-in button. Accounts,
+  Settings and plugin consent show plugin logos through a signed path
+  (below).
+- **Gravatars** at `GET /api/avatars/gravatar/{hash}`, where `hash` is a
+  user's `gravatar_hash`.
+- **Sign-in provider pictures** through the `picture_path` next to each
+  `picture_url` (`/api/auth/me`, `/api/users` and wishers), a signed
+  `/api/images/<token>` path. Remote plugin logos use the same kind of
+  path.
+
+These answer with a one-day browser cache header instead of `immutable`,
+because the image behind the address can change. Bookclerk itself keeps
+serving its cached copy until the cache evicts it, so a changed picture
+can take longer to appear. Without a deployed cover fetcher they answer
+`503` and the web app shows a monogram. Gravatars are downloaded at most
+four at a time, since anyone signed in can name a new hash; a request
+over that limit also answers `503`.
 
 ## Claim tickets and Accounts
 

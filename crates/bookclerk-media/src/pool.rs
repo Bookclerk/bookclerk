@@ -31,6 +31,7 @@ use bookclerk_sandbox::{CpuRate, Enforcement, NetPolicy, Spec, SPEC_ENV};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Semaphore;
 
+use crate::cover_worker::{CoverRunner, CoverWorker};
 use crate::error::{MediaError, Result};
 use crate::job::{MediaJob, MediaJobOutput, MediaJobReply};
 
@@ -126,19 +127,21 @@ impl From<&bookclerk_config::MediaConfig> for MediaPoolConfig {
 
 /// Worker binary plus optional spawn-time jail launcher.
 #[derive(Debug, Clone)]
-struct WorkerLaunch {
+pub(crate) struct WorkerLaunch {
     /// Absolute path of `bookclerk-media-worker` used for each job.
-    bin: PathBuf,
+    pub(crate) bin: PathBuf,
     /// When set, the pool runs `jail -- worker` so AppContainer can be applied
     /// at CreateProcess (Windows). Absent on platforms that self-confine.
-    jail: Option<PathBuf>,
+    pub(crate) jail: Option<PathBuf>,
 }
 
 /// Where a pool sends its jobs.
 #[derive(Debug)]
 enum Runner {
     /// Spawn the worker binary (optionally through `bookclerk-jail`) per job.
-    Worker(WorkerLaunch),
+    /// Boxed behind an `Arc` so `MediaPool` stays small on Windows, where
+    /// paths are larger.
+    Worker(Arc<WorkerLaunch>),
     /// Run on a blocking thread in this process, unconfined. Only reached when
     /// the operator turned isolation off.
     InProcess,
@@ -158,6 +161,9 @@ pub struct MediaPool {
     config: MediaPoolConfig,
     /// Where jobs run: confined worker, in-process, or refuse-every-job.
     runner: Runner,
+    /// The long-lived worker that processes cover images, sharing the job
+    /// runner's isolation and sized to the same worker count.
+    covers: Box<CoverWorker>,
 }
 
 impl Drop for MediaPool {
@@ -186,7 +192,7 @@ impl MediaPool {
             // since that is a packaging error and would put codecs back in the
             // host process either way.
             mode => match resolve_runner(mode, config.worker_bin.as_deref()) {
-                Ok(launch) => Runner::Worker(launch),
+                Ok(launch) => Runner::Worker(Arc::new(launch)),
                 Err(detail) => {
                     tracing::error!(
                         confinement = mode.as_env_value(),
@@ -197,8 +203,17 @@ impl MediaPool {
             },
         };
 
+        let cover_runner = match &runner {
+            Runner::Worker(launch) => CoverRunner::Worker {
+                launch: WorkerLaunch::clone(launch),
+                confinement: config.confinement,
+            },
+            Runner::InProcess => CoverRunner::InProcess,
+            Runner::Refuse(detail) => CoverRunner::Refuse(detail.clone()),
+        };
         Self {
             permits: Arc::new(Semaphore::new(config.workers)),
+            covers: Box::new(CoverWorker::new(cover_runner, config.workers)),
             config,
             runner,
         }
@@ -272,6 +287,29 @@ impl MediaPool {
         }
     }
 
+    /// Turns one untrusted downloaded cover image into the JPEG sizes the
+    /// host serves.
+    ///
+    /// Covers do not take a job slot: they run on one long-lived worker
+    /// (jailed to no path and no network) that decodes on as many threads as
+    /// this pool has workers, so search results do not queue behind an
+    /// acquire.
+    ///
+    /// # Arguments
+    ///
+    /// * `cover` - The downloaded bytes, at most
+    ///   [`bookclerk_cover::MAX_INPUT_BYTES`].
+    ///
+    /// # Errors
+    ///
+    /// [`MediaError::Cover`] when the image is refused or takes longer than
+    /// 30 s, [`MediaError::NotIsolated`] when isolation is required but no
+    /// worker was found, and [`MediaError::Worker`] when the worker cannot be
+    /// started or dies.
+    pub async fn process_cover(&self, cover: Vec<u8>) -> Result<bookclerk_cover::CoverSet> {
+        self.covers.process(cover).await
+    }
+
     /// Run `job`, waiting for a free slot first.
     ///
     /// # Errors
@@ -304,7 +342,7 @@ impl MediaPool {
             })?;
 
         match &self.runner {
-            Runner::Worker(launch) => self.run_in_worker(launch.clone(), job).await,
+            Runner::Worker(launch) => self.run_in_worker(WorkerLaunch::clone(launch), job).await,
             Runner::InProcess => run_in_process(job).await,
             Runner::Refuse(detail) => Err(MediaError::NotIsolated {
                 job: label,
@@ -415,7 +453,7 @@ impl MediaPool {
 }
 
 /// Re-emits worker/jail stderr through tracing so daemon JSON logs stay structured.
-fn forward_worker_stderr(job: &'static str, stderr: tokio::process::ChildStderr) {
+pub(crate) fn forward_worker_stderr(job: &'static str, stderr: tokio::process::ChildStderr) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
@@ -686,7 +724,7 @@ fn check_bin(path: &Path, source: &str) -> std::result::Result<PathBuf, String> 
 /// (it is executed by absolute path), no `HOME`, and nothing from Bookclerk's
 /// own configuration. What remains either changes how the C codecs behave or
 /// makes a crash diagnosable.
-fn worker_env_allowed(key: &str) -> bool {
+pub(crate) fn worker_env_allowed(key: &str) -> bool {
     const ALLOW: &[&str] = &[
         // Windows resolves system DLLs through these; the loader fails without
         // them. Ignored elsewhere.

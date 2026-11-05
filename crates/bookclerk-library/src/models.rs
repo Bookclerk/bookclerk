@@ -639,6 +639,15 @@ pub struct BookRecord {
     /// HTTPS URL for cover art when known.
     #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
+    /// Same-origin path of this cover's processed images, set by the daemon
+    /// when `cover_url` is an `https` URL; never stored. Append `/128`
+    /// (thumbnail), `/360` (card) or `/full`, so a client can show covers
+    /// without loading `cover_url` from another site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
+    )]
+    pub cover_path: Option<String>,
     /// Subject / topic tags (often from Open Library; `;`- or `,`-separated).
     #[schema(example = "Androgyny; Interplanetary voyages; Fiction")]
     pub subjects: Option<String>,
@@ -983,6 +992,15 @@ pub struct TitleRequestRecord {
     /// HTTPS URL for cover art when known.
     #[schema(example = "https://images.example.com/covers/9780441478125.jpg")]
     pub cover_url: Option<String>,
+    /// Same-origin path of this cover's processed images, set by the daemon
+    /// when `cover_url` is an `https` URL. Append `/128`
+    /// (thumbnail), `/360` (card) or `/full`, so a client can show covers
+    /// without loading `cover_url` from another site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "/api/covers/aHR0cHM6Ly9pbWFnZXMuZXhhbXBsZS5jb20vYy5qcGc.q2fW1n4bJm0Rg9xV3kTzPA"
+    )]
+    pub cover_path: Option<String>,
     /// Per-storefront snapshots (empty for legacy rows).
     #[serde(default)]
     pub sources: Vec<TitleRequestSourceRecord>,
@@ -1081,6 +1099,13 @@ pub struct QueueWisher {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(example = "https://accounts.example.com/u/dana/picture.png")]
     pub picture_url: Option<String>,
+    /// Same-origin 128 px copy of `picture_url` for the web app to show
+    /// (filled by the daemon; never stored).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "/api/images/aHR0cHM6Ly9hY2NvdW50cy5leGFtcGxlLmNvbS91L2RhbmEvcGljdHVyZS5wbmc.N14rqh66Bok9-eCqJKBNoQ"
+    )]
+    pub picture_path: Option<String>,
 }
 
 impl QueueWisher {

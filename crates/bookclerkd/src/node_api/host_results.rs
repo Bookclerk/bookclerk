@@ -26,9 +26,10 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::{JobKind, LibraryStore};
 use bookclerk_node_proto::{
-    seal_upload_token, AcquireTarget, Body, Frame, PlanDestination, MAX_FRAME_BYTES,
+    seal_upload_token, AcquireTarget, Body, Frame, LibraryId, PlanDestination, MAX_FRAME_BYTES,
     MAX_SCAN_BATCH_ROWS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
 };
+use bookclerk_storage::StorageBackend;
 use rand::RngCore as _;
 use zeroize::Zeroize as _;
 
@@ -161,13 +162,37 @@ pub(super) async fn acquire_plan(
         if !crate::jobs::acquire_job_includes_book(&book, false, download_episodes) {
             continue;
         }
+        // Another account's copy of the edition is already here: this title
+        // shares its files, as a local acquire would, rather than send the
+        // host to fetch keys that title holds.
+        let backends: Vec<(&str, &dyn StorageBackend)> = destinations
+            .iter()
+            .map(|destination| (destination.id.as_str(), destination.backend.as_ref()))
+            .collect();
+        match bookclerk_acquire::share_acquired_sibling(library, &backends, &book).await {
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(error = %err, book = %book.uuid, "could not share an acquired copy of the edition");
+            }
+        }
         let parent = podcast_parent(library, &book).await?;
+        // The host names with this library's edition ids, so it plans the
+        // same keys this node grants; a failed read fails the plan rather
+        // than send the host names this node would not grant.
+        let library_id = owner_library_id(library, &book.uuid).await?;
+        let parent_library_id = match &parent {
+            Some(parent) => owner_library_id(library, &parent.uuid).await?,
+            None => None,
+        };
         targets.push(AcquireTarget {
             book_uuid: book.uuid.clone(),
             plugin_key: book.plugin_key.clone(),
             account_id: book.account_id.clone(),
             book: serde_json::to_value(&book).unwrap_or_default(),
             parent: parent.map(|parent| serde_json::to_value(&parent).unwrap_or_default()),
+            library_id,
+            parent_library_id,
         });
     }
     let destinations = destinations
@@ -195,6 +220,21 @@ pub(super) async fn acquire_plan(
         targets.truncate(targets.len() / 2);
     }
     Ok(frame)
+}
+
+/// The library id of title `book_uuid` in this node's library, as the
+/// `<library id>` naming tag writes it, or `None` when it has no edition.
+///
+/// # Errors
+///
+/// Returns an error when the edition cannot be read.
+async fn owner_library_id(
+    library: &LibraryStore,
+    book_uuid: &str,
+) -> bookclerk_library::Result<Option<LibraryId>> {
+    Ok(bookclerk_acquire::library_id_of(library, book_uuid)
+        .await?
+        .and_then(|id| LibraryId::try_from(id).ok()))
 }
 
 /// This node's destinations with the key scope of the title `book_uuid`

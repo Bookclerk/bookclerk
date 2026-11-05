@@ -6,12 +6,15 @@
 //! test in `bookclerk-plugin-manifest/tests/fuzz_corpus.rs` decodes it the same
 //! way. Oracles: deny mode allows nothing; loopback and private destinations
 //! are never allowed without an explicit CIDR grant; `*.suffix` never matches
-//! `xsuffix`; percent-encoded hosts never match; hostname normalization is
-//! idempotent; the policy survives a JSON round trip.
+//! `xsuffix`; `*` never matches an IP literal and never grants TCP;
+//! percent-encoded hosts never match; hostname normalization is idempotent;
+//! the policy survives a JSON round trip.
 
 #![no_main]
 
-use bookclerk_plugin_manifest::{host_matches, normalize_hostname, EgressPolicy, NetworkMode};
+use bookclerk_plugin_manifest::{
+    host_matches, normalize_hostname, EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
+};
 use libfuzzer_sys::fuzz_target;
 
 /// Largest policy document worth decoding.
@@ -149,6 +152,27 @@ fn check_policy(policy: &EgressPolicy) {
             );
         }
         assert!(!host_matches(&format!("{pattern}%41"), pattern));
+    }
+
+    // `*` grants hostnames only: with no other entry, no IP literal passes
+    // the hostname layer, and a `*` TCP grant opens no socket.
+    if !policy.domains.is_empty() && policy.domains.iter().all(|d| d == ANY_PUBLIC_HOST) {
+        for host in ["8.8.8.8", "1.1.1.1", "[2606:4700::1111]", "134744072"] {
+            assert!(!policy.allows_initial(host), "`*` allowed IP literal {host}");
+        }
+        assert!(host_matches("example.com", ANY_PUBLIC_HOST));
+    }
+    if policy.tcp.iter().all(|g| g.host == ANY_PUBLIC_HOST) {
+        for host in &hosts {
+            assert!(
+                !policy
+                    .tcp
+                    .iter()
+                    .flat_map(|g| g.ports.iter())
+                    .any(|&port| policy.allows_tcp(host, port)),
+                "`*` TCP grant opened {host}"
+            );
+        }
     }
 
     assert!(

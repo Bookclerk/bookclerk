@@ -6684,6 +6684,7 @@ fn queue_wisher_for(
             .filter(|s| !s.is_empty())
             .map(crate::gravatar_hash),
         picture_url,
+        picture_path: None,
     }
 }
 
@@ -6825,6 +6826,7 @@ fn map_listening(m: listening_progress::Model) -> ListeningProgressRecord {
 /// Maps a `title_requests` row; storefront sources are filled later by attach helpers.
 fn map_request(m: title_requests::Model) -> TitleRequestRecord {
     TitleRequestRecord {
+        cover_path: None,
         id: m.id,
         uuid: m.uuid,
         identity_id: m.identity_id,
@@ -7002,6 +7004,7 @@ fn map_book(m: books::Model) -> Result<BookRecord> {
         description: m.description,
         language: m.language,
         cover_url: m.cover_url,
+        cover_path: None,
         subjects: m.subjects,
         enrich_source: m.enrich_source,
         enrich_confidence: m.enrich_confidence,
@@ -7074,14 +7077,14 @@ impl LibraryStore {
     }
 }
 
+pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
 pub(crate) mod library_model;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
 pub(crate) mod storage_scan;
-pub(crate) mod title_files;
+pub use edition_files::{EditionFile, FileOwner, FileRole, ACQUIRE_WRITER};
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
-pub use title_files::{TitleFile, ACQUIRE_WRITER};
 pub(crate) mod job_queue;
 
 mod books_page;

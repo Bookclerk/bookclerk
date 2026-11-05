@@ -31,7 +31,7 @@ export type Manifest = {
   args?: string[];
   /**
    * Named entrypoints the guest exports (`storefront`, `storage`,
-   * `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`). Triggers for the
+   * `databaseAdapter`, `remoteLibrary`, `cli`, `oidc`, `metadata`, `covers`). Triggers for the
    * default entrypoint live under `[triggers]` / `[[events.consumers]]`.
    */
   entrypoints?: string[];
@@ -401,6 +401,7 @@ export const ENTRYPOINT_NAMES = [
   "cli",
   "oidc",
   "metadata",
+  "covers",
 ] as const;
 
 const LOGO_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"] as const;
@@ -724,7 +725,7 @@ function validateSurface(m: Manifest): void {
 }
 
 /** Newest compatibility date the pinned workerd binary honors. */
-export const WORKERD_PIN_COMPAT_DATE = "2026-10-28";
+export const WORKERD_PIN_COMPAT_DATE = "2026-10-29";
 
 /** Author flags allowed on this pin. Required together for Python guests. */
 export const PYTHON_COMPATIBILITY_FLAGS = [

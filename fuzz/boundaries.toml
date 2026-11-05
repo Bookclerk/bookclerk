@@ -97,6 +97,34 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk", "rust-sdk"]
 
+[targets.cover_sink_key]
+crate = "bookclerk-plugin-abi"
+boundary = "CoverFetcher.fetchCovers sink keys (guest-chosen put key to URL index)"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.cover_process]
+crate = "bookclerk-cover"
+boundary = "Cover images downloaded from any public website (sniff, decode, resize, re-encode)"
+input_from = "any website"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.cover_token]
+crate = "bookclerk-cover"
+boundary = "Cover tokens in /api/covers and /api/images paths, and Gravatar hashes in /api/avatars paths (which remote URL a route may fetch)"
+input_from = "signed-in user"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.cover_wire]
+crate = "bookclerk-cover"
+boundary = "Cover worker frames (requests the worker reads, replies the host reads)"
+input_from = "media worker"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.guest_sql_authz]
 crate = "bookclerk-plugin-abi"
 boundary = "Guest SQL authorization under every host-issued policy shape"
@@ -122,5 +150,12 @@ artifacts = ["bookclerk", "rust-sdk"]
 crate = "bookclerk-resolve"
 boundary = "Store listings resolved into works, expressions and editions"
 input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.node_frame]
+crate = "bookclerk-node-proto"
+boundary = "Node-to-node frames on the cluster socket"
+input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]

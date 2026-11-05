@@ -12,6 +12,7 @@ authors.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 bookclerk-config.workspace = true
+bookclerk-naming.workspace = true
 bookclerk-library.workspace = true
 bookclerk-plugin-host.workspace = true
 rusqlite.workspace = true

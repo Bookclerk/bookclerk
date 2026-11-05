@@ -425,3 +425,50 @@ async fn pool_surfaces_a_job_failure_without_killing_the_caller() {
     .expect("pool still works after a failed job");
     assert!(output.exists());
 }
+
+/// A 1×1 opaque PNG.
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+    0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D, 0xB0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+    0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pool_processes_covers_concurrently_on_one_worker() {
+    let _serial = begin_windows_confined_pool_test().await;
+    let pool = Arc::new(confined_pool(2, supported_confinement()));
+    assert!(pool.is_isolated(), "{}", pool.summary());
+
+    // The worker's own JPEG output is a valid JPEG input too.
+    let jpeg = pool.process_cover(PNG.to_vec()).await.expect("png").full;
+    let mut tasks = Vec::new();
+    for n in 0..8 {
+        let pool = Arc::clone(&pool);
+        let input = if n % 2 == 0 {
+            PNG.to_vec()
+        } else {
+            jpeg.clone()
+        };
+        tasks.push(tokio::spawn(async move { pool.process_cover(input).await }));
+    }
+    for task in tasks {
+        let set = task.await.expect("join").expect("cover");
+        assert_eq!((set.width, set.height), (1, 1));
+        for image in [&set.thumb, &set.card, &set.full] {
+            assert!(image.starts_with(&[0xFF, 0xD8, 0xFF]));
+        }
+    }
+
+    // A refusal answers that cover only; the worker keeps serving.
+    let err = pool
+        .process_cover(b"<svg onload=alert(1)>".to_vec())
+        .await
+        .expect_err("refused");
+    assert!(
+        matches!(err, bookclerk_media::MediaError::Cover(_)),
+        "{err:?}"
+    );
+    pool.process_cover(PNG.to_vec()).await.expect("still up");
+}

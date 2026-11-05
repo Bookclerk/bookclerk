@@ -42,6 +42,20 @@ The same page also sets:
 - whether to save the cover image, a companion PDF and chapter information
   beside each book.
 
+Every book's path carries a short library id, such as `[1a2b3c4d]`. With
+the audiobookshelf profile it ends the file name, for example
+`Author/Series/1 - Title/Title [1a2b3c4d].m4b`. With the classic profile it
+ends the folder name instead, for example
+`Title [B0XXXXXXXX] [1a2b3c4d]/Title [B0XXXXXXXX].m4b`.
+
+The id comes from the store's product, so the same book gets the same id
+every time it is scanned. It keeps two different editions of a book, such as an
+abridged and an unabridged recording, from ever overwriting each other.
+
+If you write your own templates, they must include it too. If you own a
+book on two accounts, it is downloaded once and both copies point at the
+same files.
+
 ## Books you already have
 
 If you already keep audiobooks in a folder or bucket, Bookclerk can match

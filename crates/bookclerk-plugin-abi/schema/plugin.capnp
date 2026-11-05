@@ -55,6 +55,10 @@ const maxEventPayloadBytes :UInt32 = 65536;
 # Largest `KvNamespace` value in bytes; a `[[kv_namespaces]]` row may lower
 # its own cap but never raise it past this.
 const maxKvValueBytes :UInt32 = 1048576;
+# Most URLs in one `CoverFetcher.fetchCovers` call.
+const maxCoverUrls :UInt32 = 32;
+# Largest image body `CoverFetcher.fetchCovers` may return for one URL.
+const maxCoverBytes :UInt32 = 10485760;
 # Longest `KvNamespace` key in UTF-8 bytes.
 const maxKvKeyBytes :UInt32 = 512;
 # Largest `KvNamespace` metadata JSON text in bytes.
@@ -336,6 +340,8 @@ struct Entrypoints {
   scheduledHandler @9 :ScheduledHandler;
   # `metadata` entrypoint.
   metadata @10 :MetadataProvider;
+  # `covers` entrypoint.
+  covers @11 :CoverFetcher;
 }
 
 # Result union of `PluginWorker.open`.
@@ -1049,6 +1055,24 @@ interface MetadataProvider {
   ) -> (result :MetadataChaptersReply);
 }
 
+# `covers` entrypoint: downloads cover images on the host's behalf, so the
+# host itself never makes an outbound request to a URL a plugin or a store
+# supplied. The fetcher only transports bytes: the host sniffs, decodes and
+# re-encodes every image in its media worker before anything stores or
+# serves it. Network access is limited to what the manifest's
+# `[capabilities.network]` declares.
+interface CoverFetcher {
+  # Liveness / readiness probe.
+  health @0 () -> (result :HealthReply);
+  # Fetches every URL concurrently and streams each body into `sink` under
+  # its index in `params.urls` (`"0"`, `"1"`, ...). The reply says, per URL,
+  # whether its body was stored.
+  fetchCovers @1 (
+      params :CoverFetchParams,  # URLs and the per-image byte cap.
+      sink :Destination  # Host-served store that accepts only those keys.
+  ) -> (result :CoverImagesReply);
+}
+
 # Marks an enum whose wire strings (where an enum travels as `Text`, e.g.
 # `PluginError.code`) are the snake_case form of the enumerant names
 # (`payloadTooLarge` -> "payload_too_large").
@@ -1118,6 +1142,8 @@ enum Entrypoint {
   # Metadata provider: `lookup`, `search` and `chapters`
   # (`MetadataProvider`).
   metadata @6;
+  # Cover fetcher: `fetchCovers` (`CoverFetcher`).
+  covers @7;
 }
 
 # One declared event consumer: a `[[events.consumers]]` row the default
@@ -2515,6 +2541,45 @@ struct MetadataChaptersReply {
   union {
     # Success: chapter layout or not-found marker.
     ok @0 :MetadataChapters;
+    # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Params of `CoverFetcher.fetchCovers`.
+struct CoverFetchParams {
+  # Absolute `https://` URLs to fetch, at most `maxCoverUrls`; never empty.
+  # The host has already checked each one against its URL policy.
+  urls @0 :List(Text);
+  # Largest body, in bytes, the host accepts for one image; at most
+  # `maxCoverBytes`. The sink refuses a larger body, which fails that URL
+  # only.
+  maxBytes @1 :UInt32;
+}
+
+# What happened to one requested URL.
+struct CoverImage {
+  # The requested URL, verbatim.
+  url @0 :Text;
+  # Whether the body was put into the sink under this URL's index.
+  stored @1 :Bool;
+  # `Content-Type` the server sent. Advisory: the host sniffs the bytes.
+  contentType @2 :Text $optional;
+  # Why nothing was stored (HTTP status, size cap, timeout, refused host).
+  error @3 :Text $optional;
+}
+
+# Success payload of `CoverFetcher.fetchCovers`.
+struct CoverImages {
+  # One entry per requested URL, in request order.
+  images @0 :List(CoverImage);
+}
+
+# Result union of `CoverFetcher.fetchCovers`.
+struct CoverImagesReply {
+  union {
+    # Success: one entry per requested URL.
+    ok @0 :CoverImages;
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }

@@ -46,6 +46,8 @@ export interface AuthMeUser {
     identity_id: number;
     provider: string;
     picture_url: string;
+    /** Same-origin 128 px copy of `picture_url`, when the server signed one. */
+    picture_path?: string | null;
     last_used_at?: string | null;
   }[];
 }
@@ -160,6 +162,8 @@ export interface BookRecord {
   language: string | null;
   /** Remote or proxied cover image URL. */
   cover_url: string | null;
+  /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
+  cover_path?: string | null;
   /** Subject / BISAC-style tags when enriched. */
   subjects: string | null;
   /** Enrichment provider id that last wrote metadata. */
@@ -1110,6 +1114,8 @@ export interface ListedUser {
     identity_id: number;
     provider: string;
     picture_url: string;
+    /** Same-origin 128 px copy of `picture_url`, when the server signed one. */
+    picture_path?: string | null;
     last_used_at?: string | null;
   }[];
   /** Unfinished listen within ~30 minutes (waveform uses the last ~5 minutes). */
@@ -1647,7 +1653,7 @@ export interface PluginSettingsGroup {
   plugin_key?: string;
   /** Host-evaluated provenance (`platform_bundled`, `verified_staged`, `installed`, …). */
   provenance?: string;
-  /** Google favicon (or portal brand) URL for Settings list rows. */
+  /** Same-origin logo for Settings list rows (embedded, or a copy of the remote logo). */
   logo?: string;
   settings: PluginSettingOption[];
   /** Instance this group edits; absent for a `config.toml`-backed database adapter. */
@@ -2893,6 +2899,25 @@ export function coverUrl(uuid: string): string {
   return `/api/library/books/${encodeURIComponent(uuid)}/cover`;
 }
 
+/** A processed cover size the daemon serves: thumbnail, card, or full size. */
+export type CoverSize = 128 | 360 | "full";
+
+/**
+ * The same-origin URL of one processed size of a remote cover.
+ *
+ * The daemon hands out `cover_path` (`/api/covers/<token>`) for every remote
+ * `https` cover, so the web app never loads `cover_url` from another site.
+ *
+ * @param path - A `cover_path` from an API response.
+ * @param size - The size to load.
+ * @returns The image URL, or `null` when there is no usable path.
+ */
+export function coverSrc(path: string | null | undefined, size: CoverSize): string | null {
+  const trimmed = path?.trim();
+  if (!trimmed || !trimmed.startsWith("/api/covers/") || trimmed.includes("?")) return null;
+  return `${trimmed}/${size}`;
+}
+
 /**
  * Storefront product identity for a catalog work.
  */
@@ -2952,6 +2977,8 @@ export interface Recommendation {
   /** Stable bibliographic key (`isbn:` / `asin:` / `soft:`…). */
   work_key?: string;
   cover_url?: string | null;
+  /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
+  cover_path?: string | null;
   subtitle?: string | null;
   description?: string | null;
   publisher?: string | null;
@@ -3025,6 +3052,8 @@ export interface TitleRequest {
   work_id: string | null;
   resolved_book_uuid: string | null;
   cover_url?: string | null;
+  /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
+  cover_path?: string | null;
   description?: string | null;
   subtitle?: string | null;
   narrators?: string | null;
@@ -3061,8 +3090,10 @@ export interface QueueWisher {
   avatar_source?: string | null;
   /** SHA-256 hex of the contact email for Gravatar. */
   gravatar_hash?: string | null;
-  /** HTTPS picture from the wishing identity, when any. */
+  /** HTTPS picture from the wishing identity, when any; never loaded directly. */
   picture_url?: string | null;
+  /** Same-origin 128 px copy of `picture_url`, when the server signed one. */
+  picture_path?: string | null;
 }
 
 /**
@@ -3075,6 +3106,8 @@ export interface GlobalQueueEntry {
   asin: string | null;
   isbn: string | null;
   cover_url?: string | null;
+  /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
+  cover_path?: string | null;
   description?: string | null;
   subtitle?: string | null;
   narrators?: string | null;
@@ -3112,6 +3145,8 @@ export interface CatalogSearchHit {
   asin: string | null;
   isbn: string | null;
   cover_url?: string | null;
+  /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
+  cover_path?: string | null;
   store_editions: StoreEdition[];
   sources: string[];
   subtitle?: string | null;
@@ -3288,6 +3323,8 @@ export interface TitleMeta {
   series_index?: string | null;
   isbn?: string | null;
   cover_url?: string | null;
+  /** Same-origin path of this cover's processed images; see {@link coverSrc}. */
+  cover_path?: string | null;
   description?: string | null;
   publisher?: string | null;
   length_minutes?: number | null;

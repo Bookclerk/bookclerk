@@ -64,7 +64,7 @@ Request headers:
 | --- | --- |
 | `Authorization` | `Bearer <BRIDGE_TOKEN>` |
 | `Content-Type` | `application/x-capnp` |
-| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
+| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `CoverFetcher`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
 | `X-Bookclerk-Method` | Method name as declared in `plugin.capnp` (`login`, `event`, `job`, `openSession`, `databaseMigrations`, …) |
 | `X-Bookclerk-Context` | Bridge JSON `BridgeContext` (`invocation`, `config`, `secrets`, `eventsToken`, `databases` = `{ <BINDING>: <grant token> }`; `jobId` on `JobRunner.job`) — present for every entrypoint call, absent for `PluginWorker.*`. The adapter isolate exchanges the tokens for the author's `EVENTS` / `env.<BINDING>` bindings; authors never see them |
 | `X-Bookclerk-Caps` | JSON array of capability descriptors for the request message's capability table (only when the `$Params` struct carries interface-typed fields) |
@@ -121,8 +121,8 @@ isolate object; later `AdapterDatabaseSession.*` calls name it in
 
 Streams are never capabilities on this transport: `Destination.get`,
 `Destination.put`, and `Source.open` use the dedicated body routes, and
-`JobController.input` / `output` reach the launcher through the granted
-`GET /open` / `PUT /put` routes.
+`JobController.input` / `output` and the `CoverFetcher.fetchCovers` `sink`
+reach the launcher through the granted `GET /open` / `PUT /put` routes.
 
 ### Method table
 
@@ -137,6 +137,7 @@ Streams are never capabilities on this transport: `Destination.get`,
 | `PluginCli` | `describe`, `invoke` | `Cli extends CliEntrypoint` |
 | `Oidc` | `clients`, `authenticateUser` | `Oidc extends OidcEntrypoint` |
 | `MetadataProvider` | `health`, `lookup`, `search`, `chapters` | `Metadata extends MetadataEntrypoint` |
+| `CoverFetcher` | `health`, `fetchCovers` — the `sink` is a `destination` grant token | `Covers extends CoverEntrypoint` |
 | `Database` | `openSession` | `DatabaseAdapter extends DatabaseAdapterEntrypoint` |
 | `AdapterDatabaseSession` | all 10 (`X-Bookclerk-Target`) | the `AdapterDatabaseSession` object `openSession` returned |
 
@@ -155,7 +156,7 @@ unknown, expired, or revoked tokens.
 | Route | Grant flag | Purpose |
 | --- | --- | --- |
 | `GET /open?key=` | `allow_open` | `JobController.input.open` (streamed body) |
-| `PUT /put?key=` | `allow_put` | `JobController.output.put` (streamed body) |
+| `PUT /put?key=` | `allow_put` | `JobController.output.put` and the `fetchCovers` sink (streamed body; several puts on one grant may stream at once) |
 | `POST /progress` | `allow_progress` | `JobController.progress.report` |
 | `GET /cancel` | `cancel` present | Long poll: `200 {"cancelled":true}` once the host cancellation fires, `204` after the poll window so the isolate re-arms; the adapter turns it into `job.signal` |
 | `POST /db/execute` | `allow_database` | Typed SQL on the granted `GuestDatabase` (Cap'n bytes) |

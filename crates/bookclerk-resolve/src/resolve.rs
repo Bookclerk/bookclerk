@@ -21,7 +21,7 @@ use std::collections::BTreeSet;
 
 use crate::identifiers::IdentifierKey;
 use crate::kinds::{Abridgement, ExpressionKind, Level, Strength, WorkKind};
-use crate::listing::{HoldingDraft, Listing};
+use crate::listing::{HoldingDraft, Listing, ListingKey};
 use crate::model::{
     Conflict, CreditWrite, EditionIdentifierRow, EditionRow, Event, ExpressionRow, HoldingRow,
     LinkReason, ListingRow, Override, Plan, SeriesWrite, Snapshot, WorkIdentifierRow, WorkMatchKey,
@@ -41,10 +41,23 @@ pub enum EntityKind {
     Listing,
 }
 
-/// Mints ids for new rows; the store uses random UUIDs, tests use counters.
+/// Mints ids for new rows; the store uses UUIDs, tests use counters.
 pub trait IdSource {
     /// A fresh id, never returned before, for a new row of `kind`.
     fn next_id(&mut self, kind: EntityKind) -> String;
+
+    /// The id for a new edition first seen through the listing `key`.
+    ///
+    /// The store derives it from `key`, so every node that resolves the same
+    /// listing first mints the same edition id. The resolver mints an
+    /// edition only for a listing with no stored edition, but that
+    /// listing's first edition can outlive it (holding other listings), so
+    /// a caller deriving ids must check the id is free; the store mints a
+    /// random one when it is not. The default is [`IdSource::next_id`].
+    fn edition_id(&mut self, key: &ListingKey) -> String {
+        let _ = key;
+        self.next_id(EntityKind::Edition)
+    }
 }
 
 /// Whether a stored expression may take `listing`.
@@ -373,7 +386,7 @@ pub fn resolve(
                 }
             };
             let edition = EditionRow {
-                id: ids.next_id(EntityKind::Edition),
+                id: ids.edition_id(&listing.key),
                 expression_id,
                 media_kind: listing.media_kind,
                 title: listing.title.clone(),
@@ -620,28 +633,37 @@ pub fn resolve(
 
     // A work first stored from a listing without an author has no matcher
     // key; it gains one from a later listing that names the author, unless
-    // another work already holds that key.
+    // another work already holds that key. An episode gaining its show in
+    // this plan is judged under that show, so the key comes in the same
+    // plan rather than on the next scan.
     let work_match_key = if new_work.is_none() {
         let key = listing.work_match_key();
         snapshot
             .work(&work_id)
             .filter(|w| w.match_key.is_empty() && w.kind == listing.work_kind && !key.is_empty())
-            .filter(|w| {
+            .map(|w| {
+                let parent = match &work_parent {
+                    Some(late) if late.work_id == w.id => Some(late.parent_work_id.clone()),
+                    _ => w.parent_work_id.clone(),
+                };
+                (w, parent)
+            })
+            .filter(|(w, parent)| {
                 !snapshot.works.iter().any(|other| {
                     other.id != w.id
                         && other.match_key == key
                         && other.kind == w.kind
                         && match w.kind {
-                            WorkKind::PodcastEpisode => other.parent_work_id == w.parent_work_id,
+                            WorkKind::PodcastEpisode => other.parent_work_id == *parent,
                             WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => true,
                         }
                 })
             })
-            .map(|w| WorkMatchKey {
+            .map(|(w, parent)| WorkMatchKey {
                 work_id: w.id.clone(),
                 kind: w.kind,
                 parent_work_id: match w.kind {
-                    WorkKind::PodcastEpisode => w.parent_work_id.clone(),
+                    WorkKind::PodcastEpisode => parent,
                     WorkKind::Book | WorkKind::PodcastShow | WorkKind::Drama => None,
                 },
                 match_key: key,

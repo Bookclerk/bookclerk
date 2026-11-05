@@ -1024,6 +1024,42 @@ export interface MetadataProviderChaptersResults {
 }
 
 /**
+ * Params envelope of `CoverFetcher.health`.
+ *
+ * @internal
+ */
+export interface CoverFetcherHealthParams {
+}
+
+/**
+ * Results envelope of `CoverFetcher.health`.
+ *
+ * @internal
+ */
+export interface CoverFetcherHealthResults {
+  result: T.HealthReply;
+}
+
+/**
+ * Params envelope of `CoverFetcher.fetchCovers`.
+ *
+ * @internal
+ */
+export interface CoverFetcherFetchCoversParams {
+  params: T.CoverFetchParams;
+  sink?: T.Destination | null;
+}
+
+/**
+ * Results envelope of `CoverFetcher.fetchCovers`.
+ *
+ * @internal
+ */
+export interface CoverFetcherFetchCoversResults {
+  result: T.CoverImagesReply;
+}
+
+/**
  * Params envelope of `Database.openSession`.
  *
  * @internal
@@ -1855,13 +1891,13 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
 };
 
 /**
- * Wire codec for `Entrypoints` (0 data words, 11 pointers).
+ * Wire codec for `Entrypoints` (0 data words, 12 pointers).
  *
  * @internal
  */
 export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
   dataWords: 0,
-  pointerCount: 11,
+  pointerCount: 12,
   write(s, v, caps) {
     if (v.eventConsumer != null) {
       s.setCap(0, caps.exportCap(v.eventConsumer));
@@ -1895,6 +1931,9 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     }
     if (v.metadata != null) {
       s.setCap(10, caps.exportCap(v.metadata));
+    }
+    if (v.covers != null) {
+      s.setCap(11, caps.exportCap(v.covers));
     }
   },
   read(s, caps) {
@@ -1944,6 +1983,10 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (!(metadataValue == null)) {
       out.metadata = metadataValue;
     }
+    const coversValue = caps.importCap(s.getCapIndex(11)) as T.CoverFetcher;
+    if (!(coversValue == null)) {
+      out.covers = coversValue;
+    }
     return out;
   },
 };
@@ -1961,7 +2004,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          EntrypointsCodec.write(s.initStruct(0, 0, 11), v.value, caps);
+          EntrypointsCodec.write(s.initStruct(0, 0, 12), v.value, caps);
         }
         break;
       case "err":
@@ -1978,7 +2021,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 11), caps) };
+        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 12), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
       default:
@@ -6846,6 +6889,128 @@ export const MetadataChaptersReplyCodec: StructCodec<T.MetadataChaptersReply> = 
 };
 
 /**
+ * Wire codec for `CoverFetchParams` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const CoverFetchParamsCodec: StructCodec<T.CoverFetchParams> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.urls ?? []);
+    s.setUint32(0, v.maxBytes ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      urls: s.getTextList(0),
+      maxBytes: s.getUint32(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `CoverImage` (1 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const CoverImageCodec: StructCodec<T.CoverImage> = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.url ?? "");
+    s.setBool(0, v.stored ?? false);
+    if (v.contentType !== undefined) {
+      s.setText(1, v.contentType ?? "");
+    }
+    if (v.error !== undefined) {
+      s.setText(2, v.error ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.CoverImage = {
+      url: s.getText(0),
+      stored: s.getBool(0),
+    };
+    const contentTypeValue = s.getText(1);
+    if (!(contentTypeValue === "")) {
+      out.contentType = contentTypeValue;
+    }
+    const errorValue = s.getText(2);
+    if (!(errorValue === "")) {
+      out.error = errorValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `CoverImages` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const CoverImagesCodec: StructCodec<T.CoverImages> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.images ?? [];
+      const items = s.initStructList(0, list.length, 1, 3);
+      for (let i = 0; i < items.length; i++) {
+        CoverImageCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      images: s.getStructList(0, 1, 3).map((item) => CoverImageCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `CoverImagesReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const CoverImagesReplyCodec: StructCodec<T.CoverImagesReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          CoverImagesCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("CoverImagesReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: CoverImagesCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+      default:
+        throw unknownUnion("CoverImagesReply", disc);
+    }
+  },
+};
+
+/**
  * Wire codec for `DbValue` (2 data words, 1 pointers).
  *
  * @internal
@@ -10186,6 +10351,94 @@ export const MetadataProviderChaptersResultsCodec: StructCodec<MetadataProviderC
   read(s, caps) {
     return {
       result: MetadataChaptersReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `CoverFetcher.health` params envelope (0 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const CoverFetcherHealthParamsCodec: StructCodec<CoverFetcherHealthParams> = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  },
+};
+
+/**
+ * Wire codec for the `CoverFetcher.health` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const CoverFetcherHealthResultsCodec: StructCodec<CoverFetcherHealthResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: HealthReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `CoverFetcher.fetchCovers` params envelope (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const CoverFetcherFetchCoversParamsCodec: StructCodec<CoverFetcherFetchCoversParams> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.params != null) {
+      CoverFetchParamsCodec.write(s.initStruct(0, 1, 1), v.params, caps);
+    }
+    if (v.sink != null) {
+      s.setCap(1, caps.exportCap(v.sink));
+    }
+  },
+  read(s, caps) {
+    const out: CoverFetcherFetchCoversParams = {
+      params: CoverFetchParamsCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+    const sinkValue = caps.importCap(s.getCapIndex(1)) as T.Destination;
+    if (!(sinkValue == null)) {
+      out.sink = sinkValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for the `CoverFetcher.fetchCovers` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const CoverFetcherFetchCoversResultsCodec: StructCodec<CoverFetcherFetchCoversResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      CoverImagesReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: CoverImagesReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

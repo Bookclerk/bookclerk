@@ -40,7 +40,11 @@ updates:
     # (docs/contributing/ci.md#tool-versions): tool-versions-bump.yml bumps uv's
     # tag and digest together, and a Node.js major is changed by hand.
     # Dependabot still moves the node digest within the pinned major.
+    # Dependabot names an image from a registry other than Docker Hub without
+    # the host (`astral-sh/uv`, as in its PR titles), so the ignore has to use
+    # that name; the full reference is kept in case it ever matches on it.
     ignore:
+      - dependency-name: "astral-sh/uv"
       - dependency-name: "ghcr.io/astral-sh/uv"
       - dependency-name: "node"
         update-types: ["version-update:semver-major"]
@@ -108,6 +112,7 @@ updates:
   # shipped modules/ import nothing from npm.
   - package-ecosystem: npm
     directories:
+      - "/crates/bookclerk-plugins/optional/covers"
       - "/crates/bookclerk-plugins/optional/metadata-audnexus"
       - "/crates/bookclerk-plugins/optional/metadata-openlibrary"
     schedule:

@@ -912,9 +912,7 @@ pub async fn run_acquire(
     let bad_book = cfg.output.bad_book_action;
     let total = targets.len();
     // Deployed metadata providers fill the plain-audio overlay.
-    let metadata = bookclerk_acquire::AcquireMetadata::new(std::sync::Arc::new(
-        state.integrations.read().await.clone(),
-    ));
+    let metadata = crate::covers::acquire_metadata(state).await;
     for (idx, book) in targets.into_iter().enumerate() {
         if let Some(ctx) = ctx {
             if ctx.is_cancelled()
@@ -955,6 +953,8 @@ pub async fn run_acquire(
             write_destinations: None,
             job_id: ctx.map(|c| c.fence.job_id.clone()),
             temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
+            library_id: None,
+            parent_library_id: None,
             metadata: metadata.clone(),
         };
         let mut attempts = 0u32;

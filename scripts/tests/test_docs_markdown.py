@@ -608,6 +608,43 @@ class TreeTest(unittest.TestCase):
         )
 
 
+    def test_relative_file_links_in_rust_doc_comments(self) -> None:
+        src = self.base / "crates" / "x" / "src"
+        (src / "bin").mkdir(parents=True)
+        (src / "lib.rs").write_text(
+            "//! [adr](../../../docs/adr/a.md) [item](crate::a::B) [web](https://example.com/x.md)\n"
+            "//! [site](/docs/x) [anchor](#x) `[code](c.md)` [readme](README.md#top)\n"
+            "//! ```text\n//! [fenced](f.md)\n//! ```\n"
+            "//! ````text\n//! ```\n//! [nested](n.md)\n//! ````\n"
+            "//! [angle](<https://example.com/x.md>) [rel](<../y.md>)\n"
+            "/// [def]: ../other.rs\n"
+            "//// [not a doc comment](n.md)\n"
+            "// [plain comment](p.md)\n"
+        )
+        (src / "main.rs").write_text("//! [binary](../README.md)\n")
+        (src / "bin" / "tool.rs").write_text("//! [binary](../../README.md)\n")
+        self.assertEqual(
+            dm.source_doc_links([src], self.base),
+            [
+                "crates/x/src/lib.rs:1: ../../../docs/adr/a.md",
+                "crates/x/src/lib.rs:2: README.md#top",
+                "crates/x/src/lib.rs:10: ../y.md",
+                "crates/x/src/lib.rs:11: ../other.rs",
+            ],
+        )
+
+
+class WorkspaceDocCommentTest(unittest.TestCase):
+    """The real workspace: no Rust library doc comment links a file relatively.
+
+    docs-publish (main only) fails on such a link; this runs on every pull
+    request, before the change lands.
+    """
+
+    def test_workspace_libraries_have_no_relative_file_links(self) -> None:
+        self.assertEqual(dm.source_doc_links(dm.library_source_dirs()), [])
+
+
 # Unix times of 2025-10-01 and 2025-10-02, 12:00 UTC.
 DAY1 = 1_759_320_000
 DAY2 = DAY1 + 86_400

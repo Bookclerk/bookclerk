@@ -2,7 +2,7 @@
 
 Spawns the pinned Cloudflare ``workerd`` with a materialized Cap'n Proto config
 and POSTs ``describe`` (plus a ``POST /invoke`` ``health`` call for storefront,
-remoteLibrary and metadata guests) to the HTTP bridge. Does not require the Rust
+remoteLibrary, metadata and covers guests) to the HTTP bridge. Does not require the Rust
 ``bookclerk-workerd`` binary.
 """
 
@@ -64,6 +64,7 @@ _HEALTH_INTERFACES: tuple[tuple[str, str], ...] = (
     ("storefront", "ContentSource"),
     ("remoteLibrary", "RemoteLibrary"),
     ("metadata", "MetadataProvider"),
+    ("covers", "CoverFetcher"),
 )
 
 
@@ -105,7 +106,8 @@ def _health_codecs(iface: str) -> tuple[Any, Any]:
     """Params and results codecs of ``iface``'s ``health`` method.
 
     Args:
-        iface: ``ContentSource``, ``RemoteLibrary`` or ``MetadataProvider``.
+        iface: ``ContentSource``, ``RemoteLibrary``, ``MetadataProvider`` or
+            ``CoverFetcher``.
 
     Returns:
         The ``(params, results)`` struct codecs.
@@ -128,6 +130,10 @@ def _health_codecs(iface: str) -> tuple[Any, Any]:
             _wire._metadata_provider_health_params_codec,
             _wire._metadata_provider_health_results_codec,
         ),
+        "CoverFetcher": (
+            _wire._cover_fetcher_health_params_codec,
+            _wire._cover_fetcher_health_results_codec,
+        ),
     }
     if iface not in codecs:
         raise ValueError(f"{iface} has no health probe")
@@ -139,8 +145,8 @@ def _invoke_health(base: str, iface: str, token: str) -> Any:
 
     Args:
         base: Bridge base URL.
-        iface: Cap'n interface name (``ContentSource``, ``RemoteLibrary`` or
-            ``MetadataProvider``).
+        iface: Cap'n interface name (``ContentSource``, ``RemoteLibrary``,
+            ``MetadataProvider`` or ``CoverFetcher``).
         token: Bridge bearer token.
 
     Returns:
@@ -279,8 +285,8 @@ def run_smoke(plugin_dir: Path) -> str:
     try:
         _wait_for_health(base, bridge_token)
         describe = _post_json(f"{base}/describe", {}, bridge_token)
-        # `health` is a method of the storefront, remoteLibrary and metadata
-        # entrypoints; the default entrypoint (event/job triggers) has no
+        # `health` is a method of the storefront, remoteLibrary, metadata and
+        # covers entrypoints; the default entrypoint (event/job triggers) has no
         # health probe.
         health = {
             iface: _require_healthy(iface, _invoke_health(base, iface, bridge_token))

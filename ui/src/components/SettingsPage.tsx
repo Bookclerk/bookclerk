@@ -44,7 +44,7 @@ import {
   type AuthRole,
   type SettingsResponse,
 } from "@/lib/api";
-import { googleFaviconUrl, storeFaviconUrl } from "@/lib/catalogTitle";
+import { storeIconSrc } from "@/lib/catalogTitle";
 import { cn, pageWidthClass } from "@/lib/utils";
 
 const FAMILY_LABELS: Record<string, string> = {
@@ -278,7 +278,7 @@ function effectiveLoaded(settings: SettingsResponse | null, plugin: PluginSettin
   return runtimeLoadedKeys(plugin).some((key) => effective[key] === "true");
 }
 
-/** Prefer API `logo`, then known store/domain favicons; advance on load failure. */
+/** Prefer the API's same-origin `logo`, then the store's icon; advance on load failure. */
 function pluginLogoCandidates(plugin: PluginSettingsGroup): string[] {
   const out: string[] = [];
   const push = (url: string | undefined) => {
@@ -287,25 +287,10 @@ function pluginLogoCandidates(plugin: PluginSettingsGroup): string[] {
   };
   push(plugin.logo);
   if (plugin.family === "source" || plugin.family === "integration") {
-    push(storeFaviconUrl(plugin.id));
+    push(storeIconSrc(plugin.id));
   }
-  const domain = PLUGIN_FAVICON_FALLBACK_DOMAINS[pluginRowKey(plugin)];
-  if (domain) push(googleFaviconUrl(domain));
   return out;
 }
-
-/** Domains when API logo is missing or the primary `<img>` fails to load. */
-const PLUGIN_FAVICON_FALLBACK_DOMAINS: Record<string, string> = {
-  "source:audible": "audible.com",
-  "source:chirp": "chirpbooks.com",
-  "source:libro": "libro.fm",
-  "source:graphicaudio": "graphicaudio.com",
-  "integration:audiobookshelf": "audiobookshelf.org",
-  "database:sqlite": "sqlite.org",
-  "database:d1": "cloudflare.com",
-  "database:postgres": "postgresql.org",
-  "output:s3": "aws.amazon.com",
-};
 
 function PluginLogo({ plugin }: { plugin: PluginSettingsGroup }) {
   const candidates = pluginLogoCandidates(plugin);

@@ -86,6 +86,8 @@ import type {
   LoginParams,
   LoginResult,
   LoginStartResult,
+  CoverFetchParams,
+  CoverImage,
   MetadataChapters,
   MetadataChaptersParams,
   MetadataLookupParams,
@@ -137,6 +139,9 @@ export type {
   CliInvokeParams,
   CliInvokeResult,
   CliSchema,
+  CoverFetchParams,
+  CoverImage,
+  CoverImages,
   DomainEvent,
   ExtensibleConfig,
   HealthOk,
@@ -2282,13 +2287,50 @@ export class MetadataEntrypoint<
   }
 }
 
+/**
+ * `covers` entrypoint (`CoverFetcher`): downloads cover images for the host.
+ * The host passes a `sink` {@link Destination}; put the body for `urls[i]`
+ * under the key `String(i)` and return one {@link CoverImage} per URL, in
+ * request order. The host sniffs, decodes and re-encodes every body, so the
+ * bytes stay untrusted. Export it as `export class Covers extends CoverEntrypoint`.
+ */
+export class CoverEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends NamedEntrypoint<Env> {
+  static override bookclerkMethods = Object.freeze(["health", "fetchCovers"]);
+
+  /**
+   * Reports whether the fetcher can answer.
+   *
+   * @returns Health flag plus detail.
+   */
+  health(): Promise<HealthOk> {
+    return Promise.resolve({ ok: true, detail: "" });
+  }
+  /**
+   * Fetches each URL and streams its body into `sink` under its index.
+   *
+   * @param _params - URLs (absolute `https://`) and the per-body byte cap.
+   * @param _sink - Host destination; accepts `put` for keys `0..urls.length`.
+   * @returns One entry per URL, in request order.
+   */
+  fetchCovers(_params: CoverFetchParams, _sink: Destination): Promise<CoverImage[]> {
+    return Promise.reject(unsupported("fetchCovers"));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Adapter isolate (trusted; owns GRANTED / BRIDGE_TOKEN / PLUGIN_DESCRIBE)
 // ---------------------------------------------------------------------------
 
 /** Wire name of each named entrypoint (`plugin.toml` `entrypoints`). */
 export type EntrypointName =
-  "storefront" | "storage" | "databaseAdapter" | "remoteLibrary" | "cli" | "oidc" | "metadata";
+  | "storefront"
+  | "storage"
+  | "databaseAdapter"
+  | "remoteLibrary"
+  | "cli"
+  | "oidc"
+  | "metadata"
+  | "covers";
 
 /** Adapter binding name for each named entrypoint. */
 export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Object.freeze({
@@ -2299,6 +2341,7 @@ export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Obj
   cli: "PLUGIN_CLI",
   oidc: "PLUGIN_OIDC",
   metadata: "PLUGIN_METADATA",
+  covers: "PLUGIN_COVERS",
 });
 
 /** Exported class name the launcher binds for each named entrypoint. */
@@ -2310,6 +2353,7 @@ export const ENTRYPOINT_CLASSES: Readonly<Record<EntrypointName, string>> = Obje
   cli: "Cli",
   oidc: "Oidc",
   metadata: "Metadata",
+  covers: "Covers",
 });
 
 /** Reverse-channel fetcher bound as `GRANTED` on the adapter isolate. */

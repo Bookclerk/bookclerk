@@ -38,7 +38,7 @@ from .path_guard import (
 PYTHON_WORKERD_FLAGS = ("python_workers", "disable_python_external_sdk")
 """Compatibility flags required for Python Workers under bookclerk-workerd."""
 
-WORKERD_PIN_COMPAT_DATE = "2026-10-28"
+WORKERD_PIN_COMPAT_DATE = "2026-10-29"
 """Newest ``compatibility_date`` the pinned workerd binary honors."""
 
 _LOAD_SUFFIXES = (".js", ".mjs", ".py", ".wasm", ".json")
@@ -622,6 +622,7 @@ ENTRYPOINT_NAMES: tuple[str, ...] = (
     "cli",
     "oidc",
     "metadata",
+    "covers",
 )
 """Entrypoint wire names accepted in ``entrypoints``."""
 
@@ -824,6 +825,7 @@ ENTRYPOINT_EXPORT_CLASSES: dict[str, str] = {
     "cli": "Cli",
     "oidc": "Oidc",
     "metadata": "Metadata",
+    "covers": "Covers",
 }
 """Exported class name the launcher binds for each ``entrypoints`` wire name."""
 
@@ -852,7 +854,7 @@ def check_main_module_source(
         raise ValueError(
             f"{main_name}: `BookclerkPlugin` was removed in api_version 3; extend `{base}` "
             "(default export with event()/job() triggers) and export named entrypoint classes "
-            "(Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata)"
+            "(Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers)"
         )
     if language == "python":
         if "bookclerk_plugin_sdk" not in src and base not in src:

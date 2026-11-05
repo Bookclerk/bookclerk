@@ -89,6 +89,11 @@ That job runs no repository code and is the only one with
 end (nextest's `--no-fail-fast`, and no cancelling job), so one round shows
 every failure among them.
 
+The job frees the preinstalled SDKs it never uses (Android, .NET, GHC and
+the CodeQL bundle) before it builds. A full-suite coverage build fills most
+of a hosted runner's disk, and when the dependency cache only partly
+matches, the stale dependencies it restores can push the build out of space.
+
 Test targets with `harness = false` whose `main` doesn't answer libtest's
 `--list` protocol would list zero tests under nextest. So they are excluded
 from the nextest run and run with `cargo test --test`
@@ -393,7 +398,8 @@ Dependabot and the workerd pin). For uv it also resolves the image digest
 and rewrites every Dockerfile that builds from the image. It opens one pull
 request for every tool due that day, on the `deps/tool-versions` branch, with
 the [automation App](automation.md#automation-app), and turns on auto-merge. Dependabot ignores the uv image and Node.js majors, so
-the two never race.
+the two never race. Its ignore names the uv image `astral-sh/uv`, without the
+`ghcr.io` host, because that is the name Dependabot matches ignores against.
 
 > [!NOTE]
 > The Rust toolchain keeps its own pin in `rust-toolchain.toml`, and the
@@ -811,7 +817,10 @@ The summary has two figures:
 Floors ratchet. After every successful merge group run, which measures
 every area in full,
 [`coverage-floors.yml`](../../.github/workflows/coverage-floors.yml) reads
-that run's coverage and runs `scripts/coverage_gate.py --ratchet`:
+that run's coverage and runs `scripts/coverage_gate.py --ratchet` on `main`
+once `main` contains the commit that run measured. It waits up to five minutes
+for that commit to land and skips the run if it does not. Only code already on
+`main` runs in the job, because the job also holds the automation App token:
 
 1. Each floor rises to the area's measured coverage rounded down, less one
    point, so noise does not fail a run.
@@ -1229,7 +1238,10 @@ workflow does the same for the Python plugin SDK
    `@staticmethod` or `@classmethod`) or an enum's methods. The summary
    names the changed functions it skipped for that reason.
 5. Each mutant runs the tests that cover its function. A mutant no test
-   runs counts as missed.
+   runs counts as missed. mutmut picks those tests by node id, and pytest
+   cannot find a node id again once it has escaped a backslash or a
+   non-ASCII character in it, so `tests/conftest.py` refuses such test ids.
+   Give a parametrized case an ASCII id instead of `repr` of its input.
 6. The run stops after 60 minutes. mutmut records each result as it lands,
    so the summary then counts the mutants tested before the limit and says
    the run was stopped. If mutmut fails or stops before testing any

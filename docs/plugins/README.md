@@ -52,7 +52,8 @@ Authors write a Workers-shaped module:
   - plus an optional `describe()` refinement.
 - Every named entrypoint in `entrypoints = [...]` is an exported class
   with the matching name, extending its base: `Storefront`, `Storage`,
-  `RemoteLibrary`, `DatabaseAdapter`, `Cli`, `Oidc` or `Metadata`.
+  `RemoteLibrary`, `DatabaseAdapter`, `Cli`, `Oidc`, `Metadata` or
+  `Covers`.
 - Native guests implement the Rust `PluginWorker`
   (`describe` / `open(invocation, bindings) -> Entrypoints`) and call
   `serve`. On native guests, `serve` is the stdin/stdout Cap'n Proto
@@ -309,10 +310,10 @@ Audible, Libro.fm, Chirp, GraphicAudio and Audiobookshelf ship as
   display alias from a different PluginKey on the same host is invalid
   (fail closed).
 
-The Open Library and Audnexus metadata providers are first-party
-**workerd TypeScript** guests in the same tree
-(`crates/bookclerk-plugins/optional/metadata-openlibrary` and
-`metadata-audnexus`). They have no Cargo package:
+The Open Library and Audnexus metadata providers and the `covers`
+fetcher are first-party **workerd TypeScript** guests in the same tree
+(`crates/bookclerk-plugins/optional/metadata-openlibrary`,
+`metadata-audnexus` and `covers`). They have no Cargo package:
 
 - Their source is in `src/`. `npm run build` compiles it with TypeScript
   into the `modules/` that ships, and both are committed. CI's

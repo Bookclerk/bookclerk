@@ -31,8 +31,8 @@ pub use kinds::{
     Strength, WorkKind,
 };
 pub use listing::{
-    stored_marketplace, work_match_key, Credit, Holder, HoldingDraft, Listing, ListingDraft,
-    ListingError, ListingKey, SeriesEntry,
+    stored_marketplace, stored_product_id, work_match_key, Credit, Holder, HoldingDraft, Listing,
+    ListingDraft, ListingError, ListingKey, SeriesEntry,
 };
 pub use model::{
     Conflict, CreditWrite, EditionIdentifierRow, EditionRow, Event, ExpressionRow, HoldingRow,

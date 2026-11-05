@@ -80,13 +80,78 @@ const CREDIT_BATCH_STATEMENTS: usize = 30;
 // One listing's series (a series row and an entry each) fit in one batch.
 const _: () = assert!(2 * resolve::listing::MAX_SERIES <= CREDIT_BATCH_STATEMENTS);
 
-/// Fresh UUIDs for new rows.
-struct UuidIds;
+/// Fresh UUIDs for new rows; an edition's is derived from the listing that
+/// first named it ([`edition_id_for_listing`]) unless `random_editions`.
+#[derive(Default)]
+struct UuidIds {
+    /// Mint random edition ids too: the derived id is already taken (the
+    /// listing's first edition still holds other listings after the
+    /// listing was moved off it).
+    random_editions: bool,
+}
 
 impl resolve::IdSource for UuidIds {
     fn next_id(&mut self, _kind: resolve::EntityKind) -> String {
         Uuid::new_v4().to_string()
     }
+
+    fn edition_id(&mut self, key: &resolve::listing::ListingKey) -> String {
+        if self.random_editions {
+            self.next_id(resolve::EntityKind::Edition)
+        } else {
+            edition_id_for_listing(key)
+        }
+    }
+}
+
+/// Namespace of the name-based (version 5) UUIDs that edition ids are.
+const EDITION_ID_NAMESPACE: Uuid = Uuid::from_u128(0x6b1f_4e0a_93c2_5d7e_8a41_0c9b_2f63_d815);
+
+/// The id of an edition first seen through the store listing `key`: a
+/// version 5 UUID over its plugin key, marketplace and product id. Two
+/// nodes (or one library rebuilt from a fresh scan) that resolve the same
+/// listing first give its edition the same id, and so the same
+/// `<library id>` in file names.
+#[must_use]
+pub fn edition_id_for_listing(key: &resolve::listing::ListingKey) -> String {
+    let name = format!(
+        "edition\0{}\0{}\0{}",
+        key.plugin_key, key.marketplace, key.product_id
+    );
+    Uuid::new_v5(&EDITION_ID_NAMESPACE, name.as_bytes()).to_string()
+}
+
+/// Lower-case Crockford base32 digits, for [`library_id`].
+const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
+
+/// The `<library id>` of edition `edition_id`: its first 40 bits as 8
+/// lower-case Crockford base32 characters (no `i`, `l`, `o` or `u`). An id
+/// that is not a UUID falls back to its first 8 ASCII letters and digits.
+/// Returns `None` when that leaves nothing.
+#[must_use]
+pub fn library_id(edition_id: &str) -> Option<String> {
+    let short = match Uuid::parse_str(edition_id) {
+        Ok(uuid) => {
+            let bytes = uuid.as_bytes();
+            let bits = bytes[..5]
+                .iter()
+                .fold(0u64, |acc, byte| (acc << 8) | u64::from(*byte));
+            (0..8)
+                .rev()
+                .map(|digit| {
+                    // Masked to five bits, so the conversion always succeeds.
+                    let index = u8::try_from((bits >> (digit * 5)) & 0x1f).unwrap_or(0);
+                    char::from(CROCKFORD[usize::from(index)])
+                })
+                .collect()
+        }
+        Err(_) => edition_id
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .take(8)
+            .collect::<String>(),
+    };
+    Some(short).filter(|short| !short.is_empty())
 }
 
 /// A stored enum spelling the resolver does not know: the row was written
@@ -597,6 +662,20 @@ impl LibraryStore {
         lookup_chunk(self.max_binds)
     }
 
+    /// True when an edition with id `edition_id` is in the library.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    async fn edition_exists(&self, edition_id: &str) -> Result<bool> {
+        use sea_orm::PaginatorTrait as _;
+        let found = editions::Entity::find_by_id(edition_id.to_string())
+            .count(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(found > 0)
+    }
+
     /// Resolves `listing` into the library and records `holding` of it.
     ///
     /// # Arguments
@@ -628,7 +707,19 @@ impl LibraryStore {
                     listing.key.product_id
                 )));
             }
-            let plan = resolve::resolve(listing, holding, &snapshot, &mut UuidIds);
+            let mut plan = resolve::resolve(listing, holding, &snapshot, &mut UuidIds::default());
+            if let Some(edition) = &plan.new_edition {
+                if self.edition_exists(&edition.id).await? {
+                    plan = resolve::resolve(
+                        listing,
+                        holding,
+                        &snapshot,
+                        &mut UuidIds {
+                            random_editions: true,
+                        },
+                    );
+                }
+            }
             let refresh = stored_row
                 .as_ref()
                 .is_some_and(|row| listing_needs_refresh(row, listing, Utc::now()));
@@ -1508,6 +1599,50 @@ mod tests {
     }
 
     #[test]
+    fn edition_ids_are_derived_from_the_listing_key() {
+        let key = |plugin: &str, market: &str, product: &str| resolve::listing::ListingKey {
+            plugin_key: plugin.into(),
+            marketplace: market.into(),
+            product_id: product.into(),
+        };
+        let id = edition_id_for_listing(&key("audible", "us", "B001"));
+        assert_eq!(id, edition_id_for_listing(&key("audible", "us", "B001")));
+        assert_eq!(Uuid::parse_str(&id).unwrap().get_version_num(), 5);
+        for other in [
+            key("audible", "uk", "B001"),
+            key("libro", "us", "B001"),
+            key("audible", "us", "B002"),
+            // The separator keeps fields from running together.
+            key("audibleu", "s", "B001"),
+        ] {
+            assert_ne!(id, edition_id_for_listing(&other), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn a_library_id_is_eight_crockford_digits_of_the_edition_id() {
+        assert_eq!(
+            library_id("00000000-0000-4000-8000-000000000000").as_deref(),
+            Some("00000000")
+        );
+        // 0xffffffffff is all ones: the last digit of the alphabet.
+        assert_eq!(
+            library_id("ffffffff-ff00-4000-8000-000000000000").as_deref(),
+            Some("zzzzzzzz")
+        );
+        // 0x0123456789 in five-bit groups.
+        assert_eq!(
+            library_id("01234567-8900-4000-8000-000000000000").as_deref(),
+            Some("04hmasw9")
+        );
+        let id = library_id(&Uuid::new_v4().to_string()).unwrap();
+        assert_eq!(id.len(), 8);
+        assert!(id.bytes().all(|b| CROCKFORD.contains(&b)), "{id}");
+        assert_eq!(library_id("edition-12").as_deref(), Some("edition1"));
+        assert_eq!(library_id("--"), None);
+    }
+
+    #[test]
     fn sort_names_put_the_last_word_first() {
         assert_eq!(sort_name("Frank Herbert"), "Herbert, Frank");
         assert_eq!(sort_name("Plato"), "Plato");
@@ -1580,6 +1715,104 @@ mod store_tests {
     }
 
     #[tokio::test]
+    async fn a_taken_derived_edition_id_falls_back_to_a_random_one() {
+        use crate::entities::store_listings;
+        let store = self::store().await;
+        let mut draft = dune("audible", "B001");
+        draft.identifiers.clear();
+        let listing = resolve::Listing::from_draft(&draft).unwrap();
+        let first = store
+            .record_listing(&listing, &account("a1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            first.listing.edition_id,
+            edition_id_for_listing(&listing.key)
+        );
+        // The listing leaves the library while its edition stays, so the
+        // next resolve mints an edition whose derived id is taken.
+        holdings::Entity::delete_many()
+            .filter(holdings::Column::ListingId.eq(first.listing.id.clone()))
+            .exec(&store.db)
+            .await
+            .unwrap();
+        store_listings::Entity::delete_by_id(first.listing.id.clone())
+            .exec(&store.db)
+            .await
+            .unwrap();
+        let again = store
+            .record_listing(&listing, &account("a1"))
+            .await
+            .unwrap();
+        let minted = again.new_edition.expect("a new edition");
+        assert_ne!(minted.id, first.listing.edition_id);
+        assert_eq!(Uuid::parse_str(&minted.id).unwrap().get_version_num(), 4);
+    }
+
+    #[tokio::test]
+    async fn only_a_live_editions_file_holds_a_name() {
+        use crate::{FileOwner, FileRole};
+        let store = self::store().await;
+        let dune = resolve::Listing::from_draft(&dune("audible", "B001")).unwrap();
+        let linked = store.record_listing(&dune, &account("a1")).await.unwrap();
+        let held = FileOwner::Edition(linked.listing.edition_id.clone());
+        let mine = FileOwner::Edition("another-edition".into());
+        let record = |key: &'static str, owner: FileOwner| {
+            let store = store.clone();
+            async move {
+                assert!(store
+                    .record_edition_file("local", key, &owner, FileRole::Audio)
+                    .await
+                    .unwrap());
+            }
+        };
+        record("A/Live.m4b", held.clone()).await;
+        record("A/Gone.m4b", FileOwner::Edition("removed-edition".into())).await;
+        record("A/Branch.m4b", FileOwner::BranchTitle("shared".into())).await;
+        assert!(store
+            .name_held_by_another_owner("A/Live", &mine)
+            .await
+            .unwrap());
+        assert!(!store
+            .name_held_by_another_owner("A/Live", &held)
+            .await
+            .unwrap());
+        for stale in ["A/Gone", "A/Branch"] {
+            assert!(
+                !store
+                    .name_held_by_another_owner(stale, &mine)
+                    .await
+                    .unwrap(),
+                "{stale}"
+            );
+        }
+        // An acquire's record refuses a live edition's key and takes over
+        // a stale holder's.
+        assert!(!store
+            .record_edition_file("local", "A/Live.m4b", &mine, FileRole::Audio)
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .edition_file("local", "A/Live.m4b")
+                .await
+                .unwrap()
+                .unwrap()
+                .owner,
+            held
+        );
+        for stale in ["A/Gone.m4b", "A/Branch.m4b"] {
+            assert!(
+                store
+                    .record_edition_file("local", stale, &mine, FileRole::Audio)
+                    .await
+                    .unwrap(),
+                "{stale}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn two_accounts_and_two_stores_share_one_edition() {
         let store = store().await;
         let audible = resolve::Listing::from_draft(&dune("audible", "B001")).unwrap();
@@ -1601,6 +1834,18 @@ mod store_tests {
 
         let again = store.record_listing(&libro, &account("a1")).await.unwrap();
         assert!(again.is_noop(), "{again:?}");
+        // The edition's id comes from the listing that first named it, so
+        // another library resolving the same listing first agrees on it.
+        assert_eq!(
+            first.listing.edition_id,
+            edition_id_for_listing(&audible.key)
+        );
+        let elsewhere = self::store().await;
+        let theirs = elsewhere
+            .record_listing(&audible, &account("someone-else"))
+            .await
+            .unwrap();
+        assert_eq!(theirs.listing.edition_id, first.listing.edition_id);
 
         let db = &store.db;
         assert_eq!(holdings::Entity::find().count(db).await.unwrap(), 3);
@@ -1727,7 +1972,7 @@ mod store_tests {
         let listing = resolve::Listing::from_draft(&draft).unwrap();
         let holder = resolve::Holder::Account("a1".into());
         let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert_eq!(
             store
                 .run_link_listing(link_params(&listing, &plan, &snapshot))
@@ -1891,7 +2136,7 @@ mod store_tests {
             .listing_snapshot(&listing, &resolve::Holder::Account("a1".into()))
             .await
             .unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         let mut params = link_params(&listing, &plan, &snapshot);
         assert_eq!(
             params.stored_edition_id.as_deref(),
@@ -1946,7 +2191,7 @@ mod store_tests {
         let listing = resolve::Listing::from_draft(&with_asin).unwrap();
         let holder = resolve::Holder::Account("a1".into());
         let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert_eq!(plan.link, resolve::LinkReason::WeakIdentifier);
         assert_eq!(plan.listing.edition_id, edition);
 
@@ -2020,7 +2265,7 @@ mod store_tests {
         let listing = resolve::Listing::from_draft(&with_asin).unwrap();
         let holder = resolve::Holder::Account("a1".into());
         let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert_eq!(plan.listing.edition_id, isbn_only.listing.edition_id);
 
         // Meanwhile the ASIN is claimed by the other edition.
@@ -2075,7 +2320,7 @@ mod store_tests {
         let listing = resolve::Listing::from_draft(&with_asin).unwrap();
         let holder = resolve::Holder::Account("a1".into());
         let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert_eq!(plan.listing.edition_id, isbn_only.listing.edition_id);
 
         // Meanwhile another scan stores the same product, described
@@ -2115,7 +2360,7 @@ mod store_tests {
         let listing = resolve::Listing::from_draft(&draft).unwrap();
         let holder = resolve::Holder::Account("a1".into());
         let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert!(plan.new_work.is_some());
 
         // Meanwhile another store's listing of the same book is stored.
@@ -2165,7 +2410,7 @@ mod store_tests {
             .listing_snapshot(&listing, &resolve::Holder::Account("a1".into()))
             .await
             .unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert!(plan.edition_update.is_some());
         // The plan believes the listing sold another edition, as it would
         // after a concurrent relink; its fill must not land.
@@ -2207,7 +2452,7 @@ mod store_tests {
         let listing = resolve::Listing::from_draft(&draft).unwrap();
         let holder = resolve::Holder::Account("a1".into());
         let snapshot = store.listing_snapshot(&listing, &holder).await.unwrap();
-        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds);
+        let plan = resolve::resolve(&listing, &account("a1"), &snapshot, &mut UuidIds::default());
         assert!(plan.new_work.is_some());
         assert_eq!(plan.work_identifiers.len(), 1);
 
@@ -2521,7 +2766,7 @@ mod store_tests {
             &listing,
             &account("a1"),
             &resolve::Snapshot::default(),
-            &mut UuidIds,
+            &mut UuidIds::default(),
         );
         let batches = credit_batches(&plan);
         let with_series: Vec<_> = batches
@@ -2549,7 +2794,7 @@ mod store_tests {
             &listing,
             &account("a1"),
             &resolve::Snapshot::default(),
-            &mut UuidIds,
+            &mut UuidIds::default(),
         );
         let batches = credit_batches(&plan);
         assert!(batches.len() > 1);

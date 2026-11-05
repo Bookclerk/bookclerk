@@ -19,6 +19,38 @@ pub const MAX_KV_VALUE_BYTES: u32 = crate::plugin_capnp::MAX_KV_VALUE_BYTES;
 
 /// Longest `KvNamespace` key in UTF-8 bytes.
 pub const MAX_KV_KEY_BYTES: u32 = crate::plugin_capnp::MAX_KV_KEY_BYTES;
+/// Most URLs in one `CoverFetcher.fetchCovers` call.
+pub const MAX_COVER_URLS: u32 = crate::plugin_capnp::MAX_COVER_URLS;
+
+/// Largest image body one `CoverFetcher.fetchCovers` URL may return.
+pub const MAX_COVER_BYTES: u32 = crate::plugin_capnp::MAX_COVER_BYTES;
+
+/// Parses a `CoverFetcher.fetchCovers` sink key into the URL index it names.
+///
+/// The guest puts the body for `urls[i]` under the key `i`. Only the
+/// canonical decimal spelling is accepted (`0`, `7`, `31`; never `07`, `+7`,
+/// ` 7` or `7.0`), so each index has exactly one key.
+///
+/// # Arguments
+///
+/// * `key` - The key the guest wrote under (untrusted).
+/// * `slots` - Number of URLs in the request; valid indexes are `0..slots`.
+///
+/// # Returns
+///
+/// The index, or `None` when `key` is not a canonical index below `slots`.
+#[must_use]
+pub fn cover_sink_slot(key: &str, slots: usize) -> Option<usize> {
+    let canonical = !key.is_empty()
+        && key.len() <= 20
+        && key.bytes().all(|b| b.is_ascii_digit())
+        && (key == "0" || !key.starts_with('0'));
+    if !canonical {
+        return None;
+    }
+    key.parse::<usize>().ok().filter(|index| *index < slots)
+}
+
 /// Longest `[triggers] crons` source in bytes (`ScheduledController.cron`).
 pub const MAX_CRON_BYTES: u32 = crate::plugin_capnp::MAX_CRON_BYTES;
 
@@ -140,6 +172,21 @@ mod tests {
         assert_eq!(limits.clamp_list_limit(0), MAX_LIST_PAGE);
         assert_eq!(limits.clamp_list_limit(1), 1);
         assert_eq!(limits.clamp_list_limit(10_000), MAX_LIST_PAGE);
+    }
+
+    #[test]
+    fn cover_sink_slot_accepts_canonical_indexes_only() {
+        assert_eq!(cover_sink_slot("0", 3), Some(0));
+        assert_eq!(cover_sink_slot("31", 32), Some(31));
+        for key in [
+            "", "32", "01", "00", "+1", "-1", " 1", "1 ", "1.0", "a", "１",
+        ] {
+            assert_eq!(cover_sink_slot(key, 32), None, "{key:?}");
+        }
+        assert_eq!(cover_sink_slot("3", 32), Some(3));
+        assert_eq!(cover_sink_slot("0", 0), None);
+        assert_eq!(cover_sink_slot(&"9".repeat(21), usize::MAX), None);
+        assert_eq!(cover_sink_slot("18446744073709551616", usize::MAX), None);
     }
 
     #[test]

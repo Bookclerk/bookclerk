@@ -86,6 +86,8 @@ pub enum Entrypoint {
     /// Metadata provider: `lookup`, `search` and `chapters`
     /// (`MetadataProvider`).
     Metadata,
+    /// Cover fetcher: `fetchCovers` (`CoverFetcher`).
+    Covers,
 }
 
 impl Entrypoint {
@@ -100,6 +102,7 @@ impl Entrypoint {
             Self::Cli => "cli",
             Self::Oidc => "oidc",
             Self::Metadata => "metadata",
+            Self::Covers => "covers",
         }
     }
 
@@ -114,6 +117,7 @@ impl Entrypoint {
             "cli" => Some(Self::Cli),
             "oidc" => Some(Self::Oidc),
             "metadata" => Some(Self::Metadata),
+            "covers" => Some(Self::Covers),
             _ => None,
         }
     }
@@ -129,6 +133,7 @@ impl From<Entrypoint> for plugin_capnp::Entrypoint {
             Entrypoint::Cli => Self::Cli,
             Entrypoint::Oidc => Self::Oidc,
             Entrypoint::Metadata => Self::Metadata,
+            Entrypoint::Covers => Self::Covers,
         }
     }
 }
@@ -143,6 +148,7 @@ impl From<plugin_capnp::Entrypoint> for Entrypoint {
             plugin_capnp::Entrypoint::Cli => Self::Cli,
             plugin_capnp::Entrypoint::Oidc => Self::Oidc,
             plugin_capnp::Entrypoint::Metadata => Self::Metadata,
+            plugin_capnp::Entrypoint::Covers => Self::Covers,
         }
     }
 }
@@ -2483,6 +2489,50 @@ pub struct MetadataChapters {
     /// Whether the provider marks the offsets as exact rather than estimated.
     #[serde(default)]
     pub accurate: bool,
+}
+
+/// Params of `CoverFetcher.fetchCovers`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverFetchParams {
+    /// Absolute `https://` URLs to fetch, at most `maxCoverUrls`; never empty.
+    /// The host has already checked each one against its URL policy.
+    #[serde(default)]
+    pub urls: Vec<String>,
+    /// Largest body, in bytes, the host accepts for one image; at most
+    /// `maxCoverBytes`. The sink refuses a larger body, which fails that URL
+    /// only.
+    #[serde(default)]
+    pub max_bytes: u32,
+}
+
+/// What happened to one requested URL.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverImage {
+    /// The requested URL, verbatim.
+    #[serde(default)]
+    pub url: String,
+    /// Whether the body was put into the sink under this URL's index.
+    #[serde(default)]
+    pub stored: bool,
+    /// `Content-Type` the server sent. Advisory: the host sniffs the bytes.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    /// Why nothing was stored (HTTP status, size cap, timeout, refused host).
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Success payload of `CoverFetcher.fetchCovers`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverImages {
+    /// One entry per requested URL, in request order.
+    #[serde(default)]
+    pub images: Vec<CoverImage>,
 }
 
 /// Encode a [`EventConsumerSpec`] onto a Cap'n Proto builder.
@@ -6147,9 +6197,141 @@ pub fn read_metadata_chapters_reply(
     }
 }
 
+/// Encode a [`CoverFetchParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_cover_fetch_params(
+    mut b: plugin_capnp::cover_fetch_params::Builder<'_>,
+    v: &CoverFetchParams,
+) -> capnp::Result<()> {
+    {
+        let mut items = b.reborrow().init_urls(list_len(v.urls.len())?);
+        for (i, item) in v.urls.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    b.set_max_bytes(v.max_bytes);
+    Ok(())
+}
+
+/// Decode a [`CoverFetchParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_cover_fetch_params(
+    r: plugin_capnp::cover_fetch_params::Reader<'_>,
+) -> capnp::Result<CoverFetchParams> {
+    Ok(CoverFetchParams {
+        urls: read_text_list(r.get_urls()?)?,
+        max_bytes: r.get_max_bytes(),
+    })
+}
+
+/// Encode a [`CoverImage`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_cover_image(
+    mut b: plugin_capnp::cover_image::Builder<'_>,
+    v: &CoverImage,
+) -> capnp::Result<()> {
+    b.set_url(&v.url);
+    b.set_stored(v.stored);
+    if let Some(value) = &v.content_type {
+        b.set_content_type(value);
+    }
+    if let Some(value) = &v.error {
+        b.set_error(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`CoverImage`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_cover_image(r: plugin_capnp::cover_image::Reader<'_>) -> capnp::Result<CoverImage> {
+    Ok(CoverImage {
+        url: r.get_url()?.to_string()?,
+        stored: r.get_stored(),
+        content_type: opt_text(r.get_content_type()?)?,
+        error: opt_text(r.get_error()?)?,
+    })
+}
+
+/// Encode a [`CoverImages`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_cover_images(
+    mut b: plugin_capnp::cover_images::Builder<'_>,
+    v: &CoverImages,
+) -> capnp::Result<()> {
+    {
+        let mut items = b.reborrow().init_images(list_len(v.images.len())?);
+        for (i, item) in v.images.iter().enumerate() {
+            write_cover_image(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`CoverImages`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_cover_images(r: plugin_capnp::cover_images::Reader<'_>) -> capnp::Result<CoverImages> {
+    Ok(CoverImages {
+        images: r
+            .get_images()?
+            .iter()
+            .map(|item| read_cover_image(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+    })
+}
+
+/// Encode a `CoverImagesReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_cover_images_reply(
+    b: plugin_capnp::cover_images_reply::Builder<'_>,
+    v: &Result<CoverImages, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_cover_images(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `CoverImagesReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_cover_images_reply(
+    r: plugin_capnp::cover_images_reply::Reader<'_>,
+) -> capnp::Result<Result<CoverImages, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::cover_images_reply::Ok(ok) => Ok(Ok(read_cover_images(ok?)?)),
+        plugin_capnp::cover_images_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 96;
+pub const READ_ANY_COUNT: u8 = 100;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -6590,6 +6772,23 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
         95 => {
             let _ = read_metadata_chapters_reply(
                 reader.get_root::<plugin_capnp::metadata_chapters_reply::Reader<'_>>()?,
+            )?;
+        }
+        96 => {
+            let _ = read_cover_fetch_params(
+                reader.get_root::<plugin_capnp::cover_fetch_params::Reader<'_>>()?,
+            )?;
+        }
+        97 => {
+            let _ = read_cover_image(reader.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)?;
+        }
+        98 => {
+            let _ =
+                read_cover_images(reader.get_root::<plugin_capnp::cover_images::Reader<'_>>()?)?;
+        }
+        99 => {
+            let _ = read_cover_images_reply(
+                reader.get_root::<plugin_capnp::cover_images_reply::Reader<'_>>()?,
             )?;
         }
         _ => {
@@ -10714,6 +10913,176 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
                         "round trip changed the decoded MetadataChaptersReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        96 => {
+            let first = read_cover_fetch_params(
+                reader.get_root::<plugin_capnp::cover_fetch_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cover_fetch_params(
+                message.init_root::<plugin_capnp::cover_fetch_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_cover_fetch_params(
+                    again.get_root::<plugin_capnp::cover_fetch_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cover_fetch_params(
+                    message.init_root::<plugin_capnp::cover_fetch_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CoverFetchParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        97 => {
+            let first =
+                read_cover_image(reader.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cover_image(
+                message.init_root::<plugin_capnp::cover_image::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_cover_image(again.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cover_image(
+                    message.init_root::<plugin_capnp::cover_image::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CoverImage value".to_string(),
+                    ));
+                }
+            }
+        }
+        98 => {
+            let first =
+                read_cover_images(reader.get_root::<plugin_capnp::cover_images::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cover_images(
+                message.init_root::<plugin_capnp::cover_images::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_cover_images(again.get_root::<plugin_capnp::cover_images::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cover_images(
+                    message.init_root::<plugin_capnp::cover_images::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CoverImages value".to_string(),
+                    ));
+                }
+            }
+        }
+        99 => {
+            let first = read_cover_images_reply(
+                reader.get_root::<plugin_capnp::cover_images_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cover_images_reply(
+                message.init_root::<plugin_capnp::cover_images_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_cover_images_reply(
+                    again.get_root::<plugin_capnp::cover_images_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cover_images_reply(
+                    message.init_root::<plugin_capnp::cover_images_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CoverImagesReply value".to_string(),
                     ));
                 }
             }

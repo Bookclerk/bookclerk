@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Every entrypoint in declaration order (mirrors the Cap'n Proto enum).
-pub const ALL_ENTRYPOINTS: [Entrypoint; 7] = [
+pub const ALL_ENTRYPOINTS: [Entrypoint; 8] = [
     Entrypoint::Storefront,
     Entrypoint::Storage,
     Entrypoint::DatabaseAdapter,
@@ -22,6 +22,7 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 7] = [
     Entrypoint::Cli,
     Entrypoint::Oidc,
     Entrypoint::Metadata,
+    Entrypoint::Covers,
 ];
 
 /// Entrypoints the host loads into their own registry (sources,
@@ -47,9 +48,11 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
         Entrypoint::Storefront => PluginFamily::Source,
         Entrypoint::Storage => PluginFamily::Output,
         Entrypoint::DatabaseAdapter => PluginFamily::Database,
-        Entrypoint::RemoteLibrary | Entrypoint::Cli | Entrypoint::Oidc | Entrypoint::Metadata => {
-            PluginFamily::Integration
-        }
+        Entrypoint::RemoteLibrary
+        | Entrypoint::Cli
+        | Entrypoint::Oidc
+        | Entrypoint::Metadata
+        | Entrypoint::Covers => PluginFamily::Integration,
     }
 }
 
@@ -64,8 +67,8 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
 pub enum PluginFamily {
     /// Storefront / library source (`Storefront` entrypoint).
     Source,
-    /// Event consumer, job runner, remote library, CLI, OIDC bridge, or
-    /// metadata provider.
+    /// Event consumer, job runner, remote library, CLI, OIDC bridge,
+    /// metadata provider, or cover fetcher.
     Integration,
     /// Destination / output backend (`Storage` entrypoint).
     Output,
@@ -1238,7 +1241,7 @@ impl PluginManifest {
     /// A plugin joins the `Source` / `Output` / `Database` families through
     /// the matching named entrypoint and the `Integration` family through
     /// event consumers, queue consumers, crons, `RemoteLibrary`, `Cli`,
-    /// `Oidc`, or `Metadata`.
+    /// `Oidc`, `Metadata`, or `Covers`.
     ///
     /// Job triggers make a plugin an integration only when it has no
     /// `storefront`, `storage` or `databaseAdapter` entrypoint. Beside one of
@@ -1266,6 +1269,7 @@ impl PluginManifest {
                         || self.has_entrypoint(Entrypoint::RemoteLibrary)
                         || self.has_entrypoint(Entrypoint::Oidc)
                         || self.has_entrypoint(Entrypoint::Metadata)
+                        || self.has_entrypoint(Entrypoint::Covers)
                         || (self.has_entrypoint(Entrypoint::Cli) && !self.has_registry_entrypoint())
                 }
             };
@@ -1587,9 +1591,10 @@ impl PluginManifest {
             }
         }
         for tcp in &self.capabilities.network.tcp {
-            if crate::egress::normalize_domain_pattern(&tcp.host).is_none() {
+            if crate::egress::normalize_tcp_host(&tcp.host).is_none() {
                 return Err(Error::message(format!(
-                    "plugin.toml: capabilities.network.tcp host `{}` is not a valid hostname",
+                    "plugin.toml: capabilities.network.tcp host `{}` is not a valid hostname \
+                     (`*` is a fetch grant only)",
                     tcp.host
                 )));
             }
@@ -1915,6 +1920,7 @@ mod tests {
                 PluginFamily::Source,
                 PluginFamily::Output,
                 PluginFamily::Database,
+                PluginFamily::Integration,
                 PluginFamily::Integration,
                 PluginFamily::Integration,
                 PluginFamily::Integration,
@@ -2647,6 +2653,21 @@ tcp = [{ host = "api.audible.com", ports = [443] }]
         assert_eq!(m.capabilities.network.tcp.len(), 1);
         assert_eq!(m.capabilities.network.tcp[0].host, "api.audible.com");
         assert_eq!(m.capabilities.network.tcp[0].ports, vec![443]);
+
+        let star = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "audible"
+runtime = "native"
+command = "./bookclerk-plugin-source-audible"
+entrypoints = ["storefront"]
+[capabilities.network]
+mode = "outbound"
+tcp = [{ host = "*", ports = [443] }]
+"#,
+        )
+        .expect_err("`*` is a fetch grant only");
+        assert!(star.to_string().contains("fetch grant only"), "{star}");
     }
 
     #[test]

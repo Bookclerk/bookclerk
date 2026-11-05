@@ -333,19 +333,23 @@ pub fn run_case(data: &[u8]) -> Result<usize, String> {
         recorded += 1;
     }
     // Every earlier listing still resolves to a plan that changes nothing,
-    // except that an episode recorded before its show now gains the show
-    // (once; the rescan after that changes nothing).
+    // except for two fills that later listings can make possible: an
+    // episode recorded before its show gains the show, and a work stored
+    // without a matcher key gains the listing's key once no other work
+    // holds it (another work moving under a show frees it). Each happens
+    // once; the rescan after that changes nothing.
     for link in catalog.links.clone() {
         let mut plan = catalog
             .record(&link.listing, &link.holding)
             .map_err(|err| err.to_string())?;
-        let only_late_show = plan.work_parent.is_some()
+        let only_late_fill = (plan.work_parent.is_some() || plan.work_match_key.is_some())
             && Plan {
                 work_parent: None,
+                work_match_key: None,
                 ..plan.clone()
             }
             .is_noop();
-        if only_late_show {
+        if only_late_fill {
             plan = catalog
                 .record(&link.listing, &link.holding)
                 .map_err(|err| err.to_string())?;

@@ -30,13 +30,14 @@ use bookclerk_plugin_abi::{
 };
 use bookclerk_plugin_abi::{
     serve_plugin_stdio, Bindings, ByteRange, ContentSource, ContentSourceClient, CopyResult,
-    Database, DatabaseClient, Destination, DestinationClient, Entrypoint, Entrypoints,
-    EventConsumer, EventConsumerClient, ExtensibleConfig, GuestDatabase, HostBindings, Invocation,
-    JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataProvider,
-    MetadataProviderClient, ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints,
-    PluginCapabilities, PluginCli, PluginCliClient, PluginClient, PluginDescribe, PluginMigration,
-    PluginWorker, PutResult, QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary,
-    RemoteLibraryClient, ScheduledHandler, ScheduledHandlerClient, WriteOptions, MAX_SCALAR_BYTES,
+    CoverFetchParams, CoverFetcher, CoverFetcherClient, CoverImage, Database, DatabaseClient,
+    Destination, DestinationClient, Entrypoint, Entrypoints, EventConsumer, EventConsumerClient,
+    ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Invocation, JobController, JobOutcome,
+    JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataProvider, MetadataProviderClient,
+    ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli,
+    PluginCliClient, PluginClient, PluginDescribe, PluginMigration, PluginWorker, PutResult,
+    QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient,
+    ScheduledHandler, ScheduledHandlerClient, WriteOptions, MAX_SCALAR_BYTES,
     MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
@@ -356,6 +357,12 @@ impl WorkerdRoot {
         if self.exports(Entrypoint::Metadata) {
             exported.metadata = Some(Box::new(MetadataProviderClient::new(invoke.typed())));
         }
+        if self.exports(Entrypoint::Covers) {
+            exported.covers = Some(Box::new(InvokeCoverFetcher {
+                typed: CoverFetcherClient::new(invoke.typed(), MAX_STREAM_WINDOW_BYTES),
+                table: Rc::clone(&self.table),
+            }));
+        }
         if self.runs_jobs() {
             exported.job_runner = Some(Box::new(InvokeJobRunner {
                 http: self.http.clone(),
@@ -384,6 +391,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         queue_consumer,
         scheduled_handler,
         metadata,
+        covers,
     } = opened;
     Entrypoints {
         event_consumer: event_consumer
@@ -419,6 +427,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         metadata: metadata
             .filter(|_| allow(Entrypoint::Metadata.wire_name()))
             .map(|c| Box::new(c) as Box<dyn MetadataProvider>),
+        covers: covers
+            .filter(|_| allow(Entrypoint::Covers.wire_name()))
+            .map(|c| Box::new(c) as Box<dyn CoverFetcher>),
     }
 }
 
@@ -710,7 +721,7 @@ impl JobRunner for InvokeJobRunner {
             grant.clone(),
             GrantedSlot {
                 input: Some(input),
-                output: Some(output),
+                output: Some(Rc::from(output)),
                 progress: Some(progress),
                 cancel: Some(cancel),
                 expires: std::time::Instant::now() + std::time::Duration::from_secs(3600),
@@ -746,6 +757,49 @@ impl JobRunner for InvokeJobRunner {
                 GrantCap::client(CapDescriptor::Destination { token: token() }),
                 GrantCap::client(CapDescriptor::Progress { token: token() }),
                 GrantCap::client(CapDescriptor::Cancellation { token: token() }),
+            )
+            .await
+    }
+}
+
+/// `covers` entrypoint of an author isolate. Each `fetchCovers` call mints
+/// one put-only grant token for the host sink, which travels in the
+/// `fetchCovers$Params` capability table as a [`GrantCap`] descriptor; the
+/// isolate streams each body to the granted `PUT /put` route.
+struct InvokeCoverFetcher {
+    /// Typed client over `/invoke`.
+    typed: CoverFetcherClient,
+    /// Granted-channel table the sink grant lives in.
+    table: GrantedTable,
+}
+
+#[async_trait(?Send)]
+impl CoverFetcher for InvokeCoverFetcher {
+    async fn health(&self) -> AbiResult<HealthOk> {
+        self.typed.health().await
+    }
+
+    async fn fetch_covers(
+        &self,
+        params: CoverFetchParams,
+        sink: Box<dyn Destination>,
+    ) -> AbiResult<Vec<CoverImage>> {
+        let grant = format!("{:032x}", rand::random::<u128>());
+        self.table.borrow_mut().insert(
+            grant.clone(),
+            GrantedSlot::output_only(
+                Rc::from(sink),
+                std::time::Instant::now() + std::time::Duration::from_secs(3600),
+            ),
+        );
+        let _revoke = RevokeGrant {
+            table: Rc::clone(&self.table),
+            grant: grant.clone(),
+        };
+        self.typed
+            .fetch_covers_with_sink(
+                params,
+                GrantCap::client(CapDescriptor::Destination { token: grant }),
             )
             .await
     }

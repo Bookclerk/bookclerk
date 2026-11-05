@@ -21,6 +21,8 @@ export type TitleDetail = {
   asin?: string | null;
   isbn?: string | null;
   cover_url?: string | null;
+  /** Same-origin path of the processed cover (see `coverSrc`). */
+  cover_path?: string | null;
   /** Prefer local library cover when present. */
   library_uuid?: string | null;
   description?: string | null;
@@ -88,6 +90,7 @@ export function titleDetailFromCatalog(
     asin: title.asin,
     isbn: title.isbn,
     cover_url: title.cover_url,
+    cover_path: title.cover_path,
     work_key: title.work_key,
     notes: title.notes,
     reasons: title.reasons,
@@ -126,6 +129,7 @@ export function titleDetailFromBook(book: BookRecord): TitleDetail {
     asin: book.asin,
     isbn: book.isbn,
     cover_url: book.cover_url,
+    cover_path: book.cover_path,
     library_uuid: book.uuid,
     description: book.description,
     publisher: book.publisher,

@@ -4,6 +4,7 @@ members = [
     "crates/bookclerk-acquire",
     "crates/bookclerk-cli",
     "crates/bookclerk-config",
+    "crates/bookclerk-cover",
     "crates/bookclerk-db-exec",
     "crates/bookclerk-db-guest",
     "crates/bookclerk-demo-seed",
@@ -58,6 +59,7 @@ default-members = [
 exclude = [
     "third_party/audible-rs",
     "fuzz",
+    "crates/bookclerk-plugins/optional/covers",
     "crates/bookclerk-plugins/optional/metadata-audnexus",
     "crates/bookclerk-plugins/optional/metadata-openlibrary",
 ]
@@ -92,6 +94,7 @@ bookclerk-enrich = { path = "crates/bookclerk-enrich" }
 bookclerk-sandbox = { path = "crates/bookclerk-sandbox" }
 bookclerk-jail = { path = "crates/bookclerk-jail" }
 bookclerk-mp4 = { path = "crates/bookclerk-mp4" }
+bookclerk-cover = { path = "crates/bookclerk-cover" }
 bookclerk-media = { path = "crates/bookclerk-media" }
 bookclerk-media-worker = { path = "crates/bookclerk-media-worker" }
 bookclerk-storage = { path = "crates/bookclerk-storage" }
@@ -199,12 +202,12 @@ bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 tempfile = "3"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 email_address = "0.2"
 tantivy = "0.27"
 csv = "1"
 filetime = "0.2"
-rust_xlsxwriter = "0.101"
+rust_xlsxwriter = "0.102"
 tar = "0.4"
 flate2 = "1"
 hex = "0.4"

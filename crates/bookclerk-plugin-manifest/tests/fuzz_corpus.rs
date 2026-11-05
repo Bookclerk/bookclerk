@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use bookclerk_plugin_manifest::{
     consent_domains_for, format_manifest, host_matches, normalize_hostname, parse, EgressPolicy,
-    NetworkMode,
+    NetworkMode, ANY_PUBLIC_HOST,
 };
 
 /// Regular files directly under `fuzz/corpus/<target>/`, canonicalized and
@@ -192,6 +192,25 @@ fn fuzz_corpus_egress_policy_holds_invariants() {
                 }
             }
             assert!(!policy.allows_initial(&format!("{pattern}%41")));
+        }
+        // `*` grants hostnames only, and never a socket.
+        if !policy.domains.is_empty() && policy.domains.iter().all(|d| d == ANY_PUBLIC_HOST) {
+            for host in ["8.8.8.8", "1.1.1.1", "[2606:4700::1111]", "134744072"] {
+                assert!(
+                    !policy.allows_initial(host),
+                    "`*` allowed {host} via {}",
+                    path.display()
+                );
+            }
+        }
+        for grant in policy.tcp.iter().filter(|g| g.host == ANY_PUBLIC_HOST) {
+            for port in &grant.ports {
+                assert!(
+                    !policy.allows_tcp("example.com", *port),
+                    "`*` TCP grant opened a socket via {}",
+                    path.display()
+                );
+            }
         }
     }
     assert!(parsed > 0, "no egress_policy seed parsed");

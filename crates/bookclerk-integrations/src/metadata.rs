@@ -389,5 +389,11 @@ mod tests {
         ] {
             assert!(err.to_string().contains("does not provide metadata"));
         }
+        assert!(!plain.supports_covers());
+        let err = plain
+            .fetch_covers(vec!["https://a.example/1.jpg".into()], 1)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("does not fetch covers"), "{err}");
     }
 }

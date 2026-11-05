@@ -2,7 +2,7 @@
 //!
 //! Each submodule exposes a single [`NAME`](health::NAME) constant equal to
 //! the corresponding `ContentSource` / `RemoteLibrary` / `Oidc` /
-//! `MetadataProvider` / `Cli` /
+//! `MetadataProvider` / `CoverFetcher` / `Cli` /
 //! `EventConsumer` / `EventPublisher` / `QueueConsumer` / `QueueProducer` /
 //! `PluginWorker` method in
 //! `schema/plugin.capnp`. Prefer these constants over string literals when
@@ -48,6 +48,7 @@ pub const METHOD_NAMES: &[&str] = &[
     lookup::NAME,
     search::NAME,
     chapters::NAME,
+    fetch_covers::NAME,
     put::NAME,
     get::NAME,
     exists::NAME,
@@ -195,6 +196,16 @@ pub mod search {
 pub mod chapters {
     /// Wire method name `"chapters"`.
     pub const NAME: &str = "chapters";
+}
+
+/// Cover image bodies streamed into a host sink (Cap'n Proto
+/// `CoverFetcher.fetchCovers`).
+///
+/// Params: [`crate::CoverFetchParams`] plus a host-served
+/// [`crate::Destination`]. Result: [`crate::CoverImages`].
+pub mod fetch_covers {
+    /// Wire method name `"fetchCovers"`.
+    pub const NAME: &str = "fetchCovers";
 }
 
 /// Plugin-provided OIDC client templates (Cap'n Proto `Oidc.clients`).

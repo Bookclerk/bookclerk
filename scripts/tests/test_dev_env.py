@@ -229,7 +229,10 @@ class ProvisionScriptTests(unittest.TestCase):
         config = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
         docker = next(u for u in config["updates"] if u["package-ecosystem"] == "docker")
         ignored = {i["dependency-name"]: i.get("update-types") for i in docker.get("ignore", [])}
-        self.assertEqual(None, ignored.get("ghcr.io/astral-sh/uv", "missing"))
+        # Dependabot drops the registry host from the name it matches ignores
+        # against (#669 bumped the uv image while only the full reference
+        # was ignored), so the host-less name is the one that counts.
+        self.assertEqual(None, ignored.get("astral-sh/uv", "missing"))
         self.assertEqual(["version-update:semver-major"], ignored.get("node"))
 
     def test_session_setup_finds_node_and_uv_images(self) -> None:

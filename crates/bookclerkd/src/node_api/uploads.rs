@@ -43,7 +43,7 @@
 //! commit included) has every copy this node received deleted again
 //! ([`discard_received`]); a file that finished streaming just as its
 //! upload was aborted is deleted at once. A copy is deleted only while its
-//! key is still recorded as that upload's (`title_files`): a later upload
+//! key is still recorded as that upload's (`edition_files`): a later upload
 //! of the title or an acquire that wrote the key since keeps its file,
 //! however late the stale cleanup runs.
 //! Files go straight to the destinations, so deletion is the rollback. An

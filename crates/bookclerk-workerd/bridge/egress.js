@@ -6,6 +6,8 @@
  * `allowUndeclaredPublicRedirects`, `tcp`, `addressCidrs`).
  *
  * - Initial (hop 0) hosts must match `domains` (IDNA ASCII; reject `%` / non-ASCII).
+ *   A bare `*` entry matches every hostname but never an IP literal; it is a
+ *   fetch grant only and never matches a `tcp[]` grant.
  * - Redirect hops must also match `domains` unless `allowUndeclaredPublicRedirects`
  *   is set. That flag never grants loopback, RFC1918, link-local, or metadata.
  * - Workerd `internet` `allow = ["public", …cidrs]` is the resolved-address
@@ -36,10 +38,14 @@ const REQUEST_BODY_HEADERS = [
   "content-type",
 ];
 
+/** The `domains` entry that grants every public hostname. */
+const ANY_PUBLIC_HOST = "*";
+
 function hostMatches(host, pattern) {
   const h = normalizeHostToken(host);
   const p = normalizeHostToken(pattern);
   if (h == null || p == null) return false;
+  if (p === ANY_PUBLIC_HOST) return !isIpLiteral(h);
   if (p.startsWith("*.")) {
     const suffix = p.slice(1); // ".example.com"
     return h.endsWith(suffix) || h === p.slice(2);
@@ -58,6 +64,16 @@ function normalizeHostToken(host) {
     if (h.charCodeAt(i) > 0x7f) return null;
   }
   return h;
+}
+
+/**
+ * True for an IPv6 literal or a name whose last label is numeric (dotted,
+ * decimal, hex or octal IPv4 spellings), which `*` never matches.
+ */
+function isIpLiteral(host) {
+  if (host.includes(":") || host.startsWith("[")) return true;
+  const last = host.slice(host.lastIndexOf(".") + 1);
+  return /^(0x[0-9a-f]*|[0-9]+)$/.test(last);
 }
 
 function parseIpv4(host) {
@@ -152,7 +168,11 @@ function allowsTcp(host, port, policy) {
   if (normalized == null) return false;
   const grants = policy.tcp || [];
   return grants.some(
-    (g) => hostMatches(normalized, g.host) && Array.isArray(g.ports) && g.ports.includes(port),
+    (g) =>
+      g.host !== ANY_PUBLIC_HOST &&
+      hostMatches(normalized, g.host) &&
+      Array.isArray(g.ports) &&
+      g.ports.includes(port),
   );
 }
 
@@ -331,6 +351,10 @@ export default {
       }
       const response = await fetch(toFetch, { redirect: "manual" });
       if (response.status >= 300 && response.status < 400) {
+        // `redirect: "manual"` hands the 3xx back so the plugin can vet
+        // each hop itself (as on Cloudflare); this gate still checked the
+        // host it was sent to.
+        if (request.redirect === "manual") return response;
         const location = response.headers.get("location");
         if (!location) return response;
         hop += 1;

@@ -20,7 +20,7 @@ use bookclerk_plugin_abi::{
 
 use crate::brand::Brand;
 use crate::error::{IntegrationError, Result};
-use crate::types::{ExternalUser, IntegrationHealth};
+use crate::types::{ExternalUser, FetchedCover, IntegrationHealth};
 
 /// Declared `[[queues.consumers]]` row (mirrors `plugin.toml`): the queue the
 /// integration's `queue(batch)` trigger consumes and its redelivery policy.
@@ -324,6 +324,28 @@ pub trait Integration: Send + Sync {
             "integration `{}` does not provide metadata",
             self.id()
         ))
+    }
+
+    /// Whether this integration exports the `covers` entrypoint (downloads
+    /// cover images on the host's behalf).
+    ///
+    /// Default: `false`.
+    fn supports_covers(&self) -> bool {
+        false
+    }
+
+    /// Downloads `urls` through the `covers` entrypoint
+    /// (`CoverFetcher.fetchCovers`), refusing any body over `max_bytes`.
+    ///
+    /// Returns one [`FetchedCover`] per URL, in request order; a URL that
+    /// failed carries `error` instead of failing the call.
+    ///
+    /// Default: unsupported.
+    async fn fetch_covers(&self, _urls: Vec<String>, _max_bytes: u32) -> Result<Vec<FetchedCover>> {
+        Err(IntegrationError::message(format!(
+            "integration `{}` does not fetch covers",
+            self.id()
+        )))
     }
 
     /// Human-readable connectivity probe for CLI / ops (`integrations test`).

@@ -15,7 +15,7 @@ use crate::control_plane::*;
 use crate::entities::{node_credentials, nodes};
 use crate::master_key::master_key_test_lock_async;
 use crate::models::UserRole;
-use crate::store::{LibraryStore, NewBook};
+use crate::store::{FileOwner, FileRole, LibraryStore, NewBook};
 
 const PLUGIN: &str = "path:file:///tmp/store#store";
 const BRANCH: &str = "branch-b";
@@ -1090,7 +1090,7 @@ async fn open_branch(store: &LibraryStore, branch: &str, titles: &[CatalogTitle]
 
 /// A branch cannot declare files in another title's folder: neither a
 /// sidecar of a library book (its cover, `.cue`, chapter or metadata JSON,
-/// none recorded in `title_files`), nor any other name in, or in a folder
+/// none recorded in `edition_files`), nor any other name in, or in a folder
 /// below, a folder that holds a library book's audio or another branch's
 /// delivered title's audio.
 #[tokio::test]
@@ -1240,43 +1240,56 @@ async fn a_shared_titles_keys_stay_its_own() {
     else {
         panic!("expected a grant");
     };
-    let held = store.title_file("local", key).await.unwrap();
+    let held = store.edition_file("local", key).await.unwrap();
     assert_eq!(
         held.as_ref().map(|held| held.writer.as_str()),
         Some(upload_id.as_str())
     );
     assert!(
         !store
-            .claim_title_file(
+            .claim_edition_file(
                 "local",
                 key,
-                "another-branch-title",
+                &FileOwner::BranchTitle("another-branch-title".into()),
                 "catalog-upload",
+                FileRole::Audio,
+                None,
                 held.as_ref(),
-                true
+                true,
+                None
             )
             .await
             .unwrap(),
         "another branch title's upload cannot take the shared title's key"
     );
-    assert_eq!(store.title_file("local", key).await.unwrap(), held);
+    assert_eq!(store.edition_file("local", key).await.unwrap(), held);
     assert!(
         store
-            .claim_title_file("local", key, &book, "job-upload", held.as_ref(), false)
+            .claim_edition_file(
+                "local",
+                key,
+                &owner_of(&store, &book).await,
+                "job-upload",
+                FileRole::Audio,
+                None,
+                held.as_ref(),
+                false,
+                Some(book.as_str())
+            )
             .await
             .unwrap(),
         "a job upload of a library book takes the shared title's key over"
     );
     store
-        .release_title_file("local", key, "job-upload", held.as_ref())
+        .release_edition_file("local", key, "job-upload", held.as_ref())
         .await
         .unwrap();
-    assert_eq!(store.title_file("local", key).await.unwrap(), held);
+    assert_eq!(store.edition_file("local", key).await.unwrap(), held);
 
     // An acquire run here writes the key anyway; the catalog upload no
     // longer holds it and is refused at commit.
     assert!(record_upload_file(&store, &upload_id, 0).await.unwrap());
-    store.record_title_file("local", key, &book).await.unwrap();
+    record_for_book(&store, "local", key, &book).await.unwrap();
     let limits = JobClaimLimits {
         class: 1,
         plugin_instance: 1,
@@ -1429,4 +1442,30 @@ async fn a_duplicate_catalog_commit_answers_committed() {
             job_completed: false
         }
     );
+}
+
+/// The edition owner `book_uuid`'s files are recorded under; a uuid with no
+/// edition (no such book) reads as an edition id that does not exist, so
+/// its record is a stale owner's.
+async fn owner_of(store: &LibraryStore, book_uuid: &str) -> FileOwner {
+    store
+        .file_owner_of_book(book_uuid)
+        .await
+        .unwrap()
+        .unwrap_or_else(|| FileOwner::Edition(book_uuid.to_owned()))
+}
+
+/// Records `key` on `destination` as an acquire of `book_uuid`'s edition
+/// wrote it.
+async fn record_for_book(
+    store: &LibraryStore,
+    destination: &str,
+    key: &str,
+    book_uuid: &str,
+) -> crate::Result<()> {
+    let owner = owner_of(store, book_uuid).await;
+    store
+        .record_edition_file(destination, key, &owner, FileRole::for_key(key, None))
+        .await
+        .map(|recorded| assert!(recorded, "{key} is another edition's"))
 }

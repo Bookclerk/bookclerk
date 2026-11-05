@@ -24,6 +24,8 @@ export type CatalogTitle = {
   asin: string | null;
   isbn: string | null;
   cover_url: string | null;
+  /** Same-origin path of the processed cover (see `coverSrc`). */
+  cover_path: string | null;
   store_editions: StoreEdition[];
   sources: string[];
   reasons?: string[];
@@ -309,35 +311,26 @@ export function storeLabel(source: string): string {
   }
 }
 
-/** First-party storefront / integration domains for Google favicon URLs. */
-const STORE_FAVICON_DOMAINS: Record<string, string> = {
-  audible: "audible.com",
-  chirp: "chirpbooks.com",
-  libro: "libro.fm",
-  "libro.fm": "libro.fm",
-  graphicaudio: "graphicaudio.com",
-  audiobookshelf: "audiobookshelf.org",
+/** Catalog source names that differ from the storefront plugin's id. */
+const STORE_ID_ALIASES: Record<string, string> = {
+  "libro.fm": "libro",
 };
 
 /**
- * Builds a Google S2 favicon URL for a domain.
+ * Same-origin icon for a storefront or integration id (`audible`, `libro`, …).
  *
- * @param domain - Hostname such as `audible.com`.
- * @returns Favicon image URL.
- */
-export function googleFaviconUrl(domain: string): string {
-  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=128`;
-}
-
-/**
- * Favicon URL for a storefront id (`audible`, `libro`, …), if known.
+ * Bookclerk downloads the icon the plugin names and serves a 128 px copy; the
+ * route fails when no deployed plugin has that id, so callers fall back to a
+ * monogram on error.
  *
  * @param source - Store id.
- * @returns Favicon URL, or `undefined` when the domain is unknown.
+ * @returns Icon path, or `undefined` for an id that cannot name a plugin.
  */
-export function storeFaviconUrl(source: string): string | undefined {
-  const domain = STORE_FAVICON_DOMAINS[source.trim().toLowerCase()];
-  return domain ? googleFaviconUrl(domain) : undefined;
+export function storeIconSrc(source: string): string | undefined {
+  const raw = source.trim().toLowerCase();
+  const id = STORE_ID_ALIASES[raw] ?? raw;
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(id)) return undefined;
+  return `/api/stores/${encodeURIComponent(id)}/icon`;
 }
 
 /**
@@ -536,6 +529,7 @@ export function catalogTitleFromHit(
     asin: hit.asin,
     isbn: hit.isbn,
     cover_url: hit.cover_url ?? null,
+    cover_path: hit.cover_path ?? null,
     store_editions: hit.store_editions ?? [],
     sources: hit.sources ?? [],
     purchase_hints: hit.purchase_hints,
@@ -585,6 +579,7 @@ export function catalogTitleFromRec(
     asin: rec.asin,
     isbn: rec.isbn,
     cover_url: rec.cover_url ?? null,
+    cover_path: rec.cover_path ?? null,
     store_editions: editions,
     sources,
     reasons: rec.reasons,
@@ -621,6 +616,7 @@ export function catalogTitleFromRequest(req: TitleRequest): CatalogTitle {
     asin: req.asin,
     isbn: req.isbn,
     cover_url: req.cover_url ?? null,
+    cover_path: req.cover_path ?? null,
     store_editions: editions,
     sources,
     purchase_hints: req.purchase_hints,
@@ -898,6 +894,8 @@ export function applyTitleMeta(
     asin: pickStr(title.asin, meta.asin),
     isbn: pickStr(title.isbn, meta.isbn),
     cover_url: pickStr(title.cover_url, meta.cover_url),
+    // The path follows whichever cover URL won.
+    cover_path: title.cover_url?.trim() ? title.cover_path : (meta.cover_path ?? null),
     description: pickBetterDescription(title.description, meta.description),
     publisher: pickStr(title.publisher, meta.publisher),
     length_minutes: title.length_minutes ?? meta.length_minutes ?? null,
@@ -991,6 +989,7 @@ export function catalogTitleFromQueueEntry(
     asin: entry.asin,
     isbn: entry.isbn,
     cover_url: entry.cover_url ?? null,
+    cover_path: entry.cover_path ?? null,
     store_editions: editions,
     sources,
     purchase_hints: entry.purchase_hints,

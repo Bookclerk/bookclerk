@@ -300,9 +300,9 @@ dependencies = [
 
 [[package]]
 name = "arrow-buffer"
-version = "58.4.0"
+version = "58.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9552f96391c005e6ab449fa941420935e7e062489b12b8b1b08879b2163f5b5"
+checksum = "53ee609a07eb721c2e4a7669d7bb88e2106c560e7dec1219096fecf5eae356d1"
 dependencies = [
  "bytes",
  "half",
@@ -333,9 +333,9 @@ dependencies = [
 
 [[package]]
 name = "arrow-data"
-version = "58.4.0"
+version = "58.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b24852db04738907e06c04ea61e42fe7fda962a34513022dc0d0e754fb7976b"
+checksum = "10791765e6927cdd8ace5bf0e51a69f38a1c3aded2db93561b003c332d02ee2a"
 dependencies = [
  "arrow-buffer",
  "arrow-schema",
@@ -372,9 +372,9 @@ dependencies = [
 
 [[package]]
 name = "arrow-schema"
-version = "58.4.0"
+version = "58.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21ca356ad6425cecb6eb7b28e4f659f1ee7880fbb1a16127de7dd62901efee9e"
+checksum = "8506ad465ebb9483bb6efa1e2e78a313549122c6dd67dc2f7087297b762eaede"
 
 [[package]]
 name = "arrow-select"
@@ -1575,6 +1575,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-cover"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "fast_image_resize",
+ "hmac 0.13.0",
+ "image",
+ "jpeg-encoder",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "url",
+]
+
+[[package]]
 name = "bookclerk-db-exec"
 version = "0.1.0"
 dependencies = [
@@ -1747,6 +1761,7 @@ dependencies = [
  "base64 0.23.1",
  "bookclerk-config",
  "bookclerk-db-exec",
+ "bookclerk-naming",
  "bookclerk-node-proto",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-database-sqlite",
@@ -1781,6 +1796,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bookclerk-config",
+ "bookclerk-cover",
  "bookclerk-mp4",
  "bookclerk-sandbox",
  "fdk-aac",
@@ -1800,8 +1816,10 @@ dependencies = [
 name = "bookclerk-media-worker"
 version = "0.1.0"
 dependencies = [
+ "bookclerk-cover",
  "bookclerk-media",
  "bookclerk-sandbox",
+ "rayon",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1814,6 +1832,7 @@ dependencies = [
  "anyhow",
  "bookclerk-config",
  "bookclerk-library",
+ "bookclerk-naming",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-host",
  "chrono",
@@ -2455,6 +2474,7 @@ dependencies = [
  "base64 0.23.1",
  "bookclerk-acquire",
  "bookclerk-config",
+ "bookclerk-cover",
  "bookclerk-discover",
  "bookclerk-enrich",
  "bookclerk-integrations",
@@ -2475,6 +2495,7 @@ dependencies = [
  "chrono",
  "clap",
  "futures",
+ "hex",
  "http-body-util",
  "indexmap 2.14.2",
  "jsonschema",
@@ -4092,6 +4113,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fast_image_resize"
+version = "5.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbc7fe45cf92b43817ff62a3723e862b85bd1d06288f63007f7645d1d2f7a060"
+dependencies = [
+ "cfg-if",
+ "document-features",
+ "num-traits",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "fastdivide"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5076,10 +5109,23 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error 2.0.1",
 ]
 
 [[package]]
@@ -5331,6 +5377,12 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
 ]
+
+[[package]]
+name = "jpeg-encoder"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b454d911ac55068f53495488d8ccd0646eaa540c033a28ee15b07838afafb01f"
 
 [[package]]
 name = "js-sys"
@@ -8088,9 +8140,9 @@ dependencies = [
 
 [[package]]
 name = "rust_xlsxwriter"
-version = "0.101.0"
+version = "0.102.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49aa1d1558e9465f5053bf9fb5361fe75db827c6a4423d5e5fe72096622f8908"
+checksum = "6ca3d0e879a578c1313c2800ab0c6c029d38eed18098675e50341a30d32372ed"
 dependencies = [
  "zip",
 ]
@@ -8818,6 +8870,12 @@ dependencies = [
  "cpufeatures 0.3.0",
  "digest 0.11.3",
 ]
+
+[[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "sha2"
@@ -10556,6 +10614,7 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "serde_core",
+ "sha1_smol",
  "wasm-bindgen",
 ]
 

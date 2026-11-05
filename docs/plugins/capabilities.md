@@ -46,6 +46,13 @@ tcp = [{ host = "api.example.com", ports = [443] }]
 
 - `capabilities.network.domains` is the **fetch** allowlist (workerd
   only). Raw TCP is `capabilities.network.tcp` (`host` + `ports`).
+- A bare `*` in `domains` grants **any public website**: every public
+  hostname, but never an IP literal. Loopback names such as `localhost`
+  and private, loopback, link-local and metadata addresses stay denied,
+  including a public name that resolves to one. It is a fetch grant
+  only; a TCP `host` can't be `*`. Consent screens show it as "Any public
+  website". Use it only when the hosts can't be known in advance, as for
+  cover art.
 - The operator may add extra fetch hosts, TCP targets and CIDRs. The
   guest's `describe()` can't.
 - The default address-space policy is the public Internet only. Loopback,
@@ -78,7 +85,8 @@ Workerd egress is matched by the shared `EgressPolicy` and
 `bridge/egress.js`:
 
 - **Every hop.** The request URL's host must be on
-  `capabilities.network.domains` (with `*.` prefix wildcards), including
+  `capabilities.network.domains` (with `*.` prefix wildcards, or `*` for
+  any public hostname), including
   **redirect hops**, unless the operator granted undeclared public
   redirects. Matching uses **IDNA ToASCII** on both the request host and
   the allowlist patterns. Percent-encoded hosts and failed IDNA are
@@ -101,6 +109,9 @@ Workerd egress is matched by the shared `EgressPolicy` and
   301 and 302 convert **POST to GET** only; 303 converts non-GET/HEAD to
   GET; 307 and 308 keep the method and body. `AbortSignal` and other
   RequestInit metadata survive hops.
+- **Manual redirects.** `fetch(url, { redirect: "manual" })` gets the 3xx
+  back unfollowed, as on Cloudflare, so a plugin can vet each hop itself.
+  The gate still checks the host of every request the plugin sends.
 - **Python and outbound.** Workerd Python guests also need the Pyodide and
   CDN hosts (`cdn.jsdelivr.net`, `pypi.org`, `files.pythonhosted.org`) in
   the consent grant. Materializing uses the same set and doesn't widen

@@ -5,6 +5,8 @@
  * Keys:
  * - `tcp:<host>:<port>` — CONNECT, write `ping\\n`, return the echo bytes
  * - `fetch:<url>` — isolate `fetch`, return `STATUS\\n<body>`
+ * - `manual:<url>` — `fetch` with `redirect: "manual"`, return
+ *   `STATUS\\n<location>`
  */
 
 import { connect } from "cloudflare:sockets";
@@ -63,6 +65,12 @@ export class Storage extends StorageEntrypoint {
       } catch (err) {
         throw PluginError.fromWire("failed_precondition", String(err && err.message ? err.message : err));
       }
+    }
+    if (key.startsWith("manual:")) {
+      const res = await fetch(key.slice(7), { redirect: "manual" });
+      await res.body?.cancel();
+      const body = toBytes(`${res.status}\n${res.headers.get("location") ?? ""}`);
+      return { meta: { key, size: body.byteLength }, body: bytesStream(body) };
     }
     if (key.startsWith("fetch:")) {
       const url = key.slice(6);

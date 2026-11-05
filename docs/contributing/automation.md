@@ -632,6 +632,14 @@ site serves a folder's `README.md` at the folder's URL and `<page>/index.md`
 is the page's Markdown copy), and a page beside a folder of the same name
 (make it that folder's `README.md`).
 
+The Rust reference puts a module's docs at a different depth than its
+source file, so a doc comment in a library crate must not link a file
+relatively (a link target such as `../../docs/adr/x.md`). Write the path in a code span or
+link an absolute URL instead; intra-doc links to Rust items are fine. The
+build checks this before it starts, and so do the plan job's
+`test_docs_markdown.py` tests on every pull request, because the build
+itself runs only on `main`.
+
 ### Last updated dates
 
 `last-updated.json` at the root holds the instant each page of `docs/`

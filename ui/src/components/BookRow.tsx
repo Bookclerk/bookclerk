@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { CoverThumb } from "@/components/CoverThumb";
 import { Download } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,13 +31,6 @@ export function BookRow({
   busy: boolean;
   showAcquire?: boolean;
 }) {
-  // Local sidecar first (acquired titles), then the storefront's cover art,
-  // then the Bookclerk mark.
-  const remote = book.cover_url?.trim();
-  const covers = [coverUrl(book.uuid)];
-  if (remote) covers.push(remote.startsWith("//") ? `https:${remote}` : remote);
-  const [coverIndex, setCoverIndex] = useState(0);
-  const coverFailed = coverIndex >= covers.length;
   const meta = [book.authors, book.narrators ? `narr. ${book.narrators}` : null]
     .filter(Boolean)
     .join(" · ");
@@ -53,22 +46,13 @@ export function BookRow({
         onClick={() => onOpen?.(book)}
         aria-label={`Open details for ${book.title}`}
       >
-        {coverFailed ? (
-          <img
-            src="/bookclerk-mark.svg"
-            alt=""
-            className="h-full w-full object-contain p-2 opacity-80"
-          />
-        ) : (
-          <img
-            src={covers[coverIndex]}
-            alt=""
-            loading="lazy"
-            referrerPolicy="no-referrer"
-            className="h-full w-full object-cover"
-            onError={() => setCoverIndex((i) => i + 1)}
-          />
-        )}
+        {/* The local sidecar (acquired titles) first, then the storefront's
+            cover through the daemon, then the Bookclerk mark. */}
+        <CoverThumb
+          path={book.cover_path}
+          sources={[coverUrl(book.uuid)]}
+          className="h-full w-full rounded-none bg-transparent shadow-none"
+        />
       </button>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">

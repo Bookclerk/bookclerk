@@ -134,6 +134,10 @@ const CATALOG_HITS_SELECTOR: u8 = 46;
 const METADATA_RECORDS_SELECTOR: u8 = 91;
 /// See [`SCAN_SUMMARY_SELECTOR`].
 const METADATA_CHAPTERS_SELECTOR: u8 = 94;
+/// See [`SCAN_SUMMARY_SELECTOR`].
+const COVER_FETCH_PARAMS_SELECTOR: u8 = 96;
+/// See [`SCAN_SUMMARY_SELECTOR`].
+const COVER_IMAGES_SELECTOR: u8 = 98;
 
 /// A scan summary with every structured book record filled.
 fn structured_scan_summary() -> bookclerk_plugin_abi::ScanSummary {
@@ -308,6 +312,38 @@ fn structured_metadata_chapters() -> bookclerk_plugin_abi::MetadataChapters {
     }
 }
 
+/// A cover request for two URLs.
+fn structured_cover_fetch_params() -> bookclerk_plugin_abi::CoverFetchParams {
+    bookclerk_plugin_abi::CoverFetchParams {
+        urls: vec![
+            "https://covers.openlibrary.org/b/id/8231856-L.jpg".into(),
+            "https://m.media-amazon.com/images/I/51x.jpg".into(),
+        ],
+        max_bytes: 10_485_760,
+    }
+}
+
+/// One stored and one failed cover answer.
+fn structured_cover_images() -> bookclerk_plugin_abi::CoverImages {
+    use bookclerk_plugin_abi::{CoverImage, CoverImages};
+    CoverImages {
+        images: vec![
+            CoverImage {
+                url: "https://covers.openlibrary.org/b/id/8231856-L.jpg".into(),
+                stored: true,
+                content_type: Some("image/jpeg".into()),
+                error: None,
+            },
+            CoverImage {
+                url: "https://m.media-amazon.com/images/I/51x.jpg".into(),
+                stored: false,
+                content_type: None,
+                error: Some("HTTP 404".into()),
+            },
+        ],
+    }
+}
+
 /// Unpacked single-segment message bytes for one root struct.
 // Test helper: a failed encode is the test failing.
 #[allow(clippy::expect_used)]
@@ -329,8 +365,8 @@ where
 #[test]
 fn structured_book_record_seeds_are_current() {
     use bookclerk_plugin_abi::{
-        plugin_capnp, write_catalog_hits, write_metadata_chapters, write_metadata_records,
-        write_scan_summary,
+        plugin_capnp, write_catalog_hits, write_cover_fetch_params, write_cover_images,
+        write_metadata_chapters, write_metadata_records, write_scan_summary,
     };
 
     let scan = message_bytes(|m| {
@@ -360,6 +396,20 @@ fn structured_book_record_seeds_are_current() {
             &structured_metadata_chapters(),
         )
         .expect("write metadata chapters");
+    });
+    let cover_params = message_bytes(|m| {
+        write_cover_fetch_params(
+            m.init_root::<plugin_capnp::cover_fetch_params::Builder<'_>>(),
+            &structured_cover_fetch_params(),
+        )
+        .expect("write cover params");
+    });
+    let cover_images = message_bytes(|m| {
+        write_cover_images(
+            m.init_root::<plugin_capnp::cover_images::Builder<'_>>(),
+            &structured_cover_images(),
+        )
+        .expect("write cover images");
     });
     let reader = |bytes: &[u8]| {
         capnp::serialize::read_message(
@@ -408,6 +458,26 @@ fn structured_book_record_seeds_are_current() {
         .expect("decode metadata chapters"),
         structured_metadata_chapters()
     );
+    let params_message = reader(&cover_params);
+    assert_eq!(
+        bookclerk_plugin_abi::read_cover_fetch_params(
+            params_message
+                .get_root::<plugin_capnp::cover_fetch_params::Reader<'_>>()
+                .expect("cover params root")
+        )
+        .expect("decode cover params"),
+        structured_cover_fetch_params()
+    );
+    let images_message = reader(&cover_images);
+    assert_eq!(
+        bookclerk_plugin_abi::read_cover_images(
+            images_message
+                .get_root::<plugin_capnp::cover_images::Reader<'_>>()
+                .expect("cover images root")
+        )
+        .expect("decode cover images"),
+        structured_cover_images()
+    );
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus");
     for (name, selector, bytes) in [
         ("structured_scan_summary.bin", SCAN_SUMMARY_SELECTOR, &scan),
@@ -421,6 +491,16 @@ fn structured_book_record_seeds_are_current() {
             "structured_metadata_chapters.bin",
             METADATA_CHAPTERS_SELECTOR,
             &chapters,
+        ),
+        (
+            "structured_cover_fetch_params.bin",
+            COVER_FETCH_PARAMS_SELECTOR,
+            &cover_params,
+        ),
+        (
+            "structured_cover_images.bin",
+            COVER_IMAGES_SELECTOR,
+            &cover_images,
         ),
     ] {
         bookclerk_plugin_abi::roundtrip_any_message(selector, bytes)
@@ -441,4 +521,20 @@ fn structured_book_record_seeds_are_current() {
             );
         }
     }
+}
+
+#[path = "../../../fuzz/oracles/cover_sink_key.rs"]
+mod cover_sink_key_oracle;
+
+/// Mirrors `fuzz/fuzz_targets/cover_sink_key.rs` with the shared oracle.
+// Test code: a missing corpus file is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn fuzz_corpus_cover_sink_key_holds_invariants() {
+    let mut checked = 0;
+    for path in corpus_files("cover_sink_key") {
+        cover_sink_key_oracle::check(&std::fs::read(&path).expect("read"));
+        checked += 1;
+    }
+    assert!(checked > 0, "no cover_sink_key seed");
 }

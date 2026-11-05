@@ -162,6 +162,11 @@ const INTERFACES: &[InterfaceEntry] = &[
         methods: &["health", "lookup", "search", "chapters"],
     },
     InterfaceEntry {
+        id: <plugin_capnp::cover_fetcher::Client as HasTypeId>::TYPE_ID,
+        name: "CoverFetcher",
+        methods: &["health", "fetchCovers"],
+    },
+    InterfaceEntry {
         id: <plugin_capnp::event_consumer::Client as HasTypeId>::TYPE_ID,
         name: "EventConsumer",
         methods: &["event"],

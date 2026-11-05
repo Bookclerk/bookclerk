@@ -27,12 +27,17 @@ boundary extends it.
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
-| `https_url_policy` | URLs from plugin output the host fetches itself (a metadata provider's cover URL) | `bookclerk-plugin-manifest::https_url_on_hosts` |
+| `https_url_policy` | URLs from untrusted output checked against a host allowlist (no caller since covers moved to the cover service) | `bookclerk-plugin-manifest::https_url_on_hosts` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
+| `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
+| `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
+| `cover_token` | Cover tokens in `/api/covers` and `/api/images` paths, and Gravatar hashes in `/api/avatars` paths: which remote URL a route may fetch | `bookclerk-cover::token` |
+| `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
+| `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
 
 Some boundaries need more than a cell:
 
@@ -61,6 +66,7 @@ only that. The others check:
 - **`egress_policy`**: deny allows nothing. Loopback, private and metadata
   addresses need a CIDR in every spelling (trailing dot, fullwidth digits,
   legacy `127.1`, hex and octal IPv4). `*.suffix` never matches `xsuffix`,
+  `*` never matches an IP literal and never grants a socket,
   percent-encoded hosts never match, and the JSON round-trips.
 - **`plugin_manifest`**: `format_manifest` round-trips, and a deny manifest
   yields a deny policy.
@@ -75,6 +81,32 @@ only that. The others check:
   is `fuzz/oracles/https_url_policy.rs`, replayed from
   `bookclerk-plugin-manifest`.
 - **`abi_decode`**: the traversal budget is derived from the input size.
+  Structured seeds cover the book records, the metadata replies and the
+  cover request and reply (`structured_*.bin`).
+- **`cover_sink_key`**: a key names a slot exactly when it is the
+  canonical decimal spelling of an index below the URL count, read digit
+  by digit without `str::parse`, so no two keys name one slot. The shared
+  oracle is `fuzz/oracles/cover_sink_key.rs`, replayed from
+  `bookclerk-plugin-abi`.
+- **`cover_process`**: an input without a JPEG, PNG or WebP signature is
+  refused. An accepted cover yields three JPEGs whose markers and frame
+  headers, read byte by byte rather than by the `image` crate, show 4:4:4
+  sampling, the reported size for the full image, and edges within 2400,
+  360 and 128 px that never grow from one size to the next. The shared
+  oracle is `fuzz/oracles/cover_process.rs`, replayed from
+  `bookclerk-cover`, whose replay test also regenerates the image seeds.
+- **`cover_token`**: a token opens only when an independent HMAC-SHA256
+  re-signing of its URL reproduces it byte for byte, and the URL is `https`
+  with a host; a signed URL round-trips, never opens under another key, and
+  a one-byte change is refused. The same input as a Gravatar hash names a
+  URL only when it is exactly 64 lowercase hex digits, checked byte by
+  byte, and that URL is the hash's picture on `www.gravatar.com` with
+  nothing else in it. The shared oracle is `fuzz/oracles/cover_token.rs`,
+  replayed from `bookclerk-cover`.
+- **`cover_wire`**: the first byte picks the request or the reply decoder.
+  An accepted frame re-encodes to exactly its own bytes, and an accepted
+  reply carries only JPEG-signed images and a nonzero size. The shared
+  oracle is `fuzz/oracles/cover_wire.rs`, replayed from `bookclerk-cover`.
 - **`abi_roundtrip`**: a value the decoder accepts re-encodes, re-decodes
   and compares equal (`read(write(v)) == v`).
 - **`guest_sql_authz`**: every table, column, function and schema action
@@ -94,8 +126,15 @@ only that. The others check:
   is recorded; a work found by identifier or text match has the listing's
   kind, and an episode's work shares its show. Resolving any listing
   again changes nothing, except that an episode recorded before its show
-  gains the show once. The oracle is
+  gains the show once, and a work stored without a matcher key gains one
+  once no other work holds it. The oracle is
   `bookclerk_resolve::fuzzing::run_case`, replayed from `bookclerk-resolve`.
+- **`node_frame`**: an accepted frame is within the size limit and the
+  frame version, and serializes and parses back to an equal frame (unless
+  its serialized text grows past the limit, as `1e9` written out does). Every
+  library id in `acquire.targets` is 1 to 16 ASCII letters and digits,
+  checked byte by byte. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  replayed from `bookclerk-node-proto`.
 
 ## Boundaries outside the Rust workspace
 
@@ -671,6 +710,27 @@ tree and on its text, in `npm test` (the `workerd_guests` check).
   `MAX_CHAPTERS`. `found` exactly when that walk finds any. Durations are
   positive safe integers.
 
+### Cover fetcher guest
+
+The `covers` guest decides which URLs it requests: the host's URLs and every
+redirect `Location` an upstream server sends. Its `test/fuzz.test.ts` replays
+`fuzz/url/` and `fuzz/location/` and runs seeded text mutations in
+`npm test` (the `workerd_guests` check); `FUZZ_SEED` and `FUZZ_ITERATIONS`
+pick another run.
+
+- **Cover URL policy** (`checkUrl` in
+  `crates/bookclerk-plugins/optional/covers/src/fetcher.ts`). Oracle,
+  written from the policy and the WHATWG URL rules: accept exactly an
+  `https` URL with the default port, no credentials, no control characters
+  or spaces, at most 4096 code units, and a hostname whose labels are
+  non-empty and whose last label is not a number (the URL parser's IPv4
+  test) or a bracketed address. Accepted URLs are canonical and
+  idempotent.
+- **Redirect chains** (`fetchOne`). Mutated `Location` chains: every
+  request is a policy URL, each hop is the previous `Location` resolved
+  against the URL that sent it, no more than `MAX_REDIRECTS` are followed,
+  and a body is stored only after a chain the policy allowed in full.
+
 ## Still to add
 
 These are tracked in the fuzzing ADR's follow-ups:
@@ -680,7 +740,8 @@ These are tracked in the fuzzing ADR's follow-ups:
 - Audible CENC/DASH parsing;
 - package extraction;
 - naming paths;
-- node frames;
+- the node frames' per-body checks beyond parsing (upload manifests,
+  storage keys) and the frames' HTTP side;
 - media chapter math;
 - backup import.
 

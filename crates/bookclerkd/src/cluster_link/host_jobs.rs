@@ -165,6 +165,11 @@ pub struct HostTitle {
     /// seeded into the scratch library so episodes are named as on the
     /// owner.
     pub parent: Option<BookRecord>,
+    /// The title's library id on the owner, which names its files here as
+    /// there (this host's scratch library has its own edition ids).
+    pub library_id: Option<String>,
+    /// The podcast parent's library id on the owner.
+    pub parent_library_id: Option<String>,
     /// The owner node's destinations, the primary first; never empty.
     pub destinations: Vec<HostDestination>,
 }
@@ -308,9 +313,7 @@ impl HostGuests for GuestHost {
         tokio::fs::create_dir_all(&scratch_dir).await?;
         let scratch = scratch_library(&cfg, &scratch_dir).await?;
         // This host's own metadata providers fill the plain-audio overlay.
-        let metadata = bookclerk_acquire::AcquireMetadata::new(Arc::new(
-            self.state.integrations.read().await.clone(),
-        ));
+        let metadata = crate::covers::acquire_metadata(&self.state).await;
         let result = acquire_into(
             &scratch.store,
             &cfg,
@@ -421,6 +424,8 @@ pub fn acquire_request(
         write_destinations: None,
         job_id: None,
         temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
+        library_id: None,
+        parent_library_id: None,
         metadata: bookclerk_acquire::AcquireMetadata::default(),
     }
 }
@@ -481,6 +486,10 @@ async fn acquire_into(
     // enter a key.
     let mut request = acquire_request(cfg, book, &primary.options);
     request.cache_dir = cache_dir.to_path_buf();
+    request.library_id.clone_from(&title.library_id);
+    request
+        .parent_library_id
+        .clone_from(&title.parent_library_id);
     request.metadata = metadata;
     let result =
         bookclerk_acquire::acquire_book_indexed(scratch, &destinations, request, None, source)
@@ -724,7 +733,7 @@ async fn acquire_titles<G: HostGuests>(
     let mut attempted = BTreeSet::new();
     let mut acquired = 0u32;
     let mut failed = 0u32;
-    loop {
+    'plan: loop {
         let (targets, planned) = with_retries(|| host.acquire_plan())
             .await
             .map_err(|err| owner_error("the acquire plan", &err))?;
@@ -742,11 +751,13 @@ async fn acquire_titles<G: HostGuests>(
         if fresh.is_empty() {
             return Ok((acquired, failed));
         }
-        for target in fresh {
+        let mut fresh = fresh.into_iter();
+        while let Some(target) = fresh.next() {
             if ctx.is_cancelled() {
                 anyhow::bail!("cancelled");
             }
             attempted.insert(target.book_uuid.clone());
+            let library_id = target.library_id.clone();
             if target.plugin_key != bindings.plugin_key {
                 failed += 1;
                 continue;
@@ -765,6 +776,8 @@ async fn acquire_titles<G: HostGuests>(
             let title = HostTitle {
                 book,
                 parent,
+                library_id: target.library_id.map(String::from),
+                parent_library_id: target.parent_library_id.map(String::from),
                 destinations: destinations.clone(),
             };
             // Both the guest's acquire and the title's upload stop once the
@@ -815,7 +828,21 @@ async fn acquire_titles<G: HostGuests>(
             let _ = tokio::fs::remove_dir_all(&outbox).await;
             let _ = tokio::fs::remove_dir_all(title_cache_dir(&outbox)).await;
             match uploaded {
-                Ok(()) => acquired += 1,
+                Ok(()) => {
+                    acquired += 1;
+                    // Another account's title of the same edition is
+                    // planned too: ask again, so the owner shares the files
+                    // just uploaded rather than this host fetching and
+                    // uploading the same edition a second time.
+                    if library_id.is_some()
+                        && fresh
+                            .as_slice()
+                            .iter()
+                            .any(|next| next.library_id == library_id)
+                    {
+                        continue 'plan;
+                    }
+                }
                 Err(err) if ctx.is_cancelled() => return Err(err),
                 Err(err) => {
                     tracing::warn!(job_id = %host.job.job.id, book_uuid = %title.book.uuid, error = %err, "a title failed on the host");

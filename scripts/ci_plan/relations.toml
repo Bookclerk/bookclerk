@@ -68,6 +68,8 @@ paths = [
     "fuzz/corpus/sql_parse/**",
     "fuzz/corpus/abi_decode/**",
     "fuzz/corpus/abi_roundtrip/**",
+    "fuzz/corpus/cover_sink_key/**",
+    "fuzz/oracles/cover_sink_key.rs",
 ]
 
 # The guest SQL authorizer oracle is shared by the fuzz target and the
@@ -107,8 +109,25 @@ paths = [
 ]
 
 [[test_input]]
+package = "bookclerk-cover"
+# The cover oracles are shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/cover_process/**",
+    "fuzz/oracles/cover_process.rs",
+    "fuzz/corpus/cover_wire/**",
+    "fuzz/oracles/cover_wire.rs",
+    "fuzz/corpus/cover_token/**",
+    "fuzz/oracles/cover_token.rs",
+]
+
+[[test_input]]
 package = "bookclerk-resolve"
 paths = ["fuzz/corpus/library_resolve/**"]
+
+[[test_input]]
+package = "bookclerk-node-proto"
+# The frame oracle is shared with the replay test through `#[path]`.
+paths = ["fuzz/corpus/node_frame/**", "fuzz/oracles/node_frame.rs"]
 
 [[test_input]]
 package = "bookclerk-cli"

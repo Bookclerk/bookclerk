@@ -50,12 +50,13 @@ export function WisherAvatars({
       <span className="isolate flex -space-x-1.5 overflow-visible">
         {visible.map((wisher, index) => {
           const label = wisherLabel(wisher);
-          const ssoPictures = wisher.picture_url
+          const ssoPictures = wisher.picture_path
             ? [
                 {
                   identity_id: wisher.identity_id ?? 0,
                   provider: "sso",
-                  picture_url: wisher.picture_url,
+                  picture_url: wisher.picture_url ?? "",
+                  picture_path: wisher.picture_path,
                 },
               ]
             : [];
