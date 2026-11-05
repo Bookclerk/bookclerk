@@ -112,6 +112,68 @@ shared table and never calls a plugin's client.
 API coverage notes:
 [`crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md`](../../crates/bookclerk-plugins/optional/integration-audiobookshelf/openapi/PIN.md).
 
+## Open Library and Audnexus
+
+Two optional **metadata providers** ship as plugins: `openlibrary`
+(book records from [Open Library](https://openlibrary.org)) and `audnexus`
+(audiobook records and chapter layouts from [Audnexus](https://audnex.us)).
+They describe what those public catalogs say about a book; they never
+change your library on their own.
+
+| Plugin | Answers | Reaches |
+| --- | --- | --- |
+| `openlibrary` | Lookups by Open Library edition id, work id or ISBN; searches by title and author | `openlibrary.org` |
+| `audnexus` | Lookups and chapter layouts by ASIN | `api.audnex.us` |
+
+Bookclerk asks every deployed metadata provider, in turn, when it:
+
+- matches non-Audible books to an Audible ASIN during a scan
+  (`library.enrich_from_audible`), looking each Audible catalog
+  candidate up by ASIN;
+- fills in title details in Discover;
+- overlays an Audible chapter layout, cover and tags onto plain audio
+  during acquire;
+- fills gaps (subjects, description, cover, language) on owned books with
+  `bookclerk discover enrich-metadata`, or during `discover recommend`.
+
+With no provider deployed, ASIN matching, the acquire overlay and gap
+filling find nothing and leave your library as it is; Bookclerk has no
+built-in lookups to fall back to. Discover title details still fill what
+they can from the Libro.fm catalog when a deployed `libro` source finds the
+book's ISBN. A provider that fails, or gives no answer within 30 seconds, is
+logged and skipped, and the next one is asked.
+
+The acquire overlay asks the providers deployed on the node that runs the
+download, so in a cluster deploy them wherever acquires run.
+
+These plugins are optional, so they aren't installed by default. Install
+the plugin first, as [Installing plugins](plugins.md#installing-plugins)
+describes; approving and deploying act only on an installed plugin.
+
+To turn one on:
+
+1. Approve its network access:
+
+   ```sh
+   bookclerk plugins approve openlibrary --yes
+   ```
+
+2. For Open Library, set a contact address. Open Library asks API users to
+   identify themselves, so it can reach you before it limits heavy use:
+
+   ```sh
+   bookclerk plugins config set openlibrary contact_email you@example.com
+   ```
+
+3. Deploy it:
+
+   ```sh
+   bookclerk plugins deploy openlibrary
+   ```
+
+Each call makes at most one request to Open Library, or one per ASIN (up
+to five) to Audnexus. Their health checks make no request at all.
+
 ## Claim tickets and Accounts
 
 A **claim ticket** links a person to their identity in another app. With

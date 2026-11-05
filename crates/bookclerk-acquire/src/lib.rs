@@ -39,8 +39,8 @@ pub use naming::{
 pub use pipeline::{
     acquire_book, acquire_book_indexed, acquire_pdf_only, planned_storage_key,
     planned_storage_key_for, planned_storage_key_with_rules, planned_title_folders,
-    planned_title_names, AcquireRequest, AcquireResult, PlannedTitleNames, NAME_WILDCARD,
-    NUMBER_WILDCARD,
+    planned_title_names, AcquireMetadata, AcquireRequest, AcquireResult, PlannedTitleNames,
+    NAME_WILDCARD, NUMBER_WILDCARD,
 };
 pub use reconcile::{
     extract_asins_from_key, find_existing_for_book, find_existing_for_request, reconcile_library,

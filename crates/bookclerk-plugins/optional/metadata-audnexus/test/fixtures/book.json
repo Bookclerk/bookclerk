@@ -1,0 +1,77 @@
+{
+  "asin": "B002V0QK4C",
+  "authors": [
+    {
+      "asin": "B000APZOQA",
+      "name": "Terry Goodkind"
+    }
+  ],
+  "copyright": 1994,
+  "description": "The masterpiece that started Terry Goodkind's New York Times bestselling epic Sword of Truth In the aftermath of the bru",
+  "formatType": "unabridged",
+  "genres": [
+    {
+      "asin": "18574426011",
+      "name": "Literature & Fiction",
+      "type": "genre"
+    },
+    {
+      "asin": "18580606011",
+      "name": "Science Fiction & Fantasy",
+      "type": "genre"
+    },
+    {
+      "asin": "18574456011",
+      "name": "Genre Fiction",
+      "type": "tag"
+    },
+    {
+      "asin": "18580621011",
+      "name": "Movie, TV & Video Game Tie-Ins",
+      "type": "tag"
+    },
+    {
+      "asin": "18574476011",
+      "name": "Sagas",
+      "type": "tag"
+    },
+    {
+      "asin": "18580607011",
+      "name": "Fantasy",
+      "type": "tag"
+    },
+    {
+      "asin": "18580608011",
+      "name": "Action & Adventure",
+      "type": "tag"
+    },
+    {
+      "asin": "18580615011",
+      "name": "Epic",
+      "type": "tag"
+    }
+  ],
+  "image": "https://m.media-amazon.com/images/I/91VIQAWhp+L.jpg",
+  "isAdult": false,
+  "isbn": "9781423377962",
+  "language": "english",
+  "literatureType": "fiction",
+  "narrators": [
+    {
+      "name": "Sam Tsoutsouvas"
+    }
+  ],
+  "publisherName": "Brilliance Audio",
+  "rating": "4.5",
+  "region": "us",
+  "releaseDate": "2008-10-15T00:00:00.000Z",
+  "runtimeLengthMin": 2046,
+  "seriesPrimary": {
+    "asin": "B005NB27MK",
+    "name": "Sword of Truth",
+    "position": "1"
+  },
+  "subtitle": "Sword of Truth, Book 1",
+  "summary": "<p><b>The masterpiece that started Terry Goodkind's<i> New York Times</i> bestselling epic Sword of Truth</b></p><p>In t",
+  "title": "Wizard's First Rule"
+}

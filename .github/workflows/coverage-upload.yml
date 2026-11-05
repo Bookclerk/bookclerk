@@ -278,6 +278,30 @@ jobs:
 
       # Test results for Codecov Test Analytics: failed tests in the pull
       # request comment and, from merge groups, flaky tests on main.
+      - name: Upload workerd-guests
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/workerd-guests.lcov') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage-upload/workerd-guests.lcov
+          flags: workerd-guests
+          disable_search: true
+          # This checkout is the default branch, not the commit measured:
+          # its file list and contents would make Codecov drop new files
+          # and mark the wrong lines as non-code. Send no file list (the
+          # reports are already repository-relative) and no line fixes.
+          network_filter: coverage-upload-sends-no-file-list/
+          disable_file_fixes: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      # Test results for Codecov Test Analytics: failed tests in the pull
+      # request comment and, from merge groups, flaky tests on main.
       - name: Upload rust test results
         if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/rust.junit.xml') != ''
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -353,6 +377,25 @@ jobs:
           report_type: test_results
           files: coverage-upload/python-sdk.junit.xml
           flags: python-sdk
+          disable_search: true
+          use_oidc: true
+          version: v11.3.1
+          fail_ci_if_error: false
+          override_commit: ${{ github.event.workflow_run.head_sha }}
+          override_branch: ${{ steps.target.outputs.branch }}
+          override_pr: ${{ steps.target.outputs.pr }}
+          override_build: ${{ github.event.workflow_run.id }}
+          override_build_url: ${{ github.event.workflow_run.html_url }}
+
+      # Bundle Analysis (docs/contributing/ci.md#bundle-sizes). The analyzer
+      # is this checkout's pinned tooling, installed without install scripts.
+      - name: Upload workerd-guests test results
+        if: steps.target.outputs.upload == 'true' && hashFiles('coverage-upload/workerd-guests.junit.xml') != ''
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          report_type: test_results
+          files: coverage-upload/workerd-guests.junit.xml
+          flags: workerd-guests
           disable_search: true
           use_oidc: true
           version: v11.3.1

@@ -34,7 +34,8 @@ tested that exact commit. So the push run resolves with `--build-only`
 (`build_only: true` in the artifact):
 
 - Only the jobs that save caches run: `check`, `test`, `native-gateway`
-  and `release` (`BUILD_ONLY_JOBS` in `scripts/ci_plan/execute.py`). The
+  and `release` (`BUILD_ONLY_JOBS` in `scripts/ci_plan/execute.py`), plus
+  the [macOS job](#macos-job), which runs the `native-gateway` leg. The
   gate expects every other job to be skipped. The release job drops its
   envelope check (`BUILD_ONLY_SKIPPED_CHECKS`), which only measures, and
   runs a fat and a thin leg so both of its caches stay warm.
@@ -107,9 +108,9 @@ Rust dependency caches use three shared keys. Each is saved by one job on
 `main` and restored by the others:
 
 - **`lint`**: saved by `check`.
-- **`debug`**: saved by `test` on Linux and by `native-gateway` on macOS
-  and Windows. Restored by `e2e`, `confinement`, `tray`, `postgres` and
-  `windows-cluster`.
+- **`debug`**: saved by `test` on Linux, by `native-gateway` on Windows
+  and by the [macOS job](#macos-job) on macOS. Restored by `e2e`,
+  `confinement`, `tray`, `postgres` and `windows-cluster`.
 - **`release`**: saved by `release` (the job that also runs the
   envelope), once per LTO mode (see [Release build](#release-build)).
 
@@ -212,6 +213,7 @@ paths):
 | A declared `fixture` | The checks declared for that fixture |
 | A declared `test_guests` executable | The launching package's tests re-run, with no propagation |
 | `ui/`, `packages/plugin-sdk*/`, ABI scripts | The UI, SDK ABI and API-doc checks |
+| A first-party workerd guest without a Cargo package (`crates/bookclerk-plugins/<tier>/<name>/`) | Its type-check, build and tests (`workerd_guests`) and its staged E2E. `packages/plugin-sdk/` also selects `workerd_guests`, because the guests type-check against it |
 | `docs/**` | The website tests (`site_test`) |
 | `tools/site/**`, `assets/brand/**` | The website tests and audit (`site_test`, `site_audit`) |
 | `tools/diagnostics-collector/**` | The collector's tests (`collector_test`) |
@@ -297,7 +299,7 @@ test step excludes it (`--exclude bookclerk-plugin-e2e` on the full suite).
   `examples/plugins-*/plugin.toml`), host discovery, registry or install
   preflight, or the full suite.
 - **Subsets.** Each compiled-affected guest package adds its id. Changed
-  non-Cargo example guests add theirs. The workerd SDK runtime embed adds
+  non-Cargo guests (examples and first-party workerd guests) add theirs. The workerd SDK runtime embed adds
   every workerd-runtime guest. Shared host runtime changes add the
   `runtime_smoke` guests (native Rust, workerd TS, workerd Python).
 - **Combination.** Full wins over subsets, subsets are unioned, and
@@ -347,13 +349,14 @@ when a step matches no test. Name such tests `postgres_*`.
 | Job | Runs when | Checks |
 | --- | --- | --- |
 | `plan` | Always | Planner, executor, contract and guardrail tests; DB isolation and docs lints; `resolve`; the `ci-plan` artifact |
-| `fmt / clippy / docs` | Any of its checks is selected | `lint`, `ui`, `plugin_sdk_abi`, `python_sdk`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
+| `fmt / clippy / docs` | Any of its checks is selected | `lint`, `ui`, `plugin_sdk_abi`, `python_sdk`, `workerd_guests`, `author_surface`, `fmt`, `clippy`, `clippy_publish`, `api_docs`, `doctest`, `store_free` |
 | `unit + integration tests` | `rust_test` is selected | nextest over the affected packages (the workspace on the full suite), custom-harness targets, feature test runs, bench and example builds |
 | `staged plugin installation (e2e)` | `e2e` is selected | Builds, installs and stages the guests in scope, then the `bookclerk-plugin-e2e` staged targets |
 | `release build + small-VPS envelope (<lto> LTO)` | A shipped binary (hosts, helpers, platform guests) is compiled-affected (`release`), or an `[envelope].paths` input changed, an `[envelope].packages` member is compiled-affected, or the full suite (`envelope`) | Each selected check as its own step; see [Release build](#release-build) and [Small-VPS envelope](#small-vps-envelope) |
-| `sandbox + jailed tiers` (3 OS) | sandbox, jail, media or media-worker is affected | Clippy and enforcement tests (Windows `--test-threads=1`) |
-| `native-behind-workerd gateway` (3 OS) | See [the gateway job](#native-behind-workerd-gateway-job) | The four `native_gateway` targets, plus per-OS extras |
-| `tray` (3 OS) | `bookclerk-tray` is affected | Clippy and tests |
+| `sandbox + jailed tiers` (Linux, Windows) | sandbox, jail, media or media-worker is affected | Clippy and enforcement tests (Windows `--test-threads=1`) |
+| `native-behind-workerd gateway` (Linux, Windows) | See [the gateway job](#native-behind-workerd-gateway-job) | The four `native_gateway` targets, plus per-OS extras |
+| `tray` (Linux, Windows) | `bookclerk-tray` is affected | Clippy and tests |
+| `macOS (sandbox, gateway, tray)` | Any of the three jobs above runs | The macOS run of each of them, one step each; see [macOS job](#macos-job) |
 | `postgres 16/17/18` | An owning package's unit tests are affected | Only the owners' steps, on every supported major |
 | `windows cluster startup + identity` | A `[windows_cluster].paths` input changed, or the full suite | See [Windows cluster](#windows-cluster-startup-and-identity) |
 | `website + collector Workers` | See [Workers](#website-and-collector-workers) | `site_test`, `site_audit`, `collector_test`, `demo_test`; no Rust toolchain |
@@ -458,7 +461,7 @@ The job runs when any of these hold:
 - a `[native_gateway].paths` smoke input changed;
 - it is the full suite.
 
-On every OS it runs
+On every OS (on macOS, as a step of the [macOS job](#macos-job)) it runs
 `cargo test -p bookclerk-plugin-e2e --test native_gateway --test native_gateway_isolation --test native_gateway_lifecycle --test native_gateway_authenticated_endpoint`
 (see [the smoke](#native-behind-workerd-gateway-smoke) below).
 
@@ -779,6 +782,7 @@ extra test run:
 | `rust` | `test` (`rust_test`) | [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov), source-based LLVM coverage |
 | `site`, `collector`, `demo` | Workers (`site_test`, `collector_test`, `demo_test`) | Vitest V8 coverage (`npm run coverage`) |
 | `python-sdk` | `fmt / clippy / docs` (`python_sdk`) | pytest-cov |
+| `workerd-guests` | `fmt / clippy / docs` (`workerd_guests`) | Node's test runner coverage (`node --test --experimental-test-coverage`) |
 
 How a run gets there:
 
@@ -855,6 +859,10 @@ cargo-nextest runs each test in its own); the test job keeps the files
 beside its coverage report and CI Gate runs
 [`scripts/contract_coverage.py`](../../scripts/contract_coverage.py) over
 them.
+
+CI Gate writes the only Web API contract report of a run. The plan job's
+tests of the script run it too, but neither they nor any other script test
+in that job write to the job's step summary.
 
 The step summary shows how many of the declared responses (route, status
 and media type) the tests observed, in all and (in a fold) per tag, and lists every
@@ -972,6 +980,7 @@ comment and, from merge group runs, finds tests that are flaky on `main`.
   custom-harness tests write no report.
 - The Workers: Vitest's `junit` reporter, next to the coverage run.
 - The Python SDK: pytest's `--junitxml`.
+- The first-party workerd guests: Node's `junit` test reporter.
 
 The test jobs upload their artifacts even when tests fail, so failures reach
 Codecov. Like the coverage reports, the JUnit reports come from the pull
@@ -1039,8 +1048,8 @@ Each run works like this:
 3. The job summary lists what was tested and what was missed. A run that
    did not test its range fails, so the next run covers the same changes:
    the baseline failed, the tool exited with an error, or it left no
-   results. A run stopped at its time limit still succeeds with what it
-   tested.
+   results. A run stopped at its time limit, or early because the runner
+   ran low on disk or memory, still succeeds with what it tested.
 4. When a mutant was missed, the reusable
    [`mutation-issue.yml`](../../.github/workflows/mutation-issue.yml)
    workflow files the summary as an issue titled `Missed mutants: <area>`
@@ -1088,7 +1097,14 @@ the starting point of the next scheduled one.
    the same confinement enforcement as the test job. Tests that launch a
    helper then run instead of skipping.
 4. Each mutant runs the tests of its own package under cargo-nextest.
-5. The run stops after 4 hours and reports what it tested so far.
+5. The run stops after 4 hours and reports what it tested so far. It
+   also stops early, the same way, when less than 3 GiB of disk is free or
+   less than 768 MiB of memory stays available for two checks 15 seconds
+   apart. A runner that runs out of either loses contact with GitHub, and
+   the job then fails with no log and no results, so the next run would
+   retry an even larger range. The job frees the preinstalled SDKs it never
+   uses before it builds, logs the disk and memory left every 10 minutes,
+   and the summary says why a run stopped early.
 
 The job summary shows the share of mutants the tests caught and lists the
 missed ones. The full results, with a log per mutant, are in the
@@ -1281,8 +1297,8 @@ Configure repository rulesets or branch protection so the **required** CI check 
 **`CI Gate`** (plus the OSV check), **not** every matrix child.
 
 > [!WARNING]
-> Skipped `release`, `confinement`, `native-gateway` and `tray` jobs report
-> `skipped`. If those job names are required individually, merges stay
+> Skipped `release`, `confinement`, `native-gateway`, `tray` and macOS jobs
+> report `skipped`. If those job names are required individually, merges stay
 > pending forever.
 
 Also enable a merge queue that consumes `merge_group` checks, so the full
@@ -1299,6 +1315,51 @@ Queue settings:
 With a queue required, "require branches to be up to date" no longer
 matters. The queue tests each entry against the current `main`, stacked on
 the entries ahead of it.
+
+### macOS job
+
+The macOS runs of `confinement`, `native-gateway` and `tray` share one
+job, `macOS (sandbox, gateway, tray)`, on `macos-latest`. Since 2 November
+2026, GitHub has often failed to give macOS jobs a runner, whichever macOS
+label they ask for. In the runs checked on 4 November, no more than two
+of this repository's macOS jobs ran at the same time. One job per run asks
+for one macOS runner instead of three.
+
+The job runs when any of the three jobs is planned. It runs each planned
+check as its own step once setup succeeded, and a check still runs after
+an earlier check failed, so one round shows every failure. It saves the macOS `debug` cache on
+`main`, as `native-gateway` does on Windows. In `OS_LEG_JOBS` in
+[`scripts/ci_plan/plan.py`](../../scripts/ci_plan/plan.py), `CI Gate`
+expects the job whenever it expects any of the three.
+
+GitHub sometimes never gives the job a runner. It cancels the job with the
+not-acquired annotation (see [re-enqueue](#merge-queue-re-enqueue) below),
+and `CI Gate` fails, as for any job that doesn't succeed. After one retry,
+the macOS checks are best effort:
+
+1. A pull request run is re-run once (attempt 2). On a merge group, the
+   pull request goes back in the queue once.
+2. If the macOS job gets no runner again, `CI Gate` passes without it. A
+   step in `CI Gate` runs
+   `scripts/merge_queue_requeue.py --stranded-job` to check that the job
+   was cancelled with no runner and no step and carries the not-acquired
+   annotation, and that the same happened on the try before: the previous
+   attempt of a pull request run, or the pull request's previous merge
+   group, when it has entered the queue at least twice on its current
+   head. That merge group must have started after the pull request first
+   entered the queue on its current head, so a run of an older head never
+   counts. A first miss after a retry for another reason still fails.
+3. The gate prints a warning and a step-summary note that the macOS checks
+   didn't run on that commit.
+
+`CI Gate` sees such a job as `abandoned` in `needs` (the jobs API reports
+it as `cancelled`), so it accepts either result for a job the step
+vouched for.
+
+A macOS job that ran and failed, or was cancelled after it started, always
+fails the gate. So does a stranded job on a `main` push or an OSV
+remediation run. The gate job reads the GitHub API with a read-only token
+(`actions`, `checks` and `issues`).
 
 ### Merge-queue re-enqueue
 
@@ -1329,6 +1390,8 @@ only when all of these hold:
    between makes it fail.
 
 Every check stays required: the new merge group runs the full suite again.
+A run whose `CI Gate` passed (the [macOS job](#macos-job) let through) is
+never re-enqueued or re-run.
 The workflow runs from the default branch, reads only the GitHub API and
 runs no pull request code. The step summary says why it did or didn't
 enqueue.

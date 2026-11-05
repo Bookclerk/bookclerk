@@ -11,7 +11,9 @@ use bookclerk_integrations::{
     ProvidedOidcClient, QueueSubscription,
 };
 use bookclerk_plugin_sdk::{
-    AuthenticateUserParams, DomainEvent, EventResult, ScanLibraryParams, PRODUCT_API_VERSION,
+    AuthenticateUserParams, DomainEvent, EventResult, MetadataChapters, MetadataChaptersParams,
+    MetadataLookupParams, MetadataRecord, MetadataSearchParams, ScanLibraryParams,
+    PRODUCT_API_VERSION,
 };
 use tracing::warn;
 
@@ -522,6 +524,40 @@ impl Integration for ExternalIntegration {
             h.ok,
             h.detail.unwrap_or_default()
         )])
+    }
+
+    fn supports_metadata(&self) -> bool {
+        self.session.has_entrypoint(crate::Entrypoint::Metadata)
+    }
+
+    async fn metadata_lookup(
+        &self,
+        params: MetadataLookupParams,
+    ) -> bookclerk_integrations::Result<Vec<MetadataRecord>> {
+        Ok(self
+            .session
+            .metadata(move |provider| async move { provider.lookup(params).await })
+            .await?)
+    }
+
+    async fn metadata_search(
+        &self,
+        params: MetadataSearchParams,
+    ) -> bookclerk_integrations::Result<Vec<MetadataRecord>> {
+        Ok(self
+            .session
+            .metadata(move |provider| async move { provider.search(params).await })
+            .await?)
+    }
+
+    async fn metadata_chapters(
+        &self,
+        params: MetadataChaptersParams,
+    ) -> bookclerk_integrations::Result<MetadataChapters> {
+        Ok(self
+            .session
+            .metadata(move |provider| async move { provider.chapters(params).await })
+            .await?)
     }
 
     fn supports_credential_login(&self) -> bool {

@@ -112,7 +112,7 @@ jobs:
       # The Python SDK's uv.lock is updated with `uv lock`. No cache: the
       # bump is not public yet.
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version-file: .tool-versions
           enable-cache: false
@@ -171,10 +171,14 @@ jobs:
     needs: bump
     if: needs.bump.outputs.changed == 'true'
     # ci.yml's fail-fast job needs `actions: write` to cancel this run when a
-    # CI job fails; every other ci.yml job keeps `contents: read`.
+    # CI job fails, and CI Gate asks for read access to checks and issues
+    # (its stranded-job step, which skips this run); every other ci.yml job
+    # keeps `contents: read`.
     permissions:
       contents: read
       actions: write
+      checks: read
+      issues: read
     uses: ./.github/workflows/ci.yml
     with:
       private-head: true

@@ -124,21 +124,21 @@ class WidenTest(unittest.TestCase):
     def test_widened_files_are_named_when_mutated(self) -> None:
         out = mr.Results()
         out.mutants[Outcome.CAUGHT] = ["crates/a/src/lib.rs:9:1: replace g -> u32 with 0"]
-        text = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs", "crates/a/tests/t.rs"])
+        text = mr.render(out, mr.Run.CLEAN, stopped=None, widened=["crates/a/src/lib.rs", "crates/a/tests/t.rs"])
         self.assertIn("the functions in them were mutated instead", text)
         self.assertNotIn("mutants, more than one run tests", text)
         self.assertIn("- `crates/a/src/lib.rs`", text)
         # A widened file that yielded no mutant (a test file) is not named.
         self.assertNotIn("tests/t.rs", text)
-        self.assertNotIn("functions in them", mr.render(out, mr.Run.CLEAN, stopped=False))
+        self.assertNotIn("functions in them", mr.render(out, mr.Run.CLEAN, stopped=None))
         # The note counts the widened mutants that ran, not those admitted
         # (an unviable one, or one a stopped run never reached, did not run).
         out.mutants[Outcome.UNVIABLE] = ["crates/a/src/lib.rs:12:1: replace h with ()"]
         out.mutants[Outcome.MISSED] = ["crates/b/src/api.rs:3:7: replace <= with > in f"]
-        sampled = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs"], sample=mr.Sample(300, 15))
+        sampled = mr.render(out, mr.Run.CLEAN, stopped=None, widened=["crates/a/src/lib.rs"], sample=mr.Sample(300, 15))
         self.assertIn("including any not listed, hold 300 mutants", sampled)
         self.assertIn("so 1 spread across them were tested", sampled)
-        everything = mr.render(out, mr.Run.CLEAN, stopped=False, widened=["crates/a/src/lib.rs"], sample=mr.Sample(9, 9))
+        everything = mr.render(out, mr.Run.CLEAN, stopped=None, widened=["crates/a/src/lib.rs"], sample=mr.Sample(9, 9))
         self.assertNotIn("hold 9 mutants", everything)
 
 
@@ -179,7 +179,7 @@ class RenderTest(unittest.TestCase):
         out = mr.Results()
         out.mutants[Outcome.CAUGHT] = [CAUGHT] * 3
         out.mutants[Outcome.MISSED] = [MISSED]
-        text = mr.render(out, mr.Run.MISSED, stopped=False)
+        text = mr.render(out, mr.Run.MISSED, stopped=None)
         self.assertIn("**75%** of the 4 mutants", text)
         self.assertIn("| 3 | 1 | 0 | 0 |", text)
         self.assertIn(f"- `{MISSED}`", text)
@@ -187,27 +187,27 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("time limit", text)
 
     def test_long_lists_are_cut(self) -> None:
-        text = mr.render(results(missed=mr.MAX_LISTED + 7), mr.Run.MISSED, stopped=True)
+        text = mr.render(results(missed=mr.MAX_LISTED + 7), mr.Run.MISSED, stopped=mr.Stop.TIME_LIMIT)
         self.assertEqual(text.count("\n- `"), mr.MAX_LISTED)
         self.assertIn("and 7 more", text)
         self.assertIn("time limit", text)
 
     def test_other_states(self) -> None:
-        self.assertIn("failed to build or its tests failed", mr.render(mr.Results(), mr.Run.BASELINE_FAILED, stopped=False))
-        self.assertIn("did not finish", mr.render(mr.Results(), mr.Run.ERROR, stopped=False))
-        self.assertIn("No mutants to test", mr.render(mr.Results(), mr.Run.CLEAN, stopped=False))
-        only_unviable = mr.render(results(unviable=2), mr.Run.CLEAN, stopped=False)
+        self.assertIn("failed to build or its tests failed", mr.render(mr.Results(), mr.Run.BASELINE_FAILED, stopped=None))
+        self.assertIn("did not finish", mr.render(mr.Results(), mr.Run.ERROR, stopped=None))
+        self.assertIn("No mutants to test", mr.render(mr.Results(), mr.Run.CLEAN, stopped=None))
+        only_unviable = mr.render(results(unviable=2), mr.Run.CLEAN, stopped=None)
         self.assertIn("| 0 | 0 | 0 | 2 |", only_unviable)
         self.assertNotIn("%**", only_unviable)
 
     def test_an_error_after_partial_results_is_flagged(self) -> None:
-        partial = mr.render(results(caught=1), mr.Run.ERROR, stopped=False)
+        partial = mr.render(results(caught=1), mr.Run.ERROR, stopped=None)
         self.assertIn("**100%**", partial)
         self.assertIn("results are incomplete", partial)
         # The time-limit note already explains a stopped run.
-        stopped = mr.render(results(caught=1), mr.Run.ERROR, stopped=True)
+        stopped = mr.render(results(caught=1), mr.Run.ERROR, stopped=mr.Stop.TIME_LIMIT)
         self.assertNotIn("results are incomplete", stopped)
-        self.assertNotIn("results are incomplete", mr.render(results(caught=1), mr.Run.CLEAN, stopped=False))
+        self.assertNotIn("results are incomplete", mr.render(results(caught=1), mr.Run.CLEAN, stopped=None))
 
     def test_backticks_stay_in_code(self) -> None:
         self.assertEqual(mr._code("a"), "`a`")
@@ -239,13 +239,38 @@ class MainTest(unittest.TestCase):
         self.assertIn("did not finish", "".join(c.args[0] for c in stdout.write.call_args_list))
 
     def test_usable(self) -> None:
-        self.assertTrue(mr.usable(mr.Run.CLEAN, False))
-        self.assertTrue(mr.usable(mr.Run.MISSED, False))
-        self.assertTrue(mr.usable(mr.Run.TIMEOUTS, False))
-        self.assertFalse(mr.usable(mr.Run.BASELINE_FAILED, False))
-        self.assertFalse(mr.usable(mr.Run.ERROR, False))
-        # Stopped at the time limit (SIGINT reads as an error): what it tested stands.
-        self.assertTrue(mr.usable(mr.Run.ERROR, True))
+        self.assertTrue(mr.usable(mr.Run.CLEAN, None))
+        self.assertTrue(mr.usable(mr.Run.MISSED, None))
+        self.assertTrue(mr.usable(mr.Run.TIMEOUTS, None))
+        self.assertFalse(mr.usable(mr.Run.BASELINE_FAILED, None))
+        self.assertFalse(mr.usable(mr.Run.ERROR, None))
+        # Stopped at the time limit, or before the runner ran out of disk or
+        # memory (SIGINT reads as an error): what it tested stands.
+        for stop in mr.Stop:
+            self.assertTrue(mr.usable(mr.Run.ERROR, stop))
+
+    def test_stop_notes_name_the_reason(self) -> None:
+        self.assertEqual(set(mr.STOP_NOTES), set(mr.Stop))
+        for stop, needle in ((mr.Stop.TIME_LIMIT, "time limit"), (mr.Stop.LOW_DISK, "disk space"), (mr.Stop.LOW_MEMORY, "memory")):
+            text = mr.render(results(caught=1), mr.Run.ERROR, stopped=stop)
+            self.assertIn(f"> {mr.STOP_NOTES[stop]}", text)
+            self.assertIn(needle, text)
+            self.assertNotIn("results are incomplete", text)
+
+    def test_stopped_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "mutants.out"
+            out.mkdir()
+            (out / "caught.txt").write_text(CAUGHT + "\n", encoding="utf-8")
+            cases = (([], 1, None), (["--stopped"], 0, mr.Stop.TIME_LIMIT), (["--stopped", "low-disk"], 0, mr.Stop.LOW_DISK), (["--stopped", "low-memory"], 0, mr.Stop.LOW_MEMORY))
+            for extra, code, stop in cases:
+                with self.subTest(extra=extra), mock.patch("sys.stdout") as stdout:
+                    self.assertEqual(mr.main(["--out", str(out), "--exit-code", "130", "--summary", "", *extra]), code)
+                    text = "".join(c.args[0] for c in stdout.write.call_args_list)
+                    for other in mr.Stop:
+                        (self.assertIn if other is stop else self.assertNotIn)(mr.STOP_NOTES[other], text)
+            with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+                mr.main(["--out", str(out), "--exit-code", "130", "--stopped", "tired"])
 
 
 def names_of(job: dict) -> list[str | None]:

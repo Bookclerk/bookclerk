@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,7 @@ from .plan import (
     E2E_PACKAGE,
     JOB_CHECKS,
     NON_CARGO_CHECKS,
+    OS_LEG_JOBS,
     STEP_GATED_JOBS,
     PlanError,
     Plan,
@@ -336,6 +338,7 @@ def job_outputs(artifact: Mapping[str, Any]) -> dict[str, str]:
         plan.selected("lint")
         or plan.selected("ui")
         or plan.selected("plugin_sdk_abi")
+        or plan.selected("workerd_guests")
         or (plan.selected("api_docs") and (docs.get("all") or docs.get("typescript") or docs.get("ui")))
     )
     # uv installs the Python SDK and its pdoc extra from uv.lock.
@@ -471,6 +474,104 @@ def _coverage_report(area: str) -> Path | None:
     report = Path(root) / area / "lcov.info"
     report.parent.mkdir(parents=True, exist_ok=True)
     return report
+
+
+def workerd_guest_dirs(workspace: Path) -> list[Path]:
+    """First-party workerd guests that carry their own TypeScript build.
+
+    A guest qualifies when it sits under ``crates/bookclerk-plugins/<tier>/``,
+    its ``plugin.toml`` says ``runtime = "workerd"`` and it has a
+    ``package.json``.
+
+    Args:
+        workspace: The repository root.
+
+    Returns:
+        The guest directories, sorted.
+    """
+    out: list[Path] = []
+    for manifest in sorted((workspace / "crates" / "bookclerk-plugins").glob("*/*/plugin.toml")):
+        try:
+            runtime = tomllib.loads(manifest.read_text(encoding="utf-8")).get("runtime")
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ExecError(f"cannot parse {manifest}: {exc}") from exc
+        if runtime == "workerd" and (manifest.parent / "package.json").is_file():
+            out.append(manifest.parent)
+    return out
+
+
+# Removes a guest's emitted `modules/` before the build, so a module whose
+# source was deleted does not survive the rebuild unnoticed.
+_CLEAR_MODULES = "import shutil; shutil.rmtree('modules', ignore_errors=True)"
+
+# Fails when the rebuilt `modules/` differs from the committed one in any way:
+# a changed or deleted tracked file, or a new untracked one.
+_MODULES_DRIFT = (
+    "import subprocess, sys; "
+    "out = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all', '--', 'modules'], "
+    "capture_output=True, text=True, check=True).stdout; "
+    "print(out, end=''); sys.exit(1 if out else 0)"
+)
+
+
+def _workerd_guest_commands(ctx: "Context") -> list[Command]:
+    """Type-check, rebuild and test every first-party workerd guest.
+
+    The guests type-check against the TypeScript SDK, so it is built first.
+    Each guest's shipped ``modules/`` is emitted from ``src/`` by its build;
+    a committed tree that differs from a fresh build is drift. The unit tests
+    of all guests run in one ``node --test`` from the repository root, so one
+    LCOV report covers them.
+
+    Args:
+        ctx: Paths and platform facts.
+
+    Returns:
+        The commands, in order.
+    """
+    sdk = str(ctx.workspace / "packages" / "plugin-sdk")
+    cmds = [
+        Command("npm ci (plugin-sdk)", ["npm", "ci"], cwd=sdk),
+        Command("npm run build (plugin-sdk)", ["npm", "run", "build"], cwd=sdk),
+    ]
+    dirs = workerd_guest_dirs(ctx.workspace)
+    for guest in dirs:
+        rel = guest.relative_to(ctx.workspace).as_posix()
+        cmds += [
+            Command(f"npm ci ({rel})", ["npm", "ci"], cwd=str(guest)),
+            Command(f"tsc ({rel})", ["npm", "run", "typecheck"], cwd=str(guest)),
+            Command(f"clear modules ({rel})", [sys.executable, "-c", _CLEAR_MODULES], cwd=str(guest)),
+            Command(f"npm run build ({rel})", ["npm", "run", "build"], cwd=str(guest)),
+            Command(f"modules drift ({rel})", [sys.executable, "-c", _MODULES_DRIFT], cwd=str(guest)),
+        ]
+    if not dirs:
+        return cmds
+    report = _coverage_report("workerd-guests")
+    reporters = ["--test-reporter=spec", "--test-reporter-destination=stdout"]
+    if report:
+        reporters += [
+            "--test-reporter=lcov",
+            f"--test-reporter-destination={report}",
+            "--test-reporter=junit",
+            f"--test-reporter-destination={report.parent / 'junit.xml'}",
+        ]
+    tests = [f"{guest.relative_to(ctx.workspace).as_posix()}/test/**/*.test.ts" for guest in dirs]
+    cmds.append(
+        Command(
+            "node --test (workerd guests)",
+            [
+                "node",
+                "--test",
+                "--experimental-test-module-mocks",
+                "--experimental-test-coverage",
+                "--test-coverage-include=crates/bookclerk-plugins/*/*/src/**",
+                *reporters,
+                *tests,
+            ],
+            cwd=str(ctx.workspace),
+        )
+    )
+    return cmds
 
 
 def _bundle_dir(bundle: str) -> Path | None:
@@ -659,6 +760,8 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             Command("ruff format", [py, "-m", "ruff", "format", "--check", "packages/plugin-sdk-python"]),
             Command("pytest", [py, "-m", "pytest", "packages/plugin-sdk-python/tests", "-q", *cov], env=src),
         ]
+    if check == "workerd_guests":
+        return _workerd_guest_commands(ctx)
     if check == "site_test":
         site = str(ctx.workspace / "tools" / "site")
         return [
@@ -1163,17 +1266,59 @@ def run_check(
 # gate
 
 
-def gate(artifact: Mapping[str, Any], needs: Mapping[str, Any]) -> list[str]:
-    """Problems comparing job results with the expected execution."""
+# What ``needs.<job>.result`` reports for a job that never got a runner.
+STRANDED_RESULTS = frozenset({"cancelled", "abandoned"})
+
+
+def expected_jobs(artifact: Mapping[str, Any]) -> dict[str, bool]:
+    """Whether each job ``CI Gate`` needs is expected to run.
+
+    Args:
+        artifact: The validated plan artifact.
+
+    Returns:
+        The execution plan's jobs, plus each ``OS_LEG_JOBS`` job, expected
+        when any of the jobs it runs a leg of is.
+    """
+    expected = dict(execution_plan(artifact).jobs)
+    for job, owners in OS_LEG_JOBS.items():
+        expected[job] = any(expected.get(owner, False) for owner in owners)
+    return expected
+
+
+def gate(
+    artifact: Mapping[str, Any],
+    needs: Mapping[str, Any],
+    stranded: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Problems comparing job results with the expected execution.
+
+    Args:
+        artifact: The validated plan artifact.
+        needs: ``toJSON(needs)`` of the ``CI Gate`` job.
+        stranded: ``OS_LEG_JOBS`` jobs that GitHub cancelled without ever
+            giving them a runner, on a run that already retried them
+            (``scripts/merge_queue_requeue.py --stranded-job``). Such a job
+            passes the gate as ``cancelled`` or ``abandoned`` (what
+            ``needs`` reports for a job no runner took); any other job, or
+            any other result, does not.
+
+    Returns:
+        One sentence per problem; empty when the gate passes.
+    """
     problems: list[str] = []
     plan_result = (needs.get("plan") or {}).get("result")
     if plan_result != "success":
         problems.append(f"plan: {plan_result}")
-    expected = execution_plan(artifact).jobs
+    for job in sorted(stranded - set(OS_LEG_JOBS)):
+        problems.append(f"{job}: only an OS leg job may pass without a runner")
+    expected = expected_jobs(artifact)
     for job, want in expected.items():
         result = (needs.get(job) or {}).get("result")
         if result is None:
             problems.append(f"{job}: not reported to the gate (missing from needs)")
+        elif want and result in STRANDED_RESULTS and job in stranded and job in OS_LEG_JOBS:
+            continue
         elif want and result != "success":
             problems.append(f"{job}: expected to run, result {result}")
         elif not want and result != "skipped":

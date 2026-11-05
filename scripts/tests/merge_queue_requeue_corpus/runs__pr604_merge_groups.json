@@ -1,0 +1,60 @@
+[
+ {
+  "total_count": 4,
+  "workflow_runs": [
+   {
+    "id": 41660521252,
+    "run_number": 3500,
+    "event": "merge_group",
+    "head_branch": "gh-readonly-queue/main/pr-604-9bc9f97b61370d35f573f5f1dc23b99d75eb155b",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "conclusion": null,
+    "head_repository": {
+     "full_name": "Bookclerk/bookclerk"
+    },
+    "created_at": "2026-11-03T22:00:00Z"
+   },
+   {
+    "id": 41650000001,
+    "run_number": 3490,
+    "event": "merge_group",
+    "head_branch": "gh-readonly-queue/main/pr-604-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "conclusion": "failure",
+    "head_repository": {
+     "full_name": "Bookclerk/bookclerk"
+    },
+    "created_at": "2026-11-03T21:00:00Z"
+   },
+   {
+    "id": 41640000002,
+    "run_number": 3480,
+    "event": "merge_group",
+    "head_branch": "gh-readonly-queue/main/pr-603-cccccccccccccccccccccccccccccccccccccccc",
+    "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "conclusion": "success",
+    "head_repository": {
+     "full_name": "Bookclerk/bookclerk"
+    },
+    "created_at": "2026-11-03T20:00:00Z"
+   }
+  ]
+ },
+ {
+  "total_count": 4,
+  "workflow_runs": [
+   {
+    "id": 41630000003,
+    "run_number": 3470,
+    "event": "merge_group",
+    "head_branch": "gh-readonly-queue/main/pr-604-dddddddddddddddddddddddddddddddddddddddd",
+    "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+    "conclusion": "failure",
+    "head_repository": {
+     "full_name": "Bookclerk/bookclerk"
+    },
+    "created_at": "2026-11-03T10:00:00Z"
+   }
+  ]
+ }
+]

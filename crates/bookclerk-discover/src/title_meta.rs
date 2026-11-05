@@ -1,7 +1,8 @@
 //! Public bibliographic metadata for title detail dialogs.
 //!
-//! Prefer Audnexus when an ASIN is known; otherwise try a confident Audible
-//! catalog match from title/author/ISBN. When those miss or stay sparse (common
+//! Prefer a metadata-provider record (the Audnexus plugin) when an ASIN is
+//! known; otherwise try a confident Audible catalog match from
+//! title/author/ISBN. When those miss or stay sparse (common
 //! for Libro.fm ISBN-only hits), fill gaps via source [`ContentSource::catalog_detail`]
 //! (Libro explore details or product HTML JSON-LD). Used by Discover, Wishlist,
 //! and Library detail views (commerce links stay on a separate purchase-hints path).
@@ -10,13 +11,13 @@
 //! bulk Discover expand stays lean. Written reviews are loaded on demand via
 //! [`resolve_title_reviews`] (paginated) so title-meta / shelf expand stay light.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bookclerk_enrich::{
     enrichment_for_asin, fetch_audible_catalog_rating, fetch_audible_catalog_reviews_page,
     lookup_by_metadata, public_http_client, CatalogReview, CatalogReviewsSort, Enrichment,
-    MatchQuery, DEFAULT_ENRICH_MIN_CONFIDENCE,
+    MatchQuery, MetadataProviders, DEFAULT_ENRICH_MIN_CONFIDENCE,
 };
 use bookclerk_source::{CatalogHit, SourceRegistry};
 
@@ -456,6 +457,7 @@ async fn fill_from_source_catalog(
 /// # Arguments
 ///
 /// * `query` - Query vector or free-text search string.
+/// * `providers` - Deployed metadata providers asked for records.
 /// * `sources` - String `sources` for this call.
 ///
 /// # Returns
@@ -467,12 +469,13 @@ async fn fill_from_source_catalog(
 /// Returns an error when the underlying I/O, parse, network, or store operation fails.
 pub async fn resolve_title_meta(
     query: &TitleMetaQuery,
+    providers: Arc<dyn MetadataProviders>,
     sources: Option<&SourceRegistry>,
 ) -> Result<Option<TitleMeta>> {
     let region = query.region.trim();
     let region = if region.is_empty() { "us" } else { region };
     let key = cache_key(&[
-        "title-meta-v8",
+        "title-meta-v9",
         region,
         query.asin.as_deref().unwrap_or(""),
         query.isbn.as_deref().unwrap_or(""),
@@ -483,26 +486,28 @@ pub async fn resolve_title_meta(
         return Ok(cached);
     }
 
-    let resolved = match resolve_title_meta_uncached(query, region, sources).await {
-        Ok(meta) => meta,
-        Err(err) => {
-            // Treat upstream Audnexus / catalog errors as a miss so batch callers
-            // still get partial results instead of a hard failure.
-            tracing::debug!(error = %err, title = %query.title, "title-meta resolve failed");
-            None
-        }
-    };
+    let resolved =
+        match resolve_title_meta_uncached(query, providers.as_ref(), region, sources).await {
+            Ok(meta) => meta,
+            Err(err) => {
+                // Treat upstream provider / catalog errors as a miss so batch callers
+                // still get partial results instead of a hard failure.
+                tracing::debug!(error = %err, title = %query.title, "title-meta resolve failed");
+                None
+            }
+        };
     title_meta_cache().insert(key, resolved.clone());
     Ok(resolved)
 }
 
-/// Resolves title metadata without the TTL cache (Audnexus by ASIN, then storefront fill).
+/// Resolves title metadata without the TTL cache (provider record by ASIN, then storefront fill).
 async fn resolve_title_meta_uncached(
     query: &TitleMetaQuery,
+    providers: &dyn MetadataProviders,
     region: &str,
     sources: Option<&SourceRegistry>,
 ) -> Result<Option<TitleMeta>> {
-    // Prefer a single Audnexus fetch by ASIN. Title/author catalog matching is
+    // Prefer a single provider lookup by ASIN. Title/author catalog matching is
     // multiple public HTTP round-trips and is easy to stack under the API budget
     // when many detail modals open — only fall back when no ASIN is known.
     let mut meta = if let Some(asin) = query
@@ -512,8 +517,8 @@ async fn resolve_title_meta_uncached(
         .filter(|s| !s.is_empty())
         .filter(|s| !isbn_like(s))
     {
-        enrichment_for_asin(asin, region)
-            .await?
+        enrichment_for_asin(providers, asin, region)
+            .await
             .map(TitleMeta::from_enrichment)
     } else {
         None
@@ -557,7 +562,7 @@ async fn resolve_title_meta_uncached(
                 duration_minutes: query.length_minutes.map(|n| n as f64),
             };
             let min = f64::from(DEFAULT_ENRICH_MIN_CONFIDENCE) / 100.0;
-            meta = match lookup_by_metadata(&mq, region, min).await? {
+            meta = match lookup_by_metadata(providers, &mq, region, min).await? {
                 Some(scored) => Some(TitleMeta::from_enrichment(scored.enrichment)),
                 None => None,
             };
@@ -686,6 +691,7 @@ pub async fn resolve_title_reviews(query: &TitleReviewsQuery) -> Result<TitleRev
 ///
 /// * `queries` - Batch of purchase-hint or title-meta queries.
 /// * `max_concurrent` - Numeric `max_concurrent` value for this call.
+/// * `providers` - Deployed metadata providers asked for records.
 /// * `sources` - String `sources` for this call.
 ///
 /// # Returns
@@ -698,6 +704,7 @@ pub async fn resolve_title_reviews(query: &TitleReviewsQuery) -> Result<TitleRev
 pub async fn resolve_title_meta_batch(
     queries: &[TitleMetaQuery],
     max_concurrent: usize,
+    providers: Arc<dyn MetadataProviders>,
     sources: Option<&SourceRegistry>,
 ) -> Vec<Result<Option<TitleMeta>>> {
     let limit = max_concurrent.clamp(1, 8);
@@ -708,7 +715,13 @@ pub async fn resolve_title_meta_batch(
         for (offset, q) in chunk.iter().enumerate() {
             let q = q.clone();
             let sources = sources.clone();
-            set.spawn(async move { (offset, resolve_title_meta(&q, sources.as_ref()).await) });
+            let providers = Arc::clone(&providers);
+            set.spawn(async move {
+                (
+                    offset,
+                    resolve_title_meta(&q, providers, sources.as_ref()).await,
+                )
+            });
         }
         let mut slot: Vec<Option<Result<Option<TitleMeta>>>> =
             (0..chunk.len()).map(|_| None).collect();

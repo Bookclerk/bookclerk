@@ -27,6 +27,7 @@ boundary extends it.
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
+| `https_url_policy` | URLs from plugin output the host fetches itself (a metadata provider's cover URL) | `bookclerk-plugin-manifest::https_url_on_hosts` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec and the database envelope decoders | `bookclerk-plugin-abi` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
@@ -67,6 +68,11 @@ only that. The others check:
   normalized source, and `next_after` / `latest_at_or_before` agree with a
   minute-by-minute scan of `matches`. The shared oracle is
   `fuzz/oracles/cron_schedule.rs`, replayed from
+  `bookclerk-plugin-manifest`.
+- **`https_url_policy`**: the check is idempotent, and an accepted URL is
+  `https://` with no user info, port or IP literal, on a host the patterns
+  cover, read byte by byte rather than by the URL parser. The shared oracle
+  is `fuzz/oracles/https_url_policy.rs`, replayed from
   `bookclerk-plugin-manifest`.
 - **`abi_decode`**: the traversal budget is derived from the input size.
 - **`abi_roundtrip`**: a value the decoder accepts re-encodes, re-decodes
@@ -246,12 +252,14 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     from CodeQL, and every run carries the id `/language:rust`.
 
 - **Missing-runner recovery** (`queued_pr`, `pr_run_attempt`,
-  `run_lineage`, `newer_run`, `stranded_jobs`, `not_acquired`, `pr_head`
-  and `enqueues_since_head` in `scripts/merge_queue_requeue.py`). It reads GitHub API responses about
+  `run_lineage`, `newer_run`, `stranded_jobs`, `not_acquired`, `pr_head`,
+  `enqueues_since_head`, `first_enqueue_on_head`, `gate_run`,
+  `stranded_job`, `gate_passed` and `previous_queue_run` in
+  `scripts/merge_queue_requeue.py`). It reads GitHub API responses about
   a failed merge-group or pull request run, not pull request content, so
   it isn't an untrusted boundary. Its output decides whether a pull
-  request goes back in the queue or a run is re-run, though, so it is
-  fuzzed the same way.
+  request goes back in the queue, a run is re-run, or `CI Gate` passes
+  without the macOS job, though, so it is fuzzed the same way.
   - Test and corpus: `scripts/tests/test_merge_queue_requeue.py`,
     `scripts/tests/merge_queue_requeue_corpus/` (files named
     `run__<case>`, `runs__<case>`, `jobs__<case>`, `annotations__<case>`,
@@ -273,7 +281,19 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     request qualifies only when it is open, `draft` is `false`, auto-merge
     is unset and its head is a full commit id in this repository. Enqueues
     are counted after the last `committed` or `head_ref_force_pushed`
-    event.
+    event, and the first entry on the head is the first
+    `added_to_merge_queue` event after it, which needs a
+    `YYYY-MM-DDTHH:MM:SSZ` `created_at`. For `CI Gate`, a run counts only when it is a `pull_request` or
+    `merge_group` run of `ci.yml` in this repository with a non-empty head
+    branch; a job is stranded only when exactly one job has its name (or
+    `<caller> / <name>`) and it completed `cancelled` with no runner and
+    no steps; the gate passed only when a job named `CI Gate` (or
+    `<caller> / CI Gate`) succeeded; and a pull request's previous merge
+    group is the queue-branch run for that pull request with the largest
+    `run_number` below the current one and a `created_at` no earlier than
+    that first entry, across listing pages whose every entry has an
+    integer `id` and `run_number`, a string head branch and a timestamp
+    `created_at`.
 
 - **Mutation testing start commit** (`choose` in
   `scripts/mutation_base.py`). The nightly mutation workflows read the
@@ -605,6 +625,40 @@ inputs live in `tools/demo/src/routes.ts`, `src/inputs.ts` and
   only its integer error codes. The demo widget only with a printable site
   key and printable, deduplicated, bounded hostnames, and keys only when
   both are printable.
+
+### Metadata provider guests
+
+The `openlibrary` and `audnexus` guests parse upstream JSON inside the
+jailed isolate. What reaches the host is the Cap'n Proto reply that
+`abi_decode` and `abi_roundtrip` already cover, so these parsers guard the
+records each guest returns. Each guest's `test/fuzz.test.ts` replays its
+corpora under `fuzz/` and runs seeded mutation fuzzing, on the parsed JSON
+tree and on its text, in `npm test` (the `workerd_guests` check).
+`FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
+
+- **Open Library search results** (`recordsFromSearch` in
+  `crates/bookclerk-plugins/optional/metadata-openlibrary/src/openlibrary.ts`),
+  under a lookup and a title search. Corpus `fuzz/search_response/`.
+  Oracle: a body is refused exactly when it is not an object or its `docs`
+  is not a list. Records stay within the limit, each work and edition id
+  appears in the body, ISBNs have the ISBN shape, the URL names the edition
+  or else the work, and covers are Open Library cover URLs. Credits are
+  distinct authors, and lists stay within their caps. Every string is
+  non-empty, well-formed UTF-16 and at most `MAX_TEXT` long, and the
+  mapping is deterministic.
+- **Audnexus books** (`recordFromBook` in
+  `crates/bookclerk-plugins/optional/metadata-audnexus/src/audnexus.ts`).
+  Corpus `fuzz/book/`. Oracle: a record exactly when the body has a
+  ten-character ASIN and a non-blank title, and the ASIN is the first
+  identifier with the asked region. Credits are distinct per role and
+  capped. At most two series entries. Dates are `YYYY-MM-DD`, covers are
+  `https://`, lengths and ratings are in range, and the same string rules
+  as Open Library apply.
+- **Audnexus chapter layouts** (`chaptersFromBody`). Corpus
+  `fuzz/chapters/`. Oracle: the chapters' starts and depths equal an
+  explicit-stack pre-order walk of the body, down to `MAX_DEPTH` and up to
+  `MAX_CHAPTERS`. `found` exactly when that walk finds any. Durations are
+  positive safe integers.
 
 ## Still to add
 

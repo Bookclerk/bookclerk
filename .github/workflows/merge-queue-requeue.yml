@@ -27,6 +27,10 @@
 #   default branch only and runs no pull request code; it reads the GitHub
 #   API and nothing the pull request produced.
 #
+# CI Gate also uses the script (`--stranded-job`) to pass a run whose
+# macOS job never got a runner after one retry, and a run whose CI Gate
+# passed is never re-run or re-enqueued (docs/contributing/ci.md#macos-job).
+#
 # See docs/contributing/ci.md#merge-queue-re-enqueue.
 
 name: Missing-runner recovery

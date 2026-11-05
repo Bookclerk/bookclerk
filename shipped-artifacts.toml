@@ -19,6 +19,8 @@ not_shipped = [
   { path = "fuzz/Cargo.lock", why = "fuzz targets and oracles, CI only" },
   { path = "examples/plugins-echo-workerd-fetch/package-lock.json", why = "reference example, never packaged" },
   { path = "examples/plugins-echo-workerd-ts/package-lock.json", why = "reference example, never packaged" },
+  { path = "crates/bookclerk-plugins/optional/metadata-audnexus/package-lock.json", why = "the guest's type-check and test tooling (TypeScript, Node types, the SDK's types); its shipped modules/ import nothing from npm" },
+  { path = "crates/bookclerk-plugins/optional/metadata-openlibrary/package-lock.json", why = "the guest's type-check and test tooling (TypeScript, Node types, the SDK's types); its shipped modules/ import nothing from npm" },
   { path = "examples/plugins-echo-native-python/requirements-dev.txt", why = "reference example, dev tooling" },
   { path = "scripts/tests/requirements.txt", why = "CI test tooling" },
   { path = "tools/codecov/package-lock.json", why = "CI-only Codecov Bundle Analysis uploader for coverage-upload.yml; never deployed or packaged" },

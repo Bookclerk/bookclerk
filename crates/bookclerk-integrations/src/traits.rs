@@ -2,7 +2,7 @@
 //!
 //! Required methods cover identity, lifecycle, outbox event delivery, and
 //! health. Optional
-//! capabilities (credential login, library scan, listening sync) default off —
+//! capabilities (credential login, library scan, listening sync, metadata) default off —
 //! override only when the adapter can provide them. Ranking / discovery never
 //! call adapter clients; they read the generic `listening_progress` table after
 //! hosts sync via [`Integration::sync_listening_progress`].
@@ -13,7 +13,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bookclerk_library::LibraryStore;
-use bookclerk_plugin_abi::{DomainEvent, EventResult, QueueBatch, QueueResult};
+use bookclerk_plugin_abi::{
+    DomainEvent, EventResult, MetadataChapters, MetadataChaptersParams, MetadataLookupParams,
+    MetadataRecord, MetadataSearchParams, QueueBatch, QueueResult,
+};
 
 use crate::brand::Brand;
 use crate::error::{IntegrationError, Result};
@@ -284,6 +287,43 @@ pub trait Integration: Send + Sync {
             "integration `{}` does not support listening sync",
             self.id()
         )))
+    }
+
+    /// Whether this integration exports the `metadata` entrypoint
+    /// (bibliographic lookups, searches and chapter layouts).
+    ///
+    /// Default: `false`.
+    fn supports_metadata(&self) -> bool {
+        false
+    }
+
+    /// Edition records for a set of identifiers (`MetadataProvider.lookup`).
+    ///
+    /// Default: unsupported.
+    async fn metadata_lookup(&self, _params: MetadataLookupParams) -> Result<Vec<MetadataRecord>> {
+        Err(self.metadata_unsupported())
+    }
+
+    /// Edition records matching a title and author (`MetadataProvider.search`).
+    ///
+    /// Default: unsupported.
+    async fn metadata_search(&self, _params: MetadataSearchParams) -> Result<Vec<MetadataRecord>> {
+        Err(self.metadata_unsupported())
+    }
+
+    /// Chapter layout of one edition (`MetadataProvider.chapters`).
+    ///
+    /// Default: unsupported.
+    async fn metadata_chapters(&self, _params: MetadataChaptersParams) -> Result<MetadataChapters> {
+        Err(self.metadata_unsupported())
+    }
+
+    /// The error the default metadata methods return.
+    fn metadata_unsupported(&self) -> IntegrationError {
+        IntegrationError::message(format!(
+            "integration `{}` does not provide metadata",
+            self.id()
+        ))
     }
 
     /// Human-readable connectivity probe for CLI / ops (`integrations test`).

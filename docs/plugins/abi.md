@@ -807,12 +807,16 @@ export class Metadata extends MetadataEntrypoint<Env> {
 }
 ```
 
-> [!NOTE]
-> The host does not call metadata providers yet. Discover and enrichment
-> still use the built-in OpenLibrary and Audnexus lookups until the library
-> stores works and editions; then they move to first-party metadata plugins
-> and the built-in lookups are removed
-> ([#614](https://github.com/Bookclerk/bookclerk/issues/614)).
+For a complete provider, see the first-party `openlibrary` and `audnexus`
+plugins under `crates/bookclerk-plugins/optional/` (`metadata-openlibrary`
+and `metadata-audnexus`).
+
+The host asks every deployed provider in turn: for Audible ASIN matching
+during scans, Discover title details, the acquire chapter overlay, and
+`bookclerk discover enrich-metadata`. Lookups and searches collect records
+from every provider; `chapters` stops at the first layout with `found`
+set. A provider that fails is logged and skipped
+([integrations](../server/integrations.md#open-library-and-audnexus)).
 
 ### Storage entrypoints
 

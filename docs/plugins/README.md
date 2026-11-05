@@ -318,6 +318,22 @@ Audible, Libro.fm, Chirp, GraphicAudio and Audiobookshelf ship as
   display alias from a different PluginKey on the same host is invalid
   (fail closed).
 
+The Open Library and Audnexus metadata providers are first-party
+**workerd TypeScript** guests in the same tree
+(`crates/bookclerk-plugins/optional/metadata-openlibrary` and
+`metadata-audnexus`). They have no Cargo package:
+
+- Their source is in `src/`. `npm run build` compiles it with TypeScript
+  into the `modules/` that ships, and both are committed. CI's
+  `workerd_guests` check rebuilds `modules/` and fails when it differs from
+  the committed copy.
+- The parsing and request planning sit apart from the network call, so the
+  unit tests (`npm test`, Node's test runner) drive the same code the
+  guest runs. The entrypoint module is tested with the SDK's isolate module
+  replaced, because the real one only loads inside `workerd`.
+- The root `Cargo.toml` excludes each of them from the plugin-tree member
+  globs by name.
+
 CI builds and stages plugin artifacts with `cargo stage-plugins`, as local
 development does. Artifacts are **not** published to crates.io or GitHub
 Releases yet.
