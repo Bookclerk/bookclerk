@@ -199,7 +199,7 @@ bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 tempfile = "3"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 email_address = "0.2"
 tantivy = "0.27"
 csv = "1"

@@ -327,7 +327,12 @@ profiles carry it, saving templates without it is refused, and an acquire
 whose name another edition still holds is refused rather than overwrite
 it. The store product id does not qualify, since one edition sold by two
 stores has two, and podcast feeds, some storefronts and imported files
-have no ISBN or ASIN.
+have no ISBN or ASIN. An edition's id is a version 5 UUID over the store
+listing that first named it (plugin key, marketplace, product id), so
+libraries that see the same listing first agree on its id and its
+`<library id>`, which is the first 40 bits of that UUID in Crockford
+base32. The resolver mints an edition only for a listing with no stored
+edition, so the derived id is never reused while its edition exists.
 
 Step 5 takes the quality comparison, because node frames do not carry a
 file's quality yet: storefronts may declare a file's format and quality,

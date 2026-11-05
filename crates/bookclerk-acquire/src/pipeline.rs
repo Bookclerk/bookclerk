@@ -2371,26 +2371,20 @@ async fn base_folder_naming_ctx(
 }
 
 /// The short Bookclerk id of the edition `book_uuid` resolves to, for
-/// `<library id>`: the first eight letters and digits of the edition id.
+/// `<library id>` ([`bookclerk_library::library_id`]).
 ///
 /// # Returns
 ///
 /// `None` when the title has no edition (or the read fails, which is
 /// logged); its names then use its product id instead.
 pub async fn library_id_of(library: &LibraryStore, book_uuid: &str) -> Option<String> {
-    let edition = match library.edition_of_book(book_uuid).await {
-        Ok(edition) => edition?,
+    match library.edition_of_book(book_uuid).await {
+        Ok(edition) => bookclerk_library::library_id(&edition?),
         Err(err) => {
             tracing::warn!(error = %err, "could not read a title's edition for naming");
-            return None;
+            None
         }
-    };
-    let short: String = edition
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .take(8)
-        .collect();
-    Some(short).filter(|short| !short.is_empty())
+    }
 }
 
 /// The folder and file naming contexts of `req`. Both carry the edition's
@@ -3647,11 +3641,8 @@ mod tests {
             .edition_of_book(uuid)
             .await
             .unwrap()
+            .map(|edition| bookclerk_library::library_id(&edition).unwrap())
             .unwrap()
-            .chars()
-            .filter(char::is_ascii_alphanumeric)
-            .take(8)
-            .collect()
     }
 
     #[tokio::test]
@@ -3761,6 +3752,7 @@ mod tests {
         let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut destinations = counting_destinations(&tmp.path().join("dest"), puts.clone());
         destinations.items[0].options.folder_template = Some("<title>".into());
+        destinations.items[0].options.file_template = Some("<title>".into());
         let source = CountingSource {
             fetches: fetches.clone(),
             pdf_url: None,

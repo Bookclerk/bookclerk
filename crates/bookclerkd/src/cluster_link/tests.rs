@@ -1405,13 +1405,13 @@ mod results_and_uploads {
         )
     }
 
-    /// The folder the default naming profile gives title `product_id`
-    /// (`owner_book`) in `library`: `Author/Title <id> [<library id>]`.
-    async fn default_folder(library: &LibraryStore, book_uuid: &str, product_id: &str) -> String {
-        let short = bookclerk_acquire::library_id_of(library, book_uuid)
+    /// Title `book_uuid`'s library id in `library`, which the default
+    /// naming profile writes into its file names
+    /// (`Author/Title <id>/Title <id> [<library id>].m4b`).
+    async fn library_id(library: &LibraryStore, book_uuid: &str) -> String {
+        bookclerk_acquire::library_id_of(library, book_uuid)
             .await
-            .expect("the title has an edition");
-        format!("Author/Title {product_id} [{short}]")
+            .expect("the title has an edition")
     }
 
     /// The owner's one `local` destination, its title scope `folder`.
@@ -1851,9 +1851,10 @@ mod results_and_uploads {
             bookclerk_library::AcquireStatus::Acquired
         );
         let key = acquired.storage_key.clone().unwrap_or_default();
-        let dir = default_folder(&world.owner, &book.uuid, "t1").await;
-        assert!(
-            key.starts_with(&format!("{dir}/")),
+        let id = library_id(&world.owner, &book.uuid).await;
+        assert_eq!(
+            key,
+            format!("Author/Title t1/Title t1 [{id}].m4b"),
             "named as a local acquire would: {key}"
         );
         assert_eq!(
@@ -2934,12 +2935,13 @@ mod results_and_uploads {
             .upsert_book(&owner_book("riley-acct", "t1"))
             .await
             .unwrap();
-        let dir = default_folder(&world.owner, &book.uuid, "t1").await;
+        let dir = "Author/Title t1";
+        let id = library_id(&world.owner, &book.uuid).await;
         let job_id = enqueue_acquire(&world.owner).await;
         let fence = claim_acquire(&world, 60).await;
         let files = vec![
-            local_file(&format!("{dir}/Title t1 [t1].m4b"), b"audio"),
-            local_file(&format!("{dir}/Title t1 [t1].jpg"), b"jpeg"),
+            local_file(&format!("{dir}/Title t1 [{id}].m4b"), b"audio"),
+            local_file(&format!("{dir}/Title t1 [{id}].jpg"), b"jpeg"),
         ];
         let UploadGrant::Granted {
             upload_id, token, ..
@@ -2951,10 +2953,10 @@ mod results_and_uploads {
             &owner_node_id(&world),
             &UploadGrantRequest {
                 book_uuid: &book.uuid,
-                primary_key: &format!("{dir}/Title t1 [t1].m4b"),
+                primary_key: &format!("{dir}/Title t1 [{id}].m4b"),
                 pdf_key: None,
                 files: &files,
-                destinations: &local_scope(&dir),
+                destinations: &local_scope(dir),
             },
         )
         .await
@@ -2966,7 +2968,7 @@ mod results_and_uploads {
         assert!(first.starts_with("HTTP/1.1 200"), "{first}");
         assert!(owner_out
             .path()
-            .join(format!("{dir}/Title t1 [t1].jpg"))
+            .join(format!("{dir}/Title t1 [{id}].jpg"))
             .is_file());
 
         // The host (connected now; the job is already running) re-sends
@@ -2977,7 +2979,7 @@ mod results_and_uploads {
                 job_id: job_id.clone(),
                 fence,
                 book_uuid: book.uuid.clone(),
-                primary_key: format!("{dir}/Title t1 [t1].m4b"),
+                primary_key: format!("{dir}/Title t1 [{id}].m4b"),
                 pdf_key: None,
                 files: vec![files[0].clone()],
             })
@@ -3081,7 +3083,8 @@ mod results_and_uploads {
             .upsert_book(&owner_book("riley-acct", "t1"))
             .await
             .unwrap();
-        let dir = default_folder(&world.owner, &book.uuid, "t1").await;
+        let dir = "Author/Title t1";
+        let id = library_id(&world.owner, &book.uuid).await;
         let other = world
             .owner
             .scope(PLUGIN, "test")
@@ -3150,7 +3153,7 @@ mod results_and_uploads {
         record_for_book(
             &world.owner,
             "local",
-            &format!("{dir}/Title t1 [t1].cue"),
+            &format!("{dir}/Title t1 [{id}].cue"),
             &other.uuid,
         )
         .await
@@ -3162,18 +3165,18 @@ mod results_and_uploads {
         for (key, reason) in [
             (format!("{dir}/Title t2.m4b"), "key_out_of_scope"),
             (format!("{dir}/Title t2.jpg"), "key_out_of_scope"),
-            (format!("{dir}/Title t1 [t1].cue"), "key_of_another_book"),
+            (format!("{dir}/Title t1 [{id}].cue"), "key_of_another_book"),
         ] {
             let body = grant(vec![
-                local_file(&format!("{dir}/Title t1 [t1].m4b"), b"audio"),
+                local_file(&format!("{dir}/Title t1 [{id}].m4b"), b"audio"),
                 local_file(&key, b"other"),
             ])
             .await;
             assert_eq!(refusal(&body), reason, "{key}");
         }
         let body = grant(vec![
-            local_file(&format!("{dir}/Title t1 [t1].m4b"), b"audio"),
-            local_file(&format!("{dir}/Title t1 [t1].jpg"), b"jpeg"),
+            local_file(&format!("{dir}/Title t1 [{id}].m4b"), b"audio"),
+            local_file(&format!("{dir}/Title t1 [{id}].jpg"), b"jpeg"),
         ])
         .await;
         assert!(matches!(body, Body::UploadGranted { .. }), "{body:?}");

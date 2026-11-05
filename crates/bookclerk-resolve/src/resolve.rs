@@ -21,7 +21,7 @@ use std::collections::BTreeSet;
 
 use crate::identifiers::IdentifierKey;
 use crate::kinds::{Abridgement, ExpressionKind, Level, Strength, WorkKind};
-use crate::listing::{HoldingDraft, Listing};
+use crate::listing::{HoldingDraft, Listing, ListingKey};
 use crate::model::{
     Conflict, CreditWrite, EditionIdentifierRow, EditionRow, Event, ExpressionRow, HoldingRow,
     LinkReason, ListingRow, Override, Plan, SeriesWrite, Snapshot, WorkIdentifierRow, WorkMatchKey,
@@ -41,10 +41,22 @@ pub enum EntityKind {
     Listing,
 }
 
-/// Mints ids for new rows; the store uses random UUIDs, tests use counters.
+/// Mints ids for new rows; the store uses UUIDs, tests use counters.
 pub trait IdSource {
     /// A fresh id, never returned before, for a new row of `kind`.
     fn next_id(&mut self, kind: EntityKind) -> String;
+
+    /// The id for a new edition first seen through the listing `key`.
+    ///
+    /// The resolver mints an edition only for a listing with no stored
+    /// edition, so an id derived from `key` alone is never handed out twice
+    /// while its edition exists. The store derives it that way, so every
+    /// node that resolves the same listing first mints the same edition id;
+    /// the default is [`IdSource::next_id`].
+    fn edition_id(&mut self, key: &ListingKey) -> String {
+        let _ = key;
+        self.next_id(EntityKind::Edition)
+    }
 }
 
 /// Whether a stored expression may take `listing`.
@@ -373,7 +385,7 @@ pub fn resolve(
                 }
             };
             let edition = EditionRow {
-                id: ids.next_id(EntityKind::Edition),
+                id: ids.edition_id(&listing.key),
                 expression_id,
                 media_kind: listing.media_kind,
                 title: listing.title.clone(),

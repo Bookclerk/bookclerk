@@ -80,13 +80,68 @@ const CREDIT_BATCH_STATEMENTS: usize = 30;
 // One listing's series (a series row and an entry each) fit in one batch.
 const _: () = assert!(2 * resolve::listing::MAX_SERIES <= CREDIT_BATCH_STATEMENTS);
 
-/// Fresh UUIDs for new rows.
+/// Fresh UUIDs for new rows; an edition's is derived from the listing that
+/// first named it ([`edition_id_for_listing`]).
 struct UuidIds;
 
 impl resolve::IdSource for UuidIds {
     fn next_id(&mut self, _kind: resolve::EntityKind) -> String {
         Uuid::new_v4().to_string()
     }
+
+    fn edition_id(&mut self, key: &resolve::listing::ListingKey) -> String {
+        edition_id_for_listing(key)
+    }
+}
+
+/// Namespace of the name-based (version 5) UUIDs that edition ids are.
+const EDITION_ID_NAMESPACE: Uuid = Uuid::from_u128(0x6b1f_4e0a_93c2_5d7e_8a41_0c9b_2f63_d815);
+
+/// The id of an edition first seen through the store listing `key`: a
+/// version 5 UUID over its plugin key, marketplace and product id. Two
+/// nodes (or one library rebuilt from a fresh scan) that resolve the same
+/// listing first give its edition the same id, and so the same
+/// `<library id>` in file names.
+#[must_use]
+pub fn edition_id_for_listing(key: &resolve::listing::ListingKey) -> String {
+    let name = format!(
+        "edition\0{}\0{}\0{}",
+        key.plugin_key, key.marketplace, key.product_id
+    );
+    Uuid::new_v5(&EDITION_ID_NAMESPACE, name.as_bytes()).to_string()
+}
+
+/// Lower-case Crockford base32 digits, for [`library_id`].
+const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
+
+/// The `<library id>` of edition `edition_id`: its first 40 bits as 8
+/// lower-case Crockford base32 characters (no `i`, `l`, `o` or `u`). An id
+/// that is not a UUID falls back to its first 8 ASCII letters and digits.
+/// Returns `None` when that leaves nothing.
+#[must_use]
+pub fn library_id(edition_id: &str) -> Option<String> {
+    let short = match Uuid::parse_str(edition_id) {
+        Ok(uuid) => {
+            let bytes = uuid.as_bytes();
+            let bits = bytes[..5]
+                .iter()
+                .fold(0u64, |acc, byte| (acc << 8) | u64::from(*byte));
+            (0..8)
+                .rev()
+                .map(|digit| {
+                    // Masked to five bits, so the conversion always succeeds.
+                    let index = u8::try_from((bits >> (digit * 5)) & 0x1f).unwrap_or(0);
+                    char::from(CROCKFORD[usize::from(index)])
+                })
+                .collect()
+        }
+        Err(_) => edition_id
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .take(8)
+            .collect::<String>(),
+    };
+    Some(short).filter(|short| !short.is_empty())
 }
 
 /// A stored enum spelling the resolver does not know: the row was written
@@ -1508,6 +1563,50 @@ mod tests {
     }
 
     #[test]
+    fn edition_ids_are_derived_from_the_listing_key() {
+        let key = |plugin: &str, market: &str, product: &str| resolve::listing::ListingKey {
+            plugin_key: plugin.into(),
+            marketplace: market.into(),
+            product_id: product.into(),
+        };
+        let id = edition_id_for_listing(&key("audible", "us", "B001"));
+        assert_eq!(id, edition_id_for_listing(&key("audible", "us", "B001")));
+        assert_eq!(Uuid::parse_str(&id).unwrap().get_version_num(), 5);
+        for other in [
+            key("audible", "uk", "B001"),
+            key("libro", "us", "B001"),
+            key("audible", "us", "B002"),
+            // The separator keeps fields from running together.
+            key("audibleu", "s", "B001"),
+        ] {
+            assert_ne!(id, edition_id_for_listing(&other), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn a_library_id_is_eight_crockford_digits_of_the_edition_id() {
+        assert_eq!(
+            library_id("00000000-0000-4000-8000-000000000000").as_deref(),
+            Some("00000000")
+        );
+        // 0xffffffffff is all ones: the last digit of the alphabet.
+        assert_eq!(
+            library_id("ffffffff-ff00-4000-8000-000000000000").as_deref(),
+            Some("zzzzzzzz")
+        );
+        // 0x0123456789 in five-bit groups.
+        assert_eq!(
+            library_id("01234567-8900-4000-8000-000000000000").as_deref(),
+            Some("04hmasw9")
+        );
+        let id = library_id(&Uuid::new_v4().to_string()).unwrap();
+        assert_eq!(id.len(), 8);
+        assert!(id.bytes().all(|b| CROCKFORD.contains(&b)), "{id}");
+        assert_eq!(library_id("edition-12").as_deref(), Some("edition1"));
+        assert_eq!(library_id("--"), None);
+    }
+
+    #[test]
     fn sort_names_put_the_last_word_first() {
         assert_eq!(sort_name("Frank Herbert"), "Herbert, Frank");
         assert_eq!(sort_name("Plato"), "Plato");
@@ -1601,6 +1700,18 @@ mod store_tests {
 
         let again = store.record_listing(&libro, &account("a1")).await.unwrap();
         assert!(again.is_noop(), "{again:?}");
+        // The edition's id comes from the listing that first named it, so
+        // another library resolving the same listing first agrees on it.
+        assert_eq!(
+            first.listing.edition_id,
+            edition_id_for_listing(&audible.key)
+        );
+        let elsewhere = self::store().await;
+        let theirs = elsewhere
+            .record_listing(&audible, &account("someone-else"))
+            .await
+            .unwrap();
+        assert_eq!(theirs.listing.edition_id, first.listing.edition_id);
 
         let db = &store.db;
         assert_eq!(holdings::Entity::find().count(db).await.unwrap(), 3);

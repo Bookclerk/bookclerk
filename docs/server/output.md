@@ -128,13 +128,13 @@ you need to:
 ```toml
 [output]
 naming_profile = "audiobookshelf"
-# folder_template = "<author>/<title> [<library id>]"
-# file_template = "<title> [<asin>]"
+# folder_template = "<first author>/<title short>"
+# file_template = "<title> [<library id>]"
 ```
 
 | Profile | Layout |
 | --- | --- |
-| `audiobookshelf` (default) | Author, series and year folders that suit Audiobookshelf, with the library id on the book's folder |
+| `audiobookshelf` (default) | `Author/Series/1 - Title/Title [library id].m4b`, or `Author/Title/Title [library id].m4b` outside a series, which Audiobookshelf scans as author, series and book |
 | `classic` | Libation's desktop defaults with the library id added: `<title short> [<id>] [<library id>]` |
 
 Each destination can override the naming too, with its own
@@ -161,6 +161,17 @@ field (`<has series->…<-has>`) doesn't count. It is a short id for the
 edition, such as `1a2b3c4d`, so two editions of a book (an abridged and an
 unabridged recording, two narrators' readings) never share a path, while
 every store's copy of the same edition does.
+
+The id is eight lower-case letters and digits (Crockford base32, so never
+`i`, `l`, `o` or `u`). It is worked out from the store listing that first
+brought the edition into the library: its store, marketplace and product
+id. Two libraries, or one library rebuilt from a fresh scan, that see the
+same listing first give the edition the same id, so its files keep their
+names.
+
+The `audiobookshelf` profile puts the id in the file names rather than the
+folder, because Audiobookshelf reads a bracketed value in a folder name as
+an ASIN.
 
 Bookclerk refuses to save naming settings without it. A destination's own
 naming overrides are checked when a book is acquired: an acquire whose

@@ -1125,18 +1125,14 @@ mod reconcile_integration {
             .await
             .unwrap()
             .unwrap();
-        // The default layout names the folder after the edition's library id.
+        // The default layout names the file after the edition's library id.
         let edition = library
             .edition_of_book(&stored.uuid)
             .await
             .unwrap()
             .unwrap();
-        let short: String = edition
-            .chars()
-            .filter(char::is_ascii_alphanumeric)
-            .take(8)
-            .collect();
-        let key = format!("Jane Doe/Hello _{short}_/Hello_ World _B00EXAMPLE1_.m4b");
+        let short = bookclerk_library::library_id(&edition).unwrap();
+        let key = format!("Jane Doe/Hello/Hello_ World _{short}_.m4b");
         let key = key.as_str();
         inner
             .put(key, Bytes::from_static(b"audio"), ObjectMeta::default())

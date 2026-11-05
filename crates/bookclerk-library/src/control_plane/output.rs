@@ -1258,12 +1258,9 @@ mod tests {
         );
         body.set("output.bad_book_action", "Abort").unwrap();
         assert_eq!(body.get("output.bad_book_action").as_deref(), Some("abort"));
+        assert!(body.clone().set("output.file_template", "<title>").is_err());
         body.set("output.folder_template", "<author> [<library id>]")
             .unwrap();
-        assert!(body
-            .clone()
-            .set("output.folder_template", "<author>")
-            .is_err());
         body.set("output.folder_template", "").unwrap();
         assert_eq!(body.folder_template, None);
         body.set(

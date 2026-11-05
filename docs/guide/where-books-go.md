@@ -42,8 +42,10 @@ The same page also sets:
 - whether to save the cover image, a companion PDF and chapter information
   beside each book.
 
-Each book's folder ends with a short library id, such as
-`[1a2b3c4d]`. It keeps two different editions of a book, such as an
+Each book's file name ends with a short library id, such as
+`[1a2b3c4d]`, for example `Author/Series/1 - Title/Title [1a2b3c4d].m4b`.
+The id comes from the store's product, so the same book gets the same id
+every time it is scanned. It keeps two different editions of a book, such as an
 abridged and an unabridged recording, from ever overwriting each other.
 If you write your own templates, they must include it too. If you own a
 book on two accounts, it is downloaded once and both copies point at the

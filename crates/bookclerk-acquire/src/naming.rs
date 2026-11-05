@@ -482,7 +482,7 @@ mod tests {
             "m4b",
             &bookclerk_config::windows_replacement_characters(),
         );
-        assert_eq!(key, "A_B/Hello [B00X]/Hello_ World [B00X].m4b");
+        assert_eq!(key, "A_B/Hello/Hello_ World [B00X].m4b");
     }
 
     #[test]
@@ -499,11 +499,11 @@ mod tests {
             "m4b",
             &bookclerk_config::posix_replacement_characters(),
         );
-        assert_eq!(key, "Jane Doe/Hello [B00X]/Hello: World [B00X].m4b");
+        assert_eq!(key, "Jane Doe/Hello/Hello: World [B00X].m4b");
     }
 
     #[test]
-    fn audiobookshelf_profile_includes_series_year_narrator() {
+    fn audiobookshelf_profile_names_series_and_sequence() {
         let ctx = NamingContext {
             asin: "B00EXAMPLE1".into(),
             title: "Wizards First Rule: A Novel".into(),
@@ -518,7 +518,7 @@ mod tests {
         let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
         assert_eq!(
             key,
-            "Terry Goodkind/Sword of Truth/1 - 1994 - Wizards First Rule {Sam Tsoutsouvas} [B00EXAMPLE1]/Wizards First Rule: A Novel [B00EXAMPLE1].m4b"
+            "Terry Goodkind/Sword of Truth/1 - Wizards First Rule/Wizards First Rule: A Novel [B00EXAMPLE1].m4b"
         );
     }
 
@@ -533,7 +533,7 @@ mod tests {
         };
         let templates = resolve_templates(NamingProfile::Audiobookshelf, None, None, None);
         let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
-        assert_eq!(key, "Jane Doe/Main [B00X]/Main: Sub [B00X].m4b");
+        assert_eq!(key, "Jane Doe/Main/Main: Sub [B00X].m4b");
     }
 
     #[test]
@@ -546,7 +546,7 @@ mod tests {
         };
         let templates = resolve_templates(NamingProfile::Audiobookshelf, None, None, None);
         let key = storage_key(&ctx, Some(&templates.folder), Some(&templates.file), "m4b");
-        assert_eq!(key, "Jane Doe/Standalone [B00X]/Standalone [B00X].m4b");
+        assert_eq!(key, "Jane Doe/Standalone/Standalone [B00X].m4b");
     }
 
     #[test]
