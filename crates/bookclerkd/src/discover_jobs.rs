@@ -126,6 +126,30 @@ fn job_subject(payload: &JobPayload) -> anyhow::Result<DiscoverSubject> {
         .ok_or_else(|| anyhow::anyhow!("discover job has no valid subject"))
 }
 
+/// Drops a deleted subject's Discover rows when it no longer exists.
+///
+/// Called before a job does any work and again after it wrote, so a job
+/// queued (or still running) when its user or portal identity was deleted
+/// leaves nothing behind for the daily refresh to pick up again.
+///
+/// # Returns
+///
+/// `true` when the subject is gone (and its rows were deleted).
+///
+/// # Errors
+///
+/// Returns the library error.
+async fn forget_if_removed(
+    library: &bookclerk_library::LibraryStore,
+    subject: &DiscoverSubject,
+) -> anyhow::Result<bool> {
+    if library.discover_subject_exists(subject).await? {
+        return Ok(false);
+    }
+    library.forget_discover_subject(subject).await?;
+    Ok(true)
+}
+
 /// Runs a `discover_candidates` job, then admits the subject's ranking.
 ///
 /// # Errors
@@ -143,6 +167,9 @@ pub async fn run_discover_candidates(
     if job_cancelled(ctx, &library).await {
         anyhow::bail!("cancelled");
     }
+    if forget_if_removed(&library, &subject).await? {
+        return Ok(format!("subject={} removed", subject.key()));
+    }
     let opts = discover_options(
         &cfg,
         false,
@@ -156,6 +183,9 @@ pub async fn run_discover_candidates(
         library.mark_discover_fetch(&subject, Utc::now()).await?;
         bookclerk_discover::FetchReport::default()
     };
+    if forget_if_removed(&library, &subject).await? {
+        return Ok(format!("subject={} removed", subject.key()));
+    }
     // The ranking reads what was just stored; a failure to admit it leaves
     // the next read to queue it.
     if let Err(err) = enqueue_discover_feed(state, &subject, payload.trigger, Duration::ZERO).await
@@ -192,6 +222,9 @@ pub async fn run_discover_feed(
     if job_cancelled(ctx, &library).await {
         anyhow::bail!("cancelled");
     }
+    if forget_if_removed(&library, &subject).await? {
+        return Ok(format!("subject={} removed", subject.key()));
+    }
     let has_books = library.count_books(None).await? > 0;
     let use_onnx = has_books && cfg.discovery.embeddings_enabled;
     // One embedder at a time, as the request-queue route does.
@@ -217,6 +250,9 @@ pub async fn run_discover_feed(
     let opts = discover_options(&cfg, use_onnx, model_id);
     let sources = state.sources.read().await.clone();
     let report = bookclerk_discover::rank_subject_feed(&library, &sources, &subject, &opts).await?;
+    if forget_if_removed(&library, &subject).await? {
+        return Ok(format!("subject={} removed", subject.key()));
+    }
     info!(
         subject = %subject.key(),
         scope = report.scope.as_str(),
@@ -305,6 +341,14 @@ pub async fn queue_daily_refresh(state: &AppState) -> usize {
     let now = Utc::now();
     let mut queued = 0;
     for subject in subjects {
+        match forget_if_removed(&library, &subject).await {
+            Ok(false) => {}
+            Ok(true) => continue,
+            Err(err) => {
+                tracing::warn!(subject = %subject.key(), error = %err, "discover refresh could not check a subject");
+                continue;
+            }
+        }
         let newest = library
             .newest_discover_candidate_fetch(&subject)
             .await
@@ -506,13 +550,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_job_for_a_deleted_user_writes_nothing_back() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, library) = crate::node_api::tests::test_state(&files).await;
+        let gone = DiscoverSubject::User(9_999);
+        library
+            .put_discover_feed(&gone, "{}", SeedScope::Own, None)
+            .await
+            .unwrap();
+        let payload = JobPayload {
+            subject: Some(gone.key()),
+            ..JobPayload::default()
+        };
+        let summary = run_discover_candidates(&state, &payload, None)
+            .await
+            .unwrap();
+        assert!(summary.ends_with("removed"), "{summary}");
+        let summary = run_discover_feed(&state, &payload, None).await.unwrap();
+        assert!(summary.ends_with("removed"), "{summary}");
+        assert!(library.get_discover_feed(&gone).await.unwrap().is_none());
+        assert!(library
+            .newest_discover_candidate_fetch(&gone)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(queued(&library).await.is_empty());
+    }
+
+    #[tokio::test]
     async fn the_daily_refresh_queues_only_stale_subjects() {
         let files = tempfile::tempdir().unwrap();
         let (state, library) = crate::node_api::tests::test_state(&files).await;
         assert_eq!(queue_daily_refresh(&state).await, 0);
-        let fresh = DiscoverSubject::User(1);
-        let stale = DiscoverSubject::User(2);
-        for subject in [&fresh, &stale] {
+        let mut ids = Vec::new();
+        for name in ["Fresh", "Stale"] {
+            let user = library
+                .create_user(bookclerk_library::UserRole::Member, Some(name), None)
+                .await
+                .unwrap();
+            ids.push(user.id);
+        }
+        let fresh = DiscoverSubject::User(ids[0]);
+        let stale = DiscoverSubject::User(ids[1]);
+        // A deleted user's leftover feed is dropped, not refreshed.
+        let deleted = DiscoverSubject::User(9_999);
+        for subject in [&fresh, &stale, &deleted] {
             library
                 .put_discover_feed(subject, "{}", SeedScope::Own, None)
                 .await
@@ -529,7 +611,8 @@ mod tests {
         assert_eq!(queue_daily_refresh(&state).await, 1);
         assert_eq!(
             queued(&library).await,
-            vec![(JobKind::DiscoverCandidates, String::from("user:2"))]
+            vec![(JobKind::DiscoverCandidates, stale.key())]
         );
+        assert!(library.get_discover_feed(&deleted).await.unwrap().is_none());
     }
 }

@@ -17,7 +17,8 @@ use sea_orm::{
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
 use crate::entities::{
-    discover_candidates, discover_feeds, discover_fetches, discover_store_calls,
+    discover_candidates, discover_feeds, discover_fetches, discover_store_calls, portal_identities,
+    users,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
@@ -249,6 +250,63 @@ impl LibraryStore {
             }
         }
         Ok(out)
+    }
+
+    /// Reports whether a Discover subject still exists.
+    ///
+    /// The operator always exists; a user or portal subject exists while
+    /// its `users` or `portal_identities` row does. Jobs check this so a
+    /// fetch or ranking queued before the subject was deleted does not
+    /// write its rows back.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub async fn discover_subject_exists(&self, subject: &DiscoverSubject) -> Result<bool> {
+        let found = match subject {
+            DiscoverSubject::Operator => return Ok(true),
+            DiscoverSubject::User(id) => users::Entity::find_by_id(*id)
+                .select_only()
+                .column(users::Column::Id)
+                .into_tuple::<i64>()
+                .one(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?,
+            DiscoverSubject::Portal(id) => portal_identities::Entity::find_by_id(*id)
+                .select_only()
+                .column(portal_identities::Column::Id)
+                .into_tuple::<i64>()
+                .one(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?,
+        };
+        Ok(found.is_some())
+    }
+
+    /// Deletes every stored Discover row of one subject (candidates, feed
+    /// and fetch marker).
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub async fn forget_discover_subject(&self, subject: &DiscoverSubject) -> Result<()> {
+        let key = subject.key();
+        discover_candidates::Entity::delete_many()
+            .filter(discover_candidates::Column::SubjectKey.eq(key.clone()))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        discover_feeds::Entity::delete_many()
+            .filter(discover_feeds::Column::SubjectKey.eq(key.clone()))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        discover_fetches::Entity::delete_many()
+            .filter(discover_fetches::Column::SubjectKey.eq(key))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(())
     }
 
     /// Records that one subject's candidate fetch finished at `at`.
@@ -677,6 +735,73 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_deleted_subject_is_missing_and_forgotten() {
+        let store = store().await;
+        assert!(store
+            .discover_subject_exists(&DiscoverSubject::Operator)
+            .await
+            .unwrap());
+        assert!(!store
+            .discover_subject_exists(&DiscoverSubject::User(41))
+            .await
+            .unwrap());
+        assert!(!store
+            .discover_subject_exists(&DiscoverSubject::Portal(42))
+            .await
+            .unwrap());
+        let user = store
+            .create_user(crate::models::UserRole::Member, Some("Ann"), None)
+            .await
+            .unwrap();
+        let identity = store
+            .upsert_portal_identity("oidc", "ann", Some("Ann"))
+            .await
+            .unwrap();
+        assert!(store
+            .discover_subject_exists(&DiscoverSubject::User(user.id))
+            .await
+            .unwrap());
+        assert!(store
+            .discover_subject_exists(&DiscoverSubject::Portal(identity.id))
+            .await
+            .unwrap());
+
+        let gone = DiscoverSubject::User(41);
+        let kept = DiscoverSubject::User(user.id);
+        for subject in [&gone, &kept] {
+            store
+                .replace_discover_candidates(subject, "libro", SeedScope::Own, &rows(&["k"]))
+                .await
+                .unwrap();
+            store
+                .put_discover_feed(subject, "{}", SeedScope::Own, None)
+                .await
+                .unwrap();
+            store
+                .mark_discover_fetch(subject, Utc::now())
+                .await
+                .unwrap();
+        }
+        store.forget_discover_subject(&gone).await.unwrap();
+        assert!(store
+            .list_discover_candidates(&gone)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(store.get_discover_feed(&gone).await.unwrap().is_none());
+        assert!(store
+            .newest_discover_candidate_fetch(&gone)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store.list_discover_candidates(&kept).await.unwrap().len(),
+            1
+        );
+        assert!(store.get_discover_feed(&kept).await.unwrap().is_some());
     }
 
     #[tokio::test]
