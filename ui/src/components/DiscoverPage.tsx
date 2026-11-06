@@ -50,6 +50,7 @@ import {
   type CatalogTitle,
   type RuntimeBucket,
 } from "@/lib/catalogTitle";
+import { useLiveRefresh } from "@/lib/live";
 import {
   createWishlistItem,
   fetchDiscoverFeed,
@@ -228,20 +229,38 @@ export function DiscoverPage({
     return { feed: f, wishlist: w };
   }
 
+  // A ranking job that writes someone's shelves moves the live socket's
+  // `discover` topic; re-read the stored feed then, in place (the shelves
+  // already shown and how many are open stay as they are).
+  const feedGeneration = useRef(0);
+  const liveState = useLiveRefresh(
+    ["discover"],
+    () => {
+      const generation = feedGeneration.current;
+      return fetchDiscoverFeed()
+        .then((next) => {
+          if (generation === feedGeneration.current) setFeed(next);
+        })
+        .catch(() => undefined);
+    },
+    { pollMs: 0 },
+  );
+
   // While the daemon is still building the caller's shelves, re-read the
   // stored feed so they appear without a reload: quickly at first, then
-  // slowly for as long as there are no shelves yet. A failed read counts
-  // as a poll and tries again.
+  // slowly for as long as there are no shelves yet. With the live socket
+  // open the topic brings the update, so only the slow re-read runs, as a
+  // safety net for a write the revision missed. A failed read counts as a
+  // poll and tries again.
   const feedState = feed.state;
   const feedPolls = useRef(0);
-  const feedGeneration = useRef(0);
   const [pollRetry, setPollRetry] = useState(0);
   useEffect(() => {
     if (feedState !== "preparing" && feedState !== "refreshing") {
       feedPolls.current = 0;
       return;
     }
-    const quick = feedPolls.current < FEED_POLL_LIMIT;
+    const quick = liveState !== "open" && feedPolls.current < FEED_POLL_LIMIT;
     if (!quick && feedState !== "preparing") return;
     const generation = feedGeneration.current;
     const timer = window.setTimeout(
@@ -259,7 +278,7 @@ export function DiscoverPage({
       quick ? FEED_POLL_MS : FEED_POLL_SLOW_MS,
     );
     return () => window.clearTimeout(timer);
-  }, [feed, feedState, pollRetry]);
+  }, [feed, feedState, pollRetry, liveState]);
 
   async function refresh() {
     setError(null);

@@ -27,7 +27,15 @@ export const BACKOFF_MAX_MS = 30_000;
 
 /** What the daemon reports changes for. */
 export type LiveTopic =
-  "library" | "jobs" | "deliveries" | "nodes" | "config" | "consents" | "clusters" | "users";
+  | "library"
+  | "jobs"
+  | "deliveries"
+  | "nodes"
+  | "config"
+  | "consents"
+  | "clusters"
+  | "users"
+  | "discover";
 
 /** Connection state of a {@link LiveClient}. */
 export type LiveState = "idle" | "connecting" | "open" | "closed";

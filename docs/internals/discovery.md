@@ -98,9 +98,12 @@ seeing:
 | `refreshing` | The stored feed is shown while a newer one is built. |
 | `preparing` | No feed yet (or the stored one does not decode); shelves are empty and the page shows placeholders. |
 
-While the state is `preparing` or `refreshing`, the page reads the feed again
-every 4 seconds, up to 15 times. A `preparing` page then keeps reading every
-30 seconds until shelves arrive.
+When a ranking job stores someone's shelves, the live socket's `discover`
+topic changes and an open Discover page reads its feed again in place.
+While the socket is down and the state is `preparing` or `refreshing`, the
+page reads the feed every 4 seconds instead, up to 15 times. A `preparing`
+page also keeps reading every 30 seconds until shelves arrive, socket or
+not, in case a write was missed.
 
 A read queues what is stale. It queues a ranking when the last fetch finished
 after the feed was ranked. It queues a fetch when none has finished or the
