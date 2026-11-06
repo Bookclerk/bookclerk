@@ -2884,14 +2884,11 @@ fn interpret_receipt(
         .get("created_at")
         .and_then(JsonValue::as_str)
         .map(str::to_string);
-    let mut result = if status == atomic_status::OK {
-        match decode_receipt_payload(row.get("payload")) {
-            Some(payload) => DbAtomicResult::ok(payload),
-            None => DbAtomicResult::ok_unit(),
-        }
-    } else {
-        DbAtomicResult::with_status(status)
-    };
+    let mut result = DbAtomicResult::with_status(status);
+    // As in production: a duplicate carries the record it folded into.
+    if status == atomic_status::OK || status == atomic_status::DUPLICATE {
+        result.payload = decode_receipt_payload(row.get("payload"));
+    }
     result.replayed = replayed;
     result.receipt_created_at = created_at;
     result

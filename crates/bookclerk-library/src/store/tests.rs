@@ -7076,6 +7076,19 @@ async fn wishlist_writes_publish_wishlist_changed() {
         })
         .await
         .unwrap();
+    let cancelled = store
+        .create_title_request(&NewTitleRequest {
+            identity_id: Some(theirs.id),
+            title: "Dune".into(),
+            asin: Some("B00DUNE".into()),
+            ..wish.clone()
+        })
+        .await
+        .unwrap();
+    store
+        .update_title_request_status(&cancelled.uuid, RequestStatus::Cancelled, None)
+        .await
+        .unwrap();
     store.delete_user(doomed.id).await.unwrap();
     let deleted: Vec<serde_json::Value> = store
         .list_domain_events_for_queue(crate::CORE_EVENTS_QUEUE, 50)
