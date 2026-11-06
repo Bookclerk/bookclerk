@@ -5337,9 +5337,9 @@ async fn discover_recommendations(
         }));
     }
 
-    // Wishlist-only (no library books): skip ONNX warm-up. MiniLM load routinely
-    // exceeds the 8s API timeout, and with no owned titles there is no taste
-    // centroid / storefront seed work that needs real embeddings.
+    // Wishlist-only (no library books): no taste centroid, so no embedding
+    // work at all. With books, owned works are embedded with local-hash, or
+    // with ONNX MiniLM when `discovery.embeddings_enabled` opts into it.
     let use_onnx = has_books && cfg.discovery.embeddings_enabled;
 
     let _discover = state
@@ -5354,11 +5354,12 @@ async fn discover_recommendations(
             )
         })?;
 
-    let model_id = if use_onnx {
+    let model_id = if has_books {
+        // Without ONNX this opens the local-hash embedder straight away.
         let mut embedder = open_embedder_blocking(
             cfg.paths().models_dir.clone(),
             cfg.discovery.embed_intra_threads,
-            true,
+            use_onnx,
         )
         .await?;
         let model_id = embedder.model_id().to_string();
@@ -5411,7 +5412,7 @@ async fn discover_recommendations(
         disabled_shelves,
         models_dir: use_onnx.then(|| cfg.paths().models_dir.clone()),
         embed_intra_threads: cfg.discovery.embed_intra_threads,
-        embeddings_enabled: use_onnx,
+        embeddings_enabled: has_books,
     };
     let sources = state.sources.read().await;
     let mut feed = bookclerk_discover::recommend_feed(&library, &sources, &opts)

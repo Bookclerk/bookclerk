@@ -486,6 +486,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn embeddings_override_defaults_to_off_for_an_unparsable_value() {
+        let mut cfg = Config::default();
+        apply_setting_overrides(&mut cfg, &[("discovery.embeddings_enabled", "true")]);
+        assert!(cfg.discovery.embeddings_enabled);
+        apply_setting_overrides(&mut cfg, &[("discovery.embeddings_enabled", "maybe")]);
+        assert!(!cfg.discovery.embeddings_enabled);
+    }
+
+    #[test]
     fn dotted_override_sets_widevine() {
         let mut cfg = Config::default();
         apply_setting_overrides(&mut cfg, &[("output.widevine", "true")]);
