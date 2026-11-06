@@ -683,6 +683,20 @@ impl CoverService {
             // Unlike a request's failure, an unavailable fetcher is
             // remembered too: the cached copy is served meanwhile.
             self.remember_failure(key, &failure);
+            return;
+        }
+        // Whatever kept it from landing (a replacement that could not be
+        // written, files that could not be deleted), a copy still on disk
+        // and still stale is not checked again for the failure TTL either.
+        let renewed = lock(&self.index)
+            .get(key)
+            .is_some_and(|entry| !entry.is_stale(Stamp::now()));
+        let on_disk = tokio::fs::try_exists(dir.join(key)).await.unwrap_or(false);
+        if !renewed && on_disk {
+            self.remember_failure(
+                key,
+                &CoverFailure::Unavailable("the revalidated image could not be kept".into()),
+            );
         }
     }
 
@@ -2139,6 +2153,32 @@ mod tests {
         }
         assert_eq!(failing.calls.load(Ordering::SeqCst), 1);
         assert!(lock(&service.index).get(&key).is_some());
+
+        // A new image that can't be written: the old copy stays and the
+        // same backoff applies.
+        lock(&service.failures).clear();
+        let dir = service.dir.clone().expect("dir");
+        let _ = std::fs::remove_dir_all(dir.join(STAGING_DIR));
+        std::fs::write(dir.join(STAGING_DIR), b"blocked").expect("block staging");
+        let unwritable = Arc::new(Fake {
+            revalidation: Revalidation::Changed,
+            ..Fake::default()
+        });
+        for _ in 0..2 {
+            let kept = service
+                .image_detached(
+                    Arc::clone(&unwritable),
+                    url.clone(),
+                    CoverSize::Thumb,
+                    Refresh::WhenStale,
+                )
+                .await
+                .expect("old copy kept");
+            assert_eq!(kept, replaced);
+            settle(&service).await;
+        }
+        assert_eq!(unwritable.calls.load(Ordering::SeqCst), 1);
+        std::fs::remove_file(dir.join(STAGING_DIR)).expect("unblock");
 
         // Nothing can fetch at all: the same backoff applies.
         lock(&service.failures).clear();
