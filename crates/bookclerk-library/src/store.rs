@@ -1157,16 +1157,36 @@ impl LibraryStore {
     ///
     /// Removes portal identities, account links, wishlist rows, claim tickets,
     /// sessions, and prefs for the user. Acquired library books are retained.
-    /// Refuses to delete the last active owner.
+    /// Refuses to delete the last active owner. Publishes `wishlist_changed`
+    /// (status `deleted`) for each open wish removed with the user, so
+    /// Discover stops counting it for everyone else.
     ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
     pub async fn delete_user(&self, id: i64) -> Result<()> {
+        let identities: Vec<i64> = self
+            .list_portal_identities_for_user(id)
+            .await?
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        let wishes = title_requests::Entity::find()
+            .filter(title_requests::Column::IdentityId.is_in(identities))
+            .filter(title_requests::Column::Status.eq(RequestStatus::Open.as_str()))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
         if let Some(atomic) = &self.atomic {
-            return atomic.delete_user(id).await;
+            atomic.delete_user(id).await?;
+        } else {
+            crate::db_atomic::delete_user(&self.db, id).await?;
         }
-        crate::db_atomic::delete_user(&self.db, id).await
+        for wish in wishes {
+            self.publish_wishlist_changed(&wish.uuid, wish.identity_id, "deleted")
+                .await;
+        }
+        Ok(())
     }
 
     /// Deletes a user and related portal rows inside an open transaction; refuses the last owner.
@@ -5010,9 +5030,44 @@ impl LibraryStore {
             updated_at: Set(now),
         };
         let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
+        self.publish_wishlist_changed(&model.uuid, model.identity_id, &model.status)
+            .await;
         self.get_title_request_by_id(model.id)
             .await?
             .ok_or_else(|| LibraryError::NotFound(model.uuid))
+    }
+
+    /// Publishes `wishlist_changed` for one wishlist row, after its write.
+    ///
+    /// Best effort: the row is already committed, so a failed publish is
+    /// logged rather than undoing it. Discover's daily refresh still picks
+    /// the change up.
+    ///
+    /// # Arguments
+    ///
+    /// * `uuid` - The wishlist row's uuid.
+    /// * `identity_id` - The portal identity that wished for it, when any.
+    /// * `status` - The row's status after the write (`open` or `cancelled`),
+    ///   or `deleted` when the row was removed with its user.
+    async fn publish_wishlist_changed(&self, uuid: &str, identity_id: Option<i64>, status: &str) {
+        let payload = serde_json::json!({
+            "requestId": uuid,
+            "identityId": identity_id,
+            "status": status,
+        });
+        let spec = crate::PublishDomainEventSpec {
+            event_type: crate::WISHLIST_CHANGED.into(),
+            schema_version: 1,
+            correlation_id: uuid.to_string(),
+            // Each write is its own change; a reopened wish is a new event.
+            dedup_key: format!("{}:{uuid}:{}", crate::WISHLIST_CHANGED, Uuid::new_v4()),
+            payload: payload.to_string(),
+            ordering_key: uuid.to_string(),
+            ..crate::PublishDomainEventSpec::default()
+        };
+        if let Err(err) = self.publish_domain_event(spec).await {
+            tracing::warn!(request = %uuid, error = %err, "could not publish wishlist_changed");
+        }
     }
 
     /// Upsert per-storefront snapshots for a wishlist row, then return the merged record.
@@ -5619,7 +5674,9 @@ impl LibraryStore {
             am.resolved_book_uuid = Set(Some(v.to_string()));
         }
         am.updated_at = Set(now_str());
-        am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        let model = am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        self.publish_wishlist_changed(&model.uuid, model.identity_id, &model.status)
+            .await;
         Ok(())
     }
 

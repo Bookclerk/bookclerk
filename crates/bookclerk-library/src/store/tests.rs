@@ -6998,3 +6998,107 @@ async fn a_claim_with_a_past_cutoff_leaves_freshly_due_deliveries_to_better_node
     let best = claim_delivery(&store, "best").await;
     assert_eq!(best.plugin_id, "echo");
 }
+
+#[tokio::test]
+async fn wishlist_writes_publish_wishlist_changed() {
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let alice = store
+        .upsert_portal_identity("audiobookshelf", "u1", Some("alice"))
+        .await
+        .unwrap();
+    let wish = NewTitleRequest {
+        uuid: None,
+        identity_id: Some(alice.id),
+        title: "Hail Mary".into(),
+        authors: Some("Andy Weir".into()),
+        asin: Some("B00HAIL".into()),
+        isbn: None,
+        notes: None,
+        status: RequestStatus::Open,
+        work_key: String::new(),
+        work_id: None,
+        resolved_book_uuid: None,
+        cover_url: None,
+    };
+    let row = store.create_title_request(&wish).await.unwrap();
+    // Wishing for the same title again changes nothing, so publishes nothing.
+    store.create_title_request(&wish).await.unwrap();
+    store
+        .update_title_request_status(&row.uuid, RequestStatus::Cancelled, None)
+        .await
+        .unwrap();
+    let events: Vec<_> = store
+        .list_domain_events_for_queue(crate::CORE_EVENTS_QUEUE, 50)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.event_type == crate::WISHLIST_CHANGED)
+        .collect();
+    assert_eq!(events.len(), 2, "one per write: {events:?}");
+    let statuses: Vec<serde_json::Value> = events
+        .iter()
+        .map(|e| serde_json::from_str::<serde_json::Value>(&e.payload).unwrap())
+        .collect();
+    assert!(statuses
+        .iter()
+        .all(|p| p["requestId"] == row.uuid.as_str() && p["identityId"] == alice.id));
+    let mut seen: Vec<&str> = statuses
+        .iter()
+        .filter_map(|p| p["status"].as_str())
+        .collect();
+    seen.sort_unstable();
+    assert_eq!(seen, vec!["cancelled", "open"]);
+
+    // Deleting a user drops their open wishes from everyone's ranking, so
+    // each one publishes a change; their cancelled wish does not.
+    store
+        .create_user(UserRole::Owner, Some("Keep"), None)
+        .await
+        .unwrap();
+    let doomed = store
+        .create_user(UserRole::Member, Some("Go"), None)
+        .await
+        .unwrap();
+    let theirs = store
+        .link_portal_identity_to_user("oidc", "go", doomed.id, None)
+        .await
+        .unwrap();
+    let open = store
+        .create_title_request(&NewTitleRequest {
+            identity_id: Some(theirs.id),
+            title: "Artemis".into(),
+            asin: Some("B00ARTEMIS".into()),
+            ..wish.clone()
+        })
+        .await
+        .unwrap();
+    let cancelled = store
+        .create_title_request(&NewTitleRequest {
+            identity_id: Some(theirs.id),
+            title: "Dune".into(),
+            asin: Some("B00DUNE".into()),
+            ..wish.clone()
+        })
+        .await
+        .unwrap();
+    store
+        .update_title_request_status(&cancelled.uuid, RequestStatus::Cancelled, None)
+        .await
+        .unwrap();
+    store.delete_user(doomed.id).await.unwrap();
+    let deleted: Vec<serde_json::Value> = store
+        .list_domain_events_for_queue(crate::CORE_EVENTS_QUEUE, 50)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.event_type == crate::WISHLIST_CHANGED)
+        .map(|e| serde_json::from_str::<serde_json::Value>(&e.payload).unwrap())
+        .filter(|p| p["status"] == "deleted")
+        .collect();
+    assert_eq!(deleted.len(), 1, "{deleted:?}");
+    assert_eq!(deleted[0]["requestId"], open.uuid.as_str());
+}

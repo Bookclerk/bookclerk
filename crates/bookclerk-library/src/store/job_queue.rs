@@ -1246,6 +1246,40 @@ impl LibraryStore {
         count_active_jobs_on(&self.db).await
     }
 
+    /// True when a job with `dedup_key` was admitted at or after `since`
+    /// and is waiting, running or has succeeded.
+    ///
+    /// Such a job started after `since`, so it read whatever had changed by
+    /// then. A retrying event consumer uses this to skip work an earlier
+    /// attempt already queued instead of admitting it again.
+    ///
+    /// # Arguments
+    ///
+    /// * `dedup_key` - The [`JobKind::dedup_key`] of the job.
+    /// * `since` - The moment the job must have been admitted after.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn job_admitted_since(
+        &self,
+        dedup_key: &str,
+        since: chrono::DateTime<Utc>,
+    ) -> Result<bool> {
+        let newest = jobs::Entity::find()
+            .filter(jobs::Column::DedupKey.eq(dedup_key))
+            .filter(jobs::Column::State.is_in([
+                JobState::Pending.as_str(),
+                JobState::Running.as_str(),
+                JobState::Succeeded.as_str(),
+            ]))
+            .order_by_desc(jobs::Column::CreatedAt)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(newest.is_some_and(|m| parse_dt(&m.created_at) >= since))
+    }
+
     /// Rewrite an unreadable command row so it cannot be executed.
     async fn mark_invalid_job(&self, id: &str, reason: &str) -> Result<()> {
         let now = now_str();

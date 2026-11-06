@@ -115,6 +115,50 @@ yet, and queues their refresh as a read would. Callers that must wait on
 shelves, such as the hosted demo, poll it. Any signed-in caller can use it,
 since it only reports the caller's own shelves.
 
+### Taste events
+
+Shelves also refresh when someone's taste changes, without waiting for a
+read or the daily fetch. The daemon registers one host consumer,
+`host:discover`, on the [durable event outbox](jobs.md) for three host
+events:
+
+| Event | Published when | Discover queues |
+| --- | --- | --- |
+| `wishlist_changed` | A wishlist entry is added or changes status, or an open one is deleted with its user. | A fetch for the person who wished (their seeds changed), and a ranking for everyone else with shelves (wish counts changed). |
+| `listening_synced` | A listening sync changed, for some stored row, whose it is, which owned book or work it matched, its authors, whether they started it, which quarter they are in, or whether they finished it. | A fetch for everyone with shelves. |
+| `book_acquired` | The household acquires a book. | A fetch for everyone with shelves. |
+
+Each job it queues may only run 30 seconds later, so the changes of one
+sync or one browsing session fold into a single job per person. The fetches
+are cheap when little changed, because unchanged store calls come from the
+24-hour cache. Apart from the person who wished, someone without stored
+shelves is left to their first read.
+
+A job that has already started may have read the data before the change,
+so a change only folds into a job that is still pending. When the job the
+consumer needs is running or has just finished (or the queue is full), the
+delivery comes back 30 seconds later and queues again, up to 20 times.
+A retry skips each person who already has a job of that kind admitted
+after the event (waiting, running or finished), so with more people than
+the queue holds, finished refreshes are not queued again ahead of the
+people still waiting for room.
+Every node registers the same consumer and the outbox delivers each event
+once in the cluster.
+
+A listening sync compares each row it writes with the row stored before it,
+so a sync that reports only some people, or repeats what is stored, publishes
+nothing, while a book finished, unfinished and finished again is three
+changes. When one sync reports a row twice, its first stored state is
+compared with its last.
+
+A ranking job checks the newest candidate fetch again when it finishes. A
+fetch that finished while it ranked had its follow-up ranking folded into the
+running job, so the job ranks again, up to three passes in all.
+
+Ratings have no event. Discover weighs a book's own rating, but ratings
+change only when a Libation library is imported, and the next daily refresh
+picks that import up.
+
 ## Metadata gap-fill (Open Library compliance)
 
 `discover enrich-metadata` (and `discover recommend`) fill **low-volume

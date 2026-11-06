@@ -245,7 +245,14 @@ def _validate_int(field: str, value: Any, low: int, high: int, message: str) -> 
 
 
 HOST_EVENT_TYPES = frozenset(
-    {"book_acquired", "edition_linked", "edition_updated", "holding_added"}
+    {
+        "book_acquired",
+        "edition_linked",
+        "edition_updated",
+        "holding_added",
+        "wishlist_changed",
+        "listening_synced",
+    }
 )
 """Domain event types only the host emits; plugins consume them but cannot produce them."""
 

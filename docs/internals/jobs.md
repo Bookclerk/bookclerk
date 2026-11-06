@@ -105,7 +105,9 @@ stateDiagram-v2
 
 - **Admission** is one atomic backend operation (a guest atomic batch in
   production, a local `BEGIN` in tests). A partial unique index on `dedup_key` for
-  `pending`/`running` rows enforces active-key uniqueness.
+  `pending`/`running` rows enforces active-key uniqueness. Both paths take the
+  key from `JobKind::dedup_key`, so a new kind needs no second rule, and a
+  duplicate returns the id of the job it folded into.
 - A **worker** claims with a conditional `pending` → `running` update and a
   unique per-attempt `lease_generation`. Lost RPCs retry the same
   `operation_id` so a replay cannot claim a second row. That replay is
@@ -196,8 +198,12 @@ on Hosts owned by members. See
 [Scheduled triggers](../plugins/abi.md#scheduled-triggers).
 
 The two Discover kinds carry a subject key (`operator`, `user:{id}` or
-`portal:{id}`) and build that person's stored shelves. See
-[Precomputed shelves](discovery.md#precomputed-shelves).
+`portal:{id}`) and build that person's stored shelves. Reads, the daily
+scheduler and Discover's host event consumer (`host:discover`, which
+consumes `wishlist_changed`, `listening_synced` and `book_acquired` and
+admits jobs with a 30 s `run_after`) queue them. See
+[Precomputed shelves](discovery.md#precomputed-shelves) and
+[Taste events](discovery.md#taste-events).
 
 Reserved classes (no worker in this release): `media`, `transcription`,
 `indexing`.
