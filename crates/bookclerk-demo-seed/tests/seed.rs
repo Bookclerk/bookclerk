@@ -402,3 +402,22 @@ fn live_records_win_and_committed_ones_fill_the_gaps() {
         "9780593395042"
     );
 }
+
+#[test]
+fn prefers_a_released_edition_over_a_pre_order() {
+    let dune = lookup("demo-dune");
+    let mut pre_order = hit("B0PREORDER", "Dune", "Frank Herbert");
+    pre_order.published_at = Some("2999-11-24".into());
+    let mut classic = hit("B002V1OF70", "Dune", "Frank Herbert");
+    classic.published_at = Some("2007-03-01".into());
+    let undated = hit("B0UNDATED", "Dune", "Frank Herbert");
+    let hits = [pre_order.clone(), classic, undated];
+    assert_eq!(best_match(&dune, &hits).unwrap().product_id, "B002V1OF70");
+    // With only the pre-order, it is still the match.
+    assert_eq!(
+        best_match(&dune, std::slice::from_ref(&pre_order))
+            .unwrap()
+            .product_id,
+        "B0PREORDER"
+    );
+}

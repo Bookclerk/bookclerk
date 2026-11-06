@@ -465,21 +465,35 @@ pub fn search_query(lookup: &Lookup) -> String {
 /// first initial). A GraphicAudio hit without authors is judged on its
 /// title alone, because that store never returns them; any other store's
 /// authorless hit is refused. Among
-/// matching hits the closest title wins, then the store's own ranking.
+/// matching hits the closest title wins, then one already released (a
+/// pre-order of a new recording is not the edition a listener owns), then
+/// the store's own ranking.
 #[must_use]
 pub fn best_match<'a>(lookup: &Lookup, hits: &'a [CatalogHit]) -> Option<&'a CatalogHit> {
+    let now = Utc::now();
     hits.iter()
         .filter(|hit| !hit.product_id.trim().is_empty())
         .filter(|hit| match present(hit.authors().as_ref()) {
             Some(authors) => lists_author(&authors, lookup.author),
             None => lookup.store == GRAPHIC_AUDIO.id,
         })
-        .filter_map(|hit| title_score(lookup.title, &hit.title).map(|score| (score, hit)))
+        .filter_map(|hit| {
+            title_score(lookup.title, &hit.title).map(|score| (score, released(hit, now), hit))
+        })
         // `max_by_key` keeps the last of equal keys; reverse so the store's
         // first-ranked hit wins a tie.
         .rev()
-        .max_by_key(|(score, _)| *score)
-        .map(|(_, hit)| hit)
+        .max_by_key(|(score, released, _)| (*score, *released))
+        .map(|(_, _, hit)| hit)
+}
+
+/// Whether `hit` is out by `now`; a hit without a readable release date
+/// counts as released.
+fn released(hit: &CatalogHit, now: DateTime<Utc>) -> bool {
+    hit.published_at
+        .as_deref()
+        .and_then(release_date)
+        .is_none_or(|at| at <= now)
 }
 
 /// `records` without entries whose product id another title already took,
