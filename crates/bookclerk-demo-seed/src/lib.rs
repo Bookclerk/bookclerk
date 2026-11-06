@@ -290,9 +290,10 @@ pub type StoreRecords = BTreeMap<&'static str, CatalogHit>;
 /// Storefront records for the sample titles as the storefront plugins
 /// returned them, by [`Lookup::key`], committed in `records.json`.
 ///
-/// The demo's own lookups run from a datacenter, where some storefronts
-/// (Libro.fm among them) refuse the requests. These records stand in for a
-/// lookup that fails, so every sample title is a real store record. Refresh
+/// The demo's own lookups run from a datacenter, where a storefront may
+/// refuse or time out. These records stand in for a lookup that fails, so
+/// every sample title is a real store record. Libro.fm's records come from
+/// its app catalog's details, so they carry descriptions and prices. Refresh
 /// them from a network the stores answer with `bookclerk-demo-seed
 /// --write-records crates/bookclerk-demo-seed/records.json`.
 const RECORDS_JSON: &str = include_str!("../records.json");
