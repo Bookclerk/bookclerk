@@ -61,6 +61,9 @@ operator, a household user, or a portal identity) has a **subject key**
    store's call budget reaches both) and asks **every
    deployed storefront**, not only the stores they have accounts with. A
    person with no signal yet (and the operator) seeds from the household.
+   `storefront_max_remote_calls` is split across the stores, so all stores
+   together never make more calls than it allows (deals count as one call,
+   and a store whose share is zero is not asked).
    Stores run concurrently, each call has a 10 s timeout, and each store's
    rows are saved as that store finishes, so one slow store never discards
    the others. A store whose calls all fail or come back empty keeps its
@@ -103,7 +106,9 @@ feed was ranked, and a fetch when none has finished or the last one is older
 than 24 hours. The scheduler also queues the daily fetch for every subject
 with a stored feed. `GET /api/discover/status` reports whether the caller's
 shelves are stored yet, and queues their refresh as a read would, for callers
-that need to wait on shelves, such as the hosted demo.
+that need to wait on shelves, such as the hosted demo. Any signed-in caller
+can use it (operator, member or portal visitor), since it only reports the
+caller's own shelves.
 
 ## Metadata gap-fill (Open Library compliance)
 

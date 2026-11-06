@@ -244,10 +244,18 @@ pub async fn fetch_subject_candidates(
         library.mark_discover_fetch(subject, Utc::now()).await?;
         return Ok(report);
     }
-    let per_store = (opts.storefront_max_remote_calls / stores.len()).max(1);
+    let total = opts.storefront_max_remote_calls;
+    let base = total / stores.len();
+    let extra = total % stores.len();
 
     let mut tasks: JoinSet<(String, Vec<StorefrontCandidate>, bool)> = JoinSet::new();
-    for source in stores {
+    for (index, source) in stores.into_iter().enumerate() {
+        // Split the total budget so the stores together never exceed it; a
+        // store whose share is zero is not asked and keeps its stored rows.
+        let per_store = base + usize::from(index < extra);
+        if per_store == 0 {
+            continue;
+        }
         let seeds = seeds.clone();
         let library = library.clone();
         let exclude_sets = opts.exclude_graphicaudio_series_sets;
@@ -320,7 +328,7 @@ fn interleave_seeds(books: Vec<SeedTitle>, wishes: Vec<SeedTitle>) -> Vec<SeedTi
     out
 }
 
-/// Asks one store about every seed (up to `budget` calls) plus its deals.
+/// Asks one store for its deals, then about each seed, in at most `budget` calls.
 ///
 /// # Returns
 ///
@@ -340,6 +348,9 @@ async fn fetch_one_store(
     let mut calls = 0usize;
     let mut answered = 0usize;
     // Deals first: one call, and they fill the deals shelf whatever the seeds.
+    if budget == 0 {
+        return (out, false);
+    }
     let deal_key = call_key(&id, "deals", &[]);
     let skip_set = |hit: &CatalogHit| {
         exclude_series_sets && id.eq_ignore_ascii_case("graphicaudio") && looks_like_series_set(hit)
@@ -354,7 +365,7 @@ async fn fetch_one_store(
     }
     calls += 1;
     for seed in seeds {
-        if calls >= budget.max(2) {
+        if calls >= budget {
             break;
         }
         let s = &seed.seed;
@@ -1011,5 +1022,36 @@ mod tests {
         assert_eq!(rows[0].candidate_key, "old");
         // The empty deals answer was not cached, so both fetches asked.
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn the_total_call_budget_is_shared_by_the_stores() {
+        let subject = DiscoverSubject::Operator;
+        let calls = std::sync::Arc::default();
+        let mut registry = SourceRegistry::new();
+        for id in ["one", "two", "three"] {
+            registry.register(std::sync::Arc::new(FakeStore {
+                id,
+                deals: Some(vec!["d1"]),
+                calls: std::sync::Arc::clone(&calls),
+            }));
+        }
+        for (total, expected) in [(0, 0), (1, 1), (4, 4)] {
+            // A fresh library each round, so no answer is cached yet.
+            let (library, _) = two_member_library().await;
+            calls.store(0, std::sync::atomic::Ordering::SeqCst);
+            let opts = RecommendOptions {
+                storefront_max_remote_calls: total,
+                ..RecommendOptions::default()
+            };
+            fetch_subject_candidates(&library, &registry, &subject, &opts)
+                .await
+                .unwrap();
+            assert_eq!(
+                calls.load(std::sync::atomic::Ordering::SeqCst),
+                expected,
+                "budget {total}"
+            );
+        }
     }
 }

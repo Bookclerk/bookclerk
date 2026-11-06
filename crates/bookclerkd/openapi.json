@@ -3102,101 +3102,6 @@
         "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
-    "/api/discover/status": {
-      "get": {
-        "tags": [
-          "Discover"
-        ],
-        "summary": "Reports whether the caller's Discover shelves are stored yet, so\nprovisioning can wait for a new visitor's shelves before sending them in.",
-        "description": "It also queues the caller's fetch or ranking when the stored data is\nmissing or stale, exactly as the Discover page read does.",
-        "operationId": "discover_status",
-        "responses": {
-          "200": {
-            "description": "Stored Discover state of the caller's shelves.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DiscoverStatusResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "The caller has no portal identity.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Unauthorized"
-              }
-            }
-          },
-          "403": {
-            "description": "The caller's role does not allow this route. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorJson"
-                },
-                "examples": {
-                  "forbidden": {
-                    "summary": "The caller may not do this",
-                    "value": {
-                      "error": "forbidden",
-                      "message": "You do not have access to this resource.",
-                      "status": 403
-                    }
-                  },
-                  "mfa_enrollment_required": {
-                    "summary": "The user must enroll a second factor first",
-                    "value": {
-                      "error": "mfa_enrollment_required",
-                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
-                      "status": 403
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "The lookup failed.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
-              }
-            }
-          },
-          "504": {
-            "description": "The request ran past the API's time budget.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "request timed out"
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "operatorToken": []
-          },
-          {
-            "operatorSession": []
-          },
-          {
-            "portalSession": []
-          }
-        ],
-        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
-      }
-    },
     "/api/events/deliveries": {
       "get": {
         "tags": [
@@ -14342,6 +14247,93 @@
                   "message": "The Bookclerk daemon is not ready to handle this request.",
                   "status": 503
                 }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      }
+    },
+    "/api/discover/status": {
+      "get": {
+        "tags": [
+          "Discover"
+        ],
+        "summary": "Reports whether the caller's Discover shelves are stored yet, so\nprovisioning can wait for a new visitor's shelves before sending them in.",
+        "description": "It also queues the caller's fetch or ranking when the stored data is\nmissing or stale, exactly as the Discover page read does.",
+        "operationId": "discover_status",
+        "responses": {
+          "200": {
+            "description": "Stored Discover state of the caller's shelves.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoverStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller has no portal identity.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Unauthorized"
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The lookup failed.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
               }
             }
           },
