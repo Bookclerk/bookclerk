@@ -2193,6 +2193,10 @@ const SESSION_CHECK_RETRY_AFTER_SECS: u64 = 2;
 /// Machine slug of [`session_check_unavailable`]'s body.
 pub(crate) const SESSION_CHECK_UNAVAILABLE: &str = "session_check_unavailable";
 
+/// The message of the [`SESSION_CHECK_UNAVAILABLE`] refusal.
+pub(crate) const SESSION_CHECK_UNAVAILABLE_MESSAGE: &str =
+    "Your sign-in could not be checked yet. Try again in a moment.";
+
 /// The 503 answered when a session could not be checked, with
 /// `Retry-After`, so the browser retries instead of signing the person out.
 ///
@@ -2212,7 +2216,7 @@ pub(crate) fn session_check_unavailable() -> Response {
         Json(crate::http_error::ErrorJson::new(
             StatusCode::SERVICE_UNAVAILABLE,
             SESSION_CHECK_UNAVAILABLE,
-            "Your sign-in could not be checked yet. Try again in a moment.",
+            SESSION_CHECK_UNAVAILABLE_MESSAGE,
         )),
     )
         .into_response()
@@ -5008,7 +5012,16 @@ pub(crate) mod tests {
         let (_state, app, library) = phase2_harness("op-token-portal-503").await;
         let cookie = portal_cookie_for(&library, "test", "member-ext").await;
         break_portal_sessions(&library).await;
-        for uri in ["/api/auth/me", "/api/library/books"] {
+        // One route behind each session-resolving layer: any session,
+        // owner, node owner, administrator and user-scoped.
+        for uri in [
+            "/api/auth/me",
+            "/api/library/books",
+            "/api/auth/mfa-policy",
+            "/api/config/nodes",
+            "/status",
+            "/api/config/node-invites",
+        ] {
             let res = app
                 .clone()
                 .oneshot(

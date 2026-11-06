@@ -2000,6 +2000,31 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
           }
         },
         "deprecated": true,
@@ -2123,6 +2148,31 @@
                 "example": "Failed to deserialize the JSON body into the target type: account: invalid type: integer `1`, expected a string at line 1 column 12"
               }
             }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
           }
         },
         "deprecated": true,
@@ -2243,6 +2293,31 @@
                 "example": "Failed to deserialize the JSON body into the target type: asin: invalid type: integer `1`, expected a string at line 1 column 9"
               }
             }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
           }
         },
         "deprecated": true,
@@ -2335,6 +2410,31 @@
                   "error": "internal_error",
                   "message": "Something went wrong on the Bookclerk daemon.",
                   "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -2443,6 +2543,31 @@
                   "error": "not_found",
                   "message": "That page or resource was not found.",
                   "status": 404
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -2652,7 +2777,7 @@
             }
           },
           "503": {
-            "description": "Job admission is paused.",
+            "description": "Job admission is paused. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2758,6 +2883,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -2859,6 +3009,31 @@
                   "error": "internal_error",
                   "message": "Something went wrong on the Bookclerk daemon.",
                   "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -2996,6 +3171,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -3097,6 +3297,31 @@
                   "error": "internal_error",
                   "message": "Something went wrong on the Bookclerk daemon.",
                   "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -3217,6 +3442,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -3318,6 +3568,31 @@
                   "error": "internal_error",
                   "message": "Something went wrong on the Bookclerk daemon.",
                   "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -3446,6 +3721,31 @@
                   "error": "internal_error",
                   "message": "Something went wrong on the Bookclerk daemon.",
                   "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -3583,6 +3883,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -3712,6 +4037,31 @@
                   "error": "internal_error",
                   "message": "Something went wrong on the Bookclerk daemon.",
                   "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -3849,6 +4199,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -3978,6 +4353,31 @@
                   "error": "internal_error",
                   "message": "Something went wrong on the Bookclerk daemon.",
                   "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -4215,7 +4615,7 @@
             }
           },
           "503": {
-            "description": "Job admission is paused.",
+            "description": "Job admission is paused. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4462,7 +4862,7 @@
             }
           },
           "503": {
-            "description": "Job admission is paused.",
+            "description": "Job admission is paused. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4629,7 +5029,7 @@
             }
           },
           "503": {
-            "description": "Job admission is paused.",
+            "description": "Job admission is paused. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10539,6 +10939,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -10689,6 +11114,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -10785,6 +11235,31 @@
                 },
                 "example": {
                   "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -10982,6 +11457,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -11078,6 +11578,31 @@
                 },
                 "example": {
                   "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -11189,6 +11714,31 @@
                 },
                 "example": {
                   "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -11392,7 +11942,7 @@
             }
           },
           "503": {
-            "description": "The node API's certificate pin is not available yet (`node_api_pin_unavailable`).",
+            "description": "The node API's certificate pin is not available yet (`node_api_pin_unavailable`). The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11537,6 +12087,31 @@
                 },
                 "example": {
                   "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -11766,7 +12341,7 @@
             }
           },
           "503": {
-            "description": "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`).",
+            "description": "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`). The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12046,7 +12621,7 @@
             }
           },
           "503": {
-            "description": "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`).",
+            "description": "The library could not be read; try again (`unavailable`), or this library's cluster row or origin is not available yet (`cluster_unavailable`, `origin_unavailable`). The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12218,7 +12793,7 @@
             }
           },
           "503": {
-            "description": "The user record could not be read (`unavailable`); try again.",
+            "description": "The user record could not be read (`unavailable`); try again. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12335,7 +12910,7 @@
             }
           },
           "503": {
-            "description": "This library's cluster row (`cluster_unavailable`) or origin (`origin_unavailable`) is not available yet.",
+            "description": "This library's cluster row (`cluster_unavailable`) or origin (`origin_unavailable`) is not available yet. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12518,6 +13093,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -12667,6 +13267,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -12769,6 +13394,31 @@
                 },
                 "example": {
                   "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -12934,6 +13584,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -13072,6 +13747,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -13169,6 +13869,31 @@
                 },
                 "example": {
                   "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -13334,6 +14059,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -13492,6 +14242,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -13612,6 +14387,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -13714,6 +14514,31 @@
                   "error": "not_found",
                   "message": "That page or resource was not found.",
                   "status": 404
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -13853,7 +14678,7 @@
             }
           },
           "503": {
-            "description": "This node cannot fetch or process covers right now.",
+            "description": "This node cannot fetch or process covers right now. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13993,7 +14818,7 @@
             }
           },
           "503": {
-            "description": "This node cannot fetch or process images right now.",
+            "description": "This node cannot fetch or process images right now. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14133,7 +14958,7 @@
             }
           },
           "503": {
-            "description": "This node cannot fetch or process images right now, or too many Gravatars are downloading at once.",
+            "description": "This node cannot fetch or process images right now, or too many Gravatars are downloading at once. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14273,7 +15098,7 @@
             }
           },
           "503": {
-            "description": "This node cannot fetch or process images right now.",
+            "description": "This node cannot fetch or process images right now. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14374,6 +15199,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -14458,6 +15308,31 @@
                   "type": "string"
                 },
                 "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
               }
             }
           },
@@ -14597,6 +15472,31 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: missing field `title` at line 1 column 2"
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
               }
             }
           },
@@ -14747,6 +15647,31 @@
                   "type": "string"
                 },
                 "example": "purchase-hints batch task cancelled"
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
               }
             }
           },
@@ -15036,6 +15961,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The stores did not answer within the search budget.",
             "content": {
@@ -15182,6 +16132,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -15318,6 +16293,31 @@
                   "type": "string"
                 },
                 "example": "Failed to deserialize the JSON body into the target type: queries: invalid type: integer `1`, expected a sequence at line 1 column 12"
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
               }
             }
           },
@@ -15460,6 +16460,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -15550,6 +16575,31 @@
                   "type": "string"
                 },
                 "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
               }
             }
           },
@@ -15701,6 +16751,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -15838,6 +16913,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -15932,7 +17032,7 @@
             }
           },
           "503": {
-            "description": "Discover is shutting down; try again.",
+            "description": "Discover is shutting down; try again. The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -16012,6 +17112,31 @@
                   "error": "forbidden",
                   "message": "You do not have access to this resource.",
                   "status": 403
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -16101,6 +17226,31 @@
                   "error": "internal_error",
                   "message": "Something went wrong on the Bookclerk daemon.",
                   "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -16217,6 +17367,31 @@
                   "error": "internal_error",
                   "message": "Something went wrong on the Bookclerk daemon.",
                   "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -16422,6 +17597,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -16551,6 +17751,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -16638,6 +17863,31 @@
                   "error": "internal_error",
                   "message": "Something went wrong on the Bookclerk daemon.",
                   "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -16773,6 +18023,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -16836,6 +18111,31 @@
                   "type": "string"
                 },
                 "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
               }
             }
           },
@@ -16958,6 +18258,31 @@
                   "type": "string"
                 },
                 "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
               }
             }
           },
@@ -17587,6 +18912,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -17785,6 +19135,31 @@
                       "status": 500
                     }
                   }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -18004,6 +19379,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -18211,6 +19611,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -18407,6 +19832,31 @@
                       "status": 500
                     }
                   }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -19262,6 +20712,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -19445,6 +20920,31 @@
                       "status": 500
                     }
                   }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
@@ -21219,6 +22719,31 @@
               }
             }
           },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -21384,6 +22909,31 @@
                       "status": 500
                     }
                   }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
                 }
               }
             }
