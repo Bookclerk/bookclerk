@@ -740,8 +740,10 @@ tree and on its text, in `npm test` (the `workerd_guests` check).
 ### Cover fetcher guest
 
 The `covers` guest decides which URLs it requests: the host's URLs and every
-redirect `Location` an upstream server sends. Its `test/fuzz.test.ts` replays
-`fuzz/url/` and `fuzz/location/` and runs seeded text mutations in
+redirect `Location` an upstream server sends. It also passes header values
+both ways: the host's validators out as request headers, and an upstream
+server's caching headers back in its answer. Its `test/fuzz.test.ts` replays
+`fuzz/url/`, `fuzz/location/` and `fuzz/header/` and runs seeded text mutations in
 `npm test` (the `workerd_guests` check); `FUZZ_SEED` and `FUZZ_ITERATIONS`
 pick another run.
 
@@ -757,6 +759,12 @@ pick another run.
   request is a policy URL, each hop is the previous `Location` resolved
   against the URL that sent it, no more than `MAX_REDIRECTS` are followed,
   and a body is stored only after a chain the policy allowed in full.
+- **Header values** (`headerValueOk`, `checkParams` conditions and
+  `passHeaders`). Oracle, written from the ABI's `maxCoverHeaderBytes` and
+  the visible-ASCII part of RFC 9110's `field-value`: a value passes
+  exactly when it is at most 1024 bytes of tab, space and `VCHAR`. A
+  condition outside that is refused, and a response header outside it is
+  dropped from the answer.
 
 ## Still to add
 
