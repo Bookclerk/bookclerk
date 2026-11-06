@@ -612,6 +612,13 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     )",
     ),
     MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS discover_fetches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject_key TEXT NOT NULL UNIQUE,
+        fetched_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS encrypted_secrets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         kind TEXT NOT NULL,

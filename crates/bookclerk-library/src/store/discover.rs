@@ -16,7 +16,9 @@ use sea_orm::{
 };
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
-use crate::entities::{discover_candidates, discover_feeds, discover_store_calls};
+use crate::entities::{
+    discover_candidates, discover_feeds, discover_fetches, discover_store_calls,
+};
 use crate::error::{LibraryError, Result};
 use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
 
@@ -230,11 +232,50 @@ impl LibraryStore {
             .collect())
     }
 
-    /// Returns when one subject's newest stored candidate was fetched.
+    /// Records that one subject's candidate fetch finished at `at`.
+    ///
+    /// Recorded separately from the candidate rows, so a fetch that found
+    /// nothing new still counts as fresh for a day.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub async fn mark_discover_fetch(
+        &self,
+        subject: &DiscoverSubject,
+        at: DateTime<Utc>,
+    ) -> Result<()> {
+        let key = subject.key();
+        let existing = discover_fetches::Entity::find()
+            .filter(discover_fetches::Column::SubjectKey.eq(key.clone()))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        match existing {
+            Some(model) => {
+                let mut am: discover_fetches::ActiveModel = model.into();
+                am.fetched_at = Set(at.to_rfc3339());
+                am.update(&self.db).await.map_err(LibraryError::Orm)?;
+            }
+            None => {
+                discover_fetches::ActiveModel {
+                    id: NotSet,
+                    subject_key: Set(key),
+                    fetched_at: Set(at.to_rfc3339()),
+                }
+                .insert(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns when one subject's last candidate fetch finished.
     ///
     /// # Returns
     ///
-    /// `None` when the subject has no stored candidates.
+    /// `None` when no fetch has finished for the subject yet.
     ///
     /// # Errors
     ///
@@ -243,9 +284,8 @@ impl LibraryStore {
         &self,
         subject: &DiscoverSubject,
     ) -> Result<Option<DateTime<Utc>>> {
-        let row = discover_candidates::Entity::find()
-            .filter(discover_candidates::Column::SubjectKey.eq(subject.key()))
-            .order_by_desc(discover_candidates::Column::FetchedAt)
+        let row = discover_fetches::Entity::find()
+            .filter(discover_fetches::Column::SubjectKey.eq(subject.key()))
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
@@ -525,11 +565,30 @@ mod tests {
         assert_eq!(bob_rows.len(), 1);
         assert_eq!(bob_rows[0].seed_scope, SeedScope::Household);
         assert_eq!(bob_rows[0].candidate_json, "{\"k\":\"z\"}");
+        // Candidate rows alone do not mark a fetch; finishing one does, even
+        // when it stored nothing, and a later finish moves the mark.
         assert!(store
             .newest_discover_candidate_fetch(&alice)
             .await
             .unwrap()
-            .is_some());
+            .is_none());
+        let first = Utc::now() - chrono::Duration::hours(2);
+        store.mark_discover_fetch(&alice, first).await.unwrap();
+        let later = Utc::now();
+        store.mark_discover_fetch(&alice, later).await.unwrap();
+        assert_eq!(
+            store
+                .newest_discover_candidate_fetch(&alice)
+                .await
+                .unwrap()
+                .map(|t| t.timestamp()),
+            Some(later.timestamp())
+        );
+        assert!(store
+            .newest_discover_candidate_fetch(&bob)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

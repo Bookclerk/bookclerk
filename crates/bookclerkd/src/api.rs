@@ -4576,23 +4576,13 @@ async fn list_events(
     Ok(Json(rows.into_iter().map(domain_event_info).collect()))
 }
 
-/// Query string for `GET /api/discover/status`.
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-struct DiscoverStatusQuery {
-    /// One subject key to report even when it has no stored feed yet
-    /// (`operator`, `user:<id>`, `portal:<id>`).
-    #[param(example = "user:2")]
-    subject: Option<String>,
-}
-
-/// Stored Discover state of one subject.
+/// Stored Discover state of the caller's shelves.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-struct DiscoverSubjectStatus {
-    /// Subject key (`operator`, `user:<id>`, `portal:<id>`).
+struct DiscoverStatusResponse {
+    /// The caller's subject key (`operator`, `user:<id>`, `portal:<id>`).
     #[schema(example = "user:2")]
     subject: String,
-    /// True once the subject has stored shelves to show.
+    /// True once the caller has stored shelves to show.
     #[schema(example = true)]
     ready: bool,
     /// Seeds the stored feed was ranked from (`own` or `household`), when ranked.
@@ -4601,81 +4591,52 @@ struct DiscoverSubjectStatus {
     /// RFC 3339 time the stored feed was ranked, when ranked.
     #[schema(example = "2026-11-06T00:30:00+00:00")]
     feed_computed_at: Option<String>,
-    /// RFC 3339 time of the subject's newest storefront fetch, when any.
+    /// RFC 3339 time the caller's last storefront fetch finished, when any.
     #[schema(example = "2026-11-06T00:29:41+00:00")]
     candidates_fetched_at: Option<String>,
 }
 
-/// Stored Discover state per subject.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-struct DiscoverStatusResponse {
-    /// Every subject with a stored feed, plus the one asked about.
-    subjects: Vec<DiscoverSubjectStatus>,
-}
-
-/// Reports which subjects have stored Discover shelves, so provisioning can
-/// wait for a new visitor's shelves before sending them in.
+/// Reports whether the caller's Discover shelves are stored yet, so
+/// provisioning can wait for a new visitor's shelves before sending them in.
 ///
-/// Naming a `subject` also queues its fetch or ranking when its stored data
-/// is missing or stale, exactly as the Discover page read does.
+/// It also queues the caller's fetch or ranking when the stored data is
+/// missing or stale, exactly as the Discover page read does.
 #[utoipa::path(
     get,
     path = "/api/discover/status",
-    params(DiscoverStatusQuery),
     responses(
-        (status = 200, description = "Stored Discover state per subject.", body = DiscoverStatusResponse),
-        (status = 400, description = "The subject key is not one Discover knows.", body = String, content_type = "text/plain", example = json!("unknown subject `user:x`")),
+        (status = 200, description = "Stored Discover state of the caller's shelves.", body = DiscoverStatusResponse),
+        (status = 401, description = "The caller has no portal identity.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
         (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
     ),
 )]
 async fn discover_status(
     State(state): State<Arc<AppState>>,
-    Query(q): Query<DiscoverStatusQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<DiscoverStatusResponse>, (StatusCode, String)> {
     let library = state.library_snapshot().await;
-    let mut subjects = library
-        .list_discover_feed_subjects()
+    let (subject_key, _) = auth::prefs_subject_for_caller(&state, &headers)
+        .await
+        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+    let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
+        .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
+    let feed = library
+        .get_discover_feed(&subject)
         .await
         .map_err(internal_err)?;
-    if let Some(key) = q.subject.as_deref() {
-        let subject = bookclerk_library::DiscoverSubject::parse(key)
-            .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("unknown subject `{key}`")))?;
-        // Asking about a subject also queues its first fetch or ranking,
-        // as the page read would, so provisioning need not open the page.
-        let stored = library
-            .get_discover_feed(&subject)
-            .await
-            .map_err(internal_err)?;
-        let newest = library
-            .newest_discover_candidate_fetch(&subject)
-            .await
-            .map_err(internal_err)?;
-        let refresh =
-            crate::discover_jobs::refresh_needed(stored.as_ref(), newest, chrono::Utc::now());
-        crate::discover_jobs::queue_refresh(&state, &subject, refresh).await;
-        if !subjects.contains(&subject) {
-            subjects.push(subject);
-        }
-    }
-    let mut out = Vec::with_capacity(subjects.len());
-    for subject in subjects {
-        let feed = library
-            .get_discover_feed(&subject)
-            .await
-            .map_err(internal_err)?;
-        let fetched = library
-            .newest_discover_candidate_fetch(&subject)
-            .await
-            .map_err(internal_err)?;
-        out.push(DiscoverSubjectStatus {
-            subject: subject.key(),
-            ready: feed.is_some(),
-            scope: feed.as_ref().map(|f| f.seed_scope.as_str().to_string()),
-            feed_computed_at: feed.as_ref().map(|f| f.computed_at.to_rfc3339()),
-            candidates_fetched_at: fetched.map(|t| t.to_rfc3339()),
-        });
-    }
-    Ok(Json(DiscoverStatusResponse { subjects: out }))
+    let fetched = library
+        .newest_discover_candidate_fetch(&subject)
+        .await
+        .map_err(internal_err)?;
+    let refresh = crate::discover_jobs::refresh_needed(feed.as_ref(), fetched, chrono::Utc::now());
+    crate::discover_jobs::queue_refresh(&state, &subject, refresh).await;
+    Ok(Json(DiscoverStatusResponse {
+        subject: subject.key(),
+        ready: feed.is_some(),
+        scope: feed.as_ref().map(|f| f.seed_scope.as_str().to_string()),
+        feed_computed_at: feed.as_ref().map(|f| f.computed_at.to_rfc3339()),
+        candidates_fetched_at: fetched.map(|t| t.to_rfc3339()),
+    }))
 }
 
 /// Delivery counters plus live consumers for one queue.

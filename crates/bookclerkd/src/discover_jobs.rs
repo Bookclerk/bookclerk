@@ -152,6 +152,8 @@ pub async fn run_discover_candidates(
         let sources = state.sources.read().await.clone();
         bookclerk_discover::fetch_subject_candidates(&library, &sources, &subject, &opts).await?
     } else {
+        // Nothing to fetch, but the fetch counts as done for the day.
+        library.mark_discover_fetch(&subject, Utc::now()).await?;
         bookclerk_discover::FetchReport::default()
     };
     // The ranking reads what was just stored; a failure to admit it leaves
@@ -461,32 +463,20 @@ mod tests {
         let summary = run_discover_feed(&state, &payload, None).await.unwrap();
         assert!(summary.contains("scope=household"), "{summary}");
 
-        // A stored feed with no candidates still asks for a fetch.
+        // A fetch that found nothing still counts as fresh: the feed is ready
+        // and nothing more is queued.
+        let jobs_before = queued(&library).await;
         let (_, feed) = get(&app, "/api/discover/recommendations").await;
-        assert_eq!(feed["state"], "refreshing");
+        assert_eq!(feed["state"], "ready");
         assert!(feed["computed_at"].is_string());
+        assert_eq!(queued(&library).await, jobs_before);
 
         let (status, report) = get(&app, "/api/discover/status").await;
         assert_eq!(status, axum::http::StatusCode::OK, "{report}");
-        assert_eq!(report["subjects"][0]["subject"], "operator");
-        assert_eq!(report["subjects"][0]["ready"], true);
-        assert_eq!(report["subjects"][0]["scope"], "household");
-
-        // Naming a new subject reports it and queues its fetch.
-        let (_, report) = get(&app, "/api/discover/status?subject=user:5").await;
-        let five = report["subjects"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|s| s["subject"] == "user:5")
-            .cloned()
-            .unwrap();
-        assert_eq!(five["ready"], false);
-        assert!(queued(&library)
-            .await
-            .contains(&(JobKind::DiscoverCandidates, String::from("user:5"))));
-        let (status, _) = get(&app, "/api/discover/status?subject=user:x").await;
-        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(report["subject"], "operator");
+        assert_eq!(report["ready"], true);
+        assert_eq!(report["scope"], "household");
+        assert!(report["candidates_fetched_at"].is_string());
 
         // A job without a subject fails instead of guessing one.
         assert!(run_discover_feed(&state, &JobPayload::default(), None)
@@ -513,12 +503,11 @@ mod tests {
                 .unwrap();
         }
         library
-            .replace_discover_candidates(
-                &fresh,
-                "libro",
-                SeedScope::Own,
-                &[(String::from("k"), String::from("{}"))],
-            )
+            .mark_discover_fetch(&fresh, Utc::now())
+            .await
+            .unwrap();
+        library
+            .mark_discover_fetch(&stale, Utc::now() - chrono::Duration::hours(25))
             .await
             .unwrap();
         assert_eq!(queue_daily_refresh(&state).await, 1);

@@ -56,12 +56,15 @@ operator, a household user, or a portal identity) has a **subject key**
 
 1. **Candidates** (`discover_candidates`): a `discover_candidates` job seeds
    from that person's own taste (books on the store accounts linked to their
-   identities, their listening, their open wishlist) and asks **every
+   identities, household books they have listened to, their listening and
+   their open wishlist) and asks **every
    deployed storefront**, not only the stores they have accounts with. A
    person with no signal yet (and the operator) seeds from the household.
    Stores run concurrently, each call has a 10 s timeout, and each store's
    rows are saved as that store finishes, so one slow store never discards
-   the others. A store whose calls all fail keeps its previous rows.
+   the others. A store whose calls all fail keeps its previous rows. The
+   finished fetch is recorded in `discover_fetches`, so a fetch that found
+   nothing new still counts as fresh for a day.
 2. **Feed** (`discover_feeds`): when the fetch finishes it admits a
    `discover_feed` job, which ranks the stored candidates into shelves with
    no network calls and stores the result.
@@ -81,12 +84,12 @@ seeing:
 | `refreshing` | The stored feed is shown while a newer one is built. |
 | `preparing` | No feed yet; shelves are empty and the page shows placeholders. |
 
-A read queues what is stale: a ranking when stored candidates are newer than
-the feed, and a fetch when there are no candidates or they are older than 24
-hours. The scheduler also queues the daily fetch for every subject with a
-stored feed. `GET /api/discover/status` reports each subject's readiness
-(`?subject=` names one and queues its refresh), for callers that need to wait
-on shelves, such as the hosted demo.
+A read queues what is stale: a ranking when the last fetch finished after the
+feed was ranked, and a fetch when none has finished or the last one is older
+than 24 hours. The scheduler also queues the daily fetch for every subject
+with a stored feed. `GET /api/discover/status` reports whether the caller's
+shelves are stored yet, and queues their refresh as a read would, for callers
+that need to wait on shelves, such as the hosted demo.
 
 ## Metadata gap-fill (Open Library compliance)
 

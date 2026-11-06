@@ -63,7 +63,9 @@ pub struct SubjectTaste {
 /// Loads one subject's taste.
 ///
 /// A user or portal identity uses the books held by store accounts linked to
-/// them, the listening rows recorded for them, and their open wishlist. When
+/// them plus the household books they have listened to, the listening rows
+/// recorded for them (by identity id, or by provider and external user id on
+/// rows recorded before the identity was known), and their open wishlist. When
 /// all three are empty (a new member, or a visitor who has connected no store
 /// yet), and always for the operator, the household library is used instead.
 ///
@@ -114,9 +116,11 @@ pub async fn load_subject_taste(
     }
 
     let identity_ids: HashSet<i64> = identities.iter().map(|i| i.id).collect();
-    let external_ids: HashSet<&str> = identities
+    // External user ids are provider-local, so a legacy row without an
+    // identity id matches only on the (provider, external id) pair.
+    let external_ids: HashSet<(&str, &str)> = identities
         .iter()
-        .map(|i| i.external_user_id.as_str())
+        .map(|i| (i.provider.as_str(), i.external_user_id.as_str()))
         .collect();
     let mut held: HashSet<(String, String)> = HashSet::new();
     for identity in &identities {
@@ -124,17 +128,26 @@ pub async fn load_subject_taste(
             held.insert((link.plugin_key, link.account_id));
         }
     }
-    let books: Vec<BookRecord> = household
-        .iter()
-        .filter(|b| held.contains(&(b.plugin_key.clone(), b.account_id.clone())))
-        .cloned()
-        .collect();
     let listening: Vec<ListeningProgressRecord> = all_listening
         .into_iter()
-        .filter(|r| {
-            r.identity_id.is_some_and(|id| identity_ids.contains(&id))
-                || external_ids.contains(r.external_user_id.as_str())
+        .filter(|r| match r.identity_id {
+            Some(id) => identity_ids.contains(&id),
+            None => external_ids.contains(&(r.provider.as_str(), r.external_user_id.as_str())),
         })
+        .collect();
+    // Their books: those on store accounts linked to them, plus any household
+    // book they have listened to (a member may listen without owning).
+    let listened: HashSet<&str> = listening
+        .iter()
+        .filter_map(|r| r.book_uuid.as_deref())
+        .collect();
+    let books: Vec<BookRecord> = household
+        .iter()
+        .filter(|b| {
+            held.contains(&(b.plugin_key.clone(), b.account_id.clone()))
+                || listened.contains(b.uuid.as_str())
+        })
+        .cloned()
         .collect();
     let wishlist: Vec<SeedTitle> = library
         .list_title_requests(Some(RequestStatus::Open))
@@ -219,6 +232,7 @@ pub async fn fetch_subject_candidates(
     };
     let stores = registry.all();
     if stores.is_empty() {
+        library.mark_discover_fetch(subject, Utc::now()).await?;
         return Ok(report);
     }
     let per_store = (opts.storefront_max_remote_calls / stores.len()).max(1);
@@ -264,6 +278,7 @@ pub async fn fetch_subject_candidates(
         report.candidates += rows.len();
     }
     report.stores_failed.sort();
+    library.mark_discover_fetch(subject, Utc::now()).await?;
     tracing::info!(
         subject = %subject.key(),
         scope = taste.scope.as_str(),
@@ -434,7 +449,7 @@ pub async fn rank_subject_feed(
     let household = library.list_books(None).await?;
     let (asins, isbns, products) = owned_identity_sets(&household);
     let stored = library.list_discover_candidates(subject).await?;
-    let newest = stored.iter().map(|c| c.fetched_at).max();
+    let newest = library.newest_discover_candidate_fetch(subject).await?;
     let mut map: HashMap<String, StorefrontCandidate> = HashMap::new();
     for row in &stored {
         match serde_json::from_str::<StorefrontCandidate>(&row.candidate_json) {
@@ -704,6 +719,77 @@ mod tests {
             assert_eq!(taste.scope, SeedScope::Household, "{subject:?}");
             assert_eq!(taste.books.len(), 2);
         }
+    }
+
+    /// A listening row on `book_uuid` for `(provider, external)`.
+    fn listen(
+        identity_id: Option<i64>,
+        provider: &str,
+        external: &str,
+        item: &str,
+        book_uuid: &str,
+    ) -> bookclerk_library::NewListeningProgress {
+        bookclerk_library::NewListeningProgress {
+            identity_id,
+            provider: provider.to_string(),
+            external_user_id: external.to_string(),
+            book_uuid: Some(book_uuid.to_string()),
+            work_id: None,
+            external_item_id: item.to_string(),
+            title: None,
+            authors: None,
+            asin: None,
+            isbn: None,
+            progress: Some(0.5),
+            current_time_seconds: Some(3_600.0),
+            duration_seconds: Some(7_200.0),
+            is_finished: false,
+            last_listened_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn listening_seeds_a_member_by_identity_or_by_provider_and_external_id() {
+        let (library, alice) = two_member_library().await;
+        let opts = RecommendOptions::default();
+        let bob_book = library
+            .list_books(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|b| b.title == "Bob Book")
+            .unwrap()
+            .uuid;
+        let carol = library
+            .upsert_portal_identity("oidc", "carol", Some("Carol"))
+            .await
+            .unwrap();
+        // Rows that are not Carol's: the same external id on another provider,
+        // and a row attributed to Alice that reuses Carol's external id.
+        for row in [
+            listen(None, "abs", "carol", "i1", &bob_book),
+            listen(Some(alice.id), "oidc", "carol", "i2", &bob_book),
+        ] {
+            library.upsert_listening_progress(&row).await.unwrap();
+        }
+        let none = load_subject_taste(&library, &DiscoverSubject::Portal(carol.id), &opts)
+            .await
+            .unwrap();
+        assert_eq!(none.scope, SeedScope::Household);
+
+        // A legacy row on Carol's own provider and external id is hers, and
+        // the book she listened to seeds her fetch without her owning it.
+        library
+            .upsert_listening_progress(&listen(None, "oidc", "carol", "i3", &bob_book))
+            .await
+            .unwrap();
+        let taste = load_subject_taste(&library, &DiscoverSubject::Portal(carol.id), &opts)
+            .await
+            .unwrap();
+        assert_eq!(taste.scope, SeedScope::Own);
+        assert_eq!(taste.listening.len(), 1);
+        let titles: Vec<&str> = taste.books.iter().map(|b| b.title.as_str()).collect();
+        assert_eq!(titles, vec!["Bob Book"]);
     }
 
     #[tokio::test]

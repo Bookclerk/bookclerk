@@ -1477,7 +1477,7 @@ fn plan_delete_user(user_id: i64) -> AtomicPlan {
         &format!("DELETE FROM user_preferences WHERE subject_key = ? AND {allow}"),
         prefs_p,
     ));
-    for table in ["discover_candidates", "discover_feeds"] {
+    for table in ["discover_candidates", "discover_feeds", "discover_fetches"] {
         let mut p = vec![j_str(&subject)];
         p.extend(allow_p.clone());
         statements.push(sql(
