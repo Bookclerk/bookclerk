@@ -104,7 +104,9 @@ While the socket is down and the state is `preparing` or `refreshing`, the
 page reads the feed every 4 seconds instead, up to 15 times. A `preparing`
 page then keeps reading every 30 seconds until shelves arrive. With the
 socket open, a `preparing` or `refreshing` page also reads every 30 seconds,
-in case a write was missed or a live re-read failed.
+in case a write was missed or a live re-read failed. A live re-read that
+fails is also retried 30 seconds later whatever the feed shows, so a `ready`
+page does not keep stale shelves until the next change.
 
 A read queues what is stale. It queues a ranking when the last fetch finished
 after the feed was ranked. It queues a fetch when none has finished or the

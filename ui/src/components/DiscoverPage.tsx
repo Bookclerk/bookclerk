@@ -88,8 +88,9 @@ const FEED_POLL_MS = 4_000;
 /** Quick re-reads of an unfinished feed before slowing to {@link FEED_POLL_SLOW_MS}. */
 const FEED_POLL_LIMIT = 15;
 /**
- * Delay between re-reads once {@link FEED_POLL_LIMIT} is spent, while the feed
- * is still preparing (a refreshing feed already shows shelves, so it stops).
+ * Delay between slow re-reads: once {@link FEED_POLL_LIMIT} is spent while the
+ * feed is still preparing, while an unfinished feed waits on the live socket,
+ * and before retrying a live re-read that failed.
  */
 const FEED_POLL_SLOW_MS = 30_000;
 
@@ -234,19 +235,25 @@ export function DiscoverPage({
   // A ranking job that writes someone's shelves moves the live socket's
   // `discover` topic; re-read the stored feed then, in place (the shelves
   // already shown and how many are open stay as they are).
+  // A live re-read that fails is retried after FEED_POLL_SLOW_MS whatever
+  // the feed shows, so ready shelves never stay stale until the next change.
   const feedReads = useRef(new LatestRead());
-  const liveState = useLiveRefresh(
-    ["discover"],
-    () => {
-      const ticket = feedReads.current.begin();
-      return fetchDiscoverFeed()
-        .then((next) => {
-          if (feedReads.current.accept(ticket)) setFeed(next);
-        })
-        .catch(() => undefined);
-    },
-    { pollMs: 0 },
-  );
+  const [liveRetry, setLiveRetry] = useState(0);
+  const readLiveFeed = () => {
+    const ticket = feedReads.current.begin();
+    return fetchDiscoverFeed()
+      .then((next) => {
+        if (feedReads.current.accept(ticket)) setFeed(next);
+        setLiveRetry(0);
+      })
+      .catch(() => setLiveRetry((n) => n + 1));
+  };
+  const liveState = useLiveRefresh(["discover"], readLiveFeed, { pollMs: 0 });
+  useEffect(() => {
+    if (liveRetry === 0) return;
+    const timer = window.setTimeout(() => void readLiveFeed(), FEED_POLL_SLOW_MS);
+    return () => window.clearTimeout(timer);
+  }, [liveRetry]);
 
   // While the daemon is still building the caller's shelves, re-read the
   // stored feed so they appear without a reload: quickly at first, then
