@@ -346,6 +346,16 @@ function bindingMessage(manifest) {
     console.error("FAIL ownUserAgentHostsFor", JSON.stringify(asciiHosts));
     process.exit(1);
   }
+  // The A-label check itself, independent of what this Node's URL parser does.
+  const { isValidALabel } = await import("../dist/tools/idna.js");
+  const aLabels = { "xn--fa-hia": true, "xn--3xa": true, example: true };
+  for (const bad of ["xn--", "xn--99999999", "xn--abc-", "xn---"]) aLabels[bad] = false;
+  for (const [label, valid] of Object.entries(aLabels)) {
+    if (isValidALabel(label) !== valid) {
+      console.error("FAIL isValidALabel", label, !valid);
+      process.exit(1);
+    }
+  }
   console.log("ok own_user_agent validation");
 }
 // [triggers] crons: shape, count and duplicates; a cron-only manifest is valid.

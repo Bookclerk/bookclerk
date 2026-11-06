@@ -12,6 +12,7 @@ import { domainToASCII } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { isValidALabel } from "../tools/idna.js";
 import {
   applyAuthorCompatibilityDate,
   declaresPython,
@@ -349,7 +350,9 @@ export function ownUserAgentHostsFor(hosts: readonly string[]): string[] {
     const pattern = trimmed.slice(0, end);
     const wildcard = pattern.startsWith("*.");
     const ascii = domainToASCII(wildcard ? pattern.slice(2) : pattern);
-    if (ascii) out.push(wildcard ? `*.${ascii}` : ascii);
+    if (ascii && ascii.split(".").every(isValidALabel)) {
+      out.push(wildcard ? `*.${ascii}` : ascii);
+    }
   }
   return out;
 }
