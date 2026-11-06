@@ -54,6 +54,19 @@ TRACKED_RELATIVE_PATHS = {
 }
 TRACKED_OAUTH_SUFFIX = "/oauth/token"
 
+# Signed-out catalog endpoints source-libro/src/catalog.rs calls. The plugin
+# derives their absolute paths from LIBRARY_PATH's /api/vN/ prefix, so a
+# version bump is caught there; a rename or removal is caught here.
+CATALOG_RELATIVE_PATHS = (
+    "explore/search",
+    "explore/audiobook_details/{isbn}",
+)
+
+# Headers the plugin sends that the app's AuthInterceptor must still define:
+# Authorization on signed-in calls, X-LibroFm-AppVer on every call (signed-out
+# explore/audiobook_details answers 404 without it).
+REQUIRED_APP_HEADERS = ("Authorization", "X-LibroFm-AppVer")
+
 CONST_RE = re.compile(
     r'pub\s+const\s+(?P<name>[A-Z0-9_]+)\s*:\s*&str\s*=\s*"(?P<value>[^"]*)"\s*;'
 )
@@ -458,6 +471,33 @@ def compare(surface: ApkSurface, client: ClientConsts) -> list[dict[str, Any]]:
         abs_paths.get("audiobooks/{isbn}/packaged_m4b"),
         client.packaged_m4b_path,
     )
+
+    # Catalog endpoints the plugin calls must still exist in the app.
+    relative = {e.path for e in surface.endpoints}
+    missing_catalog = [p for p in CATALOG_RELATIVE_PATHS if p not in relative]
+    if missing_catalog:
+        drifts.append(
+            {
+                "field": "CATALOG_PATHS",
+                "apk": None,
+                "client": missing_catalog,
+                "severity": "error",
+                "note": "catalog endpoints source-libro calls are gone from the APK",
+            }
+        )
+
+    # Headers the plugin relies on must still be part of the app's contract.
+    missing_headers_required = [h for h in REQUIRED_APP_HEADERS if h not in surface.headers]
+    if missing_headers_required:
+        drifts.append(
+            {
+                "field": "APP_HEADERS",
+                "apk": surface.headers,
+                "client": missing_headers_required,
+                "severity": "error",
+                "note": "headers source-libro sends are no longer set by the app's AuthInterceptor",
+            }
+        )
 
     # Informative: headers we do not yet send (except ones we already map).
     known = {

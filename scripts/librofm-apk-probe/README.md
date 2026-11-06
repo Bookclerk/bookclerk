@@ -113,13 +113,34 @@ checks run only when the probe reports API drift:
 Informational-only extras (e.g. unused `X-LibroFm-Api-Key` in the APK) do **not**
 trigger live calls. Override with `workflow_dispatch` → `force_live_smoke`.
 
-### Public catalog (optional)
+Two checks guard the plugin's catalog calls against APK drift. Both are
+blocking (`severity=error`), and neither has a constant the fixer can rewrite,
+so the `api-drift` issue asks for a manual change:
 
-`live_smoke.py --profiles public` hits `explore/search`, suggest, genres, and
-`explore/audiobook_details/{isbn}` without auth. Useful for catalog metadata
-shapes; not a substitute for acquire-path checks. Since November 2026,
-`explore/audiobook_details` answers `404` without `X-LibroFm-AppVer`; with
-it, signed-out calls answer `200`.
+- `CATALOG_PATHS`: `explore/search` or `explore/audiobook_details/{isbn}` is
+  gone from the APK's Retrofit interfaces.
+- `APP_HEADERS`: the APK's `AuthInterceptor` no longer sets `Authorization`
+  or `X-LibroFm-AppVer`.
+
+### Public catalog (every run)
+
+`live_smoke.py --profiles public` calls `explore/search`, suggest, genres and
+`explore/audiobook_details/{isbn}` with exactly the headers the plugin's
+catalog calls send: `bookclerk/<workspace version> (+https://bookclerk.app)`,
+`Accept: application/json` and `X-LibroFm-AppVer`, and no auth. It catches
+server-side changes that leave the APK alone, such as a new required header
+or a block on our user agent. The workflow runs it on every run and fails
+when it fails.
+
+The report also lists, per run:
+
+- `missing_mapped_fields`: detail fields the plugin maps that the title
+  lacked (informational, since single titles can lack a field);
+- `explore_audiobook_details_without_appver`: the status without
+  `X-LibroFm-AppVer`. `404` means the header is still required; anything else
+  means Libro.fm changed that rule.
+
+It does not replace the acquire-path checks.
 
 ## Local usage
 
@@ -152,9 +173,10 @@ exit `2` = hard failure / missing auth credentials.
 `.github/workflows/librofm-apk-probe.yml` runs weekly and on `workflow_dispatch`.
 
 1. Extract APK API surface; upload **report JSON/Markdown only** (never APKs or
-   media). Live smoke uses `--no-media-download`.
-2. **Only if APK API drifted** (or `force_live_smoke`): public catalog smoke +
-   auth live-smoke (API JSON only — no CDN media artifact)
+   media). Live smoke uses `--no-media-download`. The public catalog smoke
+   runs every time; its failure fails the run.
+2. **Only if APK API drifted** (or `force_live_smoke`): auth live-smoke (API
+   JSON only — no CDN media artifact)
 3. On blocking constant drift (schedule/manual): file or update the
    `api-drift` issue, and when auth smoke passed, open the constants PR that
    closes it (automation App token; see `docs/contributing/automation.md#automation-app`)

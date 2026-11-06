@@ -172,6 +172,7 @@ jobs:
           "$PY" scripts/tests/test_plugin_publisher.py
           "$PY" scripts/tests/test_envelope.py
           "$PY" scripts/tests/test_source_apk_probe.py
+          "$PY" scripts/tests/test_librofm_apk_probe.py
           "$PY" scripts/tests/test_osv_remediate.py
           "$PY" scripts/tests/test_fuzz_crash_triage.py
           "$PY" scripts/tests/test_osv_advisories.py
