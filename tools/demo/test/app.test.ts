@@ -542,6 +542,7 @@ describe("a running session", () => {
     assert.equal(after.status, 410);
     assert.ok(after.headers.getSetCookie().some((c) => c.startsWith("__Host-demo=;")));
     assert.match(await after.text(), /Your demo has ended/);
+    assert.match(after.headers.get("Server-Timing") ?? "", /^session;dur=\d+$/);
   });
 
   it("keeps the session when bookclerkd itself answers 410", async () => {

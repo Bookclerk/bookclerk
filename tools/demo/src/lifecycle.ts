@@ -27,11 +27,12 @@ import {
 export const STOREFRONTS = ["audible", "libro", "chirp", "graphicaudio"];
 
 /**
- * Every plugin a session enables: the storefronts, and `covers`, which
- * downloads the images the web app shows (covers, store icons, avatars) so
- * they load from the demo's own origin.
+ * Plugins a session enables after the storefronts, without which the demo
+ * still works: `covers` downloads the images the web app shows (covers,
+ * store icons, avatars) so they load from the demo's own origin. When one
+ * can't be enabled, the app shows its fallback images.
  */
-export const DEMO_PLUGINS = [...STOREFRONTS, "covers"];
+export const OPTIONAL_PLUGINS = ["covers"];
 
 /**
  * Sends one request to bookclerkd in the container.
@@ -122,7 +123,7 @@ export async function signInVisitor(call: ContainerCall, operatorToken: string):
 }
 
 /**
- * Approves each demo plugin's requested grant (the storefronts and `covers`) as the operator and deploys its
+ * Approves each plugin's requested grant as the operator and deploys its
  * default instance on this node, as an operator would in Settings. Visitors
  * cannot do either: the Worker refuses those routes.
  *
@@ -136,7 +137,7 @@ export async function signInVisitor(call: ContainerCall, operatorToken: string):
 export async function enableStorefronts(
   call: ContainerCall,
   operatorToken: string,
-  ids: string[] = DEMO_PLUGINS,
+  ids: string[] = STOREFRONTS,
 ): Promise<void> {
   const json = { Authorization: `Bearer ${operatorToken}`, "Content-Type": "application/json" };
   for (const id of ids) {
@@ -164,6 +165,31 @@ export async function enableStorefronts(
     });
     await res.body?.cancel();
     if (res.status !== 200) throw new Error(`deploying ${id} answered ${res.status}`);
+  }
+}
+
+/**
+ * Enables the storefronts, then each of [`OPTIONAL_PLUGINS`], whose failure
+ * is logged instead of ending the session.
+ *
+ * @param call - Container request function.
+ * @param operatorToken - The session's operator token.
+ * @param warn - Where an optional plugin's failure is reported.
+ * @returns
+ * @throws {Error} When a storefront cannot be enabled.
+ */
+export async function enableDemoPlugins(
+  call: ContainerCall,
+  operatorToken: string,
+  warn: (message: string) => void = console.warn,
+): Promise<void> {
+  await enableStorefronts(call, operatorToken, STOREFRONTS);
+  for (const id of OPTIONAL_PLUGINS) {
+    try {
+      await enableStorefronts(call, operatorToken, [id]);
+    } catch (err) {
+      warn(`demo: ${id} not enabled: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
 

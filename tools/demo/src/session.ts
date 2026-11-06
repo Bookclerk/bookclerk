@@ -14,7 +14,7 @@ import { finish, recordStartup } from "./limits.ts";
 import { timed } from "./timing.ts";
 import {
   type ContainerCall,
-  enableStorefronts,
+  enableDemoPlugins,
   randomHex,
   signInVisitor,
   signOutStores,
@@ -253,7 +253,7 @@ export class DemoSession extends Container<Env> implements SessionApi {
       if (await this.stillStarting()) {
         await waitForHealth(call, { timeoutMs: BOOT_TIMEOUT_MS, intervalMs: 1000 });
       }
-      if (await this.stillStarting()) await enableStorefronts(call, operatorToken);
+      if (await this.stillStarting()) await enableDemoPlugins(call, operatorToken);
       const portalSession = (await this.stillStarting())
         ? await signInVisitor(call, operatorToken)
         : null;

@@ -513,7 +513,10 @@ async function proxy(
   const upstream = await timed("session", () => sessionStub(env, id).fetch(forwarded), deps.now);
   const state = upstream.headers.get("X-Demo-State");
   if (upstream.status === 503 && state !== null) {
-    return notRunning(request, state, env);
+    const answer = notRunning(request, state, env);
+    const timing = upstream.headers.get("Server-Timing");
+    if (timing !== null) answer.headers.set("Server-Timing", timing);
+    return answer;
   }
   return forwardResponse(upstream);
 }
