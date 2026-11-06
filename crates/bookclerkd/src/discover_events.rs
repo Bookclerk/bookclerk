@@ -12,10 +12,10 @@
 use std::time::Duration;
 
 use bookclerk_library::{
-    DiscoverSubject, DomainEventRecord, EventCatalogSubscription, EventDeliveryRecord, JobState,
-    JobTrigger, LibraryStore, LISTENING_SYNCED, WISHLIST_CHANGED,
+    DiscoverSubject, DomainEventRecord, EventCatalogSubscription, EventDeliveryRecord, JobKind,
+    JobPayload, JobState, JobTrigger, LibraryStore, LISTENING_SYNCED, WISHLIST_CHANGED,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tracing::{debug, warn};
 
@@ -213,6 +213,7 @@ async fn queue_for(
     state: &AppState,
     library: &LibraryStore,
     taste: Taste,
+    since: DateTime<Utc>,
 ) -> anyhow::Result<Queued> {
     let owner = match taste {
         Taste::Wishlist {
@@ -224,7 +225,13 @@ async fn queue_for(
     let plan = plan_refresh(taste, owner, with_feeds);
     let mut outcome = Queued::Done;
     // Host-initiated, like the daily refresh: no person asked for it.
+    // A retry skips subjects an earlier attempt already covered, so jobs
+    // that finished in between are not queued again ahead of the subjects
+    // still waiting for room in the queue.
     for subject in &plan.fetch {
+        if covered_since(library, JobKind::DiscoverCandidates, subject, since).await? {
+            continue;
+        }
         let admitted =
             enqueue_discover_candidates(state, subject, JobTrigger::Scheduler, EVENT_DEBOUNCE)
                 .await?;
@@ -233,6 +240,9 @@ async fn queue_for(
         }
     }
     for subject in &plan.rank {
+        if covered_since(library, JobKind::DiscoverFeed, subject, since).await? {
+            continue;
+        }
         let admitted =
             enqueue_discover_feed(state, subject, JobTrigger::Scheduler, EVENT_DEBOUNCE).await?;
         if needs_retry(library, &admitted).await? {
@@ -246,6 +256,27 @@ async fn queue_for(
         "discover refresh queued for a taste event"
     );
     Ok(outcome)
+}
+
+/// True when a `kind` job for `subject` was admitted at or after `since`
+/// (the event's creation), so it reads the change and needs no new job.
+///
+/// # Errors
+///
+/// Returns the library error.
+async fn covered_since(
+    library: &LibraryStore,
+    kind: JobKind,
+    subject: &DiscoverSubject,
+    since: DateTime<Utc>,
+) -> anyhow::Result<bool> {
+    let payload = JobPayload {
+        subject: Some(subject.key()),
+        ..JobPayload::default()
+    };
+    Ok(library
+        .job_admitted_since(&kind.dedup_key(&payload), since)
+        .await?)
 }
 
 /// True when an admission did not leave a job that will see this change:
@@ -292,7 +323,7 @@ pub async fn run_discover_delivery(
             return;
         }
     };
-    let result = match queue_for(state, library, taste).await {
+    let result = match queue_for(state, library, taste, event.created_at).await {
         Ok(Queued::Done) => library.ack_event_delivery(&fence).await,
         Ok(Queued::Later) => {
             let run_after = chrono::Duration::from_std(EVENT_DEBOUNCE)
@@ -453,6 +484,45 @@ mod tests {
         assert!(!needs_retry(&library, &AdmitJob::Duplicate(id))
             .await
             .expect("check"));
+    }
+
+    /// A retry skips a subject only when a job for it was admitted after the
+    /// event and has not failed, so finished refreshes are not queued again.
+    #[tokio::test]
+    async fn a_job_admitted_after_the_event_covers_its_subject() {
+        use sea_orm::ConnectionTrait;
+        let files = tempfile::tempdir().expect("tempdir");
+        let (state, library) = crate::node_api::tests::test_state(&files).await;
+        let subject = DiscoverSubject::Operator;
+        let covered = |since| covered_since(&library, JobKind::DiscoverFeed, &subject, since);
+        let before = Utc::now();
+        assert!(!covered(before).await.expect("no job yet"));
+        let AdmitJob::Created(id) =
+            enqueue_discover_feed(&state, &subject, JobTrigger::Scheduler, EVENT_DEBOUNCE)
+                .await
+                .expect("admit")
+        else {
+            panic!("expected a new job");
+        };
+        assert!(covered(before).await.expect("pending"));
+        // Another kind for the same subject is not the same work.
+        assert!(
+            !covered_since(&library, JobKind::DiscoverCandidates, &subject, before)
+                .await
+                .expect("other kind")
+        );
+        let mark = |state: &'static str| {
+            let sql = format!("UPDATE jobs SET state = '{state}' WHERE id = '{id}'");
+            let db = library.db().clone();
+            async move { db.execute_unprepared(&sql).await.expect("mark") }
+        };
+        mark("succeeded").await;
+        assert!(covered(before).await.expect("succeeded"));
+        // A job admitted before the event may have read the old data.
+        let after = Utc::now() + chrono::Duration::seconds(1);
+        assert!(!covered(after).await.expect("older job"));
+        mark("failed").await;
+        assert!(!covered(before).await.expect("failed"));
     }
 
     /// Dispatches the newest outbox row of `event_type` and claims it as

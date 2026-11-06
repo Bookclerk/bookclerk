@@ -138,6 +138,10 @@ A job that has already started may have read the data before the change,
 so a change only folds into a job that is still pending. When the job the
 consumer needs is running or has just finished (or the queue is full), the
 delivery comes back 30 seconds later and queues again, up to 20 times.
+A retry skips each person who already has a job of that kind admitted
+after the event (waiting, running or finished), so with more people than
+the queue holds, finished refreshes are not queued again ahead of the
+people still waiting for room.
 Every node registers the same consumer and the outbox delivers each event
 once in the cluster.
 
