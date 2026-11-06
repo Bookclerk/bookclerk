@@ -50,6 +50,7 @@ import {
   type CatalogTitle,
   type RuntimeBucket,
 } from "@/lib/catalogTitle";
+import { LatestRead } from "@/lib/latestRead";
 import { useLiveRefresh } from "@/lib/live";
 import {
   createWishlistItem,
@@ -220,10 +221,11 @@ export function DiscoverPage({
   }
 
   async function refreshFeed() {
-    // A poll that started before this refresh must not overwrite its result.
-    feedGeneration.current += 1;
+    // Every feed read (this refresh, a poll, a live update) takes a ticket,
+    // so a read that answers late never replaces a newer one's shelves.
+    const ticket = feedReads.current.begin();
     const [f, w] = await Promise.all([fetchDiscoverFeed(), fetchWishlist()]);
-    setFeed(f);
+    if (feedReads.current.accept(ticket)) setFeed(f);
     setWishlist(w);
     setVisibleShelvesCount(SHELVES_INITIAL);
     return { feed: f, wishlist: w };
@@ -232,14 +234,14 @@ export function DiscoverPage({
   // A ranking job that writes someone's shelves moves the live socket's
   // `discover` topic; re-read the stored feed then, in place (the shelves
   // already shown and how many are open stay as they are).
-  const feedGeneration = useRef(0);
+  const feedReads = useRef(new LatestRead());
   const liveState = useLiveRefresh(
     ["discover"],
     () => {
-      const generation = feedGeneration.current;
+      const ticket = feedReads.current.begin();
       return fetchDiscoverFeed()
         .then((next) => {
-          if (generation === feedGeneration.current) setFeed(next);
+          if (feedReads.current.accept(ticket)) setFeed(next);
         })
         .catch(() => undefined);
     },
@@ -262,15 +264,15 @@ export function DiscoverPage({
     }
     const quick = liveState !== "open" && feedPolls.current < FEED_POLL_LIMIT;
     if (!quick && feedState !== "preparing") return;
-    const generation = feedGeneration.current;
     const timer = window.setTimeout(
       () => {
         feedPolls.current += 1;
+        const ticket = feedReads.current.begin();
         void fetchDiscoverFeed()
           .then((next) => {
-            if (generation === feedGeneration.current) setFeed(next);
-            // A refresh started after this poll; run the effect again so
-            // polling continues even if that refresh fails.
+            if (feedReads.current.accept(ticket)) setFeed(next);
+            // A newer read was applied first; run the effect again so
+            // polling continues from what it showed.
             else setPollRetry((n) => n + 1);
           })
           .catch(() => setPollRetry((n) => n + 1));
