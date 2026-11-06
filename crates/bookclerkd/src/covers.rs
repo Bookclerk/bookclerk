@@ -1048,12 +1048,20 @@ fn write_entry(dir: &Path, key: &str, set: &CoverSet) -> std::io::Result<u64> {
 /// Deletes the least recently served entries until the cache is at most 90%
 /// of `budget`.
 ///
-/// An entry written again between being picked and being deleted is lost
-/// from disk while still indexed; its next request downloads it again.
+/// An entry that cannot be deleted (a file held open on Windows) is
+/// indexed again, so it still counts toward the budget and goes on a later
+/// sweep. An entry written again between being picked and being deleted is
+/// lost from disk while still indexed; its next request downloads it again.
 fn sweep(dir: &Path, index: &Mutex<Index>, budget: u64) {
     let evicted = lock(index).evict_to(budget / 10 * 9);
-    for key in evicted {
-        let _ = std::fs::remove_dir_all(dir.join(key));
+    for (key, entry) in evicted {
+        let path = dir.join(&key);
+        if let Err(err) = std::fs::remove_dir_all(&path) {
+            if path.exists() {
+                tracing::debug!(error = %err, "could not evict a cached image; kept for a later sweep");
+                lock(index).restore(&key, entry);
+            }
+        }
     }
 }
 
@@ -2180,6 +2188,134 @@ mod tests {
         }
     }
 
+    /// A `covers` plugin that records each call's params and answers with
+    /// `answers`, in order.
+    struct Plugin {
+        /// Params of each call.
+        calls: Mutex<Vec<bookclerk_plugin_abi::CoverFetchParams>>,
+        /// What every call answers.
+        answers: Vec<bookclerk_integrations::FetchedCover>,
+    }
+
+    #[async_trait::async_trait]
+    impl bookclerk_integrations::Integration for Plugin {
+        fn id(&self) -> &str {
+            "covers"
+        }
+
+        async fn start(
+            &self,
+            _ctx: bookclerk_integrations::IntegrationContext,
+        ) -> bookclerk_integrations::Result<()> {
+            Ok(())
+        }
+
+        async fn health(
+            &self,
+        ) -> bookclerk_integrations::Result<bookclerk_integrations::IntegrationHealth> {
+            Ok(bookclerk_integrations::IntegrationHealth {
+                id: "covers".into(),
+                enabled: true,
+                ok: true,
+                detail: None,
+            })
+        }
+
+        async fn deliver_domain_event(
+            &self,
+            _event: bookclerk_integrations::DomainEvent,
+        ) -> bookclerk_integrations::Result<bookclerk_integrations::EventResult> {
+            Ok(bookclerk_integrations::EventResult::Ack)
+        }
+
+        fn supports_covers(&self) -> bool {
+            true
+        }
+
+        async fn fetch_covers(
+            &self,
+            params: bookclerk_plugin_abi::CoverFetchParams,
+        ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::FetchedCover>> {
+            lock(&self.calls).push(params);
+            Ok(self.answers.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_live_backend_sends_conditions_only_when_it_has_them() {
+        use bookclerk_integrations::{FetchedCover, IntegrationRegistry};
+        let empty = LiveBackend {
+            integrations: Arc::new(tokio::sync::RwLock::new(IntegrationRegistry::new())),
+        };
+        assert!(matches!(
+            empty
+                .fetch(vec![FetchRequest::plain("https://a".into())])
+                .await,
+            Err(CoverFailure::Unavailable(_))
+        ));
+
+        let plugin = Arc::new(Plugin {
+            calls: Mutex::default(),
+            answers: vec![
+                FetchedCover {
+                    not_modified: true,
+                    ..FetchedCover::default()
+                },
+                FetchedCover {
+                    not_modified: true,
+                    ..FetchedCover::default()
+                },
+            ],
+        });
+        let mut registry = IntegrationRegistry::new();
+        registry.register(Arc::clone(&plugin) as Arc<dyn bookclerk_integrations::Integration>);
+        let live = LiveBackend {
+            integrations: Arc::new(tokio::sync::RwLock::new(registry)),
+        };
+
+        // Plain fetches send no conditions; a 304 to one is refused, and a
+        // URL the plugin left unanswered fails.
+        let plain = live
+            .fetch(vec![
+                FetchRequest::plain("https://a".into()),
+                FetchRequest::plain("https://b".into()),
+                FetchRequest::plain("https://c".into()),
+            ])
+            .await
+            .expect("fetched");
+        assert!(lock(&plugin.calls)[0].conditions.is_empty());
+        assert!(matches!(plain[0], Download::Failed(_)));
+        assert_eq!(plain[2], Download::Failed("no answer for this URL".into()));
+
+        // One revalidation among plain fetches: one condition per URL, the
+        // plain one empty.
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let revalidated = live
+            .fetch(vec![
+                FetchRequest {
+                    url: "https://a".into(),
+                    validators: Validators::new(Some("\"v1\""), Some(modified)),
+                },
+                FetchRequest::plain("https://b".into()),
+            ])
+            .await
+            .expect("fetched");
+        let conditions = lock(&plugin.calls)[1].conditions.clone();
+        assert_eq!(conditions.len(), 2);
+        assert_eq!(conditions[0].if_none_match.as_deref(), Some("\"v1\""));
+        assert_eq!(
+            conditions[0].if_modified_since.as_deref(),
+            Some("Tue, 14 Nov 2023 22:13:20 GMT")
+        );
+        assert_eq!(
+            conditions[1],
+            bookclerk_plugin_abi::CoverCondition::default()
+        );
+        assert!(matches!(revalidated[0], Download::NotModified { .. }));
+        assert!(matches!(revalidated[1], Download::Failed(_)));
+        assert!(lock(&plugin.calls).iter().all(|call| call.max_bytes > 0));
+    }
+
     #[test]
     fn plugin_answers_become_downloads() {
         use bookclerk_integrations::{CoverHeaders, FetchedCover};
@@ -2233,6 +2369,36 @@ mod tests {
         );
         assert_eq!(Refresh::Never.cache_control(), IMMUTABLE);
         assert_eq!(Refresh::WhenStale.cache_control(), CHANGEABLE);
+    }
+
+    #[test]
+    fn an_entry_that_cannot_be_deleted_stays_indexed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path();
+        let mut index = Index::detached();
+        let stuck = cache_key("https://img.example/stuck.png");
+        let gone = cache_key("https://img.example/gone.png");
+        // A file where the directory should be cannot be removed as one.
+        std::fs::write(dir.join(&stuck), b"x").expect("file");
+        let entry = |served: u64| Entry {
+            fetched: Stamp::from_time(SystemTime::UNIX_EPOCH),
+            fresh_until: Stamp::from_time(SystemTime::UNIX_EPOCH),
+            etag: None,
+            last_modified: None,
+            served: Stamp::from_time(SystemTime::UNIX_EPOCH + Duration::from_secs(served)),
+            bytes: 10,
+        };
+        index.put(&stuck, entry(1));
+        index.put(&gone, entry(2));
+        let index = Mutex::new(index);
+        sweep(dir, &index, 0);
+        let index = lock(&index);
+        assert!(index.get(&stuck).is_some());
+        assert!(
+            index.get(&gone).is_none(),
+            "already absent counts as deleted"
+        );
+        assert_eq!(index.total(), 10);
     }
 
     #[test]

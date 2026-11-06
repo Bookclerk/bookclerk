@@ -256,8 +256,9 @@ impl Index {
     ///
     /// # Returns
     ///
-    /// The keys forgotten, whose directories the caller deletes.
-    pub(super) fn evict_to(&mut self, target: u64) -> Vec<String> {
+    /// The keys forgotten with their entries. The caller deletes their
+    /// directories and [`Self::restore`]s any it could not delete.
+    pub(super) fn evict_to(&mut self, target: u64) -> Vec<(String, Entry)> {
         if self.total <= target {
             return Vec::new();
         }
@@ -272,11 +273,20 @@ impl Index {
             if self.total <= target {
                 break;
             }
-            if self.remove(&key).is_some() {
-                evicted.push(key);
+            if let Some(entry) = self.remove(&key) {
+                evicted.push((key, entry));
             }
         }
         evicted
+    }
+
+    /// Indexes `entry` for `key` again after its eviction could not delete
+    /// it, so its files still count toward the budget and are evicted on a
+    /// later sweep. Does nothing when `key` was written again meanwhile.
+    pub(super) fn restore(&mut self, key: &str, entry: Entry) {
+        if !self.entries.contains_key(key) {
+            self.put(key, entry);
+        }
     }
 
     /// Appends `record` to the journal, compacting it when it has grown
@@ -518,8 +528,24 @@ mod tests {
         }
         assert!(index.evict_to(40).is_empty());
         let evicted = index.evict_to(25);
-        assert_eq!(evicted, vec![key(3), key(2)]);
+        assert_eq!(
+            evicted
+                .iter()
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>(),
+            vec![key(3), key(2)]
+        );
         assert_eq!(index.total(), 20);
+        // An entry that could not be deleted counts again; one written
+        // again meanwhile keeps its new record.
+        let (first, oldest) = evicted[0].clone();
+        index.restore(&first, oldest);
+        assert_eq!(index.total(), 30);
+        index.put(&key(2), entry(1, 4));
+        index.restore(&key(2), evicted[1].1.clone());
+        assert_eq!(index.get(&key(2)).expect("new").bytes, 4);
+        index.remove(&first);
+        index.remove(&key(2));
         // Replacing an entry replaces its bytes.
         index.put(&key(0), entry(1, 3));
         assert_eq!(index.total(), 13);
