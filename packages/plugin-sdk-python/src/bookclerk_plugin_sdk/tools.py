@@ -15,6 +15,7 @@ import hashlib
 import os
 import re
 import shutil
+import stringprep
 import subprocess
 import sys
 import time
@@ -598,9 +599,20 @@ def _label_to_ascii(label: str) -> str | None:
     try:
         # UTS 46 maps compatibility forms and case first (``ｆａ`` is ``fa``,
         # ``ẞ`` is ``ß``), then keeps the deviation characters.
-        mapped = unicodedata.normalize("NFC", unicodedata.normalize("NFKC", label).lower())
+        # Characters UTS 46 ignores (a soft hyphen, variation selectors) go
+        # first; ZWNJ and ZWJ are deviations and stay.
+        kept = "".join(c for c in label if c in "\u200c\u200d" or not stringprep.in_table_b1(c))
+        mapped = unicodedata.normalize("NFC", unicodedata.normalize("NFKC", kept).lower())
         if mapped.isascii():
             return _label_to_ascii(mapped)
+        # A joiner must follow a virama (CONTEXTJ). The host also accepts a
+        # ZWNJ by Arabic joining type, which Python has no table for, so
+        # `check` refuses that rarer form.
+        if any(
+            c in "\u200c\u200d" and (i == 0 or unicodedata.combining(mapped[i - 1]) != 9)
+            for i, c in enumerate(mapped)
+        ):
+            return None
         if any(c in _IDNA_DEVIATIONS for c in mapped):
             return "xn--" + mapped.encode("punycode").decode("ascii")
         return encodings_idna.ToASCII(label).decode("ascii").lower()

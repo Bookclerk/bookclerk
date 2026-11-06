@@ -1725,3 +1725,8 @@ def test_own_user_agent_hosts_are_put_in_ascii_form() -> None:
         "*.xn--fa-hia.de",
         "*.example.com",
     ]
+    # Characters UTS 46 ignores are dropped; a joiner outside a virama is refused.
+    assert own_user_agent_hosts_for(["*.fa\u00adß.de", "x\ufe0fy.example", "a\u200db.example"]) == [
+        "*.xn--fa-hia.de",
+        "xy.example",
+    ]
