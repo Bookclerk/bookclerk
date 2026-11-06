@@ -235,10 +235,36 @@ class RenderTest(unittest.TestCase):
         cls.pages = rm.Renderer(crates).render_all()
 
     def test_one_page_per_public_module(self) -> None:
-        self.assertEqual(sorted(self.pages), ["demo/index.md", "demo/proto.md", "other/index.md"])
+        self.assertEqual(sorted(self.pages), ["demo/README.md", "demo/proto.md", "other/README.md"])
+
+    def test_crates_land_in_their_tree_folders(self) -> None:
+        # The SDK crate sits on the plugins shelf; every other crate under
+        # internals/crates. Links between them cross the folders.
+        folders = {"demo": "plugins/sdk/rust", "other": "internals/crates/other"}
+        pages = rm.Renderer({"demo": rm.Crate("demo", demo_crate()), "other": rm.Crate("other", other_crate())}, folders).render_all()
+        self.assertEqual(
+            sorted(pages),
+            ["internals/crates/other/README.md", "plugins/sdk/rust/README.md", "plugins/sdk/rust/proto.md"],
+        )
+        self.assertIn("- [`other::Thing`](../../../internals/crates/other/README.md#thing)", pages["plugins/sdk/rust/README.md"])
+        self.assertIn("- [`proto`](proto.md): Wire protocol.", pages["plugins/sdk/rust/README.md"])
+
+    def test_a_module_with_submodules_is_a_folder(self) -> None:
+        page = rm.Page("demo", ("net", "tcp"), {}, folder="plugins/sdk/rust")
+        self.assertEqual(page.file, "plugins/sdk/rust/net/tcp.md")
+        page.has_children = True
+        self.assertEqual(page.file, "plugins/sdk/rust/net/tcp/README.md")
+        self.assertEqual(rm.Page("demo", (), {}).file, "demo/README.md")
+
+    def test_two_pages_for_one_file_are_refused(self) -> None:
+        # A public module named README would land on its crate root's file.
+        renderer = rm.Renderer({"demo": rm.Crate("demo", demo_crate())})
+        renderer.pages["demo"].append(renderer.pages["demo"][0])
+        with self.assertRaisesRegex(ValueError, "two pages render to demo/README.md"):
+            renderer.render_all()
 
     def test_root_page(self) -> None:
-        page = self.pages["demo/index.md"]
+        page = self.pages["demo/README.md"]
         self.assertEqual(page.count("\n# "), 0)
         self.assertTrue(page.startswith("# demo\n\nDemo crate.\n\n## Overview\n\nBuild a [`Mux`](#mux) with [`open`](#open)."))
         # The struct from the private module is documented on the root page.
@@ -257,18 +283,18 @@ class RenderTest(unittest.TestCase):
         self.assertIn("**Variants**\n\n- `Read`: Read only.", page)
         self.assertIn("pub const LIMIT: usize = 64;", page)
         self.assertIn("- [`proto`](proto.md): Wire protocol.", page)
-        self.assertIn("- [`other::Thing`](../other/index.md#thing)", page)
+        self.assertIn("- [`other::Thing`](../other/README.md#thing)", page)
         # A glob the walk cannot expand is still listed.
         self.assertIn("- `other::*`\n", page)
         self.assertIn("| [`Mux`](#mux) | struct | A multiplexer. |", page)
 
     def test_section_order(self) -> None:
-        page = self.pages["demo/index.md"]
+        page = self.pages["demo/README.md"]
         order = [page.index(f"\n## {s}\n") for s in ("Re-exports", "Modules", "Structs", "Enums", "Functions", "Constants")]
         self.assertEqual(order, sorted(order))
 
     def test_glob_of_a_public_module_links_to_its_page(self) -> None:
-        root = self.pages["demo/index.md"]
+        root = self.pages["demo/README.md"]
         # `pub use proto::*` lists the items; proto's own page documents them.
         self.assertIn("- [`proto::Frame`](proto.md#frame)\n- [`proto::Codec`](proto.md#codec)", root)
         self.assertNotIn("### Frame", root)
@@ -282,7 +308,7 @@ class RenderTest(unittest.TestCase):
         self.assertIn("pub struct Frame;", page)
 
     def test_unions_traits_and_macros(self) -> None:
-        page = self.pages["other/index.md"]
+        page = self.pages["other/README.md"]
         self.assertIn("pub union Pair {\n    pub word: u32,\n    pub bytes: [u8; 4],\n}", page)
         self.assertIn("**Fields**\n\n- `word`: As a word.", page)
         self.assertIn("pub unsafe trait Marker {}", page)
@@ -292,12 +318,12 @@ class RenderTest(unittest.TestCase):
     def test_field_doc_headings_are_counted(self) -> None:
         # The field's "Limit" heading comes first on the page, so the
         # constant is the second "limit" anchor.
-        page = self.pages["other/index.md"]
+        page = self.pages["other/README.md"]
         self.assertLess(page.index("Limit"), page.index("### LIMIT"))
         self.assertIn("| [`LIMIT`](#limit-1) |", page)
 
     def test_struct_variant_fields_and_variant_links(self) -> None:
-        page = self.pages["other/index.md"]
+        page = self.pages["other/README.md"]
         # The variant has no docs of its own but lists its documented field.
         self.assertIn("**Variants**\n\n- `Hello`\n  - `node`: Sender's node id.\n", page)
         self.assertNotIn("`resume`:", page)

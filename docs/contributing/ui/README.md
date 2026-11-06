@@ -3,7 +3,7 @@
 This page explains how the React app in `ui/` is built and served, how the
 in-process tray works, and where the brand assets live. The roles,
 sign-in and screens are described in the
-[Web app and sign-in reference](../server/sign-in.md).
+[Web app and sign-in reference](../../server/sign-in.md).
 
 ## Run
 
@@ -135,7 +135,7 @@ Linux GTK3 graph.
 ## Brand assets
 
 The production logo, mark and favicons live under
-[`assets/brand/`](../../assets/brand/), and the UI copies the web assets
+[`assets/brand/`](../../../assets/brand/), and the UI copies the web assets
 into `ui/public/`.
 
 - Dark surfaces recolor the wordmark to parchment (inverted ink).
@@ -143,7 +143,12 @@ into `ui/public/`.
 
 ## Next steps
 
-- [Web app and sign-in reference](../server/sign-in.md): the screens and
+- [Web app and sign-in reference](../../server/sign-in.md): the screens and
   routes the UI serves.
-- [Build from source and use the CLI](build-from-source.md): building the
+- [Build from source and use the CLI](../build-from-source.md): building the
   daemon the UI runs on.
+
+## Library reference
+
+The sections below are generated from `ui/src/lib`, the API client and
+helpers the screens share, one page per module.

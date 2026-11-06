@@ -27,6 +27,14 @@ import {
 export const STOREFRONTS = ["audible", "libro", "chirp", "graphicaudio"];
 
 /**
+ * Plugins a session enables after the storefronts, without which the demo
+ * still works: `covers` downloads the images the web app shows (covers,
+ * store icons, avatars) so they load from the demo's own origin. When one
+ * can't be enabled, the app shows its fallback images.
+ */
+export const OPTIONAL_PLUGINS = ["covers"];
+
+/**
  * Sends one request to bookclerkd in the container.
  *
  * @param path - Path and query, starting with `/`.
@@ -115,7 +123,7 @@ export async function signInVisitor(call: ContainerCall, operatorToken: string):
 }
 
 /**
- * Approves each storefront's requested grant as the operator and deploys its
+ * Approves each plugin's requested grant as the operator and deploys its
  * default instance on this node, as an operator would in Settings. Visitors
  * cannot do either: the Worker refuses those routes.
  *
@@ -157,6 +165,31 @@ export async function enableStorefronts(
     });
     await res.body?.cancel();
     if (res.status !== 200) throw new Error(`deploying ${id} answered ${res.status}`);
+  }
+}
+
+/**
+ * Enables the storefronts, then each of [`OPTIONAL_PLUGINS`], whose failure
+ * is logged instead of ending the session.
+ *
+ * @param call - Container request function.
+ * @param operatorToken - The session's operator token.
+ * @param warn - Where an optional plugin's failure is reported.
+ * @returns
+ * @throws {Error} When a storefront cannot be enabled.
+ */
+export async function enableDemoPlugins(
+  call: ContainerCall,
+  operatorToken: string,
+  warn: (message: string) => void = console.warn,
+): Promise<void> {
+  await enableStorefronts(call, operatorToken, STOREFRONTS);
+  for (const id of OPTIONAL_PLUGINS) {
+    try {
+      await enableStorefronts(call, operatorToken, [id]);
+    } catch (err) {
+      warn(`demo: ${id} not enabled: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
 

@@ -1,7 +1,7 @@
 # bookclerk.app website
 
 The public website: a landing page for people who want to use Bookclerk, a
-download page, and the documentation with its generated API reference under
+download page, and the documentation, generated references included, under
 `/docs/`. It is plain HTML and CSS, with small shared layout enhancements
 (`src/site.js`), plus homepage (`src/catalog.js`) and docs (`src/docs.js`)
 enhancements, served by a Cloudflare Worker named **`bookclerk-site`** on
@@ -28,16 +28,16 @@ release exists, the workflow passes its tag to the build: the notices go, the
 download page links to that release, and `/docs/` shows that release's docs
 instead of `main`'s.
 
-| Variable | Meaning |
-| --- | --- |
-| `SITE_RELEASE_TAG` | newest release tag (`v1.2.3`); empty means no release |
-| `SITE_RELEASE_DATE` | that release's date, `YYYY-MM-DD` |
-| `SITE_DOCS_VERSIONS` | the release tags whose docs bookclerk-docs has tagged, whitespace-separated, newest first, for the docs version picker; needs `SITE_RELEASE_TAG` |
-| `SITE_COMMIT` | commit the site is built from |
-| `SITE_BUILT_ON` | build date, `YYYY-MM-DD` (default: today) |
-| `SITE_ORIGIN` | `https://<host>` the site is served from, for canonical and preview URLs (default `https://bookclerk.app`) |
-| `SITE_INDEXNOW_KEY` | the site's IndexNow key, written to `/<key>.txt`; empty means no key file. The workflow passes the `INDEXNOW_KEY` variable (see [IndexNow](../../docs/contributing/automation.md#indexnow)) |
-| `SITE_DEMO_URL` | `https://<host>` of the hosted demo ([`tools/demo`](../demo/README.md)); empty means no demo, and the pages leave out every demo link. The workflow uses `https://demo.<DOMAIN>`, else the `DEMO_URL` variable, and none when `DEMO_URL` is `none` |
+| Variable             | Meaning                                                                                                                                                                                                                                            |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SITE_RELEASE_TAG`   | newest release tag (`v1.2.3`); empty means no release                                                                                                                                                                                              |
+| `SITE_RELEASE_DATE`  | that release's date, `YYYY-MM-DD`                                                                                                                                                                                                                  |
+| `SITE_DOCS_VERSIONS` | the release tags whose docs bookclerk-docs has tagged, whitespace-separated, newest first, for the docs version picker; needs `SITE_RELEASE_TAG`                                                                                                   |
+| `SITE_COMMIT`        | commit the site is built from                                                                                                                                                                                                                      |
+| `SITE_BUILT_ON`      | build date, `YYYY-MM-DD` (default: today)                                                                                                                                                                                                          |
+| `SITE_ORIGIN`        | `https://<host>` the site is served from, for canonical and preview URLs (default `https://bookclerk.app`)                                                                                                                                         |
+| `SITE_INDEXNOW_KEY`  | the site's IndexNow key, written to `/<key>.txt`; empty means no key file. The workflow passes the `INDEXNOW_KEY` variable (see [IndexNow](../../docs/contributing/automation.md#indexnow))                                                        |
+| `SITE_DEMO_URL`      | `https://<host>` of the hosted demo ([`tools/demo`](../demo/README.md)); empty means no demo, and the pages leave out every demo link. The workflow uses `https://demo.<DOMAIN>`, else the `DEMO_URL` variable, and none when `DEMO_URL` is `none` |
 
 ## Local preview
 
@@ -148,18 +148,30 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   `render.ts` renders them (shared by the build and the Worker), and
   `docs.ts` reads the local `docs/` for the build. `NAV` in `render.ts`
   orders the sidebar; a doc in `docs/` missing from it is listed under "More".
+  Within a group the sidebar nests pages by folder (`navTree`): a page
+  listed after the `README` of a folder holding it sits beneath that
+  page, so the SDK guides sit under "Plugin SDKs" and the SQL contract's
+  versions under "SQL contract".
   The layout follows developers.cloudflare.com's measurements: a slim sticky
   header, a sticky sidebar whose groups fold (only the current page's group
   opens) pinned left, a reading column of about 88 characters centred
   between it and an "On this page" rail pinned right, which the Worker
   builds from the doc's `##` and `###` headings. Each `##`–`######` heading
-  carries a self-link that shows on hover, and a row under the title holds
+  carries a self-link that shows on hover (an empty link whose chain icon
+  `site.css` draws from `src/link-icon.svg`, so a page with a thousand
+  headings does not carry a thousand inline SVGs), and a row under the title holds
   the last updated date, Copy as Markdown and View as Markdown. The rail
-  ends with Source on GitHub (for a generated page under `api/`, what it is
-  generated from: build.ts `generatedSources`) and Report a problem, and comes with a
+  ends with Source on GitHub (for a generated page, what it is generated
+  from, read from the version's `generated.json`) and Report a problem, and comes with a
   breadcrumb and previous and next links taken from `NAV`. Every crumb is a
-  link: a sidebar group links to its first page, and a Web API route page
-  runs through the Web API entry it sits under. Below 1200px the
+  link: a sidebar group links to its first page, then every folder above
+  the page that is a page itself follows (`navAncestors`), whether the
+  sidebar lists it ("Plugin SDKs" above an SDK guide) or the build wrote it
+  (a crate above its modules). A page of a generated reference (a Web API
+  route group, an SDK module, a crate) runs through the landing page it
+  sits under, which lists the reference's pages beneath its sidebar entry
+  (the Web API's route groups, an SDK's modules, every crate), marking the
+  one being read or the one whose folder holds it. Below 1200px the
   rail becomes an "On this page" menu over the page, and below 900px the
   sidebar becomes a second menu beside it (`<details>`, so they work
   without a script). They share a `name`,
@@ -179,9 +191,19 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   the language, the rest the code) and fuzzes mutations against an oracle
   that the output is only escaped text and those spans and reads back to the
   input exactly.
+- `generated.ts` – reads `generated.json`, which the docs build writes at
+  the root of each docs version: every generated reference (the plugin
+  SDKs, the web API, the Rust crates, the web UI library) with its folder,
+  what it is generated from and the pages it wrote. The Worker tells
+  generated pages from hand-written ones by it, so a reference can move in
+  the tree without a change here. When it is missing or not a valid
+  manifest, every page renders as hand-written. When the read fails, such
+  a page also stays out of the edge cache. It comes from outside the
+  Worker, so `fuzz.test.ts` replays
+  `fuzz/generated/` and fuzzes mutations against an independent oracle.
 - `last-updated.ts` – reads `last-updated.json`, which the docs publishing
   workflow writes at the root of each docs version from this repository's
-  git history (`scripts/docs-markdown.py`; the generated `api/` pages are
+  git history (`scripts/docs-markdown.py`; the generated pages are
   dated by `scripts/docs-publish.py` from when their content last changed),
   and formats the "Last updated" date under each page's title (also
   `dateModified` in its JSON-LD). A page's date is the UTC instant it
@@ -194,7 +216,7 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
   `fuzz/last_updated/` and fuzzes mutations against an independent oracle.
 - `sitemap.ts` – writes sitemaps and sitemap indexes, for the build's
   fallback copy and for the Worker's sectioned one (see "Search engines, link previews and agents").
-- `diagram.ts` – draws each ```` ```mermaid ```` fence as inline SVG with
+- `diagram.ts` – draws each ` ```mermaid ` fence as inline SVG with
   [beautiful-mermaid](https://github.com/lukilabs/beautiful-mermaid), which
   lays diagrams out without a DOM, so pages need no client-side script and
   the docs' Markdown stays what GitHub renders. Flowcharts, state, sequence,
@@ -290,8 +312,9 @@ cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks 
 
 The docs are published as Markdown to `Bookclerk/bookclerk-docs` by
 `docs-publish.yml`: its `main` follows this repository's `main`, and each
-release has a tag of the same name. The tree is `docs/` as written plus the
-generated API reference under `api/`. The Worker reads pages from it rather
+release has a tag of the same name. The tree is `docs/` as written with the
+generated references in their shelves (see
+[Docs publishing](../../docs/contributing/automation.md#the-tree)). The Worker reads pages from it rather
 than deploying them, so the Worker's size does not grow with the number of
 versions.
 
@@ -304,10 +327,16 @@ versions.
 - Every URL is slash-free: `<path>` is the file's path without `.md`, a
   directory's `README.md` is `<dir>` and the docs home is `/docs` (or
   `/docs/v/<ref>`). The slash spelling (`<dir>/`) and old `.html` URLs
-  redirect permanently (301), and `<dir>` without a README goes to
-  `<dir>/index` (rustdoc's crate pages). Because `x.md` and `x/README.md`
-  would share `/docs/x`, `docs.test.ts` checks no two docs do; the
-  lookup tries the spelling the sidebar lists first. Website pages follow
+  redirect permanently (301). A doc's Markdown copy is `index.md` under its
+  URL (`/docs/plugins/index.md` for `plugins/README.md` and
+  `/docs/plugins/manifest/index.md` for `plugins/manifest.md`; the home's
+  is `/docs/index.md`, like the site's `/index.md`), so the docs build
+  refuses a page named `index.md`; the earlier `<page>.md` and
+  `<dir>/README.md` spellings redirect there. A page that moved in the
+  tree is not redirected: its old URL goes to the docs home like any
+  other miss. Because `x.md` and `x/README.md` would share `/docs/x`,
+  the docs build and `docs.test.ts` check no two docs do; the lookup tries
+  the spelling the sidebar lists first. Website pages follow
   the same rule: `/download/` and `/download.html` move to `/download`
   with a 301 from the Worker, and the assets binding drops trailing slashes
   (`html_handling = "drop-trailing-slash"`) for anything else.
@@ -324,10 +353,10 @@ versions.
   page: the "docs could not be loaded" page in the site's look (Markdown for
   Markdown readers), linking to the same doc in the docs repository on
   GitHub, with `Retry-After: 60`, `no-store` and `noindex`. The version's
-  `last-updated.json` is fetched the same way (capped at 2 MB), but a
-  failure there only leaves out the
-  page's date, and that page is kept out of the edge cache so the date
-  returns once the docs repository answers.
+  `last-updated.json` and `generated.json` are fetched the same way (each
+  capped at 2 MB), but a failure there only leaves out the page's date or
+  renders it as hand-written, and that page is kept out of the edge cache
+  so they return once the docs repository answers.
 - Each page is rendered into the shell `build.ts` bakes from `src/doc.html`
   (`%%name%%` holes take escaped values, `<!--name-->` markers take the
   rendered parts). Links between docs stay in the same version, links to
@@ -373,9 +402,9 @@ versions.
   Search Console reports indexing per shelf: `/sitemap-site.xml` holds the
   pages outside `/docs/` and the docs home, and each top docs folder gets
   its own (`/sitemap-guide.xml`, `/sitemap-server.xml`,
-  `/sitemap-api.xml`, ...), dated by its newest page. The Worker writes
+  `/sitemap-plugins.xml`, ...), dated by its newest page. The Worker writes
   them from the default docs version's `last-updated.json`, so together
-  they list every page of that version, the generated API reference
+  they list every page of that version, the generated references
   included, each doc with its date as `<lastmod>`. They are cached like
   that version's pages, and a deploy that changes the Worker starts them
   fresh. When the file cannot be read, `/sitemap.xml` is the flat sitemap
@@ -384,7 +413,7 @@ versions.
   serve at their URL are left out, and each sitemap lists at most 50,000
   URLs. `robots.txt` allows all crawlers, points to `/sitemap.xml` and
   carries a `Content-Signal` line (`search=yes, ai-input=yes, ai-train=yes,
-  use=reference`: index, excerpt, and link back to the source page) under
+use=reference`: index, excerpt, and link back to the source page) under
   the Content Signals policy text. Cloudflare prepends its own managed rules
   to this file when Bot Preference Sync is on with a blocking AI bot policy,
   so keep that setting off for bookclerk.app.
@@ -402,13 +431,13 @@ versions.
   is `/sitemap.md` (and `Accept: text/markdown`). When the dates file cannot
   be read it lists the sidebar's docs without dates, for a minute.
 - Every sitemap starts with `<?xml-stylesheet type="text/css"
-  href="/sitemap.css"?>`, so a person who opens one sees it in the site's
+href="/sitemap.css"?>`, so a person who opens one sees it in the site's
   colors and fonts with a pointer to `/sitemap`. CSS cannot make the URLs
   clickable, which is why `/sitemap` exists. XSLT is not used because
   browsers are removing it (Chrome from November 2026), and the XML is the
   same for every client: serving people something else would be cloaking.
-- For agents: each doc is also served as Markdown at `/docs/<path>.md` (and
-  `/docs/v/<ref>/<path>.md`)
+- For agents: each doc is also served as Markdown at `/docs/<path>/index.md` (and
+  `/docs/v/<ref>/<path>/index.md`)
   (linked from the page with `rel="alternate"` and "View as Markdown"), with
   links between docs pointing at the other Markdown copies. `/llms.txt`
   repeats the home page's features and questions, then indexes them per
@@ -418,7 +447,7 @@ versions.
   whose `Accept` header ranks `text/markdown` (or `text/x-markdown`) at least
   as high as HTML gets the page's Markdown version, with
   `Link: <page>; rel="canonical"`. Browsers and `*/*` keep getting HTML,
-  which carries `Link: <page>.md; rel="alternate"; type="text/markdown"`.
+  which carries `Link: <page>/index.md; rel="alternate"; type="text/markdown"`.
   Page responses say `Vary: Accept`; a missing doc requested as Markdown gets
   `404.md` with status 404. The Markdown version is the site's own copy,
   with links rewritten to the site, not the docs repository's file.

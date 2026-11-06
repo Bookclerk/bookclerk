@@ -30,7 +30,10 @@ every content signal to `no` (`use=immediate`).
 
 1. The launch page (`GET /`) asks for a Turnstile check. `POST /_demo/start`
    verifies it with Siteverify (hostname and action must match), then admits
-   the session against the limits below and records it in D1.
+   the session against the limits below and records it in D1. The Worker's
+   pages load nothing from outside except Turnstile and the Cloudflare Web
+   Analytics beacon the edge adds, as on the website, and their CSP allows
+   only those two (`PAGE_CSP` in `src/pages.ts`).
 2. The visitor's `DemoSession` Durable Object (`src/session.ts`) starts the
    container with a fresh operator token and `master.key` password, and the
    demo's own origin as bookclerkd's `public_origin` (so bookclerkd's own
@@ -55,7 +58,9 @@ every content signal to `no` (`use=immediate`).
      authorizes everything as the visitor's Owner account and
      scans only the visitor's store accounts;
    - rewrites `Set-Cookie` so the container cannot set the Worker's cookies,
-     and adds a banner with the time left and a **Start over** button.
+     and adds a banner with the time left and a **Start over** button;
+   - marks the app's HTML `Cache-Control: no-transform`, so Cloudflare does
+     not add its Web Analytics beacon inside the visitor's copy.
 
    The waiting page and the banner follow the session over a WebSocket
    (`/_demo/live`, `src/live.ts`, `public/_demo/live.js`): the Durable Object
@@ -75,12 +80,16 @@ every content signal to `no` (`use=immediate`).
 
 `packaging/demo/Dockerfile` starts from the production builder and image
 built from the same commit, so every crate and plugin is the version that
-commit ships. It adds the Audible, Libro.fm, Chirp and GraphicAudio plugins,
-and removes `bookclerk-media-worker` and the `local` output plugin, so the
-host has nothing to acquire with even if a request got through. Plugins run
-with `isolation = "best-effort"` because the Containers kernel has no
-Landlock; this is a demo-only exception (each visitor's VM is the boundary)
-and shipped builds keep `"required"`. Media isolation stays `"required"`.
+commit ships. It adds the Audible, Libro.fm, Chirp, GraphicAudio and
+`covers` plugins, and removes the `local` output plugin, so the host has
+nowhere to acquire to even if a request got through. `covers` downloads
+covers, store icons and avatars, and `bookclerk-media-worker` re-encodes
+them, so the web app loads every image from the demo's own origin.
+
+Plugins and the media worker run with `isolation = "best-effort"` because
+the Containers kernel has no Landlock. This is a demo-only exception: each
+visitor's VM is the boundary, seccomp and network policy still apply, and
+shipped builds keep `"required"`.
 
 ## Limits
 
@@ -142,7 +151,11 @@ adds a V8 coverage report.
 (`tsconfig.worker.json`). The scripts under `public/_demo/` are browser
 scripts the Worker serves, not Worker code, and stay JavaScript. The fonts
 under `public/_demo/fonts/` and `public/_demo/mark.svg` are copies of the
-website's fonts and the app's mark; a test fails when a copy drifts.
+website's fonts and the app's mark, the icons (`favicon.ico`,
+`favicon-32x32.png`, `apple-touch-icon.png`) are copies of the app's, and
+`demo.css` repeats the website's metric-matched fallback fonts so the launch
+page does not shift when the web fonts arrive; a test fails when a copy
+drifts.
 
 `test/inputs.fuzz.test.ts` replays the seed corpora under `corpus/` and
 fuzzes every input boundary against independent oracles (see

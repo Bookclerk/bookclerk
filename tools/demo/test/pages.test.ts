@@ -13,6 +13,7 @@ import {
   LEGAL,
   launchPage,
   PAGE_CSP,
+  SOCIAL_IMAGE_ALT,
   TURNSTILE_SCRIPT,
   waitPage,
 } from "../src/pages.ts";
@@ -45,6 +46,28 @@ const LAUNCH = {
 };
 
 describe("launchPage", () => {
+  it("names the icons and the website's social card", () => {
+    const html = launchPage(LAUNCH);
+    assert.match(html, /<link rel="icon" href="\/_demo\/favicon\.ico" sizes="any">/);
+    assert.match(html, /<link rel="apple-touch-icon" href="\/_demo\/apple-touch-icon\.png">/);
+    assert.match(
+      html,
+      /<meta property="og:image" content="https:\/\/bookclerk\.example\.test\/social-card\.png">/,
+    );
+    assert.match(html, /<meta property="og:title" content="Try Bookclerk">/);
+    assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
+    // The same image and alt text as the website's pages.
+    const head = file("../../site/src/partials/head.html").toString("utf8");
+    assert.ok(head.includes(`<meta property="og:image:alt" content="${SOCIAL_IMAGE_ALT}">`));
+    assert.ok(file("../../site/src/social-card.png").byteLength > 0);
+  });
+
+  it("has no link preview image without a website", () => {
+    const html = launchPage({ ...LAUNCH, siteUrl: "" });
+    assert.doesNotMatch(html, /og:image/);
+    assert.match(html, /<link rel="icon" href="\/_demo\/favicon\.ico" sizes="any">/);
+  });
+
   it("has the mark, the stores, the notes and the start form, without inline styles", () => {
     const html = launchPage(LAUNCH);
     assert.match(
@@ -221,6 +244,21 @@ describe("static files", () => {
       sha256("../public/_demo/mark.svg"),
       sha256("../../../ui/public/bookclerk-mark.svg"),
     );
+    for (const icon of ["favicon.ico", "favicon-32x32.png", "apple-touch-icon.png"])
+      assert.equal(sha256(`../public/_demo/${icon}`), sha256(`../../../ui/public/${icon}`), icon);
+  });
+
+  it("uses the website's metric-matched fallback fonts", () => {
+    const faces = (css: string): string[] =>
+      [...css.matchAll(/@font-face \{[^}]*"(?:Source Sans 3|Literata) Fallback"[^}]*\}/g)].map(
+        (m) => m[0],
+      );
+    const demo = file("../public/_demo/demo.css").toString("utf8");
+    const site = faces(file("../../site/src/site.css").toString("utf8"));
+    assert.equal(site.length, 4);
+    assert.deepEqual(faces(demo), site);
+    assert.match(demo, /--display:\s*"Literata",\s*"Literata Fallback",/);
+    assert.match(demo, /--sans:\s*"Source Sans 3",\s*"Source Sans 3 Fallback",/);
   });
 
   it("loads every font the stylesheet names, under a CSP that allows them", () => {
@@ -229,5 +267,14 @@ describe("static files", () => {
     assert.equal(urls.length, 4);
     for (const name of urls) assert.ok(file(`../public/_demo/fonts/${name}`).byteLength > 0);
     assert.match(PAGE_CSP, /font-src 'self'/);
+  });
+
+  it("allows the Web Analytics beacon and nothing else from outside but Turnstile", () => {
+    const origins = [...PAGE_CSP.matchAll(/https:\/\/[^\s;]+/g)].map((m) => m[0]);
+    assert.deepEqual([...new Set(origins)].sort(), [
+      "https://challenges.cloudflare.com",
+      "https://cloudflareinsights.com",
+      "https://static.cloudflareinsights.com",
+    ]);
   });
 });

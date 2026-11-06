@@ -5,7 +5,14 @@
 
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "vitest";
-import { type Deps, handle, resetEstimateCache, sweep, withBanner } from "../src/app.ts";
+import {
+  type Deps,
+  handle,
+  resetEstimateCache,
+  sweep,
+  withBanner,
+  withNoTransform,
+} from "../src/app.ts";
 import type { Env, SessionApi } from "../src/env.ts";
 import { finish, recordStartup } from "../src/limits.ts";
 import type { LiveStatus } from "../src/live.ts";
@@ -246,10 +253,12 @@ describe("launch and admission", () => {
     const html = await res.text();
     assert.match(html, /data-sitekey="0x4AAAAAAA-site"/);
     assert.match(html, /data-action="demo_start"/);
+    const csp = res.headers.get("Content-Security-Policy") ?? "";
     assert.match(
-      res.headers.get("Content-Security-Policy") ?? "",
-      /script-src 'self' https:\/\/challenges\.cloudflare\.com/,
+      csp,
+      /script-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/static\.cloudflareinsights\.com;/,
     );
+    assert.match(csp, /connect-src 'self' https:\/\/cloudflareinsights\.com;/);
   });
 
   it("refuses to start when the Worker is not set up", async () => {
@@ -492,6 +501,37 @@ describe("a running session", () => {
     );
   });
 
+  it("keeps Cloudflare from changing the app's HTML, and only its HTML", async () => {
+    const { env, deps, cookie, stub } = await ready();
+    stub.reply = (req) =>
+      new URL(req.url).pathname === "/library"
+        ? new Response("<html><head></head></html>", {
+            headers: { "Content-Type": "text/html", "Cache-Control": "no-store" },
+          })
+        : Response.json({}, { headers: { "Cache-Control": "no-store" } });
+    const page = await handle(
+      new Request(`${ORIGIN}/library`, { headers: { Cookie: cookie, Accept: "text/html" } }),
+      env,
+      deps,
+    );
+    assert.equal(page.headers.get("Cache-Control"), "no-store, no-transform");
+    const api = await handle(
+      new Request(`${ORIGIN}/api/jobs`, { headers: { Cookie: cookie } }),
+      env,
+      deps,
+    );
+    assert.equal(api.headers.get("Cache-Control"), "no-store");
+  });
+
+  it("adds no-transform to Cache-Control once", () => {
+    assert.equal(withNoTransform(null), "no-transform");
+    assert.equal(withNoTransform("  "), "no-transform");
+    assert.equal(withNoTransform("no-cache"), "no-cache, no-transform");
+    assert.equal(withNoTransform("public, No-Transform"), "public, No-Transform");
+    assert.equal(withNoTransform("no-transform,max-age=0"), "no-transform,max-age=0");
+    assert.equal(withNoTransform("x-no-transform-y"), "x-no-transform-y, no-transform");
+  });
+
   it("limits store sign-in attempts per session", async () => {
     const { env, deps, cookie, stub } = await ready();
     const attempt = () =>
@@ -542,6 +582,7 @@ describe("a running session", () => {
     assert.equal(after.status, 410);
     assert.ok(after.headers.getSetCookie().some((c) => c.startsWith("__Host-demo=;")));
     assert.match(await after.text(), /Your demo has ended/);
+    assert.match(after.headers.get("Server-Timing") ?? "", /^session;dur=\d+$/);
   });
 
   it("keeps the session when bookclerkd itself answers 410", async () => {

@@ -3030,7 +3030,17 @@ export interface ShelfKindInfo {
 export interface DiscoverFeed {
   shelves: DiscoverShelf[];
   shelf_kinds?: ShelfKindInfo[];
+  /**
+   * How current the stored shelves are: `preparing` (none stored yet),
+   * `refreshing` (newer ones queued) or `ready`.
+   */
+  state?: DiscoverFeedState;
+  /** RFC 3339 time the stored shelves were ranked. */
+  computed_at?: string;
 }
+
+/** How current a stored Discover feed is. */
+export type DiscoverFeedState = "ready" | "refreshing" | "preparing";
 
 /**
  * Wishlist / title-request row from `/api/wishlist`.
@@ -3204,17 +3214,17 @@ export interface CatalogSearchPage {
 }
 
 /**
- * Loads Discover recommendation shelves.
+ * Loads the caller's stored Discover shelves.
  *
- * @param limit - Max items per shelf (default 36). Seed URLs only; live prices load later.
- * @returns Discover feed payload.
+ * @returns Discover feed payload; `state` says whether shelves are still being prepared.
  */
-export async function fetchDiscoverFeed(limit = 36): Promise<DiscoverFeed> {
-  // Seed storefront URLs in the feed; live prices load viewport-gated per card.
+export async function fetchDiscoverFeed(): Promise<DiscoverFeed> {
+  // The daemon only reads stored shelves (queued jobs build them), so this
+  // answers quickly; live prices still load viewport-gated per card.
   const res = await fetchWithTimeout(
-    `/api/discover/recommendations?limit=${limit}&no_purchase_hints=true`,
+    "/api/discover/recommendations",
     { credentials: "include" },
-    20_000,
+    8_000,
     "Discover feed",
   );
   return parseJson(res);

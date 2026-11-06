@@ -1,40 +1,25 @@
 # bookclerk-plugin-sdk
 
-Guest-only Bookclerk plugin SDK for Rust authors of native and workerd plugins.
+Guest-only Bookclerk plugin SDK for Rust authors of native and workerd
+plugins (`api_version = 3`).
 
-Depend on this crate from a standalone plugin workspace — not
-`bookclerk-plugin-host`. Implement [`PluginWorker`] and call [`serve`] (native Cap'n Proto) or use the workerd /
-npm bridge described in `src/workerd.rs`.
+Depend on this crate from a standalone plugin workspace, not on
+`bookclerk-plugin-host`. Implement `PluginWorker` and call `serve` (the
+native Cap'n Proto runner), or use the workerd / npm bridge in
+`src/workerd.rs`:
 
-## Features
-
-| Feature | Purpose |
-| --- | --- |
-| *(default)* | Cap'n Proto guest runner, fetch/upload path helpers, callback tunnel, ABI re-exports |
-| `db` | SeaORM ↔ Workers RPC DTO helpers for database guests |
-| `http` | Native HTTPS through the workerd socket proxy |
-
-## Socket proxy (`BOOKCLERK_SOCKET_PROXY`)
-
-Native-behind-workerd guests receive an inherited link (`fd:<n>` on Unix,
-`handle:<n>` on Windows) and multiplex CONNECT streams over [`mux`]. This is
-a **minor-incompatible** guest contract: older SDKs that only open a
-pathname or named-pipe proxy cannot reach the host and fail closed (no
-ambient TCP). Rebuild guests against this SDK. Pathname, `abstract:`, and
-`\\.\pipe\` forms remain for tests.
-
-`BOOKCLERK_NATIVE_BACKEND` and `BOOKCLERK_NESTED_*` are gone (they were
-host↔launcher internals). Windows `Isolation::Off` still needs
-`bookclerk-jail.exe` beside the host so handle handoff can run.
-
-The `bookclerk-plugin` author CLI (`check` / `fmt` / `sync-embed` / `package` /
-`smoke`) lives in [`bookclerk-plugin-tools`](../bookclerk-plugin-tools), so
-guests depending on this SDK never pull `bookclerk-workerd`:
-
-```bash
-cargo plugin -- check .
-# same as: cargo run -p bookclerk-plugin-tools --bin bookclerk-plugin -- check .
+```toml
+[dependencies]
+bookclerk-plugin-sdk = { git = "https://github.com/Bookclerk/bookclerk", package = "bookclerk-plugin-sdk" }
+# Database guests also need:
+# bookclerk-plugin-sdk = { …, features = ["db"] }
 ```
+
+The guide, with the author model, the features, the socket proxy and the
+author CLI, is the
+[Rust plugin SDK](https://bookclerk.app/docs/plugins/sdk/rust) page
+([`docs/plugins/sdk/rust/README.md`](../../docs/plugins/sdk/rust/README.md)
+in this repository). The crate's reference follows it on the same page.
 
 ## API documentation
 
@@ -46,7 +31,5 @@ Rustdoc for this crate is generated with the workspace API docs:
 cargo doc -p bookclerk-plugin-sdk --no-deps --all-features --open
 ```
 
-HTML lands under `docs/api/rust/` (gitignored). Style expectations are in
-[`docs/contributing/code-documentation.md`](../../docs/contributing/code-documentation.md). Product
-guides: [`docs/plugins/README.md`](../../docs/plugins/README.md),
-[`docs/plugins/registry.md`](../../docs/plugins/registry.md).
+HTML lands under `target/api-docs/rust/`. Style expectations are in
+[`docs/contributing/code-documentation.md`](../../docs/contributing/code-documentation.md).

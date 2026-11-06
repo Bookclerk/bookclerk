@@ -1083,7 +1083,7 @@ guest-denied.
   canonical DDL, and a binding missing that catalog fails closed (reset or
   recreate it).
 
-See the [SQL contract v1](../sql-contract/v1.md).
+See the [SQL contract v1](sql-contract/v1.md).
 
 #### How bindings reach the guest
 

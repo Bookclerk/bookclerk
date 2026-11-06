@@ -40,6 +40,29 @@ pub struct DiscoverFeed {
     /// Catalog of shelf kinds for ignore prefs (empty `disabled_shelves` = all on).
     #[serde(default)]
     pub shelf_kinds: Vec<ShelfKindInfo>,
+    /// Whether these are the caller's current shelves, set by the daemon's
+    /// read of the stored feed. Absent in a stored feed and from the CLI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "ready")]
+    pub state: Option<FeedState>,
+    /// RFC 3339 time the shelves were ranked; absent while `state` is `preparing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2026-11-06T00:30:00Z")]
+    pub computed_at: Option<String>,
+}
+
+/// How current a stored Discover feed is.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedState {
+    /// The stored shelves are current.
+    Ready,
+    /// Stored shelves are shown while a newer fetch or ranking is queued.
+    Refreshing,
+    /// No shelves are stored yet; a fetch is queued and the page shows placeholders.
+    Preparing,
 }
 
 /// Taste context used to title and fill personalized shelves.
@@ -332,6 +355,8 @@ pub fn build_discover_feed(
     DiscoverFeed {
         shelves,
         shelf_kinds: shelf_kind_catalog(),
+        state: None,
+        computed_at: None,
     }
 }
 

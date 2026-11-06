@@ -1369,6 +1369,12 @@ pub enum JobKind {
     /// (`plugin_scheduled`), delivered to its `scheduled(controller)`
     /// handler on a node that runs the instance.
     PluginScheduled,
+    /// Fetch storefront candidates from one Discover subject's own seeds
+    /// (`discover_candidates`), store by store.
+    DiscoverCandidates,
+    /// Rank one Discover subject's stored candidates into shelves
+    /// (`discover_feed`); no network.
+    DiscoverFeed,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,
 }
@@ -1384,6 +1390,8 @@ impl JobKind {
             Self::IntegrationScan => "integration_scan",
             Self::PluginCopy => "plugin_copy",
             Self::PluginScheduled => "plugin_scheduled",
+            Self::DiscoverCandidates => "discover_candidates",
+            Self::DiscoverFeed => "discover_feed",
             Self::Invalid => "invalid",
         }
     }
@@ -1398,6 +1406,8 @@ impl JobKind {
             "integration_scan" => Some(Self::IntegrationScan),
             "plugin_copy" => Some(Self::PluginCopy),
             "plugin_scheduled" => Some(Self::PluginScheduled),
+            "discover_candidates" => Some(Self::DiscoverCandidates),
+            "discover_feed" => Some(Self::DiscoverFeed),
             "invalid" => Some(Self::Invalid),
             _ => None,
         }
@@ -1462,6 +1472,16 @@ impl JobKind {
             Self::PluginScheduled => plugin_scheduled_dedup_key(
                 payload.plugin_instance_id.as_deref().unwrap_or("-"),
                 payload.cron.as_deref().unwrap_or("-"),
+            ),
+            // One active fetch or ranking per subject: a burst of events
+            // folds into the job already queued.
+            Self::DiscoverCandidates => format!(
+                "discover_candidates:subject={}",
+                payload.subject.as_deref().unwrap_or("-")
+            ),
+            Self::DiscoverFeed => format!(
+                "discover_feed:subject={}",
+                payload.subject.as_deref().unwrap_or("-")
             ),
             Self::Invalid => "invalid".into(),
         }
@@ -1681,6 +1701,10 @@ pub struct JobPayload {
     /// `scheduledTime`, in Unix milliseconds (always a whole UTC minute).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_time_ms: Option<i64>,
+    /// For [`JobKind::DiscoverCandidates`] and [`JobKind::DiscoverFeed`]: the
+    /// Discover subject key (`operator`, `user:<id>`, `portal:<id>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
 }
 
 /// Dedup key of a [`JobKind::PluginScheduled`] fire: one active fire per
@@ -1716,6 +1740,7 @@ impl Default for JobPayload {
             requires_unsettled_since_ms: None,
             cron: None,
             scheduled_time_ms: None,
+            subject: None,
         }
     }
 }

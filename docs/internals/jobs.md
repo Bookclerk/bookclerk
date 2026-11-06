@@ -178,6 +178,8 @@ stateDiagram-v2
 | `integration_scan` | `integration_scan:id={id}:force={0\|1}` | `network` | `run_integration_scan` |
 | `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI `JobRunner` stream-copy (`run_plugin_copy`) |
 | `plugin_scheduled` | `plugin_scheduled:instance={id}:cron={schedule}` | `network` | `scheduled(controller)` on the instance (`run_plugin_scheduled`) |
+| `discover_candidates` | `discover_candidates:subject={key}` | `network` | `run_discover_candidates`, then admits the subject's `discover_feed` |
+| `discover_feed` | `discover_feed:subject={key}` | `network` | `run_discover_feed` (no network; ranks stored candidates) |
 
 `plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
 ticker claims a due fire with a compare-and-swap on the instance's
@@ -192,6 +194,10 @@ past the requirements sweep's grace period, the sweep fails the fire as
 `unroutable`. That covers an instance deployed nowhere and one deployed only
 on Hosts owned by members. See
 [Scheduled triggers](../plugins/abi.md#scheduled-triggers).
+
+The two Discover kinds carry a subject key (`operator`, `user:{id}` or
+`portal:{id}`) and build that person's stored shelves. See
+[Precomputed shelves](discovery.md#precomputed-shelves).
 
 Reserved classes (no worker in this release): `media`, `transcription`,
 `indexing`.

@@ -1,6 +1,6 @@
 {
   "contractVersion": 1,
-  "description": "Normative Bookclerk SQL v1 corpus. See docs/sql-contract/v1.md.",
+  "description": "Normative Bookclerk SQL v1 corpus. See docs/plugins/sql-contract/v1.md.",
   "lowering": [
     {
       "id": "placeholders-basic",

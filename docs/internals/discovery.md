@@ -43,10 +43,77 @@ Listening taste is **optional** and **provider-agnostic**. Integrations that
 support listening sync (Audiobookshelf today; third-party plugins via capability
 `sync_listening`) write into the shared `listening_progress` table. Ranking never
 calls those adapters — if no listening data is present, or you pass
-`--no-listening` / `?no_listening=1`, discovery still runs on owned-library taste
-alone. Scope with optional `external_user_id` / `?user=` and/or
-`--listening-provider` / `?listening_providers=` for multi-user or multi-integration
-libraries.
+`--no-listening` to the CLI, discovery still runs on owned-library taste
+alone. The CLI scopes with `external_user_id` and/or `--listening-provider` for
+multi-user or multi-integration libraries; the daemon scopes each stored feed
+to its person (see [Precomputed shelves](#precomputed-shelves)).
+
+## Precomputed shelves
+
+The daemon never builds shelves while a page waits. Each person (the
+operator, a household user, or a portal identity) has a **subject key**
+(`operator`, `user:{id}`, `portal:{id}`) and two stored layers:
+
+1. **Candidates** (`discover_candidates`): a `discover_candidates` job seeds
+   from that person's own taste (books on the store accounts linked to their
+   identities, household books they have listened to, their listening and
+   their open wishlist, with book and wishlist seeds alternating so each
+   store's call budget reaches both) and asks **every
+   deployed storefront**, not only the stores they have accounts with. A
+   person with no signal yet (and the operator) seeds from the household.
+   `storefront_max_remote_calls` is split across the stores, so all stores
+   together never make more calls than it allows (deals count as one call,
+   and a store whose share is zero is not asked).
+   Stores run concurrently, each call has a 10 s timeout, a store stops
+   starting new calls 20 s into a fetch and saves what it has, and each store's
+   rows are saved as that store finishes, so one slow store never discards
+   the others. A store whose calls all fail or come back empty keeps its
+   previous rows, since a plugin adapter can report a guest failure as an
+   empty answer. The
+   finished fetch is recorded in `discover_fetches`, so a fetch that found
+   nothing new still counts as fresh for a day.
+2. **Feed** (`discover_feeds`): when the fetch finishes it admits a
+   `discover_feed` job, which ranks the stored candidates into shelves with
+   no network calls and stores the result. It uses only candidates fetched
+   for the person's current seeds (their own, or the household's), and none
+   when `discovery.storefront_candidates` is off.
+
+> [!NOTE]
+> A candidate fetch asks the storefronts deployed on the node that claims
+> it. In a cluster that splits storefronts across nodes, stores deployed
+> only on other nodes are not asked yet.
+
+Storefront answers are cached for 24 hours in `discover_store_calls`, keyed by
+a hash of the store and the request, so people whose seeds overlap share one
+call. Failed and empty answers are not cached. Both jobs are deduplicated per subject, so a burst of triggers folds into
+the job already waiting.
+
+`GET /api/discover/recommendations` reads the stored feed and returns at once,
+filtering the caller's hidden shelves. Its `state` says what the page is
+seeing:
+
+| `state` | Meaning |
+| --- | --- |
+| `ready` | The stored feed is current. |
+| `refreshing` | The stored feed is shown while a newer one is built. |
+| `preparing` | No feed yet (or the stored one does not decode); shelves are empty and the page shows placeholders. |
+
+While the state is `preparing` or `refreshing`, the page reads the feed again
+every 4 seconds, up to 15 times. A `preparing` page then keeps reading every
+30 seconds until shelves arrive.
+
+A read queues what is stale. It queues a ranking when the last fetch finished
+after the feed was ranked. It queues a fetch when none has finished or the
+last one is older than 24 hours.
+
+The scheduler queues the daily fetch for every subject with a stored feed.
+Deleting a user removes their Discover rows. A fetch or ranking still queued
+or running for them deletes its rows instead of writing them back.
+
+`GET /api/discover/status` reports whether the caller's shelves are stored
+yet, and queues their refresh as a read would. Callers that must wait on
+shelves, such as the hosted demo, poll it. Any signed-in caller can use it,
+since it only reports the caller's own shelves.
 
 ## Metadata gap-fill (Open Library compliance)
 
@@ -227,7 +294,7 @@ still resolve by ASIN (e.g. English *A Game of Thrones* `B002UZZ93G`).
 | Surface | Commands / routes |
 | --- | --- |
 | CLI | `bookclerk discover recommend` (prints shelves), `embed`, `sync-listening`, `wishlist …` |
-| Daemon | `GET /api/discover/recommendations`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
+| Daemon | `GET /api/discover/recommendations` (stored feed), `GET /api/discover/status`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
 | GUI | **Discover** — personalized shelves + catalog search (filter rail, sort + direction, language, Hide Virtual Voice); **Wishlist** — personal list with global queue sidebar |
 
 Wishlists are **store-agnostic**. Rows share a `work_key` plus runtime identity

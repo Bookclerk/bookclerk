@@ -647,7 +647,9 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `accounts`, `books`, `ignored_titles`, `saved_filters`,
 `users`, `portal_identities`, `claim_tickets`, `portal_sessions`,
 `operator_sessions`, `account_links`, `listening_progress`, `title_requests`, `title_request_sources`,
-`embeddings`, `user_preferences`, `encrypted_secrets`, `jobs`,
+`embeddings`, `discover_candidates`, `discover_store_calls`, `discover_feeds`,
+`discover_fetches`,
+`user_preferences`, `encrypted_secrets`, `jobs`,
 `job_temp_paths`, `domain_events`, `event_deliveries`,
 `event_subscriber_nodes`, `event_outbox_stats`, `bookclerk_slots`,
 `plugin_databases` and `bookclerk_schema_migrations`, plus the library
@@ -802,6 +804,6 @@ let plain = unseal_secret(&record)?;
 - [Configuration](configuration.md#bootstrap-files): the other bootstrap
   files.
 - [ADR: SQL database contract](../adr/sql-database-contract.md) and the
-  [SQL-v1 contract](../sql-contract/v1.md): the SQL every adapter accepts.
+  [SQL-v1 contract](../plugins/sql-contract/v1.md): the SQL every adapter accepts.
 - [Libraries and branches](cluster-hosts.md): sharing one database between
   clerks.

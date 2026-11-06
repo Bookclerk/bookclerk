@@ -17,7 +17,7 @@ reviews:
     - path: "crates/bookclerk-{jail,sandbox,workerd,plugin-host,plugin-abi,db-exec,media-worker,mp4}/**"
       instructions: >-
         Security surface. Apply the Review guidelines in AGENTS.md as blocking.
-    - path: "docs/sql-contract/**"
+    - path: "docs/plugins/sql-contract/**"
       instructions: >-
         Security surface. Apply the Review guidelines in AGENTS.md as blocking.
     - path: ".github/workflows/**"

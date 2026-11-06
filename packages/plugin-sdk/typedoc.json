@@ -1,8 +1,19 @@
 {
   "$schema": "https://typedoc.org/schema.json",
-  "entryPoints": ["src/index.ts", "src/workerd.ts", "src/sparse-workerd/index.ts", "src/cli.ts"],
+  "entryPoints": [
+    "src/index.ts",
+    "src/abi.ts",
+    "src/db-execute.ts",
+    "src/db-value.ts",
+    "src/env.ts",
+    "src/generated.ts",
+    "src/plugin.ts",
+    "src/workerd.ts",
+    "src/sparse-workerd/index.ts",
+    "src/cli.ts"
+  ],
   "entryPointStrategy": "resolve",
-  "out": "../../docs/api/typescript",
+  "out": "../../target/api-docs/typescript",
   "name": "@bookclerk/plugin-sdk",
   "readme": "README.md",
   "excludePrivate": true,

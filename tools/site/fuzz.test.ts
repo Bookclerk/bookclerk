@@ -12,6 +12,18 @@ import { renderMermaidSVG } from "beautiful-mermaid";
 
 import { cleanSvg, diagram } from "./diagram.ts";
 import { HTTP_METHODS } from "./api-reference.ts";
+import {
+  generatedSource,
+  isGenerated,
+  MAX_GENERATED_PATH_LENGTH,
+  MAX_REFERENCES,
+  parseGenerated,
+  referenceModules,
+  referenceOf,
+  webApiOf,
+  webApiPages,
+} from "./generated.ts";
+import type { GeneratedManifest, GeneratedReference } from "./generated.ts";
 import { highlight } from "./highlight.ts";
 import { datedPages, formatDate, MAX_DOC_KEY_LENGTH, pageDate } from "./last-updated.ts";
 import { MAX_DOCUMENT_BYTES, MAX_SITEMAP_ENTRIES, readSitemap, readSnapshot } from "./indexnow.ts";
@@ -696,6 +708,262 @@ test("datedPages agrees with the oracle on mutated inputs", () => {
   }
 });
 
+/** Fragments manifest mutations splice in: JSON punctuation, the field names, kinds, paths and markup. */
+const MANIFEST_FRAGMENTS = [
+  '"',
+  "{",
+  "}",
+  "[",
+  "]",
+  ":",
+  ",",
+  "\\",
+  "\\u0000",
+  " ",
+  "\n",
+  "1",
+  "2",
+  "null",
+  "true",
+  "false",
+  '"version"',
+  '"references"',
+  '"sources"',
+  '"folder"',
+  '"kind"',
+  '"title"',
+  '"source"',
+  '"landing"',
+  '"pages"',
+  '"web-api"',
+  '"python"',
+  '"rust-crates"',
+  '"typescript"',
+  '"rust-sdk"',
+  '"server/api"',
+  '"server/api/README"',
+  '"plugins/sdk/python/workerd"',
+  '"__proto__"',
+  '"constructor"',
+  "/",
+  "//",
+  "./",
+  "../",
+  ".",
+  "_",
+  "-",
+  "<",
+  "&",
+  "é",
+];
+
+/** Page keys the manifest fuzzing asks about. */
+const MANIFEST_KEYS = [
+  "README",
+  "server/api/README",
+  "server/api/jobs",
+  "server/api/schemas",
+  "server/api",
+  "plugins/sdk/python/README",
+  "plugins/sdk/python/workerd",
+  "plugins/sdk/python/workerd/types",
+  "internals/crates/README",
+  "internals/crates/bookclerk_media/README",
+  "internals/crates/bookclerk_media/mp3",
+  "contributing/ui/api",
+  "__proto__",
+  "constructor",
+  "toString",
+  "",
+  "missing",
+];
+
+/** The kinds the manifest may name, written apart from generated.ts. */
+const ORACLE_KINDS = ["typescript", "python", "rust-sdk", "web-api", "rust-crates"];
+
+/**
+ * Tells whether a value is a path the manifest may hold, written apart
+ * from generated.ts: a string of bounded length whose segments pass
+ * oracleDocKey.
+ *
+ * @param value - The value.
+ * @returns True for a usable path.
+ */
+function oracleManifestPath(value: unknown): value is string {
+  return (
+    typeof value === "string" && value.length <= MAX_GENERATED_PATH_LENGTH && oracleDocKey(value)
+  );
+}
+
+/**
+ * Reads a manifest the way generated.ts should, written apart from it:
+ * through property descriptors, by exact types, refusing the whole
+ * document on the first fault.
+ *
+ * @param json - The file's text.
+ * @returns The manifest, or null.
+ */
+function oracleManifest(json: string): GeneratedManifest | null {
+  let document: unknown;
+  try {
+    document = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  const record = (v: unknown): Record<string, unknown> | null =>
+    typeof v === "object" && v !== null && !(v instanceof Array)
+      ? Object.assign(Object.create(null), v)
+      : null;
+  const top = record(document);
+  if (top === null || top["version"] !== 1) return null;
+  const list = top["references"];
+  if (!(list instanceof Array) || list.length > MAX_REFERENCES) return null;
+  const references: GeneratedReference[] = [];
+  const folders: string[] = [];
+  for (const entry of list) {
+    const r = record(entry);
+    if (r === null) return null;
+    const folder = r["folder"];
+    const kind = r["kind"];
+    const title = r["title"];
+    const source = r["source"];
+    const landing = r["landing"];
+    const pages = r["pages"];
+    if (!oracleManifestPath(folder) || folders.includes(folder)) return null;
+    if (typeof kind !== "string" || !ORACLE_KINDS.includes(kind)) return null;
+    if (typeof title !== "string" || title === "" || title.length > 200) return null;
+    if (!oracleManifestPath(source) || source.split("/").includes("..")) return null;
+    if (landing !== true && landing !== false) return null;
+    if (!(pages instanceof Array)) return null;
+    const keys: string[] = [];
+    for (const page of pages) {
+      if (!oracleManifestPath(page) || !page.startsWith(`${folder}/`) || keys.includes(page))
+        return null;
+      keys.push(page);
+    }
+    folders.push(folder);
+    references.push({
+      folder,
+      kind: kind as GeneratedReference["kind"],
+      title,
+      source,
+      landing,
+      pages: keys,
+    });
+  }
+  const rawSources = top["sources"] === undefined ? {} : record(top["sources"]);
+  if (rawSources === null) return null;
+  const sources: Record<string, string> = {};
+  for (const key of Object.getOwnPropertyNames(rawSources)) {
+    const value = rawSources[key];
+    if (!oracleManifestPath(key) || !oracleManifestPath(value) || value.split("/").includes(".."))
+      return null;
+    sources[key] = value;
+  }
+  return { references, sources };
+}
+
+/**
+ * Checks one parseGenerated run against the oracle, and the lookups built
+ * on the manifest against plain derivations from the oracle's reading.
+ *
+ * @param json - The manifest's text.
+ * @param context - What to print on failure.
+ */
+function checkManifest(json: string, context: string): void {
+  const got = parseGenerated(json);
+  const expected = oracleManifest(json);
+  assert.deepEqual(got, expected, `${context}: ${JSON.stringify(json)}`);
+  if (got === null || expected === null) {
+    assert.equal(webApiPages(got), null, context);
+    for (const key of MANIFEST_KEYS) {
+      assert.equal(referenceOf(got, key), null, context);
+      assert.equal(isGenerated(got, key), false, context);
+      assert.equal(generatedSource(got, key), null, context);
+    }
+    return;
+  }
+  // The parsed manifest carries nothing but the fields read: no prototype
+  // keys reach it through `sources`.
+  assert.equal(Object.getPrototypeOf(got.sources), Object.prototype, context);
+  for (const key of ["__proto__", "constructor", "toString"])
+    assert.ok(
+      !Object.hasOwn(got.sources, key) || Object.hasOwn(expected.sources, key),
+      `${context}: ${key}`,
+    );
+  const web = expected.references.find((r) => r.kind === "web-api");
+  assert.deepEqual(webApiPages(got), web === undefined ? null : webApiOf(web.folder), context);
+  for (const key of MANIFEST_KEYS) {
+    const owner: GeneratedReference | null =
+      expected.references.find((r) => r.pages.includes(key)) ??
+      expected.references.find((r) => r.landing && key === `${r.folder}/README`) ??
+      null;
+    assert.deepEqual(referenceOf(got, key), owner, `${context}: ${key}`);
+    assert.equal(
+      isGenerated(got, key),
+      expected.references.some((r) => r.pages.includes(key)),
+      `${context}: ${key}`,
+    );
+    // The source: the entry for the page or its nearest folder, else the owner's.
+    const own = key.endsWith("/README") ? key.slice(0, -"/README".length) : key;
+    let source: string | null = null;
+    const parts = own.split("/");
+    for (let n = parts.length; n >= 1 && source === null; n--) {
+      const candidate = parts.slice(0, n).join("/");
+      if (Object.hasOwn(expected.sources, candidate)) source = expected.sources[candidate] ?? null;
+    }
+    assert.equal(generatedSource(got, key), source ?? owner?.source ?? null, `${context}: ${key}`);
+  }
+  for (const reference of got.references) {
+    const modules = referenceModules(reference);
+    const depth = (k: string): number => k.slice(reference.folder.length + 1).split("/").length;
+    const direct = reference.pages.filter((k) =>
+      depth(k) === 1 ? !k.endsWith("/README") : depth(k) === 2 && k.endsWith("/README"),
+    );
+    assert.deepEqual(
+      modules.map((m) => m.key),
+      direct,
+      `${context}: modules of ${reference.folder}`,
+    );
+    for (const m of modules) {
+      assert.ok(oracleDocKey(m.title) && !m.title.includes("/"), `${context}: ${m.title}`);
+      assert.ok(
+        m.key === `${reference.folder}/${m.title}` ||
+          m.key === `${reference.folder}/${m.title}/README`,
+        context,
+      );
+    }
+  }
+}
+
+test("parseGenerated agrees with the oracle on its seed corpus", () => {
+  const seeds = corpus("generated");
+  assert.ok(seeds.length >= 10);
+  let read = 0;
+  for (const seed of seeds) {
+    checkManifest(seed, "seed");
+    read += parseGenerated(seed)?.references.length ?? 0;
+  }
+  assert.ok(read >= 4, "the seeds hold valid references");
+});
+
+test("parseGenerated agrees with the oracle on mutated inputs", () => {
+  const seeds = corpus("generated");
+  const rand = prng(SEED ^ 0x9e);
+  for (let i = 0; i < ITERATIONS; i++) {
+    const json = mutate(
+      seeds[Math.floor(rand() * seeds.length)] ?? "",
+      seeds,
+      rand,
+      MANIFEST_FRAGMENTS,
+    );
+    checkManifest(json, `FUZZ_SEED=${SEED} iteration ${i}`);
+  }
+});
+
+/** The Web API reference's pages, as the API layout fuzzing keys them. */
+const API = webApiOf("api/web");
+
 /** Fragments diagram-source mutations splice in: Mermaid arrows, brackets, directives and HTML-special text. */
 const DIAGRAM_FRAGMENTS = [
   "-->",
@@ -1004,7 +1272,10 @@ const VOID_ELEMENTS = /^(br|hr|img|input|wbr|col|meta|link|source)$/;
  * @param context - What to print when a check fails.
  */
 function checkApiPage(source: string, context: string): void {
-  const laid = renderDoc(source, "api/web/fuzz", { blobBase: "https://example.invalid/" }).html;
+  const laid = renderDoc(source, "api/web/fuzz", {
+    blobBase: "https://example.invalid/",
+    api: API,
+  }).html;
   const plain = renderDoc(source, "guide/fuzz", { blobBase: "https://example.invalid/" }).html;
   assert.ok(!/<script/i.test(laid), `script element: ${context}`);
 
@@ -1149,7 +1420,10 @@ const INDEX_FRAGMENTS = [
  * @param context - What to print when a check fails.
  */
 function checkApiIndex(source: string, context: string): void {
-  const laid = renderDoc(source, "api/web/README", { blobBase: "https://example.invalid/" }).html;
+  const laid = renderDoc(source, "api/web/README", {
+    blobBase: "https://example.invalid/",
+    api: API,
+  }).html;
   const plain = renderDoc(source, "guide/fuzz", { blobBase: "https://example.invalid/" }).html;
   assert.ok(!/<script/i.test(laid), `script element: ${context}`);
   checkNesting(laid, context);
@@ -1273,6 +1547,10 @@ const PATH_FRAGMENTS = [
   ".html",
   "search-index.json",
   "index.html",
+  "index",
+  "/index",
+  "index.md",
+  "README.md",
   ".md",
   "/docs",
   "/docs/",

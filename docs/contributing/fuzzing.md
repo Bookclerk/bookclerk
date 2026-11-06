@@ -355,6 +355,22 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     asked about nothing else, and the first such candidate git confirms
     wins.
 
+- **ClusterFuzzLite artifact lookup** (`newest_artifact` in
+  `scripts/cflite_artifacts.py`). Every fuzzing run finds each target's
+  corpus and the coverage report with one listing of the artifacts by
+  name (see [Artifact lookups](#artifact-lookups)). The listing names
+  artifacts that `main`'s scheduled runs uploaded, not pull request
+  content, so it isn't an untrusted boundary. Its answer decides where the
+  job's token is sent, though, so it is fuzzed the same way.
+  - Test and corpus: `scripts/tests/test_cflite_artifacts.py`,
+    `scripts/tests/cflite_artifacts_corpus/` (files named
+    `artifacts__<case>`, trimmed from a real listing), replayed and
+    mutated both as bytes and as JSON values.
+  - Oracle: an explicit walk with exact type checks. The first entry
+    wins whose `id` is a positive integer, whose `name` is the one asked
+    for, whose `expired` is `false` and whose `archive_download_url` is
+    exactly `<listing>/<id>/zip` on this repository's API.
+
 ### CLA check (Python)
 
 - **CLA checker** (`scripts/cla_check.py`). It reads the workflow event
@@ -590,7 +606,7 @@ fuzzing in `npm test`.
   reference outside the diagram, and ids carrying the page's prefix.
 - **Web API layout** (`layoutOperations` in
   `tools/site/api-reference.ts`, through `renderDoc`) rearranges the
-  generated `api/web/` pages from the docs repository into operation
+  generated Web API pages from the docs repository into operation
   sections, with one panel per example response (`layoutResponses`),
   one per example request language (`layoutRequests`) and property rows
   for the parameter, body and response lists (`layoutProperties`).
@@ -603,7 +619,7 @@ fuzzing in `npm test`.
   has without the layout.
 - **Web API index layout** (`layoutIndex` and `indexRoutes` in
   `tools/site/api-reference.ts`, through `renderDoc`) lays out the
-  generated `api/web/README.md` as route group cards with a quick-start
+  generated Web API index as route group cards with a quick-start
   aside, and reads its routes for the sidebar. Corpus
   `tools/site/fuzz/api_index/`. Oracle: the HTML nests properly, every card
   and aside is labelled by its own heading, every badge names a known
@@ -617,6 +633,17 @@ fuzzing in `npm test`.
   by field, and each sitemap key segment by segment. The date shown is only
   `Mon D, YYYY`, and its `<time>` element holds only the date's own
   characters.
+- **Generated manifest reader** (`parseGenerated` and the lookups built
+  on it in `tools/site/generated.ts`) reads the docs repository's
+  `generated.json`, which says which pages the docs build generated, from
+  what, and which reference each belongs to; the Worker uses it for the
+  Web API layout, the source line, the sidebar lists and the sitemap
+  page. Corpus `tools/site/fuzz/generated/`. Oracle: the document read
+  through property descriptors by exact types, every folder, page and
+  source path segment by segment, each page under its folder, and the
+  lookups (a page's reference, whether it is generated, its source, the
+  Web API's pages and a reference's modules) derived plainly from the
+  oracle's reading.
 - **IndexNow sitemap reader** (`readSitemap` in `tools/site/indexnow.ts`)
   reads the live site's sitemaps in the `indexnow` workflow, which then
   submits the URLs they list. Corpus `tools/site/fuzz/indexnow_sitemap/`.
@@ -766,11 +793,33 @@ pull-request workflow's path filter.
 
 | Workflow | When | What |
 | --- | --- | --- |
-| `cflite-pr.yml` | Pull requests touching `fuzz/`, the fuzzed crates, or the ClusterFuzzLite config | 10 minutes, AddressSanitizer, code-change mode; fails on a new crash |
+| `cflite-pr.yml` | Pull requests touching `fuzz/`, the fuzzed crates, or the ClusterFuzzLite config | 10 minutes, AddressSanitizer, code-change mode through `.github/actions/cflite-run-fuzzers`; fails on a new crash |
 | `cflite-batch.yml` | Daily, and `workflow_dispatch` | 45 minutes of batch fuzzing split across targets, then [crash triage](#fuzz-crash-triage), corpus pruning and a coverage report |
 
 The batch run's triage is private, and its corpus and coverage report are
 kept as Actions artifacts.
+
+### Artifact lookups
+
+Both workflows run the same pinned run-fuzzers image, entered through
+`scripts/cflite_artifacts.py`, which changes how ClusterFuzzLite finds a
+target's corpus or the coverage report:
+
+- **Stock lookup.** ClusterFuzzLite lists every artifact in the repository,
+  100 per page, until a name matches. It stops paging only after as many
+  artifacts as the first page counted. When none matches (a target added
+  since the last batch run) and artifacts expire meanwhile, it keeps
+  asking for empty pages. One pull request run asked for 4,840 pages and
+  used up the repository's hourly `GITHUB_TOKEN` budget, so other
+  workflows failed until the hour reset.
+- **Bounded lookup.** Each lookup is one request for the artifacts with
+  that name, newest first. The newest one that has not expired and
+  downloads from this repository is used; a target without one fuzzes
+  from its seeds, as before. Listing every artifact is disabled.
+
+If the image no longer has the methods the script replaces, the job fails
+instead of fuzzing with the stock lookup. Bump the image digest in both
+actions and `cflite-batch.yml` together, then re-test.
 
 > [!IMPORTANT]
 > A crash found by the scheduled run is handled as a security report,
@@ -816,8 +865,9 @@ Instead:
    run-fuzzers image through `.github/actions/cflite-private-run`, which
    runs `scripts/fuzz-crash-triage.py run`. That is the image's own mode,
    with its output in a private log and its crash upload disabled.
-   - Corpus and coverage artifacts are unchanged, and so is pull-request
-     fuzzing. The log shows a crash count.
+   - Corpus and coverage artifacts are unchanged (looked up as in
+     [Artifact lookups](#artifact-lookups)), and pull-request fuzzing still
+     logs and uploads its crashes. The log shows a crash count.
    - Timeout inputs are kept (`REPORT_TIMEOUTS`), so triage sees them.
    - Every scheduled build sets `bad-build-check: false`, because that
      check runs each target briefly and prints its output to the log.

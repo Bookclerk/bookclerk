@@ -130,7 +130,7 @@ function PreferencesDialog({
       try {
         const [prefs, feed, sources] = await Promise.all([
           fetchPreferences(),
-          fetchDiscoverFeed(1),
+          fetchDiscoverFeed(),
           loadEnabledSources(),
         ]);
         if (cancelled) return;

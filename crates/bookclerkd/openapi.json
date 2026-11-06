@@ -14288,95 +14288,33 @@
         "x-bookclerk-access": "The operator, or any library session."
       }
     },
-    "/api/discover/recommendations": {
+    "/api/discover/status": {
       "get": {
         "tags": [
           "Discover"
         ],
-        "summary": "Builds the Discover recommendation feed, skipping embed work on an empty library.",
-        "operationId": "discover_recommendations",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Maximum recommendations to return.",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 0
-            }
-          },
-          {
-            "name": "user",
-            "in": "query",
-            "description": "Optional external user id used to bias the feed.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "no_purchase_hints",
-            "in": "query",
-            "description": "When true, skip storefront price/availability enrichment.",
-            "required": false,
-            "schema": {
-              "type": "boolean"
-            }
-          },
-          {
-            "name": "no_listening",
-            "in": "query",
-            "description": "When true, ignore listening_progress (owned-library taste only).",
-            "required": false,
-            "schema": {
-              "type": "boolean"
-            }
-          },
-          {
-            "name": "listening_providers",
-            "in": "query",
-            "description": "Comma-separated integration ids; empty = all listening providers.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
+        "summary": "Reports whether the caller's Discover shelves are stored yet, so\nprovisioning can wait for a new visitor's shelves before sending them in.",
+        "description": "It also queues the caller's fetch or ranking when the stored data is\nmissing or stale, exactly as the Discover page read does.",
+        "operationId": "discover_status",
         "responses": {
           "200": {
-            "description": "The Discover feed.",
+            "description": "Stored Discover state of the caller's shelves.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DiscoverFeed"
+                  "$ref": "#/components/schemas/DiscoverStatusResponse"
                 }
               }
             }
           },
-          "400": {
-            "description": "The query is malformed or too large.",
+          "401": {
+            "description": "The caller has no portal identity.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize query string: invalid digit found in string"
-              }
-            }
-          },
-          "401": {
-            "description": "The caller is not signed in, or the credential is wrong.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                },
-                "example": {
-                  "error": "unauthorized",
-                  "message": "Operator authentication is required. Sign in with your operator token.",
-                  "status": 401
-                }
+                "example": "Unauthorized"
               }
             }
           },
@@ -14411,14 +14349,90 @@
               }
             }
           },
-          "503": {
-            "description": "Discover is shutting down; try again.",
+          "504": {
+            "description": "The request ran past the API's time budget.",
             "content": {
               "text/plain": {
                 "schema": {
                   "type": "string"
                 },
-                "example": "discover gate closed"
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session."
+      }
+    },
+    "/api/discover/recommendations": {
+      "get": {
+        "tags": [
+          "Discover"
+        ],
+        "summary": "Returns the caller's stored Discover shelves; never builds them on the request.",
+        "description": "Shelves are ranked by queued `discover_candidates` and `discover_feed`\njobs. This route reads the stored feed, drops the caller's hidden shelves,\nand queues a fetch or ranking when the stored data is missing or stale:\n`state` is `preparing` (no shelves yet), `refreshing` (stored shelves,\nnewer ones queued) or `ready`.",
+        "operationId": "discover_recommendations",
+        "responses": {
+          "200": {
+            "description": "The caller's stored Discover feed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoverFeed"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller has no portal identity.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Unauthorized"
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The lookup failed.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
               }
             }
           },
@@ -26339,6 +26353,25 @@
               "$ref": "#/components/schemas/ShelfKindInfo"
             },
             "description": "Catalog of shelf kinds for ignore prefs (empty `disabled_shelves` = all on)."
+          },
+          "state": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FeedState",
+                "description": "Whether these are the caller's current shelves, set by the daemon's\nread of the stored feed. Absent in a stored feed and from the CLI."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "computed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 time the shelves were ranked; absent while `state` is `preparing`.",
+            "example": "2026-11-06T00:30:00Z"
           }
         }
       },
@@ -26375,6 +26408,50 @@
               "$ref": "#/components/schemas/Recommendation"
             },
             "description": "Ordered collection of child entries for this response."
+          }
+        }
+      },
+      "DiscoverStatusResponse": {
+        "type": "object",
+        "description": "Stored Discover state of the caller's shelves.",
+        "required": [
+          "subject",
+          "ready"
+        ],
+        "properties": {
+          "subject": {
+            "type": "string",
+            "description": "The caller's subject key (`operator`, `user:<id>`, `portal:<id>`).",
+            "example": "user:2"
+          },
+          "ready": {
+            "type": "boolean",
+            "description": "True once the caller has stored shelves to show.",
+            "example": true
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Seeds the stored feed was ranked from (`own` or `household`), when ranked.",
+            "example": "own"
+          },
+          "feed_computed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 time the stored feed was ranked, when ranked.",
+            "example": "2026-11-06T00:30:00+00:00"
+          },
+          "candidates_fetched_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 time the caller's last storefront fetch finished, when any.",
+            "example": "2026-11-06T00:29:41+00:00"
           }
         }
       },
@@ -27181,6 +27258,15 @@
           }
         }
       },
+      "FeedState": {
+        "type": "string",
+        "description": "How current a stored Discover feed is.",
+        "enum": [
+          "ready",
+          "refreshing",
+          "preparing"
+        ]
+      },
       "FileTimestampMode": {
         "type": "string",
         "description": "Which timestamp to apply after acquire (`CreationTime` / `LastWriteTime`).",
@@ -27651,6 +27737,8 @@
           "integration_scan",
           "plugin_copy",
           "plugin_scheduled",
+          "discover_candidates",
+          "discover_feed",
           "invalid"
         ]
       },

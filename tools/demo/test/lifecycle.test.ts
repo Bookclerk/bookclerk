@@ -5,7 +5,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import {
+  enableDemoPlugins,
   enableStorefronts,
+  OPTIONAL_PLUGINS,
+  STOREFRONTS,
   signInVisitor,
   signOutStores,
   waitForHealth,
@@ -195,6 +198,49 @@ describe("enableStorefronts", () => {
     );
     await assert.rejects(
       enableStorefronts(scripted({}).call, "op", ["audible"]),
+      /consent for audible answered 404/,
+    );
+  });
+});
+
+describe("enableDemoPlugins", () => {
+  const all = [...STOREFRONTS, ...OPTIONAL_PLUGINS];
+  const instances = () =>
+    Response.json({
+      node_id: "node-1",
+      instances: all.map((id) => ({ plugin_instance_id: `i-${id}`, alias: id, is_default: true })),
+    });
+  const routes = (ids: string[]) => {
+    const r: Record<string, (init: RequestInit) => Response> = {
+      "GET /api/config/plugin-instances": instances,
+    };
+    for (const id of ids) {
+      r[`POST /api/plugins/${id}/consent`] = () => Response.json({});
+      r[`PUT /api/config/plugin-instances/i-${id}/deployments/node-1`] = () => Response.json({});
+    }
+    return r;
+  };
+
+  it("enables the storefronts and then covers", async () => {
+    assert.deepEqual(OPTIONAL_PLUGINS, ["covers"]);
+    const warnings: string[] = [];
+    const { call, seen } = scripted(routes(all));
+    await enableDemoPlugins(call, "op", (m) => warnings.push(m));
+    const keys = seen.map((s) => s.key);
+    assert.ok(keys.includes("POST /api/plugins/audible/consent"));
+    assert.ok(keys.includes("PUT /api/config/plugin-instances/i-covers/deployments/node-1"));
+    assert.deepEqual(warnings, []);
+  });
+
+  it("keeps the session when covers can't be enabled", async () => {
+    const warnings: string[] = [];
+    await enableDemoPlugins(scripted(routes(STOREFRONTS)).call, "op", (m) => warnings.push(m));
+    assert.deepEqual(warnings, ["demo: covers not enabled: consent for covers answered 404"]);
+  });
+
+  it("still fails when a storefront can't be enabled", async () => {
+    await assert.rejects(
+      enableDemoPlugins(scripted(routes(["libro"])).call, "op", () => {}),
       /consent for audible answered 404/,
     );
   });

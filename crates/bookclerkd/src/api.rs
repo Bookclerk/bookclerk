@@ -1170,6 +1170,7 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
         .routes(routes!(crate::covers::get_image))
         .routes(routes!(crate::covers::get_gravatar))
         .routes(routes!(crate::covers::get_store_icon))
+        .routes(routes!(discover_status))
         .routes(routes!(discover_recommendations))
         .routes(routes!(discover_purchase_hints))
         .routes(routes!(discover_purchase_hints_batch))
@@ -1455,25 +1456,6 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
     )
 }
 
-/// Opens the discover embedder on a blocking thread so ONNX load cannot stall the HTTP runtime.
-async fn open_embedder_blocking(
-    models_dir: PathBuf,
-    embed_intra_threads: usize,
-    embeddings_enabled: bool,
-) -> Result<Box<dyn bookclerk_discover::Embedder>, (StatusCode, String)> {
-    tokio::task::spawn_blocking(move || {
-        bookclerk_discover::open_embedder(&models_dir, embed_intra_threads, embeddings_enabled)
-    })
-    .await
-    .map_err(|err| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("embedder task failed: {err}"),
-        )
-    })?
-    .map_err(internal_err)
-}
-
 /// Content-Security-Policy of the web app's document.
 ///
 /// Scripts, styles, fonts, connections, workers and the manifest come only
@@ -1564,7 +1546,6 @@ fn api_timeout_for_path(path: &str) -> Duration {
         | "/api/discover/title-meta"
         | "/api/discover/title-meta/batch"
         | "/api/discover/title-reviews" => Duration::from_secs(25),
-        "/api/discover/recommendations" => Duration::from_secs(20),
         // Parallel store searches (~7s each) + optional page enrich (~3.5s).
         "/api/discover/search" => Duration::from_secs(16),
         // Leave library waits for the library to hear `node.leaving`
@@ -4567,6 +4548,70 @@ async fn list_events(
     Ok(Json(rows.into_iter().map(domain_event_info).collect()))
 }
 
+/// Stored Discover state of the caller's shelves.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+struct DiscoverStatusResponse {
+    /// The caller's subject key (`operator`, `user:<id>`, `portal:<id>`).
+    #[schema(example = "user:2")]
+    subject: String,
+    /// True once the caller has stored shelves to show.
+    #[schema(example = true)]
+    ready: bool,
+    /// Seeds the stored feed was ranked from (`own` or `household`), when ranked.
+    #[schema(example = "own")]
+    scope: Option<String>,
+    /// RFC 3339 time the stored feed was ranked, when ranked.
+    #[schema(example = "2026-11-06T00:30:00+00:00")]
+    feed_computed_at: Option<String>,
+    /// RFC 3339 time the caller's last storefront fetch finished, when any.
+    #[schema(example = "2026-11-06T00:29:41+00:00")]
+    candidates_fetched_at: Option<String>,
+}
+
+/// Reports whether the caller's Discover shelves are stored yet, so
+/// provisioning can wait for a new visitor's shelves before sending them in.
+///
+/// It also queues the caller's fetch or ranking when the stored data is
+/// missing or stale, exactly as the Discover page read does.
+#[utoipa::path(
+    get,
+    path = "/api/discover/status",
+    responses(
+        (status = 200, description = "Stored Discover state of the caller's shelves.", body = DiscoverStatusResponse),
+        (status = 401, description = "The caller has no portal identity.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
+        (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
+    ),
+)]
+async fn discover_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<DiscoverStatusResponse>, (StatusCode, String)> {
+    let library = state.library_snapshot().await;
+    let (subject_key, _) = auth::prefs_subject_for_caller(&state, &headers)
+        .await
+        .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+    let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
+        .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
+    // A feed that does not decode (another release wrote it) counts as
+    // missing, so it is ranked again and not reported ready.
+    let feed = bookclerk_discover::stored_subject_feed(&library, &subject, &[])
+        .await
+        .map_err(internal_err)?;
+    let fetched = library
+        .newest_discover_candidate_fetch(&subject)
+        .await
+        .map_err(internal_err)?;
+    let refresh = crate::discover_jobs::refresh_needed(feed.as_ref(), fetched, chrono::Utc::now());
+    crate::discover_jobs::queue_refresh(&state, &subject, refresh).await;
+    Ok(Json(DiscoverStatusResponse {
+        subject: subject.key(),
+        ready: feed.is_some(),
+        scope: feed.as_ref().map(|f| f.scope.as_str().to_string()),
+        feed_computed_at: feed.as_ref().map(|f| f.computed_at.to_rfc3339()),
+        candidates_fetched_at: fetched.map(|t| t.to_rfc3339()),
+    }))
+}
+
 /// Delivery counters plus live consumers for one queue.
 async fn queue_info(
     library: &bookclerk_library::LibraryStore,
@@ -5140,25 +5185,6 @@ async fn get_book_cover(
         .into_response())
 }
 
-#[derive(Debug, Deserialize, Default, utoipa::ToSchema, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-/// Query string for `GET /api/discover/recommendations`.
-struct RecommendQuery {
-    /// Maximum recommendations to return.
-    limit: Option<usize>,
-    /// Optional external user id used to bias the feed.
-    user: Option<String>,
-    #[serde(default)]
-    /// When true, skip storefront price/availability enrichment.
-    no_purchase_hints: Option<bool>,
-    /// When true, ignore listening_progress (owned-library taste only).
-    #[serde(default)]
-    no_listening: Option<bool>,
-    /// Comma-separated integration ids; empty = all listening providers.
-    #[serde(default)]
-    listening_providers: Option<String>,
-}
-
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Wishlist / title-request create body from Discover or the portal.
 struct CreateRequestBody {
@@ -5274,28 +5300,29 @@ struct CatalogSearchQuery {
     max_length_minutes: Option<i64>,
 }
 
-/// Builds the Discover recommendation feed, skipping embed work on an empty library.
+/// Returns the caller's stored Discover shelves; never builds them on the request.
+///
+/// Shelves are ranked by queued `discover_candidates` and `discover_feed`
+/// jobs. This route reads the stored feed, drops the caller's hidden shelves,
+/// and queues a fetch or ranking when the stored data is missing or stale:
+/// `state` is `preparing` (no shelves yet), `refreshing` (stored shelves,
+/// newer ones queued) or `ready`.
 #[utoipa::path(
     get,
     path = "/api/discover/recommendations",
-    params(RecommendQuery),
     responses(
-        (status = 200, description = "The Discover feed.", body = bookclerk_discover::DiscoverFeed),
-        (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("Failed to deserialize query string: invalid digit found in string")),
+        (status = 200, description = "The caller's stored Discover feed.", body = bookclerk_discover::DiscoverFeed),
+        (status = 401, description = "The caller has no portal identity.", body = String, content_type = "text/plain", example = json!("Unauthorized")),
         (status = 500, description = "The lookup failed.", body = String, content_type = "text/plain", example = json!("ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection")),
-        (status = 503, description = "Discover is shutting down; try again.", body = String, content_type = "text/plain", example = json!("discover gate closed")),
     ),
 )]
 async fn discover_recommendations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(q): Query<RecommendQuery>,
 ) -> Result<Json<bookclerk_discover::DiscoverFeed>, (StatusCode, String)> {
-    let cfg = state.config.read().await.clone();
     let library = state.library_snapshot().await;
 
-    // Fast path: skip embedding/recommendation work when there is no library or
-    // wishlist data yet. This keeps initial GUI loads responsive in empty setups.
+    // Nothing to recommend from: answer at once, queue nothing.
     let has_books = library.count_books(None).await.map_err(internal_err)? > 0;
     let has_open_requests = !library
         .list_title_requests(Some(RequestStatus::Open))
@@ -5306,89 +5333,54 @@ async fn discover_recommendations(
         return Ok(Json(bookclerk_discover::DiscoverFeed {
             shelves: Vec::new(),
             shelf_kinds: bookclerk_discover::shelf_kind_catalog(),
+            state: Some(bookclerk_discover::FeedState::Ready),
+            computed_at: None,
         }));
     }
-
-    // Wishlist-only (no library books): skip ONNX warm-up. MiniLM load routinely
-    // exceeds the 8s API timeout, and with no owned titles there is no taste
-    // centroid / storefront seed work that needs real embeddings.
-    let use_onnx = has_books && cfg.discovery.embeddings_enabled;
-
-    let _discover = state
-        .discover_gate
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "discover gate closed".into(),
-            )
-        })?;
-
-    let model_id = if use_onnx {
-        let mut embedder = open_embedder_blocking(
-            cfg.paths().models_dir.clone(),
-            cfg.discovery.embed_intra_threads,
-            true,
-        )
-        .await?;
-        let model_id = embedder.model_id().to_string();
-        let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut()).await;
-        model_id
-    } else {
-        String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1)
-    };
-
-    let listening_providers = q
-        .listening_providers
-        .as_deref()
-        .unwrap_or("")
-        .split([',', ';'])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-
-    // Portal sessions personalize by default from their external user id.
-    let external_user_id = if let Some(user) = q.user {
-        Some(user)
-    } else if let Some(identity) = auth::caller_portal_identity(&state, &headers).await {
-        Some(identity.external_user_id)
-    } else {
-        None
-    };
 
     let (subject_key, identity_id) = auth::prefs_subject_for_caller(&state, &headers)
         .await
         .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
+    let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
+        .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
     let disabled_shelves = library
         .get_user_preferences_or_default(&subject_key, identity_id)
         .await
         .map(|p| p.disabled_shelves)
         .unwrap_or_default();
 
-    let opts = bookclerk_discover::RecommendOptions {
-        limit: q.limit.unwrap_or(cfg.discovery.recommend_limit.max(24)),
-        embedding_model: model_id,
-        region: String::from("us"),
-        include_purchase_hints: !q.no_purchase_hints.unwrap_or(false),
-        external_user_id,
-        include_listening: !q.no_listening.unwrap_or(false),
-        listening_providers,
-        fetch_storefront_candidates: has_books && cfg.discovery.storefront_candidates,
-        storefront_seed_limit: cfg.discovery.storefront_seed_limit,
-        storefront_max_remote_calls: cfg.discovery.storefront_max_remote_calls,
-        exclude_graphicaudio_series_sets: cfg.discovery.exclude_graphicaudio_series_sets,
-        disabled_shelves,
-        models_dir: use_onnx.then(|| cfg.paths().models_dir.clone()),
-        embed_intra_threads: cfg.discovery.embed_intra_threads,
-        embeddings_enabled: use_onnx,
-    };
-    let sources = state.sources.read().await;
-    let mut feed = bookclerk_discover::recommend_feed(&library, &sources, &opts)
+    let read = bookclerk_discover::stored_subject_feed(&library, &subject, &disabled_shelves)
         .await
         .map_err(internal_err)?;
+    // A feed that does not decode reads as `None` above and counts as
+    // missing, so a ranking replaces it.
+    let newest = library
+        .newest_discover_candidate_fetch(&subject)
+        .await
+        .map_err(internal_err)?;
+    let refresh = crate::discover_jobs::refresh_needed(read.as_ref(), newest, chrono::Utc::now());
+    crate::discover_jobs::queue_refresh(&state, &subject, refresh).await;
+    let mut feed = match read {
+        Some(stored) => {
+            let mut feed = stored.feed;
+            feed.state = Some(if refresh == crate::discover_jobs::FeedRefresh::None {
+                bookclerk_discover::FeedState::Ready
+            } else {
+                bookclerk_discover::FeedState::Refreshing
+            });
+            feed.computed_at = Some(stored.computed_at.to_rfc3339());
+            feed
+        }
+        None => bookclerk_discover::DiscoverFeed {
+            shelves: Vec::new(),
+            shelf_kinds: bookclerk_discover::shelf_kind_catalog(),
+            state: Some(bookclerk_discover::FeedState::Preparing),
+            computed_at: None,
+        },
+    };
+    if feed.shelf_kinds.is_empty() {
+        feed.shelf_kinds = bookclerk_discover::shelf_kind_catalog();
+    }
     let files = crate::profile::files_dir(&state).await;
     for shelf in &mut feed.shelves {
         for item in &mut shelf.items {

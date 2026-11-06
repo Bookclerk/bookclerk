@@ -11,6 +11,8 @@
  * - Sparse workerd: `import { runSmoke } from "@bookclerk/plugin-sdk/sparse-workerd"`
  *
  * See `docs/plugins/README.md` and `docs/contributing/code-documentation.md`.
+ *
+ * @module plugin-sdk
  */
 
 import "./cloudflare-workers.d.ts";
