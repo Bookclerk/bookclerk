@@ -271,9 +271,11 @@ function ConsentRow({
   const requested = row.requested_grant ?? {};
   const domains = requested.domains ?? [];
   const bindings = requested.bindings ?? [];
+  const ownAgentHosts = requested.ownUserAgentHosts ?? [];
   const networked = Boolean(requested.networkMode && requested.networkMode !== "deny");
   const [deniedDomains, setDeniedDomains] = useState<Set<string>>(new Set());
   const [deniedBindings, setDeniedBindings] = useState<Set<string>>(new Set());
+  const [deniedOwnAgents, setDeniedOwnAgents] = useState<Set<string>>(new Set());
   const [denyNetwork, setDenyNetwork] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -283,6 +285,7 @@ function ConsentRow({
   useEffect(() => {
     setDeniedDomains(new Set());
     setDeniedBindings(new Set());
+    setDeniedOwnAgents(new Set());
     setDenyNetwork(false);
     setError(null);
   }, [requestKey]);
@@ -389,6 +392,27 @@ function ConsentRow({
               ))
             )}
           </fieldset>
+          {ownAgentHosts.length > 0 ? (
+            <fieldset className="space-y-1" disabled={busy}>
+              <legend className="text-xs font-medium text-ink/70">
+                Own User-Agent instead of Bookclerk&apos;s
+              </legend>
+              {ownAgentHosts.map((host) => (
+                <label key={host} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    disabled={denyNetwork}
+                    checked={denyNetwork || deniedOwnAgents.has(host)}
+                    onChange={(e) =>
+                      setDeniedOwnAgents((set) => toggle(set, host, e.target.checked))
+                    }
+                  />
+                  <span className="text-ink/45">Deny</span>
+                  <span className="font-mono text-[12px]">{host}</span>
+                </label>
+              ))}
+            </fieldset>
+          ) : null}
         </div>
       ) : null}
       <GrantFacts grant={requested} />
@@ -419,6 +443,7 @@ function ConsentRow({
                   request_digest: row.request_digest,
                   deny_domains: denyNetwork ? [] : [...deniedDomains],
                   deny_bindings: [...deniedBindings],
+                  deny_own_user_agent_hosts: denyNetwork ? [] : [...deniedOwnAgents],
                   deny_network: denyNetwork,
                 }),
               )

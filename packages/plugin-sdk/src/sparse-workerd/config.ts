@@ -8,6 +8,7 @@
  */
 
 import fs from "node:fs";
+import { domainToASCII } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -332,6 +333,24 @@ export function pluginGlobalOutbound(mode: string): "blocked" | "egress" {
 }
 
 /**
+ * Puts own-agent host patterns into the ASCII form the egress worker
+ * matches against, as the host's policy does: IDNA for the name, `*.` kept.
+ *
+ * @param hosts - `capabilities.network.own_user_agent.hosts` as written.
+ * @returns The patterns that normalize, lowercased and in A-label form.
+ */
+export function ownUserAgentHostsFor(hosts: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const raw of hosts) {
+    const pattern = raw.trim().replace(/\.+$/, "");
+    const wildcard = pattern.startsWith("*.");
+    const ascii = domainToASCII(wildcard ? pattern.slice(2) : pattern);
+    if (ascii) out.push(wildcard ? `*.${ascii}` : ascii);
+  }
+  return out;
+}
+
+/**
  * Builds the egress allowlist, appending Pyodide hosts when needed.
  *
  * @param needsPython - Whether the plugin embeds Python modules.
@@ -552,7 +571,9 @@ export function materializeConfig(
     mode: networkMode === "outbound" ? "outbound" : "deny",
     domains,
     maxRedirects: 10,
-    ownUserAgentHosts: manifest.capabilities?.network?.own_user_agent?.hosts ?? [],
+    ownUserAgentHosts: ownUserAgentHostsFor(
+      manifest.capabilities?.network?.own_user_agent?.hosts ?? [],
+    ),
   });
   const policyEscaped = escapeCapnp(policyJson);
 

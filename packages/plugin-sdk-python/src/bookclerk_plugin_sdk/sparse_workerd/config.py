@@ -266,6 +266,33 @@ def plugin_global_outbound(mode: str) -> str:
     return "egress" if mode == "outbound" else "blocked"
 
 
+def own_user_agent_hosts_for(hosts: list[Any]) -> list[str]:
+    """Put own-agent host patterns into the ASCII form the egress worker matches.
+
+    As the host's policy does: IDNA for the name, the ``*.`` prefix kept.
+
+    Args:
+        hosts: ``capabilities.network.own_user_agent.hosts`` as written.
+
+    Returns:
+        The patterns that normalize, lowercased and in A-label form.
+    """
+    out: list[str] = []
+    for raw in hosts:
+        if not isinstance(raw, str):
+            continue
+        pattern = raw.strip().rstrip(".")
+        wildcard = pattern.startswith("*.")
+        name = pattern[2:] if wildcard else pattern
+        try:
+            ascii_name = name.encode("idna").decode("ascii").lower()
+        except UnicodeError:
+            continue
+        if ascii_name:
+            out.append(f"*.{ascii_name}" if wildcard else ascii_name)
+    return out
+
+
 def egress_domains_for(needs_python: bool, mode: str, base: list[str]) -> list[str]:
     """Build the egress allow-list, adding Pyodide hosts when needed.
 
@@ -419,7 +446,7 @@ def materialize_config(
     network_mode = net.get("mode") or "deny"
     network_domains = list(net.get("domains") or [])
     own_user_agent = net.get("own_user_agent")
-    own_user_agent_hosts = (
+    own_user_agent_hosts = own_user_agent_hosts_for(
         list(own_user_agent.get("hosts") or []) if isinstance(own_user_agent, dict) else []
     )
 

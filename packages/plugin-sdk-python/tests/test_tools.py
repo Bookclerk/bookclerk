@@ -1640,6 +1640,11 @@ def test_check_plugin_require_binary_resolves_an_absolute_command(tmp_path: Path
         ("a b.example", False),
         ("x%41.example", False),
         ("bad\u200e.example", False),
+        ("a,b.example", False),
+        ("xn--.example", False),
+        ("xn--99999999.example", False),
+        ("xn--bcher-kva.example", True),
+        ("*.api.123", True),
     ],
     ids=[
         "exact",
@@ -1652,6 +1657,11 @@ def test_check_plugin_require_binary_resolves_an_absolute_command(tmp_path: Path
         "space",
         "percent",
         "disallowed-idna",
+        "comma",
+        "empty-punycode",
+        "bad-punycode",
+        "a-label",
+        "numeric-last-label",
     ],
 )
 def test_own_user_agent_hosts_match_the_host_rules(host: str, valid: bool) -> None:
@@ -1671,6 +1681,10 @@ def test_own_user_agent_hosts_match_the_host_rules(host: str, valid: bool) -> No
         ({"hosts": [7], "reason": "r"}, "hosts entry `7` is not a valid hostname"),
         ({"hosts": ["a.example"], "reason": "x" * 301}, "reason must be one line"),
         ({"hosts": ["a.example"], "reason": "two\nlines"}, "reason must be one line"),
+        (
+            {"hosts": ["a.example"], "reason": "r", "extra": True},
+            "unknown field `extra`",
+        ),
     ],
 )
 def test_own_user_agent_table_is_validated(own: Any, message: str) -> None:
@@ -1691,3 +1705,11 @@ def test_own_user_agent_needs_outbound_mode() -> None:
         _validate_own_user_agent(
             {"mode": "deny", "own_user_agent": {"hosts": ["a.example"], "reason": "r"}}
         )
+
+
+def test_own_user_agent_hosts_are_put_in_ascii_form() -> None:
+    from bookclerk_plugin_sdk.sparse_workerd.config import own_user_agent_hosts_for
+
+    assert own_user_agent_hosts_for(
+        [" *.Bücher.example. ", "API.example.com", 7, "\u200e", ""]
+    ) == ["*.xn--bcher-kva.example", "api.example.com"]

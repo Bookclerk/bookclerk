@@ -24194,6 +24194,17 @@
             ],
             "uniqueItems": true
           },
+          "deny_own_user_agent_hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Requested hosts to refuse the plugin's own User-Agent on; requests to\nthem carry Bookclerk's agent instead.",
+            "example": [
+              "*.libro.fm"
+            ],
+            "uniqueItems": true
+          },
           "deny_network": {
             "type": "boolean",
             "description": "Deny all network access.",

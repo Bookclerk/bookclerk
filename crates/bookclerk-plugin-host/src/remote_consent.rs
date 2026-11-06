@@ -40,6 +40,9 @@ pub struct RemoteNarrowing {
     pub deny_domains: BTreeSet<String>,
     /// Host bindings to deny (`secrets`, `oauth`, `kv`, ...).
     pub deny_bindings: BTreeSet<String>,
+    /// Requested own-agent hosts to refuse: requests to them carry
+    /// Bookclerk's agent. The hosts stay reachable.
+    pub deny_own_user_agent_hosts: BTreeSet<String>,
     /// Turn outbound network off altogether.
     pub deny_network: bool,
 }
@@ -95,9 +98,13 @@ pub fn remote_request_within(reviewed: &PluginGrant, requested: &PluginGrant) ->
         && (!requested.allow_undeclared_public_redirects
             || reviewed.allow_undeclared_public_redirects)
         // A consent reviewed before the permission existed keeps what the
-        // manifest declares, as a local legacy grant does.
+        // manifest declares, as a local legacy grant does; a host the
+        // operator refused was answered.
         && reviewed.own_user_agent_hosts.as_ref().is_none_or(|approved| {
-            requested.approved_own_user_agent_hosts().is_subset(approved)
+            requested
+                .approved_own_user_agent_hosts()
+                .iter()
+                .all(|host| approved.contains(host) || reviewed.own_user_agent_refused_hosts.contains(host))
         })
         && requested.bindings.is_subset(&reviewed.bindings)
         && requested
@@ -114,8 +121,8 @@ pub fn remote_request_within(reviewed: &PluginGrant, requested: &PluginGrant) ->
 ///
 /// # Errors
 ///
-/// Returns an error when the narrowing names a domain or binding the
-/// request does not ask for (it would deny nothing, and a typo must not
+/// Returns an error when the narrowing names a domain, binding or own-agent
+/// host the request does not ask for (it would deny nothing, and a typo must not
 /// read as a narrowing that did not happen).
 pub fn remote_consent(requested: &PluginGrant, narrowing: &RemoteNarrowing) -> Result<PluginGrant> {
     let unknown_domains: Vec<_> = narrowing
@@ -140,7 +147,26 @@ pub fn remote_consent(requested: &PluginGrant, narrowing: &RemoteNarrowing) -> R
             unknown_bindings.join(", ")
         )));
     }
+    let requested_own = requested.approved_own_user_agent_hosts();
+    let unknown_own: Vec<_> = narrowing
+        .deny_own_user_agent_hosts
+        .difference(&requested_own)
+        .cloned()
+        .collect();
+    if !unknown_own.is_empty() {
+        return Err(crate::PluginError::message(format!(
+            "the request does not ask to keep its own User-Agent for {}",
+            unknown_own.join(", ")
+        )));
+    }
     let mut consent = requested.clone();
+    consent.own_user_agent_hosts = Some(
+        requested_own
+            .difference(&narrowing.deny_own_user_agent_hosts)
+            .cloned()
+            .collect(),
+    );
+    consent.own_user_agent_refused_hosts = narrowing.deny_own_user_agent_hosts.clone();
     for domain in &narrowing.deny_domains {
         consent.domains.remove(domain);
     }
@@ -268,21 +294,18 @@ pub fn narrow_remote_grant(requested: &PluginGrant, consent: &PluginGrant) -> Pl
         manifest_cidrs: requested.manifest_cidrs.clone(),
         allow_undeclared_public_redirects: redirects,
         operator_allow_undeclared_public_redirects: Some(redirects),
+        // The reviewed approval is kept as is and narrowed to the request at
+        // run time (see `PluginGrant::effective_own_user_agent_hosts`); a
+        // consent reviewed before the permission existed keeps every
+        // declared host.
         own_user_agent_hosts: if deny {
             Some(BTreeSet::new())
         } else {
-            consent
-                .own_user_agent_hosts
-                .as_ref()
-                .map(|approved| both(&requested.approved_own_user_agent_hosts(), approved))
+            consent.own_user_agent_hosts.clone()
         },
         own_user_agent_reason: requested.own_user_agent_reason.clone(),
         own_user_agent_refused_hosts: consent.own_user_agent_refused_hosts.clone(),
-        legacy_own_user_agent_hosts: if !deny && consent.own_user_agent_hosts.is_none() {
-            requested.approved_own_user_agent_hosts()
-        } else {
-            BTreeSet::new()
-        },
+        declared_own_user_agent_hosts: Some(requested.approved_own_user_agent_hosts()),
         bindings: both(&requested.bindings, &consent.bindings),
         compatibility_flags: both(&requested.compatibility_flags, &consent.compatibility_flags),
         cpu_ms: min_workerd_limit(
@@ -711,6 +734,47 @@ mod tests {
             .egress_policy()
             .own_user_agent_hosts
             .is_empty());
+
+        // The operator can refuse one host and keep the others; the
+        // refused host is answered, so the same request stays covered.
+        let mut two = agent_request.clone();
+        two.own_user_agent_hosts = Some(
+            [
+                "api.store.example".to_string(),
+                "cdn.store.example".to_string(),
+            ]
+            .into(),
+        );
+        let refused = remote_consent(
+            &two,
+            &RemoteNarrowing {
+                deny_own_user_agent_hosts: ["cdn.store.example".to_string()].into(),
+                ..RemoteNarrowing::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            refused.own_user_agent_hosts,
+            Some(["api.store.example".to_string()].into())
+        );
+        assert!(refused
+            .own_user_agent_refused_hosts
+            .contains("cdn.store.example"));
+        assert!(remote_request_within(&refused, &two));
+        assert_eq!(
+            narrow_remote_grant(&two, &refused)
+                .egress_policy()
+                .own_user_agent_hosts,
+            vec!["api.store.example".to_string()]
+        );
+        assert!(remote_consent(
+            &two,
+            &RemoteNarrowing {
+                deny_own_user_agent_hosts: ["typo.example".to_string()].into(),
+                ..RemoteNarrowing::default()
+            }
+        )
+        .is_err());
 
         // A consent reviewed before the permission existed keeps the
         // declared hosts and still covers the request.

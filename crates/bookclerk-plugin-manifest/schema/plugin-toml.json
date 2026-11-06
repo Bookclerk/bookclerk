@@ -176,7 +176,9 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "own_user_agent": { "$ref": "#/$defs/OwnUserAgent" }
-      }
+      },
+      "if": { "properties": { "mode": { "const": "deny" } } },
+      "then": { "not": { "required": ["own_user_agent"] } }
     },
     "OwnUserAgent": {
       "type": "object",
@@ -189,13 +191,18 @@
           "description": "Exact hosts or *. wildcards (never *).",
           "minItems": 1,
           "maxItems": 32,
-          "items": { "type": "string", "minLength": 1, "not": { "const": "*" } }
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(\\*\\.)?[^*\\s,/:%@?#\\\\]+$"
+          }
         },
         "reason": {
           "type": "string",
           "description": "One line for the operator on why these hosts need the plugin's own agent, such as the app API contract it follows.",
           "minLength": 1,
-          "maxLength": 300
+          "maxLength": 300,
+          "pattern": "^[^\\r\\n]+$"
         }
       }
     },

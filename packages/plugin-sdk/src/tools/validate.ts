@@ -611,7 +611,7 @@ const MAX_OWN_USER_AGENT_REASON_CHARS = 300;
  * points), which the host's IDNA step rejects too.
  */
 // eslint-disable-next-line no-control-regex
-const FORBIDDEN_HOST_CHARS = /[\u0000-\u0020#%/:<>?@[\\\]^|\u007f]/;
+const FORBIDDEN_HOST_CHARS = /[\u0000-\u0020#%,/:<>?@[\\\]^|\u007f]/;
 
 /**
  * True when `raw` is an exact hostname or a `*.` wildcard, as the host's
@@ -625,8 +625,10 @@ function isOwnUserAgentHost(raw: string): boolean {
   const pattern = raw.trim().replace(/\.+$/, "");
   const host = pattern.startsWith("*.") ? pattern.slice(2) : pattern;
   if (!host || host === "*" || FORBIDDEN_HOST_CHARS.test(host)) return false;
+  // The host checks IDNA only. A URL also parses a last label of digits as
+  // IPv4, so a known label is appended to leave that check out.
   try {
-    return new URL(`http://${host}/`).hostname.length > 0;
+    return new URL(`http://${host}.example/`).hostname.length > 0;
   } catch {
     return false;
   }
@@ -643,6 +645,10 @@ function validateOwnUserAgent(m: Manifest): void {
   const own = m.capabilities?.network?.own_user_agent;
   if (own === undefined) return;
   const field = "plugin.toml: capabilities.network.own_user_agent";
+  const unknown = Object.keys(own).filter((key) => key !== "hosts" && key !== "reason");
+  if (unknown.length > 0) {
+    throw new Error(`${field}: unknown field \`${unknown[0]}\` (expected hosts, reason)`);
+  }
   if (m.capabilities.network.mode !== "outbound") {
     throw new Error(`${field} needs mode = "outbound"`);
   }

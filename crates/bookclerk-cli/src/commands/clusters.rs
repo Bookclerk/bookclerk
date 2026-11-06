@@ -125,6 +125,10 @@ pub enum ClustersCommand {
         /// Repeatable.
         #[arg(long = "deny-binding", value_name = "BINDING")]
         deny_bindings: Vec<String>,
+        /// Refuse the plugin's own User-Agent on a host it asks for; its
+        /// requests there carry Bookclerk's agent. Repeatable.
+        #[arg(long = "deny-own-user-agent", value_name = "HOST")]
+        deny_own_user_agent_hosts: Vec<String>,
         /// Deny all network access.
         #[arg(long)]
         deny_network: bool,
@@ -453,6 +457,7 @@ pub async fn run(
             request_digest,
             deny_domains,
             deny_bindings,
+            deny_own_user_agent_hosts,
             deny_network,
         } => {
             let cluster = cluster_id(store, cluster).await?;
@@ -464,6 +469,9 @@ pub async fn run(
                 &RemoteNarrowing {
                     deny_domains: deny_domains.into_iter().collect::<BTreeSet<_>>(),
                     deny_bindings: deny_bindings.into_iter().collect::<BTreeSet<_>>(),
+                    deny_own_user_agent_hosts: deny_own_user_agent_hosts
+                        .into_iter()
+                        .collect::<BTreeSet<_>>(),
                     deny_network,
                 },
                 RemoteApprover::Operator(CLI_APPROVER),

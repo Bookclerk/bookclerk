@@ -326,7 +326,7 @@ On the command line:
 | Join, signing in through a browser | `bookclerk clusters join --url https://owner.example` |
 | Join with a branch invite | `bookclerk clusters join` (paste the invite, or pipe it on stdin) |
 | See what the library asks to run here | `bookclerk clusters consents` |
-| Approve a request | `bookclerk clusters approve <plugin_key> --request <digest> [--deny-domain …] [--deny-binding …]` |
+| Approve a request | `bookclerk clusters approve <plugin_key> --request <digest> [--deny-domain …] [--deny-binding …] [--deny-own-user-agent …]` |
 | Revoke an approval | `bookclerk clusters revoke <plugin_key>` |
 | Leave | `bookclerk clusters leave` (tells the library, which revokes the node, then deletes the node keys) |
 

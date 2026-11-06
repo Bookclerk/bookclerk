@@ -2428,6 +2428,8 @@ export interface RemoteApprovalBody {
   deny_domains?: string[];
   /** Host bindings to remove (`secrets`, `oauth`, `kv`, …). */
   deny_bindings?: string[];
+  /** Requested hosts refused the plugin's own User-Agent; they get Bookclerk's agent. */
+  deny_own_user_agent_hosts?: string[];
   /** True turns outbound network off altogether (no domains, TCP or CIDRs). */
   deny_network?: boolean;
 }

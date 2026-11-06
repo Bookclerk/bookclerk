@@ -99,6 +99,10 @@ reason = "Libro.fm's sign-in, library and download API answers the HTTP client o
   them. A grant approved before this permission existed keeps the hosts
   the plugin lists, because those plugins already sent their own agents
   everywhere.
+- A remote cluster's request lists the same hosts. The operator approves
+  them with the request or refuses some of them with
+  `bookclerk clusters approve --deny-own-user-agent <HOST>` (or the
+  **Deny** boxes in the cluster consents panel).
 
 Where the rule is applied depends on the runtime:
 
@@ -111,7 +115,9 @@ Where the rule is applied depends on the runtime:
 > Raw TCP (`connect()`) carries no HTTP headers, so the rule doesn't
 > reach a plugin that speaks HTTP over its own socket. The native rule
 > lives in the guest's SDK, so it holds for plugins that use the SDK
-> client, which every first-party plugin does.
+> client, which every first-party plugin does. A native guest built
+> with an older SDK, or one that brings its own HTTP client, sends
+> whatever agent it sets.
 
 The native path is tested end to end on Linux, macOS and Windows by
 `cargo test -p bookclerk-plugin-e2e --test native_gateway --test native_gateway_isolation --test native_gateway_lifecycle --test native_gateway_authenticated_endpoint`.
@@ -230,7 +236,9 @@ baseline, and lets the operator **widen or narrow**:
 
 - domains, bindings and flags;
 - the network mode;
-- the hosts that keep the plugin's own [User-Agent](#user-agent);
+- the hosts that keep the plugin's own [User-Agent](#user-agent) (only
+  narrowed: the operator approves or refuses the hosts the manifest
+  lists and can't add others);
 - workerd `cpuMs` and `subrequests`;
 - the shared `diskMib` (capped by the host).
 

@@ -451,6 +451,21 @@
       "name": "own user agent unicode wildcard host",
       "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"openlibrary.org\"]\n\n[capabilities.network.own_user_agent]\nhosts = [\"*.b\\u00fccher.example\"]\nreason = \"r\"\n",
       "error": null
+    },
+    {
+      "name": "own user agent host with comma",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"openlibrary.org\"]\n\n[capabilities.network.own_user_agent]\nhosts = [\"a.example,b.example\"]\nreason = \"r\"\n",
+      "error": "plugin.toml: capabilities.network.own_user_agent.hosts entry `a.example,b.example` is not a valid hostname or `*.` wildcard (`*` is not allowed)"
+    },
+    {
+      "name": "own user agent empty punycode label",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"openlibrary.org\"]\n\n[capabilities.network.own_user_agent]\nhosts = [\"xn--.example\"]\nreason = \"r\"\n",
+      "error": "plugin.toml: capabilities.network.own_user_agent.hosts entry `xn--.example` is not a valid hostname or `*.` wildcard (`*` is not allowed)"
+    },
+    {
+      "name": "own user agent numeric last label",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"openlibrary.org\"]\n\n[capabilities.network.own_user_agent]\nhosts = [\"*.api.123\"]\nreason = \"r\"\n",
+      "error": null
     }
   ]
 }

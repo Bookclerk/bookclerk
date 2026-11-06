@@ -193,7 +193,8 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
 }
 
 const { parse } = await import("smol-toml");
-const { materializeConfig } = await import("../dist/sparse-workerd/config.js");
+const { materializeConfig, ownUserAgentHostsFor } =
+  await import("../dist/sparse-workerd/config.js");
 const conflictDir = path.join(fixtures, "invalid-module-path");
 const conflictManifest = parse(fs.readFileSync(path.join(conflictDir, "plugin.toml"), "utf8"));
 try {
@@ -329,6 +330,7 @@ function bindingMessage(manifest) {
     [own("outbound", { hosts: ["a.example.com"], reason: " " }), "one line"],
     [own("outbound", { hosts: ["a.example.com"], reason: "a\nb" }), "one line"],
     [own("outbound", { hosts: ["a.example.com"], reason: "x".repeat(301) }), "one line"],
+    [own("outbound", { ...ok, extra: true }), "unknown field `extra`"],
   ];
   for (const [manifest, needle] of cases) {
     const message = bindingMessage(manifest);
@@ -336,6 +338,13 @@ function bindingMessage(manifest) {
       console.error("FAIL own_user_agent", JSON.stringify(manifest), message);
       process.exit(1);
     }
+  }
+  const asciiHosts = ownUserAgentHostsFor([" *.Bücher.example. ", "API.example.com", "xn--"]);
+  if (
+    JSON.stringify(asciiHosts) !== JSON.stringify(["*.xn--bcher-kva.example", "api.example.com"])
+  ) {
+    console.error("FAIL ownUserAgentHostsFor", JSON.stringify(asciiHosts));
+    process.exit(1);
   }
   console.log("ok own_user_agent validation");
 }

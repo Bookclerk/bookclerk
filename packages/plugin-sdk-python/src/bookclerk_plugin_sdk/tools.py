@@ -562,7 +562,7 @@ MAX_OWN_USER_AGENT_REASON_CHARS = 300
 """Longest ``own_user_agent.reason``, in characters."""
 
 
-_FORBIDDEN_HOST_CHARS = frozenset("#%/:<>?@[\\]^|\x7f")
+_FORBIDDEN_HOST_CHARS = frozenset("#%,/:<>?@[\\]^|\x7f")
 """Code points a URL host may not contain (WHATWG forbidden domain code points)."""
 
 
@@ -585,12 +585,20 @@ def _is_own_user_agent_host(raw: str) -> bool:
         return False
     if any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in host):
         return False
-    if host.isascii():
+    if not host.isascii():
+        try:
+            host.encode("idna")
+        except UnicodeError:
+            return False
         return True
-    try:
-        host.encode("idna")
-    except UnicodeError:
-        return False
+    # An ASCII A-label (`xn--`) must decode, as the host's IDNA step checks.
+    for label in host.split("."):
+        if label[:4].lower() == "xn--":
+            try:
+                if not label[4:].encode("ascii").decode("punycode"):
+                    return False
+            except UnicodeError:
+                return False
     return True
 
 
@@ -612,6 +620,9 @@ def _validate_own_user_agent(net: dict[str, Any]) -> None:
     field = "plugin.toml: capabilities.network.own_user_agent"
     if not isinstance(own, dict):
         raise ValueError(f"{field} must be a table")
+    unknown = sorted(set(own) - {"hosts", "reason"})
+    if unknown:
+        raise ValueError(f"{field}: unknown field `{unknown[0]}` (expected hosts, reason)")
     if net.get("mode") != "outbound":
         raise ValueError(f'{field} needs mode = "outbound"')
     hosts = own.get("hosts")
