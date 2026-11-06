@@ -2044,40 +2044,14 @@ fn plan_enqueue_job(
     now: &str,
 ) -> AtomicPlan {
     let run_after = run_after.unwrap_or(now);
-    let dedup = match kind {
-        "scan" => match json_instance_from_payload(payload_json) {
-            Some(instance) => format!(
-                "scan:account={}:instance={instance}",
-                json_account_from_payload(payload_json)
-            ),
-            None => format!("scan:account={}", json_account_from_payload(payload_json)),
-        },
-        "acquire" => {
-            // Mirrors `JobKind::dedup_key`: a forced or PDF-only acquire is
-            // different work from a plain one.
-            let mut key = format!(
-                "acquire:title={}:account={}",
-                json_title_from_payload(payload_json),
-                json_account_from_payload(payload_json)
-            );
-            if json_force_from_payload(payload_json) == 1 {
-                key.push_str(":force=1");
-            }
-            if json_flag_from_payload(payload_json, "pdf_only") {
-                key.push_str(":pdf=1");
-            }
-            match json_instance_from_payload(payload_json) {
-                Some(instance) => format!("{key}:instance={instance}"),
-                None => key,
-            }
-        }
-        "listen_sync" => "listen_sync".into(),
-        "integration_scan" => format!(
-            "integration_scan:id={}:force={}",
-            json_integration_from_payload(payload_json),
-            json_force_from_payload(payload_json)
-        ),
-        other => format!("{other}:unknown"),
+    // The same key the ORM path admits under (`JobKind::dedup_key`), so
+    // every kind, including ones added later, dedups per its own payload.
+    let dedup = match (
+        crate::models::JobKind::parse(kind),
+        serde_json::from_str::<crate::models::JobPayload>(payload_json),
+    ) {
+        (Some(job_kind), Ok(payload)) => job_kind.dedup_key(&payload),
+        _ => format!("{kind}:unknown"),
     };
     let job_id = format!("{}-{}", kind, uuid::Uuid::new_v4());
     let mut statements = plan_lock_job_queue();
@@ -2739,72 +2713,6 @@ fn plan_claim_next_event_delivery(
         prior_receipt_index: None,
         expected_hash: None,
     }
-}
-
-/// Best-effort account filter from a job payload JSON string.
-fn json_account_from_payload(payload_json: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(payload_json)
-        .ok()
-        .and_then(|v| {
-            v.get("account")
-                .and_then(|a| a.as_str())
-                .map(str::to_string)
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "all".into())
-}
-
-/// Best-effort pinned plugin instance id from a job payload JSON string.
-fn json_instance_from_payload(payload_json: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(payload_json)
-        .ok()
-        .and_then(|v| {
-            v.get("plugin_instance_id")
-                .and_then(|a| a.as_str())
-                .map(str::to_string)
-        })
-        .filter(|s| !s.is_empty())
-}
-
-/// Best-effort title filter from a job payload JSON string.
-fn json_title_from_payload(payload_json: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(payload_json)
-        .ok()
-        .and_then(|v| v.get("title").and_then(|a| a.as_str()).map(str::to_string))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "all".into())
-}
-
-/// Best-effort `force` flag from a job payload JSON string (`0` or `1`).
-fn json_force_from_payload(payload_json: &str) -> u8 {
-    u8::from(
-        serde_json::from_str::<serde_json::Value>(payload_json)
-            .ok()
-            .and_then(|v| v.get("force").and_then(JsonValue::as_bool))
-            .unwrap_or(false),
-    )
-}
-
-/// Best-effort boolean `field` of a job payload JSON string (`false` when
-/// absent or not a boolean).
-fn json_flag_from_payload(payload_json: &str, field: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(payload_json)
-        .ok()
-        .and_then(|v| v.get(field).and_then(JsonValue::as_bool))
-        .unwrap_or(false)
-}
-
-/// Best-effort integration id from a job payload JSON string.
-fn json_integration_from_payload(payload_json: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(payload_json)
-        .ok()
-        .and_then(|v| {
-            v.get("integration_id")
-                .and_then(|a| a.as_str())
-                .map(str::to_string)
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "all".into())
 }
 
 #[cfg(test)]
@@ -4218,6 +4126,84 @@ mod tests {
             ),
         );
         assert_eq!(again.status, atomic_status::DUPLICATE);
+    }
+
+    /// Every kind dedups under the ORM's `JobKind::dedup_key`, so two
+    /// Discover subjects (or two plugin schedules) get one job each instead of
+    /// folding into one shared `:unknown` key.
+    #[test]
+    fn enqueue_dedups_every_kind_by_its_own_payload() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        let cases = [
+            ("discover_candidates", r#"{"v":1,"subject":"operator"}"#),
+            ("discover_candidates", r#"{"v":1,"subject":"user:2"}"#),
+            ("discover_feed", r#"{"v":1,"subject":"operator"}"#),
+            ("discover_feed", r#"{"v":1,"subject":"user:2"}"#),
+            (
+                "plugin_scheduled",
+                r#"{"v":1,"plugin_instance_id":"a","cron":"0 * * * *"}"#,
+            ),
+            (
+                "plugin_scheduled",
+                r#"{"v":1,"plugin_instance_id":"b","cron":"0 * * * *"}"#,
+            ),
+            (
+                "plugin_copy",
+                r#"{"v":1,"plugin_id":"local","source_key":"x","dest_key":"y"}"#,
+            ),
+            ("listen_sync", r#"{"v":1}"#),
+            ("integration_scan", r#"{"v":1,"integration_id":"echo"}"#),
+            (
+                "scan",
+                r#"{"v":1,"account":"a1","plugin_instance_id":"i1"}"#,
+            ),
+        ];
+        for (i, (kind, payload)) in cases.iter().enumerate() {
+            let now = format!("2024-06-01T00:01:{:02}Z", 2 * i);
+            let first = run_plan(
+                &conn,
+                &plan_enqueue_job(kind, payload, 0, 3, 32, None, &now),
+            );
+            assert_eq!(first.status, atomic_status::OK, "{kind} {payload}");
+            let later = format!("2024-06-01T00:01:{:02}Z", 2 * i + 1);
+            let again = run_plan(
+                &conn,
+                &plan_enqueue_job(kind, payload, 0, 3, 32, None, &later),
+            );
+            assert_eq!(again.status, atomic_status::DUPLICATE, "{kind} {payload}");
+            let parsed: crate::models::JobPayload = serde_json::from_str(payload).unwrap();
+            let job_kind = crate::models::JobKind::parse(kind).unwrap();
+            let stored: String = conn
+                .query_row(
+                    "SELECT dedup_key FROM jobs WHERE payload = ?1 AND kind = ?2",
+                    [payload, kind],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, job_kind.dedup_key(&parsed), "{kind} {payload}");
+        }
+        let unknown = run_plan(
+            &conn,
+            &plan_enqueue_job(
+                "not_a_kind",
+                r#"{"v":1}"#,
+                0,
+                3,
+                32,
+                None,
+                "2024-06-01T00:02:00Z",
+            ),
+        );
+        assert_eq!(unknown.status, atomic_status::OK);
+        let key: String = conn
+            .query_row(
+                "SELECT dedup_key FROM jobs WHERE kind = 'not_a_kind'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(key, "not_a_kind:unknown");
     }
 
     /// The SQL dedup key of an acquire matches `JobKind::dedup_key`: a

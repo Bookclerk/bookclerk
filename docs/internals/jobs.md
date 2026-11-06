@@ -105,7 +105,9 @@ stateDiagram-v2
 
 - **Admission** is one atomic backend operation (a guest atomic batch in
   production, a local `BEGIN` in tests). A partial unique index on `dedup_key` for
-  `pending`/`running` rows enforces active-key uniqueness.
+  `pending`/`running` rows enforces active-key uniqueness. Both paths take the
+  key from `JobKind::dedup_key`, so a new kind needs no second rule, and a
+  duplicate returns the id of the job it folded into.
 - A **worker** claims with a conditional `pending` → `running` update and a
   unique per-attempt `lease_generation`. Lost RPCs retry the same
   `operation_id` so a replay cannot claim a second row. That replay is
