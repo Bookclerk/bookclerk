@@ -154,6 +154,20 @@ bookclerk library acquire --isbn 978…
 
 Credentials are stored in `encrypted_secrets` in the database.
 
+Catalog search, title details, related titles and purchase links work
+without an account. They use the signed-out catalog of the Libro.fm Android
+app's API, with a user agent that names Bookclerk and the app-version header
+that API requires. Libro.fm's website pages refuse automated requests, so
+the plugin does not read them.
+
+Search lists the title, ISBN, authors, narrators and cover. Title details
+add the description, genres, running time, publisher, series, abridged
+status, language, list price in US dollars and related titles.
+
+A purchase link points at the matching ISBN on Libro.fm, or else at the
+best title-and-author match. A book that the details call reports as not
+for sale never gets a link, even through the title match.
+
 ## Chirp
 
 Connect Chirp from **Accounts** with your email and password. Then:

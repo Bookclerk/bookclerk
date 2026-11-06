@@ -253,14 +253,14 @@ impl ContentSource for LibroSource {
         &self,
         opts: &CatalogSearchOpts,
     ) -> bookclerk_source::Result<Vec<CatalogHit>> {
-        crate::catalog::search_catalog(opts).await
+        crate::catalog::search_catalog(&self.base_url, opts).await
     }
 
     async fn catalog_detail(
         &self,
         product_id: &str,
     ) -> bookclerk_source::Result<Option<CatalogHit>> {
-        crate::catalog::catalog_detail(product_id).await
+        crate::catalog::catalog_detail(&self.base_url, product_id).await
     }
 
     async fn expand_candidates(
@@ -268,14 +268,14 @@ impl ContentSource for LibroSource {
         seed: &ExpandSeed,
         limit: usize,
     ) -> bookclerk_source::Result<Vec<CatalogHit>> {
-        crate::catalog::expand_candidates(seed, limit).await
+        crate::catalog::expand_candidates(&self.base_url, seed, limit).await
     }
 
     async fn purchase_hint(
         &self,
         opts: &PurchaseHintOpts,
     ) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
-        crate::catalog::purchase_hint(opts).await
+        crate::catalog::purchase_hint(&self.base_url, opts).await
     }
 }
 

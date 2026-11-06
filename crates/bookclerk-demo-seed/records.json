@@ -1,4 +1,47 @@
 {
+  "demo-circe": {
+    "product_id": "9781478975311",
+    "title": "Circe",
+    "url": "https://libro.fm/audiobooks/9781478975311",
+    "cover_url": "https://covers.libro.fm/9781478975311_1120.jpg",
+    "origin": "libro details",
+    "subtitle": null,
+    "description": "<p><b>This #1 </b><i><b>New York Times</b></i><b> bestseller brilliantly reimagines the life of Circe, formidable sorceress of </b><i><b>The Odyssey</b></i><b>, as she discovers her own power, forges her identity, and challenges the gods who seek to control her. </b><br><br><b>\"[A] bold and subversive retelling of the goddess's story.\" —</b><i><b>The New York Times</b></i></p><p>In the house of Helios, god of the sun and mightiest of the Titans, a daughter is born. But Circe is a strange child—not powerful, like her father, nor viciously alluring like her mother. Turning to the world of mortals for companionship, she discovers that she does possess power—the power of witchcraft, which can transform rivals into monsters and menace the gods themselves.</p><p>Threatened, Zeus banishes her to a deserted island, where she hones her occult craft, tames wild beasts and crosses paths with many of the most famous figures in all of mythology, including the Minotaur, Daedalus and his doomed son Icarus, the murderous Medea, and, of course, wily Odysseus.</p><p>But there is danger, too, for a woman who stands alone, and Circe unwittingly draws the wrath of both men and gods, ultimately finding herself pitted against one of the most terrifying and vengeful of the Olympians. To protect what she loves most, Circe must summon all her strength and choose, once and for all, whether she belongs with the gods she is born from, or the mortals she has come to love.</p><p>With unforgettably vivid characters, mesmerizing language, and page-turning suspense, <i>Circe </i>is a triumph of storytelling, an intoxicating epic of family rivalry, palace intrigue, love and loss, as well as a celebration of indomitable female strength in a man's world.</p><p>Named one of the Best Books of the Year by NPR, <i>Washington Post</i>, <i>People</i>, <i>Time</i>, Amazon, <i>Entertainment Weekly</i>, <i>Bustle</i>, <i>Newsweek</i>, <i>A.V. Club</i>, <i>Christian Science Monitor</i>, <i>Refinery 29</i>, <i>Buzzfeed</i>, <i>Paste</i>, Audible, <i>Kirkus Reviews</i>, <i>Publishers Weekly</i>, <i>Thrillist</i>, NYPL, <i>Self</i>, <i>Real Simple</i>, Goodreads,<i> Boston Globe</i>, <i>Electric Literature</i>, <i>BookPage</i>, <i>Guardian</i>, <i>Book Riot</i>, <i>Seattle Times</i>, and <i>Business Insider</i>.</p>",
+    "publisher": "Hachette Audio",
+    "length_minutes": 728,
+    "published_at": "2018-04-10T00:00:00.000Z",
+    "categories": "Classics, Fiction, Fiction - Literary, Historical Fiction",
+    "language": "eng",
+    "price_cents": 3359,
+    "currency": "USD",
+    "price_label": "$33.59",
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": false,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "isbn",
+        "value": "9781478975311"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Madeline Miller",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Perdita Weeks",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [],
+    "parent_product_id": null
+  },
   "demo-dune": {
     "product_id": "B002V1OF70",
     "title": "Dune",
@@ -195,6 +238,59 @@
     ],
     "parent_product_id": null
   },
+  "demo-lessons-in-chemistry": {
+    "product_id": "9780593507537",
+    "title": "Lessons in Chemistry",
+    "url": "https://libro.fm/audiobooks/9780593507537",
+    "cover_url": "https://covers.libro.fm/9780593507537_1120.jpg",
+    "origin": "libro details",
+    "subtitle": "A Novel",
+    "description": "<b>#1 GLOBAL BESTSELLER WITH MORE THAN 8 MILLION COPIES SOLD • Meet Elizabeth Zott: “a gifted research chemist, absurdly self-assured and immune to social convention” (<i>The Washington Post</i>) in 1960s California whose career takes a detour when she becomes the unlikely star of a beloved TV cooking show. <b>• <b>STREAM ON APPLE TV+</b><br></b><br>This novel is “irresistible, satisfying and full of fuel” (<i>The New York Times Book Review</i>) and “witty, sometimes hilarious...the <i>Catch-22 </i>of early feminism” (Stephen King, via Twitter).</b><br><b><br>A BEST BOOK OF THE YEAR: <i>The New York Times, Washington Post, NPR, Oprah Daily, Entertainment Weekly, Newsweek</i></b><br><br><b><i> </i></b>Chemist Elizabeth Zott is not your average woman. In fact, Elizabeth Zott would be the first to point out that there is no such thing as an <i>average</i> woman. But it’s the early 1960s and her all-male team at Hastings Research Institute takes a very unscientific view of equality. Except for one: Calvin Evans; the lonely, brilliant, Nobel–prize nominated grudge-holder who falls in love with—of all things—her mind. True chemistry results. <br><br>But like science, life is unpredictable. Which is why a few years later Elizabeth Zott finds herself not only a single mother, but the reluctant star of America’s most beloved cooking show <i>Supper at Six</i>. Elizabeth’s unusual approach to cooking (“combine one tablespoon acetic acid with a pinch of sodium chloride”) proves revolutionary. But as her following grows, not everyone is happy. Because as it turns out, Elizabeth Zott isn’t just teaching women to cook. She’s daring them to change the status quo.  <br><br>Laugh-out-loud funny, shrewdly observant, and studded with a dazzling cast of supporting characters, <i>Lessons in Chemistry</i> is as original and vibrant as its protagonist.",
+    "publisher": "Penguin Random House Audio Publishing Group",
+    "length_minutes": 715,
+    "published_at": "2022-04-05T00:00:00.000Z",
+    "categories": "Humor, Fiction, Fiction - Literary",
+    "language": "eng",
+    "price_cents": 2250,
+    "currency": "USD",
+    "price_label": "$22.50",
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": false,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "isbn",
+        "value": "9780593507537"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Bonnie Garmus",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Miranda Raison",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Bonnie Garmus",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Pandora Sykes",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [],
+    "parent_product_id": null
+  },
   "demo-mistborn-1-part-1": {
     "product_id": "1716",
     "title": "Mistborn 1: The Final Empire 1 of 3",
@@ -349,6 +445,53 @@
     ],
     "parent_product_id": null
   },
+  "demo-the-midnight-library": {
+    "product_id": "9780593340233",
+    "title": "The Midnight Library",
+    "url": "https://libro.fm/audiobooks/9780593340233",
+    "cover_url": "https://covers.libro.fm/9780593340233_1120.jpg",
+    "origin": "libro details",
+    "subtitle": "A GMA Book Club Pick (A Novel)",
+    "description": "<b><b><b><b>The #1 <i>New York Times </i>bestselling WORLDWIDE phenomenon </b><br><br><b>Winner of the Goodreads Choice Award for Fiction | A Good Morning America Book Club Pick | <i>Independent (</i>London) Ten Best Books of the Year</b><br><br><b>\"A feel-good book guaranteed to lift your spirits.\"<i>—The Washington Post</i> <br><br>The dazzling reader-favorite about the choices that go into a life well lived. Don’t miss Matt Haig’s latest <i>New York Times</i> bestseller, <i>The Midnight Train</i>, available now<br></b></b></b></b><br>Somewhere out beyond the edge of the universe there is a library that contains an infinite number of books, each one the story of another reality. One tells the story of your life as it is, along with another book for the other life you could have lived if you had made a different choice at any point in your life. While we all wonder how our lives might have been, what if you had the chance to go to the library and see for yourself? Would any of these other lives truly be better?<br><br>In <i>The Midnight Library</i>, Matt Haig's enchanting blockbuster novel, Nora Seed finds herself faced with this decision. Faced with the possibility of changing her life for a new one, following a different career, undoing old breakups, realizing her dreams of becoming a glaciologist; she must search within herself as she travels through the Midnight Library to decide what is truly fulfilling in life, and what makes it worth living in the first place.",
+    "publisher": "Penguin Random House Audio Publishing Group",
+    "length_minutes": 530,
+    "published_at": "2020-09-29T00:00:00.000Z",
+    "categories": "Fiction, Fiction - Literary, Science Fiction",
+    "language": "eng",
+    "price_cents": 2000,
+    "currency": "USD",
+    "price_label": "$20.00",
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": false,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "isbn",
+        "value": "9780593340233"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Matt Haig",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Carey Mulligan",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [
+      {
+        "name": "The Midnight World"
+      }
+    ],
+    "parent_product_id": null
+  },
   "demo-the-silent-patient": {
     "product_id": "372695",
     "title": "The Silent Patient",
@@ -443,6 +586,54 @@
         "storeSeriesId": "B0DMXTJ8WH"
       }
     ],
+    "parent_product_id": null
+  },
+  "demo-tomorrow-and-tomorrow": {
+    "product_id": "9780593591635",
+    "title": "Tomorrow, and Tomorrow, and Tomorrow",
+    "url": "https://libro.fm/audiobooks/9780593591635",
+    "cover_url": "https://covers.libro.fm/9780593591635_1120.jpg",
+    "origin": "libro details",
+    "subtitle": "A novel",
+    "description": "<b><i>NEW YORK TIMES </i>BESTSELLER • Sam and Sadie—two college friends, often in love, but never lovers—become creative partners in a dazzling and intricately imagined world of video game design, where success brings them fame, joy, tragedy, duplicity, and, ultimately, a kind of immortality. It is a love story, but not one you have heard before.</b><br> <b><br>\"Delightful and absorbing.\" —<i>The New York Times </i>• \"Utterly brilliant.\" —John Green</b><br>  <br><b>One of the <i>New York Times</i>’s 100 Best Books of the 21st Century • One of the Best Books of the Year: <i>The New York Times, Entertainment Weekly, TIME, </i>GoodReads, <i>Oprah Daily</i></b><br><br>From the best-selling author of <i>The Storied Life of A. J. Fikry</i>: On a bitter-cold day, in the December of his junior year at Harvard, Sam Masur exits a subway car and sees, amid the hordes of people waiting on the platform, Sadie Green. He calls her name. For a moment, she pretends she hasn’t heard him, but then, she turns, and a game begins: a legendary collaboration that will launch them to stardom. <br><br>These friends, intimates since childhood, borrow money, beg favors, and, before even graduating college, they have created their first blockbuster, Ichigo. Overnight, the world is theirs. Not even twenty-five years old, Sam and Sadie are brilliant, successful, and rich, but these qualities won’t protect them from their own creative ambitions or the betrayals of their hearts.<br><br>Spanning thirty years, from Cambridge, Massachusetts, to Venice Beach, California, and lands in between and far beyond, Gabrielle Zevin’s <i>Tomorrow, and Tomorrow, and Tomorrow </i>examines the multifarious nature of identity, disability, failure, the redemptive possibilities in play, and above all, our need to connect: to be loved and to love.",
+    "publisher": "Penguin Random House Audio Publishing Group",
+    "length_minutes": 832,
+    "published_at": "2022-07-05T00:00:00.000Z",
+    "categories": "Fiction, Fiction - Literary",
+    "language": "eng",
+    "price_cents": 2600,
+    "currency": "USD",
+    "price_label": "$26.00",
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": false,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "isbn",
+        "value": "9780593591635"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Gabrielle Zevin",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Jennifer Kim",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Julian Cihi",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [],
     "parent_product_id": null
   },
   "demo-where-the-crawdads-sing": {

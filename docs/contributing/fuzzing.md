@@ -39,6 +39,7 @@ boundary extends it.
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the cluster socket | `bookclerk-node-proto::Frame` |
+| `libro_catalog` | Libro.fm catalog search pages and audiobook details, which the `libro` guest turns into Discover records, purchase links and prices | `bookclerk-plugin-source-libro` |
 
 Some boundaries need more than a cell:
 

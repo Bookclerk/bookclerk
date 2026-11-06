@@ -14,7 +14,9 @@
 //!
 //! The titles are real audiobooks. Before seeding, the binary looks each one
 //! up in its storefront's public catalog through the storefront plugin, the
-//! search Discover uses, and the seed writes the record the store returned:
+//! search Discover uses, then fetches the matched title's full record (the
+//! details call title dialogs use), and the seed writes the record the store
+//! returned:
 //! its product id, cover art, description and the rest, as a scan and
 //! enrichment would. A title whose lookup fails (store unreachable, no
 //! confident match) keeps the fields listed here under a made-up product id
@@ -36,7 +38,7 @@ use bookclerk_library::{
     AcquireStatus, LibraryStore, NewBook, NewTitleRequest, RequestStatus, UserRole,
 };
 use bookclerk_node_proto::{CatalogFile, CatalogMetadata, CatalogTitle};
-use bookclerk_source::CatalogHit;
+use bookclerk_source::{CatalogHit, ContentSource};
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
@@ -288,9 +290,10 @@ pub type StoreRecords = BTreeMap<&'static str, CatalogHit>;
 /// Storefront records for the sample titles as the storefront plugins
 /// returned them, by [`Lookup::key`], committed in `records.json`.
 ///
-/// The demo's own lookups run from a datacenter, where some storefronts
-/// (Libro.fm among them) refuse the requests. These records stand in for a
-/// lookup that fails, so every sample title is a real store record. Refresh
+/// The demo's own lookups run from a datacenter, where a storefront may
+/// refuse or time out. These records stand in for a lookup that fails, so
+/// every sample title is a real store record. Libro.fm's records come from
+/// its app catalog's details, so they carry descriptions and prices. Refresh
 /// them from a network the stores answer with `bookclerk-demo-seed
 /// --write-records crates/bookclerk-demo-seed/records.json`.
 const RECORDS_JSON: &str = include_str!("../records.json");
@@ -897,6 +900,54 @@ fn catalog_title(sample: &SampleTitle, hit: Option<&CatalogHit>) -> CatalogTitle
             content_type: Some("audio/mp4".into()),
         }],
     }
+}
+
+/// Replaces a search hit with its storefront's full catalog record (the
+/// details call Discover makes for title dialogs), so a store whose search
+/// rows are lean, such as Libro.fm, still seeds a description, publisher,
+/// genres and price.
+///
+/// # Arguments
+///
+/// * `source` - The storefront the hit came from.
+/// * `hit` - The search row [`best_match`] chose.
+/// * `deadline` - When the lookup budget runs out.
+///
+/// # Returns
+///
+/// The full record under `hit`'s product id, or `hit` unchanged when the
+/// details call fails, times out, finds nothing, or returns a different
+/// product than the search matched (neither the same product id nor the
+/// same ISBN).
+pub async fn with_details(
+    source: &dyn ContentSource,
+    hit: CatalogHit,
+    deadline: tokio::time::Instant,
+) -> CatalogHit {
+    let lookup = tokio::time::timeout_at(deadline, source.catalog_detail(&hit.product_id));
+    match lookup.await {
+        Ok(Ok(Some(mut full))) if same_product(&full, &hit) => {
+            // Keep the id the search matched, so records stay keyed alike.
+            full.product_id = hit.product_id;
+            full
+        }
+        Ok(Ok(_)) => hit,
+        Ok(Err(err)) => {
+            tracing::warn!(product = %hit.product_id, %err, "catalog details failed");
+            hit
+        }
+        Err(_) => {
+            tracing::warn!(product = %hit.product_id, "catalog details timed out");
+            hit
+        }
+    }
+}
+
+/// Whether a details record describes the same product as a search row: the
+/// same product id, or the same ISBN when a store keys its search rows and
+/// details differently (an ISBN on one, a slug on the other).
+fn same_product(full: &CatalogHit, hit: &CatalogHit) -> bool {
+    full.product_id == hit.product_id || hit.isbn().is_some_and(|isbn| full.isbn() == Some(isbn))
 }
 
 /// The `--write-records <path>` argument the seed binary was given, if any.

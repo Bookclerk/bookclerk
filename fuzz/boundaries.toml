@@ -160,6 +160,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.libro_catalog]
+crate = "bookclerk-plugin-source-libro"
+boundary = "Libro.fm catalog search pages and audiobook details from the store's app API"
+input_from = "store"
+side = "guest"
+artifacts = ["bookclerk"]
+
 [targets.node_frame]
 crate = "bookclerk-node-proto"
 boundary = "Node-to-node frames on the cluster socket"
