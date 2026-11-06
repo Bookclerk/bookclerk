@@ -313,9 +313,16 @@ async fn fetch_one_store(
     let mut answered = 0usize;
     // Deals first: one call, and they fill the deals shelf whatever the seeds.
     let deal_key = call_key(&id, "deals", &[]);
+    let skip_set = |hit: &CatalogHit| {
+        exclude_series_sets && id.eq_ignore_ascii_case("graphicaudio") && looks_like_series_set(hit)
+    };
     if let Some(hits) = cached_or_call(library, &id, &deal_key, || source.list_deals(32)).await {
         answered += 1;
-        out.extend(hits.into_iter().map(|h| hit_to_candidate(&id, h)));
+        out.extend(
+            hits.into_iter()
+                .filter(|h| !skip_set(h))
+                .map(|h| hit_to_candidate(&id, h)),
+        );
     }
     calls += 1;
     for seed in seeds {
@@ -331,7 +338,9 @@ async fn fetch_one_store(
                 &s.product_id,
                 &s.title,
                 s.authors.as_deref().unwrap_or(""),
+                s.narrators.as_deref().unwrap_or(""),
                 s.series.as_deref().unwrap_or(""),
+                s.series_asin.as_deref().unwrap_or(""),
                 s.asin.as_deref().unwrap_or(""),
                 s.isbn.as_deref().unwrap_or(""),
                 &s.region,
@@ -342,10 +351,7 @@ async fn fetch_one_store(
         let Some(hits) = hits else { continue };
         answered += 1;
         for hit in hits {
-            if exclude_series_sets
-                && id.eq_ignore_ascii_case("graphicaudio")
-                && looks_like_series_set(&hit)
-            {
+            if skip_set(&hit) {
                 continue;
             }
             out.push(apply_seed_title(hit_to_candidate(&id, hit), seed));
@@ -451,10 +457,17 @@ pub async fn rank_subject_feed(
     let taste = load_subject_taste(library, subject, opts).await?;
     let household = library.list_books(None).await?;
     let (asins, isbns, products) = owned_identity_sets(&household);
-    let stored = library.list_discover_candidates(subject).await?;
+    // With storefront candidates turned off, stored rows from before stay
+    // out of the feed; rows fetched for another seed scope (before the
+    // subject had taste of their own, or after they lost it) do too.
+    let stored = if opts.fetch_storefront_candidates {
+        library.list_discover_candidates(subject).await?
+    } else {
+        Vec::new()
+    };
     let newest = library.newest_discover_candidate_fetch(subject).await?;
     let mut map: HashMap<String, StorefrontCandidate> = HashMap::new();
-    for row in &stored {
+    for row in stored.iter().filter(|row| row.seed_scope == taste.scope) {
         match serde_json::from_str::<StorefrontCandidate>(&row.candidate_json) {
             Ok(c) => insert_candidate(&mut map, c, &asins, &isbns, &products),
             Err(err) => tracing::debug!(error = %err, "skip an unreadable stored candidate"),

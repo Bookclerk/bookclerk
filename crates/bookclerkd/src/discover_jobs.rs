@@ -478,6 +478,22 @@ mod tests {
         assert_eq!(report["scope"], "household");
         assert!(report["candidates_fetched_at"].is_string());
 
+        // A feed another release wrote, which does not decode, counts as
+        // missing, so the page shows placeholders until a ranking replaces it.
+        library
+            .put_discover_feed(
+                &DiscoverSubject::Operator,
+                "not a feed",
+                SeedScope::Household,
+                Some(Utc::now()),
+            )
+            .await
+            .unwrap();
+        let (_, report) = get(&app, "/api/discover/status").await;
+        assert_eq!(report["ready"], false);
+        let (_, feed) = get(&app, "/api/discover/recommendations").await;
+        assert_eq!(feed["state"], "preparing");
+
         // A job without a subject fails instead of guessing one.
         assert!(run_discover_feed(&state, &JobPayload::default(), None)
             .await

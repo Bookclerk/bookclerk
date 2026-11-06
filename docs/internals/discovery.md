@@ -67,7 +67,14 @@ operator, a household user, or a portal identity) has a **subject key**
    nothing new still counts as fresh for a day.
 2. **Feed** (`discover_feeds`): when the fetch finishes it admits a
    `discover_feed` job, which ranks the stored candidates into shelves with
-   no network calls and stores the result.
+   no network calls and stores the result. It uses only candidates fetched
+   for the person's current seeds (their own, or the household's), and none
+   when `discovery.storefront_candidates` is off.
+
+> [!NOTE]
+> A candidate fetch asks the storefronts deployed on the node that claims
+> it. In a cluster that splits storefronts across nodes, stores deployed
+> only on other nodes are not asked yet.
 
 Storefront answers are cached for 24 hours in `discover_store_calls`, keyed by
 a hash of the store and the request, so people whose seeds overlap share one
@@ -82,7 +89,11 @@ seeing:
 | --- | --- |
 | `ready` | The stored feed is current. |
 | `refreshing` | The stored feed is shown while a newer one is built. |
-| `preparing` | No feed yet; shelves are empty and the page shows placeholders. |
+| `preparing` | No feed yet (or the stored one does not decode); shelves are empty and the page shows placeholders. |
+
+While the state is `preparing` or `refreshing`, the page reads the feed again
+every 4 seconds, up to 15 times. A `preparing` page then keeps reading every
+30 seconds until shelves arrive.
 
 A read queues what is stale: a ranking when the last fetch finished after the
 feed was ranked, and a fetch when none has finished or the last one is older

@@ -4620,10 +4620,13 @@ async fn discover_status(
         .map_err(|status| (status, status.canonical_reason().unwrap_or("error").into()))?;
     let subject = bookclerk_library::DiscoverSubject::parse(&subject_key)
         .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
+    // A feed that does not decode (another release wrote it) counts as
+    // missing, so it is ranked again and not reported ready.
     let feed = library
         .get_discover_feed(&subject)
         .await
-        .map_err(internal_err)?;
+        .map_err(internal_err)?
+        .filter(|f| serde_json::from_str::<bookclerk_discover::DiscoverFeed>(&f.feed_json).is_ok());
     let fetched = library
         .newest_discover_candidate_fetch(&subject)
         .await
@@ -5376,20 +5379,25 @@ async fn discover_recommendations(
         .map(|p| p.disabled_shelves)
         .unwrap_or_default();
 
-    let stored = library
-        .get_discover_feed(&subject)
+    let read = bookclerk_discover::stored_subject_feed(&library, &subject, &disabled_shelves)
         .await
         .map_err(internal_err)?;
+    // A feed that does not decode reads as `None` above and counts as
+    // missing here too, so a ranking replaces it.
+    let stored = if read.is_some() {
+        library
+            .get_discover_feed(&subject)
+            .await
+            .map_err(internal_err)?
+    } else {
+        None
+    };
     let newest = library
         .newest_discover_candidate_fetch(&subject)
         .await
         .map_err(internal_err)?;
     let refresh = crate::discover_jobs::refresh_needed(stored.as_ref(), newest, chrono::Utc::now());
     crate::discover_jobs::queue_refresh(&state, &subject, refresh).await;
-
-    let read = bookclerk_discover::stored_subject_feed(&library, &subject, &disabled_shelves)
-        .await
-        .map_err(internal_err)?;
     let mut feed = match read {
         Some(stored) => {
             let mut feed = stored.feed;
