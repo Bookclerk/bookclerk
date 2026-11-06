@@ -1,0 +1,303 @@
+<!DOCTYPE html><html class="default" lang="en" data-base="../"><head><meta charset="utf-8"/><meta http-equiv="x-ua-compatible" content="IE=edge"/><title>ContentSource | @bookclerk/plugin-sdk</title><meta name="description" content="Documentation for @bookclerk/plugin-sdk"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="../assets/style.css"/><link rel="stylesheet" href="../assets/highlight.css"/><script defer src="../assets/main.js"></script><script async src="../assets/icons.js" id="tsd-icons-script"></script><script async src="../assets/search.js" id="tsd-search-script"></script><script async src="../assets/navigation.js" id="tsd-nav-script"></script><script async src="../assets/hierarchy.js" id="tsd-hierarchy-script"></script></head><body><script>document.documentElement.dataset.theme = localStorage.getItem("tsd-theme") || "os";document.body.style.display="none";setTimeout(() => window.app?app.showPage():document.body.style.removeProperty("display"),500)</script><header class="tsd-page-toolbar">
+<div class="tsd-toolbar-contents container"><a href="../index.html" class="title">@bookclerk/plugin-sdk</a>
+<div id="tsd-toolbar-links"></div><button id="tsd-search-trigger" class="tsd-widget" aria-label="Search"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-search"></use></svg></button><dialog id="tsd-search" aria-label="Search"><input role="combobox" id="tsd-search-input" aria-controls="tsd-search-results" aria-autocomplete="list" aria-expanded="true" autocapitalize="off" autocomplete="off" placeholder="Search the docs" maxLength="100"/>
+<ul role="listbox" id="tsd-search-results"></ul>
+<div id="tsd-search-status" aria-live="polite" aria-atomic="true">
+<div>Preparing search index...</div></div></dialog><a href="#" class="tsd-widget menu" id="tsd-toolbar-menu-trigger" data-toggle="menu" aria-label="Menu"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-menu"></use></svg></a></div></header>
+<div class="container container-main">
+<div class="col-content">
+<div class="tsd-page-title">
+<ul class="tsd-breadcrumb" aria-label="Breadcrumb">
+<li><a href="../modules/index.html">index</a></li>
+<li><a href="" aria-current="page">ContentSource</a></li></ul>
+<h1>Interface ContentSource</h1></div>
+<section class="tsd-panel tsd-comment">
+<div class="tsd-comment tsd-typography"><p>Storefront content source (not byte Source). Every method takes and
+returns typed structs from the &quot;Typed method payloads&quot; section.</p>
+</div></section>
+<div class="tsd-signature"><span class="tsd-signature-keyword">interface</span> <span class="tsd-kind-interface">ContentSource</span> <span class="tsd-signature-symbol">{</span><br/>    <a class="tsd-kind-call-signature" href="#catalogdetail-1">catalogDetail</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.CatalogDetailParams.html" class="tsd-signature-type tsd-kind-interface">CatalogDetailParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.CatalogDetailReply.html" class="tsd-signature-type tsd-kind-type-alias">CatalogDetailReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#diagnose-1">diagnose</a><span class="tsd-signature-symbol">()</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.DiagnoseReply.html" class="tsd-signature-type tsd-kind-type-alias">DiagnoseReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#expandcandidates-1">expandCandidates</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.ExpandCandidatesParams.html" class="tsd-signature-type tsd-kind-interface">ExpandCandidatesParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.CatalogHitsReply.html" class="tsd-signature-type tsd-kind-type-alias">CatalogHitsReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#fetchtitle-1">fetchTitle</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.FetchTitleParams.html" class="tsd-signature-type tsd-kind-interface">FetchTitleParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.FetchTitleReply.html" class="tsd-signature-type tsd-kind-type-alias">FetchTitleReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#health-1">health</a><span class="tsd-signature-symbol">()</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.HealthReply.html" class="tsd-signature-type tsd-kind-type-alias">HealthReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#listaccounts-1">listAccounts</a><span class="tsd-signature-symbol">()</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.SourceAccountsReply.html" class="tsd-signature-type tsd-kind-type-alias">SourceAccountsReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#listdeals-1">listDeals</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.ListDealsParams.html" class="tsd-signature-type tsd-kind-interface">ListDealsParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.CatalogHitsReply.html" class="tsd-signature-type tsd-kind-type-alias">CatalogHitsReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#login-1">login</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.LoginParams.html" class="tsd-signature-type tsd-kind-interface">LoginParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.LoginReply.html" class="tsd-signature-type tsd-kind-type-alias">LoginReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#logincomplete-1">loginComplete</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.LoginCompleteParams.html" class="tsd-signature-type tsd-kind-interface">LoginCompleteParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.LoginReply.html" class="tsd-signature-type tsd-kind-type-alias">LoginReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#loginstart-1">loginStart</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.LoginParams.html" class="tsd-signature-type tsd-kind-interface">LoginParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.LoginStartReply.html" class="tsd-signature-type tsd-kind-type-alias">LoginStartReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#purchasehint-1">purchaseHint</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.PurchaseHintParams.html" class="tsd-signature-type tsd-kind-interface">PurchaseHintParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.PurchaseHintReply.html" class="tsd-signature-type tsd-kind-type-alias">PurchaseHintReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#revokeaccount-1">revokeAccount</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.RevokeAccountParams.html" class="tsd-signature-type tsd-kind-interface">RevokeAccountParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.EmptyReply.html" class="tsd-signature-type tsd-kind-type-alias">EmptyReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#scan-1">scan</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.ScanParams.html" class="tsd-signature-type tsd-kind-interface">ScanParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.ScanReply.html" class="tsd-signature-type tsd-kind-type-alias">ScanReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#searchcatalog-1">searchCatalog</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.SearchCatalogParams.html" class="tsd-signature-type tsd-kind-interface">SearchCatalogParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.CatalogHitsReply.html" class="tsd-signature-type tsd-kind-type-alias">CatalogHitsReply</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/><span class="tsd-signature-symbol">}</span></div><aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1007">generated.ts:1007</a></li></ul></aside>
+<section class="tsd-panel-group tsd-index-group">
+<section class="tsd-panel tsd-index-panel">
+<details class="tsd-index-content tsd-accordion" open><summary class="tsd-accordion-summary tsd-index-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h5 class="tsd-index-heading uppercase">Index</h5></summary>
+<div class="tsd-accordion-details">
+<section class="tsd-index-section">
+<h3 class="tsd-index-heading tsd-anchor-link" id="methods">Methods<a href="#methods" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<div class="tsd-index-list"><a href="#catalogdetail" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>catalog<wbr/>Detail</span></a>
+<a href="#diagnose" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>diagnose</span></a>
+<a href="#expandcandidates" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>expand<wbr/>Candidates</span></a>
+<a href="#fetchtitle" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>fetch<wbr/>Title</span></a>
+<a href="#health" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>health</span></a>
+<a href="#listaccounts" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>list<wbr/>Accounts</span></a>
+<a href="#listdeals" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>list<wbr/>Deals</span></a>
+<a href="#login" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>login</span></a>
+<a href="#logincomplete" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>login<wbr/>Complete</span></a>
+<a href="#loginstart" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>login<wbr/>Start</span></a>
+<a href="#purchasehint" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>purchase<wbr/>Hint</span></a>
+<a href="#revokeaccount" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>revoke<wbr/>Account</span></a>
+<a href="#scan" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>scan</span></a>
+<a href="#searchcatalog" class="tsd-index-link"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>search<wbr/>Catalog</span></a>
+</div></section></div></details></section></section>
+<details class="tsd-panel-group tsd-member-group tsd-accordion" open><summary class="tsd-accordion-summary" data-key="section-Methods"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h2 class="tsd-anchor-link" id="methods-1">Methods<a href="#methods-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2></summary>
+<section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="catalogdetail"><span>catalog<wbr/>Detail</span><a href="#catalogdetail" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="catalogdetail-1"><span class="tsd-kind-call-signature">catalogDetail</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.CatalogDetailParams.html" class="tsd-signature-type tsd-kind-interface">CatalogDetailParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.CatalogDetailReply.html" class="tsd-signature-type tsd-kind-type-alias">CatalogDetailReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#catalogdetail-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Full catalog record for one product.</p>
+</div>
+<div class="tsd-parameters">
+<h4 class="tsd-parameters-title">Parameters</h4>
+<ul class="tsd-parameter-list">
+<li><span><span class="tsd-kind-parameter">params</span>: <a href="index.CatalogDetailParams.html" class="tsd-signature-type tsd-kind-interface">CatalogDetailParams</a></span>
+<div class="tsd-comment tsd-typography"><p>Product id and optional ISBN.</p>
+</div></li></ul></div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.CatalogDetailReply.html" class="tsd-signature-type tsd-kind-type-alias">CatalogDetailReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.CatalogDetailReply.html" class="tsd-kind-type-alias">CatalogDetailReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1095">generated.ts:1095</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="diagnose"><span>diagnose</span><a href="#diagnose" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="diagnose-1"><span class="tsd-kind-call-signature">diagnose</span><span class="tsd-signature-symbol">()</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.DiagnoseReply.html" class="tsd-signature-type tsd-kind-type-alias">DiagnoseReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#diagnose-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Human-readable diagnostic lines.</p>
+</div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.DiagnoseReply.html" class="tsd-signature-type tsd-kind-type-alias">DiagnoseReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.DiagnoseReply.html" class="tsd-kind-type-alias">DiagnoseReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1088">generated.ts:1088</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="expandcandidates"><span>expand<wbr/>Candidates</span><a href="#expandcandidates" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="expandcandidates-1"><span class="tsd-kind-call-signature">expandCandidates</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.ExpandCandidatesParams.html" class="tsd-signature-type tsd-kind-interface">ExpandCandidatesParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.CatalogHitsReply.html" class="tsd-signature-type tsd-kind-type-alias">CatalogHitsReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#expandcandidates-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Related-title expansion from a seed title.</p>
+</div>
+<div class="tsd-parameters">
+<h4 class="tsd-parameters-title">Parameters</h4>
+<ul class="tsd-parameter-list">
+<li><span><span class="tsd-kind-parameter">params</span>: <a href="index.ExpandCandidatesParams.html" class="tsd-signature-type tsd-kind-interface">ExpandCandidatesParams</a></span>
+<div class="tsd-comment tsd-typography"><p>Seed identity fields and limit.</p>
+</div></li></ul></div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.CatalogHitsReply.html" class="tsd-signature-type tsd-kind-type-alias">CatalogHitsReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.CatalogHitsReply.html" class="tsd-kind-type-alias">CatalogHitsReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1062">generated.ts:1062</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="fetchtitle"><span>fetch<wbr/>Title</span><a href="#fetchtitle" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="fetchtitle-1"><span class="tsd-kind-call-signature">fetchTitle</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.FetchTitleParams.html" class="tsd-signature-type tsd-kind-interface">FetchTitleParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.FetchTitleReply.html" class="tsd-signature-type tsd-kind-type-alias">FetchTitleReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#fetchtitle-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Download and decrypt one title into <code>cacheDir</code>.</p>
+</div>
+<div class="tsd-parameters">
+<h4 class="tsd-parameters-title">Parameters</h4>
+<ul class="tsd-parameter-list">
+<li><span><span class="tsd-kind-parameter">params</span>: <a href="index.FetchTitleParams.html" class="tsd-signature-type tsd-kind-interface">FetchTitleParams</a></span>
+<div class="tsd-comment tsd-typography"><p>Title, credentials, and fetch options.</p>
+</div></li></ul></div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.FetchTitleReply.html" class="tsd-signature-type tsd-kind-type-alias">FetchTitleReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.FetchTitleReply.html" class="tsd-kind-type-alias">FetchTitleReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1028">generated.ts:1028</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="health"><span>health</span><a href="#health" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="health-1"><span class="tsd-kind-call-signature">health</span><span class="tsd-signature-symbol">()</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.HealthReply.html" class="tsd-signature-type tsd-kind-type-alias">HealthReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#health-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Liveness / readiness probe.</p>
+</div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.HealthReply.html" class="tsd-signature-type tsd-kind-type-alias">HealthReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.HealthReply.html" class="tsd-kind-type-alias">HealthReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1082">generated.ts:1082</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="listaccounts"><span>list<wbr/>Accounts</span><a href="#listaccounts" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="listaccounts-1"><span class="tsd-kind-call-signature">listAccounts</span><span class="tsd-signature-symbol">()</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.SourceAccountsReply.html" class="tsd-signature-type tsd-kind-type-alias">SourceAccountsReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#listaccounts-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Enumerate accounts the guest knows about.</p>
+</div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.SourceAccountsReply.html" class="tsd-signature-type tsd-kind-type-alias">SourceAccountsReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.SourceAccountsReply.html" class="tsd-kind-type-alias">SourceAccountsReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1034">generated.ts:1034</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="listdeals"><span>list<wbr/>Deals</span><a href="#listdeals" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="listdeals-1"><span class="tsd-kind-call-signature">listDeals</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.ListDealsParams.html" class="tsd-signature-type tsd-kind-interface">ListDealsParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.CatalogHitsReply.html" class="tsd-signature-type tsd-kind-type-alias">CatalogHitsReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#listdeals-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Current storefront deals.</p>
+</div>
+<div class="tsd-parameters">
+<h4 class="tsd-parameters-title">Parameters</h4>
+<ul class="tsd-parameter-list">
+<li><span><span class="tsd-kind-parameter">params</span>: <a href="index.ListDealsParams.html" class="tsd-signature-type tsd-kind-interface">ListDealsParams</a></span>
+<div class="tsd-comment tsd-typography"><p>Optional result cap.</p>
+</div></li></ul></div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.CatalogHitsReply.html" class="tsd-signature-type tsd-kind-type-alias">CatalogHitsReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.CatalogHitsReply.html" class="tsd-kind-type-alias">CatalogHitsReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1076">generated.ts:1076</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="login"><span>login</span><a href="#login" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="login-1"><span class="tsd-kind-call-signature">login</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.LoginParams.html" class="tsd-signature-type tsd-kind-interface">LoginParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.LoginReply.html" class="tsd-signature-type tsd-kind-type-alias">LoginReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#login-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Connect an account (password or one-shot OAuth).</p>
+</div>
+<div class="tsd-parameters">
+<h4 class="tsd-parameters-title">Parameters</h4>
+<ul class="tsd-parameter-list">
+<li><span><span class="tsd-kind-parameter">params</span>: <a href="index.LoginParams.html" class="tsd-signature-type tsd-kind-interface">LoginParams</a></span>
+<div class="tsd-comment tsd-typography"><p>Credentials, marketplace, callback wiring.</p>
+</div></li></ul></div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.LoginReply.html" class="tsd-signature-type tsd-kind-type-alias">LoginReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.LoginReply.html" class="tsd-kind-type-alias">LoginReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1014">generated.ts:1014</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="logincomplete"><span>login<wbr/>Complete</span><a href="#logincomplete" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="logincomplete-1"><span class="tsd-kind-call-signature">loginComplete</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.LoginCompleteParams.html" class="tsd-signature-type tsd-kind-interface">LoginCompleteParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.LoginReply.html" class="tsd-signature-type tsd-kind-type-alias">LoginReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#logincomplete-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Finish an interactive OAuth login started by <code>loginStart</code>.</p>
+</div>
+<div class="tsd-parameters">
+<h4 class="tsd-parameters-title">Parameters</h4>
+<ul class="tsd-parameter-list">
+<li><span><span class="tsd-kind-parameter">params</span>: <a href="index.LoginCompleteParams.html" class="tsd-signature-type tsd-kind-interface">LoginCompleteParams</a></span>
+<div class="tsd-comment tsd-typography"><p>Session id from <code>loginStart</code>.</p>
+</div></li></ul></div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.LoginReply.html" class="tsd-signature-type tsd-kind-type-alias">LoginReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.LoginReply.html" class="tsd-kind-type-alias">LoginReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1048">generated.ts:1048</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="loginstart"><span>login<wbr/>Start</span><a href="#loginstart" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="loginstart-1"><span class="tsd-kind-call-signature">loginStart</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.LoginParams.html" class="tsd-signature-type tsd-kind-interface">LoginParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.LoginStartReply.html" class="tsd-signature-type tsd-kind-type-alias">LoginStartReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#loginstart-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Begin an interactive OAuth login; returns a session id.</p>
+</div>
+<div class="tsd-parameters">
+<h4 class="tsd-parameters-title">Parameters</h4>
+<ul class="tsd-parameter-list">
+<li><span><span class="tsd-kind-parameter">params</span>: <a href="index.LoginParams.html" class="tsd-signature-type tsd-kind-interface">LoginParams</a></span>
+<div class="tsd-comment tsd-typography"><p>Same shape as <code>login</code>; host fills callback IPC.</p>
+</div></li></ul></div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.LoginStartReply.html" class="tsd-signature-type tsd-kind-type-alias">LoginStartReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.LoginStartReply.html" class="tsd-kind-type-alias">LoginStartReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1041">generated.ts:1041</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="purchasehint"><span>purchase<wbr/>Hint</span><a href="#purchasehint" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="purchasehint-1"><span class="tsd-kind-call-signature">purchaseHint</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.PurchaseHintParams.html" class="tsd-signature-type tsd-kind-interface">PurchaseHintParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.PurchaseHintReply.html" class="tsd-signature-type tsd-kind-type-alias">PurchaseHintReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#purchasehint-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Purchase link / price hint for one title.</p>
+</div>
+<div class="tsd-parameters">
+<h4 class="tsd-parameters-title">Parameters</h4>
+<ul class="tsd-parameter-list">
+<li><span><span class="tsd-kind-parameter">params</span>: <a href="index.PurchaseHintParams.html" class="tsd-signature-type tsd-kind-interface">PurchaseHintParams</a></span>
+<div class="tsd-comment tsd-typography"><p>Identity fields and price flag.</p>
+</div></li></ul></div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.PurchaseHintReply.html" class="tsd-signature-type tsd-kind-type-alias">PurchaseHintReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.PurchaseHintReply.html" class="tsd-kind-type-alias">PurchaseHintReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1069">generated.ts:1069</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="revokeaccount"><span>revoke<wbr/>Account</span><a href="#revokeaccount" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="revokeaccount-1"><span class="tsd-kind-call-signature">revokeAccount</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.RevokeAccountParams.html" class="tsd-signature-type tsd-kind-interface">RevokeAccountParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.EmptyReply.html" class="tsd-signature-type tsd-kind-type-alias">EmptyReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#revokeaccount-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Undo store-side state for one account before the host deletes its
+stored credentials (for example, deregister the device registered at
+login). Best effort: the host revokes the account whatever this returns.</p>
+</div>
+<div class="tsd-parameters">
+<h4 class="tsd-parameters-title">Parameters</h4>
+<ul class="tsd-parameter-list">
+<li><span><span class="tsd-kind-parameter">params</span>: <a href="index.RevokeAccountParams.html" class="tsd-signature-type tsd-kind-interface">RevokeAccountParams</a></span>
+<div class="tsd-comment tsd-typography"><p>Account id and its stored credentials.</p>
+</div></li></ul></div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.EmptyReply.html" class="tsd-signature-type tsd-kind-type-alias">EmptyReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.EmptyReply.html" class="tsd-kind-type-alias">EmptyReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1104">generated.ts:1104</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="scan"><span>scan</span><a href="#scan" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="scan-1"><span class="tsd-kind-call-signature">scan</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.ScanParams.html" class="tsd-signature-type tsd-kind-interface">ScanParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.ScanReply.html" class="tsd-signature-type tsd-kind-type-alias">ScanReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#scan-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Sync library rows for one or more accounts.</p>
+</div>
+<div class="tsd-parameters">
+<h4 class="tsd-parameters-title">Parameters</h4>
+<ul class="tsd-parameter-list">
+<li><span><span class="tsd-kind-parameter">params</span>: <a href="index.ScanParams.html" class="tsd-signature-type tsd-kind-interface">ScanParams</a></span>
+<div class="tsd-comment tsd-typography"><p>Accounts, paging, and host-sealed credentials.</p>
+</div></li></ul></div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.ScanReply.html" class="tsd-signature-type tsd-kind-type-alias">ScanReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.ScanReply.html" class="tsd-kind-type-alias">ScanReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1021">generated.ts:1021</a></li></ul></aside></div></li></ul></section>
+<section class="tsd-panel tsd-member">
+<h3 class="tsd-anchor-link" id="searchcatalog"><span>search<wbr/>Catalog</span><a href="#searchcatalog" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
+<ul class="tsd-signatures">
+<li class="">
+<div class="tsd-signature tsd-anchor-link" id="searchcatalog-1"><span class="tsd-kind-call-signature">searchCatalog</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">params</span><span class="tsd-signature-symbol">:</span> <a href="index.SearchCatalogParams.html" class="tsd-signature-type tsd-kind-interface">SearchCatalogParams</a><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.CatalogHitsReply.html" class="tsd-signature-type tsd-kind-type-alias">CatalogHitsReply</a><span class="tsd-signature-symbol">&gt;</span><a href="#searchcatalog-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
+<div class="tsd-description">
+<div class="tsd-comment tsd-typography"><p>Free-text storefront catalog search.</p>
+</div>
+<div class="tsd-parameters">
+<h4 class="tsd-parameters-title">Parameters</h4>
+<ul class="tsd-parameter-list">
+<li><span><span class="tsd-kind-parameter">params</span>: <a href="index.SearchCatalogParams.html" class="tsd-signature-type tsd-kind-interface">SearchCatalogParams</a></span>
+<div class="tsd-comment tsd-typography"><p>Query, region, paging, sort, facet.</p>
+</div></li></ul></div>
+<h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="../types/index.CatalogHitsReply.html" class="tsd-signature-type tsd-kind-type-alias">CatalogHitsReply</a><span class="tsd-signature-symbol">&gt;</span></h4><p><a href="../types/index.CatalogHitsReply.html" class="tsd-kind-type-alias">CatalogHitsReply</a></p>
+<aside class="tsd-sources">
+<ul>
+<li>Defined in <a href="https://github.com/Bookclerk/bookclerk/blob/94a7702320fe4c1fcc8b330942deb99454b1058f/packages/plugin-sdk/src/generated.ts#L1055">generated.ts:1055</a></li></ul></aside></div></li></ul></section></section></details></div>
+<div class="col-sidebar">
+<div class="page-menu">
+<div class="tsd-navigation settings">
+<details class="tsd-accordion"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>Settings</h3></summary>
+<div class="tsd-accordion-details">
+<div class="tsd-filter-visibility"><span class="settings-label">Member Visibility</span>
+<ul id="tsd-filter-options">
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-protected" name="protected"/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Protected</span></label></li>
+<li class="tsd-filter-item"><label class="tsd-filter-input"><input type="checkbox" id="tsd-filter-inherited" name="inherited" checked/><svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect class="tsd-checkbox-background" width="30" height="30" x="1" y="1" rx="6" fill="none"></rect><path class="tsd-checkbox-checkmark" d="M8.35422 16.8214L13.2143 21.75L24.6458 10.25" stroke="none" stroke-width="3.5" stroke-linejoin="round" fill="none"></path></svg><span>Inherited</span></label></li></ul></div>
+<div class="tsd-theme-toggle"><label class="settings-label" for="tsd-theme">Theme</label><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div>
+<details open class="tsd-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
+<h3>On This Page</h3></summary>
+<div class="tsd-accordion-details">
+<details open class="tsd-accordion tsd-page-navigation-section"><summary class="tsd-accordion-summary" data-key="section-Methods"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>Methods</summary>
+<div><a href="#catalogdetail"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>catalog<wbr/>Detail</span></a><a href="#diagnose"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>diagnose</span></a><a href="#expandcandidates"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>expand<wbr/>Candidates</span></a><a href="#fetchtitle"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>fetch<wbr/>Title</span></a><a href="#health"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>health</span></a><a href="#listaccounts"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>list<wbr/>Accounts</span></a><a href="#listdeals"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>list<wbr/>Deals</span></a><a href="#login"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>login</span></a><a href="#logincomplete"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>login<wbr/>Complete</span></a><a href="#loginstart"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>login<wbr/>Start</span></a><a href="#purchasehint"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>purchase<wbr/>Hint</span></a><a href="#revokeaccount"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>revoke<wbr/>Account</span></a><a href="#scan"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>scan</span></a><a href="#searchcatalog"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Method"><use href="../assets/icons.svg#icon-2048"></use></svg><span>search<wbr/>Catalog</span></a></div></details></div></details></div>
+<div class="site-menu">
+<nav class="tsd-navigation"><a href="../modules.html">@bookclerk/plugin-sdk</a>
+<ul class="tsd-small-nested-navigation" id="tsd-nav-container">
+<li>Loading...</li></ul></nav></div></div></div><footer>
+<p class="tsd-generator">Generated using <a href="https://typedoc.org/" target="_blank">TypeDoc</a></p></footer>
+<div class="overlay"></div></body></html>
