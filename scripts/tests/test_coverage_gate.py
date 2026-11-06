@@ -397,6 +397,46 @@ class JudgeTest(unittest.TestCase):
         verdict = cg.judge(self.config(), [result], {})
         self.assertEqual(verdict.failures, ("rust line coverage is 50.0%, below its 75% floor.",))
 
+    def test_area_patch_target_follows_the_floor(self) -> None:
+        config = self.config()
+        cases = {0: 80, 79.9: 80, 84: 80, 85: 85, 89.5: 85, 93: 90, 98: 95, 99: 95, 100: 95}
+        for floor, target in cases.items():
+            with self.subTest(floor=floor):
+                self.assertEqual(cg.area_patch_target(config, area(floor=floor)), target)
+        high = cg.Config(enforce=True, patch_target=97, areas=())
+        self.assertEqual(cg.area_patch_target(high, area(floor=98)), 97)
+
+    def test_area_below_its_own_target_fails(self) -> None:
+        site = cg.Area("site", "site/lcov.info", "tools/site", ("tools/site/",), (".ts",), 98)
+        config = cg.Config(enforce=True, patch_target=80, areas=(area(), site))
+        hits = {f"tools/site/{n}.ts": {1: 1} for n in range(9)} | {"tools/site/z.ts": {1: 0}}
+        results = [cg.AreaResult(config.areas[0], True, {"crates/a.rs": {n: 1 for n in range(1, 31)}}), cg.AreaResult(site, True, hits, partial=True)]
+        added = {path: {1} for path in hits} | {"crates/a.rs": set(range(1, 31))}
+        verdict = cg.judge(config, results, added)
+        self.assertEqual(verdict.patch_percent, 97.5)
+        self.assertEqual(
+            verdict.failures,
+            ("site patch coverage is 90.0%, below its 95% target (its 98% floor, rounded down to 5 points).",),
+        )
+
+    def test_area_at_the_file_target_is_only_checked_overall(self) -> None:
+        site = cg.Area("site", "site/lcov.info", "tools/site", ("tools/site/",), (".ts",), 98)
+        config = cg.Config(enforce=True, patch_target=80, areas=(area(), site))
+        results = [
+            cg.AreaResult(config.areas[0], True, {"crates/a.rs": {1: 0, 2: 1}}),
+            cg.AreaResult(site, True, {"tools/site/a.ts": {n: 1 for n in range(1, 21)}}),
+        ]
+        verdict = cg.judge(config, results, {"crates/a.rs": {1, 2}, "tools/site/a.ts": set(range(1, 21))})
+        self.assertEqual(verdict.failures, ())
+
+    def test_area_at_its_own_target_passes(self) -> None:
+        site = cg.Area("site", "site/lcov.info", "tools/site", ("tools/site/",), (".ts",), 98)
+        config = cg.Config(enforce=True, patch_target=80, areas=(site,))
+        lines = {n: 1 for n in range(1, 20)} | {20: 0}
+        verdict = cg.judge(config, [cg.AreaResult(site, True, {"tools/site/a.ts": lines}, partial=True)], {"tools/site/a.ts": set(lines)})
+        self.assertEqual(verdict.patch_percent, 95.0)
+        self.assertEqual(verdict.failures, ())
+
 
 class RenderTest(unittest.TestCase):
     """The summary lists areas, missed lines and failures."""
@@ -416,8 +456,8 @@ class RenderTest(unittest.TestCase):
         text = cg.render(config, verdict)
         self.assertIn("## Coverage (report only)", text)
         self.assertIn("**50.0%** of 2 changed executable lines", text)
-        self.assertIn("| rust | 50.0% (1/2) | 0% |", text)
-        self.assertIn("| site | not measured in this run | 0% |", text)
+        self.assertIn("| rust | 50.0% (1/2) | 0% | 80% |", text)
+        self.assertIn("| site | not measured in this run | 0% | 80% |", text)
         self.assertIn("- `crates/a.rs`: 2", text)
         self.assertIn("below the 80% target", text)
 
