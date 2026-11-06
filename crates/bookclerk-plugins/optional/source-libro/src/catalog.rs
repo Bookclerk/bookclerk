@@ -253,7 +253,7 @@ pub async fn purchase_hint(
                 (Some(hit), true) => {
                     return Ok(Some(hint_from_hit(hit, title, opts.with_price)));
                 }
-                (_, false) => not_for_sale = Some(isbn.clone()),
+                (_, false) => not_for_sale = Some(comparable_isbn(&isbn)),
                 (None, true) => {}
             }
         } else {
@@ -287,7 +287,7 @@ pub async fn purchase_hint(
         let Some(isbn) = hit.isbn() else {
             return Ok(Some(hint_from_hit(hit, None, opts.with_price)));
         };
-        if not_for_sale.as_deref() == Some(isbn.as_str()) {
+        if not_for_sale.as_deref() == Some(comparable_isbn(&isbn).as_str()) {
             continue;
         }
         match libro_details_logged(&http, base_url, &isbn).await {
@@ -472,7 +472,7 @@ async fn libro_isbn_hit(
     let hits = libro_search_hits(http, base_url, isbn, 24, 1).await?;
     Ok(hits
         .into_iter()
-        .find(|h| h.isbn().as_deref() == Some(isbn))
+        .find(|h| h.isbn().as_deref().map(comparable_isbn) == Some(comparable_isbn(isbn)))
         .map(|mut h| {
             h.origin = String::from("libro catalog");
             h
@@ -553,6 +553,14 @@ pub fn parse_search_page(body: &[u8], limit: usize) -> bookclerk_source::Result<
         .filter_map(parse_libro_book)
         .take(limit)
         .collect())
+}
+
+/// An ISBN in the form [`CatalogHit::isbn`] gives (an ISBN-10 becomes its
+/// ISBN-13), so a requested ISBN compares equal to the same book's search
+/// row however either side wrote it; a value that is not a valid ISBN is
+/// compared as given.
+fn comparable_isbn(isbn: &str) -> String {
+    records::normalize_identifier(IdentifierScheme::Isbn, isbn).unwrap_or_else(|| isbn.to_string())
 }
 
 /// Digits of an ISBN or ISBN-leading slug (`9781…-title` → `9781…`), hyphens removed.

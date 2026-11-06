@@ -667,3 +667,27 @@ async fn purchase_hint_offers_a_title_match_without_a_valid_isbn() {
         .unwrap();
     assert_eq!(hint.product_id, "12345");
 }
+
+#[tokio::test]
+async fn an_isbn_10_finds_its_isbn_13_search_row() {
+    let server = MockServer::start().await;
+    // Details miss (not mounted), so the exact-ISBN search decides.
+    mount_search(
+        &server,
+        "0306406152",
+        page(vec![row(9780306406157, "Signal Theory", "A. Author")]),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+    let hit = source.catalog_detail("0306406152").await.unwrap().unwrap();
+    assert_eq!(hit.title, "Signal Theory");
+    let hint = source
+        .purchase_hint(&PurchaseHintOpts {
+            isbn: Some("0-306-40615-2".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(hint.product_id, "9780306406157");
+}
