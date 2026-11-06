@@ -104,6 +104,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.cache_headers]
+crate = "bookclerk-cover"
+boundary = "If-None-Match on image requests, which decides a 304 answer"
+input_from = "any client"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.cover_process]
 crate = "bookclerk-cover"
 boundary = "Cover images downloaded from any public website (sniff, decode, resize, re-encode)"

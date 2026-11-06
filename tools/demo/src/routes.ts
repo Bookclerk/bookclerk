@@ -155,6 +155,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/discover/purchase-hints/batch", "allow"],
   ["GET", "/api/discover/recommendations", "allow"],
   ["GET", "/api/discover/search", "allow"],
+  ["GET", "/api/discover/status", "allow"],
   ["POST", "/api/discover/sync-listening", "allow"],
   ["POST", "/api/discover/title-meta", "allow"],
   ["POST", "/api/discover/title-meta/batch", "allow"],

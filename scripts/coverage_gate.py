@@ -69,6 +69,12 @@ RATCHET_MARGIN = 1
 RATCHET_MAX_STEP = 5
 #: The highest floor the ratchet sets, in percent.
 RATCHET_MAX_FLOOR = 99
+#: An area's own patch target follows its floor in steps of this many points
+#: (see :func:`area_patch_target`).
+PATCH_TARGET_STEP = 5
+#: The highest patch target a floor sets on its own. Reaching 100% needs a
+#: reviewed way to mark lines no test can run, which the gate does not have.
+PATCH_TARGET_MAX = 95
 #: An area's table header in the areas file.
 AREA_HEADER_RE = re.compile(r"^\[areas\.([A-Za-z0-9_-]+)\]\s*$")
 #: An area's floor line in the areas file.
@@ -398,8 +404,31 @@ def percent(covered: int, total: int) -> float:
     return 100.0 * covered / total if total else 100.0
 
 
+def area_patch_target(config: Config, area: Area) -> float:
+    """Work out the patch coverage an area's own changed lines must reach.
+
+    The target is the area's floor rounded down to a multiple of
+    ``PATCH_TARGET_STEP``, at most ``PATCH_TARGET_MAX`` and never below the
+    file's ``patch_target``. It rises as the ratchet raises the floor, so an
+    area whose code is well tested holds new code to the same standard.
+
+    Args:
+        config: The areas file.
+        area: The area.
+
+    Returns:
+        The target, in percent.
+    """
+    stepped = math.floor(area.floor / PATCH_TARGET_STEP) * PATCH_TARGET_STEP
+    return max(config.patch_target, min(PATCH_TARGET_MAX, stepped))
+
+
 def judge(config: Config, results: list[AreaResult], added: dict[str, set[int]]) -> Verdict:
-    """Compute patch coverage and check each area's floor.
+    """Compute patch coverage and check each area's patch target and floor.
+
+    The change as a whole must reach ``patch_target``; the changed lines of
+    an area whose own target is higher (see :func:`area_patch_target`) must
+    also reach that.
 
     Args:
         config: The areas file.
@@ -411,6 +440,7 @@ def judge(config: Config, results: list[AreaResult], added: dict[str, set[int]])
     """
     files: list[FileOutcome] = []
     unmeasured: list[str] = []
+    per_area: dict[str, list[int]] = {}
     for path in sorted(added):
         if path in config.generated:
             continue
@@ -425,11 +455,24 @@ def judge(config: Config, results: list[AreaResult], added: dict[str, set[int]])
         if changed:
             missed = tuple(n for n in changed if lines[n] == 0)
             files.append(FileOutcome(path, len(changed) - len(missed), missed))
+            counts = per_area.setdefault(result.area.name, [0, 0])
+            counts[0] += len(changed) - len(missed)
+            counts[1] += len(changed)
     total = sum(f.covered + len(f.missed) for f in files)
     patch = percent(sum(f.covered for f in files), total) if total else None
     failures: list[str] = []
     if patch is not None and patch < config.patch_target:
         failures.append(f"Patch coverage is {patch:.1f}%, below the {config.patch_target:g}% target.")
+    for result in results:
+        target = area_patch_target(config, result.area)
+        if result.area.name in per_area and target > config.patch_target:
+            covered, changed = per_area[result.area.name]
+            value = percent(covered, changed)
+            if value < target:
+                failures.append(
+                    f"{result.area.name} patch coverage is {value:.1f}%, below its {target:g}% target "
+                    f"(its {result.area.floor:g}% floor, rounded down to {PATCH_TARGET_STEP} points)."
+                )
     for result in results:
         if result.measured and not result.partial:
             covered, lines = result.totals()
@@ -545,16 +588,17 @@ def render(config: Config, verdict: Verdict) -> str:
             f"Patch coverage: **{verdict.patch_percent:.1f}%** of {lines} changed executable lines "
             f"(target {config.patch_target:g}%)."
         )
-    out += ["", "| Area | Line coverage | Floor |", "| --- | --- | --- |"]
+    out += ["", "| Area | Line coverage | Floor | Patch target |", "| --- | --- | --- | --- |"]
     for result in verdict.areas:
+        target = f"{area_patch_target(config, result.area):g}%"
         if result.measured:
             covered, lines = result.totals()
             note = " (affected packages only; floor not checked)" if result.partial else ""
             out.append(
-                f"| {result.area.name} | {percent(covered, lines):.1f}% ({covered}/{lines}){note} | {result.area.floor:g}% |"
+                f"| {result.area.name} | {percent(covered, lines):.1f}% ({covered}/{lines}){note} | {result.area.floor:g}% | {target} |"
             )
         else:
-            out.append(f"| {result.area.name} | not measured in this run | {result.area.floor:g}% |")
+            out.append(f"| {result.area.name} | not measured in this run | {result.area.floor:g}% | {target} |")
     missed = [f for f in verdict.files if f.missed]
     if missed:
         out += ["", "Changed lines the tests did not run:", ""]

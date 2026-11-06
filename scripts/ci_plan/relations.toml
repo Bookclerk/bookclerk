@@ -118,6 +118,8 @@ paths = [
     "fuzz/oracles/cover_wire.rs",
     "fuzz/corpus/cover_token/**",
     "fuzz/oracles/cover_token.rs",
+    "fuzz/corpus/cache_headers/**",
+    "fuzz/oracles/cache_headers.rs",
 ]
 
 [[test_input]]

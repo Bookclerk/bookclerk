@@ -13,7 +13,9 @@
 # is then not checked, while patch coverage still is.
 #
 # `mode = "report"` only warns; `mode = "enforce"` fails CI Gate when patch
-# coverage is below `patch_target` or an area is below its floor. See
+# coverage is below `patch_target`, an area's changed lines miss its own
+# patch target (its floor rounded down to 5 points, 80-95; see
+# `area_patch_target` in coverage_gate.py) or an area is below its floor. See
 # docs/contributing/ci.md#coverage.
 
 mode = "enforce"

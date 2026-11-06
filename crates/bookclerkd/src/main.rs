@@ -12,11 +12,13 @@
 
 mod api;
 mod auth;
+mod cache_policy;
 mod cluster_link;
 mod config_authority;
 mod covers;
 mod cron_worker;
 mod csrf;
+mod discover_jobs;
 mod event_worker;
 mod heartbeat;
 mod http_error;

@@ -17,9 +17,11 @@
 //!
 //! Every codec here is pure Rust, and the function works on a byte slice with
 //! no I/O, so the fuzzer and the tests drive exactly what the media worker
-//! runs. [`wire`] is the frame format the host and the worker exchange, and
-//! [`token`] signs the cover URLs the daemon serves.
+//! runs. [`wire`] is the frame format the host and the worker exchange,
+//! [`token`] signs the cover URLs the daemon serves, and [`http_cache`]
+//! holds the validators those answers carry.
 
+pub mod http_cache;
 pub mod token;
 pub mod wire;
 

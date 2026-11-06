@@ -776,8 +776,9 @@ timeout fails the test.
 ## Coverage
 
 CI Gate checks how much of a change its tests run. It fails when the
-change's patch coverage is below 80% (`patch_target`) or an area falls below
-its floor, and writes a summary either way. Setting `mode = "report"` in
+change's patch coverage is below 80% (`patch_target`), an area's changed
+lines miss that area's own patch target, or an area falls below its floor,
+and writes a summary either way. Setting `mode = "report"` in
 `scripts/coverage_areas.toml` turns those failures back into warnings.
 
 Coverage is measured in the jobs that already run the tests, so it costs no
@@ -806,9 +807,16 @@ How a run gets there:
 The summary has two figures:
 
 - **Patch coverage**: of the executable lines the change adds, the share
-  the tests ran. The target is 80%. Lines in an area this run did not
-  measure, such as Rust on a docs-only change, are listed apart rather than
-  counted.
+  the tests ran. The whole change must reach 80%. Lines in an area this run
+  did not measure, such as Rust on a docs-only change, are listed apart
+  rather than counted.
+- **Area patch targets**: each area's floor rounded down to a multiple of
+  five, between 80% and 95%. An area whose target is above 80% must also
+  reach it on its own changed lines, so well-tested code keeps new code to
+  the same standard. A floor of 98% gives a target of 95%, and one of 93%
+  gives 90%. Targets rise with the floors, so nobody edits them. The goal is
+  100%, but the gate stops at 95% because it has no reviewed way yet to mark
+  lines no test can run.
 - **Area floors**: each area's total line coverage against its floor in
   [`scripts/coverage_areas.toml`](../../scripts/coverage_areas.toml). A
   selective Rust run tests only the affected packages, so the `rust` floor
