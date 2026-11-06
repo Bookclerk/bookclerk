@@ -12,6 +12,10 @@ mode = "outbound"
 tcp = [
     { host = "*.libro.fm", ports = [443] },
 ]
+
+[capabilities.network.own_user_agent]
+hosts = ["*.libro.fm"]
+reason = "Libro.fm's sign-in, library and download API answers the HTTP client of the Libro.fm Android app."
 # Native TCP via the SDK HTTP client. Covers, API, and other libro.fm
 # hosts match the wildcard. Off-site CDN CONNECT destinations still need
 # a TCP grant (operator additions). Fetch `domains` are workerd-only.

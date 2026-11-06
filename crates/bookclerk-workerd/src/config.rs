@@ -1059,6 +1059,9 @@ pub fn materialize_native_backend(
     let mut policy = egress.policy().clone();
     policy.domains = domains;
     policy.subrequests = Some(subrequests);
+    // The bridge always names this build, even when the policy came from the
+    // manifest alone (no host grant).
+    policy.user_agent = Some(policy.effective_user_agent());
     let policy_json = policy.to_policy_json();
     let policy_escaped = escape_capnp(&policy_json.to_string());
 
@@ -1419,6 +1422,9 @@ pub fn materialize(
     // Always inject clamped subrequests so the bridge can enforce (even if the
     // caller built EgressProxy without going through from_manifest).
     policy.subrequests = Some(subrequests);
+    // The bridge always names this build, even when the policy came from the
+    // manifest alone (no host grant).
+    policy.user_agent = Some(policy.effective_user_agent());
     let policy_json = policy.to_policy_json();
     let policy_escaped = escape_capnp(&policy_json.to_string());
 

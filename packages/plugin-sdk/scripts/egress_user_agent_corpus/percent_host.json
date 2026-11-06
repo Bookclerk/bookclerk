@@ -1,0 +1,8 @@
+{
+  "host": "api%2elibro.fm",
+  "patterns": [
+    "*.libro.fm"
+  ],
+  "userAgent": "bookclerk/1.0.0 (+https://bookclerk.app)",
+  "own": "App/1"
+}

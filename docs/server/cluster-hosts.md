@@ -358,7 +358,9 @@ deployed plugin shows up as a **request**, with:
 
 - the version the owner wants to run;
 - what that version asks for: network mode and domains, TCP targets,
-  address ranges, host bindings such as `config`, `secrets` or `kv`, and
+  address ranges, host bindings such as `config`, `secrets` or `kv`, the
+  hosts that keep the plugin's own
+  [User-Agent](../plugins/capabilities.md#user-agent) with its reason, and
   memory, CPU and disk budgets;
 - the archive URL and digest this host would fetch;
 - a `request_digest` covering all of it.
@@ -366,13 +368,15 @@ deployed plugin shows up as a **request**, with:
 ```sh
 bookclerk clusters consents [--cluster <id>]
 bookclerk clusters approve <plugin_key> --request <request_digest> \
-    [--deny-domain cdn.store.example]... [--deny-binding secrets]... [--deny-network]
+    [--deny-domain cdn.store.example]... [--deny-binding secrets]... \
+    [--deny-own-user-agent api.store.example]... [--deny-network]
 bookclerk clusters revoke <plugin_key>
 ```
 
 The same is in the web UI under **Settings → Library** (operator only; an
 Owner sees only the [sharing settings](#branches-of-branches)). It lists
-pending requests with their domains and bindings, a deny checkbox on each,
+pending requests with their domains, bindings and own-agent hosts, a deny
+checkbox on each,
 a deny-network switch, and Approve and Revoke.
 
 The HTTP routes behind it are operator-only:
@@ -380,18 +384,21 @@ The HTTP routes behind it are operator-only:
 | Route | Body |
 | --- | --- |
 | `GET /api/config/cluster-consents` | → `{clusters, consents}` (links carry ids, origin, state and whether they are pinned; never keys) |
-| `POST /api/config/cluster-consents/approve` | `{cluster_id, plugin_key, request_digest, deny_domains?, deny_bindings?, deny_network?}` |
+| `POST /api/config/cluster-consents/approve` | `{cluster_id, plugin_key, request_digest, deny_domains?, deny_bindings?, deny_own_user_agent_hosts?, deny_network?}` |
 | `POST /api/config/cluster-consents/revoke` | `{cluster_id, plugin_key}` |
 
 ### Consent rules
 
-- **Only what is asked for can be approved.** Denying a domain or binding
-  the request doesn't ask for is refused (`409 approval_refused`, with the
-  reason in `detail`).
+- **Only what is asked for can be approved.** Denying a domain, binding or
+  own-agent host the request doesn't ask for is refused
+  (`400 invalid_approval`, with the reason in `detail`). Unless network
+  access is denied too, so is denying an own-agent host that an approved
+  wildcard still covers. A host the owner stops asking for is dropped from
+  the approval.
 - **You approve the request you reviewed.** `--request` (the UI always
   sends it) makes the approval a compare-and-swap. If the owner has since
   changed the request (another version, grant or archive), the approval
-  is refused rather than applied unseen.
+  is refused with `409 approval_refused` rather than applied unseen.
 - **Asking for more waits again.** A later version that asks for anything
   outside what was approved is `awaiting_host_reapproval` and doesn't run
   until approved. That covers a domain, TCP target, address range,

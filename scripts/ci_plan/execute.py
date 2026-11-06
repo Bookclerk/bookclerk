@@ -714,6 +714,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             "test:plugin-migrations",
             "test:entrypoints",
             "test:entrypoints-codec",
+            "test:egress-user-agent",
         ):
             cmds.append(Command(f"npm run {script}", ["npm", "run", script], cwd=sdk))
         return cmds

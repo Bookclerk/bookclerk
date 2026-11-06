@@ -1847,6 +1847,14 @@ export interface PluginGrant {
   operatorAddedCidrs?: string[];
   operatorDeniedCidrs?: string[];
   allowUndeclaredPublicRedirects?: boolean;
+  /**
+   * Hosts that receive the plugin's own `User-Agent`; every other request
+   * carries the host's. Absent on a grant approved before this permission
+   * existed, which keeps whatever the plugin declares.
+   */
+  ownUserAgentHosts?: string[];
+  /** The plugin's reason for `ownUserAgentHosts`, from `plugin.toml`. */
+  ownUserAgentReason?: string;
   authorityRevision?: string;
   bindings: string[];
   compatibilityFlags: string[];
@@ -1914,6 +1922,8 @@ export interface PluginConsentResponse {
   existing?: PluginGrant;
   brand?: PluginConsentBrand;
   limits: PluginConsentLimits;
+  /** The `User-Agent` the host sends, except to the request's `ownUserAgentHosts`. */
+  host_user_agent?: string;
 }
 
 function consentQuery(pluginKey?: string): string {
@@ -1961,6 +1971,7 @@ export async function approvePluginConsent(
     tcp?: { host: string; ports: number[] }[];
     addressCidrs?: string[];
     allowUndeclaredPublicRedirects?: boolean;
+    ownUserAgentHosts?: string[];
     bindings: string[];
     compatibilityFlags: string[];
     cpuMs?: number;
@@ -2418,6 +2429,10 @@ export interface RemoteGrantView {
   tcp?: { host: string; ports: number[] }[];
   /** CIDR ranges beyond the public Internet (private or local addresses). */
   addressCidrs?: string[];
+  /** Hosts that receive the plugin's own `User-Agent` instead of the host's. */
+  ownUserAgentHosts?: string[] | null;
+  /** The plugin's reason for `ownUserAgentHosts`. */
+  ownUserAgentReason?: string | null;
   /** Host bindings (`config`, `secrets`, `kv`, …). */
   bindings?: string[];
   /** `[triggers].jobs` types it may handle. */
@@ -2510,6 +2525,8 @@ export interface RemoteApprovalBody {
   deny_domains?: string[];
   /** Host bindings to remove (`secrets`, `oauth`, `kv`, …). */
   deny_bindings?: string[];
+  /** Requested hosts refused the plugin's own User-Agent; they get Bookclerk's agent. */
+  deny_own_user_agent_hosts?: string[];
   /** True turns outbound network off altogether (no domains, TCP or CIDRs). */
   deny_network?: boolean;
 }

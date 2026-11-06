@@ -7,10 +7,6 @@ use crate::error::{GraphicAudioError, Result};
 use crate::magento::{parse_html_fragment, DEFAULT_STORE_URL};
 use bookclerk_plugin_sdk::http::Client as HttpClient;
 
-/// Desktop Chrome User-Agent used for unauthenticated Magento catalog pages.
-const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
-    (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Bookclerk/GraphicAudio";
-
 /// One Magento catalog product (grid / related / product page).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MagentoCatalogProduct {
@@ -50,12 +46,11 @@ pub fn catalog_http_client() -> Result<HttpClient> {
 }
 
 /// Fetch HTML from an absolute Magento URL.
+///
+/// Sends no agent of its own, so the request carries the host's honest
+/// `bookclerk/<version>` agent; the public catalog answers it.
 pub async fn fetch_catalog_html(http: &HttpClient, url: &str) -> Result<String> {
-    let resp = http
-        .get(url)
-        .header("user-agent", BROWSER_UA)
-        .send()
-        .await?;
+    let resp = http.get(url).send().await?;
     let status = resp.status();
     let html = resp.text().await?;
     if !status.is_success() {

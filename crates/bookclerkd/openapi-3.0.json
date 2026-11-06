@@ -25769,6 +25769,17 @@
             ],
             "uniqueItems": true
           },
+          "deny_own_user_agent_hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Requested hosts to refuse the plugin's own User-Agent on; requests to\nthem carry Bookclerk's agent instead.",
+            "example": [
+              "*.libro.fm"
+            ],
+            "uniqueItems": true
+          },
           "deny_network": {
             "type": "boolean",
             "description": "Deny all network access.",
@@ -32939,6 +32950,17 @@
                 "example": false,
                 "nullable": true
               },
+              "ownUserAgentHosts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Override the hosts that keep the plugin's own `User-Agent` when set.\n\nEach entry must be one the request lists; leaving one out sends the\nhost's agent there instead.",
+                "example": [
+                  "*.libro.fm"
+                ],
+                "nullable": true
+              },
               "bindings": {
                 "type": "array",
                 "items": {
@@ -33189,7 +33211,8 @@
           "request",
           "covered",
           "summary",
-          "limits"
+          "limits",
+          "host_user_agent"
         ],
         "properties": {
           "plugin_id": {
@@ -33421,6 +33444,23 @@
                 "description": "Undeclared public redirect permission.",
                 "example": false
               },
+              "ownUserAgentHosts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hosts (exact or `*.` wildcard) that receive the plugin's own\n`User-Agent`; every other request carries the host's agent. Absent on\na grant approved before this permission existed, which keeps the hosts\nthe plugin's manifest declares.",
+                "example": [
+                  "*.libro.fm"
+                ],
+                "nullable": true
+              },
+              "ownUserAgentReason": {
+                "type": "string",
+                "description": "The plugin's reason for [`Self::own_user_agent_hosts`], from\n`plugin.toml`.",
+                "example": "Libro.fm's sign-in, library and download API answers the HTTP client of the Libro.fm Android app.",
+                "nullable": true
+              },
               "grantRevision": {
                 "type": "string",
                 "description": "SHA-256 of persisted operator consent (no host overlays).",
@@ -33553,6 +33593,11 @@
               }
             ],
             "description": "Host-capped resource defaults (workerd budgets + shared disk). Always set."
+          },
+          "host_user_agent": {
+            "type": "string",
+            "description": "The `User-Agent` this host sends for the plugin's requests, except to\nthe request's `ownUserAgentHosts`.",
+            "example": "bookclerk/0.1.0 (+https://bookclerk.app)"
           }
         }
       },
@@ -33704,6 +33749,17 @@
             "type": "boolean",
             "description": "Override undeclared-public-redirect permission when set.",
             "example": false,
+            "nullable": true
+          },
+          "ownUserAgentHosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Override the hosts that keep the plugin's own `User-Agent` when set.\n\nEach entry must be one the request lists; leaving one out sends the\nhost's agent there instead.",
+            "example": [
+              "*.libro.fm"
+            ],
             "nullable": true
           },
           "bindings": {
@@ -33962,6 +34018,23 @@
             "type": "boolean",
             "description": "Undeclared public redirect permission.",
             "example": false
+          },
+          "ownUserAgentHosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hosts (exact or `*.` wildcard) that receive the plugin's own\n`User-Agent`; every other request carries the host's agent. Absent on\na grant approved before this permission existed, which keeps the hosts\nthe plugin's manifest declares.",
+            "example": [
+              "*.libro.fm"
+            ],
+            "nullable": true
+          },
+          "ownUserAgentReason": {
+            "type": "string",
+            "description": "The plugin's reason for [`Self::own_user_agent_hosts`], from\n`plugin.toml`.",
+            "example": "Libro.fm's sign-in, library and download API answers the HTTP client of the Libro.fm Android app.",
+            "nullable": true
           },
           "grantRevision": {
             "type": "string",
@@ -34838,6 +34911,7 @@
               "operatorDeniedCidrs": [],
               "operatorDeniedDomains": [],
               "operatorDeniedTcp": [],
+              "ownUserAgentHosts": [],
               "pluginId": "libro",
               "pluginKey": "cargo:https://crates.io#bookclerk-plugin-source-libro",
               "producers": [],

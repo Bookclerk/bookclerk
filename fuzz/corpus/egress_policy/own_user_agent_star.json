@@ -1,0 +1,1 @@
+{"mode":"outbound","domains":["*"],"maxRedirects":3,"ownUserAgentHosts":["*"," * ","*.","bücher.example","x%41.example"]}

@@ -218,6 +218,12 @@ function GrantFacts({ grant }: { grant: RemoteGrantView }) {
   if (grant.allowUndeclaredPublicRedirects) {
     facts.push("Redirects: may follow redirects to public hosts it did not declare");
   }
+  if (grant.ownUserAgentHosts?.length) {
+    const reason = grant.ownUserAgentReason ? ` (${grant.ownUserAgentReason})` : "";
+    facts.push(
+      `Asks to send its own User-Agent instead of Bookclerk's to: ${grant.ownUserAgentHosts.join(", ")}${reason}`,
+    );
+  }
   if (grant.jobs?.length) facts.push(`Jobs: ${grant.jobs.join(", ")}`);
   if (grant.entrypoints?.length) facts.push(`Entrypoints: ${grant.entrypoints.join(", ")}`);
   if (grant.producers?.length) facts.push(`Sends to queues: ${grant.producers.join(", ")}`);
@@ -265,9 +271,11 @@ function ConsentRow({
   const requested = row.requested_grant ?? {};
   const domains = requested.domains ?? [];
   const bindings = requested.bindings ?? [];
+  const ownAgentHosts = requested.ownUserAgentHosts ?? [];
   const networked = Boolean(requested.networkMode && requested.networkMode !== "deny");
   const [deniedDomains, setDeniedDomains] = useState<Set<string>>(new Set());
   const [deniedBindings, setDeniedBindings] = useState<Set<string>>(new Set());
+  const [deniedOwnAgents, setDeniedOwnAgents] = useState<Set<string>>(new Set());
   const [denyNetwork, setDenyNetwork] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -277,6 +285,7 @@ function ConsentRow({
   useEffect(() => {
     setDeniedDomains(new Set());
     setDeniedBindings(new Set());
+    setDeniedOwnAgents(new Set());
     setDenyNetwork(false);
     setError(null);
   }, [requestKey]);
@@ -383,6 +392,27 @@ function ConsentRow({
               ))
             )}
           </fieldset>
+          {ownAgentHosts.length > 0 ? (
+            <fieldset className="space-y-1" disabled={busy}>
+              <legend className="text-xs font-medium text-ink/70">
+                Own User-Agent instead of Bookclerk&apos;s
+              </legend>
+              {ownAgentHosts.map((host) => (
+                <label key={host} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    disabled={denyNetwork}
+                    checked={denyNetwork || deniedOwnAgents.has(host)}
+                    onChange={(e) =>
+                      setDeniedOwnAgents((set) => toggle(set, host, e.target.checked))
+                    }
+                  />
+                  <span className="text-ink/45">Deny</span>
+                  <span className="font-mono text-[12px]">{host}</span>
+                </label>
+              ))}
+            </fieldset>
+          ) : null}
         </div>
       ) : null}
       <GrantFacts grant={requested} />
@@ -391,6 +421,9 @@ function ConsentRow({
           Granted now: network {row.grant.networkMode ?? "deny"}
           {row.grant.domains?.length ? ` (${row.grant.domains.map(domainLabel).join(", ")})` : ""};
           bindings {row.grant.bindings?.length ? row.grant.bindings.join(", ") : "none"}
+          {row.grant.ownUserAgentHosts?.length
+            ? `; own User-Agent on ${row.grant.ownUserAgentHosts.join(", ")}`
+            : ""}
         </p>
       ) : null}
 
@@ -413,6 +446,7 @@ function ConsentRow({
                   request_digest: row.request_digest,
                   deny_domains: denyNetwork ? [] : [...deniedDomains],
                   deny_bindings: [...deniedBindings],
+                  deny_own_user_agent_hosts: denyNetwork ? [] : [...deniedOwnAgents],
                   deny_network: denyNetwork,
                 }),
               )

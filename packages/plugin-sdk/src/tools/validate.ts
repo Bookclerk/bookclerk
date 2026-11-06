@@ -5,6 +5,7 @@
  */
 
 import { MAX_CRON_BYTES } from "../abi.js";
+import { isValidALabel } from "./idna.js";
 
 /**
  * Parsed `plugin.toml` shape accepted by the TypeScript author tools.
@@ -98,7 +99,16 @@ export type Manifest = {
   /** Network policy the operator must consent to. */
   capabilities: {
     /** Egress policy (`deny` / `outbound`, plus hostname domains for workerd). */
-    network: { mode: string; domains?: string[] };
+    network: {
+      mode: string;
+      domains?: string[];
+      /**
+       * Hosts that receive the plugin's own `User-Agent` instead of the
+       * host's `bookclerk/<version>` agent, with the reason the consent form
+       * shows the operator.
+       */
+      own_user_agent?: { hosts: string[]; reason: string };
+    };
   };
   /** Optional CLI schema block (`[[cli.commands]]`) mirrored into describe metadata. */
   cli?: unknown;
@@ -555,6 +565,7 @@ export function validateManifest(m: Manifest): void {
   }
   validateSurface(m);
   validateSettings(m);
+  validateOwnUserAgent(m);
   const runtime = m.runtime ?? "native";
   if (runtime === "native") {
     if (!m.command || !String(m.command).trim()) {
@@ -590,6 +601,89 @@ export function validateManifest(m: Manifest): void {
     }
   } else {
     throw new Error(`plugin.toml: unknown runtime ${runtime}`);
+  }
+}
+
+/** Most hosts one `[capabilities.network.own_user_agent]` table may list. */
+const MAX_OWN_USER_AGENT_HOSTS = 32;
+
+/** Longest `own_user_agent.reason`, in characters. */
+const MAX_OWN_USER_AGENT_REASON_CHARS = 300;
+
+/**
+ * Code points a URL host may not contain (WHATWG forbidden domain code
+ * points), which the host's IDNA step rejects too.
+ */
+// eslint-disable-next-line no-control-regex
+const FORBIDDEN_HOST_CHARS = /[\u0000-\u0020#%,/:<>?@[\\\]^|\u007f]/;
+
+/**
+ * True when `raw` is an exact hostname or a `*.` wildcard, as the host's
+ * `normalize_tcp_host` accepts it: trimmed, trailing dots dropped, never `*`,
+ * no port, scheme, path or percent-encoding, and valid IDNA.
+ *
+ * @param raw - Host as written in `plugin.toml`.
+ * @returns Whether the host would accept it.
+ */
+function isOwnUserAgentHost(raw: string): boolean {
+  const trimmed = raw.trim();
+  // A scan, not `/\.+$/`, which backtracks on long runs of dots.
+  let end = trimmed.length;
+  while (end > 0 && trimmed[end - 1] === ".") end--;
+  const pattern = trimmed.slice(0, end);
+  const host = pattern.startsWith("*.") ? pattern.slice(2) : pattern;
+  if (!host || host === "*" || FORBIDDEN_HOST_CHARS.test(host)) return false;
+  // The host checks IDNA only. A URL also parses a last label of digits as
+  // IPv4, so a known label is appended to leave that check out.
+  // IDNA maps some Unicode forms (a fullwidth comma, say) to these ASCII
+  // characters, so the normalized name is checked again.
+  try {
+    const ascii = new URL(`http://${host}.example/`).hostname;
+    if (ascii.length === 0 || FORBIDDEN_HOST_CHARS.test(ascii)) return false;
+    // Some URL parsers pass an `xn--` label through unchecked; the host's
+    // IDNA step requires each to decode to the label it encodes.
+    return ascii.split(".").every(isValidALabel);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates `[capabilities.network.own_user_agent]` the way the host does:
+ * outbound mode, 1 to 32 hosts that are not `*`, and a one-line reason.
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When the table is present and malformed.
+ */
+function validateOwnUserAgent(m: Manifest): void {
+  const own = m.capabilities?.network?.own_user_agent;
+  if (own === undefined) return;
+  const field = "plugin.toml: capabilities.network.own_user_agent";
+  const unknown = Object.keys(own).filter((key) => key !== "hosts" && key !== "reason");
+  if (unknown.length > 0) {
+    throw new Error(`${field}: unknown field \`${unknown[0]}\` (expected hosts, reason)`);
+  }
+  if (m.capabilities.network.mode !== "outbound") {
+    throw new Error(`${field} needs mode = "outbound"`);
+  }
+  const hosts = Array.isArray(own.hosts) ? own.hosts : [];
+  if (hosts.length === 0 || hosts.length > MAX_OWN_USER_AGENT_HOSTS) {
+    throw new Error(`${field}.hosts must list between 1 and ${MAX_OWN_USER_AGENT_HOSTS} hosts`);
+  }
+  for (const host of hosts) {
+    if (typeof host !== "string" || !isOwnUserAgentHost(host)) {
+      throw new Error(
+        `${field}.hosts entry \`${String(host)}\` is not a valid hostname or \`*.\` wildcard (\`*\` is not allowed)`,
+      );
+    }
+  }
+  const reason = typeof own.reason === "string" ? own.reason.trim() : "";
+  // eslint-disable-next-line no-control-regex
+  const hasControl = /[\u0000-\u001f\u007f-\u009f]/.test(reason);
+  if (!reason || [...reason].length > MAX_OWN_USER_AGENT_REASON_CHARS || hasControl) {
+    throw new Error(
+      `${field}.reason must be one line of 1 to ${MAX_OWN_USER_AGENT_REASON_CHARS} characters`,
+    );
   }
 }
 

@@ -191,6 +191,13 @@ pub struct NetworkCapabilities {
     /// Explicit CIDR grants beyond the public Internet (no blanket `private`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub address_cidrs: Vec<String>,
+    /// Hosts that receive the plugin's own `User-Agent` instead of the host's.
+    ///
+    /// Every other request carries the host's honest agent
+    /// ([`crate::host_user_agent`]). Declaring this table asks the operator
+    /// for permission on the consent form, which shows the hosts and reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_user_agent: Option<OwnUserAgent>,
 }
 
 impl Default for NetworkCapabilities {
@@ -201,8 +208,35 @@ impl Default for NetworkCapabilities {
             tcp: vec![],
             allow_undeclared_public_redirects: false,
             address_cidrs: vec![],
+            own_user_agent: None,
         }
     }
+}
+
+/// Longest [`OwnUserAgent::reason`] a manifest may declare, in characters.
+pub const MAX_OWN_USER_AGENT_REASON_CHARS: usize = 300;
+
+/// Most hosts one [`OwnUserAgent`] table may list.
+pub const MAX_OWN_USER_AGENT_HOSTS: usize = 32;
+
+/// `[capabilities.network.own_user_agent]`: where a plugin keeps its own
+/// `User-Agent`.
+///
+/// By default the host replaces every guest request's `User-Agent` with
+/// `bookclerk/<version> (+https://bookclerk.app)`. A plugin that talks to a
+/// store's app API, which answers only the store's own app, lists those hosts
+/// here with a reason. The operator sees both on the consent form and may
+/// refuse; refused or unlisted hosts get the host's agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OwnUserAgent {
+    /// Exact hosts or `*.` wildcards (never `*`), IDNA-normalized at
+    /// validate time. Between 1 and [`MAX_OWN_USER_AGENT_HOSTS`] entries.
+    pub hosts: Vec<String>,
+    /// One sentence for the operator on why these hosts need the plugin's own
+    /// agent, such as the app API contract it follows. Non-empty, at most
+    /// [`MAX_OWN_USER_AGENT_REASON_CHARS`] characters, no control characters.
+    pub reason: String,
 }
 
 /// Maximum named database bindings one plugin may declare.
@@ -1617,6 +1651,9 @@ impl PluginManifest {
                 ))
             })?;
         }
+        if let Some(own) = &self.capabilities.network.own_user_agent {
+            validate_own_user_agent(self.capabilities.network.mode, own)?;
+        }
         if self.entrypoints.is_empty()
             && !self.consumes_events()
             && !self.consumes_queues()
@@ -1863,6 +1900,46 @@ impl PluginManifest {
     }
 }
 
+/// Checks `[capabilities.network.own_user_agent]`.
+///
+/// # Errors
+///
+/// Returns an error when the network mode is `deny`, the host list is empty,
+/// too long or holds an invalid pattern or `*`, or the reason is empty, too
+/// long or holds control characters.
+fn validate_own_user_agent(mode: NetworkMode, own: &OwnUserAgent) -> Result<()> {
+    const FIELD: &str = "plugin.toml: capabilities.network.own_user_agent";
+    if mode == NetworkMode::Deny {
+        return Err(Error::message(format!("{FIELD} needs mode = \"outbound\"")));
+    }
+    if own.hosts.is_empty() || own.hosts.len() > MAX_OWN_USER_AGENT_HOSTS {
+        return Err(Error::message(format!(
+            "{FIELD}.hosts must list between 1 and {MAX_OWN_USER_AGENT_HOSTS} hosts"
+        )));
+    }
+    for host in &own.hosts {
+        // A comma would split the host in the list a native guest receives
+        // (`BOOKCLERK_OWN_USER_AGENT_HOSTS`), so it is refused here, before
+        // and after IDNA (which maps some Unicode commas to `,`).
+        if host.contains(',') || crate::egress::normalize_own_user_agent_host(host).is_none() {
+            return Err(Error::message(format!(
+                "{FIELD}.hosts entry `{host}` is not a valid hostname or `*.` wildcard \
+                 (`*` is not allowed)"
+            )));
+        }
+    }
+    let reason = own.reason.trim();
+    if reason.is_empty()
+        || reason.chars().count() > MAX_OWN_USER_AGENT_REASON_CHARS
+        || reason.chars().any(char::is_control)
+    {
+        return Err(Error::message(format!(
+            "{FIELD}.reason must be one line of 1 to {MAX_OWN_USER_AGENT_REASON_CHARS} characters"
+        )));
+    }
+    Ok(())
+}
+
 /// Rejects an invalid or host-reserved queue name at `field`.
 ///
 /// # Errors
@@ -1948,6 +2025,105 @@ mode = "deny"
 {extra}
 "#
         )
+    }
+
+    /// A native outbound manifest with `own` as its own-agent table body.
+    fn with_own_user_agent(mode: &str, own: &str) -> String {
+        format!(
+            r#"
+api_version = 3
+id = "echo"
+runtime = "native"
+command = "./echo"
+entrypoints = ["remoteLibrary"]
+[capabilities.network]
+mode = "{mode}"
+tcp = [{{ host = "*.example.com", ports = [443] }}]
+[capabilities.network.own_user_agent]
+{own}
+"#
+        )
+    }
+
+    #[test]
+    fn own_user_agent_parses_and_feeds_the_egress_policy() {
+        let m = PluginManifest::parse(&with_own_user_agent(
+            "outbound",
+            "hosts = [\"*.Example.com\", \"api.example.com\"]\nreason = \"App API contract.\"",
+        ))
+        .unwrap();
+        let own = m.capabilities.network.own_user_agent.as_ref().unwrap();
+        assert_eq!(own.reason, "App API contract.");
+        let policy = crate::EgressPolicy::from_manifest(&m);
+        assert_eq!(
+            policy.own_user_agent_hosts,
+            vec!["*.example.com".to_string(), "api.example.com".to_string()]
+        );
+        assert!(policy.keeps_own_user_agent("a.example.com"));
+        assert!(!policy.keeps_own_user_agent("example.org"));
+    }
+
+    #[test]
+    fn own_user_agent_rejects_bad_tables() {
+        let cases = [
+            (
+                "deny",
+                "hosts = [\"a.example.com\"]\nreason = \"r\"",
+                "outbound",
+            ),
+            ("outbound", "hosts = []\nreason = \"r\"", "between 1 and"),
+            (
+                "outbound",
+                "hosts = [\"*\"]\nreason = \"r\"",
+                "`*` is not allowed",
+            ),
+            (
+                "outbound",
+                "hosts = [\"a%41.example.com\"]\nreason = \"r\"",
+                "not a valid",
+            ),
+            (
+                "outbound",
+                "hosts = [\"a.example.com\"]\nreason = \"  \"",
+                "one line",
+            ),
+            (
+                "outbound",
+                "hosts = [\"a.example.com\"]\nreason = \"a\\nb\"",
+                "one line",
+            ),
+            ("outbound", "hosts = [\"a.example.com\"]", "reason"),
+            (
+                "outbound",
+                "hosts = [\"a.example.com\"]\nreason = \"r\"\nextra = 1",
+                "extra",
+            ),
+        ];
+        for (mode, own, needle) in cases {
+            let err = PluginManifest::parse(&with_own_user_agent(mode, own))
+                .expect_err(own)
+                .to_string();
+            assert!(err.contains(needle), "{own}: {err}");
+        }
+        let long = "x".repeat(MAX_OWN_USER_AGENT_REASON_CHARS + 1);
+        let err = PluginManifest::parse(&with_own_user_agent(
+            "outbound",
+            &format!("hosts = [\"a.example.com\"]\nreason = \"{long}\""),
+        ))
+        .expect_err("long reason")
+        .to_string();
+        assert!(err.contains("one line"), "{err}");
+        let hosts = (0..=MAX_OWN_USER_AGENT_HOSTS)
+            .map(|i| format!("\"h{i}.example.com\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let err = PluginManifest::parse(&with_own_user_agent(
+            "outbound",
+            &format!("hosts = [{hosts}]\nreason = \"r\""),
+        ))
+        .expect_err("too many hosts")
+        .to_string();
+        assert!(err.contains("between 1 and"), "{err}");
     }
 
     #[test]

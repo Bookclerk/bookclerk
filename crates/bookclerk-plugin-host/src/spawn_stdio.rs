@@ -525,6 +525,7 @@ async fn spawn_siblings(
 
     let mut guest_cmd = command_for_start(guest_start, backend, &[]);
     apply_common_env(&mut guest_cmd, plugin, id);
+    apply_user_agent_env(&mut guest_cmd, grant);
     apply_temp_and_home(&mut guest_cmd, &jail.scratch, &jail.data);
     #[cfg(unix)]
     if let Some(dir) = jail.guest_ipc.as_ref().and_then(|ipc| ipc.path()) {
@@ -2021,6 +2022,36 @@ fn apply_common_env(cmd: &mut Command, plugin: &DiscoveredPlugin, id: &str) {
     cmd.env("BOOKCLERK_PLUGIN_ID", id);
     cmd.env("BOOKCLERK_PLUGIN_ROOT", &plugin.root);
     cmd.env("BOOKCLERK_PLUGIN_TOML", plugin.root.join("plugin.toml"));
+}
+
+/// Hands a native guest the host's user-agent rule.
+///
+/// The guest owns its TLS, so the SDK HTTP client applies the rule: the
+/// host's agent everywhere except the hosts the operator approved for the
+/// guest's own agent (see [`bookclerk_plugin_sdk::USER_AGENT_ENV`]).
+///
+/// # Arguments
+///
+/// * `cmd` - Guest command, after `env_clear`.
+/// * `grant` - Effective grant for this spawn.
+fn apply_user_agent_env(cmd: &mut Command, grant: &PluginGrant) {
+    let policy = grant.egress_policy();
+    cmd.env(
+        bookclerk_plugin_sdk::USER_AGENT_ENV,
+        policy.effective_user_agent(),
+    );
+    cmd.env(
+        bookclerk_plugin_sdk::OWN_USER_AGENT_HOSTS_ENV,
+        // The list is comma-separated, so a host holding a comma (never
+        // approved; manifests refuse it) is left out rather than split.
+        policy
+            .own_user_agent_hosts
+            .iter()
+            .filter(|host| !host.contains(','))
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(","),
+    );
 }
 
 fn apply_temp_and_home(cmd: &mut Command, tmp: &std::path::Path, home: &std::path::Path) {

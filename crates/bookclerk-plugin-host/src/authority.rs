@@ -597,6 +597,27 @@ fn hash_grant(kind: &[u8], grant: &PluginGrant) -> String {
         hasher.update(c.as_bytes());
         hasher.update(b",");
     }
+    // Only a non-empty set is hashed, so revisions of grants without the
+    // permission stay what they were before it existed.
+    let own_user_agent = grant.approved_own_user_agent_hosts();
+    if !own_user_agent.is_empty() {
+        hasher.update(b"\nown_user_agent\n");
+        for host in &own_user_agent {
+            hasher.update(host.as_bytes());
+            hasher.update(b",");
+        }
+    }
+    // A legacy grant (`None`) keeps every declared host while an explicit
+    // refusal keeps none, and both hash no approved host; the refused set
+    // tells them apart, so refusing every host still fences running
+    // sessions. It is empty on every grant from before the permission.
+    if !grant.own_user_agent_refused_hosts.is_empty() {
+        hasher.update(b"\nown_user_agent_refused\n");
+        for host in &grant.own_user_agent_refused_hosts {
+            hasher.update(host.as_bytes());
+            hasher.update(b",");
+        }
+    }
     hasher.update(b"\nredirects\n");
     hasher.update(
         u8::from(grant.allow_undeclared_public_redirects)
@@ -698,6 +719,21 @@ mod tests {
         b.approved_at = "2099-01-01T00:00:00Z".into();
         b.plugin_id = "other-alias".into();
         assert_eq!(authority_revision(&a), authority_revision(&b));
+    }
+
+    #[test]
+    fn refusing_every_own_agent_host_changes_revisions() {
+        let mut legacy = grant(&["a.example"]);
+        legacy.own_user_agent_hosts = None;
+        let mut refused = legacy.clone();
+        refused.own_user_agent_hosts = Some(BTreeSet::new());
+        refused.own_user_agent_refused_hosts = ["api.example".to_string()].into();
+        assert_ne!(authority_revision(&legacy), authority_revision(&refused));
+        assert_ne!(grant_revision(&legacy), grant_revision(&refused));
+        // An explicit empty approval with nothing to refuse matches legacy.
+        let mut nothing = legacy.clone();
+        nothing.own_user_agent_hosts = Some(BTreeSet::new());
+        assert_eq!(authority_revision(&legacy), authority_revision(&nothing));
     }
 
     #[test]

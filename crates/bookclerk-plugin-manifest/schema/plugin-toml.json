@@ -174,6 +174,35 @@
           "type": "array",
           "description": "Explicit CIDR grants beyond the public Internet. No blanket private=true.",
           "items": { "type": "string", "minLength": 1 }
+        },
+        "own_user_agent": { "$ref": "#/$defs/OwnUserAgent" }
+      },
+      "if": { "properties": { "mode": { "const": "deny" } } },
+      "then": { "not": { "required": ["own_user_agent"] } }
+    },
+    "OwnUserAgent": {
+      "type": "object",
+      "description": "Hosts that receive the plugin's own User-Agent instead of the host's bookclerk/<version> agent. Shown on the consent form; the operator may refuse.",
+      "additionalProperties": false,
+      "required": ["hosts", "reason"],
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "description": "Exact hosts or *. wildcards (never *).",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(\\*\\.)?[^*\\s,/:%@?#\\\\]+$"
+          }
+        },
+        "reason": {
+          "type": "string",
+          "description": "One line for the operator on why these hosts need the plugin's own agent, such as the app API contract it follows.",
+          "minLength": 1,
+          "maxLength": 300,
+          "pattern": "^[^\\r\\n]+$"
         }
       }
     },

@@ -1,0 +1,10 @@
+{
+  "host": "evil.example",
+  "patterns": [
+    "*",
+    " * ",
+    "*."
+  ],
+  "userAgent": "bookclerk/1.0.0 (+https://bookclerk.app)",
+  "own": "Mozilla/5.0"
+}

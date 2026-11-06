@@ -110,6 +110,12 @@ grant names. If it later asks for more (a new version, or a changed
 manifest), it stops running until you approve it again. Details:
 [Capabilities and consent](../plugins/capabilities.md).
 
+Plugin requests identify as `bookclerk/<version> (+https://bookclerk.app)`.
+A plugin that follows a store's app API can ask to send its own
+`User-Agent` to that store's hosts; the consent form lists those hosts and
+the plugin's reason, and you can refuse each one. See
+[User-Agent](../plugins/capabilities.md#user-agent).
+
 Install only the plugins you use, and undeploy the rest.
 
 ## Backups
