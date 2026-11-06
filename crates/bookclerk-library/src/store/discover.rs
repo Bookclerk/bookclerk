@@ -215,7 +215,10 @@ impl LibraryStore {
 
     /// Lists every stored candidate of one subject, oldest store fetch first.
     ///
-    /// Rows whose scope text is unknown (written by a newer release) are skipped.
+    /// Rows are read in id pages, then ordered by fetch time (ties keep id
+    /// order). A refreshed candidate keeps its id, so id order alone would
+    /// not be fetch order. Rows whose scope text is unknown (written by a
+    /// newer release) are skipped.
     ///
     /// # Errors
     ///
@@ -252,6 +255,7 @@ impl LibraryStore {
                 break;
             }
         }
+        out.sort_by_key(|c| c.fetched_at);
         Ok(out)
     }
 
@@ -736,6 +740,32 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_refreshed_store_lists_after_an_older_fetch() {
+        let store = store().await;
+        let alice = DiscoverSubject::User(1);
+        store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["a"]))
+            .await
+            .unwrap();
+        store
+            .replace_discover_candidates(&alice, "chirp", SeedScope::Own, &rows(&["b"]))
+            .await
+            .unwrap();
+        store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["a"]))
+            .await
+            .unwrap();
+        let order: Vec<String> = store
+            .list_discover_candidates(&alice)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.source)
+            .collect();
+        assert_eq!(order, vec![String::from("chirp"), String::from("libro")]);
     }
 
     #[tokio::test]
