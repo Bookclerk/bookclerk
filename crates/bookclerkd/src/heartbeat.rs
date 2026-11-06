@@ -69,7 +69,7 @@ async fn beat(
         .await
         .map_err(anyhow::Error::from);
     match cache_limits(&library, &node_id).await {
-        Ok(limits) => state.covers.maintain(limits),
+        Ok(limits) => state.covers.maintain(limits).await,
         Err(err) => warn!(error = %err, "cache limits unavailable; keeping the previous ones"),
     }
     (sampler, status)

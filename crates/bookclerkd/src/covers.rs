@@ -1003,13 +1003,15 @@ impl CoverService {
     }
 
     /// Applies new retention limits and sweeps when they changed, the disk
-    /// was low, or [`SWEEP_INTERVAL`] has passed since the last sweep.
-    /// Called at every heartbeat.
+    /// is below [`free_floor`] now or was at the last check, or
+    /// [`SWEEP_INTERVAL`] has passed since the last sweep. Called at every
+    /// heartbeat, so a disk that another workload fills shrinks the cache
+    /// within one heartbeat even when no image is being written.
     ///
     /// # Arguments
     ///
     /// * `limits` - The limits now in force on this node.
-    pub(crate) fn maintain(&self, limits: Limits) {
+    pub(crate) async fn maintain(&self, limits: Limits) {
         let changed = {
             let mut current = lock(&self.limits);
             std::mem::replace(&mut *current, limits) != limits
@@ -1017,8 +1019,15 @@ impl CoverService {
         let Some(dir) = self.dir.as_deref() else {
             return;
         };
+        let low_now = {
+            let dir = dir.to_path_buf();
+            let disk = self.disk;
+            tokio::task::spawn_blocking(move || below_floor(disk, &dir))
+                .await
+                .unwrap_or(false)
+        };
         let due = lock(&self.last_sweep).is_none_or(|at| at.elapsed() >= SWEEP_INTERVAL);
-        if changed || due || self.low_disk.load(Ordering::Acquire) {
+        if changed || due || low_now || self.low_disk.load(Ordering::Acquire) {
             self.sweep_now(dir);
         } else {
             self.maybe_sweep(dir);
@@ -2152,6 +2161,9 @@ mod tests {
                 .image(&backend, &token_for(&service, url), CoverSize::Thumb)
                 .await
                 .expect("cover");
+            // The third write already passes the budget; let its sweep end
+            // so the fourth write's sweep is not skipped as overlapping.
+            swept(&service).await;
             let mut index = lock(&service.index);
             let mut entry = index.get(&cache_key(url)).expect("indexed").clone();
             entry.served = Stamp::from_time(
@@ -2700,7 +2712,7 @@ mod tests {
             index.put(&cache_key(&old), entry);
         }
         // Nothing has swept yet, so the first maintenance is due at once.
-        service.maintain(Limits::default());
+        service.maintain(Limits::default()).await;
         swept(&service).await;
         assert!(!dir.join(cache_key(&old)).exists());
         assert!(dir.join(cache_key(&recent)).exists());
@@ -2708,17 +2720,59 @@ mod tests {
         assert!(!dir.join(TRASH_DIR).read_dir().expect("trash").any(|_| true));
         // Within the interval and under budget, maintenance does not sweep.
         let before = *lock(&service.last_sweep);
-        service.maintain(Limits::default());
+        service.maintain(Limits::default()).await;
         assert_eq!(*lock(&service.last_sweep), before);
         // A changed limit sweeps at once.
         let shrunk = Limits {
             budget: 1,
             ..Limits::default()
         };
-        service.maintain(shrunk);
+        service.maintain(shrunk).await;
         swept(&service).await;
         assert_eq!(lock(&service.index).total(), 0);
         assert_eq!(*lock(&service.limits), shrunk);
+    }
+
+    #[tokio::test]
+    async fn a_disk_filled_by_something_else_shrinks_the_cache_at_the_next_heartbeat() {
+        static FULL: AtomicBool = AtomicBool::new(false);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut service =
+            CoverService::open(temp.path().join("covers"), Limits::default()).expect("open");
+        service.disk = |_| {
+            Some(bookclerk_sandbox::FilesystemSpace {
+                available: if FULL.load(Ordering::Acquire) {
+                    0
+                } else {
+                    1 << 40
+                },
+                total: 1 << 40,
+            })
+        };
+        let service = Arc::new(service);
+        let backend = Arc::new(Fake::default());
+        let url = "https://img.example/ok-full.png".to_owned();
+        service
+            .image(&backend, &token_for(&service, &url), CoverSize::Thumb)
+            .await
+            .expect("cover");
+        let bytes = lock(&service.index).total();
+        let limits = Limits {
+            budget: bytes + bytes / 2,
+            ..Limits::default()
+        };
+        service.maintain(limits).await;
+        swept(&service).await;
+        assert_eq!(lock(&service.index).total(), bytes, "under budget, kept");
+        assert!(!service.low_disk.load(Ordering::Acquire));
+
+        // Within the sweep interval, unchanged limits, no writes: only the
+        // disk changed.
+        FULL.store(true, Ordering::Release);
+        service.maintain(limits).await;
+        swept(&service).await;
+        assert_eq!(lock(&service.index).total(), 0, "shrunk to half the budget");
+        assert!(service.low_disk.load(Ordering::Acquire));
     }
 
     #[tokio::test]
@@ -2771,7 +2825,7 @@ mod tests {
         let before = *lock(&service.last_sweep);
         tokio::time::sleep(Duration::from_millis(5)).await;
         let limits = *lock(&service.limits);
-        service.maintain(limits);
+        service.maintain(limits).await;
         swept(&service).await;
         assert_ne!(*lock(&service.last_sweep), before);
     }
