@@ -113,7 +113,7 @@ async fn admission_permit(
 /// Writes a job row and wakes the worker when a new row is created.
 ///
 /// Holds an [`admission_permit`] for the write.
-async fn admit(state: &AppState, spec: EnqueueJobSpec) -> anyhow::Result<AdmitJob> {
+pub(crate) async fn admit(state: &AppState, spec: EnqueueJobSpec) -> anyhow::Result<AdmitJob> {
     let _permit = admission_permit(state).await?;
     let library = state.library_snapshot().await;
     admit_into(state, &library, spec).await
@@ -253,7 +253,7 @@ pub(crate) async fn sweep_node_bound_output_keys(
 }
 
 /// True when the fence asked to stop or the row is flagged cancelled.
-async fn job_cancelled(
+pub(crate) async fn job_cancelled(
     ctx: Option<&JobExecCtx>,
     library: &bookclerk_library::LibraryStore,
 ) -> bool {
@@ -268,7 +268,7 @@ async fn job_cancelled(
 }
 
 /// Returns `(max_pending, max_attempts)` from the live `[jobs]` config.
-async fn queue_limits(state: &AppState) -> (i64, i64) {
+pub(crate) async fn queue_limits(state: &AppState) -> (i64, i64) {
     let cfg = state.config.read().await;
     (
         i64::from(cfg.jobs.max_pending),

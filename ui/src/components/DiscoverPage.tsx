@@ -81,6 +81,15 @@ import { descriptionPlainText } from "@/lib/safeHtml";
 const SHELF_CHUNK = 8;
 const SHELVES_INITIAL = 6;
 const RESULTS_PAGE_SIZE = 24;
+/** Delay between re-reads of a Discover feed that is still being prepared. */
+const FEED_POLL_MS = 4_000;
+/** Quick re-reads of an unfinished feed before slowing to {@link FEED_POLL_SLOW_MS}. */
+const FEED_POLL_LIMIT = 15;
+/**
+ * Delay between re-reads once {@link FEED_POLL_LIMIT} is spent, while the feed
+ * is still preparing (a refreshing feed already shows shelves, so it stops).
+ */
+const FEED_POLL_SLOW_MS = 30_000;
 
 const selectClassName =
   "rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
@@ -210,12 +219,47 @@ export function DiscoverPage({
   }
 
   async function refreshFeed() {
-    const [f, w] = await Promise.all([fetchDiscoverFeed(36), fetchWishlist()]);
+    // A poll that started before this refresh must not overwrite its result.
+    feedGeneration.current += 1;
+    const [f, w] = await Promise.all([fetchDiscoverFeed(), fetchWishlist()]);
     setFeed(f);
     setWishlist(w);
     setVisibleShelvesCount(SHELVES_INITIAL);
     return { feed: f, wishlist: w };
   }
+
+  // While the daemon is still building the caller's shelves, re-read the
+  // stored feed so they appear without a reload: quickly at first, then
+  // slowly for as long as there are no shelves yet. A failed read counts
+  // as a poll and tries again.
+  const feedState = feed.state;
+  const feedPolls = useRef(0);
+  const feedGeneration = useRef(0);
+  const [pollRetry, setPollRetry] = useState(0);
+  useEffect(() => {
+    if (feedState !== "preparing" && feedState !== "refreshing") {
+      feedPolls.current = 0;
+      return;
+    }
+    const quick = feedPolls.current < FEED_POLL_LIMIT;
+    if (!quick && feedState !== "preparing") return;
+    const generation = feedGeneration.current;
+    const timer = window.setTimeout(
+      () => {
+        feedPolls.current += 1;
+        void fetchDiscoverFeed()
+          .then((next) => {
+            if (generation === feedGeneration.current) setFeed(next);
+            // A refresh started after this poll; run the effect again so
+            // polling continues even if that refresh fails.
+            else setPollRetry((n) => n + 1);
+          })
+          .catch(() => setPollRetry((n) => n + 1));
+      },
+      quick ? FEED_POLL_MS : FEED_POLL_SLOW_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [feed, feedState, pollRetry]);
 
   async function refresh() {
     setError(null);
@@ -1072,7 +1116,23 @@ export function DiscoverPage({
                 </p>
               </div>
 
-              {feed.shelves.length === 0 ? (
+              {feed.shelves.length === 0 && feed.state === "preparing" ? (
+                <div aria-busy="true" className="space-y-3">
+                  <p className="text-sm text-ink/60" role="status">
+                    Preparing your shelves…
+                  </p>
+                  {[0, 1, 2].map((row) => (
+                    <div key={row} className="flex gap-3 overflow-hidden" aria-hidden="true">
+                      {[0, 1, 2, 3, 4, 5].map((card) => (
+                        <div
+                          key={card}
+                          className="h-40 w-28 shrink-0 animate-pulse rounded-md bg-ink/5"
+                        />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              ) : feed.shelves.length === 0 ? (
                 <p className="text-sm text-ink/50">
                   No recommendations yet — finish or rate a few titles.
                 </p>
