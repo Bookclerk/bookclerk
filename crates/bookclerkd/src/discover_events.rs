@@ -35,7 +35,7 @@ pub const DISCOVER_CONSUMER_ID: &str = "host:discover";
 pub const EVENT_DEBOUNCE: Duration = Duration::from_secs(30);
 
 /// Redeliveries before a delivery is dead-lettered. A delivery is retried
-/// (after [`EVENT_DEBOUNCE`]) only while a job it needs is already running,
+/// (after [`EVENT_DEBOUNCE`]) only while a job it needs has already started,
 /// so twenty retries cover ten minutes of a slow storefront fetch.
 const MAX_RETRIES: u32 = 20;
 
@@ -198,7 +198,7 @@ async fn identity_subject(
 enum Queued {
     /// Every job is new, or folded into one that has not started yet.
     Done,
-    /// A job the plan needs is already running (it may have read the data
+    /// A job the plan needs has already started or finished (it may have read the data
     /// before this change) or the queue is full, so the delivery comes
     /// back after [`EVENT_DEBOUNCE`] to queue it again.
     Later,
@@ -249,7 +249,9 @@ async fn queue_for(
 }
 
 /// True when an admission did not leave a job that will see this change:
-/// the queue was full, or the duplicate it folded into is already running.
+/// the queue was full, or the duplicate it folded into is no longer
+/// pending (running, finished between admission and this read, or gone),
+/// so it may have read its inputs before the change.
 ///
 /// # Errors
 ///
@@ -258,15 +260,15 @@ async fn needs_retry(library: &LibraryStore, admitted: &AdmitJob) -> anyhow::Res
     match admitted {
         AdmitJob::Created(_) => Ok(false),
         AdmitJob::QueueFull => Ok(true),
-        AdmitJob::Duplicate(id) => Ok(library
+        AdmitJob::Duplicate(id) => Ok(!library
             .get_job(id)
             .await?
-            .is_some_and(|job| job.state == JobState::Running)),
+            .is_some_and(|job| job.state == JobState::Pending)),
     }
 }
 
 /// Handles one claimed delivery for Discover's consumer: queue the
-/// refreshes, then ack; retry later when a needed job is already running;
+/// refreshes, then ack; retry later when a needed job has already started;
 /// dead-letter a body this consumer cannot read.
 ///
 /// # Arguments
@@ -300,7 +302,7 @@ pub async fn run_discover_delivery(
                 .retry_event_delivery(
                     &fence,
                     run_after,
-                    "a discover job for this change is already running",
+                    "a discover job for this change already started",
                 )
                 .await
         }
@@ -416,6 +418,41 @@ mod tests {
         assert!(subs
             .iter()
             .all(|s| s.max_attempts() == Some(MAX_RETRIES + 1)));
+    }
+
+    #[tokio::test]
+    async fn only_a_pending_duplicate_absorbs_a_change() {
+        let files = tempfile::tempdir().expect("tempdir");
+        let (state, library) = crate::node_api::tests::test_state(&files).await;
+        assert!(
+            !needs_retry(&library, &AdmitJob::Created(String::from("j")))
+                .await
+                .expect("check")
+        );
+        assert!(needs_retry(&library, &AdmitJob::QueueFull)
+            .await
+            .expect("check"));
+        // A duplicate that finished (or vanished) before the read may have
+        // read its inputs before the change.
+        assert!(
+            needs_retry(&library, &AdmitJob::Duplicate(String::from("gone")))
+                .await
+                .expect("check")
+        );
+        let admitted = enqueue_discover_feed(
+            &state,
+            &DiscoverSubject::Operator,
+            JobTrigger::Scheduler,
+            EVENT_DEBOUNCE,
+        )
+        .await
+        .expect("admit");
+        let AdmitJob::Created(id) = admitted else {
+            panic!("expected a new job, got {admitted:?}");
+        };
+        assert!(!needs_retry(&library, &AdmitJob::Duplicate(id))
+            .await
+            .expect("check"));
     }
 
     /// Dispatches the newest outbox row of `event_type` and claims it as

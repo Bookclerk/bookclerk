@@ -134,8 +134,9 @@ are cheap when little changed, because unchanged store calls come from the
 24-hour cache. Apart from the person who wished, someone without stored
 shelves is left to their first read.
 
-A job that is already running may have read the data before the change, so
-when the job the consumer needs is running (or the queue is full), the
+A job that has already started may have read the data before the change,
+so a change only folds into a job that is still pending. When the job the
+consumer needs is running or has just finished (or the queue is full), the
 delivery comes back 30 seconds later and queues again, up to 20 times.
 Every node registers the same consumer and the outbox delivers each event
 once in the cluster. A listening sync publishes only when its digest of what each
