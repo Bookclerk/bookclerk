@@ -2501,6 +2501,7 @@ dependencies = [
  "futures",
  "hex",
  "http-body-util",
+ "image",
  "indexmap 2.14.2",
  "jsonschema",
  "jsonwebtoken",

@@ -223,7 +223,9 @@ The first request for a cover:
 2. downloads the image through the first deployed cover fetcher;
 3. re-encodes it in the confined media worker (see
    [Cover images](media.md#cover-images));
-4. stores the three JPEGs under `cache/covers/` in the files directory.
+4. stores the three JPEGs under `cache/covers/` in the files directory,
+   unless the image host sent `Cache-Control: no-store`. Then the cover is
+   served but not kept, and the next request downloads it again.
 
 Later requests are served from that cache, with a one-year `immutable`
 cache header and an `ETag`, so a browser that checks anyway gets
@@ -234,7 +236,15 @@ At most two of these batches download at once, and a cover already in
 one batch isn't downloaded again by another.
 
 A cover that fails isn't retried for 10 minutes. The cache keeps about
-256 MiB and drops the covers served least recently first.
+256 MiB and drops the covers served least recently first. A cover path
+always names the same image, so a cached cover is never downloaded again.
+
+Next to the entries, `cache/covers/index.journal` records when each image
+was downloaded, how long it stays fresh, the image host's `ETag` and
+`Last-Modified`, and when it was last served. Bookclerk reads it when it
+starts and never serves it. If it is lost, Bookclerk rebuilds it from the
+entries on disk; every image other than a cover is then downloaded again
+the next time it is shown.
 
 The acquire overlay gets its cover the same way, so Bookclerk itself
 never requests a cover URL. Without a deployed cover fetcher, covers
@@ -243,7 +253,11 @@ answer `503` and the overlay keeps the store's own cover.
 The web app loads covers only through `cover_path`, so a browser never
 contacts the store's or catalog's image host. It shows a placeholder until
 a cover arrives, loads covers as they scroll into view, and cancels a
-download when its cover leaves the page.
+download when its cover leaves the page. A cover that fails to load is
+tried again after about 5 seconds, then 10, 20 and 40 (each wait varies by
+up to a quarter, so covers that failed together don't all retry at once),
+each time only once it is on screen; failure answers are never cached, so a busy server or a
+cancelled download does not leave the placeholder for good.
 
 ### Other images
 
@@ -265,8 +279,22 @@ These answer with a shorter browser cache header instead of `immutable`,
 because the image behind the address can change: the browser uses its
 copy for an hour, then keeps showing it for up to a day while it checks
 with Bookclerk, which answers `304 Not Modified` when nothing changed.
-Bookclerk itself keeps serving its cached copy until the cache evicts it,
-so a changed picture can take longer to appear. Without a deployed cover fetcher they answer
+
+Bookclerk checks its own copy with the image host in the same way. The
+host's `Cache-Control`, `Expires`, `Date` and `Age` headers say how long
+the copy stays fresh, kept between one hour and seven days, and 24 hours
+when the host says nothing. Once that time is up:
+
+1. Bookclerk keeps serving the cached copy, so nobody waits.
+2. In the background, it asks the image host again, sending the stored
+   `ETag` and `Last-Modified` as `If-None-Match` and `If-Modified-Since`.
+3. A `304 Not Modified` starts a new freshness period, and a new image
+   replaces the old one. If the request fails, the old copy stays and
+   isn't checked again for 10 minutes.
+
+So a changed picture shows up within about a week at most, and usually
+much sooner. An image the host sends with `no-store` is served but never
+kept. Without a deployed cover fetcher they answer
 `503` and the web app shows a monogram. Gravatars are downloaded at most
 four at a time, since anyone signed in can name a new hash; a request
 over that limit also answers `503`.

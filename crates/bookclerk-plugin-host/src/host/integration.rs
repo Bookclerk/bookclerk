@@ -550,25 +550,13 @@ impl Integration for ExternalIntegration {
 
     async fn fetch_covers(
         &self,
-        urls: Vec<String>,
-        max_bytes: u32,
+        params: bookclerk_plugin_sdk::CoverFetchParams,
     ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::FetchedCover>> {
         Ok(self
             .session
             .covers(move |fetcher| async move {
-                let sink = super::cover_sink::CoverSink::new(urls.len(), max_bytes);
-                let images = fetcher
-                    .fetch_covers(
-                        bookclerk_plugin_sdk::CoverFetchParams {
-                            urls,
-                            max_bytes,
-                            // The cover service does not keep validators
-                            // yet, so every fetch is unconditional.
-                            conditions: Vec::new(),
-                        },
-                        sink.destination(),
-                    )
-                    .await?;
+                let sink = super::cover_sink::CoverSink::new(params.urls.len(), params.max_bytes);
+                let images = fetcher.fetch_covers(params, sink.destination()).await?;
                 Ok(sink.take_fetched(images))
             })
             .await?)

@@ -100,6 +100,9 @@ bytes.workspace = true
 bookclerk-library = { workspace = true, features = ["test-support"] }
 bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 http-body-util = "0.1"
+# Builds a second test image for the cover cache's replace-on-change tests;
+# the version and features bookclerk-cover already uses.
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Raw SQL in tests (taking an owner's archive away in the host-consent
 # tests; a briefly missing table stands in for a database fault).
 sea-orm.workspace = true

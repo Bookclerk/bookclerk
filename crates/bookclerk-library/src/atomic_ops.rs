@@ -316,7 +316,8 @@ fn default_mark_dispatched() -> bool {
 pub struct DbAtomicResult {
     /// Application outcome (`ok`, `empty`, `notFound`, `lastOwner`, …).
     pub status: String,
-    /// Op-specific record when `status` is `ok`.
+    /// Op-specific record when `status` is `ok`, or the existing record a
+    /// `duplicate` folded into (`enqueueJob`, `publishDomainEvent`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<JsonValue>,
     /// Echo of the request `operationId`.

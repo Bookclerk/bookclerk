@@ -191,14 +191,17 @@ function validateQueueName(field: string, name: unknown): void {
 /**
  * Domain event types only the host emits (`book_acquired` is written by the
  * acquire pipeline once a source's acquire handler returns; `edition_linked`,
- * `edition_updated` and `holding_added` by the library model resolver).
- * Plugins consume them but cannot declare them under `[[events.producers]]`.
+ * `edition_updated` and `holding_added` by the library model resolver;
+ * `wishlist_changed` and `listening_synced` by the library when a wishlist
+ * entry or someone's listening changes). Plugins consume them but cannot declare them under `[[events.producers]]`.
  */
 export const HOST_EVENT_TYPES: ReadonlySet<string> = new Set([
   "book_acquired",
   "edition_linked",
   "edition_updated",
   "holding_added",
+  "wishlist_changed",
+  "listening_synced",
 ]);
 
 /** Event type grammar: snake_case `[a-z][a-z0-9_]*`, as the host checks it. */

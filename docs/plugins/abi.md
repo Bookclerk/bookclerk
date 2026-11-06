@@ -247,9 +247,10 @@ The host `EventPublisher` writes straight into the library outbox
   `book_acquired` is one: a source plugin's acquire handler returns the
   book, then the host's acquire pipeline records it and publishes
   `book_acquired` in the same transaction as the library row.
-  `edition_linked`, `edition_updated` and `holding_added` are the others:
-  the library model resolver publishes them in the same batch as the
-  store listing they describe. A plugin can consume them under
+  `edition_linked`, `edition_updated` and `holding_added` are written by
+  the library model resolver in the same batch as the store listing they
+  describe, and `wishlist_changed` and `listening_synced` by the library
+  after a wishlist or listening write. A plugin can consume them under
   `[[events.consumers]]`, but can't declare them under
   `[[events.producers]]` (`check` and load fail), and the host publisher
   refuses them even from an older grant.
@@ -676,6 +677,23 @@ batch as its rows:
   account for an account holder.
 
 Their `source` is the storefront plugin that reported the listing.
+
+**Taste events.** The library publishes these after the write they
+describe, best effort (a failed publish is logged, and the write stands):
+
+- `wishlist_changed` (`requestId`, `identityId`, `status`) when a wishlist
+  entry is added or changes status (`open` or `cancelled`), or an open entry
+  is removed with its user (`deleted`); `identityId` is the portal identity
+  that wished, or null;
+- `listening_synced` (`provider`, `identityIds`) when a listening sync
+  changed a stored row's owner, matched book or work, authors, start,
+  quarter or finish; its
+  `source` is the integration that synced, and `identityIds` names the
+  portal identities whose rows changed. A sync that changes none of these
+  publishes nothing.
+
+Discover's host consumer reads them to refresh shelves (see
+[Discovery design](../internals/discovery.md#taste-events)).
 
 **Claiming.**
 

@@ -391,7 +391,11 @@ mod tests {
         }
         assert!(!plain.supports_covers());
         let err = plain
-            .fetch_covers(vec!["https://a.example/1.jpg".into()], 1)
+            .fetch_covers(bookclerk_plugin_abi::CoverFetchParams {
+                urls: vec!["https://a.example/1.jpg".into()],
+                max_bytes: 1,
+                conditions: Vec::new(),
+            })
             .await
             .unwrap_err();
         assert!(err.to_string().contains("does not fetch covers"), "{err}");

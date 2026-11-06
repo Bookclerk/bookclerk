@@ -6,6 +6,7 @@ import { useTheme } from "@/components/ThemeProvider";
 import { Button } from "@/components/ui/button";
 import {
   authMe,
+  authMeUntilAnswered,
   endElevate,
   fetchPreferences,
   logout,
@@ -145,8 +146,8 @@ export default function App() {
     let cancelled = false;
     void (async () => {
       try {
-        const me = await authMe();
-        if (cancelled) return;
+        const me = await authMeUntilAnswered(() => cancelled);
+        if (cancelled || me === null) return;
         if (me.authenticated && joinPage() != null) {
           if (joinPage() === "approve") takeApproveReturn();
           setSession(me);

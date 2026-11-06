@@ -245,6 +245,53 @@ async fn plan_commit_inserts_receipt() {
     assert_eq!(replay.status, atomic_status::OK);
 }
 
+/// Through the receipt-wrapped plan, a second subject's Discover job is its
+/// own job, and a repeat for the same subject is a duplicate that names the
+/// job it folded into (callers read that job's state).
+#[tokio::test]
+async fn enqueue_duplicate_names_the_existing_job() {
+    let db = mem_db().await;
+    let enqueue = |op: &'static str, subject: &str, now: &str| {
+        let req = named(
+            op,
+            DbAtomicParams::EnqueueJob {
+                kind: "discover_feed".into(),
+                payload_json: format!(r#"{{"v":1,"subject":"{subject}"}}"#),
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 10,
+                run_after: None,
+            },
+        );
+        compile_named_request(req.id, &req.params, now).unwrap()
+    };
+    let first = execute_compiled_on(&db, enqueue("conf-d1", "operator", "2024-06-01T00:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(first.status, atomic_status::OK);
+    let other = execute_compiled_on(&db, enqueue("conf-d2", "user:2", "2024-06-01T00:00:01Z"))
+        .await
+        .unwrap();
+    assert_eq!(
+        other.status,
+        atomic_status::OK,
+        "another subject is its own job"
+    );
+    let again = execute_compiled_on(&db, enqueue("conf-d3", "operator", "2024-06-01T00:00:02Z"))
+        .await
+        .unwrap();
+    assert_eq!(again.status, atomic_status::DUPLICATE);
+    let id = |r: &crate::DbAtomicResult| {
+        r.payload
+            .as_ref()
+            .and_then(|p| p.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    assert!(id(&first).is_some(), "{first:?}");
+    assert_eq!(id(&again), id(&first), "{again:?}");
+}
+
 #[tokio::test]
 async fn plan_hash_conflict_is_idempotency_conflict() {
     let db = mem_db().await;

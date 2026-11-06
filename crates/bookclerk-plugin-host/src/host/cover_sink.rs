@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use bookclerk_integrations::FetchedCover;
+use bookclerk_integrations::{CoverHeaders, FetchedCover};
 use bookclerk_plugin_abi::cover_sink_slot;
 use bookclerk_plugin_sdk::{
     ByteRange, CopyResult, CoverImage, Destination, ListOptions, ListPage, ObjectMetadata,
@@ -90,9 +90,12 @@ impl CoverSink {
                         Slot::Empty | Slot::Writing => None,
                     }
                 });
+                // The typed client refuses an answer that is both stored
+                // and not modified.
                 let (body, error) = match (image.stored, body) {
                     (true, Some(body)) => (Some(body), None),
                     (true, None) => (None, Some("plugin reported a body it never sent".into())),
+                    (false, _) if image.not_modified => (None, None),
                     (false, _) => (
                         None,
                         Some(image.error.unwrap_or_else(|| "not fetched".into())),
@@ -103,6 +106,15 @@ impl CoverSink {
                     body,
                     content_type: image.content_type,
                     error,
+                    not_modified: !image.stored && image.not_modified,
+                    headers: CoverHeaders {
+                        etag: image.etag,
+                        last_modified: image.last_modified,
+                        cache_control: image.cache_control,
+                        expires: image.expires,
+                        date: image.date,
+                        age: image.age,
+                    },
                 }
             })
             .collect()
@@ -349,6 +361,45 @@ mod tests {
         // A body the guest did not claim is dropped.
         assert_eq!(fetched[1].body, None);
         assert_eq!(fetched[1].error.as_deref(), Some("not fetched"));
+    }
+
+    #[tokio::test]
+    async fn not_modified_answers_and_headers_are_passed_on() {
+        let sink = CoverSink::new(2, 8);
+        // A body under a not-modified answer is not the caller's.
+        sink.destination()
+            .put("0", body(b"late"), WriteOptions::default())
+            .await
+            .expect("stored");
+        let fetched = sink.take_fetched(vec![
+            CoverImage {
+                not_modified: true,
+                etag: Some("\"v1\"".into()),
+                cache_control: Some("max-age=60".into()),
+                expires: Some("Thu, 01 Jan 2099 00:00:00 GMT".into()),
+                date: Some("Thu, 01 Jan 2026 00:00:00 GMT".into()),
+                age: Some("5".into()),
+                last_modified: Some("Wed, 31 Dec 2025 00:00:00 GMT".into()),
+                ..image("https://a", false, None)
+            },
+            image("https://b", false, Some("HTTP 500")),
+        ]);
+        assert!(fetched[0].not_modified);
+        assert_eq!(fetched[0].body, None);
+        assert_eq!(fetched[0].error, None);
+        assert_eq!(
+            fetched[0].headers,
+            CoverHeaders {
+                etag: Some("\"v1\"".into()),
+                last_modified: Some("Wed, 31 Dec 2025 00:00:00 GMT".into()),
+                cache_control: Some("max-age=60".into()),
+                expires: Some("Thu, 01 Jan 2099 00:00:00 GMT".into()),
+                date: Some("Thu, 01 Jan 2026 00:00:00 GMT".into()),
+                age: Some("5".into()),
+            }
+        );
+        assert!(!fetched[1].not_modified);
+        assert_eq!(fetched[1].headers, CoverHeaders::default());
     }
 
     #[tokio::test]

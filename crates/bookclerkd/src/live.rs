@@ -98,6 +98,21 @@ const MAX_CLIENT_FRAME: usize = 4 * 1024;
 /// Close code: the session is no longer valid.
 pub const CLOSE_UNAUTHORIZED: u16 = 4401;
 
+/// True when a refusal only says the session could not be checked yet
+/// ([`crate::auth::session_check_unavailable`]), not that it is invalid.
+///
+/// # Arguments
+///
+/// * `refusal` - Why [`resolve_user_caller`] admitted nobody.
+fn session_check_unavailable(refusal: &UserCallerRefusal) -> bool {
+    match refusal {
+        UserCallerRefusal::Response(response) => {
+            response.status() == axum::http::StatusCode::SERVICE_UNAVAILABLE
+        }
+        UserCallerRefusal::Status(_) => false,
+    }
+}
+
 /// In-process pokes: topics that changed in this process just now.
 static POKES: LazyLock<broadcast::Sender<LiveTopic>> = LazyLock::new(|| broadcast::channel(64).0);
 
@@ -370,6 +385,10 @@ async fn run(
                             topics = now;
                         }
                     }
+                    // The library could not say whether the session is
+                    // still valid: keep the socket and its topics, and check
+                    // again on the next tick.
+                    Err(refusal) if session_check_unavailable(&refusal) => {}
                     Err(_) => {
                         let _ = tx.send(close(CLOSE_UNAUTHORIZED, "signed out")).await;
                         return;

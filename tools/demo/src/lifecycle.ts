@@ -35,6 +35,13 @@ export const STOREFRONTS = ["audible", "libro", "chirp", "graphicaudio"];
 export const OPTIONAL_PLUGINS = ["covers"];
 
 /**
+ * The demo Owner's password, shown in the banner (public/_demo/banner.js)
+ * so the visitor can elevate in Settings. Only `POST /api/auth/elevate`
+ * accepts it; the sign-in routes are refused (src/routes.ts).
+ */
+export const VISITOR_PASSWORD = "bookclerk-demo";
+
+/**
  * Sends one request to bookclerkd in the container.
  *
  * @param path - Path and query, starting with `/`.
@@ -90,9 +97,11 @@ export async function waitForHealth(
  *
  * The visitor gets the account a person who installs Bookclerk has, so the
  * demo shows everything the Owner sees. The Worker still refuses the routes
- * the demo does not allow (src/routes.ts) whatever the role. The Owner gets a
- * random password nobody sees, so the claim ticket redeems without one and
- * nobody can sign in as the visitor some other way.
+ * the demo does not allow (src/routes.ts) whatever the role. The Owner's
+ * password is {@link VISITOR_PASSWORD}, which the banner shows, so the
+ * visitor can elevate to operator and impersonate the seeded users as a real
+ * Owner would. Knowing it signs nobody in: every password sign-in route is
+ * refused, and each visitor has a VM of their own.
  *
  * @param call - Container request function.
  * @param operatorToken - The session's operator token.
@@ -106,7 +115,7 @@ export async function signInVisitor(call: ContainerCall, operatorToken: string):
     body: JSON.stringify({
       display_name: "Demo visitor",
       login_name: "demo",
-      password: randomHex(24),
+      password: VISITOR_PASSWORD,
     }),
   });
   const ticket = decodeClaimTicket(await boot.text());

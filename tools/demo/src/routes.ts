@@ -39,10 +39,13 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/auth/bootstrap", "deny"],
   ["POST", "/api/auth/login", "deny"],
   ["POST", "/api/auth/logout", "deny"],
-  ["POST", "/api/auth/elevate", "deny"],
-  ["DELETE", "/api/auth/elevate", "deny"],
-  ["POST", "/api/auth/impersonate", "deny"],
-  ["DELETE", "/api/auth/impersonate", "deny"],
+  // Owner tools: the visitor elevates with the password the banner shows
+  // (VISITOR_PASSWORD) and may then act as a seeded user. Elevated, the
+  // visitor still reaches only the routes this table allows.
+  ["POST", "/api/auth/elevate", "allow"],
+  ["DELETE", "/api/auth/elevate", "allow"],
+  ["POST", "/api/auth/impersonate", "allow"],
+  ["DELETE", "/api/auth/impersonate", "allow"],
   ["GET", "/api/auth/branch-consent", "deny"],
   ["POST", "/api/auth/branch-consent", "deny"],
   ["POST", "/api/auth/branch-consent/step-up", "deny"],

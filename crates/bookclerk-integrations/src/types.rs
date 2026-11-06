@@ -28,8 +28,34 @@ pub struct FetchedCover {
     pub body: Option<Vec<u8>>,
     /// `Content-Type` the server sent. Advisory only.
     pub content_type: Option<String>,
-    /// Why there is no body, as the plugin or the host sink reported it.
+    /// Why there is no body, as the plugin or the host sink reported it;
+    /// `None` when there is a body or the image was not modified.
     pub error: Option<String>,
+    /// The server answered `304 Not Modified` to the URL's conditions:
+    /// there is no body and the caller's copy is still current.
+    pub not_modified: bool,
+    /// Upstream's caching headers, verbatim and untrusted: the caller parses
+    /// and bounds them.
+    pub headers: CoverHeaders,
+}
+
+/// The caching headers an image server sent with one answer, verbatim as
+/// the `covers` plugin passed them on (each at most the ABI's
+/// `maxCoverHeaderBytes`); `None` for a header it did not send.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CoverHeaders {
+    /// `ETag`.
+    pub etag: Option<String>,
+    /// `Last-Modified`.
+    pub last_modified: Option<String>,
+    /// `Cache-Control`.
+    pub cache_control: Option<String>,
+    /// `Expires`.
+    pub expires: Option<String>,
+    /// `Date`.
+    pub date: Option<String>,
+    /// `Age`.
+    pub age: Option<String>,
 }
 
 /// External user resolved via integration credential login or watcher.

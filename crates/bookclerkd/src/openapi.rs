@@ -387,6 +387,9 @@ fn add_group(doc: &mut OpenApi, mut group: OpenApi, access: Access, prefix: &str
                 let generic_forbidden = access != Access::OperatorOrPortal || !method.is_safe();
                 add_enrollment_refusal(op, generic_forbidden);
             }
+            if access.gates_enrollment() {
+                add_session_check_refusal(op);
+            }
         }
     }
     // The one operator-only route whose layer admits an impersonating
@@ -1031,6 +1034,70 @@ fn add_middleware_refusals(doc: &mut OpenApi) {
                     );
                 }
             }
+        }
+    }
+}
+
+/// What a route behind a session-resolving layer answers when the library
+/// could not say in time whether a session cookie is still valid.
+const SESSION_CHECK_SENTENCE: &str = "The sign-in could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than treating the caller as signed out.";
+
+/// States the 503 a route behind a session-resolving access layer may
+/// answer before its handler runs: when the portal session lookup times out
+/// or fails, the layer ([`crate::auth::session_check_unavailable`]) answers
+/// `session_check_unavailable` with `Retry-After` instead of treating the
+/// caller as signed out. A route that already states a 503 keeps its own
+/// body and gains the sentence.
+///
+/// # Arguments
+///
+/// * `op` - One operation of such a group.
+fn add_session_check_refusal(op: &mut Operation) {
+    use utoipa::openapi::header::HeaderBuilder;
+    use utoipa::openapi::schema::{KnownFormat, ObjectBuilder, SchemaFormat, Type};
+    use utoipa::openapi::{ContentBuilder, Ref, RefOr, ResponseBuilder};
+    match op.responses.responses.get_mut("503") {
+        Some(RefOr::T(response)) => {
+            if !response.description.contains(SESSION_CHECK_SENTENCE) {
+                response.description = format!(
+                    "{} {SESSION_CHECK_SENTENCE}",
+                    response.description.trim_end()
+                );
+            }
+        }
+        Some(RefOr::Ref(_)) => {}
+        None => {
+            let example = serde_json::json!({
+                "error": crate::auth::SESSION_CHECK_UNAVAILABLE,
+                "message": crate::auth::SESSION_CHECK_UNAVAILABLE_MESSAGE,
+                "status": 503,
+            });
+            op.responses.responses.insert(
+                "503".to_string(),
+                ResponseBuilder::new()
+                    .description(SESSION_CHECK_SENTENCE)
+                    .header(
+                        "Retry-After",
+                        HeaderBuilder::new()
+                            .schema(Some(
+                                ObjectBuilder::new()
+                                    .schema_type(Type::Integer)
+                                    .format(Some(SchemaFormat::KnownFormat(KnownFormat::Int64)))
+                                    .minimum(Some(0)),
+                            ))
+                            .description(Some("Seconds to wait before asking again."))
+                            .build(),
+                    )
+                    .content(
+                        "application/json",
+                        ContentBuilder::new()
+                            .schema(Some(Ref::from_schema_name("ErrorJson")))
+                            .example(Some(example))
+                            .build(),
+                    )
+                    .build()
+                    .into(),
+            );
         }
     }
 }
