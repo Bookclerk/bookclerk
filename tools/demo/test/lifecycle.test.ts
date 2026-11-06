@@ -3,7 +3,7 @@
 // and teardown signs out every linked store account even when some fail.
 
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import {
   enableDemoPlugins,
   enableStorefronts,
@@ -13,6 +13,8 @@ import {
   VISITOR_PASSWORD,
   signOutStores,
   waitForHealth,
+  prepareShelves,
+  SHELVES_WAIT,
   waitForShelves,
 } from "../src/lifecycle.ts";
 import { type Sent, sent } from "../test-support/requests.ts";
@@ -291,5 +293,33 @@ describe("enableDemoPlugins", () => {
       enableDemoPlugins(scripted(routes(["libro"])).call, "op", () => {}),
       /consent for audible answered 404/,
     );
+  });
+});
+
+describe("prepareShelves", () => {
+  const session = "s".repeat(64);
+
+  it("waits up to 25 seconds, a second apart, by default", () => {
+    assert.deepEqual(SHELVES_WAIT, { timeoutMs: 25_000, intervalMs: 1_000 });
+  });
+
+  it("returns quietly when the shelves are ready", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const call = async (): Promise<Response> => Response.json({ ready: true });
+    assert.equal(await prepareShelves(call, session, "demo-1"), true);
+    assert.equal(warn.mock.calls.length, 0);
+    warn.mockRestore();
+  });
+
+  it("warns and opens anyway when the shelves are late", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const call = async (): Promise<Response> => Response.json({ ready: false });
+    assert.equal(
+      await prepareShelves(call, session, "demo-1", { timeoutMs: 10, intervalMs: 2 }),
+      false,
+    );
+    assert.equal(warn.mock.calls.length, 1);
+    assert.match(String(warn.mock.calls[0]?.[0]), /demo session demo-1 opened before its shelves/);
+    warn.mockRestore();
   });
 });

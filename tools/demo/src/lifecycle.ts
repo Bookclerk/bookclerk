@@ -134,6 +134,34 @@ export async function waitForShelves(
 }
 
 /**
+ * How long the start waits for the visitor's Discover shelves before the
+ * session opens anyway, and how long it pauses between reads.
+ */
+export const SHELVES_WAIT = { timeoutMs: 25_000, intervalMs: 1_000 } as const;
+
+/**
+ * Builds the visitor's Discover shelves before the session opens, waiting
+ * at most {@link SHELVES_WAIT}. Never fails the start: past the deadline it
+ * logs a warning and the page fills in as the shelves arrive.
+ *
+ * @param call - Container request function.
+ * @param portalSession - The visitor's portal session.
+ * @param sessionId - The demo session's id, for the warning.
+ * @param wait - How long to wait in all, and between reads.
+ * @returns True when the shelves were ready in time; otherwise false.
+ */
+export async function prepareShelves(
+  call: ContainerCall,
+  portalSession: string,
+  sessionId: string,
+  wait: { timeoutMs: number; intervalMs: number } = SHELVES_WAIT,
+): Promise<boolean> {
+  const ready = await waitForShelves(call, portalSession, wait);
+  if (!ready) console.warn(`demo session ${sessionId} opened before its shelves were ready`);
+  return ready;
+}
+
+/**
  * Makes the visitor the host's Owner and returns the visitor's portal
  * session.
  *
