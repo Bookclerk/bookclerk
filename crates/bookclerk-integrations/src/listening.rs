@@ -13,7 +13,7 @@ use crate::types::ListeningProgressSnapshot;
 /// `provider` should be the integration id (`audiobookshelf`, plugin id, …).
 /// When anything was written, publishes `listening_synced` keyed by a digest
 /// of what the sync says each person has started or finished (see
-/// [`taste_line`]), so a sync that changes nothing Discover reads coalesces
+/// `taste_line`), so a sync that changes nothing Discover reads coalesces
 /// into the previous event instead of queueing another refresh.
 ///
 /// # Arguments
