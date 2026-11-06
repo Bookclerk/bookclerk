@@ -622,7 +622,11 @@ const FORBIDDEN_HOST_CHARS = /[\u0000-\u0020#%,/:<>?@[\\\]^|\u007f]/;
  * @returns Whether the host would accept it.
  */
 function isOwnUserAgentHost(raw: string): boolean {
-  const pattern = raw.trim().replace(/\.+$/, "");
+  const trimmed = raw.trim();
+  // A scan, not `/\.+$/`, which backtracks on long runs of dots.
+  let end = trimmed.length;
+  while (end > 0 && trimmed[end - 1] === ".") end--;
+  const pattern = trimmed.slice(0, end);
   const host = pattern.startsWith("*.") ? pattern.slice(2) : pattern;
   if (!host || host === "*" || FORBIDDEN_HOST_CHARS.test(host)) return false;
   // The host checks IDNA only. A URL also parses a last label of digits as

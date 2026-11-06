@@ -1642,6 +1642,7 @@ def test_check_plugin_require_binary_resolves_an_absolute_command(tmp_path: Path
         ("bad\u200e.example", False),
         ("a,b.example", False),
         ("a.example\uff0cb.example", False),
+        ("xn--.b\u00fccher.example", False),
         ("xn--.example", False),
         ("xn--99999999.example", False),
         ("xn--bcher-kva.example", True),
@@ -1660,6 +1661,7 @@ def test_check_plugin_require_binary_resolves_an_absolute_command(tmp_path: Path
         "disallowed-idna",
         "comma",
         "fullwidth-comma",
+        "unicode-with-empty-punycode",
         "empty-punycode",
         "bad-punycode",
         "a-label",
@@ -1715,3 +1717,5 @@ def test_own_user_agent_hosts_are_put_in_ascii_form() -> None:
     assert own_user_agent_hosts_for(
         [" *.Bücher.example. ", "API.example.com", 7, "\u200e", ""]
     ) == ["*.xn--bcher-kva.example", "api.example.com"]
+    # UTS 46 keeps `ß` (IDNA 2003 would map it to `ss`), as Node and the host do.
+    assert own_user_agent_hosts_for(["*.Faß.de", "xn--.example"]) == ["*.xn--fa-hia.de"]

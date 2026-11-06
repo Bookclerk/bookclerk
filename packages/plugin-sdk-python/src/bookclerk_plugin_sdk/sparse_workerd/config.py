@@ -25,6 +25,7 @@ from ..tools import (
     apply_author_compatibility_date,
     declares_python,
     module_load_key,
+    own_user_agent_host_ascii,
     unimplemented_surface,
     validate_author_compatibility_flags,
     workerd_module_is_embedded,
@@ -269,7 +270,8 @@ def plugin_global_outbound(mode: str) -> str:
 def own_user_agent_hosts_for(hosts: list[Any]) -> list[str]:
     """Put own-agent host patterns into the ASCII form the egress worker matches.
 
-    As the host's policy does: IDNA for the name, the ``*.`` prefix kept.
+    As the host's policy does: UTS 46 IDNA for the name, the ``*.`` prefix
+    kept; a host it would refuse is left out.
 
     Args:
         hosts: ``capabilities.network.own_user_agent.hosts`` as written.
@@ -281,15 +283,9 @@ def own_user_agent_hosts_for(hosts: list[Any]) -> list[str]:
     for raw in hosts:
         if not isinstance(raw, str):
             continue
-        pattern = raw.strip().rstrip(".")
-        wildcard = pattern.startswith("*.")
-        name = pattern[2:] if wildcard else pattern
-        try:
-            ascii_name = name.encode("idna").decode("ascii").lower()
-        except UnicodeError:
-            continue
-        if ascii_name:
-            out.append(f"*.{ascii_name}" if wildcard else ascii_name)
+        pattern = own_user_agent_host_ascii(raw)
+        if pattern is not None:
+            out.append(pattern)
     return out
 
 

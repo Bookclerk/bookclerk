@@ -674,6 +674,53 @@ impl PluginGrant {
     }
 }
 
+/// Finds a refused own-agent host that an approved pattern still covers.
+///
+/// Refusing `api.example.com` while approving `*.example.com` would leave the
+/// refusal without effect, since the wildcard matches it, so such an
+/// approval is refused instead.
+///
+/// # Arguments
+///
+/// * `approved` - Normalized hosts that keep the guest's own agent.
+/// * `refused` - Normalized hosts the operator refused.
+///
+/// # Returns
+///
+/// `(refused, approved)` for the first conflict, or `None`.
+pub(crate) fn own_user_agent_conflict(
+    approved: &BTreeSet<String>,
+    refused: &BTreeSet<String>,
+) -> Option<(String, String)> {
+    refused.iter().find_map(|refused_host| {
+        // A refused wildcard covers its bare suffix too.
+        let name = refused_host.strip_prefix("*.").unwrap_or(refused_host);
+        approved
+            .iter()
+            .find(|pattern| {
+                *pattern != refused_host && bookclerk_plugin_manifest::host_matches(name, pattern)
+            })
+            .map(|pattern| (refused_host.clone(), pattern.clone()))
+    })
+}
+
+/// The error for an own-agent refusal an approved pattern still covers.
+///
+/// # Arguments
+///
+/// * `refused` - The refused host.
+/// * `approved` - The approved pattern that covers it.
+///
+/// # Returns
+///
+/// A message asking the operator to refuse both or neither.
+pub(crate) fn own_user_agent_conflict_error(refused: &str, approved: &str) -> PluginError {
+    PluginError::message(format!(
+        "own user-agent host `{refused}` is refused but `{approved}` is approved and covers \
+         it; refuse both or neither"
+    ))
+}
+
 /// On-disk grant store.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1923,6 +1970,15 @@ pub fn validate_approved_grant(
             normalized
         }
     };
+    let own_user_agent_refused_hosts: BTreeSet<String> = declared_own_hosts
+        .difference(&own_user_agent_hosts)
+        .cloned()
+        .collect();
+    if let Some((refused, approved_host)) =
+        own_user_agent_conflict(&own_user_agent_hosts, &own_user_agent_refused_hosts)
+    {
+        return Err(own_user_agent_conflict_error(&refused, &approved_host));
+    }
     let mut domains = BTreeSet::new();
     for raw in &approved.domains {
         let Some(normalized) = bookclerk_plugin_manifest::normalize_domain_pattern(raw) else {
@@ -2019,10 +2075,7 @@ pub fn validate_approved_grant(
         } else {
             approved.operator_allow_undeclared_public_redirects
         },
-        own_user_agent_refused_hosts: declared_own_hosts
-            .difference(&own_user_agent_hosts)
-            .cloned()
-            .collect(),
+        own_user_agent_refused_hosts,
         own_user_agent_hosts: Some(own_user_agent_hosts),
         own_user_agent_reason: baseline.own_user_agent_reason.clone(),
         declared_own_user_agent_hosts: None,
@@ -4422,6 +4475,19 @@ reason = "  App API contract.  "
         unset.own_user_agent_hosts = None;
         let grant = validate_approved_grant(&unset, &baseline).unwrap();
         assert_eq!(grant.own_user_agent_hosts, baseline.own_user_agent_hosts);
+
+        // Refusing a host a still-approved wildcard covers is refused.
+        let mut overlapping = baseline.clone();
+        overlapping.own_user_agent_hosts = own_agent(&["*.example.com", "api.example.com"]);
+        let mut overlap_baseline = baseline.clone();
+        overlap_baseline.own_user_agent_hosts = overlapping.own_user_agent_hosts.clone();
+        let mut keep_wildcard = overlap_baseline.clone();
+        keep_wildcard.own_user_agent_hosts = own_agent(&["*.example.com"]);
+        let err = validate_approved_grant(&keep_wildcard, &overlap_baseline).unwrap_err();
+        assert!(err.to_string().contains("refuse both or neither"), "{err}");
+        let mut keep_exact = overlap_baseline.clone();
+        keep_exact.own_user_agent_hosts = own_agent(&["api.example.com"]);
+        assert!(validate_approved_grant(&keep_exact, &overlap_baseline).is_ok());
 
         for invented in ["evil.example.com", "*", "bad%41.example.com"] {
             let mut widened = baseline.clone();

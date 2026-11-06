@@ -1,0 +1,18 @@
+api_version = 3
+id = "own_agent_example"
+name = "Own agent example"
+version = "1.0.0"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+
+[capabilities.network]
+mode = "outbound"
+domains = ["openlibrary.org", "*.libro.fm"]
+
+[capabilities.network.own_user_agent]
+hosts = ["openlibrary.org", "*.Libro.FM.", "bücher.example"]
+reason = "The store's app API answers its own app's client only."

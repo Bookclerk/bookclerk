@@ -92,7 +92,9 @@ reason = "Libro.fm's sign-in, library and download API answers the HTTP client o
 - The consent form shows the host's agent, each listed host and the
   reason. The operator can clear any host, and that host then gets the
   host's agent too. A cleared host counts as answered, so the plugin
-  isn't marked as needing approval for it again.
+  isn't marked as needing approval for it again. A host can't be cleared
+  while an approved wildcard still covers it (`api.example.com` under
+  `*.example.com`); clear both or neither.
 - On a listed host, a request with no agent of its own still gets the
   host's agent.
 - A newer version that lists more hosts waits for consent before it gets

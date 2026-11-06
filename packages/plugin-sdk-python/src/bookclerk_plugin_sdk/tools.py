@@ -19,6 +19,8 @@ import subprocess
 import sys
 import time
 import tomllib
+import unicodedata
+from encodings import idna as encodings_idna
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -566,12 +568,78 @@ _FORBIDDEN_HOST_CHARS = frozenset("#%,/:<>?@[\\]^|\x7f")
 """Code points a URL host may not contain (WHATWG forbidden domain code points)."""
 
 
+_IDNA_DEVIATIONS = frozenset("\u00df\u03c2\u200c\u200d")
+"""Characters IDNA 2003 (Python's codec) maps away but UTS 46 keeps (``ß``, ``ς``, ZWNJ, ZWJ)."""
+
+
+def _label_to_ascii(label: str) -> str | None:
+    """Convert one host label to its lowercase A-label form, as UTS 46 does.
+
+    Python's ``idna`` codec is IDNA 2003, which maps ``ß`` to ``ss``; the
+    host, browsers and Node keep it (``faß`` is ``xn--fa-hia``), so a label
+    with such a character is Punycode-encoded directly.
+
+    Args:
+        label: One label, without dots.
+
+    Returns:
+        The ASCII label, or ``None`` when it does not convert.
+    """
+    if label.isascii():
+        lowered = label.lower()
+        if lowered.startswith("xn--"):
+            # An A-label must decode, as the host's IDNA step checks.
+            try:
+                if not lowered[4:].encode("ascii").decode("punycode"):
+                    return None
+            except UnicodeError:
+                return None
+        return lowered
+    try:
+        if any(c in _IDNA_DEVIATIONS for c in label):
+            mapped = unicodedata.normalize("NFC", label.lower())
+            return "xn--" + mapped.encode("punycode").decode("ascii")
+        return encodings_idna.ToASCII(label).decode("ascii").lower()
+    except UnicodeError:
+        return None
+
+
+def own_user_agent_host_ascii(raw: str) -> str | None:
+    """Normalize an own-agent host to the form the host's policy holds.
+
+    Trimmed, trailing dots dropped, the ``*.`` prefix kept, and every label
+    in lowercase A-label form. The result has no ``*`` name, no forbidden
+    host character (IDNA can map a fullwidth comma to ``,``) and no invalid
+    ``xn--`` label.
+
+    Args:
+        raw: Host as written in ``plugin.toml``.
+
+    Returns:
+        The normalized pattern, or ``None`` when the host would refuse it.
+    """
+    pattern = raw.strip().rstrip(".")
+    wildcard = pattern.startswith("*.")
+    host = pattern[2:] if wildcard else pattern
+    if not host or host == "*":
+        return None
+    if any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in host):
+        return None
+    labels = [_label_to_ascii(label) for label in host.split(".")]
+    if any(label is None for label in labels):
+        return None
+    ascii_host = ".".join(label for label in labels if label is not None)
+    if any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in ascii_host):
+        return None
+    return f"*.{ascii_host}" if wildcard else ascii_host
+
+
 def _is_own_user_agent_host(raw: str) -> bool:
     """Return whether ``raw`` is a host the host's ``normalize_tcp_host`` accepts.
 
     That is an exact hostname or a ``*.`` wildcard: trimmed, trailing dots
     dropped, never ``*``, with no port, scheme, path or percent-encoding, and
-    valid IDNA.
+    valid IDNA (see :func:`own_user_agent_host_ascii`).
 
     Args:
         raw: Host as written in ``plugin.toml``.
@@ -579,29 +647,7 @@ def _is_own_user_agent_host(raw: str) -> bool:
     Returns:
         Whether the host would accept it.
     """
-    pattern = raw.strip().rstrip(".")
-    host = pattern[2:] if pattern.startswith("*.") else pattern
-    if not host or host == "*":
-        return False
-    if any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in host):
-        return False
-    if not host.isascii():
-        try:
-            ascii_host = host.encode("idna").decode("ascii")
-        except UnicodeError:
-            return False
-        # IDNA maps some Unicode forms (a fullwidth comma, say) to ASCII
-        # characters a host may not hold, so the result is checked again.
-        return not any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in ascii_host)
-    # An ASCII A-label (`xn--`) must decode, as the host's IDNA step checks.
-    for label in host.split("."):
-        if label[:4].lower() == "xn--":
-            try:
-                if not label[4:].encode("ascii").decode("punycode"):
-                    return False
-            except UnicodeError:
-                return False
-    return True
+    return own_user_agent_host_ascii(raw) is not None
 
 
 def _validate_own_user_agent(net: dict[str, Any]) -> None:

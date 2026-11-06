@@ -342,7 +342,11 @@ export function pluginGlobalOutbound(mode: string): "blocked" | "egress" {
 export function ownUserAgentHostsFor(hosts: readonly string[]): string[] {
   const out: string[] = [];
   for (const raw of hosts) {
-    const pattern = raw.trim().replace(/\.+$/, "");
+    const trimmed = raw.trim();
+    // A scan, not `/\.+$/`, which backtracks on long runs of dots.
+    let end = trimmed.length;
+    while (end > 0 && trimmed[end - 1] === ".") end--;
+    const pattern = trimmed.slice(0, end);
     const wildcard = pattern.startsWith("*.");
     const ascii = domainToASCII(wildcard ? pattern.slice(2) : pattern);
     if (ascii) out.push(wildcard ? `*.${ascii}` : ascii);

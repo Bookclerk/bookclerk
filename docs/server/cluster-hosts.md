@@ -391,7 +391,9 @@ The HTTP routes behind it are operator-only:
 
 - **Only what is asked for can be approved.** Denying a domain, binding or
   own-agent host the request doesn't ask for is refused
-  (`409 approval_refused`, with the reason in `detail`).
+  (`409 approval_refused`, with the reason in `detail`), and so is denying
+  an own-agent host that an approved wildcard still covers. A host the
+  owner stops asking for is dropped from the approval.
 - **You approve the request you reviewed.** `--request` (the UI always
   sends it) makes the approval a compare-and-swap. If the owner has since
   changed the request (another version, grant or archive), the approval
