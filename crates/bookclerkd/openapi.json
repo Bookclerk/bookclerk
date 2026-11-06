@@ -13725,7 +13725,7 @@
           "Discover"
         ],
         "summary": "Serves one size of a cover the API linked to.",
-        "description": "The path comes from a `cover_path` field in a Discover or catalog\nresponse; append `/128`, `/360` or `/full`. The first request fetches the\nimage through the `covers` plugin and re-encodes it in the confined media\nworker; later ones are served from the node's cover cache. Responses are\nimmutable: a path always names the same image.",
+        "description": "The path comes from a `cover_path` field in a Discover or catalog\nresponse; append `/128`, `/360` or `/full`. The first request fetches the\nimage through the `covers` plugin and re-encodes it in the confined media\nworker; later ones are served from the node's cover cache. Responses are\nimmutable, since a path always names the same image, and carry an `ETag`\nso a client revalidating anyway gets `304 Not Modified`.",
         "operationId": "get_cover",
         "parameters": [
           {
@@ -13758,6 +13758,9 @@
                 }
               }
             }
+          },
+          "304": {
+            "description": "`If-None-Match` names the current `ETag`; no body."
           },
           "401": {
             "description": "The caller is not signed in, or the credential is wrong.",
@@ -13871,7 +13874,7 @@
           "Discover"
         ],
         "summary": "Serves a signed image that is not a cover as a 128 px JPEG.",
-        "description": "The path comes from a `picture_path` or `logo` field: a sign-in\nprovider's profile picture or a plugin's remote logo. It is fetched and\nprocessed like a cover, but answers with a daily browser cache header\ninstead of `immutable`, because the remote image can change at the same\naddress. Bookclerk keeps serving its cached copy until it is evicted.",
+        "description": "The path comes from a `picture_path` or `logo` field: a sign-in\nprovider's profile picture or a plugin's remote logo. It is fetched and\nprocessed like a cover, but answers with an hour-long browser cache\nheader instead of `immutable`, because the remote image can change at the\nsame address. Bookclerk keeps serving its cached copy until it is evicted.",
         "operationId": "get_image",
         "parameters": [
           {
@@ -13895,6 +13898,9 @@
                 }
               }
             }
+          },
+          "304": {
+            "description": "`If-None-Match` names the current `ETag`; no body."
           },
           "401": {
             "description": "The caller is not signed in, or the credential is wrong.",
@@ -14033,6 +14039,9 @@
               }
             }
           },
+          "304": {
+            "description": "`If-None-Match` names the current `ETag`; no body."
+          },
           "401": {
             "description": "The caller is not signed in, or the credential is wrong.",
             "content": {
@@ -14169,6 +14178,9 @@
                 }
               }
             }
+          },
+          "304": {
+            "description": "`If-None-Match` names the current `ETag`; no body."
           },
           "401": {
             "description": "The caller is not signed in, or the credential is wrong.",
