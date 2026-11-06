@@ -122,7 +122,7 @@ class CatalogSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "Cargo.toml").write_text(
-                '[workspace]\nmembers = []\nversion = "9"\n\n[workspace.package]\nedition = "2021"\nversion = "4.5.6"\n',
+                '[workspace]\nmembers = []\nversion = "9"\n\n[workspace.package]\nedition = "2021"\nversion = "4.5.6"  # bump on release\n',
                 encoding="utf-8",
             )
             self.assertEqual(smoke.workspace_version(root), "4.5.6")

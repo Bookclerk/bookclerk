@@ -113,3 +113,25 @@ async fn the_hit_stays_when_details_fail_or_run_out_of_time() {
     assert_eq!(hit.title, "Circe");
     assert_eq!(hit.publisher, None);
 }
+
+#[tokio::test]
+async fn a_slug_keyed_hit_takes_details_with_the_same_isbn() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(details_path("9781478975311")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(details(9781478975311)))
+        .mount(&server)
+        .await;
+    let source = LibroSource::with_base_url(server.uri());
+    let mut slugged = lean("9781478975311-circe");
+    slugged.identifiers = bookclerk_source::records::identifier(
+        bookclerk_source::records::IdentifierScheme::Isbn,
+        "9781478975311",
+        None,
+    )
+    .into_iter()
+    .collect();
+    let hit = with_details(&source, slugged, later()).await;
+    assert_eq!(hit.publisher.as_deref(), Some("Hachette Audio"));
+    assert_eq!(hit.product_id, "9781478975311-circe");
+}

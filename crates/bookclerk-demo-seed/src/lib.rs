@@ -821,9 +821,10 @@ fn catalog_title(sample: &SampleTitle, hit: Option<&CatalogHit>) -> CatalogTitle
 ///
 /// # Returns
 ///
-/// The full record, or `hit` unchanged when the details call fails, times
-/// out, finds nothing, or returns a different product than the search
-/// matched.
+/// The full record under `hit`'s product id, or `hit` unchanged when the
+/// details call fails, times out, finds nothing, or returns a different
+/// product than the search matched (neither the same product id nor the
+/// same ISBN).
 pub async fn with_details(
     source: &dyn ContentSource,
     hit: CatalogHit,
@@ -831,7 +832,11 @@ pub async fn with_details(
 ) -> CatalogHit {
     let lookup = tokio::time::timeout_at(deadline, source.catalog_detail(&hit.product_id));
     match lookup.await {
-        Ok(Ok(Some(full))) if full.product_id == hit.product_id => full,
+        Ok(Ok(Some(mut full))) if same_product(&full, &hit) => {
+            // Keep the id the search matched, so records stay keyed alike.
+            full.product_id = hit.product_id;
+            full
+        }
         Ok(Ok(_)) => hit,
         Ok(Err(err)) => {
             tracing::warn!(product = %hit.product_id, %err, "catalog details failed");
@@ -842,4 +847,11 @@ pub async fn with_details(
             hit
         }
     }
+}
+
+/// Whether a details record describes the same product as a search row: the
+/// same product id, or the same ISBN when a store keys its search rows and
+/// details differently (an ISBN on one, a slug on the other).
+fn same_product(full: &CatalogHit, hit: &CatalogHit) -> bool {
+    full.product_id == hit.product_id || hit.isbn().is_some_and(|isbn| full.isbn() == Some(isbn))
 }

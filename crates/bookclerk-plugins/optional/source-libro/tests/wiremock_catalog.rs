@@ -463,3 +463,94 @@ async fn purchase_hint_carries_the_list_price_from_details() {
     assert_eq!(via_title.product_id, "9781427201447");
     assert_eq!(via_title.price_cents, Some(2999));
 }
+
+#[tokio::test]
+async fn purchase_hint_never_offers_an_edition_details_refused() {
+    let server = MockServer::start().await;
+    mount_details(
+        &server,
+        "9780000000099",
+        200,
+        details(9780000000099, "Dune (Region Locked)", "9.99", false, vec![]),
+    )
+    .await;
+    // The title search ranks the refused edition first.
+    mount_search(
+        &server,
+        "Dune",
+        page(vec![
+            row(9780000000099, "Dune (Region Locked)", "Frank Herbert"),
+            row(9781427201450, "Dune (Movie Tie-In)", "Frank Herbert"),
+        ]),
+    )
+    .await;
+    mount_search(
+        &server,
+        "Dune Messiah",
+        page(vec![row(9780000000098, "Dune Messiah", "Frank Herbert")]),
+    )
+    .await;
+    mount_details(
+        &server,
+        "9780000000098",
+        200,
+        details(9780000000098, "Dune Messiah", "9.99", false, vec![]),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+
+    let next = source
+        .purchase_hint(&PurchaseHintOpts {
+            isbn: Some("9780000000099".into()),
+            title: Some("Dune".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.product_id, "9781427201450");
+
+    // A title match whose own details say it is not for sale gives no hint.
+    let refused = source
+        .purchase_hint(&PurchaseHintOpts {
+            title: Some("Dune Messiah".into()),
+            with_price: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(refused.is_none());
+}
+
+#[tokio::test]
+async fn purchase_hint_falls_back_to_title_when_the_isbn_lookup_fails() {
+    let server = MockServer::start().await;
+    mount_details(&server, "9781427201447", 500, serde_json::json!({})).await;
+    Mock::given(method("GET"))
+        .and(path(explore_search_path()))
+        .and(query_param("q", "9781427201447"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    mount_search(
+        &server,
+        "Dune",
+        page(vec![row(
+            9781427201450,
+            "Dune (Movie Tie-In)",
+            "Frank Herbert",
+        )]),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+    let hint = source
+        .purchase_hint(&PurchaseHintOpts {
+            isbn: Some("9781427201447".into()),
+            title: Some("Dune".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(hint.product_id, "9781427201450");
+}

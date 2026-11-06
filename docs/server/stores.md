@@ -164,6 +164,10 @@ Search lists the title, ISBN, authors, narrators and cover. Title details
 add the description, genres, running time, publisher, series, abridged
 status, language, list price in US dollars and related titles.
 
+A purchase link points at the matching ISBN on Libro.fm, or else at the
+best title-and-author match. A book that the details call reports as not
+for sale never gets a link, even through the title match.
+
 ## Chirp
 
 Connect Chirp from **Accounts** with your email and password. Then:

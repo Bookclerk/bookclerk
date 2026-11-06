@@ -95,19 +95,6 @@ jobs:
             echo "No APK API drift — skipping live auth/download smoke (avoids needless Libro.fm traffic)." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Upload probe reports (JSON/Markdown only — no APK / media)
-        if: always() && steps.probe.outputs.report == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: librofm-apk-probe
-          path: |
-            artifacts/librofm-apk-probe/report.json
-            artifacts/librofm-apk-probe/report.md
-            artifacts/librofm-apk-probe/apk_shapes.json
-            artifacts/librofm-apk-probe/public_smoke.json
-            artifacts/librofm-apk-probe/live_smoke.json
-          if-no-files-found: warn
-
       - name: Summarize probe
         if: always() && steps.probe.outputs.report == 'true'
         run: |
@@ -190,6 +177,20 @@ jobs:
         run: |
           echo "skipped=true" >> "$GITHUB_OUTPUT"
           echo "Live smoke not run (no APK API drift; use workflow_dispatch force_live_smoke to override)." >> "$GITHUB_STEP_SUMMARY"
+
+      # After every smoke step, so public_smoke.json and live_smoke.json are in it.
+      - name: Upload probe reports (JSON/Markdown only — no APK / media)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: librofm-apk-probe
+          path: |
+            artifacts/librofm-apk-probe/report.json
+            artifacts/librofm-apk-probe/report.md
+            artifacts/librofm-apk-probe/apk_shapes.json
+            artifacts/librofm-apk-probe/public_smoke.json
+            artifacts/librofm-apk-probe/live_smoke.json
+          if-no-files-found: warn
 
       - name: Apply suggested client.rs updates
         id: apply

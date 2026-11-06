@@ -215,8 +215,8 @@ pub async fn expand_candidates(
 ///
 /// # Errors
 ///
-/// Returns an error when the ISBN lookup fails. A failed title search is
-/// logged and treated as no match.
+/// Currently never: a failed ISBN lookup or title search is logged and
+/// treated as no match. The `Result` keeps the `ContentSource` signature.
 pub async fn purchase_hint(
     base_url: &str,
     opts: &PurchaseHintOpts,
@@ -243,13 +243,24 @@ pub async fn purchase_hint(
         .and_then(isbn_or_slug)
         .or_else(|| opts.product_id.as_deref().and_then(isbn_or_slug))
         .and_then(isbn_digits);
+    // An ISBN the details call reports as not for sale; the title search
+    // must not offer that same edition.
+    let mut not_for_sale: Option<String> = None;
     if let Some(isbn) = isbn {
         if let Some(details) = libro_details_logged(&http, base_url, &isbn).await {
-            if let (Some(hit), true) = (details.audiobook, details.for_sale) {
-                return Ok(Some(hint_from_hit(hit, title, opts.with_price)));
+            match (details.audiobook, details.for_sale) {
+                (Some(hit), true) => {
+                    return Ok(Some(hint_from_hit(hit, title, opts.with_price)));
+                }
+                (_, false) => not_for_sale = Some(isbn.clone()),
+                (None, true) => {}
             }
-        } else if let Some(hit) = libro_isbn_hit(&http, base_url, &isbn).await? {
-            return Ok(Some(hint_from_hit(hit, title, false)));
+        } else {
+            match libro_isbn_hit(&http, base_url, &isbn).await {
+                Ok(Some(hit)) => return Ok(Some(hint_from_hit(hit, title, false))),
+                Ok(None) => {}
+                Err(err) => tracing::debug!(%isbn, error = %err, "libro ISBN search failed"),
+            }
         }
         tracing::debug!(%isbn, "libro ISBN not for sale; trying title search");
     }
@@ -261,8 +272,10 @@ pub async fn purchase_hint(
         Some(a) => format!("{t} {a}"),
         None => t.to_string(),
     };
-    let hit = match libro_search_hits(&http, base_url, &q, 1, 1).await {
-        Ok(hits) => hits.into_iter().next(),
+    let hit = match libro_search_hits(&http, base_url, &q, TITLE_HINT_ROWS, 1).await {
+        Ok(hits) => hits
+            .into_iter()
+            .find(|h| not_for_sale.is_none() || h.isbn() != not_for_sale),
         Err(err) => {
             tracing::debug!(error = %err, "libro title search failed");
             None
@@ -273,16 +286,22 @@ pub async fn purchase_hint(
     };
     if opts.with_price {
         if let Some(isbn) = hit.isbn() {
-            if let Some(full) = libro_details_logged(&http, base_url, &isbn)
-                .await
-                .and_then(|d| d.audiobook)
-            {
-                hit = full;
+            if let Some(details) = libro_details_logged(&http, base_url, &isbn).await {
+                if !details.for_sale {
+                    return Ok(None);
+                }
+                if let Some(full) = details.audiobook {
+                    hit = full;
+                }
             }
         }
     }
     Ok(Some(hint_from_hit(hit, None, opts.with_price)))
 }
+
+/// Search rows the title fallback of [`purchase_hint`] reads, so an edition
+/// the details call refused can be skipped for the next match.
+const TITLE_HINT_ROWS: usize = 5;
 
 /// Builds a purchase hint pointing at the hit's storefront page, with its
 /// price when `with_price` is set and the hit carries one.
@@ -564,6 +583,7 @@ fn parse_libro_book(v: &Value) -> Option<CatalogHit> {
                 .or_else(|| x.as_i64().map(|n| n.to_string()))
                 .or_else(|| x.as_u64().map(|n| n.to_string()))
         })
+        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())?;
     let title = v
         .get("title")
@@ -953,6 +973,17 @@ fn urlencode_minimal(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn catalog_calls_follow_the_library_path_version() {
+        // A LIBRARY_PATH reshaped by a probe bump must not silently pin the
+        // catalog calls to the fallback version.
+        assert!(LIBRARY_PATH.ends_with("library"), "{LIBRARY_PATH}");
+        assert_eq!(
+            explore_search_path(),
+            format!("{}explore/search", LIBRARY_PATH.trim_end_matches("library"))
+        );
+    }
 
     #[test]
     fn isbn_or_slug_accepts_isbn_and_slug() {

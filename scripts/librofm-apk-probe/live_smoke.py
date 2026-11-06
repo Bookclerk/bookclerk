@@ -39,6 +39,7 @@ import re
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -84,15 +85,12 @@ CATALOG_USER_AGENT_TEMPLATE = "bookclerk/{version} (+https://bookclerk.app)"
 
 def workspace_version(repo: Path) -> str:
     """The `[workspace.package]` version, which `CARGO_PKG_VERSION` gives the plugin."""
-    in_package = False
-    for raw in (repo / "Cargo.toml").read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if line.startswith("["):
-            in_package = line == "[workspace.package]"
-            continue
-        if in_package and line.startswith("version"):
-            return line.split("=", 1)[1].strip().strip('"')
-    raise ValueError("no [workspace.package] version in Cargo.toml")
+    with (repo / "Cargo.toml").open("rb") as f:
+        manifest = tomllib.load(f)
+    version = manifest.get("workspace", {}).get("package", {}).get("version")
+    if not isinstance(version, str) or not version:
+        raise ValueError("no [workspace.package] version in Cargo.toml")
+    return version
 
 
 def catalog_headers(app_ver: str, version: str, *, with_app_ver: bool = True) -> dict[str, str]:

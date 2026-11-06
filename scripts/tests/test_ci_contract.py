@@ -505,12 +505,14 @@ class WorkflowContractTests(unittest.TestCase):
         filter_paths = set(on["pull_request"]["paths"])
         for name, dep in fuzz["dependencies"].items():
             if isinstance(dep, dict) and "path" in dep:
-                crate_dir = Path(dep["path"]).name
+                # Relative to the repository, so nested crates such as
+                # crates/bookclerk-plugins/optional/<plugin> match too.
+                crate_dir = Path(dep["path"]).relative_to("..").as_posix()
                 with self.subTest(dependency=name):
                     self.assertIn(
-                        f"crates/{crate_dir}/**",
+                        f"{crate_dir}/**",
                         filter_paths,
-                        f"cflite-pr.yml must fuzz on changes to crates/{crate_dir}",
+                        f"cflite-pr.yml must fuzz on changes to {crate_dir}",
                     )
 
     def test_actions_are_pinned(self) -> None:
