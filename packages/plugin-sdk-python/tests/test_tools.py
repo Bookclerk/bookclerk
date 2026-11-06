@@ -1625,3 +1625,52 @@ def test_check_plugin_require_binary_resolves_an_absolute_command(tmp_path: Path
     binary.parent.mkdir()
     binary.touch()
     assert check_plugin(staging).startswith("ok id=echo_tools")
+
+
+@pytest.mark.parametrize(
+    ("host", "valid"),
+    [
+        ("api.example.com", True),
+        ("*.Libro.fm.", True),
+        ("*.bücher.example", True),
+        ("*.", False),
+        (" * ", False),
+        ("api.example.com:443", False),
+        ("https://api.example.com", False),
+        ("a b.example", False),
+        ("x%41.example", False),
+        ("bad\u200e.example", False),
+    ],
+    ids=[
+        "exact",
+        "wildcard-trailing-dot",
+        "unicode-wildcard",
+        "bare-wildcard-dot",
+        "padded-star",
+        "port",
+        "scheme",
+        "space",
+        "percent",
+        "disallowed-idna",
+    ],
+)
+def test_own_user_agent_hosts_match_the_host_rules(host: str, valid: bool) -> None:
+    from bookclerk_plugin_sdk.tools import _is_own_user_agent_host
+
+    assert _is_own_user_agent_host(host) is valid
+
+
+@pytest.mark.parametrize(
+    ("own", "message"),
+    [
+        ("not a table", "capabilities.network.own_user_agent must be a table"),
+        ({"hosts": [7], "reason": "r"}, "hosts entry `7` is not a valid hostname"),
+        ({"hosts": ["a.example"], "reason": "x" * 301}, "reason must be one line"),
+        ({"hosts": ["a.example"], "reason": "two\nlines"}, "reason must be one line"),
+    ],
+)
+def test_own_user_agent_table_is_validated(own: Any, message: str) -> None:
+    from bookclerk_plugin_sdk.tools import _validate_own_user_agent
+
+    with pytest.raises(ValueError, match=message):
+        _validate_own_user_agent({"mode": "outbound", "own_user_agent": own})

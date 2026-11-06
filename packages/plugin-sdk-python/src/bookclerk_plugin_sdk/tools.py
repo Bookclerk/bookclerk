@@ -585,6 +585,8 @@ def _is_own_user_agent_host(raw: str) -> bool:
         return False
     if any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in host):
         return False
+    if host.isascii():
+        return True
     try:
         host.encode("idna")
     except UnicodeError:

@@ -6903,6 +6903,43 @@ mod tests {
     }
 
     #[test]
+    fn own_user_agent_hosts_reach_the_approval_and_the_consent_view() {
+        use bookclerk_plugin_host::PluginGrant;
+
+        let baseline = PluginGrant {
+            plugin_id: "libro".into(),
+            network_mode: "outbound".into(),
+            own_user_agent_hosts: Some(
+                ["*.libro.fm".to_string(), "api.example.com".to_string()].into(),
+            ),
+            own_user_agent_reason: Some("App API.".into()),
+            ..PluginGrant::empty()
+        };
+        let approved = build_approved_grant(
+            &baseline,
+            Some(PluginGrantOverride {
+                own_user_agent_hosts: Some(vec!["*.libro.fm".into()]),
+                ..PluginGrantOverride::default()
+            }),
+        )
+        .expect("narrow own-agent hosts");
+        assert_eq!(
+            approved.own_user_agent_hosts,
+            Some(["*.libro.fm".to_string()].into())
+        );
+
+        let view = serde_json::to_value(super::PluginGrantView::from_grant(&approved)).unwrap();
+        assert_eq!(view["ownUserAgentHosts"], serde_json::json!(["*.libro.fm"]));
+        assert_eq!(view["ownUserAgentReason"], "App API.");
+        let legacy = PluginGrant {
+            own_user_agent_hosts: None,
+            ..baseline
+        };
+        let view = serde_json::to_value(super::PluginGrantView::from_grant(&legacy)).unwrap();
+        assert!(view.get("ownUserAgentHosts").is_none(), "{view}");
+    }
+
+    #[test]
     fn listen_validation_uses_effective_auth_flag() {
         let mut cfg = Config::default();
         cfg.daemon.listen = ListenAddrs::parse_list("0.0.0.0:8787").unwrap();
