@@ -970,6 +970,19 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn abridged_flags_accept_bools_numbers_and_words() {
+        assert_eq!(parse_abridged_flag(Some(&json!(true))), Some(true));
+        assert_eq!(parse_abridged_flag(Some(&json!(0))), Some(false));
+        assert_eq!(parse_abridged_flag(Some(&json!(2))), Some(true));
+        assert_eq!(parse_abridged_flag(Some(&json!(" Abridged "))), Some(true));
+        assert_eq!(parse_abridged_flag(Some(&json!("unabridged"))), Some(false));
+        assert_eq!(parse_abridged_flag(Some(&json!("maybe"))), None);
+        assert_eq!(parse_abridged_flag(Some(&json!(1.5))), None);
+        assert_eq!(parse_abridged_flag(Some(&json!([]))), None);
+        assert_eq!(parse_abridged_flag(None), None);
+    }
+
+    #[test]
     fn usd_cents_reads_only_plain_decimal_prices() {
         assert_eq!(usd_cents(&json!("33.59")), Some(3359));
         assert_eq!(usd_cents(&json!(" 9.5 ")), Some(950));

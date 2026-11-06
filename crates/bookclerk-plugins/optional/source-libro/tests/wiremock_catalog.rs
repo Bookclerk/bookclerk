@@ -554,3 +554,73 @@ async fn purchase_hint_falls_back_to_title_when_the_isbn_lookup_fails() {
         .unwrap();
     assert_eq!(hint.product_id, "9781427201450");
 }
+
+#[tokio::test]
+async fn expand_searches_the_title_alone_without_authors() {
+    let server = MockServer::start().await;
+    mount_search(
+        &server,
+        "Dune",
+        page(vec![row(9781427201447, "Dune", "Frank Herbert")]),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+    let titled = seed("audible", "B002V1OF70", " Dune ", None);
+    let hits = source.expand_candidates(&titled, 3).await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].origin.starts_with("libro catalog search"));
+    // No title and no author leaves nothing to search for.
+    let blank = seed("audible", "B002V1OF70", "  ", None);
+    assert!(source
+        .expand_candidates(&blank, 3)
+        .await
+        .unwrap()
+        .is_empty());
+    // A zero limit never reaches the catalog.
+    let none = source
+        .search_catalog(&CatalogSearchOpts {
+            query: "Dune".into(),
+            limit: 0,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(none.is_empty());
+}
+
+#[tokio::test]
+async fn purchase_hint_searches_titles_when_details_lack_the_audiobook() {
+    let server = MockServer::start().await;
+    // Details answer for sale but without an audiobook record.
+    mount_details(
+        &server,
+        "9781427201447",
+        200,
+        serde_json::json!({"data": {"purchase_info": {"for_sale": true, "price": "9.99"}}}),
+    )
+    .await;
+    mount_search(
+        &server,
+        "Dune",
+        page(vec![row(
+            9781427201450,
+            "Dune (Movie Tie-In)",
+            "Frank Herbert",
+        )]),
+    )
+    .await;
+    // No details are mounted for the title match, so the price lookup misses.
+    let source = LibroSource::with_base_url(server.uri());
+    let hint = source
+        .purchase_hint(&PurchaseHintOpts {
+            isbn: Some("9781427201447".into()),
+            title: Some("Dune".into()),
+            with_price: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(hint.product_id, "9781427201450");
+    assert_eq!(hint.price_cents, None);
+}
