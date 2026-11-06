@@ -187,9 +187,11 @@ function allowsTcp(host, port, policy) {
 function keepsOwnUserAgent(host, policy) {
   const normalized = normalizeHostToken(host);
   if (normalized == null) return false;
-  return (policy.ownUserAgentHosts || []).some(
-    (p) => p !== ANY_PUBLIC_HOST && hostMatches(normalized, p),
-  );
+  // Normalize each pattern first so a padded or dotted `*` never matches.
+  return (policy.ownUserAgentHosts || []).some((p) => {
+    const pattern = normalizeHostToken(p);
+    return pattern != null && pattern !== ANY_PUBLIC_HOST && hostMatches(normalized, pattern);
+  });
 }
 
 /**

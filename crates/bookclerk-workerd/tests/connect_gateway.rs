@@ -403,7 +403,8 @@ async fn workerd_fetch_carries_the_host_user_agent_except_on_approved_hosts() {
         tcp: vec![],
         address_cidrs: vec!["127.0.0.1/32".into()],
         user_agent: Some(host_agent.into()),
-        own_user_agent_hosts: vec!["127.0.0.1".into()],
+        // A padded or dotted `*` must not exempt every host.
+        own_user_agent_hosts: vec!["127.0.0.1".into(), " * ".into(), "*.".into()],
     })
     .expect("policy json");
     let local = tokio::task::LocalSet::new();
