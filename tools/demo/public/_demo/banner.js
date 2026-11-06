@@ -1,13 +1,21 @@
-// The demo bar on top of the app: time left, Start over, Get Bookclerk.
+// The demo bar on top of the app: time left, Start over, Get Bookclerk, and
+// a "Demo" button that shows the Owner password for elevating in Settings.
 // Added by the demo Worker; the app itself carries no demo code.
 (() => {
+  // VISITOR_PASSWORD in src/lifecycle.ts (test/pages.test.ts checks they match).
+  const PASSWORD = "bookclerk-demo";
   const bar = document.createElement("div");
   bar.id = "bookclerk-demo-banner";
   bar.setAttribute("role", "region");
   bar.setAttribute("aria-label", "Bookclerk demo");
 
-  // "Bookclerk demo" on wide screens, "Demo" on phones (banner.css).
-  const label = document.createElement("strong");
+  // "Bookclerk demo" on wide screens, "Demo" on phones (banner.css). It is a
+  // button that opens the tips panel below the bar.
+  const label = document.createElement("button");
+  label.type = "button";
+  label.className = "demo-label";
+  label.setAttribute("aria-expanded", "false");
+  label.setAttribute("aria-controls", "bookclerk-demo-tips");
   const long = document.createElement("span");
   long.className = "demo-long";
   long.textContent = "Bookclerk demo";
@@ -40,8 +48,31 @@
   get.rel = "noopener";
   get.hidden = true;
 
+  const tips = document.createElement("div");
+  tips.id = "bookclerk-demo-tips";
+  tips.hidden = true;
+  const intro = document.createElement("p");
+  intro.textContent =
+    "You are this library's Owner. To act as another user, open Settings, then Account, " +
+    "choose Elevate to Operator with this password, and pick Impersonate in User Management. " +
+    "Elevation lasts 15 minutes.";
+  const pass = document.createElement("p");
+  const passLabel = document.createElement("span");
+  passLabel.textContent = "Password: ";
+  const code = document.createElement("code");
+  code.textContent = PASSWORD;
+  pass.append(passLabel, code);
+  tips.append(intro, pass);
+  label.addEventListener("click", () => {
+    tips.hidden = !tips.hidden;
+    label.setAttribute("aria-expanded", String(!tips.hidden));
+  });
+
   bar.append(label, left, spacer, form, get);
-  const mount = () => document.body.prepend(bar);
+  const mount = () => {
+    document.body.prepend(bar);
+    bar.after(tips);
+  };
   if (document.body) mount();
   else document.addEventListener("DOMContentLoaded", mount);
 

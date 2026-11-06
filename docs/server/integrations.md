@@ -253,7 +253,11 @@ answer `503` and the overlay keeps the store's own cover.
 The web app loads covers only through `cover_path`, so a browser never
 contacts the store's or catalog's image host. It shows a placeholder until
 a cover arrives, loads covers as they scroll into view, and cancels a
-download when its cover leaves the page.
+download when its cover leaves the page. A cover that fails to load is
+tried again after about 5 seconds, then 10, 20 and 40 (each wait varies by
+up to a quarter, so covers that failed together don't all retry at once),
+each time only once it is on screen; failure answers are never cached, so a busy server or a
+cancelled download does not leave the placeholder for good.
 
 ### Other images
 

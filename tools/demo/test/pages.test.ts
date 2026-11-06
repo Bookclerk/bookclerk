@@ -17,6 +17,7 @@ import {
   TURNSTILE_SCRIPT,
   waitPage,
 } from "../src/pages.ts";
+import { VISITOR_PASSWORD } from "../src/lifecycle.ts";
 
 /**
  * Reads a file relative to this test.
@@ -276,5 +277,12 @@ describe("static files", () => {
       "https://cloudflareinsights.com",
       "https://static.cloudflareinsights.com",
     ]);
+  });
+});
+
+describe("banner", () => {
+  it("shows the password the demo Owner is created with", () => {
+    const js = file("../public/_demo/banner.js").toString("utf8");
+    assert.ok(js.includes(`const PASSWORD = ${JSON.stringify(VISITOR_PASSWORD)};`));
   });
 });

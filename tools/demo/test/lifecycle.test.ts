@@ -10,6 +10,7 @@ import {
   OPTIONAL_PLUGINS,
   STOREFRONTS,
   signInVisitor,
+  VISITOR_PASSWORD,
   signOutStores,
   waitForHealth,
 } from "../src/lifecycle.ts";
@@ -55,7 +56,7 @@ describe("signInVisitor", () => {
     const boot = JSON.parse(seen[0]!.init.body);
     assert.equal(boot.login_name, "demo");
     assert.equal(boot.display_name, "Demo visitor");
-    assert.match(boot.password, /^[0-9a-f]{48}$/);
+    assert.equal(boot.password, VISITOR_PASSWORD);
     const redeem = JSON.parse(seen[1]!.init.body);
     assert.equal(redeem.ticket, ticket);
     assert.match(redeem.nonce, /^[0-9a-f]{64}$/);

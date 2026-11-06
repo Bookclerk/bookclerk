@@ -33,8 +33,46 @@ body:has(> #bookclerk-demo-banner) > #root {
     sans-serif;
   white-space: nowrap;
 }
-#bookclerk-demo-banner strong {
+#bookclerk-demo-banner button.demo-label {
+  font: inherit;
   font-weight: 600;
+  border: 0;
+  cursor: pointer;
+  color: inherit;
+  background: none;
+  padding: 0;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+/* The tips panel under the bar: in the flow like the bar, so it pushes the
+   app down rather than covering it. */
+#bookclerk-demo-tips {
+  flex: none;
+  position: relative;
+  z-index: 30;
+  padding: 8px 16px 10px;
+  background: #0b3553;
+  border-top: 1px solid rgba(243, 229, 198, 0.25);
+  color: #f3e5c6;
+  font:
+    14px/1.45 "Segoe UI",
+    Candara,
+    system-ui,
+    sans-serif;
+}
+#bookclerk-demo-tips[hidden] {
+  display: none;
+}
+#bookclerk-demo-tips p {
+  margin: 0 0 4px;
+  max-width: 60ch;
+}
+#bookclerk-demo-tips code {
+  font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
+  background: rgba(243, 229, 198, 0.15);
+  border-radius: 4px;
+  padding: 1px 6px;
+  user-select: all;
 }
 #bookclerk-demo-banner .demo-left {
   font-variant-numeric: tabular-nums;
@@ -46,7 +84,7 @@ body:has(> #bookclerk-demo-banner) > #root {
   display: none;
 }
 #bookclerk-demo-banner a,
-#bookclerk-demo-banner button {
+#bookclerk-demo-banner form button {
   font: inherit;
   color: #0b3553;
   background: #f3e5c6;
@@ -83,9 +121,13 @@ body:has(> #bookclerk-demo-banner) > #root {
     padding: 4px 8px;
   }
 }
-/* The narrowest phones (320px): the time and both buttons still fit. */
+/* The narrowest phones (320px): "Demo" shrinks to "?" so the time and
+   both buttons still fit. */
 @media (max-width: 360px) {
-  #bookclerk-demo-banner strong {
+  #bookclerk-demo-banner .demo-short {
     display: none;
+  }
+  #bookclerk-demo-banner button.demo-label::after {
+    content: "?";
   }
 }
