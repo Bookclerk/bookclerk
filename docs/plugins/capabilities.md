@@ -96,6 +96,10 @@ Workerd egress is matched by the shared `EgressPolicy` and
   (`public` plus explicit CIDRs in workerd `network.allow`). DNS
   rebinding from a public hostname to a private, loopback or metadata
   address is denied unless that CIDR is granted.
+- **TLS.** HTTPS requests verify the server certificate against the
+  browser CA list built into workerd (`tlsOptions = (trustBrowserCas =
+  true)` on the generated `internet` service). The host's own trust store
+  isn't consulted, so a guest sees the same roots on every platform.
 - **TCP.** `import { connect } from "cloudflare:sockets"` is forwarded to
   the egress worker's inbound CONNECT handler
   (`compatibilityFlags = ["experimental"]` plus
