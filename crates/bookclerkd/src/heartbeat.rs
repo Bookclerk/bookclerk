@@ -97,3 +97,57 @@ pub(crate) async fn cache_limits(
     };
     Ok(crate::covers::Limits::from_settings(&cluster, &node))
 }
+
+#[cfg(test)]
+mod tests {
+    use bookclerk_library::control_plane::{
+        update_cache_settings, update_node_runtime, ConfigActor, DEFAULT_CACHE_BUDGET_BYTES,
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn cache_limits_follow_the_cluster_document_and_the_node_override() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .expect("open");
+        bookclerk_library::apply_host_schema(&db)
+            .await
+            .expect("schema");
+        let store = LibraryStore::from_connection(db);
+        let actor = ConfigActor::Operator { id: "test".into() };
+
+        let defaults = cache_limits(&store, "node-a").await.expect("defaults");
+        assert_eq!(defaults, crate::covers::Limits::default());
+        assert_eq!(defaults.budget, DEFAULT_CACHE_BUDGET_BYTES);
+
+        update_cache_settings(&store, &actor, |body| {
+            body.set("cache.unviewed_days", "7")?;
+            body.set("cache.budget_bytes", "67108864")
+        })
+        .await
+        .expect("cluster");
+        let cluster = cache_limits(&store, "node-a").await.expect("cluster");
+        assert_eq!(cluster.budget, 64 << 20);
+        assert_eq!(
+            cluster.unviewed,
+            std::time::Duration::from_secs(7 * 24 * 3600)
+        );
+
+        update_node_runtime(&store, &actor, "node-a", |runtime| {
+            runtime.cache_budget_bytes = Some(32 << 20);
+        })
+        .await
+        .expect("override");
+        assert_eq!(
+            cache_limits(&store, "node-a").await.expect("node").budget,
+            32 << 20
+        );
+        assert_eq!(
+            cache_limits(&store, "node-b").await.expect("other").budget,
+            64 << 20,
+            "another node keeps the cluster budget"
+        );
+    }
+}
