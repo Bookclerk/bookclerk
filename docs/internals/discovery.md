@@ -131,7 +131,8 @@ events:
 Each job it queues may only run 30 seconds later, so the changes of one
 sync or one browsing session fold into a single job per person. The fetches
 are cheap when little changed, because unchanged store calls come from the
-24-hour cache. A person without stored shelves is left to their first read.
+24-hour cache. Apart from the person who wished, someone without stored
+shelves is left to their first read.
 
 A job that is already running may have read the data before the change, so
 when the job the consumer needs is running (or the queue is full), the

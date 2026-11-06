@@ -143,8 +143,8 @@ struct RefreshPlan {
 /// again; everyone else's shelves read household wish counts, so they are
 /// re-ranked. A household change can move anyone's seeds, so every subject
 /// with stored shelves fetches again; the shared store-call cache answers
-/// the calls that did not change. A subject with no stored shelves is left
-/// to its first read.
+/// the calls that did not change. Apart from the wish owner, a subject with
+/// no stored shelves is left to its first read.
 ///
 /// # Arguments
 ///
