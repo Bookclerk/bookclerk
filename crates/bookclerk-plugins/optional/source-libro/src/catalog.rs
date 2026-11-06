@@ -1,15 +1,17 @@
 //! Libro.fm catalog search, detail, related titles and purchase links.
 //!
 //! Every call goes to the Android app's signed-out catalog API
-//! (`/api/vN/explore/…`, the same prefix as [`LIBRARY_PATH`]) with an honest
-//! Bookclerk user agent. Libro.fm's load balancer refuses automated requests
-//! to its website pages, so this module never fetches storefront HTML and
-//! never presents itself as a browser.
+//! (`/api/vN/explore/…`, the same prefix as [`LIBRARY_PATH`]). Requests carry
+//! an honest Bookclerk user agent and the app's `X-LibroFm-AppVer` header,
+//! which is part of the app's API contract (the signed-in client sends the
+//! same value) and without which `explore/audiobook_details` answers `404`.
+//! No `Authorization`, device or OS headers are sent. Libro.fm's load
+//! balancer refuses automated requests to its website pages, so this module
+//! never fetches storefront HTML and never presents itself as a browser.
 //!
-//! Signed-out search rows are lean: ISBN, title, authors, narrators and cover.
-//! Series, description, publisher and prices come only from the signed-in
-//! `explore/audiobook_details` call, which catalog requests cannot make
-//! because they carry no account.
+//! Search rows are lean (ISBN, title, authors, narrators, cover);
+//! `explore/audiobook_details` adds description, genres, runtime, publisher,
+//! series, abridged, language, list price and related titles.
 //!
 //! This crate intentionally does **not** depend on `bookclerk-enrich`.
 
@@ -21,7 +23,7 @@ use bookclerk_source::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::client::LIBRARY_PATH;
+use crate::client::{APP_VER, LIBRARY_PATH};
 
 /// User agent for signed-out catalog calls: names Bookclerk and its site so
 /// Libro.fm can identify (and contact) the client.
@@ -47,7 +49,7 @@ pub fn explore_search_path() -> String {
 }
 
 /// GET builder for one catalog API path under `base_url`, with Bookclerk's
-/// own user agent and a JSON `Accept` header.
+/// own user agent, a JSON `Accept` header and the app's `X-LibroFm-AppVer`.
 fn catalog_get(http: &HttpClient, base_url: &str, path_and_query: &str) -> RequestBuilder {
     http.get(format!(
         "{}{path_and_query}",
@@ -55,6 +57,7 @@ fn catalog_get(http: &HttpClient, base_url: &str, path_and_query: &str) -> Reque
     ))
     .header("user-agent", CATALOG_USER_AGENT)
     .header("accept", "application/json")
+    .header("x-librofm-appver", APP_VER)
 }
 
 /// Catalog search → [`CatalogHit`]s keyed by ISBN.
@@ -89,17 +92,19 @@ pub async fn search_catalog(
 
 /// Catalog record for one ISBN (or ISBN-leading slug).
 ///
-/// Searches the catalog for the ISBN and keeps only the row whose ISBN
-/// matches exactly, so a fuzzy hit never stands in for the requested book.
+/// Prefers the app's `explore/audiobook_details` (description, genres,
+/// runtime, publisher, series, abridged, language, list price). When that
+/// misses or fails, falls back to the catalog search row whose ISBN matches
+/// exactly, so a fuzzy hit never stands in for the requested book.
 ///
 /// # Arguments
 ///
-/// * `base_url` - Libro.fm API origin.
+/// * `base_url` - Libro.fm API origin (the plugin's `base_url` setting).
 /// * `product_id` - ISBN-10/13 or `{isbn}-{slug}`; anything else returns `None`.
 ///
 /// # Errors
 ///
-/// Returns an error when the catalog search fails.
+/// Returns an error when the details call misses and the fallback search fails.
 pub async fn catalog_detail(
     base_url: &str,
     product_id: &str,
@@ -108,13 +113,23 @@ pub async fn catalog_detail(
         return Ok(None);
     };
     let http = HttpClient::new();
+    if let Some(details) = libro_details_logged(&http, base_url, &isbn).await {
+        if let Some(hit) = details.audiobook {
+            return Ok(Some(hit.decode_html_entities()));
+        }
+    }
     Ok(libro_isbn_hit(&http, base_url, &isbn)
         .await?
         .map(CatalogHit::decode_html_entities))
 }
 
-/// Related candidates for Discover: more titles by the seed's first author,
-/// without the seed itself.
+/// Related candidates for Discover.
+///
+/// A Libro.fm seed with an ISBN gets the app's related titles from
+/// `explore/audiobook_details`. Otherwise, or when that returns none, a
+/// Libro.fm seed gets more titles by its first author and a seed from
+/// another store gets a title-and-author search. The seed itself is never
+/// returned.
 ///
 /// # Arguments
 ///
@@ -124,7 +139,7 @@ pub async fn catalog_detail(
 ///
 /// # Errors
 ///
-/// Returns an error when the catalog search fails.
+/// Returns an error when the fallback catalog search fails.
 pub async fn expand_candidates(
     base_url: &str,
     seed: &ExpandSeed,
@@ -139,6 +154,25 @@ pub async fn expand_candidates(
         .and_then(isbn_digits)
         .or_else(|| isbn_digits(seed.product_id.trim()));
     let from_libro = seed.source.eq_ignore_ascii_case("libro");
+    let http = HttpClient::new();
+    if let (true, Some(isbn)) = (from_libro, seed_isbn.as_deref()) {
+        if let Some(details) = libro_details_logged(&http, base_url, isbn).await {
+            let origin = format!("libro related to “{}”", seed.title);
+            let related: Vec<CatalogHit> = details
+                .related
+                .into_iter()
+                .filter(|h| h.isbn().as_deref() != Some(isbn))
+                .take(limit)
+                .map(|mut h| {
+                    h.origin.clone_from(&origin);
+                    h.decode_html_entities()
+                })
+                .collect();
+            if !related.is_empty() {
+                return Ok(related);
+            }
+        }
+    }
     let (query, origin) = match primary_author(seed.authors.as_deref()) {
         Some(author) if from_libro => (author.to_string(), format!("libro more by {author}")),
         Some(author) => (
@@ -154,7 +188,6 @@ pub async fn expand_candidates(
     if query.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let http = HttpClient::new();
     // One extra row so dropping the seed still leaves `limit` candidates.
     let hits = libro_search_hits(&http, base_url, &query, limit.saturating_add(1), 1).await?;
     Ok(hits
@@ -171,7 +204,9 @@ pub async fn expand_candidates(
 /// Resolve a Libro.fm product link for a title, by ISBN first and then by
 /// title and author.
 ///
-/// Signed-out catalog rows carry no price, so `opts.with_price` adds nothing.
+/// With `opts.with_price`, the list price comes from
+/// `explore/audiobook_details` (`purchase_info.price`, USD). An ISBN that
+/// details report as not for sale yields no hint.
 ///
 /// # Arguments
 ///
@@ -209,10 +244,14 @@ pub async fn purchase_hint(
         .or_else(|| opts.product_id.as_deref().and_then(isbn_or_slug))
         .and_then(isbn_digits);
     if let Some(isbn) = isbn {
-        if let Some(hit) = libro_isbn_hit(&http, base_url, &isbn).await? {
-            return Ok(Some(hint_from_hit(hit, title)));
+        if let Some(details) = libro_details_logged(&http, base_url, &isbn).await {
+            if let (Some(hit), true) = (details.audiobook, details.for_sale) {
+                return Ok(Some(hint_from_hit(hit, title, opts.with_price)));
+            }
+        } else if let Some(hit) = libro_isbn_hit(&http, base_url, &isbn).await? {
+            return Ok(Some(hint_from_hit(hit, title, false)));
         }
-        tracing::debug!(%isbn, "libro ISBN not in catalog; trying title search");
+        tracing::debug!(%isbn, "libro ISBN not for sale; trying title search");
     }
 
     let Some(t) = title else {
@@ -222,28 +261,183 @@ pub async fn purchase_hint(
         Some(a) => format!("{t} {a}"),
         None => t.to_string(),
     };
-    match libro_search_hits(&http, base_url, &q, 1, 1).await {
-        Ok(hits) => Ok(hits.into_iter().next().map(|hit| hint_from_hit(hit, None))),
+    let hit = match libro_search_hits(&http, base_url, &q, 1, 1).await {
+        Ok(hits) => hits.into_iter().next(),
         Err(err) => {
             tracing::debug!(error = %err, "libro title search failed");
-            Ok(None)
+            None
+        }
+    };
+    let Some(mut hit) = hit else {
+        return Ok(None);
+    };
+    if opts.with_price {
+        if let Some(isbn) = hit.isbn() {
+            if let Some(full) = libro_details_logged(&http, base_url, &isbn)
+                .await
+                .and_then(|d| d.audiobook)
+            {
+                hit = full;
+            }
         }
     }
+    Ok(Some(hint_from_hit(hit, None, opts.with_price)))
 }
 
-/// Builds a purchase hint pointing at the hit's storefront page.
-fn hint_from_hit(hit: CatalogHit, title: Option<&str>) -> SourcePurchaseHint {
+/// Builds a purchase hint pointing at the hit's storefront page, with its
+/// price when `with_price` is set and the hit carries one.
+fn hint_from_hit(hit: CatalogHit, title: Option<&str>, with_price: bool) -> SourcePurchaseHint {
     let url = hit
         .url
         .clone()
         .or_else(|| Some(format!("{STOREFRONT_ORIGIN}/audiobooks/{}", hit.product_id)));
-    SourcePurchaseHint {
+    let mut hint = SourcePurchaseHint {
         title: title
             .map(str::to_string)
             .or_else(|| Some(hit.title.clone()).filter(|s| !s.is_empty())),
         product_id: hit.product_id,
         url,
         ..Default::default()
+    };
+    if with_price && hit.price_cents.is_some() {
+        hint.price_cents = hit.price_cents;
+        hint.price_label.clone_from(&hit.price_label);
+        hint.list_price_cents = hit.price_cents;
+        hint.list_price_label = hit.price_label;
+        hint.currency = hit.currency;
+    }
+    hint
+}
+
+/// One title from `explore/audiobook_details`.
+#[derive(Debug, Default)]
+pub struct LibroDetails {
+    /// The title itself, with its list price; `None` when the payload had no
+    /// usable audiobook object.
+    pub audiobook: Option<CatalogHit>,
+    /// Related titles the app shows under it (lean rows, like search).
+    pub related: Vec<CatalogHit>,
+    /// Whether Libro.fm sells the title (`purchase_info.for_sale`); `true`
+    /// when the payload does not say.
+    pub for_sale: bool,
+}
+
+/// `explore/audiobook_details` envelope.
+#[derive(Debug, Deserialize)]
+struct LibroDetailsResponse {
+    /// Details payload; absent on an empty body.
+    #[serde(default)]
+    data: Option<LibroDetailsData>,
+}
+
+/// Primary audiobook, related titles and purchase facts.
+#[derive(Debug, Deserialize)]
+struct LibroDetailsData {
+    /// Raw primary audiobook object for [`parse_libro_book`].
+    #[serde(default)]
+    audiobook: Option<Value>,
+    /// Raw related-title objects.
+    #[serde(default)]
+    related_audiobooks: Vec<Value>,
+    /// Purchase facts; `price` is the list price as a decimal string in USD.
+    #[serde(default)]
+    purchase_info: Option<Value>,
+}
+
+/// Parses one `explore/audiobook_details` body.
+///
+/// Sans-IO so the unit tests drive the same code as the network path. The
+/// list price (`purchase_info.price`) is copied onto the audiobook hit.
+///
+/// # Errors
+///
+/// Returns an error when `body` is not JSON shaped like the details envelope.
+pub fn parse_details(body: &[u8]) -> bookclerk_source::Result<LibroDetails> {
+    let parsed: LibroDetailsResponse = serde_json::from_slice(body)
+        .map_err(|e| bookclerk_source::SourceError::api(format!("libro details parse: {e}")))?;
+    let Some(data) = parsed.data else {
+        return Ok(LibroDetails {
+            for_sale: true,
+            ..Default::default()
+        });
+    };
+    let purchase = data.purchase_info.as_ref();
+    let for_sale = purchase
+        .and_then(|p| p.get("for_sale"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let audiobook = data
+        .audiobook
+        .as_ref()
+        .and_then(parse_libro_book)
+        .map(|mut h| {
+            h.origin = String::from("libro details");
+            if let Some(price) = purchase.and_then(|p| p.get("price")) {
+                let (cents, _, _) = price_fields_from_value(&serde_json::json!({ "price": price }));
+                if let Some(cents) = cents.filter(|c| *c > 0) {
+                    h.price_cents = Some(cents);
+                    h.currency = Some(String::from("USD"));
+                    h.price_label = Some(format_money_label(cents, "USD"));
+                }
+            }
+            h
+        });
+    let related = data
+        .related_audiobooks
+        .iter()
+        .filter_map(parse_libro_book)
+        .collect();
+    Ok(LibroDetails {
+        audiobook,
+        related,
+        for_sale,
+    })
+}
+
+/// Fetches `explore/audiobook_details/{isbn}`; `Ok(None)` on `404`.
+///
+/// # Errors
+///
+/// Returns an error on transport failure, another non-success status, or an
+/// unparseable body.
+async fn libro_details(
+    http: &HttpClient,
+    base_url: &str,
+    isbn: &str,
+) -> bookclerk_source::Result<Option<LibroDetails>> {
+    let path = format!("{}explore/audiobook_details/{isbn}", api_prefix());
+    let resp = catalog_get(http, base_url, &path)
+        .send()
+        .await
+        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+    if resp.status().as_u16() == 404 {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(bookclerk_source::SourceError::api(format!(
+            "libro audiobook details HTTP {}",
+            resp.status()
+        )));
+    }
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+    parse_details(&body).map(Some)
+}
+
+/// [`libro_details`] with failures logged and treated as a miss.
+async fn libro_details_logged(
+    http: &HttpClient,
+    base_url: &str,
+    isbn: &str,
+) -> Option<LibroDetails> {
+    match libro_details(http, base_url, isbn).await {
+        Ok(details) => details,
+        Err(err) => {
+            tracing::debug!(isbn, error = %err, "libro audiobook details failed");
+            None
+        }
     }
 }
 
@@ -435,6 +629,10 @@ fn parse_libro_book(v: &Value) -> Option<CatalogHit> {
     let language = v
         .get("language")
         .or_else(|| v.get("inLanguage"))
+        .or_else(|| {
+            v.get("audiobook_info")
+                .and_then(|i| i.get("audio_language"))
+        })
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -907,5 +1105,74 @@ mod tests {
         assert!(explore_search_path().starts_with("/api/v"));
         assert!(explore_search_path().ends_with("/explore/search"));
         assert!(CATALOG_USER_AGENT.starts_with("bookclerk/"));
+    }
+
+    /// A trimmed live `explore/audiobook_details` body (Circe, 2026-11-06).
+    fn circe_details() -> serde_json::Value {
+        json!({
+            "user_info": {"signed_in": false},
+            "data": {
+                "audiobook": {
+                    "title": "Circe",
+                    "isbn": 9781478975311u64,
+                    "description": "<p>A bold reimagining.</p>",
+                    "abridged": false,
+                    "series": null,
+                    "series_num": null,
+                    "genres": [
+                        {"id": 4, "name": "Classics", "html_name": "classics"},
+                        {"id": 5, "name": "Fiction", "html_name": "fiction-literature"}
+                    ],
+                    "audiobook_info": {
+                        "narrators": ["Perdita Weeks"],
+                        "duration": 43705,
+                        "audio_language": "eng"
+                    },
+                    "authors": ["Madeline Miller"],
+                    "cover_url": "//covers.libro.fm/9781478975311_1120.jpg",
+                    "publisher": "Hachette Audio",
+                    "publication_date": "2018-04-10T00:00:00.000Z"
+                },
+                "related_audiobooks": [
+                    {"title": "The Song of Achilles", "isbn": 9780062115577u64, "authors": ["Madeline Miller"]},
+                    {"title": "No ISBN"}
+                ],
+                "purchase_info": {"owned": false, "price": "33.59", "for_sale": true}
+            }
+        })
+    }
+
+    #[test]
+    fn details_map_every_field_and_the_list_price() {
+        let body = circe_details().to_string();
+        let d = parse_details(body.as_bytes()).unwrap();
+        assert!(d.for_sale);
+        let c = d.audiobook.unwrap();
+        assert_eq!(c.title, "Circe");
+        assert_eq!(c.publisher.as_deref(), Some("Hachette Audio"));
+        assert_eq!(c.categories.as_deref(), Some("Classics, Fiction"));
+        assert_eq!(c.length_minutes, Some(728));
+        assert_eq!(c.is_abridged, Some(false));
+        assert_eq!(c.language.as_deref(), Some("eng"));
+        assert_eq!(c.narrators().as_deref(), Some("Perdita Weeks"));
+        assert_eq!(c.price_cents, Some(3359));
+        assert_eq!(c.price_label.as_deref(), Some("$33.59"));
+        assert_eq!(c.currency.as_deref(), Some("USD"));
+        assert_eq!(c.origin, "libro details");
+        assert_eq!(d.related.len(), 1);
+        assert_eq!(d.related[0].title, "The Song of Achilles");
+    }
+
+    #[test]
+    fn details_tolerate_missing_parts_and_reject_non_json() {
+        let empty = parse_details(br#"{"user_info":{}}"#).unwrap();
+        assert!(empty.audiobook.is_none() && empty.related.is_empty() && empty.for_sale);
+        let not_for_sale = json!({"data": {"purchase_info": {"for_sale": false, "price": "0"}}});
+        assert!(
+            !parse_details(not_for_sale.to_string().as_bytes())
+                .unwrap()
+                .for_sale
+        );
+        assert!(parse_details(b"").is_err());
     }
 }

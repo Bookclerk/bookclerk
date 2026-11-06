@@ -56,9 +56,10 @@ auto-rewrite Rust `serde` structs.
 `bookclerk-libro` uses oauth → library → `download-manifest?format=m4b` →
 packaged_m4b / ZIP download-manifest → CDN bytes. Those calls need a library
 account. The plugin's catalog search, detail, related-title and purchase
-lookups (`src/catalog.rs`) use the signed-out `{api_prefix}explore/search`;
-its path follows `LIBRARY_PATH`, so an API version bump moves it too. The
-public smoke checks that endpoint's shape.
+lookups (`src/catalog.rs`) use the signed-out `{api_prefix}explore/search`
+and `{api_prefix}explore/audiobook_details/{isbn}`, sending `APP_VER` as
+`X-LibroFm-AppVer`. Their paths follow `LIBRARY_PATH`, so an API version bump
+moves them too. The public smoke checks those endpoints' shapes.
 
 ### Auth smoke (CI gate)
 
@@ -117,8 +118,8 @@ trigger live calls. Override with `workflow_dispatch` → `force_live_smoke`.
 `live_smoke.py --profiles public` hits `explore/search`, suggest, genres, and
 `explore/audiobook_details/{isbn}` without auth. Useful for catalog metadata
 shapes; not a substitute for acquire-path checks. Since November 2026,
-signed-out `explore/audiobook_details` answers `404` from the load balancer;
-it still answers `200` with a bearer token.
+`explore/audiobook_details` answers `404` without `X-LibroFm-AppVer`; with
+it, signed-out calls answer `200`.
 
 ## Local usage
 

@@ -4,6 +4,7 @@
 // Test code: unwrap/expect are fine here.
 #![allow(clippy::unwrap_used)]
 
+use bookclerk_plugin_source_libro::APP_VER;
 use bookclerk_plugin_source_libro::{explore_search_path, LibroSource, CATALOG_USER_AGENT};
 use bookclerk_source::{CatalogSearchOpts, ContentSource, ExpandSeed, PurchaseHintOpts};
 use wiremock::matchers::{header, method, path, query_param};
@@ -42,6 +43,55 @@ fn page(rows: Vec<serde_json::Value>) -> serde_json::Value {
     serde_json::json!({
         "user_info": {"signed_in": false},
         "audiobook_collection": {"page": 1, "total_pages": 1, "audiobooks": rows}
+    })
+}
+
+/// Path of `explore/audiobook_details/{isbn}` beside the search path.
+fn details_path(isbn: &str) -> String {
+    explore_search_path().replace(
+        "explore/search",
+        &format!("explore/audiobook_details/{isbn}"),
+    )
+}
+
+/// Mounts a details answer for `isbn`, requiring the app's AppVer header
+/// and Bookclerk's own user agent.
+async fn mount_details(server: &MockServer, isbn: &str, status: u16, body: serde_json::Value) {
+    Mock::given(method("GET"))
+        .and(path(details_path(isbn)))
+        .and(header("x-librofm-appver", APP_VER))
+        .and(header("user-agent", CATALOG_USER_AGENT))
+        .respond_with(ResponseTemplate::new(status).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// A details body for `isbn` with a price, sale flag and related rows.
+fn details(
+    isbn: u64,
+    title: &str,
+    price: &str,
+    for_sale: bool,
+    related: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "user_info": {"signed_in": false},
+        "data": {
+            "audiobook": {
+                "title": title,
+                "isbn": isbn,
+                "authors": ["Frank Herbert"],
+                "description": "<p>Desert planet.</p>",
+                "publisher": "Macmillan Audio",
+                "series": "Dune",
+                "series_num": 1,
+                "abridged": false,
+                "genres": [{"name": "Science Fiction"}],
+                "audiobook_info": {"narrators": ["Scott Brick"], "duration": 75720}
+            },
+            "related_audiobooks": related,
+            "purchase_info": {"price": price, "for_sale": for_sale}
+        }
     })
 }
 
@@ -279,4 +329,137 @@ async fn purchase_hint_treats_a_failed_title_search_as_no_match() {
         .await
         .unwrap();
     assert!(hint.is_none());
+}
+
+#[tokio::test]
+async fn detail_prefers_the_full_details_record() {
+    let server = MockServer::start().await;
+    mount_details(
+        &server,
+        "9781427201447",
+        200,
+        details(9781427201447, "Dune", "29.99", true, vec![]),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+    let hit = source
+        .catalog_detail("9781427201447")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(hit.origin, "libro details");
+    assert_eq!(hit.description.as_deref(), Some("<p>Desert planet.</p>"));
+    assert_eq!(hit.series().as_deref(), Some("Dune"));
+    assert_eq!(hit.length_minutes, Some(1262));
+}
+
+#[tokio::test]
+async fn detail_falls_back_to_search_when_details_fail() {
+    let server = MockServer::start().await;
+    mount_details(&server, "9781427201447", 500, serde_json::json!({})).await;
+    mount_search(
+        &server,
+        "9781427201447",
+        page(vec![row(9781427201447, "Dune", "Frank Herbert")]),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+    let hit = source
+        .catalog_detail("9781427201447")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(hit.origin, "libro catalog");
+}
+
+#[tokio::test]
+async fn expand_uses_the_apps_related_titles_for_libro_seeds() {
+    let server = MockServer::start().await;
+    mount_details(
+        &server,
+        "9781427201447",
+        200,
+        details(
+            9781427201447,
+            "Dune",
+            "29.99",
+            true,
+            vec![
+                row(9781427201447, "Dune", "Frank Herbert"),
+                row(9780441013593, "Hyperion", "Dan Simmons"),
+            ],
+        ),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+    let hits = source
+        .expand_candidates(&seed("libro", "9781427201447", "Dune", None), 5)
+        .await
+        .unwrap();
+    let titles: Vec<_> = hits.iter().map(|h| h.title.as_str()).collect();
+    assert_eq!(titles, ["Hyperion"]);
+    assert_eq!(hits[0].origin, "libro related to “Dune”");
+}
+
+#[tokio::test]
+async fn purchase_hint_carries_the_list_price_from_details() {
+    let server = MockServer::start().await;
+    mount_details(
+        &server,
+        "9781427201447",
+        200,
+        details(9781427201447, "Dune", "29.99", true, vec![]),
+    )
+    .await;
+    // Not for sale: the ISBN gives no hint, so the title search decides.
+    mount_details(
+        &server,
+        "9780000000099",
+        200,
+        details(9780000000099, "Dune (Region Locked)", "9.99", false, vec![]),
+    )
+    .await;
+    mount_search(
+        &server,
+        "Dune",
+        page(vec![row(9781427201447, "Dune", "Frank Herbert")]),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+
+    let priced = source
+        .purchase_hint(&PurchaseHintOpts {
+            isbn: Some("9781427201447".into()),
+            with_price: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(priced.price_cents, Some(2999));
+    assert_eq!(priced.list_price_label.as_deref(), Some("$29.99"));
+    assert_eq!(priced.currency.as_deref(), Some("USD"));
+
+    let unpriced = source
+        .purchase_hint(&PurchaseHintOpts {
+            isbn: Some("9781427201447".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unpriced.price_cents, None);
+
+    let via_title = source
+        .purchase_hint(&PurchaseHintOpts {
+            isbn: Some("9780000000099".into()),
+            title: Some("Dune".into()),
+            with_price: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(via_title.product_id, "9781427201447");
+    assert_eq!(via_title.price_cents, Some(2999));
 }
