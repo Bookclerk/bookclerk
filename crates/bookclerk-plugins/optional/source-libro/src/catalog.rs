@@ -205,8 +205,9 @@ pub async fn expand_candidates(
 /// title and author.
 ///
 /// With `opts.with_price`, the list price comes from
-/// `explore/audiobook_details` (`purchase_info.price`, USD). An ISBN that
-/// details report as not for sale yields no hint.
+/// `explore/audiobook_details` (`purchase_info.price`, USD). An edition that
+/// details report as not for sale is never offered, priced or not: the title
+/// match then moves on to the next search row.
 ///
 /// # Arguments
 ///
@@ -272,35 +273,39 @@ pub async fn purchase_hint(
         Some(a) => format!("{t} {a}"),
         None => t.to_string(),
     };
-    let hit = match libro_search_hits(&http, base_url, &q, TITLE_HINT_ROWS, 1).await {
-        Ok(hits) => hits
-            .into_iter()
-            .find(|h| not_for_sale.is_none() || h.isbn() != not_for_sale),
+    let hits = match libro_search_hits(&http, base_url, &q, TITLE_HINT_ROWS, 1).await {
+        Ok(hits) => hits,
         Err(err) => {
             tracing::debug!(error = %err, "libro title search failed");
-            None
+            return Ok(None);
         }
     };
-    let Some(mut hit) = hit else {
-        return Ok(None);
-    };
-    if opts.with_price {
-        if let Some(isbn) = hit.isbn() {
-            if let Some(details) = libro_details_logged(&http, base_url, &isbn).await {
-                if !details.for_sale {
-                    return Ok(None);
-                }
-                if let Some(full) = details.audiobook {
-                    hit = full;
-                }
+    // Each candidate's own details decide whether it is for sale, whether
+    // or not the caller wants a price; an unavailable edition yields to the
+    // next row. A candidate whose details miss is offered as it is.
+    for hit in hits {
+        let Some(isbn) = hit.isbn() else {
+            return Ok(Some(hint_from_hit(hit, None, opts.with_price)));
+        };
+        if not_for_sale.as_deref() == Some(isbn.as_str()) {
+            continue;
+        }
+        match libro_details_logged(&http, base_url, &isbn).await {
+            Some(details) if !details.for_sale => {
+                tracing::debug!(%isbn, "libro title match not for sale; trying the next");
             }
+            Some(LibroDetails {
+                audiobook: Some(full),
+                ..
+            }) => return Ok(Some(hint_from_hit(full, None, opts.with_price))),
+            Some(_) | None => return Ok(Some(hint_from_hit(hit, None, opts.with_price))),
         }
     }
-    Ok(Some(hint_from_hit(hit, None, opts.with_price)))
+    Ok(None)
 }
 
 /// Search rows the title fallback of [`purchase_hint`] reads, so an edition
-/// the details call refused can be skipped for the next match.
+/// that is not for sale can yield to the next match.
 const TITLE_HINT_ROWS: usize = 5;
 
 /// Builds a purchase hint pointing at the hit's storefront page, with its

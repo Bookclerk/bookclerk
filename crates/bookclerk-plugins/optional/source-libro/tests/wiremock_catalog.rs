@@ -510,6 +510,28 @@ async fn purchase_hint_never_offers_an_edition_details_refused() {
         .unwrap();
     assert_eq!(next.product_id, "9781427201450");
 
+    // A URL-only caller skips an unavailable title match for the next row.
+    mount_search(
+        &server,
+        "Dune Messiah Frank Herbert",
+        page(vec![
+            row(9780000000098, "Dune Messiah", "Frank Herbert"),
+            row(9780000000097, "Dune Messiah (Anniversary)", "Frank Herbert"),
+        ]),
+    )
+    .await;
+    let skipped = source
+        .purchase_hint(&PurchaseHintOpts {
+            title: Some("Dune Messiah".into()),
+            authors: Some("Frank Herbert".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(skipped.product_id, "9780000000097");
+    assert_eq!(skipped.price_cents, None);
+
     // A title match whose own details say it is not for sale gives no hint.
     let refused = source
         .purchase_hint(&PurchaseHintOpts {
@@ -623,4 +645,25 @@ async fn purchase_hint_searches_titles_when_details_lack_the_audiobook() {
         .unwrap();
     assert_eq!(hint.product_id, "9781427201450");
     assert_eq!(hint.price_cents, None);
+}
+
+#[tokio::test]
+async fn purchase_hint_offers_a_title_match_without_a_valid_isbn() {
+    let server = MockServer::start().await;
+    mount_search(
+        &server,
+        "Odd",
+        page(vec![serde_json::json!({"isbn": "12345", "title": "Odd"})]),
+    )
+    .await;
+    let source = LibroSource::with_base_url(server.uri());
+    let hint = source
+        .purchase_hint(&PurchaseHintOpts {
+            title: Some("Odd".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(hint.product_id, "12345");
 }
