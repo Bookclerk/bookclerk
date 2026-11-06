@@ -295,7 +295,7 @@ pub type StoreRecords = BTreeMap<&'static str, CatalogHit>;
 /// --write-records crates/bookclerk-demo-seed/records.json`.
 const RECORDS_JSON: &str = include_str!("../records.json");
 
-/// The committed storefront records ([`RECORDS_JSON`]) for the current
+/// The committed storefront records (`records.json`) for the current
 /// sample titles; entries for titles no longer sampled are dropped.
 ///
 /// # Errors
