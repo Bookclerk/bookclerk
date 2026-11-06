@@ -674,6 +674,27 @@ mod tests {
         assert_eq!(decoded.shelves.len(), feed.shelves.len());
     }
 
+    /// When four items per shelf are still too large, long descriptions are
+    /// shortened before any shelf is dropped.
+    #[test]
+    fn descriptions_are_shortened_before_shelves_are_dropped() {
+        let recs: Vec<Recommendation> = (0..4)
+            .map(|i| Recommendation {
+                description: Some("é".repeat(2_000)),
+                ..rec(&format!("Book{i}"), f64::from(i), &["finish_series"])
+            })
+            .collect();
+        let mut feed = build_discover_feed(&recs, &ShelfTaste::default(), 8, &[]);
+        let shelves = feed.shelves.len();
+        let budget = 6_000;
+        let json = encode_feed_within(&mut feed, budget).unwrap();
+        assert!(json.len() <= budget, "{} bytes", json.len());
+        assert_eq!(feed.shelves.len(), shelves);
+        let text = feed.shelves[0].items[0].description.as_deref().unwrap();
+        assert_eq!(text.chars().count(), FIT_DESCRIPTION_CHARS + 1);
+        assert!(text.ends_with('…'));
+    }
+
     /// A feed under budget is encoded unchanged, and an impossible budget
     /// still terminates with an empty feed.
     #[test]
