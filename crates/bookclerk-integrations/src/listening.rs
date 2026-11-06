@@ -91,7 +91,8 @@ pub async fn upsert_listening_snapshots(
 }
 
 /// How far someone got in one item, as Discover's engagement reads it:
-/// `0` not started, `1`–`4` the quarter they are in, `5` finished.
+/// `0` not started, `1`–`4` the quarter they are in (full playback not yet
+/// marked finished is the fourth), `5` finished.
 ///
 /// Progress comes from the reported fraction, or from playback position
 /// over duration when the fraction is missing; a position with no duration
@@ -114,9 +115,9 @@ fn listening_stage(item: &ListeningProgressSnapshot) -> u8 {
         .filter(|p| *p > 0.0)
         .unwrap_or(from_time)
         .clamp(0.0, 1.0);
-    if progress >= 1.0 {
-        5
-    } else if progress >= 0.75 {
+    // Full playback without the finished flag stays in the last quarter:
+    // Discover treats an explicitly finished book differently.
+    if progress >= 0.75 {
         4
     } else if progress >= 0.5 {
         3
@@ -385,7 +386,8 @@ mod tests {
         );
         assert_eq!(stage(Some(0.5), None, None), 3);
         assert_eq!(stage(Some(0.8), None, None), 4);
-        assert_eq!(stage(Some(1.0), None, None), 5);
+        assert_eq!(stage(Some(1.0), None, None), 4, "only the flag finishes");
+        assert_eq!(stage(None, Some(100.0), Some(100.0)), 4);
         let mut finished = snapshot("u", "i", 0.0);
         finished.is_finished = true;
         assert_eq!(listening_stage(&finished), 5);
