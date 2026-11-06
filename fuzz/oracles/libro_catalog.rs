@@ -10,8 +10,8 @@
 //! The invariants, checked against a walk of `serde_json`'s own `Value`
 //! rather than the plugin's mapping:
 //!
-//! - parsing never panics, and accepts only valid JSON (invalid UTF-8 in
-//!   a field the parser skips aside);
+//! - parsing never panics, and accepts only text that is JSON by grammar
+//!   (a skipped field's UTF-8 and number range go unchecked);
 //! - the body re-serialized from its `Value` (no duplicate keys) parses
 //!   exactly when its envelope has the documented shape: objects where the
 //!   API sends objects, and a list (or nothing) where it sends rows;
@@ -190,11 +190,12 @@ fn details_shape(value: &Value) -> Shape<DetailsFacts> {
     })
 }
 
-/// Whether `body` is JSON once invalid UTF-8 is replaced. `serde_json` skips
-/// the fields a parser ignores without checking their UTF-8, so such a body
-/// may parse; the fields it reads are always checked.
-fn only_bad_utf8(body: &[u8]) -> bool {
-    serde_json::from_str::<Value>(&String::from_utf8_lossy(body)).is_ok()
+/// Whether `body` is JSON by grammar alone. `serde_json` skips the fields a
+/// parser ignores without checking their UTF-8 or their numbers' range, so
+/// such a body may parse while a full `Value` refuses it; the fields the
+/// parser reads are always checked.
+fn json_grammar(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde::de::IgnoredAny>(body).is_ok()
 }
 
 /// Serialized records, for the determinism check.
@@ -222,7 +223,7 @@ fn search_case(body: &[u8], limit: usize, canonical: bool) {
     let parsed = parse_catalog_search_page(body, limit);
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
         assert!(
-            parsed.is_err() || only_bad_utf8(body),
+            parsed.is_err() || json_grammar(body),
             "invalid JSON parsed as a search page"
         );
         return;
@@ -258,7 +259,7 @@ fn details_case(body: &[u8], canonical: bool) {
     let parsed = parse_catalog_details(body);
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
         assert!(
-            parsed.is_err() || only_bad_utf8(body),
+            parsed.is_err() || json_grammar(body),
             "invalid JSON parsed as details"
         );
         return;
