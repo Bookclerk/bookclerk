@@ -61,11 +61,14 @@ pub struct RecommendOptions {
     /// Shelf kinds / ids to hide (`finish_series`, `author`, `genre`, `from_store`, …).
     /// Empty = offer every shelf Discover can build.
     pub disabled_shelves: Vec<String>,
-    /// Models dir for on-the-fly candidate embedding (optional; empty = skip).
+    /// Where the ONNX model lives. `Some` means candidates are embedded with
+    /// ONNX MiniLM when it loads (local-hash when it doesn't); `None` means
+    /// local-hash only, without trying ONNX.
     pub models_dir: Option<std::path::PathBuf>,
     /// ONNX intra-op thread count for the embedder (clamped ≥ 1).
     pub embed_intra_threads: usize,
     /// When false, skip embedding similarity and use heuristic ranking only.
+    /// Which embedder scores similarity is chosen by [`Self::models_dir`].
     pub embeddings_enabled: bool,
 }
 
@@ -1423,20 +1426,16 @@ async fn seed_embedding_centroid(
     }
 }
 
-/// Opens the configured embedder, or a hash embedder when models are disabled/missing.
+/// Opens the candidate embedder: none when similarity is off, local-hash
+/// without a models dir, otherwise ONNX with the local-hash fallback.
 fn open_candidate_embedder(opts: &RecommendOptions) -> Result<Option<Box<dyn Embedder>>> {
     if !opts.embeddings_enabled {
         return Ok(None);
     }
     let Some(dir) = &opts.models_dir else {
-        // Still allow hash embedder without a models dir.
         return Ok(Some(Box::new(crate::embed::HashEmbedder::new(384))));
     };
-    Ok(Some(open_embedder(
-        dir,
-        opts.embed_intra_threads,
-        opts.embeddings_enabled,
-    )?))
+    Ok(Some(open_embedder(dir, opts.embed_intra_threads, true)?))
 }
 
 /// Splits a display list on `,; /|&` and trims empty tokens.
@@ -1451,6 +1450,28 @@ fn split_tokens_display(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidates_use_local_hash_without_a_models_dir() {
+        let opts = RecommendOptions {
+            models_dir: None,
+            embeddings_enabled: true,
+            ..RecommendOptions::default()
+        };
+        let embedder = open_candidate_embedder(&opts)
+            .unwrap()
+            .expect("similarity stays on without ONNX");
+        assert_eq!(embedder.model_id(), crate::embed::MODEL_LOCAL_HASH_V1);
+    }
+
+    #[test]
+    fn candidates_skip_similarity_when_it_is_off() {
+        let opts = RecommendOptions {
+            embeddings_enabled: false,
+            ..RecommendOptions::default()
+        };
+        assert!(open_candidate_embedder(&opts).unwrap().is_none());
+    }
 
     /// A store holding one unfinished book rated 5 by "Ada Author", and its rows.
     async fn rated_library() -> (LibraryStore, Vec<BookRecord>) {

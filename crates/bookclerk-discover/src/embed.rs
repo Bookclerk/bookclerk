@@ -15,15 +15,16 @@ pub const MODEL_ALL_MINILM_L6_V2_Q: &str = "all-minilm-l6-v2-q";
 /// Local hash embedder id used when ONNX is unavailable / disabled.
 pub const MODEL_LOCAL_HASH_V1: &str = "local-hash-v1";
 
-/// Set once the ONNX runtime has panicked while loading in this process.
+/// Set once loading ONNX has failed or panicked in this process.
 ///
-/// `ort` panics instead of returning an error when `libonnxruntime` cannot be
-/// loaded, and the panic poisons its global mutex, so every later attempt
-/// panics with "Mutex poisoned". [`OnnxEmbedder::open`] loads the library
-/// itself first so a missing one is an error, not a panic; this flag is the
-/// backstop for any other load panic: after one, [`open_embedder`] goes
-/// straight to the hash embedder for the rest of the process.
-static ONNX_PANICKED: AtomicBool = AtomicBool::new(false);
+/// A failed load can take many seconds (a missing runtime library, a model
+/// download that times out), so it is attempted once per process: after a
+/// failure, [`open_embedder`] goes straight to the hash embedder until the
+/// process restarts, and no later request waits on ONNX again. A panic is
+/// covered too: `ort` panics instead of returning an error when
+/// `libonnxruntime` cannot be loaded, and the panic poisons its global mutex,
+/// so every later attempt would panic with "Mutex poisoned".
+static ONNX_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
 
 /// Resolve the configured model id.
 ///
@@ -470,15 +471,15 @@ pub fn open_embedder(
     intra_threads: usize,
     prefer_onnx: bool,
 ) -> Result<Box<dyn Embedder>> {
-    open_embedder_with(&ONNX_PANICKED, models_dir, intra_threads, prefer_onnx)
+    open_embedder_with(&ONNX_UNAVAILABLE, models_dir, intra_threads, prefer_onnx)
 }
 
-/// [`open_embedder`] with the "runtime panicked" flag passed in, so tests can
+/// [`open_embedder`] with the "ONNX unavailable" flag passed in, so tests can
 /// use their own flag instead of the process-wide one.
 ///
 /// # Arguments
 ///
-/// * `onnx_panicked` - Set when an ONNX load panicked; when set, ONNX is skipped.
+/// * `onnx_unavailable` - Set once an ONNX load failed or panicked; when set, ONNX is skipped.
 /// * `models_dir` - Directory that holds (or will hold) embedding model files.
 /// * `intra_threads` - ONNX intra-op thread count (clamped to at least 1).
 /// * `prefer_onnx` - When true, try MiniLM ONNX first and fall back to hash embeddings on failure.
@@ -491,12 +492,12 @@ pub fn open_embedder(
 ///
 /// Currently never fails; the `Result` matches [`open_embedder`].
 fn open_embedder_with(
-    onnx_panicked: &AtomicBool,
+    onnx_unavailable: &AtomicBool,
     models_dir: &Path,
     intra_threads: usize,
     prefer_onnx: bool,
 ) -> Result<Box<dyn Embedder>> {
-    if prefer_onnx && !onnx_panicked.load(Ordering::Acquire) {
+    if prefer_onnx && !onnx_unavailable.load(Ordering::Acquire) {
         // The model and cache path are owned by the closure's caller and are
         // not reused after a panic, so asserting unwind safety is sound.
         match panic::catch_unwind(AssertUnwindSafe(|| {
@@ -504,13 +505,14 @@ fn open_embedder_with(
         })) {
             Ok(Ok(e)) => return Ok(Box::new(e)),
             Ok(Err(err)) => {
+                onnx_unavailable.store(true, Ordering::Release);
                 tracing::warn!(
                     error = %err,
-                    "ONNX MiniLM embedder unavailable; falling back to local-hash embeddings"
+                    "ONNX MiniLM embedder unavailable; using local-hash embeddings until restart"
                 );
             }
             Err(payload) => {
-                onnx_panicked.store(true, Ordering::Release);
+                onnx_unavailable.store(true, Ordering::Release);
                 tracing::warn!(
                     error = panic_message(payload.as_ref()),
                     "ONNX runtime failed to load; using local-hash embeddings until restart"
@@ -579,10 +581,10 @@ mod tests {
     }
 
     #[test]
-    fn open_embedder_skips_onnx_after_a_runtime_panic() {
-        let panicked = AtomicBool::new(true);
+    fn open_embedder_skips_onnx_after_a_failed_load() {
+        let unavailable = AtomicBool::new(true);
         let dir = std::env::temp_dir().join("bookclerk-discover-onnx-panicked");
-        let embedder = open_embedder_with(&panicked, &dir, 1, true).unwrap();
+        let embedder = open_embedder_with(&unavailable, &dir, 1, true).unwrap();
         assert_eq!(embedder.model_id(), MODEL_LOCAL_HASH_V1);
     }
 }

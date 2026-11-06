@@ -28,9 +28,13 @@ pub const CANDIDATES_MAX_AGE: chrono::Duration = chrono::Duration::hours(24);
 ///
 /// * `cfg` - Live configuration.
 /// * `use_onnx` - Whether ranking may load the ONNX embedder.
+/// * `similarity` - Whether embedding similarity scores candidates (local-hash
+///   unless `use_onnx`).
+/// * `embedding_model` - Model id the owned works were embedded with.
 pub(crate) fn discover_options(
     cfg: &bookclerk_config::Config,
     use_onnx: bool,
+    similarity: bool,
     embedding_model: String,
 ) -> bookclerk_discover::RecommendOptions {
     bookclerk_discover::RecommendOptions {
@@ -48,7 +52,7 @@ pub(crate) fn discover_options(
         disabled_shelves: Vec::new(),
         models_dir: use_onnx.then(|| cfg.paths().models_dir.clone()),
         embed_intra_threads: cfg.discovery.embed_intra_threads,
-        embeddings_enabled: use_onnx,
+        embeddings_enabled: similarity,
     }
 }
 
@@ -171,6 +175,7 @@ pub async fn run_discover_candidates(
     let opts = discover_options(
         &cfg,
         false,
+        false,
         String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1),
     );
     let report = if opts.fetch_storefront_candidates {
@@ -232,11 +237,14 @@ pub async fn run_discover_feed(
         .acquire_owned()
         .await
         .map_err(|_| anyhow::anyhow!("discover gate closed"))?;
-    let model_id = if use_onnx {
+    // Owned works are embedded with local-hash, or with ONNX MiniLM when
+    // `discovery.embeddings_enabled` opts into it; without ONNX this opens the
+    // local-hash embedder straight away.
+    let model_id = if has_books {
         let models_dir = cfg.paths().models_dir.clone();
         let threads = cfg.discovery.embed_intra_threads;
         let mut embedder = tokio::task::spawn_blocking(move || {
-            bookclerk_discover::open_embedder(&models_dir, threads, true)
+            bookclerk_discover::open_embedder(&models_dir, threads, use_onnx)
         })
         .await??;
         let model_id = embedder.model_id().to_string();
@@ -245,7 +253,7 @@ pub async fn run_discover_feed(
     } else {
         String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1)
     };
-    let opts = discover_options(&cfg, use_onnx, model_id);
+    let opts = discover_options(&cfg, use_onnx, has_books, model_id);
     let sources = state.sources.read().await.clone();
     let report = bookclerk_discover::rank_subject_feed(&library, &sources, &subject, &opts).await?;
     if forget_if_removed(&library, &subject).await? {

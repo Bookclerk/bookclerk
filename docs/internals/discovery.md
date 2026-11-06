@@ -140,18 +140,25 @@ WorldCat remains reserved (API key + ToS).
 
 ## Embeddings (small / VPS-friendly)
 
-Discovery ships with **quantized MiniLM-L6-v2** via `fastembed` / ONNX Runtime
+Discover shelves rank with a **local-hash** 384-d embedder by default
+(`discovery.embeddings_enabled = false`): no download, no extra runtime and
+negligible RAM. AI-assisted recommendations are not designed yet, so ONNX
+scoring is off unless an operator turns it on.
+
+When enabled, discovery uses **quantized MiniLM-L6-v2** via `fastembed` / ONNX Runtime
 (~22 MB model under `models/` plus the ORT shared library, ~50 MB RAM, 1
 intra-thread by default). ORT is **loaded dynamically** (not statically linked)
 so hosts with glibc < 2.38 still build; on first successful load the runtime
 and model are cached under the Bookclerk files dir.
 
 If ONNX cannot load (offline host, unsupported glibc for the ORT dylib, corrupt
-cache, …), Bookclerk **warns and falls back** to a **local-hash** 384-d
-embedder (no download, negligible RAM) so recommend still works.
+cache, …), Bookclerk **warns and falls back** to local-hash so recommend still
+works. A failed load is tried once per process: later ranking runs use
+local-hash straight away until the daemon restarts, so a missing runtime
+never holds up Discover again.
 
-`discovery.embeddings_enabled = false` (or CLI `--hash` / `?no` paths that pass
-`prefer_onnx = false`) skips ONNX and uses local-hash directly.
+`discovery.embeddings_enabled = false` (the default, or CLI `--hash` / `?no`
+paths that pass `prefer_onnx = false`) skips ONNX and uses local-hash directly.
 
 ### OSV / `paste`
 
@@ -223,7 +230,7 @@ Multi-region storefronts are deferred (US default for now).
 
 ```toml
 [discovery]
-embeddings_enabled = true
+embeddings_enabled = false
 embedding_model = "local-hash-v1"
 embed_intra_threads = 1
 storefront_candidates = true

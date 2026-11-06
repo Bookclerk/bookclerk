@@ -171,9 +171,10 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                 storefront_max_remote_calls: cfg.discovery.storefront_max_remote_calls,
                 exclude_graphicaudio_series_sets: cfg.discovery.exclude_graphicaudio_series_sets,
                 disabled_shelves: operator_prefs.disabled_shelves,
-                models_dir: Some(cfg.paths().models_dir.clone()),
+                // Similarity always on; the models dir opts candidates into ONNX.
+                models_dir: prefer_onnx.then(|| cfg.paths().models_dir.clone()),
                 embed_intra_threads: cfg.discovery.embed_intra_threads,
-                embeddings_enabled: cfg.discovery.embeddings_enabled,
+                embeddings_enabled: true,
             };
             let feed = bookclerk_discover::recommend_feed(&library, &registry, &opts).await?;
             format_out::emit(format, &feed, || {
