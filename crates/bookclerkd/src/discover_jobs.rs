@@ -10,9 +10,7 @@
 
 use std::time::Duration;
 
-use bookclerk_library::{
-    DiscoverSubject, EnqueueJobSpec, JobKind, JobPayload, JobTrigger, StoredFeed,
-};
+use bookclerk_library::{DiscoverSubject, EnqueueJobSpec, JobKind, JobPayload, JobTrigger};
 use chrono::Utc;
 use tracing::info;
 
@@ -283,12 +281,12 @@ pub enum FeedRefresh {
 ///
 /// # Arguments
 ///
-/// * `feed` - The stored feed, when any.
+/// * `feed` - The stored feed, when one decodes.
 /// * `newest_candidates` - Newest stored candidate fetch, when any.
 /// * `now` - The current time.
 #[must_use]
 pub fn refresh_needed(
-    feed: Option<&StoredFeed>,
+    feed: Option<&bookclerk_discover::StoredSubjectFeed>,
     newest_candidates: Option<chrono::DateTime<Utc>>,
     now: chrono::DateTime<Utc>,
 ) -> FeedRefresh {
@@ -375,10 +373,15 @@ mod tests {
 
     use super::*;
 
-    fn feed(used: Option<chrono::DateTime<Utc>>) -> StoredFeed {
-        StoredFeed {
-            feed_json: String::from("{}"),
-            seed_scope: SeedScope::Own,
+    fn feed(used: Option<chrono::DateTime<Utc>>) -> bookclerk_discover::StoredSubjectFeed {
+        bookclerk_discover::StoredSubjectFeed {
+            feed: bookclerk_discover::DiscoverFeed {
+                shelves: Vec::new(),
+                shelf_kinds: Vec::new(),
+                state: None,
+                computed_at: None,
+            },
+            scope: SeedScope::Own,
             candidates_fetched_at: used,
             computed_at: Utc::now(),
         }

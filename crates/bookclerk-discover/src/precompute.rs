@@ -513,12 +513,15 @@ pub async fn rank_subject_feed(
     // With storefront candidates turned off, stored rows from before stay
     // out of the feed; rows fetched for another seed scope (before the
     // subject had taste of their own, or after they lost it) do too.
+    // Read the fetch time before the rows: a fetch that finishes between
+    // the two reads then leaves the feed older than its rows, so the next
+    // read ranks again instead of taking stale shelves as current.
+    let newest = library.newest_discover_candidate_fetch(subject).await?;
     let stored = if opts.fetch_storefront_candidates {
         library.list_discover_candidates(subject).await?
     } else {
         Vec::new()
     };
-    let newest = library.newest_discover_candidate_fetch(subject).await?;
     let mut map: HashMap<String, StorefrontCandidate> = HashMap::new();
     for row in stored.iter().filter(|row| row.seed_scope == taste.scope) {
         match serde_json::from_str::<StorefrontCandidate>(&row.candidate_json) {

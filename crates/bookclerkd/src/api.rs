@@ -4622,11 +4622,9 @@ async fn discover_status(
         .unwrap_or(bookclerk_library::DiscoverSubject::Operator);
     // A feed that does not decode (another release wrote it) counts as
     // missing, so it is ranked again and not reported ready.
-    let feed = library
-        .get_discover_feed(&subject)
+    let feed = bookclerk_discover::stored_subject_feed(&library, &subject, &[])
         .await
-        .map_err(internal_err)?
-        .filter(|f| serde_json::from_str::<bookclerk_discover::DiscoverFeed>(&f.feed_json).is_ok());
+        .map_err(internal_err)?;
     let fetched = library
         .newest_discover_candidate_fetch(&subject)
         .await
@@ -4636,7 +4634,7 @@ async fn discover_status(
     Ok(Json(DiscoverStatusResponse {
         subject: subject.key(),
         ready: feed.is_some(),
-        scope: feed.as_ref().map(|f| f.seed_scope.as_str().to_string()),
+        scope: feed.as_ref().map(|f| f.scope.as_str().to_string()),
         feed_computed_at: feed.as_ref().map(|f| f.computed_at.to_rfc3339()),
         candidates_fetched_at: fetched.map(|t| t.to_rfc3339()),
     }))
@@ -5383,20 +5381,12 @@ async fn discover_recommendations(
         .await
         .map_err(internal_err)?;
     // A feed that does not decode reads as `None` above and counts as
-    // missing here too, so a ranking replaces it.
-    let stored = if read.is_some() {
-        library
-            .get_discover_feed(&subject)
-            .await
-            .map_err(internal_err)?
-    } else {
-        None
-    };
+    // missing, so a ranking replaces it.
     let newest = library
         .newest_discover_candidate_fetch(&subject)
         .await
         .map_err(internal_err)?;
-    let refresh = crate::discover_jobs::refresh_needed(stored.as_ref(), newest, chrono::Utc::now());
+    let refresh = crate::discover_jobs::refresh_needed(read.as_ref(), newest, chrono::Utc::now());
     crate::discover_jobs::queue_refresh(&state, &subject, refresh).await;
     let mut feed = match read {
         Some(stored) => {

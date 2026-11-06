@@ -250,6 +250,9 @@ export function DiscoverPage({
         void fetchDiscoverFeed()
           .then((next) => {
             if (generation === feedGeneration.current) setFeed(next);
+            // A refresh started after this poll; run the effect again so
+            // polling continues even if that refresh fails.
+            else setPollRetry((n) => n + 1);
           })
           .catch(() => setPollRetry((n) => n + 1));
       },

@@ -102,16 +102,18 @@ While the state is `preparing` or `refreshing`, the page reads the feed again
 every 4 seconds, up to 15 times. A `preparing` page then keeps reading every
 30 seconds until shelves arrive.
 
-A read queues what is stale: a ranking when the last fetch finished after the
-feed was ranked, and a fetch when none has finished or the last one is older
-than 24 hours. The scheduler also queues the daily fetch for every subject
-with a stored feed. Deleting a user removes their Discover rows, and a fetch
-or ranking that was queued or running for them deletes its rows instead of
-keeping them, so the daily refresh never picks a deleted subject up again. `GET /api/discover/status` reports whether the caller's
-shelves are stored yet, and queues their refresh as a read would, for callers
-that need to wait on shelves, such as the hosted demo. Any signed-in caller
-can use it (operator, member or portal visitor), since it only reports the
-caller's own shelves.
+A read queues what is stale. It queues a ranking when the last fetch finished
+after the feed was ranked. It queues a fetch when none has finished or the
+last one is older than 24 hours.
+
+The scheduler queues the daily fetch for every subject with a stored feed.
+Deleting a user removes their Discover rows. A fetch or ranking still queued
+or running for them deletes its rows instead of writing them back.
+
+`GET /api/discover/status` reports whether the caller's shelves are stored
+yet, and queues their refresh as a read would. Callers that must wait on
+shelves, such as the hosted demo, poll it. Any signed-in caller can use it,
+since it only reports the caller's own shelves.
 
 ## Metadata gap-fill (Open Library compliance)
 
