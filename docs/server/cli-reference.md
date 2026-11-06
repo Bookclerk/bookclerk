@@ -1699,6 +1699,8 @@ Options:
 - `--drain`: Place nothing new here and move scheduled replicas away
 - `--undrain`: Accept scheduled replicas again
 - `--label <LABEL>`: Operator label for the node
+- `--cache-budget <BYTES>`: Disk space, in bytes, this node's image caches may use, overriding the cluster's `cache.budget_bytes` (16 MiB to 1 TiB)
+- `--cluster-cache-budget`: Drop this node's cache budget override and follow the cluster's
 
 ### `bookclerk nodes label`
 

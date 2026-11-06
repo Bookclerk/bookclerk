@@ -2488,6 +2488,7 @@ dependencies = [
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-host",
  "bookclerk-plugin-manifest",
+ "bookclerk-sandbox",
  "bookclerk-search",
  "bookclerk-source",
  "bookclerk-storage",

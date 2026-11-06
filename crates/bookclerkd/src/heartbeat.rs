@@ -5,13 +5,18 @@
 //! the reservations of its running guests, and the availability average.
 //! Other nodes and the placement scheduler read the row from the shared
 //! database; nodes never contact each other.
+//!
+//! Each beat also re-reads the image caches' retention limits (`core.cache`
+//! and this node's override) and hands them to the cover service, which
+//! sweeps when they changed or a sweep is due.
 
 use std::sync::Arc;
 
 use bookclerk_library::control_plane::{
-    load_or_create_node_identity, record_node_heartbeat, NodeSampler, NodeStatus,
-    NODE_HEARTBEAT_INTERVAL,
+    load_cache_settings, load_node_runtime, load_or_create_node_identity, record_node_heartbeat,
+    NodeRuntimeSettingsV1, NodeSampler, NodeStatus, NODE_HEARTBEAT_INTERVAL,
 };
+use bookclerk_library::{LibraryError, LibraryStore};
 use tracing::warn;
 
 use crate::api::AppState;
@@ -63,5 +68,32 @@ async fn beat(
     let status = record_node_heartbeat(&library, &node_id, &heartbeat)
         .await
         .map_err(anyhow::Error::from);
+    match cache_limits(&library, &node_id).await {
+        Ok(limits) => state.covers.maintain(limits),
+        Err(err) => warn!(error = %err, "cache limits unavailable; keeping the previous ones"),
+    }
     (sampler, status)
+}
+
+/// The image caches' retention limits on `node_id`: the cluster's
+/// `core.cache` document and the node's budget override, each falling back
+/// to its defaults when never written.
+///
+/// # Errors
+///
+/// A database read failure, or a stored document that is invalid.
+pub(crate) async fn cache_limits(
+    library: &LibraryStore,
+    node_id: &str,
+) -> Result<crate::covers::Limits, LibraryError> {
+    let cluster = load_cache_settings(library)
+        .await?
+        .map(|doc| doc.body)
+        .unwrap_or_default();
+    let node = match load_node_runtime(library, node_id).await {
+        Ok(doc) => doc.body,
+        Err(LibraryError::NotFound(_)) => NodeRuntimeSettingsV1::new(),
+        Err(err) => return Err(err),
+    };
+    Ok(crate::covers::Limits::from_settings(&cluster, &node))
 }

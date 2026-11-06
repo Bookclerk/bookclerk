@@ -2083,6 +2083,8 @@ enum SettingsAuthority {
     Events,
     /// The `core.output` cluster document.
     Output,
+    /// The `core.cache` cluster document.
+    Cache,
 }
 
 /// Authority that owns `key`.
@@ -2091,6 +2093,8 @@ fn settings_authority(key: &str) -> SettingsAuthority {
         SettingsAuthority::Events
     } else if bookclerk_library::control_plane::is_output_setting_key(key) {
         SettingsAuthority::Output
+    } else if bookclerk_library::control_plane::is_cache_setting_key(key) {
+        SettingsAuthority::Cache
     } else {
         SettingsAuthority::File
     }
@@ -2124,7 +2128,9 @@ fn allowed_setting_key(key: &str) -> bool {
     ) {
         return true;
     }
-    if bookclerk_library::control_plane::OUTPUT_SETTING_KEYS.contains(&key) {
+    if bookclerk_library::control_plane::OUTPUT_SETTING_KEYS.contains(&key)
+        || bookclerk_library::control_plane::is_cache_setting_key(key)
+    {
         return true;
     }
 
@@ -2150,6 +2156,13 @@ fn allowed_setting_key(key: &str) -> bool {
 
 /// Validates and canonicalizes a Settings value; returns an error string for invalid input.
 fn normalize_setting_value(key: &str, value: &str) -> Result<String, String> {
+    if bookclerk_library::control_plane::is_cache_setting_key(key) {
+        let mut body = bookclerk_library::control_plane::CacheSettingsV1::default();
+        body.set(key, value).map_err(|err| err.to_string())?;
+        return body
+            .get(key)
+            .ok_or_else(|| format!("unknown cache setting: {key}"));
+    }
     match key {
         "library.scan_interval_minutes" => value
             .parse::<u64>()
@@ -3425,6 +3438,19 @@ async fn get_settings(
             None
         }
     };
+    // `cache.*` comes from the `core.cache` document, or its defaults when
+    // nobody has written one.
+    match bookclerk_library::control_plane::load_cache_settings(&library).await {
+        Ok(doc) => {
+            let body = doc.map(|doc| doc.body).unwrap_or_default();
+            for key in bookclerk_library::control_plane::CACHE_SETTING_KEYS {
+                if let Some(value) = body.get(key) {
+                    settings.insert((*key).to_string(), value);
+                }
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "core.cache unavailable for settings"),
+    }
     let mut effective = settings.clone();
     effective.insert("daemon.auth.enabled".into(), auth.enabled.to_string());
     effective.insert("daemon.listen".into(), cfg.daemon.listen.join_comma());
@@ -3609,6 +3635,7 @@ async fn patch_settings(
     let mut normalized_pairs = Vec::<(String, String)>::new();
     let mut events_updates = Vec::<(String, String)>::new();
     let mut output_updates = Vec::<(String, String)>::new();
+    let mut cache_updates = Vec::<(String, String)>::new();
     for (key, value) in &updates {
         if key.starts_with("database.") && key.ends_with(".enabled") {
             // Exclusive enablement is applied via `apply_database_enable_updates`.
@@ -3617,11 +3644,12 @@ async fn patch_settings(
         match settings_authority(key) {
             SettingsAuthority::Events => events_updates.push((key.clone(), value.clone())),
             SettingsAuthority::Output => output_updates.push((key.clone(), value.clone())),
+            SettingsAuthority::Cache => cache_updates.push((key.clone(), value.clone())),
             SettingsAuthority::File => normalized_pairs.push((key.clone(), value.clone())),
         }
     }
 
-    // `core.events`, `core.output`, and file-backed keys are different
+    // `core.events`, `core.output`, `core.cache`, and file-backed keys are different
     // authorities, each committed separately. A later failure on one must not
     // leave a commit on another behind, so a mixed request is rejected before
     // any side is written.
@@ -3635,7 +3663,7 @@ async fn patch_settings(
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "mixed_configuration_authorities",
-                "message": "send core.events, core.output, and file-backed settings in separate requests",
+                "message": "send core.events, core.output, core.cache, and file-backed settings in separate requests",
             })),
         )
             .into_response());
@@ -3651,6 +3679,9 @@ async fn patch_settings(
             body_expected_output_revision,
         )
         .await?;
+    }
+    if !cache_updates.is_empty() {
+        crate::config_authority::commit_cache_settings(&state, &cache_updates).await?;
     }
     if normalized_pairs.is_empty() && enabling.is_empty() {
         drop(_reload_guard);
@@ -8005,6 +8036,95 @@ mode = "deny"
         let live = state.config.read().await;
         assert_eq!(live.events.retention_days, requested);
         assert_eq!(live.events_revision, Some(loaded.revision));
+    }
+
+    #[tokio::test]
+    async fn cache_settings_patch_commits_to_the_database_only() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        use axum::extract::State;
+        use axum::Json;
+        use bookclerk_library::control_plane::{bootstrap_control_plane, load_cache_settings};
+        use bookclerk_library::LibraryStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[daemon]\nlisten = \"127.0.0.1:8787\"\n",
+        )
+        .unwrap();
+        let cfg = bookclerk_config::Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        let db = bookclerk_plugin_database_sqlite::open(&dir.path().join("library.db"))
+            .await
+            .unwrap();
+        bookclerk_library::apply_host_schema(&db).await.unwrap();
+        let store = LibraryStore::from_connection(db);
+        bootstrap_control_plane(&store, dir.path(), &dir.path().join("cache"), None, &cfg)
+            .await
+            .unwrap();
+        let toml_before = std::fs::read(dir.path().join("config.toml")).unwrap();
+        let state = std::sync::Arc::new(crate::config_authority::control_plane_test_state(
+            store.clone(),
+            cfg,
+        ));
+        let patch = |settings: Vec<(&str, &str)>| super::PatchSettingsRequest {
+            settings: settings
+                .into_iter()
+                .map(|(key, value)| super::SettingsUpdate {
+                    key: key.into(),
+                    value: value.into(),
+                })
+                .collect(),
+            expected_output_revision: None,
+        };
+
+        let before = super::get_settings(State(state.clone())).await.unwrap();
+        assert_eq!(
+            before
+                .0
+                .settings
+                .get("cache.budget_bytes")
+                .map(String::as_str),
+            Some("1073741824")
+        );
+
+        let ok = super::patch_settings(
+            State(state.clone()),
+            Json(patch(vec![
+                ("cache.unviewed_days", "30"),
+                ("cache.budget_bytes", "536870912"),
+            ])),
+        )
+        .await
+        .expect("cache-only patch");
+        assert_eq!(
+            ok.0.effective
+                .get("cache.unviewed_days")
+                .map(String::as_str),
+            Some("30")
+        );
+        let stored = load_cache_settings(&store).await.unwrap().expect("stored");
+        assert_eq!(stored.body.unviewed_days, 30);
+        assert_eq!(stored.body.budget_bytes, 512 << 20);
+        assert_eq!(
+            std::fs::read(dir.path().join("config.toml")).unwrap(),
+            toml_before,
+            "cache settings never reach config.toml"
+        );
+
+        for bad in [
+            patch(vec![("cache.budget_bytes", "12")]),
+            patch(vec![
+                ("cache.unviewed_days", "30"),
+                ("events.concurrency", "2"),
+            ]),
+        ] {
+            let err = super::patch_settings(State(state.clone()), Json(bad))
+                .await
+                .expect_err("rejected");
+            assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        }
+        let unchanged = load_cache_settings(&store).await.unwrap().expect("stored");
+        assert_eq!(unchanged.revision, stored.revision);
     }
 
     #[tokio::test]

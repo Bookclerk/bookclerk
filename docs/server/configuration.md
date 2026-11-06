@@ -12,8 +12,8 @@ Bookclerk keeps settings in three places:
   or `BOOKCLERK_CONFIG`). The annotated template is
   [`config/config.example.toml`](../../config/config.example.toml).
 - **The library database**, for settings every host shares:
-  `core.events`, `core.output`, host enrollment, and every plugin's
-  settings.
+  `core.events`, `core.output`, `core.cache`, host enrollment, and every
+  plugin's settings.
 - **Bootstrap files** the process needs before it can open the database;
   see [Bootstrap files](#bootstrap-files).
 
@@ -536,6 +536,32 @@ The web app edits this document in **Settings → Output**.
   find it under their own.
 - Each destination's root, prefix, naming overrides and credentials are
   `local` and `s3` plugin settings.
+
+## Image cache
+
+The `core.cache` cluster document limits each node's cache of cover and
+other images (see [Cache retention](integrations.md#cache-retention)).
+It has no `config.toml` table: until someone sets a value, every node
+uses the defaults.
+
+| Key | Default | Allowed | Meaning |
+| --- | --- | --- | --- |
+| `cache.budget_bytes` | `1073741824` (1 GiB) | 16 MiB to 1 TiB | Bytes each node's image cache may hold |
+| `cache.unviewed_days` | `90` | `1` to `3650` | Days an image may go unviewed before it is deleted |
+
+```sh
+bookclerk config get cache.budget_bytes
+bookclerk config set cache.unviewed_days 30
+```
+
+- **Per node.** `bookclerk nodes set --cache-budget <BYTES>` stores a
+  budget in that node's `node.runtime` document, which wins over
+  `cache.budget_bytes`; `--cluster-cache-budget` removes it.
+- **Over HTTP.** `PATCH /api/settings` accepts `cache.*` keys, and
+  `GET /api/settings` lists their values. A request mixing them with
+  other authorities' keys is rejected before anything is written.
+- **Applying.** Each node reads both documents at its next heartbeat,
+  within 15 seconds, and sweeps its cache at once when a limit changed.
 
 ## Next steps
 

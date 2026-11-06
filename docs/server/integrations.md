@@ -235,9 +235,9 @@ the background, so thumbnails are usually ready before the browser asks.
 At most two of these batches download at once, and a cover already in
 one batch isn't downloaded again by another.
 
-A cover that fails isn't retried for 10 minutes. The cache keeps about
-256 MiB and drops the covers served least recently first. A cover path
-always names the same image, so a cached cover is never downloaded again.
+A cover that fails isn't retried for 10 minutes. A cover path always
+names the same image, so a cached cover is never downloaded again. How
+much the cache keeps is under [Cache retention](#cache-retention).
 
 Next to the entries, `cache/covers/index.journal` records when each image
 was downloaded, how long it stays fresh, the image host's `ETag` and
@@ -294,6 +294,38 @@ kept. Without a deployed cover fetcher they answer
 `503` and the web app shows a monogram. Gravatars are downloaded at most
 four at a time, since anyone signed in can name a new hash; a request
 over that limit also answers `503`.
+
+### Cache retention
+
+Covers and other images share one cache per node, under `cache/covers/`
+in the files directory. Three limits keep it from filling the disk:
+
+- **Budget.** The cache holds at most 1 GiB by default. When a new image
+  takes it over, the images served least recently go until it is back
+  at 90%.
+- **Unviewed age.** An image nobody has been shown for 90 days goes, even
+  under budget.
+- **Free-disk floor.** When the disk holding the cache has less than 5% of
+  its size free, or less than 2 GiB on a disk over 40 GiB, the cache
+  shrinks to half its budget. Until the disk has room again, new images
+  are served but not kept.
+
+Each node checks these limits with its heartbeat (every 15 seconds), and
+sweeps the cache when they change, when the disk is low, and at least
+hourly. A swept image is first moved into `cache/covers/.trash/`, then
+deleted, so a request never reads half an image; anything left there is
+deleted on the next sweep or start.
+
+The budget and the age are cluster settings in the `core.cache` document
+(see [Configuration](configuration.md#image-cache)), and a node can
+override the budget:
+
+```sh
+bookclerk config set cache.budget_bytes 2147483648   # 2 GiB on every node
+bookclerk config set cache.unviewed_days 30
+bookclerk nodes set --cache-budget 268435456         # 256 MiB on this node
+bookclerk nodes set --cluster-cache-budget           # back to the cluster's
+```
 
 ## Claim tickets and Accounts
 

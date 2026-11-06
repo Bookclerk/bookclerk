@@ -322,7 +322,9 @@ reports:
   are 80% of the CPU and 75% of the memory, so a desktop keeps room for
   its user. Set them with `bookclerk nodes set --cpu-budget/--memory-budget`,
   the nodes API, or **Settings → Nodes**. The node applies a change at its
-  next heartbeat.
+  next heartbeat. The same document can also hold the node's own image
+  cache budget (`--cache-budget`; see
+  [Cache retention](integrations.md#cache-retention)).
 - **Reservations**: the sum of the jail ceilings (memory and CPU, after
   `[plugins.jail]` limits) of the guests running there. The reconciler
   records each guest's ceiling on its deployment observation when it

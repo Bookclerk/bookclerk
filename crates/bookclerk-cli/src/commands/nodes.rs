@@ -47,6 +47,13 @@ pub enum NodesCommand {
         /// Operator label for the node.
         #[arg(long)]
         label: Option<String>,
+        /// Disk space, in bytes, this node's image caches may use,
+        /// overriding the cluster's `cache.budget_bytes` (16 MiB to 1 TiB).
+        #[arg(long, value_name = "BYTES", conflicts_with = "cluster_cache_budget")]
+        cache_budget: Option<u64>,
+        /// Drop this node's cache budget override and follow the cluster's.
+        #[arg(long)]
+        cluster_cache_budget: bool,
     },
     /// Add or remove placement labels on a node (`nas`, `zone=eu`).
     Label {
@@ -313,6 +320,8 @@ pub async fn run(
             drain,
             undrain,
             label,
+            cache_budget,
+            cluster_cache_budget,
         } => {
             let node_id = node.unwrap_or_else(|| this_node.clone());
             load_node(store, &node_id).await?;
@@ -336,6 +345,12 @@ pub async fn run(
                     if let Some(label) = &label {
                         runtime.label.clone_from(label);
                     }
+                    if cache_budget.is_some() {
+                        runtime.cache_budget_bytes = cache_budget;
+                    }
+                    if cluster_cache_budget {
+                        runtime.cache_budget_bytes = None;
+                    }
                 },
             )
             .await?;
@@ -345,8 +360,12 @@ pub async fn run(
                 "runtime": document.body,
             });
             emit(format, &payload, || {
+                let cache = document.body.cache_budget_bytes.map_or_else(
+                    || "the cluster's".to_string(),
+                    |bytes| format!("{bytes} bytes"),
+                );
                 println!(
-                    "node {node_id}: cpu budget {}%, memory budget {}%, {} (revision {}); applies at its next heartbeat",
+                    "node {node_id}: cpu budget {}%, memory budget {}%, cache budget {cache}, {} (revision {}); applies at its next heartbeat",
                     document.body.cpu_budget_percent,
                     document.body.memory_budget_percent,
                     if document.body.schedulable {

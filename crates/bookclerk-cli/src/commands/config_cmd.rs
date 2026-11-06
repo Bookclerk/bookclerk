@@ -6,9 +6,10 @@ use bookclerk_config::{
     NamingProfile,
 };
 use bookclerk_library::control_plane::{
-    bootstrap_control_plane, is_output_setting_key, load_events, load_host_enrollment, load_output,
-    portable_output_seed, replace_events, replace_output, set_host_enrollment_enabled, ConfigActor,
-    EventsReplace, EventsSettingsV1, OutputReplace, OutputSettingsV1, OUTPUT_SETTING_KEYS,
+    bootstrap_control_plane, is_cache_setting_key, is_output_setting_key, load_cache_settings,
+    load_events, load_host_enrollment, load_output, portable_output_seed, replace_events,
+    replace_output, set_host_enrollment_enabled, update_cache_settings, ConfigActor, EventsReplace,
+    EventsSettingsV1, OutputReplace, OutputSettingsV1, OUTPUT_SETTING_KEYS,
 };
 use bookclerk_library::{
     inspect_master_key, wrap_master_key, LibraryStore, MasterKeyFormat,
@@ -168,6 +169,9 @@ pub async fn run(
             if dotted.starts_with("events.") {
                 return get_events_setting(config, dotted, format).await;
             }
+            if is_cache_setting_key(dotted) {
+                return get_cache_setting(config, dotted, format).await;
+            }
             if is_output_setting_key(dotted) {
                 return get_output_setting(config, dotted, format).await;
             }
@@ -188,6 +192,9 @@ pub async fn run(
                 .to_string();
             if dotted.starts_with("events.") {
                 return set_events_setting(config, &dotted, &value, format).await;
+            }
+            if is_cache_setting_key(&dotted) {
+                return set_cache_setting(config, &dotted, &value, format).await;
             }
             if is_output_setting_key(&dotted) {
                 return set_output_setting(config, &dotted, &value, format).await;
@@ -769,6 +776,68 @@ async fn set_host_enrollment(
     emit(format, &payload, || {
         println!("set {HOST_ENROLLMENT_ENABLED_KEY}={}", doc.body.enabled);
         println!("authority=database revision={}", doc.revision);
+    })
+}
+
+/// Prints one `cache.*` value from the `core.cache` document, or its
+/// default when the document was never written.
+async fn get_cache_setting(
+    config: &Config,
+    dotted: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let (store, _session) = open_control_plane(config).await?;
+    let doc = load_cache_settings(&store).await?;
+    let revision = doc.as_ref().map(|doc| doc.revision);
+    let value = doc
+        .map(|doc| doc.body)
+        .unwrap_or_default()
+        .get(dotted)
+        .ok_or_else(|| anyhow::anyhow!("unknown config key: {dotted}"))?;
+    let payload = serde_json::json!({
+        "key": dotted,
+        "value": value,
+        "authority": "database",
+        "revision": revision,
+        "namespace": bookclerk_library::control_plane::CACHE_NAMESPACE,
+    });
+    emit(format, &payload, || {
+        println!("{value}");
+        match revision {
+            Some(revision) => println!("authority=database revision={revision}"),
+            None => println!("authority=database (default)"),
+        }
+    })
+}
+
+/// Compare-and-swaps one `cache.*` field in the `core.cache` document,
+/// creating it from the defaults when absent.
+async fn set_cache_setting(
+    config: &Config,
+    dotted: &str,
+    value: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let (store, _session) = open_control_plane(config).await?;
+    let doc = update_cache_settings(
+        &store,
+        &ConfigActor::Operator { id: "cli".into() },
+        |body| body.set(dotted, value),
+    )
+    .await?;
+    let shown = doc.body.get(dotted).unwrap_or_default();
+    let payload = serde_json::json!({
+        "key": dotted,
+        "value": shown,
+        "authority": "database",
+        "revision": doc.revision,
+    });
+    emit(format, &payload, || {
+        println!("set {dotted}={shown}");
+        println!(
+            "authority=database revision={}; nodes apply it at their next heartbeat",
+            doc.revision
+        );
     })
 }
 
