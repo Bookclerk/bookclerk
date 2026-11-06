@@ -339,9 +339,15 @@ function bindingMessage(manifest) {
       process.exit(1);
     }
   }
-  const asciiHosts = ownUserAgentHostsFor([" *.Bücher.example. ", "API.example.com", "xn--"]);
+  const asciiHosts = ownUserAgentHostsFor([
+    " *.Bücher.example. ",
+    "API.example.com",
+    "xn--",
+    "*.API.123",
+  ]);
   if (
-    JSON.stringify(asciiHosts) !== JSON.stringify(["*.xn--bcher-kva.example", "api.example.com"])
+    JSON.stringify(asciiHosts) !==
+    JSON.stringify(["*.xn--bcher-kva.example", "api.example.com", "*.api.123"])
   ) {
     console.error("FAIL ownUserAgentHostsFor", JSON.stringify(asciiHosts));
     process.exit(1);

@@ -221,7 +221,7 @@ function GrantFacts({ grant }: { grant: RemoteGrantView }) {
   if (grant.ownUserAgentHosts?.length) {
     const reason = grant.ownUserAgentReason ? ` (${grant.ownUserAgentReason})` : "";
     facts.push(
-      `Own User-Agent instead of Bookclerk's: ${grant.ownUserAgentHosts.join(", ")}${reason}`,
+      `Asks to send its own User-Agent instead of Bookclerk's to: ${grant.ownUserAgentHosts.join(", ")}${reason}`,
     );
   }
   if (grant.jobs?.length) facts.push(`Jobs: ${grant.jobs.join(", ")}`);
@@ -421,6 +421,9 @@ function ConsentRow({
           Granted now: network {row.grant.networkMode ?? "deny"}
           {row.grant.domains?.length ? ` (${row.grant.domains.map(domainLabel).join(", ")})` : ""};
           bindings {row.grant.bindings?.length ? row.grant.bindings.join(", ") : "none"}
+          {row.grant.ownUserAgentHosts?.length
+            ? `; own User-Agent on ${row.grant.ownUserAgentHosts.join(", ")}`
+            : ""}
         </p>
       ) : null}
 

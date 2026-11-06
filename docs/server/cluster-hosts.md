@@ -391,13 +391,14 @@ The HTTP routes behind it are operator-only:
 
 - **Only what is asked for can be approved.** Denying a domain, binding or
   own-agent host the request doesn't ask for is refused
-  (`409 approval_refused`, with the reason in `detail`), and so is denying
-  an own-agent host that an approved wildcard still covers. A host the
-  owner stops asking for is dropped from the approval.
+  (`400 invalid_approval`, with the reason in `detail`). Unless network
+  access is denied too, so is denying an own-agent host that an approved
+  wildcard still covers. A host the owner stops asking for is dropped from
+  the approval.
 - **You approve the request you reviewed.** `--request` (the UI always
   sends it) makes the approval a compare-and-swap. If the owner has since
   changed the request (another version, grant or archive), the approval
-  is refused rather than applied unseen.
+  is refused with `409 approval_refused` rather than applied unseen.
 - **Asking for more waits again.** A later version that asks for anything
   outside what was approved is `awaiting_host_reapproval` and doesn't run
   until approved. That covers a domain, TCP target, address range,

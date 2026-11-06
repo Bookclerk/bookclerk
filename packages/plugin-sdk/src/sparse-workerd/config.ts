@@ -349,7 +349,14 @@ export function ownUserAgentHostsFor(hosts: readonly string[]): string[] {
     while (end > 0 && trimmed[end - 1] === ".") end--;
     const pattern = trimmed.slice(0, end);
     const wildcard = pattern.startsWith("*.");
-    const ascii = domainToASCII(wildcard ? pattern.slice(2) : pattern);
+    const host = wildcard ? pattern.slice(2) : pattern;
+    let ascii = domainToASCII(host);
+    if (!ascii) {
+      // A last label of digits reads as IPv4 and fails; the host accepts
+      // it as a name, so convert it with a known label appended.
+      const probe = domainToASCII(`${host}.example`);
+      if (probe.endsWith(".example")) ascii = probe.slice(0, -".example".length);
+    }
     if (ascii && ascii.split(".").every(isValidALabel)) {
       out.push(wildcard ? `*.${ascii}` : ascii);
     }
