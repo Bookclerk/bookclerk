@@ -292,7 +292,13 @@ jobs:
             fi
             sleep $((attempt * 10))
           done
-          curl -fsS --max-time 10 "$URL/" | grep -q 'challenges.cloudflare.com/turnstile'
+          # Read the whole page first: under pipefail, `curl | grep -q` fails
+          # with curl's exit 23 whenever grep stops reading early.
+          page=$(curl -fsS --max-time 10 "$URL/")
+          if ! grep -q 'challenges.cloudflare.com/turnstile' <<<"$page"; then
+            echo "::error::$URL/ did not serve the Turnstile launch page"
+            exit 1
+          fi
           status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL/api/status")
           if [ "$status" != 401 ]; then
             echo "::error::$URL/api/status without a session answered $status, expected 401"
