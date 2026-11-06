@@ -14011,7 +14011,7 @@
           "Discover"
         ],
         "summary": "Serves a signed image that is not a cover as a 128 px JPEG.",
-        "description": "The path comes from a `picture_path` or `logo` field: a sign-in\nprovider's profile picture or a plugin's remote logo. It is fetched and\nprocessed like a cover, but answers with an hour-long browser cache\nheader instead of `immutable`, because the remote image can change at the\nsame address. Bookclerk keeps serving its cached copy until it is evicted.",
+        "description": "The path comes from a `picture_path` or `logo` field: a sign-in\nprovider's profile picture or a plugin's remote logo. It is fetched and\nprocessed like a cover, but answers with an hour-long browser cache\nheader instead of `immutable`, because the remote image can change at the\nsame address. Once upstream's freshness lifetime (one hour to seven\ndays) runs out, Bookclerk serves its cached copy while it checks with the\nimage host in the background.",
         "operationId": "get_image",
         "parameters": [
           {

@@ -334,14 +334,20 @@ pub trait Integration: Send + Sync {
         false
     }
 
-    /// Downloads `urls` through the `covers` entrypoint
-    /// (`CoverFetcher.fetchCovers`), refusing any body over `max_bytes`.
+    /// Downloads `params.urls` through the `covers` entrypoint
+    /// (`CoverFetcher.fetchCovers`), refusing any body over
+    /// `params.max_bytes` and sending each URL's conditions, when it has
+    /// any, as conditional request headers.
     ///
     /// Returns one [`FetchedCover`] per URL, in request order; a URL that
-    /// failed carries `error` instead of failing the call.
+    /// failed carries `error` instead of failing the call, and one the
+    /// server answered `304 Not Modified` carries `not_modified`.
     ///
     /// Default: unsupported.
-    async fn fetch_covers(&self, _urls: Vec<String>, _max_bytes: u32) -> Result<Vec<FetchedCover>> {
+    async fn fetch_covers(
+        &self,
+        _params: bookclerk_plugin_abi::CoverFetchParams,
+    ) -> Result<Vec<FetchedCover>> {
         Err(IntegrationError::message(format!(
             "integration `{}` does not fetch covers",
             self.id()

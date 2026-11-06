@@ -14,20 +14,37 @@
 //!   signature, decodes under limits and re-encodes the 128 px, 360 px and
 //!   full-size JPEGs, so the bytes served are never the bytes downloaded.
 //! - **Cache.** The three JPEGs land in `cache/covers/<sha256(url)>/`, written
-//!   to a temporary directory and renamed into place. Least recently served
-//!   entries are evicted once the cache passes [`CACHE_BUDGET_BYTES`]. One
-//!   request per URL does the work while the others wait for it, and a URL
-//!   that failed is not retried for [`FAILURE_TTL`].
+//!   to a temporary directory and renamed into place. The cache's journal
+//!   index (see [`index`]) records when each entry was fetched, until when
+//!   it is fresh, upstream's validators and when it was last served. Least
+//!   recently served entries are evicted once the cache passes
+//!   [`CACHE_BUDGET_BYTES`]. One request per URL does the work while the
+//!   others wait for it, and a URL that failed is not retried for
+//!   [`FAILURE_TTL`].
+//! - **Freshness.** Upstream's caching headers decide how long an image is
+//!   fresh (see [`upstream_policy`]); an image sent with `no-store` is
+//!   served but not kept. A cover path always names the same image, so a
+//!   cached cover is never refreshed. Any other image (a profile picture, a
+//!   store icon) is served from the cache while fresh; once stale, the
+//!   cached copy is still served while a background request revalidates it
+//!   with upstream's validators. A `304` extends its lifetime, a new image
+//!   replaces it, and a failure keeps the old copy.
+
+mod index;
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use bookclerk_cover::http_cache::{
+    upstream_policy, Storage, UpstreamHeaders, UpstreamPolicy, Validators,
+};
 use bookclerk_cover::token::{self, gravatar_url, is_coverable, TokenKey};
 use bookclerk_media::{CoverSet, CoverSize};
+use index::{Entry, Index, Stamp};
 use sha2::{Digest, Sha256};
 
 /// Where the API mounts cover paths.
@@ -60,11 +77,12 @@ const PREFETCH_BATCHES: usize = 2;
 /// shows its fallback.
 const OPEN_FETCHES: usize = 4;
 
+/// Background revalidations of stale images running at once; a stale image
+/// served while all are busy is checked on a later request instead.
+const REVALIDATIONS: usize = 4;
+
 /// Failures remembered at once; older ones are dropped first when full.
 const MAX_FAILURES: usize = 4096;
-
-/// A served file is re-stamped as recently used at most this often.
-const TOUCH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// File holding this node's token key inside the cache directory.
 const KEY_FILE: &str = "token.key";
@@ -85,18 +103,59 @@ pub(crate) enum CoverFailure {
     Refused(String),
 }
 
+/// One image to download, with what to revalidate a cached copy with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FetchRequest {
+    /// The remote image.
+    pub(crate) url: String,
+    /// Upstream's validators from the cached copy; empty for a plain fetch.
+    pub(crate) validators: Validators,
+}
+
+impl FetchRequest {
+    /// A plain fetch of `url`, for an image with no cached copy.
+    fn plain(url: String) -> Self {
+        Self {
+            url,
+            validators: Validators::default(),
+        }
+    }
+}
+
+/// What came back for one [`FetchRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Download {
+    /// The image, still to be processed, and what upstream's headers say
+    /// about keeping it.
+    Body {
+        /// The downloaded bytes, untrusted.
+        bytes: Vec<u8>,
+        /// Upstream's caching policy for them.
+        policy: UpstreamPolicy,
+    },
+    /// Upstream answered `304 Not Modified` to the request's validators.
+    NotModified {
+        /// Upstream's caching policy for the cached copy from now on.
+        policy: UpstreamPolicy,
+    },
+    /// The download failed, and why.
+    Failed(String),
+}
+
 /// What the cover service needs from the rest of the daemon: a way to
 /// download images and a way to process one.
 pub(crate) trait CoverBackend: Send + Sync + 'static {
-    /// Downloads `urls`, returning one outcome per URL in request order.
+    /// Downloads each request's image, returning one outcome per request in
+    /// order. A request with validators may come back
+    /// [`Download::NotModified`]; one without never does.
     ///
     /// # Errors
     ///
     /// [`CoverFailure::Unavailable`] when nothing can fetch covers at all.
     fn fetch(
         &self,
-        urls: Vec<String>,
-    ) -> impl Future<Output = Result<Vec<Result<Vec<u8>, String>>, CoverFailure>> + Send;
+        requests: Vec<FetchRequest>,
+    ) -> impl Future<Output = Result<Vec<Download>, CoverFailure>> + Send;
 
     /// Turns downloaded bytes into the served JPEG sizes.
     ///
@@ -118,7 +177,7 @@ pub(crate) struct LiveBackend {
 }
 
 impl CoverBackend for LiveBackend {
-    async fn fetch(&self, urls: Vec<String>) -> Result<Vec<Result<Vec<u8>, String>>, CoverFailure> {
+    async fn fetch(&self, requests: Vec<FetchRequest>) -> Result<Vec<Download>, CoverFailure> {
         let fetcher = self
             .integrations
             .read()
@@ -128,22 +187,39 @@ impl CoverBackend for LiveBackend {
             .next()
             .ok_or_else(|| CoverFailure::Unavailable("no deployed plugin fetches covers".into()))?;
         let max_bytes = u32::try_from(bookclerk_cover::MAX_INPUT_BYTES).unwrap_or(u32::MAX);
-        let count = urls.len();
+        let conditional: Vec<bool> = requests
+            .iter()
+            .map(|request| !request.validators.is_empty())
+            .collect();
+        let conditions = if conditional.contains(&true) {
+            requests
+                .iter()
+                .map(|request| bookclerk_plugin_abi::CoverCondition {
+                    if_none_match: request.validators.if_none_match().map(str::to_owned),
+                    if_modified_since: request.validators.if_modified_since(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let params = bookclerk_plugin_abi::CoverFetchParams {
+            urls: requests.into_iter().map(|request| request.url).collect(),
+            max_bytes,
+            conditions,
+        };
         let fetched = fetcher
-            .fetch_covers(urls, max_bytes)
+            .fetch_covers(params)
             .await
             .map_err(|err| CoverFailure::Unavailable(format!("cover fetch failed: {err}")))?;
-        let mut outcomes: Vec<Result<Vec<u8>, String>> = fetched
+        let received = SystemTime::now();
+        let mut fetched = fetched.into_iter();
+        Ok(conditional
             .into_iter()
-            .map(|cover| match (cover.body, cover.error) {
-                (Some(body), _) => Ok(body),
-                (None, Some(error)) => Err(error),
-                (None, None) => Err("no body".into()),
+            .map(|conditional| match fetched.next() {
+                Some(cover) => download(cover, conditional, received),
+                None => Download::Failed("no answer for this URL".into()),
             })
-            .collect();
-        outcomes.resize_with(count, || Err("no answer for this URL".into()));
-        outcomes.truncate(count);
-        Ok(outcomes)
+            .collect())
     }
 
     async fn process(&self, bytes: Vec<u8>) -> Result<CoverSet, CoverFailure> {
@@ -167,17 +243,71 @@ impl CoverBackend for LiveBackend {
     }
 }
 
+/// One plugin answer as a [`Download`].
+///
+/// # Arguments
+///
+/// * `cover` - The plugin's answer.
+/// * `conditional` - Whether the request carried validators; a
+///   `304 Not Modified` to a plain request is refused.
+/// * `received` - When the answer arrived, for upstream's freshness.
+fn download(
+    cover: bookclerk_integrations::FetchedCover,
+    conditional: bool,
+    received: SystemTime,
+) -> Download {
+    let headers = &cover.headers;
+    let policy = upstream_policy(
+        &UpstreamHeaders {
+            cache_control: headers.cache_control.as_deref().map(str::as_bytes),
+            expires: headers.expires.as_deref().map(str::as_bytes),
+            date: headers.date.as_deref().map(str::as_bytes),
+            age: headers.age.as_deref().map(str::as_bytes),
+            etag: headers.etag.as_deref().map(str::as_bytes),
+            last_modified: headers.last_modified.as_deref().map(str::as_bytes),
+        },
+        received,
+    );
+    match (cover.body, cover.not_modified, cover.error) {
+        (Some(bytes), _, _) => Download::Body { bytes, policy },
+        (None, true, _) if conditional => Download::NotModified { policy },
+        (None, true, _) => Download::Failed("not modified, but nothing was asked".into()),
+        (None, false, Some(error)) => Download::Failed(error),
+        (None, false, None) => Download::Failed("no body".into()),
+    }
+}
+
+/// Whether a cached image is checked with its source once it is stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refresh {
+    /// A cover: the address always names the same image, so the cached copy
+    /// is served for as long as it is kept.
+    Never,
+    /// An image that can change at its address (a profile picture, a store
+    /// icon): once stale, the cached copy is served while a background
+    /// request revalidates it.
+    WhenStale,
+}
+
+impl Refresh {
+    /// The browser's `Cache-Control` for an image refreshed this way.
+    fn cache_control(self) -> &'static str {
+        match self {
+            Self::Never => IMMUTABLE,
+            Self::WhenStale => CHANGEABLE,
+        }
+    }
+}
+
 /// Signs cover URLs into same-origin paths and serves the processed images.
 pub(crate) struct CoverService {
     /// `cache/covers`, or `None` for a service that only signs (tests).
     dir: Option<PathBuf>,
     /// Key for the token HMAC.
     key: TokenKey,
-    /// Bytes of processed covers on disk, as last counted plus what was
-    /// written since.
-    used: Arc<AtomicU64>,
-    /// Whether the cache was counted since start.
-    counted: AtomicBool,
+    /// The cache's journal index: freshness, validators, last served and
+    /// size of every entry.
+    index: Arc<Mutex<Index>>,
     /// Whether an eviction sweep is running.
     sweeping: Arc<AtomicBool>,
     /// Eviction threshold in bytes.
@@ -194,6 +324,8 @@ pub(crate) struct CoverService {
     /// One permit per download of an image whose address the caller picks,
     /// at most [`OPEN_FETCHES`].
     open_fetches: Arc<tokio::sync::Semaphore>,
+    /// One permit per background revalidation, at most [`REVALIDATIONS`].
+    revalidations: Arc<tokio::sync::Semaphore>,
 }
 
 impl std::fmt::Debug for CoverService {
@@ -217,23 +349,23 @@ impl CoverService {
         let key = load_or_create_key(&dir.join(KEY_FILE))?;
         // Leftovers of an interrupted write.
         let _ = std::fs::remove_dir_all(dir.join(STAGING_DIR));
-        Ok(Self::with(Some(dir), key, budget))
+        let index = Index::open(&dir);
+        Ok(Self::with(Some(dir), key, budget, index))
     }
 
     /// A service that signs paths but has nowhere to cache, so every image
     /// request is [`CoverFailure::Unavailable`]. Used when the cache directory
     /// cannot be created, and by tests that do not serve covers.
     pub(crate) fn detached() -> Self {
-        Self::with(None, random_key(), CACHE_BUDGET_BYTES)
+        Self::with(None, random_key(), CACHE_BUDGET_BYTES, Index::detached())
     }
 
     /// The service from its parts.
-    fn with(dir: Option<PathBuf>, key: TokenKey, budget: u64) -> Self {
+    fn with(dir: Option<PathBuf>, key: TokenKey, budget: u64, index: Index) -> Self {
         Self {
             dir,
             key,
-            used: Arc::new(AtomicU64::new(0)),
-            counted: AtomicBool::new(false),
+            index: Arc::new(Mutex::new(index)),
             sweeping: Arc::new(AtomicBool::new(false)),
             budget,
             flights: Mutex::default(),
@@ -241,6 +373,7 @@ impl CoverService {
             prefetching: Mutex::default(),
             batches: Arc::new(tokio::sync::Semaphore::new(PREFETCH_BATCHES)),
             open_fetches: Arc::new(tokio::sync::Semaphore::new(OPEN_FETCHES)),
+            revalidations: Arc::new(tokio::sync::Semaphore::new(REVALIDATIONS)),
         }
     }
 
@@ -318,14 +451,14 @@ impl CoverService {
     /// [`CoverFailure::UnknownToken`] for a token this node did not issue,
     /// and the cached or fresh failure otherwise.
     #[cfg(test)]
-    pub(crate) async fn image(
-        &self,
-        backend: &impl CoverBackend,
+    pub(crate) async fn image<B: CoverBackend>(
+        self: &Arc<Self>,
+        backend: &Arc<B>,
         token: &str,
         size: CoverSize,
     ) -> Result<Vec<u8>, CoverFailure> {
         let url = self.open_token(token).ok_or(CoverFailure::UnknownToken)?;
-        self.image_for_url(backend, url, size).await
+        self.image_for_url(backend, url, size, Refresh::Never).await
     }
 
     /// [`Self::image_detached`] for an image whose address the caller picks:
@@ -341,9 +474,11 @@ impl CoverService {
         backend: Arc<B>,
         url: String,
         size: CoverSize,
+        refresh: Refresh,
     ) -> Result<Vec<u8>, CoverFailure> {
         if let Some(dir) = &self.dir {
-            if let Some(bytes) = read_cached(dir, &cache_key(&url), size).await {
+            let key = cache_key(&url);
+            if let Some(bytes) = self.cached(&backend, dir, &key, &url, size, refresh).await {
                 return Ok(bytes);
             }
         }
@@ -352,7 +487,7 @@ impl CoverService {
             .map_err(|_| CoverFailure::Unavailable("too many image downloads at once".into()))?;
         let service = Arc::clone(self);
         tokio::spawn(async move {
-            let outcome = service.image_for_url(&*backend, url, size).await;
+            let outcome = service.image_for_url(&backend, url, size, refresh).await;
             drop(permit);
             outcome
         })
@@ -377,9 +512,10 @@ impl CoverService {
         backend: Arc<B>,
         url: String,
         size: CoverSize,
+        refresh: Refresh,
     ) -> Result<Vec<u8>, CoverFailure> {
         let service = Arc::clone(self);
-        tokio::spawn(async move { service.image_for_url(&*backend, url, size).await })
+        tokio::spawn(async move { service.image_for_url(&backend, url, size, refresh).await })
             .await
             .unwrap_or_else(|err| {
                 Err(CoverFailure::Unavailable(format!(
@@ -388,17 +524,19 @@ impl CoverService {
             })
     }
 
-    /// The JPEG for `size` of the cover at `url`, fetching and processing it
-    /// on first use.
+    /// The JPEG for `size` of the image at `url`, fetching and processing it
+    /// on first use. With [`Refresh::WhenStale`], a stale cached copy is
+    /// served while it is revalidated in the background.
     ///
     /// # Errors
     ///
     /// The cached or fresh failure.
-    pub(crate) async fn image_for_url(
-        &self,
-        backend: &impl CoverBackend,
+    pub(crate) async fn image_for_url<B: CoverBackend>(
+        self: &Arc<Self>,
+        backend: &Arc<B>,
         url: String,
         size: CoverSize,
+        refresh: Refresh,
     ) -> Result<Vec<u8>, CoverFailure> {
         if !is_coverable(&url) {
             return Err(CoverFailure::Refused("not an https URL".into()));
@@ -408,7 +546,7 @@ impl CoverService {
             .clone()
             .ok_or_else(|| CoverFailure::Unavailable("no cover cache".into()))?;
         let key = cache_key(&url);
-        if let Some(bytes) = read_cached(&dir, &key, size).await {
+        if let Some(bytes) = self.cached(backend, &dir, &key, &url, size, refresh).await {
             return Ok(bytes);
         }
         self.recent_failure(&key)?;
@@ -424,14 +562,19 @@ impl CoverService {
         let outcome = match self.recent_failure(&key) {
             Err(failure) => Err(failure),
             Ok(()) => {
-                let fetched = backend.fetch(vec![url]).await.and_then(|mut outcomes| {
-                    outcomes
-                        .pop()
-                        .unwrap_or_else(|| Err("no answer".into()))
-                        .map_err(CoverFailure::Refused)
-                });
+                let fetched = backend
+                    .fetch(vec![FetchRequest::plain(url)])
+                    .await
+                    .and_then(|mut downloads| match downloads.pop() {
+                        Some(Download::Body { bytes, policy }) => Ok((bytes, policy)),
+                        Some(Download::Failed(error)) => Err(CoverFailure::Refused(error)),
+                        Some(Download::NotModified { .. }) => Err(CoverFailure::Refused(
+                            "not modified, but nothing was asked".into(),
+                        )),
+                        None => Err(CoverFailure::Refused("no answer".into())),
+                    });
                 match fetched {
-                    Ok(bytes) => self.store(backend, &dir, &key, bytes).await,
+                    Ok((bytes, policy)) => self.store(&**backend, &dir, &key, bytes, policy).await,
                     Err(failure) => Err(failure),
                 }
             }
@@ -444,6 +587,146 @@ impl CoverService {
         drop(guard);
         self.land(&key, &flight);
         Ok(outcome?.get(size).to_vec())
+    }
+
+    /// One size of the cached entry for `key`, noting that it was served
+    /// and, for [`Refresh::WhenStale`], revalidating it in the background
+    /// when it is stale.
+    ///
+    /// # Returns
+    ///
+    /// `None` when the entry is not on disk.
+    async fn cached<B: CoverBackend>(
+        self: &Arc<Self>,
+        backend: &Arc<B>,
+        dir: &Path,
+        key: &str,
+        url: &str,
+        size: CoverSize,
+        refresh: Refresh,
+    ) -> Option<Vec<u8>> {
+        let bytes = read_cached(dir, key, size).await?;
+        let now = Stamp::now();
+        // An entry the index lost track of (a sweep racing a write) is
+        // served as fresh; it is indexed again when next written.
+        let stale = lock(&self.index)
+            .get(key)
+            .is_some_and(|entry| entry.is_stale(now));
+        let index = Arc::clone(&self.index);
+        let served = key.to_owned();
+        tokio::task::spawn_blocking(move || lock(&index).served(&served, now));
+        if stale && refresh == Refresh::WhenStale {
+            self.revalidate(Arc::clone(backend), url.to_owned(), key.to_owned());
+        }
+        Some(bytes)
+    }
+
+    /// Revalidates the stale entry for `key` in the background, unless it
+    /// failed recently, a request or another revalidation holds its flight,
+    /// or [`REVALIDATIONS`] are already running.
+    fn revalidate<B: CoverBackend>(self: &Arc<Self>, backend: Arc<B>, url: String, key: String) {
+        if self.recent_failure(&key).is_err() {
+            return;
+        }
+        let Ok(permit) = Arc::clone(&self.revalidations).try_acquire_owned() else {
+            return;
+        };
+        let flight = self.flight(&key);
+        let Ok(guard) = Arc::clone(&flight).try_lock_owned() else {
+            return;
+        };
+        let service = Arc::clone(self);
+        tokio::spawn(async move {
+            service.refresh_entry(&*backend, url, &key).await;
+            drop(guard);
+            drop(permit);
+            service.land(&key, &flight);
+        });
+    }
+
+    /// Asks upstream about the cached entry for `key` with its validators:
+    /// a `304` extends its lifetime, a new image replaces it, and a failure
+    /// keeps the old copy and is remembered for [`FAILURE_TTL`].
+    async fn refresh_entry(&self, backend: &impl CoverBackend, url: String, key: &str) {
+        let Some(dir) = self.dir.clone() else {
+            return;
+        };
+        let validators = lock(&self.index)
+            .get(key)
+            .map(Entry::validators)
+            .unwrap_or_default();
+        let downloaded = backend
+            .fetch(vec![FetchRequest { url, validators }])
+            .await
+            .map(|mut downloads| downloads.pop());
+        let outcome = match downloaded {
+            Ok(Some(Download::NotModified { policy })) => {
+                self.revalidated(&dir, key, policy).await;
+                Ok(())
+            }
+            Ok(Some(Download::Body { bytes, policy })) => self
+                .store(backend, &dir, key, bytes, policy)
+                .await
+                .map(drop),
+            Ok(Some(Download::Failed(error))) => Err(CoverFailure::Refused(error)),
+            Ok(None) => Err(CoverFailure::Refused("no answer".into())),
+            Err(failure) => Err(failure),
+        };
+        if let Err(failure) = outcome {
+            tracing::debug!(
+                ?failure,
+                "image revalidation failed; keeping the cached copy"
+            );
+            self.note_failure(key, &failure);
+        }
+    }
+
+    /// Applies a `304 Not Modified` to the entry for `key`: a new lifetime
+    /// and any validators upstream sent, or, when upstream now says
+    /// `no-store`, deletes the entry.
+    async fn revalidated(&self, dir: &Path, key: &str, policy: UpstreamPolicy) {
+        let fresh_for = match policy.storage {
+            Storage::DoNotStore => {
+                self.forget(dir, key).await;
+                return;
+            }
+            Storage::Store { fresh_for } => fresh_for,
+        };
+        let index = Arc::clone(&self.index);
+        let key = key.to_owned();
+        let _ = tokio::task::spawn_blocking(move || {
+            let mut index = lock(&index);
+            let Some(old) = index.get(&key).cloned() else {
+                return;
+            };
+            let now = Stamp::now();
+            let validators = &policy.validators;
+            let entry = Entry {
+                fetched: now,
+                fresh_until: now.after(fresh_for),
+                // A 304 need not repeat the validators.
+                etag: validators.if_none_match().map(str::to_owned).or(old.etag),
+                last_modified: validators
+                    .last_modified()
+                    .map(Stamp::from_time)
+                    .or(old.last_modified),
+                ..old
+            };
+            index.put(&key, entry);
+        })
+        .await;
+    }
+
+    /// Deletes the entry for `key` from the index and the disk.
+    async fn forget(&self, dir: &Path, key: &str) {
+        let index = Arc::clone(&self.index);
+        let path = dir.join(key);
+        let key = key.to_owned();
+        let _ = tokio::task::spawn_blocking(move || {
+            lock(&index).remove(&key);
+            let _ = std::fs::remove_dir_all(path);
+        })
+        .await;
     }
 
     /// Warms the cache for up to [`PREFETCH_LIMIT`] of `urls` in the
@@ -492,14 +775,24 @@ impl CoverService {
             // No flight is held while the batch downloads, so a request for
             // one of these covers never waits on the slowest of the others;
             // at worst it downloads the same image once more.
-            let urls = todo.iter().map(|(url, _)| url.clone()).collect();
-            let outcomes: Vec<Result<Vec<u8>, CoverFailure>> = match backend.fetch(urls).await {
-                Ok(outcomes) => outcomes
-                    .into_iter()
-                    .map(|outcome| outcome.map_err(CoverFailure::Refused))
-                    .collect(),
-                Err(failure) => vec![Err(failure); todo.len()],
-            };
+            let requests = todo
+                .iter()
+                .map(|(url, _)| FetchRequest::plain(url.clone()))
+                .collect();
+            let outcomes: Vec<Result<(Vec<u8>, UpstreamPolicy), CoverFailure>> =
+                match backend.fetch(requests).await {
+                    Ok(downloads) => downloads
+                        .into_iter()
+                        .map(|download| match download {
+                            Download::Body { bytes, policy } => Ok((bytes, policy)),
+                            Download::Failed(error) => Err(CoverFailure::Refused(error)),
+                            Download::NotModified { .. } => Err(CoverFailure::Refused(
+                                "not modified, but nothing was asked".into(),
+                            )),
+                        })
+                        .collect(),
+                    Err(failure) => vec![Err(failure); todo.len()],
+                };
             let mut work = tokio::task::JoinSet::new();
             for ((_, key), fetched) in todo.into_iter().zip(outcomes) {
                 let service = Arc::clone(&service);
@@ -514,7 +807,9 @@ impl CoverService {
                     let cached = tokio::fs::try_exists(dir.join(&key)).await.unwrap_or(false);
                     if !cached {
                         let outcome = match fetched {
-                            Ok(bytes) => service.store(&*backend, &dir, &key, bytes).await,
+                            Ok((bytes, policy)) => {
+                                service.store(&*backend, &dir, &key, bytes, policy).await
+                            }
                             Err(failure) => Err(failure),
                         };
                         if let Err(failure) = &outcome {
@@ -530,40 +825,67 @@ impl CoverService {
         });
     }
 
-    /// Processes downloaded bytes and writes the entry for `key`.
+    /// Processes downloaded bytes and, unless upstream said `no-store`,
+    /// writes them as the entry for `key`, replacing any older copy, and
+    /// indexes it. With `no-store`, any older copy is deleted instead.
+    ///
+    /// # Returns
+    ///
+    /// The processed images, also when they could not be written.
+    ///
+    /// # Errors
+    ///
+    /// The processing failure.
     async fn store(
         &self,
         backend: &impl CoverBackend,
         dir: &Path,
         key: &str,
         bytes: Vec<u8>,
+        policy: UpstreamPolicy,
     ) -> Result<CoverSet, CoverFailure> {
         let set = backend.process(bytes).await?;
+        let fresh_for = match policy.storage {
+            Storage::DoNotStore => {
+                self.forget(dir, key).await;
+                return Ok(set);
+            }
+            Storage::Store { fresh_for } => fresh_for,
+        };
         let written = {
             let dir = dir.to_path_buf();
             let key = key.to_owned();
             let set = set.clone();
-            tokio::task::spawn_blocking(move || write_entry(&dir, &key, &set))
-                .await
-                .map_err(|err| err.to_string())
-                .and_then(|result| result.map_err(|err| err.to_string()))
+            let index = Arc::clone(&self.index);
+            tokio::task::spawn_blocking(move || {
+                let bytes = write_entry(&dir, &key, &set)?;
+                let now = Stamp::now();
+                let entry = Entry {
+                    fetched: now,
+                    fresh_until: now.after(fresh_for),
+                    etag: policy.validators.if_none_match().map(str::to_owned),
+                    last_modified: policy.validators.last_modified().map(Stamp::from_time),
+                    served: now,
+                    bytes,
+                };
+                lock(&index).put(&key, entry);
+                Ok::<_, std::io::Error>(())
+            })
+            .await
+            .map_err(|err| err.to_string())
+            .and_then(|result| result.map_err(|err| err.to_string()))
         };
         match written {
-            Ok(bytes) => {
-                self.used.fetch_add(bytes, Ordering::Relaxed);
-                self.maybe_sweep(dir);
-            }
+            Ok(()) => self.maybe_sweep(dir),
             // Still serve this request; the next one tries the write again.
             Err(err) => tracing::warn!(error = %err, "could not cache a cover"),
         }
         Ok(set)
     }
 
-    /// Starts an eviction sweep when the cache may be over budget, or was not
-    /// counted since start.
+    /// Starts an eviction sweep when the cache is over budget.
     fn maybe_sweep(&self, dir: &Path) {
-        let first = !self.counted.swap(true, Ordering::AcqRel);
-        if !first && self.used.load(Ordering::Relaxed) <= self.budget {
+        if lock(&self.index).total() <= self.budget {
             return;
         }
         if self.sweeping.swap(true, Ordering::AcqRel) {
@@ -572,11 +894,9 @@ impl CoverService {
         let dir = dir.to_path_buf();
         let budget = self.budget;
         let sweeping = Arc::clone(&self.sweeping);
-        let used = Arc::clone(&self.used);
+        let index = Arc::clone(&self.index);
         tokio::task::spawn_blocking(move || {
-            // The count replaces the estimate. A cover written while the
-            // sweep ran may be left out, which only delays the next sweep.
-            used.store(sweep(&dir, budget), Ordering::Relaxed);
+            sweep(&dir, &index, budget);
             sweeping.store(false, Ordering::Release);
         });
     }
@@ -676,113 +996,65 @@ fn file_name(size: CoverSize) -> String {
     format!("{}.jpg", size.as_str())
 }
 
-/// Reads one size of a cached entry, marking it recently used.
+/// Reads one size of a cached entry.
 async fn read_cached(dir: &Path, key: &str, size: CoverSize) -> Option<Vec<u8>> {
-    let path = dir.join(key).join(file_name(size));
-    let bytes = tokio::fs::read(&path).await.ok()?;
-    tokio::task::spawn_blocking(move || touch(&path));
-    Some(bytes)
-}
-
-/// Stamps `path` as used now, unless it was within [`TOUCH_INTERVAL`].
-fn touch(path: &Path) {
-    let Ok(file) = std::fs::File::options().write(true).open(path) else {
-        return;
-    };
-    let stale = file
-        .metadata()
-        .and_then(|meta| meta.modified())
+    tokio::fs::read(dir.join(key).join(file_name(size)))
+        .await
         .ok()
-        .and_then(|modified| modified.elapsed().ok())
-        .is_none_or(|age| age >= TOUCH_INTERVAL);
-    if stale {
-        let _ = file.set_modified(SystemTime::now());
-    }
 }
 
-/// Writes the three sizes of `set` as entry `key`, atomically.
+/// Writes the three sizes of `set` as entry `key`, replacing any older
+/// entry: the new one is assembled in the staging directory, the old one
+/// moved aside, the new one renamed into place and the old one deleted.
 ///
 /// # Returns
 ///
-/// Bytes written, or zero when another writer got there first.
+/// Bytes written.
 ///
 /// # Errors
 ///
 /// The I/O error when the entry cannot be written.
 fn write_entry(dir: &Path, key: &str, set: &CoverSet) -> std::io::Result<u64> {
     let target = dir.join(key);
-    if target.is_dir() {
-        return Ok(0);
-    }
     let staging = dir.join(STAGING_DIR);
     std::fs::create_dir_all(&staging)?;
     let mut nonce = [0u8; 8];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
     let temp = staging.join(format!("{key}-{}", hex::encode(nonce)));
+    let old = staging.join(format!("{key}-{}-old", hex::encode(nonce)));
     std::fs::create_dir(&temp)?;
     let mut total = 0u64;
     let result = (|| {
         for size in CoverSize::ALL {
             let bytes = set.get(size);
             std::fs::write(temp.join(file_name(size)), bytes)?;
-            total += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            total = total.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        }
+        match std::fs::rename(&target, &old) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
         }
         std::fs::rename(&temp, &target)
     })();
+    let _ = std::fs::remove_dir_all(&old);
     if let Err(err) = result {
         let _ = std::fs::remove_dir_all(&temp);
-        return if target.is_dir() { Ok(0) } else { Err(err) };
+        return Err(err);
     }
     Ok(total)
 }
 
-/// Deletes the least recently used entries until the cache is at most 90%
+/// Deletes the least recently served entries until the cache is at most 90%
 /// of `budget`.
 ///
-/// # Returns
-///
-/// Bytes left in the cache.
-fn sweep(dir: &Path, budget: u64) -> u64 {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    let mut found: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let is_entry = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()));
-        if !is_entry || !path.is_dir() {
-            continue;
-        }
-        let mut bytes = 0u64;
-        let mut newest = SystemTime::UNIX_EPOCH;
-        for file in std::fs::read_dir(&path).into_iter().flatten().flatten() {
-            if let Ok(meta) = file.metadata() {
-                bytes += meta.len();
-                if let Ok(modified) = meta.modified() {
-                    newest = newest.max(modified);
-                }
-            }
-        }
-        found.push((newest, bytes, path));
+/// An entry written again between being picked and being deleted is lost
+/// from disk while still indexed; its next request downloads it again.
+fn sweep(dir: &Path, index: &Mutex<Index>, budget: u64) {
+    let evicted = lock(index).evict_to(budget / 10 * 9);
+    for key in evicted {
+        let _ = std::fs::remove_dir_all(dir.join(key));
     }
-    let mut total: u64 = found.iter().map(|(_, bytes, _)| bytes).sum();
-    if total <= budget {
-        return total;
-    }
-    let target = budget / 10 * 9;
-    found.sort_by_key(|(newest, ..)| *newest);
-    for (_, bytes, path) in found {
-        if total <= target {
-            break;
-        }
-        if std::fs::remove_dir_all(&path).is_ok() {
-            total = total.saturating_sub(bytes);
-        }
-    }
-    total
 }
 
 /// A fresh token key from the thread-local CSPRNG (ChaCha seeded from the OS).
@@ -851,7 +1123,15 @@ pub(crate) async fn get_cover(
         return StatusCode::NOT_FOUND.into_response();
     };
     let url = state.covers.open_token(&token);
-    serve(&state, &headers, url, size, IMMUTABLE, Admission::Signed).await
+    serve(
+        &state,
+        &headers,
+        url,
+        size,
+        Refresh::Never,
+        Admission::Signed,
+    )
+    .await
 }
 
 /// `Cache-Control` for a cover path, which always names the same image.
@@ -861,7 +1141,8 @@ const IMMUTABLE: &str = "private, max-age=31536000, immutable";
 /// address (a Gravatar, a store icon): the browser uses its copy for an
 /// hour, then shows it while asking Bookclerk again in the background for up
 /// to a day. The `ETag` makes that check a `304` when nothing changed.
-/// Bookclerk answers from its disk cache until the entry is evicted.
+/// Bookclerk answers from its disk cache and revalidates its own copy with
+/// the image host once upstream's freshness lifetime runs out.
 const CHANGEABLE: &str = "private, max-age=3600, stale-while-revalidate=86400";
 
 /// How [`serve`] admits a download.
@@ -884,14 +1165,15 @@ enum Admission {
 /// * `request` - The request's headers, for `If-None-Match`.
 /// * `url` - The remote image; `None` is a 404.
 /// * `size` - The size to serve.
-/// * `cache_control` - `Cache-Control` for a successful answer.
+/// * `refresh` - Whether a stale cached copy is revalidated, which also
+///   picks the browser's `Cache-Control`.
 /// * `admission` - Whether a download is limited by [`OPEN_FETCHES`].
 async fn serve(
     state: &crate::api::AppState,
     request: &axum::http::HeaderMap,
     url: Option<String>,
     size: CoverSize,
-    cache_control: &'static str,
+    refresh: Refresh,
     admission: Admission,
 ) -> axum::response::Response {
     use axum::http::StatusCode;
@@ -902,15 +1184,28 @@ async fn serve(
     });
     let outcome = match url {
         Some(url) => match admission {
-            Admission::Signed => state.covers.image_detached(backend, url, size).await,
-            Admission::Open => state.covers.image_admitted(backend, url, size).await,
+            Admission::Signed => {
+                state
+                    .covers
+                    .image_detached(backend, url, size, refresh)
+                    .await
+            }
+            Admission::Open => {
+                state
+                    .covers
+                    .image_admitted(backend, url, size, refresh)
+                    .await
+            }
         },
         None => Err(CoverFailure::UnknownToken),
     };
     match outcome {
-        Ok(bytes) => {
-            crate::cache_policy::image_response(request, bytes, "image/jpeg", cache_control)
-        }
+        Ok(bytes) => crate::cache_policy::image_response(
+            request,
+            bytes,
+            "image/jpeg",
+            refresh.cache_control(),
+        ),
         Err(CoverFailure::UnknownToken) => StatusCode::NOT_FOUND.into_response(),
         Err(CoverFailure::Refused(reason)) => {
             tracing::debug!(reason = %reason, "cover refused");
@@ -929,7 +1224,9 @@ async fn serve(
 /// provider's profile picture or a plugin's remote logo. It is fetched and
 /// processed like a cover, but answers with an hour-long browser cache
 /// header instead of `immutable`, because the remote image can change at the
-/// same address. Bookclerk keeps serving its cached copy until it is evicted.
+/// same address. Once upstream's freshness lifetime (one hour to seven
+/// days) runs out, Bookclerk serves its cached copy while it checks with the
+/// image host in the background.
 #[utoipa::path(
     get,
     path = "/api/images/{token}",
@@ -955,7 +1252,7 @@ pub(crate) async fn get_image(
         &headers,
         url,
         CoverSize::Thumb,
-        CHANGEABLE,
+        Refresh::WhenStale,
         Admission::Signed,
     )
     .await
@@ -990,7 +1287,7 @@ pub(crate) async fn get_gravatar(
         &headers,
         gravatar_url(&hash),
         CoverSize::Thumb,
-        CHANGEABLE,
+        Refresh::WhenStale,
         Admission::Open,
     )
     .await
@@ -1026,7 +1323,7 @@ pub(crate) async fn get_store_icon(
         &headers,
         url,
         CoverSize::Thumb,
-        CHANGEABLE,
+        Refresh::WhenStale,
         Admission::Signed,
     )
     .await
@@ -1074,6 +1371,7 @@ impl bookclerk_acquire::CoverImages for AcquireCovers {
                 Arc::clone(&self.backend),
                 url.trim().to_owned(),
                 CoverSize::Full,
+                Refresh::Never,
             )
             .await
         {
@@ -1123,8 +1421,31 @@ mod tests {
         0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
     ];
 
+    /// A 2×1 opaque PNG, a different image from [`PNG`].
+    fn wide_png() -> Vec<u8> {
+        let mut out = Vec::new();
+        let image = image::RgbImage::from_pixel(2, 1, image::Rgb([200, 10, 10]));
+        image::DynamicImage::ImageRgb8(image)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("png");
+        out
+    }
+
+    /// What [`Fake`] answers to a request with validators.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    enum Revalidation {
+        /// `304 Not Modified`.
+        #[default]
+        NotModified,
+        /// A different image.
+        Changed,
+        /// An error.
+        Fails,
+    }
+
     /// Serves [`PNG`] for every URL containing `ok`, an error otherwise, and
-    /// processes in this process.
+    /// processes in this process. A URL containing `nostore` comes with
+    /// `no-store`; any other with an `ETag`.
     #[derive(Default)]
     struct Fake {
         /// URLs asked for, across calls.
@@ -1133,29 +1454,67 @@ mod tests {
         calls: AtomicUsize,
         /// When set, `fetch` reports that nothing can fetch.
         unavailable: bool,
+        /// The answer to a request with validators.
+        revalidation: Revalidation,
+        /// Validators seen, in order.
+        conditions: Mutex<Vec<Validators>>,
+    }
+
+    /// The policy upstream's headers give: kept for an hour with `etag`, or
+    /// not kept.
+    fn policy(store: bool, etag: &str) -> UpstreamPolicy {
+        upstream_policy(
+            &UpstreamHeaders {
+                cache_control: Some(if store {
+                    &b"max-age=3600"[..]
+                } else {
+                    b"no-store"
+                }),
+                etag: Some(etag.as_bytes()),
+                ..UpstreamHeaders::default()
+            },
+            SystemTime::now(),
+        )
     }
 
     impl CoverBackend for Fake {
-        async fn fetch(
-            &self,
-            urls: Vec<String>,
-        ) -> Result<Vec<Result<Vec<u8>, String>>, CoverFailure> {
+        async fn fetch(&self, requests: Vec<FetchRequest>) -> Result<Vec<Download>, CoverFailure> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.unavailable {
                 return Err(CoverFailure::Unavailable("no fetcher".into()));
             }
-            self.fetched.fetch_add(urls.len(), Ordering::SeqCst);
+            self.fetched.fetch_add(requests.len(), Ordering::SeqCst);
             // Let concurrent callers pile up behind the flight lock.
             tokio::time::sleep(Duration::from_millis(20)).await;
-            Ok(urls
-                .iter()
-                .map(|url| {
+            Ok(requests
+                .into_iter()
+                .map(|FetchRequest { url, validators }| {
+                    let store = !url.contains("nostore");
+                    if !validators.is_empty() {
+                        lock(&self.conditions).push(validators);
+                        return match self.revalidation {
+                            Revalidation::NotModified => Download::NotModified {
+                                policy: policy(store, "\"v1\""),
+                            },
+                            Revalidation::Changed => Download::Body {
+                                bytes: wide_png(),
+                                policy: policy(store, "\"v2\""),
+                            },
+                            Revalidation::Fails => Download::Failed("HTTP 500".into()),
+                        };
+                    }
                     if url.contains("ok") {
-                        Ok(PNG.to_vec())
+                        Download::Body {
+                            bytes: PNG.to_vec(),
+                            policy: policy(store, "\"v1\""),
+                        }
                     } else if url.contains("html") {
-                        Ok(b"<html>".to_vec())
+                        Download::Body {
+                            bytes: b"<html>".to_vec(),
+                            policy: policy(store, "\"v1\""),
+                        }
                     } else {
-                        Err("HTTP 404".into())
+                        Download::Failed("HTTP 404".into())
                     }
                 })
                 .collect())
@@ -1262,7 +1621,12 @@ mod tests {
         let backend = Arc::new(Fake::default());
         let cached = "https://img.example/ok-cached.png".to_owned();
         service
-            .image_admitted(Arc::clone(&backend), cached.clone(), CoverSize::Thumb)
+            .image_admitted(
+                Arc::clone(&backend),
+                cached.clone(),
+                CoverSize::Thumb,
+                Refresh::WhenStale,
+            )
             .await
             .expect("first download");
 
@@ -1277,19 +1641,34 @@ mod tests {
             .collect();
         let fresh = "https://img.example/ok-fresh.png".to_owned();
         let refused = service
-            .image_admitted(Arc::clone(&backend), fresh.clone(), CoverSize::Thumb)
+            .image_admitted(
+                Arc::clone(&backend),
+                fresh.clone(),
+                CoverSize::Thumb,
+                Refresh::WhenStale,
+            )
             .await;
         assert!(matches!(refused, Err(CoverFailure::Unavailable(_))));
         assert_eq!(backend.fetched.load(Ordering::SeqCst), 1);
         let bytes = service
-            .image_admitted(Arc::clone(&backend), cached, CoverSize::Thumb)
+            .image_admitted(
+                Arc::clone(&backend),
+                cached,
+                CoverSize::Thumb,
+                Refresh::WhenStale,
+            )
             .await
             .expect("served from disk while full");
         assert!(bytes.starts_with(&[0xFF, 0xD8, 0xFF]));
 
         drop(held);
         service
-            .image_admitted(Arc::clone(&backend), fresh, CoverSize::Thumb)
+            .image_admitted(
+                Arc::clone(&backend),
+                fresh,
+                CoverSize::Thumb,
+                Refresh::WhenStale,
+            )
             .await
             .expect("downloaded once a permit is free");
         assert_eq!(backend.fetched.load(Ordering::SeqCst), 2);
@@ -1350,7 +1729,12 @@ mod tests {
         // The caller gives up while the download is still sleeping.
         let gave_up = tokio::time::timeout(
             Duration::from_millis(1),
-            service.image_detached(Arc::clone(&backend), url.clone(), CoverSize::Card),
+            service.image_detached(
+                Arc::clone(&backend),
+                url.clone(),
+                CoverSize::Card,
+                Refresh::Never,
+            ),
         )
         .await;
         assert!(gave_up.is_err());
@@ -1364,7 +1748,7 @@ mod tests {
         assert!(entry.join("full.jpg").is_file());
         assert!(lock(&service.flights).is_empty());
         let bytes = service
-            .image_detached(Arc::clone(&backend), url, CoverSize::Full)
+            .image_detached(Arc::clone(&backend), url, CoverSize::Full, Refresh::Never)
             .await
             .expect("cached");
         assert!(bytes.starts_with(&[0xFF, 0xD8, 0xFF]));
@@ -1389,7 +1773,7 @@ mod tests {
             let backend = Arc::clone(&backend);
             let token = token.clone();
             tasks.push(tokio::spawn(async move {
-                service.image(&*backend, &token, size).await
+                service.image(&backend, &token, size).await
             }));
         }
         for task in tasks {
@@ -1398,7 +1782,7 @@ mod tests {
         }
         assert_eq!(backend.fetched.load(Ordering::SeqCst), 1);
         service
-            .image(&*backend, &token, CoverSize::Full)
+            .image(&backend, &token, CoverSize::Full)
             .await
             .expect("cached");
         assert_eq!(backend.fetched.load(Ordering::SeqCst), 1);
@@ -1416,7 +1800,7 @@ mod tests {
     async fn failures_are_remembered_and_unknown_tokens_refused() {
         let temp = tempfile::tempdir().expect("tempdir");
         let service = service(temp.path());
-        let backend = Fake::default();
+        let backend = Arc::new(Fake::default());
         for url in [
             "https://img.example/missing.png",
             "https://img.example/html",
@@ -1436,16 +1820,16 @@ mod tests {
             Err(CoverFailure::UnknownToken)
         );
 
-        let detached = CoverService::detached();
+        let detached = Arc::new(CoverService::detached());
         let token = token_for(&detached, "https://img.example/ok.png");
         assert!(matches!(
             detached.image(&backend, &token, CoverSize::Thumb).await,
             Err(CoverFailure::Unavailable(_))
         ));
-        let unavailable = Fake {
+        let unavailable = Arc::new(Fake {
             unavailable: true,
             ..Fake::default()
-        };
+        });
         let token = token_for(&service, "https://img.example/ok-2.png");
         assert!(matches!(
             service.image(&unavailable, &token, CoverSize::Thumb).await,
@@ -1485,7 +1869,7 @@ mod tests {
         assert_eq!(backend.fetched.load(Ordering::SeqCst), 3);
         let token = token_for(&service, urls[0]);
         service
-            .image(&*backend, &token, CoverSize::Card)
+            .image(&backend, &token, CoverSize::Card)
             .await
             .expect("warm");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
@@ -1524,37 +1908,353 @@ mod tests {
         assert!(page(3).all(|url| !dir.join(cache_key(&url)).exists()));
     }
 
+    #[tokio::test]
+    async fn the_sweep_evicts_least_recently_served_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().join("covers");
+        let one = {
+            let set = bookclerk_cover::process(PNG).expect("set");
+            CoverSize::ALL
+                .into_iter()
+                .map(|size| u64::try_from(set.get(size).len()).expect("size"))
+                .sum::<u64>()
+        };
+        // Room for two entries and a half: writing a fourth evicts down to
+        // 90%, so the two served longest ago go.
+        let service =
+            Arc::new(CoverService::open(dir.clone(), one * 2 + one / 2 + one / 10).expect("open"));
+        let backend = Arc::new(Fake::default());
+        let urls: Vec<String> = (0..4)
+            .map(|n| format!("https://img.example/ok-{n}.png"))
+            .collect();
+        for (n, url) in urls.iter().enumerate().take(3) {
+            service
+                .image(&backend, &token_for(&service, url), CoverSize::Thumb)
+                .await
+                .expect("cover");
+            let mut index = lock(&service.index);
+            let mut entry = index.get(&cache_key(url)).expect("indexed").clone();
+            entry.served = Stamp::from_time(
+                SystemTime::now() - Duration::from_secs(3600 * (10 - u64::try_from(n).expect("n"))),
+            );
+            index.put(&cache_key(url), entry);
+        }
+        service
+            .image(&backend, &token_for(&service, &urls[3]), CoverSize::Thumb)
+            .await
+            .expect("cover");
+        for _ in 0..200 {
+            if !service.sweeping.load(Ordering::Acquire) && !dir.join(cache_key(&urls[1])).exists()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!dir.join(cache_key(&urls[0])).exists());
+        assert!(!dir.join(cache_key(&urls[1])).exists());
+        assert!(dir.join(cache_key(&urls[2])).exists());
+        assert!(dir.join(cache_key(&urls[3])).exists());
+        assert_eq!(lock(&service.index).total(), one * 2);
+        assert!(!dir
+            .join(STAGING_DIR)
+            .read_dir()
+            .expect("staging")
+            .any(|_| true));
+        // The journal remembers it after a restart.
+        drop(service);
+        let reopened = CoverService::open(dir, CACHE_BUDGET_BYTES).expect("reopen");
+        let index = lock(&reopened.index);
+        assert_eq!(index.total(), one * 2);
+        assert_eq!(
+            index
+                .get(&cache_key(&urls[3]))
+                .expect("kept")
+                .etag
+                .as_deref(),
+            Some("\"v1\"")
+        );
+    }
+
+    /// Waits until no flight is held, so background work has finished.
+    async fn settle(service: &CoverService) {
+        for _ in 0..200 {
+            if lock(&service.flights).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(lock(&service.flights).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_stale_image_is_served_and_then_revalidated() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = service(temp.path());
+        let url = "https://img.example/ok-avatar.png".to_owned();
+        let key = cache_key(&url);
+        let first = Arc::new(Fake::default());
+        let original = service
+            .image_detached(
+                Arc::clone(&first),
+                url.clone(),
+                CoverSize::Thumb,
+                Refresh::WhenStale,
+            )
+            .await
+            .expect("downloaded");
+        let fresh_until = lock(&service.index).get(&key).expect("indexed").fresh_until;
+        assert!(fresh_until > Stamp::now(), "fresh for upstream's hour");
+
+        // Fresh: served from disk, nothing asked.
+        service
+            .image_detached(
+                Arc::clone(&first),
+                url.clone(),
+                CoverSize::Thumb,
+                Refresh::WhenStale,
+            )
+            .await
+            .expect("cached");
+        assert_eq!(first.calls.load(Ordering::SeqCst), 1);
+
+        // Stale and unchanged: the copy is served, then a 304 renews it.
+        lock(&service.index).expire(&key);
+        let unchanged = Arc::new(Fake::default());
+        let served = service
+            .image_detached(
+                Arc::clone(&unchanged),
+                url.clone(),
+                CoverSize::Thumb,
+                Refresh::WhenStale,
+            )
+            .await
+            .expect("stale copy");
+        assert_eq!(served, original);
+        settle(&service).await;
+        assert_eq!(unchanged.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            lock(&unchanged.conditions)[0].if_none_match(),
+            Some("\"v1\"")
+        );
+        let entry = lock(&service.index).get(&key).expect("kept").clone();
+        assert!(!entry.is_stale(Stamp::now()));
+        assert_eq!(entry.etag.as_deref(), Some("\"v1\""));
+
+        // A cover path never revalidates, however stale.
+        lock(&service.index).expire(&key);
+        let cover = Arc::new(Fake::default());
+        service
+            .image_detached(
+                Arc::clone(&cover),
+                url.clone(),
+                CoverSize::Thumb,
+                Refresh::Never,
+            )
+            .await
+            .expect("cover");
+        settle(&service).await;
+        assert_eq!(cover.calls.load(Ordering::SeqCst), 0);
+
+        // Stale and changed: the new image replaces the old.
+        let changed = Arc::new(Fake {
+            revalidation: Revalidation::Changed,
+            ..Fake::default()
+        });
+        service
+            .image_detached(
+                Arc::clone(&changed),
+                url.clone(),
+                CoverSize::Thumb,
+                Refresh::WhenStale,
+            )
+            .await
+            .expect("stale copy");
+        settle(&service).await;
+        let replaced = service
+            .image_detached(
+                Arc::clone(&changed),
+                url.clone(),
+                CoverSize::Thumb,
+                Refresh::WhenStale,
+            )
+            .await
+            .expect("new copy");
+        assert_ne!(replaced, original);
+        assert_eq!(changed.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            lock(&service.index)
+                .get(&key)
+                .expect("kept")
+                .etag
+                .as_deref(),
+            Some("\"v2\"")
+        );
+
+        // Stale and failing: the copy stays, and the failure isn't retried
+        // on every view.
+        lock(&service.index).expire(&key);
+        let failing = Arc::new(Fake {
+            revalidation: Revalidation::Fails,
+            ..Fake::default()
+        });
+        for _ in 0..2 {
+            let kept = service
+                .image_detached(
+                    Arc::clone(&failing),
+                    url.clone(),
+                    CoverSize::Thumb,
+                    Refresh::WhenStale,
+                )
+                .await
+                .expect("old copy kept");
+            assert_eq!(kept, replaced);
+            settle(&service).await;
+        }
+        assert_eq!(failing.calls.load(Ordering::SeqCst), 1);
+        assert!(lock(&service.index).get(&key).is_some());
+    }
+
+    #[tokio::test]
+    async fn no_store_images_are_served_but_not_kept() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = service(temp.path());
+        let backend = Arc::new(Fake::default());
+        let url = "https://img.example/ok-nostore.png".to_owned();
+        for _ in 0..2 {
+            let bytes = service
+                .image_detached(
+                    Arc::clone(&backend),
+                    url.clone(),
+                    CoverSize::Thumb,
+                    Refresh::WhenStale,
+                )
+                .await
+                .expect("served");
+            assert!(bytes.starts_with(&[0xFF, 0xD8, 0xFF]));
+        }
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert!(!temp.path().join("covers").join(cache_key(&url)).exists());
+        assert!(lock(&service.index).get(&cache_key(&url)).is_none());
+
+        // A kept image whose host now says no-store, on a 304 or with a new
+        // image, is deleted.
+        for revalidation in [Revalidation::NotModified, Revalidation::Changed] {
+            let kept = "https://img.example/ok-kept.png".to_owned();
+            let key = cache_key(&kept);
+            service
+                .image_detached(
+                    Arc::new(Fake::default()),
+                    kept.clone(),
+                    CoverSize::Thumb,
+                    Refresh::WhenStale,
+                )
+                .await
+                .expect("kept");
+            assert!(lock(&service.index).get(&key).is_some());
+            lock(&service.index).expire(&key);
+            // The same entry, now answered with no-store.
+            let entry = service.dir.clone().expect("dir").join(&key);
+            let renamed = cache_key("https://img.example/ok-kept-nostore.png");
+            let moved = service.dir.clone().expect("dir").join(&renamed);
+            std::fs::rename(&entry, &moved).expect("rename");
+            let old = lock(&service.index).remove(&key).expect("entry");
+            lock(&service.index).put(&renamed, old);
+            lock(&service.index).expire(&renamed);
+            let refusing = Arc::new(Fake {
+                revalidation,
+                ..Fake::default()
+            });
+            service
+                .image_detached(
+                    Arc::clone(&refusing),
+                    "https://img.example/ok-kept-nostore.png".into(),
+                    CoverSize::Thumb,
+                    Refresh::WhenStale,
+                )
+                .await
+                .expect("stale copy");
+            settle(&service).await;
+            assert_eq!(refusing.calls.load(Ordering::SeqCst), 1, "{revalidation:?}");
+            assert!(!moved.exists(), "{revalidation:?}");
+            assert!(lock(&service.index).get(&renamed).is_none());
+        }
+    }
+
     #[test]
-    fn the_sweep_evicts_least_recently_used_entries() {
+    fn plugin_answers_become_downloads() {
+        use bookclerk_integrations::{CoverHeaders, FetchedCover};
+        let received = SystemTime::now();
+        let headers = CoverHeaders {
+            etag: Some("\"a\"".into()),
+            cache_control: Some("max-age=86400".into()),
+            ..CoverHeaders::default()
+        };
+        let body = FetchedCover {
+            url: "https://a".into(),
+            body: Some(vec![1]),
+            headers: headers.clone(),
+            ..FetchedCover::default()
+        };
+        let Download::Body { bytes, policy } = download(body, false, received) else {
+            panic!("a body");
+        };
+        assert_eq!(bytes, vec![1]);
+        assert_eq!(policy.validators.if_none_match(), Some("\"a\""));
+        assert_eq!(
+            policy.storage,
+            Storage::Store {
+                fresh_for: Duration::from_secs(86400)
+            }
+        );
+        let unchanged = FetchedCover {
+            not_modified: true,
+            headers,
+            ..FetchedCover::default()
+        };
+        assert!(matches!(
+            download(unchanged.clone(), true, received),
+            Download::NotModified { .. }
+        ));
+        assert!(matches!(
+            download(unchanged, false, received),
+            Download::Failed(_)
+        ));
+        let failed = FetchedCover {
+            error: Some("HTTP 404".into()),
+            ..FetchedCover::default()
+        };
+        assert_eq!(
+            download(failed, false, received),
+            Download::Failed("HTTP 404".into())
+        );
+        assert_eq!(
+            download(FetchedCover::default(), false, received),
+            Download::Failed("no body".into())
+        );
+        assert_eq!(Refresh::Never.cache_control(), IMMUTABLE);
+        assert_eq!(Refresh::WhenStale.cache_control(), CHANGEABLE);
+    }
+
+    #[test]
+    fn writing_an_entry_replaces_the_old_one() {
         let temp = tempfile::tempdir().expect("tempdir");
         let dir = temp.path();
-        let set = bookclerk_cover::process(PNG).expect("set");
-        let mut keys = Vec::new();
-        for n in 0..4 {
-            let key = cache_key(&format!("https://img.example/{n}.png"));
-            let written = write_entry(dir, &key, &set).expect("write");
-            assert!(written > 0);
-            assert_eq!(write_entry(dir, &key, &set).expect("again"), 0);
-            let age = Duration::from_secs(3600 * (10 - n));
-            for size in CoverSize::ALL {
-                let file = std::fs::File::options()
-                    .write(true)
-                    .open(dir.join(&key).join(file_name(size)))
-                    .expect("open");
-                file.set_modified(SystemTime::now() - age).expect("stamp");
-            }
-            keys.push((key, written));
-        }
-        let one = keys[0].1;
-        // Room for two entries: the two oldest go.
-        let left = sweep(dir, one * 2 + one / 2);
-        assert!(!dir.join(&keys[0].0).exists());
-        assert!(!dir.join(&keys[1].0).exists());
-        assert!(dir.join(&keys[2].0).exists());
-        assert!(dir.join(&keys[3].0).exists());
-        assert_eq!(left, one * 2);
-        // Under budget: nothing happens.
-        assert_eq!(sweep(dir, u64::MAX), one * 2);
+        let key = cache_key("https://img.example/ok.png");
+        let first = bookclerk_cover::process(PNG).expect("set");
+        let second = bookclerk_cover::process(&wide_png()).expect("set");
+        assert!(write_entry(dir, &key, &first).expect("write") > 0);
+        let written = write_entry(dir, &key, &second).expect("replace");
+        assert_eq!(
+            std::fs::read(dir.join(&key).join("full.jpg")).expect("read"),
+            second.get(CoverSize::Full)
+        );
+        assert_eq!(
+            written,
+            CoverSize::ALL
+                .into_iter()
+                .map(|size| u64::try_from(second.get(size).len()).expect("size"))
+                .sum::<u64>()
+        );
         assert!(!dir
             .join(STAGING_DIR)
             .read_dir()
