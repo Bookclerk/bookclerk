@@ -292,6 +292,20 @@ export function decodeClaimTicket(text: string): string | null {
 }
 
 /**
+ * Reads whether the caller's Discover shelves are ready from
+ * `GET /api/discover/status`.
+ *
+ * @param text - Response body.
+ * @returns The `ready` flag when the body is an object whose `ready` is a
+ *   boolean; otherwise null.
+ */
+export function decodeDiscoverReady(text: string): boolean | null {
+  const body = parseJson(text);
+  if (!isObject(body)) return null;
+  return typeof body.ready === "boolean" ? body.ready : null;
+}
+
+/**
  * Whether a Turnstile Siteverify answer passes for this site and action.
  *
  * @param text - Siteverify response body.

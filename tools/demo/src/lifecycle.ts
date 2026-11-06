@@ -5,7 +5,8 @@
 // per-session operator token create the visitor's account, then redeem its
 // claim ticket for a portal session the visitor's browser keeps. The visitor
 // acts only as that account: store accounts are connected through the
-// portal, so they belong to that identity.
+// portal, so they belong to that identity. Last, wait a little for the
+// visitor's Discover shelves, the page they land on, to be built.
 //
 // End: sign every connected store account out through the same route the
 // Accounts page uses, so Audible deregisters the device it added, before
@@ -14,6 +15,7 @@
 import {
   decodeClaimTicket,
   decodeConnections,
+  decodeDiscoverReady,
   decodeInstances,
   portalSessionFrom,
   PORTAL_COOKIE,
@@ -89,6 +91,74 @@ export async function waitForHealth(
     await new Promise((r) => setTimeout(r, opts.intervalMs));
   }
   throw new Error(`bookclerkd did not become healthy: ${last}`);
+}
+
+/**
+ * Waits for the visitor's Discover shelves, the page a signed-in visitor
+ * lands on, to be stored.
+ *
+ * The first read of `GET /api/discover/status` queues the visitor's
+ * storefront fetch and ranking; later reads only report. The wait is
+ * best-effort: at the deadline the session opens anyway and the page fills
+ * its placeholders as the shelves arrive. A failed read counts as not ready.
+ *
+ * @param call - Container request function.
+ * @param portalSession - The visitor's portal session.
+ * @param opts - How long to wait in all, and between reads.
+ * @returns True when the shelves were ready in time; otherwise false.
+ */
+export async function waitForShelves(
+  call: ContainerCall,
+  portalSession: string,
+  opts: { timeoutMs: number; intervalMs: number },
+): Promise<boolean> {
+  const deadline = Date.now() + opts.timeoutMs;
+  const headers = { Cookie: `${PORTAL_COOKIE}=${portalSession}` };
+  for (;;) {
+    const left = deadline - Date.now();
+    if (left <= 0) return false;
+    try {
+      const res = await call("/api/discover/status", {
+        headers,
+        signal: AbortSignal.timeout(left),
+      });
+      if (res.status !== 200) await res.body?.cancel();
+      else if (decodeDiscoverReady(await res.text()) === true) return true;
+    } catch {
+      // Not ready yet: a slow or refused read is retried until the deadline.
+    }
+    const pause = Math.min(opts.intervalMs, deadline - Date.now());
+    if (pause <= 0) return false;
+    await new Promise((r) => setTimeout(r, pause));
+  }
+}
+
+/**
+ * How long the start waits for the visitor's Discover shelves before the
+ * session opens anyway, and how long it pauses between reads.
+ */
+export const SHELVES_WAIT = { timeoutMs: 25_000, intervalMs: 1_000 } as const;
+
+/**
+ * Builds the visitor's Discover shelves before the session opens, waiting
+ * at most {@link SHELVES_WAIT}. Never fails the start: past the deadline it
+ * logs a warning and the page fills in as the shelves arrive.
+ *
+ * @param call - Container request function.
+ * @param portalSession - The visitor's portal session.
+ * @param sessionId - The demo session's id, for the warning.
+ * @param wait - How long to wait in all, and between reads.
+ * @returns True when the shelves were ready in time; otherwise false.
+ */
+export async function prepareShelves(
+  call: ContainerCall,
+  portalSession: string,
+  sessionId: string,
+  wait: { timeoutMs: number; intervalMs: number } = SHELVES_WAIT,
+): Promise<boolean> {
+  const ready = await waitForShelves(call, portalSession, wait);
+  if (!ready) console.warn(`demo session ${sessionId} opened before its shelves were ready`);
+  return ready;
 }
 
 /**

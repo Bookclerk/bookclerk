@@ -11,6 +11,7 @@ import { classify, OPERATIONS } from "../src/routes.ts";
 import {
   cookiesForContainer,
   decodeClaimTicket,
+  decodeDiscoverReady,
   decodeConnections,
   decodeInstances,
   decodeLaunchForm,
@@ -593,6 +594,18 @@ describe("demo input boundaries", () => {
             ? t
             : null;
         assert.equal(decodeClaimTicket(input), expected, label);
+      },
+    );
+  });
+  it("discover status reader takes only a boolean ready flag", () => {
+    fuzz(
+      "discover_status",
+      ["true", "false", "null", '"', "1", "{", "}", "[", "]", ",", ":", '"ready"', '"subject"'],
+      (input, label) => {
+        const v = parseOrUndefined(input);
+        const r = plainObject(v) ? v.ready : undefined;
+        const expected = typeof r === "boolean" ? r : null;
+        assert.equal(decodeDiscoverReady(input), expected, label);
       },
     );
   });
