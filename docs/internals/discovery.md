@@ -81,6 +81,14 @@ operator, a household user, or a portal identity) has a **subject key**
    for the person's current seeds (their own, or the household's), and none
    when `discovery.storefront_candidates` is off.
 
+   Both steps stay inside the database plugin's 256 KiB result limit
+   (`maxResultBytes` in the [SQL contract](../plugins/sql-contract/v1.md)).
+   The ranking reads candidates in pages and halves a page when its result
+   would be too large. A stored feed is one cell, so it is kept under
+   192 KiB: if it is larger, every shelf is cut to its best items (down to
+   four), then long descriptions are shortened, then the last shelves are
+   dropped.
+
 > [!NOTE]
 > A candidate fetch asks the storefronts deployed on the node that claims
 > it. In a cluster that splits storefronts across nodes, stores deployed

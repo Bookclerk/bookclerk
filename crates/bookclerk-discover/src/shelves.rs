@@ -561,6 +561,76 @@ pub fn flatten_feed(feed: &DiscoverFeed, limit: usize) -> Vec<Recommendation> {
     out
 }
 
+/// Fewest items a shelf keeps while [`encode_feed_within`] shrinks a feed.
+const FIT_MIN_ITEMS: usize = 4;
+
+/// Characters of a description kept once [`encode_feed_within`] has shrunk
+/// every shelf to [`FIT_MIN_ITEMS`] and the feed is still too large.
+const FIT_DESCRIPTION_CHARS: usize = 300;
+
+/// Encodes `feed` as JSON no longer than `budget` bytes, shrinking it first.
+///
+/// A stored feed is one database cell, and the database plugins refuse a
+/// cell or result over their `maxResultBytes` (256 KiB for the first-party
+/// adapters). Each round cuts every shelf to three quarters of the longest
+/// shelf, down to [`FIT_MIN_ITEMS`]. Then descriptions are shortened to
+/// [`FIT_DESCRIPTION_CHARS`]. Then shelves are dropped from the end. The
+/// top of each shelf is kept, since shelves are sorted best first.
+///
+/// # Arguments
+///
+/// * `feed` - Feed to encode; trimmed in place when it is too large.
+/// * `budget` - Most bytes the encoded feed may take.
+///
+/// # Returns
+///
+/// The encoded feed. An empty feed is returned even when `budget` is
+/// smaller than it.
+///
+/// # Errors
+///
+/// Returns the JSON encoding error.
+pub fn encode_feed_within(
+    feed: &mut DiscoverFeed,
+    budget: usize,
+) -> Result<String, serde_json::Error> {
+    let mut descriptions_cut = false;
+    loop {
+        let json = serde_json::to_string(feed)?;
+        if json.len() <= budget {
+            return Ok(json);
+        }
+        let longest = feed
+            .shelves
+            .iter()
+            .map(|s| s.items.len())
+            .max()
+            .unwrap_or(0);
+        if longest > FIT_MIN_ITEMS {
+            let cap = (longest * 3 / 4).max(FIT_MIN_ITEMS);
+            for shelf in &mut feed.shelves {
+                shelf.items.truncate(cap);
+            }
+            continue;
+        }
+        if !descriptions_cut {
+            descriptions_cut = true;
+            for item in feed.shelves.iter_mut().flat_map(|s| s.items.iter_mut()) {
+                if let Some(text) = item.description.as_mut() {
+                    if let Some((end, _)) = text.char_indices().nth(FIT_DESCRIPTION_CHARS) {
+                        text.truncate(end);
+                        text.push('…');
+                    }
+                }
+            }
+            continue;
+        }
+        if feed.shelves.pop().is_none() {
+            return Ok(json);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,6 +650,41 @@ mod tests {
         };
         r.work_key = recommendation_map_key(&r);
         r
+    }
+
+    /// A feed of many long items is cut down until it fits its budget,
+    /// keeping the best item of every shelf.
+    #[test]
+    fn a_large_feed_is_trimmed_to_its_budget() {
+        let recs: Vec<Recommendation> = (0..240)
+            .map(|i| Recommendation {
+                description: Some("d".repeat(1_200)),
+                ..rec(&format!("Book{i:03}"), f64::from(i), &["finish_series"])
+            })
+            .collect();
+        let mut feed = build_discover_feed(&recs, &ShelfTaste::default(), 48, &[]);
+        let before = serde_json::to_string(&feed).unwrap().len();
+        let budget = 20_000;
+        assert!(before > budget, "fixture is only {before} bytes");
+        let json = encode_feed_within(&mut feed, budget).unwrap();
+        assert!(json.len() <= budget, "{} bytes", json.len());
+        let shelf = feed.shelves.first().expect("a shelf survives");
+        assert_eq!(shelf.items[0].title, "Book239");
+        let decoded: DiscoverFeed = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.shelves.len(), feed.shelves.len());
+    }
+
+    /// A feed under budget is encoded unchanged, and an impossible budget
+    /// still terminates with an empty feed.
+    #[test]
+    fn a_small_feed_is_kept_and_a_tiny_budget_empties_it() {
+        let recs = vec![rec("Book1", 1.0, &["finish_series"])];
+        let mut feed = build_discover_feed(&recs, &ShelfTaste::default(), 8, &[]);
+        let whole = serde_json::to_string(&feed).unwrap();
+        assert_eq!(encode_feed_within(&mut feed, 1 << 20).unwrap(), whole);
+        let json = encode_feed_within(&mut feed, 1).unwrap();
+        assert!(feed.shelves.is_empty());
+        assert_eq!(json, serde_json::to_string(&feed).unwrap());
     }
 
     #[test]

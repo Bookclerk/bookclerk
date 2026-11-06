@@ -36,7 +36,7 @@ use crate::recommend::{
     engagement_by_book, feed_from_recommendations, owned_identity_sets, rank_candidates,
     RecommendOptions,
 };
-use crate::shelves::{shelf_is_disabled, DiscoverFeed};
+use crate::shelves::{encode_feed_within, shelf_is_disabled, DiscoverFeed};
 
 /// Longest one storefront call may take before its store moves on.
 pub const STORE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -53,6 +53,14 @@ pub const STORE_CALL_MAX_AGE: chrono::Duration = chrono::Duration::hours(24);
 
 /// Most open wishlist titles used as seeds, after the subject's books.
 const WISHLIST_SEED_LIMIT: usize = 4;
+
+/// Most bytes a stored feed's JSON may take.
+///
+/// The feed is one `discover_feeds` cell. The first-party database plugins
+/// refuse a cell or query result over 256 KiB (`maxResultBytes`), and the
+/// row read back carries a few more columns, so the feed keeps 64 KiB of
+/// headroom under that.
+pub const STORED_FEED_MAX_BYTES: usize = 192 * 1024;
 
 /// One subject's taste: whose seeds Discover uses and what they read.
 #[derive(Debug, Clone)]
@@ -543,8 +551,8 @@ pub async fn rank_subject_feed(
         &rank_opts,
     )
     .await?;
-    let feed = feed_from_recommendations(&recs, &taste.books, &taste.listening, &rank_opts);
-    let json = serde_json::to_string(&feed).map_err(|e| {
+    let mut feed = feed_from_recommendations(&recs, &taste.books, &taste.listening, &rank_opts);
+    let json = encode_feed_within(&mut feed, STORED_FEED_MAX_BYTES).map_err(|e| {
         crate::error::DiscoverError::message(format!("encode the discover feed: {e}"))
     })?;
     library

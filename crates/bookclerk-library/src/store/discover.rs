@@ -27,9 +27,10 @@ use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
 /// Rows read per query when a Discover listing walks a table, so no single
 /// statement returns an unbounded result set.
 ///
-/// Small enough to stay well under a remote database's per-query row and
-/// response-size limits (D1 caps a response at a few megabytes), large
-/// enough that a typical subject's candidates arrive in one or two reads.
+/// Large enough that a typical subject's candidates arrive in one or two
+/// reads. A page of real candidates (about 1.3 KB each) can still exceed the
+/// sqlite plugin's 256 KiB `maxResultBytes`, so the candidate listing halves
+/// its page when a result is refused for size.
 const DISCOVER_READ_PAGE: u64 = 200;
 
 /// Whose Discover shelves a stored row belongs to.
@@ -217,8 +218,10 @@ impl LibraryStore {
     ///
     /// Rows are read in id pages, then ordered by fetch time (ties keep id
     /// order). A refreshed candidate keeps its id, so id order alone would
-    /// not be fetch order. Rows whose scope text is unknown (written by a
-    /// newer release) are skipped.
+    /// not be fetch order. A page whose result would exceed the database
+    /// plugin's `maxResultBytes` is halved and read again; the smaller width
+    /// is kept for the rest of the walk. Rows whose scope text is unknown
+    /// (written by a newer release) are skipped.
     ///
     /// # Errors
     ///
@@ -230,18 +233,28 @@ impl LibraryStore {
         let key = subject.key();
         let mut out = Vec::new();
         let mut after: i64 = 0;
+        let mut width = DISCOVER_READ_PAGE;
         loop {
-            let rows = discover_candidates::Entity::find()
-                .filter(discover_candidates::Column::SubjectKey.eq(key.as_str()))
-                .filter(discover_candidates::Column::Id.gt(after))
-                .order_by_asc(discover_candidates::Column::Id)
-                .limit(DISCOVER_READ_PAGE)
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
+            let rows = loop {
+                let read = discover_candidates::Entity::find()
+                    .filter(discover_candidates::Column::SubjectKey.eq(key.as_str()))
+                    .filter(discover_candidates::Column::Id.gt(after))
+                    .order_by_asc(discover_candidates::Column::Id)
+                    .limit(width)
+                    .all(&self.db)
+                    .await
+                    .map_err(LibraryError::Orm);
+                match read {
+                    Ok(rows) => break rows,
+                    Err(err) if super::books_page::is_result_too_large(&err) && width > 1 => {
+                        width /= 2;
+                    }
+                    Err(err) => return Err(err),
+                }
+            };
             let Some(last) = rows.last() else { break };
             after = last.id;
-            let full = u64::try_from(rows.len()).is_ok_and(|n| n >= DISCOVER_READ_PAGE);
+            let full = u64::try_from(rows.len()).is_ok_and(|n| n >= width);
             out.extend(rows.into_iter().filter_map(|m| {
                 Some(StoredCandidate {
                     seed_scope: SeedScope::parse(&m.seed_scope)?,
@@ -740,6 +753,30 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// A full read page of real-sized candidates is larger than the sqlite
+    /// guest's `maxResultBytes`, so the listing has to shrink its pages.
+    #[tokio::test]
+    async fn large_candidates_list_under_the_result_cap() {
+        let store = store().await;
+        let alice = DiscoverSubject::User(1);
+        let body = "x".repeat(1_400);
+        let count = usize::try_from(DISCOVER_READ_PAGE).unwrap() + 37;
+        let rows: Vec<(String, String)> = (0..count)
+            .map(|i| {
+                (
+                    format!("k{i:04}"),
+                    format!("{{\"k\":\"{i}\",\"d\":\"{body}\"}}"),
+                )
+            })
+            .collect();
+        store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows)
+            .await
+            .unwrap();
+        let listed = store.list_discover_candidates(&alice).await.unwrap();
+        assert_eq!(listed.len(), count);
     }
 
     #[tokio::test]
