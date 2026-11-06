@@ -10,9 +10,10 @@
 //! so a backend copy (`migrate_library_backend`) leaves them behind.
 
 use chrono::{DateTime, Utc};
+use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter,
-    QueryOrder, QuerySelect, TransactionTrait,
+    QueryOrder, QuerySelect,
 };
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
@@ -139,9 +140,13 @@ pub struct StoredFeed {
 impl LibraryStore {
     /// Replaces every candidate one store returned for one subject.
     ///
-    /// The delete and inserts run in one transaction, so a reader sees the
-    /// store's old rows or its new rows, never a mix, and other stores'
-    /// rows for the subject are untouched.
+    /// Each row is upserted with this call's fetch time, then the store's
+    /// rows for the subject that this call did not write are deleted. Other
+    /// stores' rows for the subject are untouched. No interactive
+    /// transaction is used: the external database adapters only take
+    /// single statements and atomic batches, so `begin` is refused there.
+    /// A reader between the two steps can see the store's new rows next to
+    /// its old ones, never fewer than either set.
     ///
     /// # Arguments
     ///
@@ -152,7 +157,8 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// Returns the database error; nothing is changed then.
+    /// Returns the database error. Rows written before it stay; the old rows
+    /// are only deleted once every new row is stored.
     pub async fn replace_discover_candidates(
         &self,
         subject: &DiscoverSubject,
@@ -169,45 +175,42 @@ impl LibraryStore {
             }
             unique.push(row);
         }
-        let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        let written = async {
-            discover_candidates::Entity::delete_many()
-                .filter(discover_candidates::Column::SubjectKey.eq(subject_key.as_str()))
-                .filter(discover_candidates::Column::Source.eq(source))
-                .exec(&txn)
+        for (key, json) in unique {
+            let row = discover_candidates::ActiveModel {
+                id: NotSet,
+                subject_key: Set(subject_key.clone()),
+                source: Set(source.to_string()),
+                candidate_key: Set(key.clone()),
+                seed_scope: Set(scope.as_str().to_string()),
+                candidate_json: Set(json.clone()),
+                fetched_at: Set(now.clone()),
+            };
+            discover_candidates::Entity::insert(row)
+                .on_conflict(
+                    OnConflict::columns([
+                        discover_candidates::Column::SubjectKey,
+                        discover_candidates::Column::Source,
+                        discover_candidates::Column::CandidateKey,
+                    ])
+                    .update_columns([
+                        discover_candidates::Column::SeedScope,
+                        discover_candidates::Column::CandidateJson,
+                        discover_candidates::Column::FetchedAt,
+                    ])
+                    .to_owned(),
+                )
+                .exec_without_returning(&self.db)
                 .await
                 .map_err(LibraryError::Orm)?;
-            for (key, json) in unique {
-                discover_candidates::ActiveModel {
-                    id: NotSet,
-                    subject_key: Set(subject_key.clone()),
-                    source: Set(source.to_string()),
-                    candidate_key: Set(key.clone()),
-                    seed_scope: Set(scope.as_str().to_string()),
-                    candidate_json: Set(json.clone()),
-                    fetched_at: Set(now.clone()),
-                }
-                .insert(&txn)
-                .await
-                .map_err(LibraryError::Orm)?;
-            }
-            Ok::<(), LibraryError>(())
         }
-        .await;
-        match written {
-            Ok(()) => {
-                txn.commit().await.map_err(LibraryError::Orm)?;
-                if let Some(fault) = crate::take_txn_fault() {
-                    return Err(LibraryError::Orm(sea_orm::DbErr::Custom(fault)));
-                }
-                Ok(())
-            }
-            Err(err) => {
-                let _ = txn.rollback().await;
-                let _ = crate::take_txn_fault();
-                Err(err)
-            }
-        }
+        discover_candidates::Entity::delete_many()
+            .filter(discover_candidates::Column::SubjectKey.eq(subject_key.as_str()))
+            .filter(discover_candidates::Column::Source.eq(source))
+            .filter(discover_candidates::Column::FetchedAt.ne(now.as_str()))
+            .exec(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(())
     }
 
     /// Lists every stored candidate of one subject, oldest store fetch first.
@@ -682,6 +685,57 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    /// External database adapters refuse interactive transactions, so the
+    /// write must not open one: a refused `begin` leaves it working.
+    #[tokio::test]
+    async fn candidates_replace_without_an_interactive_transaction() {
+        let store = store().await;
+        let alice = DiscoverSubject::User(1);
+        store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["a", "b"]))
+            .await
+            .unwrap();
+        crate::inject_begin_failures(1);
+        let replaced = store
+            .replace_discover_candidates(
+                &alice,
+                "libro",
+                SeedScope::Household,
+                &[
+                    ("b".to_string(), "{\"k\":\"b2\"}".to_string()),
+                    ("c".to_string(), "{\"k\":\"c\"}".to_string()),
+                    ("c".to_string(), "{\"k\":\"c2\"}".to_string()),
+                ],
+            )
+            .await;
+        let unused_injection = crate::consume_begin_injection();
+        replaced.unwrap();
+        assert!(unused_injection, "the write opened a transaction");
+        let mut got: Vec<(String, String, SeedScope)> = store
+            .list_discover_candidates(&alice)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.candidate_key, c.candidate_json, c.seed_scope))
+            .collect();
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            got,
+            vec![
+                (
+                    String::from("b"),
+                    String::from("{\"k\":\"b2\"}"),
+                    SeedScope::Household
+                ),
+                (
+                    String::from("c"),
+                    String::from("{\"k\":\"c2\"}"),
+                    SeedScope::Household
+                ),
+            ]
+        );
     }
 
     #[tokio::test]

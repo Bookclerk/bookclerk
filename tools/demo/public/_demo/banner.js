@@ -1,5 +1,6 @@
 // The demo bar on top of the app: time left, Start over, Get Bookclerk, and
-// a "Demo" button that shows the Owner password for elevating in Settings.
+// a "Demo" button that shows the Owner password for elevating in Settings,
+// which the bar also fills in on the app's Elevate to Operator form.
 // Added by the demo Worker; the app itself carries no demo code.
 (() => {
   // VISITOR_PASSWORD in src/lifecycle.ts (test/pages.test.ts checks they match).
@@ -54,7 +55,8 @@
   const intro = document.createElement("p");
   intro.textContent =
     "You are this library's Owner. To act as another user, open Settings, then Account, " +
-    "choose Elevate to Operator with this password, and pick Impersonate in User Management. " +
+    "choose Elevate to Operator (the password is filled in for you), and pick Impersonate " +
+    "in User Management. " +
     "Elevation lasts 15 minutes.";
   const pass = document.createElement("p");
   const passLabel = document.createElement("span");
@@ -66,6 +68,26 @@
   label.addEventListener("click", () => {
     tips.hidden = !tips.hidden;
     label.setAttribute("aria-expanded", String(!tips.hidden));
+  });
+
+  // Settings > Account shows an "Elevate to Operator" form with an empty
+  // password box. Fill it with the demo password once, the way typing would,
+  // so React sees the value; a box the visitor has typed in is left alone.
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  const fillElevation = () => {
+    for (const input of document.querySelectorAll('form input[type="password"]')) {
+      if (input.dataset.demoFilled || input.value) continue;
+      const submit = input.form?.querySelector('button[type="submit"]');
+      if (!submit || !/Elevat/.test(submit.textContent || "")) continue;
+      input.dataset.demoFilled = "1";
+      if (valueSetter) valueSetter.call(input, PASSWORD);
+      else input.value = PASSWORD;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  };
+  new MutationObserver(fillElevation).observe(document.documentElement, {
+    childList: true,
+    subtree: true,
   });
 
   bar.append(label, left, spacer, form, get);

@@ -67,7 +67,10 @@ operator, a household user, or a portal identity) has a **subject key**
    Stores run concurrently, each call has a 10 s timeout, a store stops
    starting new calls 20 s into a fetch and saves what it has, and each store's
    rows are saved as that store finishes, so one slow store never discards
-   the others. A store whose calls all fail or come back empty keeps its
+   the others. A save upserts the store's new rows, then deletes its rows
+   that fetch did not return. It uses single statements, not an interactive
+   transaction, which the external database plugins refuse, so a reader can
+   briefly see a store's new rows beside its old ones. A store whose calls all fail or come back empty keeps its
    previous rows, since a plugin adapter can report a guest failure as an
    empty answer. The
    finished fetch is recorded in `discover_fetches`, so a fetch that found

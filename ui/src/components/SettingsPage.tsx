@@ -511,6 +511,17 @@ export function SettingsPage({
   const [activeTab, setActiveTab] = useState<SettingsTab>("account");
   const [tabInitialized, setTabInitialized] = useState(false);
 
+  /**
+   * Opens `tab` because the reader chose it, so the default tab chosen when
+   * loading ends no longer replaces it.
+   *
+   * @param tab - The tab to show.
+   */
+  function selectTab(tab: SettingsTab): void {
+    setTabInitialized(true);
+    setActiveTab(tab);
+  }
+
   useEffect(() => {
     if (!loading && !tabInitialized) {
       setActiveTab(resolveDefaultTab());
@@ -1300,7 +1311,7 @@ export function SettingsPage({
                     ? "bg-ink text-paper shadow-sm"
                     : "text-ink/60 hover:text-ink",
                 )}
-                onClick={() => setActiveTab("account")}
+                onClick={() => selectTab("account")}
               >
                 Account
               </button>
@@ -1315,7 +1326,7 @@ export function SettingsPage({
                       ? "bg-ink text-paper shadow-sm"
                       : "text-ink/60 hover:text-ink",
                   )}
-                  onClick={() => setActiveTab("users")}
+                  onClick={() => selectTab("users")}
                 >
                   User Management
                 </button>
@@ -1331,7 +1342,7 @@ export function SettingsPage({
                       ? "bg-ink text-paper shadow-sm"
                       : "text-ink/60 hover:text-ink",
                   )}
-                  onClick={() => setActiveTab("signin")}
+                  onClick={() => selectTab("signin")}
                 >
                   Sign-in
                 </button>
@@ -1348,7 +1359,7 @@ export function SettingsPage({
                         ? "bg-ink text-paper shadow-sm"
                         : "text-ink/60 hover:text-ink",
                     )}
-                    onClick={() => setActiveTab("server")}
+                    onClick={() => selectTab("server")}
                   >
                     Server Settings
                   </button>
@@ -1362,7 +1373,7 @@ export function SettingsPage({
                         ? "bg-ink text-paper shadow-sm"
                         : "text-ink/60 hover:text-ink",
                     )}
-                    onClick={() => setActiveTab("plugins")}
+                    onClick={() => selectTab("plugins")}
                   >
                     Plugins
                   </button>
@@ -1376,7 +1387,7 @@ export function SettingsPage({
                         ? "bg-ink text-paper shadow-sm"
                         : "text-ink/60 hover:text-ink",
                     )}
-                    onClick={() => setActiveTab("output")}
+                    onClick={() => selectTab("output")}
                   >
                     Output
                   </button>
@@ -1393,7 +1404,7 @@ export function SettingsPage({
                       ? "bg-ink text-paper shadow-sm"
                       : "text-ink/60 hover:text-ink",
                   )}
-                  onClick={() => setActiveTab("nodes")}
+                  onClick={() => selectTab("nodes")}
                 >
                   Nodes
                 </button>
@@ -1409,7 +1420,7 @@ export function SettingsPage({
                       ? "bg-ink text-paper shadow-sm"
                       : "text-ink/60 hover:text-ink",
                   )}
-                  onClick={() => setActiveTab("clusters")}
+                  onClick={() => selectTab("clusters")}
                 >
                   Library
                 </button>
@@ -1425,7 +1436,7 @@ export function SettingsPage({
                       ? "bg-ink text-paper shadow-sm"
                       : "text-ink/60 hover:text-ink",
                   )}
-                  onClick={() => setActiveTab("branches")}
+                  onClick={() => selectTab("branches")}
                 >
                   Branches
                 </button>
@@ -1441,7 +1452,7 @@ export function SettingsPage({
                       ? "bg-ink text-paper shadow-sm"
                       : "text-ink/60 hover:text-ink",
                   )}
-                  onClick={() => setActiveTab("clerks")}
+                  onClick={() => selectTab("clerks")}
                 >
                   Clerks
                 </button>
