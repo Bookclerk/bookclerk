@@ -68,7 +68,10 @@ only that. The others check:
   addresses need a CIDR in every spelling (trailing dot, fullwidth digits,
   legacy `127.1`, hex and octal IPv4). `*.suffix` never matches `xsuffix`,
   `*` never matches an IP literal and never grants a socket,
-  percent-encoded hosts never match, and the JSON round-trips.
+  percent-encoded hosts never match, and the JSON round-trips. The
+  guest's own `User-Agent` is kept only on hosts an own-agent pattern
+  matches, never through a `*` entry however it is spelled, and every
+  other request gets the host's agent.
 - **`plugin_manifest`**: `format_manifest` round-trips, and a deny manifest
   yields a deny policy.
 - **`cron_schedule`**: an accepted schedule round-trips through its

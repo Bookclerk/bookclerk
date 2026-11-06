@@ -67,6 +67,51 @@ tcp = [{ host = "api.example.com", ports = [443] }]
 > **workerd** plugin. Native plugins that need networking must use the SDK
 > socket capability.
 
+### User-Agent
+
+Plugin requests say honestly what sent them. Every HTTP request a plugin
+makes carries the host's `User-Agent`:
+
+```text
+bookclerk/<version> (+https://bookclerk.app)
+```
+
+The host sets it whether or not the plugin set an agent of its own, so a
+plugin can't pass itself off as a browser. Some store APIs answer only
+the store's own app, though. A plugin that follows such an app API
+contract lists those hosts, with a reason, and keeps its own agent there:
+
+```toml
+[capabilities.network.own_user_agent]
+hosts = ["*.libro.fm"]          # exact hosts or `*.` wildcards; never `*`
+reason = "Libro.fm's sign-in, library and download API answers the HTTP client of the Libro.fm Android app."
+```
+
+- The table needs `mode = "outbound"`, 1 to 32 hosts and a one-line
+  reason of at most 300 characters.
+- The consent form shows the host's agent, each listed host and the
+  reason. The operator can clear any host, and that host then gets the
+  host's agent too.
+- On a listed host, a request with no agent of its own still gets the
+  host's agent.
+- A newer version that lists more hosts waits for consent before it gets
+  them. A grant approved before this permission existed keeps the hosts
+  the plugin lists, because those plugins already sent their own agents
+  everywhere.
+
+Where the rule is applied depends on the runtime:
+
+| Runtime | Where the agent is set |
+| --- | --- |
+| Workerd | The host's egress worker sets it on every `fetch()` hop, redirects included. The plugin can't get around it. |
+| Native | Native guests own their TLS, so the SDK HTTP client (`bookclerk_plugin_sdk::http`) sets it on every hop from `BOOKCLERK_USER_AGENT` and `BOOKCLERK_OWN_USER_AGENT_HOSTS`, which the host puts in the guest's environment. |
+
+> [!NOTE]
+> Raw TCP (`connect()`) carries no HTTP headers, so the rule doesn't
+> reach a plugin that speaks HTTP over its own socket. The native rule
+> lives in the guest's SDK, so it holds for plugins that use the SDK
+> client, which every first-party plugin does.
+
 The native path is tested end to end on Linux, macOS and Windows by
 `cargo test -p bookclerk-plugin-e2e --test native_gateway --test native_gateway_isolation --test native_gateway_lifecycle --test native_gateway_authenticated_endpoint`.
 It checks that:
@@ -184,6 +229,7 @@ baseline, and lets the operator **widen or narrow**:
 
 - domains, bindings and flags;
 - the network mode;
+- the hosts that keep the plugin's own [User-Agent](#user-agent);
 - workerd `cpuMs` and `subrequests`;
 - the shared `diskMib` (capped by the host).
 

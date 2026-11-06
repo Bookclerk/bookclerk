@@ -7,6 +7,8 @@
  * - `fetch:<url>` — isolate `fetch`, return `STATUS\\n<body>`
  * - `manual:<url>` — `fetch` with `redirect: "manual"`, return
  *   `STATUS\\n<location>`
+ * - `agent:<url>` — `fetch` sending `user-agent: fixture-own/1`, return
+ *   `STATUS\\n<body>`
  */
 
 import { connect } from "cloudflare:sockets";
@@ -70,6 +72,11 @@ export class Storage extends StorageEntrypoint {
       const res = await fetch(key.slice(7), { redirect: "manual" });
       await res.body?.cancel();
       const body = toBytes(`${res.status}\n${res.headers.get("location") ?? ""}`);
+      return { meta: { key, size: body.byteLength }, body: bytesStream(body) };
+    }
+    if (key.startsWith("agent:")) {
+      const res = await fetch(key.slice(6), { headers: { "user-agent": "fixture-own/1" } });
+      const body = toBytes(`${res.status}\n${await res.text()}`);
       return { meta: { key, size: body.byteLength }, body: bytesStream(body) };
     }
     if (key.startsWith("fetch:")) {

@@ -418,6 +418,10 @@ def materialize_config(
     net = (manifest.get("capabilities") or {}).get("network") or {}
     network_mode = net.get("mode") or "deny"
     network_domains = list(net.get("domains") or [])
+    own_user_agent = net.get("own_user_agent")
+    own_user_agent_hosts = (
+        list(own_user_agent.get("hosts") or []) if isinstance(own_user_agent, dict) else []
+    )
 
     bookclerk_dir = ensure_dir_under(state_dir, ".bookclerk")
     refuse_symlink_path(state_dir, bookclerk_dir)
@@ -552,6 +556,7 @@ def materialize_config(
             "mode": "outbound" if network_mode == "outbound" else "deny",
             "domains": domains,
             "maxRedirects": 10,
+            "ownUserAgentHosts": own_user_agent_hosts,
         },
         separators=(",", ":"),
     )

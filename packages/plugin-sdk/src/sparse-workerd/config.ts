@@ -552,6 +552,7 @@ export function materializeConfig(
     mode: networkMode === "outbound" ? "outbound" : "deny",
     domains,
     maxRedirects: 10,
+    ownUserAgentHosts: manifest.capabilities?.network?.own_user_agent?.hosts ?? [],
   });
   const policyEscaped = escapeCapnp(policyJson);
 

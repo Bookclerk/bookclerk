@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use bookclerk_plugin_manifest::{
-    consent_domains_for, format_manifest, host_matches, normalize_hostname, parse, EgressPolicy,
-    NetworkMode, ANY_PUBLIC_HOST,
+    consent_domains_for, format_manifest, host_matches, normalize_domain_pattern,
+    normalize_hostname, normalize_tcp_host, parse, EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
 };
 
 /// Regular files directly under `fuzz/corpus/<target>/`, canonicalized and
@@ -212,8 +212,62 @@ fn fuzz_corpus_egress_policy_holds_invariants() {
                 );
             }
         }
+        check_user_agent(&policy);
     }
     assert!(parsed > 0, "no egress_policy seed parsed");
+}
+
+/// User-agent oracle: the guest's own agent is kept exactly on hosts an
+/// approved non-`*` pattern matches, never via `*`, never for a
+/// percent-encoded host, and every other request carries the host's agent.
+fn check_user_agent(policy: &EgressPolicy) {
+    let mut hosts: Vec<String> = vec!["example.com".into(), "127.0.0.1".into(), "localhost".into()];
+    for pattern in policy
+        .own_user_agent_hosts
+        .iter()
+        .chain(policy.domains.iter())
+    {
+        let bare = pattern.strip_prefix("*.").unwrap_or(pattern).to_string();
+        hosts.push(format!("a.{bare}"));
+        hosts.push(format!("x{bare}"));
+        hosts.push(format!("{bare}%41"));
+        hosts.push(bare);
+    }
+    let agent = policy.effective_user_agent();
+    for host in &hosts {
+        let expected = policy
+            .own_user_agent_hosts
+            .iter()
+            .filter_map(|p| normalize_tcp_host(p))
+            .any(|p| host_matches(host, &p));
+        assert_eq!(
+            policy.keeps_own_user_agent(host),
+            expected,
+            "own user-agent decision for {host:?}"
+        );
+        if host.contains('%') {
+            assert!(
+                !policy.keeps_own_user_agent(host),
+                "percent host kept {host:?}"
+            );
+        }
+        assert_eq!(policy.user_agent_for(host, None), agent);
+        let sent = policy.user_agent_for(host, Some("guest/1"));
+        assert_eq!(
+            sent == "guest/1",
+            expected || agent == "guest/1",
+            "{host:?}"
+        );
+    }
+    if policy
+        .own_user_agent_hosts
+        .iter()
+        .all(|p| normalize_domain_pattern(p).is_none_or(|n| n == ANY_PUBLIC_HOST))
+    {
+        for host in &hosts {
+            assert!(!policy.keeps_own_user_agent(host), "`*` kept {host:?}");
+        }
+    }
 }
 
 /// The `cron_schedule` oracle, shared with the fuzz target.

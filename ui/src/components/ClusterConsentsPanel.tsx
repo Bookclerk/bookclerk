@@ -218,6 +218,12 @@ function GrantFacts({ grant }: { grant: RemoteGrantView }) {
   if (grant.allowUndeclaredPublicRedirects) {
     facts.push("Redirects: may follow redirects to public hosts it did not declare");
   }
+  if (grant.ownUserAgentHosts?.length) {
+    const reason = grant.ownUserAgentReason ? ` (${grant.ownUserAgentReason})` : "";
+    facts.push(
+      `Own User-Agent instead of Bookclerk's: ${grant.ownUserAgentHosts.join(", ")}${reason}`,
+    );
+  }
   if (grant.jobs?.length) facts.push(`Jobs: ${grant.jobs.join(", ")}`);
   if (grant.entrypoints?.length) facts.push(`Entrypoints: ${grant.entrypoints.join(", ")}`);
   if (grant.producers?.length) facts.push(`Sends to queues: ${grant.producers.join(", ")}`);

@@ -104,6 +104,38 @@ pub struct EgressPolicy {
     /// Explicit CIDR grants beyond the public Internet.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub address_cidrs: Vec<String>,
+
+    /// The `User-Agent` the host sends on the guest's behalf.
+    ///
+    /// `None` means [`host_user_agent`] (this build's version). Hosts set it
+    /// when they inject the policy so every hop names the same build. Wire
+    /// name: `userAgent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+
+    /// Approved hosts (exact or `*.` wildcard, never `*`) where the guest's
+    /// own `User-Agent` is kept; see [`Self::keeps_own_user_agent`]. Wire
+    /// name: `ownUserAgentHosts`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub own_user_agent_hosts: Vec<String>,
+}
+
+/// Home page named in [`host_user_agent`], so a site operator who sees the
+/// agent in their logs can find out what sent it.
+pub const HOST_USER_AGENT_URL: &str = "https://bookclerk.app";
+
+/// The honest `User-Agent` hosts send for guest requests:
+/// `bookclerk/<version> (+https://bookclerk.app)`.
+///
+/// # Returns
+///
+/// The agent naming this build's workspace version.
+#[must_use]
+pub fn host_user_agent() -> String {
+    format!(
+        "bookclerk/{} (+{HOST_USER_AGENT_URL})",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// One TCP grant in the injected policy (`host` + `ports`).
@@ -173,6 +205,17 @@ impl EgressPolicy {
             let grant = CidrGrant::parse(raw)?;
             address_cidrs.push(format!("{}/{}", grant.network, grant.prefix));
         }
+        let mut own_user_agent_hosts = Vec::new();
+        if let Some(own) = &caps.own_user_agent {
+            for raw in &own.hosts {
+                let Some(host) = normalize_tcp_host(raw) else {
+                    return Err(format!("invalid own user-agent host `{raw}`"));
+                };
+                own_user_agent_hosts.push(host);
+            }
+        }
+        own_user_agent_hosts.sort();
+        own_user_agent_hosts.dedup();
         Ok(Self {
             mode: caps.mode,
             domains,
@@ -181,6 +224,8 @@ impl EgressPolicy {
             allow_undeclared_public_redirects: caps.allow_undeclared_public_redirects,
             tcp,
             address_cidrs,
+            user_agent: None,
+            own_user_agent_hosts,
         })
     }
 
@@ -262,6 +307,58 @@ impl EgressPolicy {
             allow_undeclared_public_redirects: false,
             tcp: Vec::new(),
             address_cidrs: Vec::new(),
+            user_agent: None,
+            own_user_agent_hosts: Vec::new(),
+        }
+    }
+
+    /// The agent the host sends: [`Self::user_agent`] or [`host_user_agent`].
+    #[must_use]
+    pub fn effective_user_agent(&self) -> String {
+        self.user_agent.clone().unwrap_or_else(host_user_agent)
+    }
+
+    /// Whether a request to `host` keeps the guest's own `User-Agent`.
+    ///
+    /// True only when `host` normalizes and matches an approved
+    /// [`Self::own_user_agent_hosts`] pattern. A `*` entry (however it is
+    /// spelled) never matches, so a tampered policy cannot exempt every host.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - Request hostname (Unicode or Punycode; trailing dot ok).
+    ///
+    /// # Returns
+    ///
+    /// `true` when the guest's agent may be sent to `host`.
+    #[must_use]
+    pub fn keeps_own_user_agent(&self, host: &str) -> bool {
+        let Some(host) = normalize_hostname(host) else {
+            return false;
+        };
+        // Normalize each pattern so a padded or Unicode `*` cannot slip past.
+        self.own_user_agent_hosts
+            .iter()
+            .filter_map(|pattern| normalize_tcp_host(pattern))
+            .any(|pattern| host_matches_normalized(&host, &pattern))
+    }
+
+    /// The `User-Agent` to put on a request to `host`.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - Request hostname of this hop.
+    /// * `requested` - The agent the guest set, if any.
+    ///
+    /// # Returns
+    ///
+    /// `requested` when the guest set one and [`Self::keeps_own_user_agent`]
+    /// allows it for `host`; otherwise [`Self::effective_user_agent`].
+    #[must_use]
+    pub fn user_agent_for(&self, host: &str, requested: Option<&str>) -> String {
+        match requested {
+            Some(own) if self.keeps_own_user_agent(host) => own.to_string(),
+            _ => self.effective_user_agent(),
         }
     }
 
@@ -814,6 +911,54 @@ fn host_matches_normalized(host: &str, pattern: &str) -> bool {
 #[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_user_agent_names_this_build_and_the_site() {
+        assert_eq!(
+            host_user_agent(),
+            format!(
+                "bookclerk/{} (+https://bookclerk.app)",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+    }
+
+    #[test]
+    fn own_user_agent_is_kept_only_on_approved_hosts() {
+        let policy = EgressPolicy {
+            user_agent: Some("bookclerk/1.2.3 (+https://bookclerk.app)".into()),
+            own_user_agent_hosts: vec![
+                "*.libro.fm".into(),
+                "openlibrary.org".into(),
+                "*".into(),
+                " * ".into(),
+            ],
+            ..EgressPolicy::deny()
+        };
+        assert!(policy.keeps_own_user_agent("libro.fm"));
+        assert!(policy.keeps_own_user_agent("API.Libro.fm."));
+        assert!(policy.keeps_own_user_agent("openlibrary.org"));
+        assert!(!policy.keeps_own_user_agent("covers.openlibrary.org"));
+        assert!(!policy.keeps_own_user_agent("evillibro.fm"));
+        assert!(!policy.keeps_own_user_agent("example.com"));
+        assert!(!policy.keeps_own_user_agent("libro%2efm"));
+        assert_eq!(
+            policy.user_agent_for("api.libro.fm", Some("okhttp/4.12.0")),
+            "okhttp/4.12.0"
+        );
+        assert_eq!(
+            policy.user_agent_for("example.com", Some("Mozilla/5.0 Chrome")),
+            "bookclerk/1.2.3 (+https://bookclerk.app)"
+        );
+        assert_eq!(
+            policy.user_agent_for("api.libro.fm", None),
+            "bookclerk/1.2.3 (+https://bookclerk.app)"
+        );
+        assert_eq!(
+            EgressPolicy::deny().effective_user_agent(),
+            host_user_agent()
+        );
+    }
 
     #[test]
     fn https_urls_are_accepted_only_on_the_listed_hosts() {

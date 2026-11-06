@@ -108,6 +108,8 @@ fn policy(echo_port: u16, allow_public_redirects: bool) -> EgressPolicy {
             ports: vec![echo_port],
         }],
         address_cidrs: vec!["127.0.0.1/32".into()],
+        user_agent: None,
+        own_user_agent_hosts: Vec::new(),
     }
 }
 
@@ -306,6 +308,8 @@ async fn workerd_any_public_host_matches_names_but_not_addresses() {
             ports: vec![http_port],
         }],
         address_cidrs: vec!["127.0.0.1/32".into()],
+        user_agent: None,
+        own_user_agent_hosts: Vec::new(),
     })
     .expect("policy json");
     let local = tokio::task::LocalSet::new();
@@ -347,6 +351,101 @@ async fn workerd_any_public_host_matches_names_but_not_addresses() {
                 .expect("`*` covers a hostname");
             assert!(named.starts_with("200\n"), "{named}");
             assert!(named.contains("pong"), "{named}");
+            let _ = child.kill().await;
+        })
+        .await;
+}
+
+/// Answers `count` HTTP requests, each with the request's `User-Agent` (or
+/// `none`) as the body.
+async fn user_agent_echo(listener: TcpListener, count: usize) {
+    for _ in 0..count {
+        let (mut s, _) = listener.accept().await.expect("http accept");
+        let mut buf = vec![0_u8; 8192];
+        let n = s.read(&mut buf).await.expect("http read");
+        let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+        let agent = request
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("user-agent")
+                    .then(|| value.trim().to_string())
+            })
+            .unwrap_or_else(|| "none".into());
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{agent}",
+            agent.len()
+        );
+        s.write_all(response.as_bytes()).await.expect("http write");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn workerd_fetch_carries_the_host_user_agent_except_on_approved_hosts() {
+    let Some(workerd) = find_workerd() else {
+        panic!(
+            "pinned workerd binary missing; run `cargo ensure-workerd`. Do not set BOOKCLERK_SKIP_WORKERD."
+        );
+    };
+    let http = TcpListener::bind("127.0.0.1:0").await.expect("http bind");
+    let http_port = http.local_addr().expect("http addr").port();
+    tokio::spawn(user_agent_echo(http, 3));
+
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sockets");
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let host_agent = "bookclerk/0.0.0-test (+https://bookclerk.app)";
+    let grant = serde_json::to_string(&EgressPolicy {
+        mode: NetworkMode::Outbound,
+        domains: vec!["127.0.0.1".into(), "localhost".into()],
+        max_redirects: 10,
+        subrequests: None,
+        allow_undeclared_public_redirects: false,
+        tcp: vec![],
+        address_cidrs: vec!["127.0.0.1/32".into()],
+        user_agent: Some(host_agent.into()),
+        own_user_agent_hosts: vec!["127.0.0.1".into()],
+    })
+    .expect("policy json");
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"))
+                .env("BOOKCLERK_PLUGIN_ROOT", &fixture)
+                .env("BOOKCLERK_WORKERD_BIN", &workerd)
+                .env("TMPDIR", tmp.path())
+                .env(GRANT_POLICY_ENV, &grant)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn bookclerk-workerd");
+            let stdin = child.stdin.take().expect("stdin");
+            let stdout = child.stdout.take().expect("stdout");
+            let (client, rpc) = connect_plugin(stdout, stdin, 64 * 1024);
+            tokio::task::spawn_local(rpc);
+            tokio::time::timeout(Duration::from_secs(90), client.describe())
+                .await
+                .expect("describe timed out")
+                .expect("describe");
+            let dest = open_storage(&client).await;
+
+            // Approved host: the plugin's own agent goes through.
+            let own = get_text(&dest, &format!("agent:http://127.0.0.1:{http_port}/"))
+                .await
+                .expect("approved host");
+            assert_eq!(own, "200\nfixture-own/1");
+            // No agent of its own: the host's, even on an approved host.
+            let unset = get_text(&dest, &format!("fetch:http://127.0.0.1:{http_port}/"))
+                .await
+                .expect("approved host without an agent");
+            assert_eq!(unset, format!("200\n{host_agent}"));
+            // Any other host: the host's agent replaces the plugin's.
+            let other = get_text(&dest, &format!("agent:http://localhost:{http_port}/"))
+                .await
+                .expect("other host");
+            assert_eq!(other, format!("200\n{host_agent}"));
+
             let _ = child.kill().await;
         })
         .await;

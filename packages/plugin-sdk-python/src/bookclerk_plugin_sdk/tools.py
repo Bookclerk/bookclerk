@@ -555,6 +555,55 @@ def validate_plugin_id(id: str) -> None:
         raise ValueError(f"plugin id `{id}` must not start/end with `_` or contain `__`")
 
 
+MAX_OWN_USER_AGENT_HOSTS = 32
+"""Most hosts one ``[capabilities.network.own_user_agent]`` table may list."""
+
+MAX_OWN_USER_AGENT_REASON_CHARS = 300
+"""Longest ``own_user_agent.reason``, in characters."""
+
+
+def _validate_own_user_agent(net: dict[str, Any]) -> None:
+    """Validate ``[capabilities.network.own_user_agent]`` the way the host does.
+
+    The table needs outbound mode, 1 to 32 hosts that are not ``*``, and a
+    one-line reason of at most 300 characters.
+
+    Args:
+        net: The ``[capabilities.network]`` table.
+
+    Raises:
+        ValueError: When the table is present and malformed.
+    """
+    own = net.get("own_user_agent")
+    if own is None:
+        return
+    field = "plugin.toml: capabilities.network.own_user_agent"
+    if not isinstance(own, dict):
+        raise ValueError(f"{field} must be a table")
+    if net.get("mode") != "outbound":
+        raise ValueError(f'{field} needs mode = "outbound"')
+    hosts = own.get("hosts")
+    if not isinstance(hosts, list) or not 1 <= len(hosts) <= MAX_OWN_USER_AGENT_HOSTS:
+        raise ValueError(f"{field}.hosts must list between 1 and {MAX_OWN_USER_AGENT_HOSTS} hosts")
+    for host in hosts:
+        trimmed = host.strip() if isinstance(host, str) else ""
+        if not trimmed or trimmed == "*" or "%" in trimmed:
+            raise ValueError(
+                f"{field}.hosts entry `{host}` is not a valid hostname or `*.` wildcard "
+                "(`*` is not allowed)"
+            )
+    reason = own.get("reason")
+    reason = reason.strip() if isinstance(reason, str) else ""
+    if (
+        not reason
+        or len(reason) > MAX_OWN_USER_AGENT_REASON_CHARS
+        or any(ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F for c in reason)
+    ):
+        raise ValueError(
+            f"{field}.reason must be one line of 1 to {MAX_OWN_USER_AGENT_REASON_CHARS} characters"
+        )
+
+
 def validate_manifest(m: dict[str, Any]) -> None:
     """Validate a parsed ``plugin.toml`` mapping.
 
@@ -579,6 +628,7 @@ def validate_manifest(m: dict[str, Any]) -> None:
     _validate_surface(m)
     runtime = m.get("runtime") or "native"
     net = (m.get("capabilities") or {}).get("network") or {}
+    _validate_own_user_agent(net)
     if runtime == "native":
         if not str(m.get("command") or "").strip():
             raise ValueError('plugin.toml: `command` is required when runtime = "native"')

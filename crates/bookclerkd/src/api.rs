@@ -681,6 +681,20 @@ struct PluginGrantView {
     /// Undeclared public redirect permission.
     #[schema(example = false)]
     allow_undeclared_public_redirects: bool,
+    /// Hosts (exact or `*.` wildcard) that receive the plugin's own
+    /// `User-Agent`; every other request carries the host's agent. Absent on
+    /// a grant approved before this permission existed, which keeps the hosts
+    /// the plugin's manifest declares.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(["*.libro.fm"]))]
+    own_user_agent_hosts: Option<Vec<String>>,
+    /// The plugin's reason for [`Self::own_user_agent_hosts`], from
+    /// `plugin.toml`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "Libro.fm's sign-in, library and download API answers the HTTP client of the Libro.fm Android app."
+    )]
+    own_user_agent_reason: Option<String>,
     /// SHA-256 of persisted operator consent (no host overlays).
     #[schema(example = "9b74c9897bac770ffc029102a200c5de3a9c4a1d6c2f1e0b5a7d8c9e0f1a2b3c")]
     grant_revision: String,
@@ -773,6 +787,11 @@ impl PluginGrantView {
             operator_added_cidrs: grant.operator_added_cidrs.iter().cloned().collect(),
             operator_denied_cidrs: grant.operator_denied_cidrs.iter().cloned().collect(),
             allow_undeclared_public_redirects: grant.allow_undeclared_public_redirects,
+            own_user_agent_hosts: grant
+                .own_user_agent_hosts
+                .as_ref()
+                .map(|hosts| hosts.iter().cloned().collect()),
+            own_user_agent_reason: grant.own_user_agent_reason.clone(),
             grant_revision: bookclerk_plugin_host::grant_revision(grant),
             authority_revision: bookclerk_plugin_host::authority_revision(grant),
             bindings: grant.bindings.iter().cloned().collect(),
@@ -819,6 +838,10 @@ struct PluginConsentResponse {
     brand: Option<PluginConsentBrand>,
     /// Host-capped resource defaults (workerd budgets + shared disk). Always set.
     limits: PluginConsentLimits,
+    /// The `User-Agent` this host sends for the plugin's requests, except to
+    /// the request's `ownUserAgentHosts`.
+    #[schema(example = "bookclerk/0.1.0 (+https://bookclerk.app)")]
+    host_user_agent: String,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -850,6 +873,12 @@ struct PluginGrantOverride {
     /// Override undeclared-public-redirect permission when set.
     #[schema(example = false)]
     allow_undeclared_public_redirects: Option<bool>,
+    /// Override the hosts that keep the plugin's own `User-Agent` when set.
+    ///
+    /// Each entry must be one the request lists; leaving one out sends the
+    /// host's agent there instead.
+    #[schema(example = json!(["*.libro.fm"]))]
+    own_user_agent_hosts: Option<Vec<String>>,
     /// Override approved bindings when set.
     ///
     /// Entries are host binding names (`config`, `secrets`, `plugin_kv`,
@@ -3203,6 +3232,9 @@ fn build_approved_grant(
         approved.allow_undeclared_public_redirects = flag;
         approved.operator_allow_undeclared_public_redirects = Some(flag);
     }
+    if let Some(hosts) = grant_override.own_user_agent_hosts {
+        approved.own_user_agent_hosts = Some(vec_to_set(hosts));
+    }
     if let Some(bindings) = grant_override.bindings {
         approved.bindings = vec_to_set(bindings);
     }
@@ -3321,6 +3353,7 @@ async fn get_plugin_consent(
         existing: existing.as_ref().map(PluginGrantView::from_grant),
         brand,
         limits,
+        host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
     }))
 }
 
@@ -3379,6 +3412,7 @@ async fn post_plugin_consent(
         existing: Some(PluginGrantView::from_grant(&approved)),
         brand,
         limits,
+        host_user_agent: bookclerk_plugin_manifest::host_user_agent(),
     }))
 }
 

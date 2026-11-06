@@ -597,6 +597,16 @@ fn hash_grant(kind: &[u8], grant: &PluginGrant) -> String {
         hasher.update(c.as_bytes());
         hasher.update(b",");
     }
+    // Only a non-empty set is hashed, so revisions of grants without the
+    // permission stay what they were before it existed.
+    let own_user_agent = grant.approved_own_user_agent_hosts();
+    if !own_user_agent.is_empty() {
+        hasher.update(b"\nown_user_agent\n");
+        for host in &own_user_agent {
+            hasher.update(host.as_bytes());
+            hasher.update(b",");
+        }
+    }
     hasher.update(b"\nredirects\n");
     hasher.update(
         u8::from(grant.allow_undeclared_public_redirects)

@@ -7,6 +7,10 @@
 //! `socket(AF_INET)`. When [`crate::NESTED_NATIVE_JAIL_ENV`] is `1` without a
 //! proxy, construction fails closed rather than falling back to ambient TCP.
 //!
+//! While the host sets [`crate::USER_AGENT_ENV`], every request hop carries
+//! the host's `User-Agent` unless its host is one the operator approved in
+//! [`crate::OWN_USER_AGENT_HOSTS_ENV`] and the guest set its own agent.
+//!
 //! Fetch domain grants do **not** imply TCP. Native manifests must declare
 //! `capabilities.network.tcp` (or rely on a host overlay) for each
 //! `host:port` this client dials.
@@ -29,8 +33,9 @@ use url::Url;
 use crate::error::{Result, SdkError};
 use crate::net::{
     connect, nested_native_jail_requested, ConnectOptions, SecureTransport, SocketAddress,
-    NESTED_NATIVE_JAIL_ENV, SOCKET_PROXY_ENV,
+    NESTED_NATIVE_JAIL_ENV, OWN_USER_AGENT_HOSTS_ENV, SOCKET_PROXY_ENV, USER_AGENT_ENV,
 };
+use bookclerk_plugin_manifest::{normalize_tcp_host, EgressPolicy};
 
 pub use http::header;
 pub use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
@@ -605,6 +610,19 @@ impl RequestBuilder {
     ///
     /// Returns when the URL is invalid or the ambient HTTP request fails.
     async fn send_direct(self, http: reqwest::Client) -> HttpResult<Response> {
+        self.send_direct_with(http, host_user_agent_rule()).await
+    }
+
+    /// [`Self::send_direct`] under an explicit user-agent `rule`.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the URL is invalid or the ambient HTTP request fails.
+    async fn send_direct_with(
+        self,
+        http: reqwest::Client,
+        rule: Option<&EgressPolicy>,
+    ) -> HttpResult<Response> {
         let mut url = Url::parse(&self.url)?;
         append_query(&mut url, &self.query);
         let mut req = http.request(reqwest_method(&self.method), url.as_str());
@@ -616,6 +634,27 @@ impl RequestBuilder {
         }
         if let Some(timeout) = self.timeout {
             req = req.timeout(timeout);
+        }
+        if rule.is_some() {
+            // Redirect hops reuse this agent; the direct path is not a jailed
+            // guest's (those always go through the socket proxy). A client
+            // default agent is applied by reqwest after this point, so only a
+            // per-request agent counts as the guest's own here.
+            let mut built = req.build()?;
+            let requested = built
+                .headers()
+                .get(header::USER_AGENT)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            let url = built.url().clone();
+            apply_user_agent(rule, &url, requested.as_deref(), built.headers_mut());
+            let resp = http.execute(built).await?;
+            return Ok(Response {
+                status: reqwest_status(resp.status()),
+                headers: reqwest_headers(resp.headers()),
+                url: resp.url().clone(),
+                inner: ResponseInner::Direct(resp),
+            });
         }
         let resp = req.send().await?;
         Ok(Response {
@@ -666,8 +705,18 @@ impl RequestBuilder {
             redirect::Policy::Limited(n) => n,
             redirect::Policy::StopOnQueryContains(_) => 10,
         };
+        let requested_user_agent = headers
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
         let mut hop = 0_usize;
         loop {
+            apply_user_agent(
+                host_user_agent_rule(),
+                &url,
+                requested_user_agent.as_deref(),
+                &mut headers,
+            );
             apply_cookies(&proxy.cookies, &url, &mut headers);
             let resp = proxy_once(&proxy.hyper, &method, &url, &headers, body.clone()).await?;
             store_cookies(&proxy.cookies, &url, &resp.headers);
@@ -894,6 +943,62 @@ pub async fn connect_tls(address: SocketAddress) -> Result<TlsStream<crate::net:
         .into_stream(),
     )
     .await
+}
+
+/// The host's user-agent rule, read once from [`USER_AGENT_ENV`] and
+/// [`OWN_USER_AGENT_HOSTS_ENV`]; `None` when the host did not set it (crate
+/// tests, host-owned clients), which leaves agents as the caller set them.
+fn host_user_agent_rule() -> Option<&'static EgressPolicy> {
+    static RULE: OnceLock<Option<EgressPolicy>> = OnceLock::new();
+    RULE.get_or_init(|| {
+        let agent = std::env::var(USER_AGENT_ENV).ok()?;
+        let hosts = std::env::var(OWN_USER_AGENT_HOSTS_ENV).unwrap_or_default();
+        Some(user_agent_rule(&agent, &hosts))
+    })
+    .as_ref()
+}
+
+/// Builds the user-agent rule from the two environment values.
+///
+/// # Arguments
+///
+/// * `agent` - The host's agent; blank falls back to the SDK build's own.
+/// * `hosts` - Comma-separated own-agent hosts; invalid entries and `*` are
+///   dropped (fail closed: those hosts get the host's agent).
+fn user_agent_rule(agent: &str, hosts: &str) -> EgressPolicy {
+    let mut rule = EgressPolicy::deny();
+    let agent = agent.trim();
+    rule.user_agent = (!agent.is_empty()).then(|| agent.to_string());
+    rule.own_user_agent_hosts = hosts.split(',').filter_map(normalize_tcp_host).collect();
+    rule
+}
+
+/// Sets the `User-Agent` for one request hop under the host's rule.
+///
+/// # Arguments
+///
+/// * `rule` - The host's rule; `None` leaves `headers` untouched.
+/// * `url` - This hop's URL; its host decides whether `requested` is kept.
+/// * `requested` - The agent the guest set before the first hop.
+/// * `headers` - Outgoing headers, updated in place.
+fn apply_user_agent(
+    rule: Option<&EgressPolicy>,
+    url: &Url,
+    requested: Option<&str>,
+    headers: &mut HeaderMap,
+) {
+    let Some(rule) = rule else {
+        return;
+    };
+    let host = url.host_str().unwrap_or_default();
+    let agent = rule.user_agent_for(host, requested);
+    // A host agent that is not a valid header value falls back to this
+    // build's own, which always is.
+    let value = HeaderValue::from_str(&agent)
+        .or_else(|_| HeaderValue::from_str(&bookclerk_plugin_manifest::host_user_agent()));
+    if let Ok(value) = value {
+        headers.insert(header::USER_AGENT, value);
+    }
 }
 
 fn use_socket_proxy() -> bool {
@@ -1317,6 +1422,118 @@ mod tests {
 #[allow(clippy::missing_panics_doc)]
 mod query_encoding_tests {
     use super::*;
+
+    fn agent_for(
+        rule: Option<&EgressPolicy>,
+        url: &str,
+        requested: Option<&str>,
+    ) -> Option<String> {
+        let mut headers = HeaderMap::new();
+        if let Some(own) = requested {
+            headers.insert(header::USER_AGENT, HeaderValue::from_str(own).unwrap());
+        }
+        apply_user_agent(rule, &Url::parse(url).unwrap(), requested, &mut headers);
+        headers
+            .get(header::USER_AGENT)
+            .map(|v| v.to_str().unwrap().to_string())
+    }
+
+    #[test]
+    fn host_agent_replaces_the_guest_agent_off_approved_hosts() {
+        let rule = user_agent_rule(
+            "bookclerk/9.9.9 (+https://bookclerk.app)",
+            "*.libro.fm, *, bad%host",
+        );
+        assert_eq!(rule.own_user_agent_hosts, vec!["*.libro.fm".to_string()]);
+        let host = Some("bookclerk/9.9.9 (+https://bookclerk.app)".to_string());
+        // No agent of its own: the host's.
+        assert_eq!(agent_for(Some(&rule), "https://libro.fm/api", None), host);
+        // Its own agent on an approved host is kept, on a redirect hop too.
+        assert_eq!(
+            agent_for(Some(&rule), "https://api.libro.fm/x", Some("okhttp/4.12.0")).as_deref(),
+            Some("okhttp/4.12.0")
+        );
+        // Anywhere else, the host's agent replaces it.
+        assert_eq!(
+            agent_for(
+                Some(&rule),
+                "https://evil-libro.fm/x",
+                Some("okhttp/4.12.0")
+            ),
+            host
+        );
+        assert_eq!(
+            agent_for(
+                Some(&rule),
+                "https://www.graphicaudio.net/",
+                Some("Mozilla/5.0 Chrome")
+            ),
+            host
+        );
+        // No host rule (crate tests, host-owned clients): untouched.
+        assert_eq!(
+            agent_for(None, "https://example.com/", Some("custom/1")).as_deref(),
+            Some("custom/1")
+        );
+        assert_eq!(agent_for(None, "https://example.com/", None), None);
+    }
+
+    #[tokio::test]
+    async fn direct_requests_follow_the_host_agent_rule() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut s, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0_u8; 4096];
+                let n = s.read(&mut buf).await.unwrap();
+                let request = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+                let agent = request
+                    .lines()
+                    .find_map(|l| l.strip_prefix("user-agent:").map(|v| v.trim().to_string()))
+                    .unwrap_or_default();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{agent}",
+                    agent.len()
+                );
+                s.write_all(reply.as_bytes()).await.unwrap();
+            }
+        });
+        let http = reqwest::Client::new();
+        let client = Client {
+            inner: Inner::Direct(http.clone()),
+        };
+        let url = format!("http://127.0.0.1:{port}/");
+        let replaced = user_agent_rule("bookclerk/9 (+https://bookclerk.app)", "");
+        let resp = client
+            .get(url.clone())
+            .header(header::USER_AGENT, "own/1")
+            .send_direct_with(http.clone(), Some(&replaced))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.text().await.unwrap(),
+            "bookclerk/9 (+https://bookclerk.app)"
+        );
+        let kept = user_agent_rule("bookclerk/9 (+https://bookclerk.app)", "127.0.0.1");
+        let resp = client
+            .get(url)
+            .header(header::USER_AGENT, "own/1")
+            .send_direct_with(http, Some(&kept))
+            .await
+            .unwrap();
+        assert_eq!(resp.text().await.unwrap(), "own/1");
+    }
+
+    #[test]
+    fn invalid_or_blank_host_agent_falls_back_to_this_build() {
+        let ours = Some(bookclerk_plugin_manifest::host_user_agent());
+        let blank = user_agent_rule("  ", "");
+        assert_eq!(agent_for(Some(&blank), "https://example.com/", None), ours);
+        let broken = user_agent_rule("bad\nagent", "");
+        assert_eq!(agent_for(Some(&broken), "https://example.com/", None), ours);
+    }
 
     #[test]
     fn nested_jail_without_socket_proxy_fails_closed() {

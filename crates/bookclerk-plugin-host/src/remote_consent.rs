@@ -94,6 +94,9 @@ pub fn remote_request_within(reviewed: &PluginGrant, requested: &PluginGrant) ->
         && requested.address_cidrs.is_subset(&reviewed.address_cidrs)
         && (!requested.allow_undeclared_public_redirects
             || reviewed.allow_undeclared_public_redirects)
+        && requested
+            .approved_own_user_agent_hosts()
+            .is_subset(&reviewed.approved_own_user_agent_hosts())
         && requested.bindings.is_subset(&reviewed.bindings)
         && requested
             .compatibility_flags
@@ -148,6 +151,7 @@ pub fn remote_consent(requested: &PluginGrant, narrowing: &RemoteNarrowing) -> R
         consent.tcp.clear();
         consent.address_cidrs.clear();
         consent.allow_undeclared_public_redirects = false;
+        consent.own_user_agent_hosts = Some(BTreeSet::new());
     }
     consent.approved_at = chrono::Utc::now().to_rfc3339();
     Ok(consent)
@@ -262,6 +266,15 @@ pub fn narrow_remote_grant(requested: &PluginGrant, consent: &PluginGrant) -> Pl
         manifest_cidrs: requested.manifest_cidrs.clone(),
         allow_undeclared_public_redirects: redirects,
         operator_allow_undeclared_public_redirects: Some(redirects),
+        own_user_agent_hosts: Some(if deny {
+            BTreeSet::new()
+        } else {
+            both(
+                &requested.approved_own_user_agent_hosts(),
+                &consent.approved_own_user_agent_hosts(),
+            )
+        }),
+        own_user_agent_reason: requested.own_user_agent_reason.clone(),
         bindings: both(&requested.bindings, &consent.bindings),
         compatibility_flags: both(&requested.compatibility_flags, &consent.compatibility_flags),
         cpu_ms: min_workerd_limit(
@@ -658,6 +671,35 @@ mod tests {
         )
         .is_err());
 
+        // The own-agent hosts are intersected like any destination.
+        let mut agent_request = request.clone();
+        agent_request.own_user_agent_hosts = Some(["api.store.example".to_string()].into());
+        agent_request.own_user_agent_reason = Some("App API.".into());
+        let mut agent_consent =
+            remote_consent(&agent_request, &RemoteNarrowing::default()).unwrap();
+        let effective = narrow_remote_grant(&agent_request, &agent_consent);
+        assert_eq!(
+            effective.own_user_agent_hosts,
+            Some(["api.store.example".to_string()].into())
+        );
+        assert_eq!(effective.own_user_agent_reason.as_deref(), Some("App API."));
+        agent_consent.own_user_agent_hosts = Some(BTreeSet::new());
+        let effective = narrow_remote_grant(&agent_request, &agent_consent);
+        assert_eq!(effective.own_user_agent_hosts, Some(BTreeSet::new()));
+        let off = remote_consent(
+            &agent_request,
+            &RemoteNarrowing {
+                deny_network: true,
+                ..RemoteNarrowing::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(off.own_user_agent_hosts, Some(BTreeSet::new()));
+        assert_eq!(
+            narrow_remote_grant(&agent_request, &off).own_user_agent_hosts,
+            Some(BTreeSet::new())
+        );
+
         // Network off clears every destination.
         let off = remote_consent(
             &request,
@@ -711,9 +753,17 @@ mod tests {
         wider_budget.memory_mib = Some(4096);
         let mut redirects = reviewed.clone();
         redirects.allow_undeclared_public_redirects = true;
+        let mut own_agent = reviewed.clone();
+        own_agent.own_user_agent_hosts = Some(["api.store.example".to_string()].into());
         let mut other_plugin = reviewed.clone();
         other_plugin.plugin_key = "path:file:///tmp/other#other".into();
-        for wider in [wider_domain, wider_binding, wider_budget, redirects] {
+        for wider in [
+            wider_domain,
+            wider_binding,
+            wider_budget,
+            redirects,
+            own_agent,
+        ] {
             assert_eq!(state(&wider), RemoteConsentState::NeedsReapproval);
         }
         assert_eq!(state(&other_plugin), RemoteConsentState::Invalid);

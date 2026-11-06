@@ -19,6 +19,10 @@
  *   egress invocation counts toward the budget.
  * - Redirect method/body and Authorization stripping follow the Fetch
  *   HTTP-redirect fetch algorithm.
+ * - Every fetch hop carries the host's honest `User-Agent` (`userAgent`,
+ *   `bookclerk/<version> (+https://bookclerk.app)`). The guest's own agent
+ *   is kept only on hosts matching `ownUserAgentHosts`, which the operator
+ *   approved on the consent form. A `*` entry never matches.
  */
 
 import { connect } from "cloudflare:sockets";
@@ -40,6 +44,9 @@ const REQUEST_BODY_HEADERS = [
 
 /** The `domains` entry that grants every public hostname. */
 const ANY_PUBLIC_HOST = "*";
+
+/** Agent sent when the injected policy names none (SDK dev harnesses). */
+const FALLBACK_USER_AGENT = "bookclerk (+https://bookclerk.app)";
 
 function hostMatches(host, pattern) {
   const h = normalizeHostToken(host);
@@ -174,6 +181,32 @@ function allowsTcp(host, port, policy) {
       Array.isArray(g.ports) &&
       g.ports.includes(port),
   );
+}
+
+/** True when the guest's own `User-Agent` may go to `host`. */
+function keepsOwnUserAgent(host, policy) {
+  const normalized = normalizeHostToken(host);
+  if (normalized == null) return false;
+  return (policy.ownUserAgentHosts || []).some(
+    (p) => p !== ANY_PUBLIC_HOST && hostMatches(normalized, p),
+  );
+}
+
+/**
+ * The request to send for one hop, with the `User-Agent` the policy allows:
+ * the guest's own on an approved host, otherwise the host's agent.
+ */
+function withUserAgent(request, hostname, policy) {
+  if (request.headers.has("user-agent") && keepsOwnUserAgent(hostname, policy)) {
+    return request;
+  }
+  const agent =
+    typeof policy.userAgent === "string" && policy.userAgent
+      ? policy.userAgent
+      : FALLBACK_USER_AGENT;
+  const headers = new Headers(request.headers);
+  headers.set("user-agent", agent);
+  return new Request(request, { headers });
 }
 
 function sameOrigin(a, b) {
@@ -344,7 +377,11 @@ export default {
       // Clone when the body may need replaying on 307/308.
       const method = (current.method || "GET").toUpperCase();
       const mayReplayBody = method !== "GET" && method !== "HEAD";
-      const toFetch = mayReplayBody ? current.clone() : current;
+      const toFetch = withUserAgent(
+        mayReplayBody ? current.clone() : current,
+        url.hostname,
+        policy,
+      );
 
       if (subrequestLimit != null) {
         subrequestCount += 1;

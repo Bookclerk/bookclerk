@@ -98,7 +98,16 @@ export type Manifest = {
   /** Network policy the operator must consent to. */
   capabilities: {
     /** Egress policy (`deny` / `outbound`, plus hostname domains for workerd). */
-    network: { mode: string; domains?: string[] };
+    network: {
+      mode: string;
+      domains?: string[];
+      /**
+       * Hosts that receive the plugin's own `User-Agent` instead of the
+       * host's `bookclerk/<version>` agent, with the reason the consent form
+       * shows the operator.
+       */
+      own_user_agent?: { hosts: string[]; reason: string };
+    };
   };
   /** Optional CLI schema block (`[[cli.commands]]`) mirrored into describe metadata. */
   cli?: unknown;
@@ -552,6 +561,7 @@ export function validateManifest(m: Manifest): void {
   }
   validateSurface(m);
   validateSettings(m);
+  validateOwnUserAgent(m);
   const runtime = m.runtime ?? "native";
   if (runtime === "native") {
     if (!m.command || !String(m.command).trim()) {
@@ -587,6 +597,48 @@ export function validateManifest(m: Manifest): void {
     }
   } else {
     throw new Error(`plugin.toml: unknown runtime ${runtime}`);
+  }
+}
+
+/** Most hosts one `[capabilities.network.own_user_agent]` table may list. */
+const MAX_OWN_USER_AGENT_HOSTS = 32;
+
+/** Longest `own_user_agent.reason`, in characters. */
+const MAX_OWN_USER_AGENT_REASON_CHARS = 300;
+
+/**
+ * Validates `[capabilities.network.own_user_agent]` the way the host does:
+ * outbound mode, 1 to 32 hosts that are not `*`, and a one-line reason.
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When the table is present and malformed.
+ */
+function validateOwnUserAgent(m: Manifest): void {
+  const own = m.capabilities?.network?.own_user_agent;
+  if (own === undefined) return;
+  const field = "plugin.toml: capabilities.network.own_user_agent";
+  if (m.capabilities.network.mode !== "outbound") {
+    throw new Error(`${field} needs mode = "outbound"`);
+  }
+  const hosts = Array.isArray(own.hosts) ? own.hosts : [];
+  if (hosts.length === 0 || hosts.length > MAX_OWN_USER_AGENT_HOSTS) {
+    throw new Error(`${field}.hosts must list between 1 and ${MAX_OWN_USER_AGENT_HOSTS} hosts`);
+  }
+  for (const host of hosts) {
+    const trimmed = typeof host === "string" ? host.trim() : "";
+    if (!trimmed || trimmed === "*" || trimmed.includes("%")) {
+      throw new Error(
+        `${field}.hosts entry \`${String(host)}\` is not a valid hostname or \`*.\` wildcard (\`*\` is not allowed)`,
+      );
+    }
+  }
+  const reason = typeof own.reason === "string" ? own.reason.trim() : "";
+  // eslint-disable-next-line no-control-regex
+  const hasControl = /[\u0000-\u001f\u007f-\u009f]/.test(reason);
+  if (!reason || [...reason].length > MAX_OWN_USER_AGENT_REASON_CHARS || hasControl) {
+    throw new Error(
+      `${field}.reason must be one line of 1 to ${MAX_OWN_USER_AGENT_REASON_CHARS} characters`,
+    );
   }
 }
 

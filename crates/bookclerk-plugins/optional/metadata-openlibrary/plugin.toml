@@ -43,6 +43,10 @@ mode = "outbound"
 # Covers are linked, not fetched, so only the API host is needed.
 domains = ["openlibrary.org"]
 
+[capabilities.network.own_user_agent]
+hosts = ["openlibrary.org"]
+reason = "Open Library asks API clients to name their app and a contact email in the User-Agent, so the plugin sends its own with the contact email setting."
+
 [vars]
 
 [[settings]]

@@ -36,6 +36,21 @@ pub const SOCKET_PROXY_WRITE_ENV: &str = "BOOKCLERK_SOCKET_PROXY_WRITE";
 /// through to `socket(AF_INET)`.
 pub const NESTED_NATIVE_JAIL_ENV: &str = "BOOKCLERK_NESTED_NATIVE_JAIL";
 
+/// The `User-Agent` the host sends for this guest
+/// (`bookclerk/<version> (+https://bookclerk.app)`).
+///
+/// Set by the host on native guests. While it is set, [`crate::http::Client`]
+/// replaces the guest's agent with this value on every request hop, except
+/// on hosts listed in [`OWN_USER_AGENT_HOSTS_ENV`]. Native guests own their
+/// TLS, so this rule lives in the SDK; workerd guests get it from the host's
+/// egress bridge instead.
+pub const USER_AGENT_ENV: &str = "BOOKCLERK_USER_AGENT";
+
+/// Comma-separated hosts (exact or `*.` wildcard) where the guest keeps its
+/// own `User-Agent`: the operator-approved
+/// `[capabilities.network.own_user_agent]` hosts. Empty or unset keeps none.
+pub const OWN_USER_AGENT_HOSTS_ENV: &str = "BOOKCLERK_OWN_USER_AGENT_HOSTS";
+
 /// Host-created directory for guest pathname sockets.
 ///
 /// The native-behind-workerd guest may bind and connect Unix sockets only in

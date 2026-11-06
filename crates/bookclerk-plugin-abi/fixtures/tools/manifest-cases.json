@@ -401,6 +401,31 @@
       "top": "runtime = \"workerd\"\nentrypoints = [\"databaseAdapter\"]\n",
       "tables": "[triggers]\ncrons = [\"0 * * * *\"]\n",
       "error": "plugin.toml: `[triggers].crons` cannot be combined with the `databaseAdapter` entrypoint; put the schedule in a separate integration plugin"
+    },
+    {
+      "name": "own user agent hosts with a reason",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"openlibrary.org\"]\n\n[capabilities.network.own_user_agent]\nhosts = [\"openlibrary.org\"]\nreason = \"Open Library asks for an app name and contact email.\"\n",
+      "error": null
+    },
+    {
+      "name": "own user agent needs outbound",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"deny\"\n\n[capabilities.network.own_user_agent]\nhosts = [\"openlibrary.org\"]\nreason = \"r\"\n",
+      "error": "plugin.toml: capabilities.network.own_user_agent needs mode = \"outbound\""
+    },
+    {
+      "name": "own user agent star host",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"openlibrary.org\"]\n\n[capabilities.network.own_user_agent]\nhosts = [\"*\"]\nreason = \"r\"\n",
+      "error": "plugin.toml: capabilities.network.own_user_agent.hosts entry `*` is not a valid hostname or `*.` wildcard (`*` is not allowed)"
+    },
+    {
+      "name": "own user agent no hosts",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"openlibrary.org\"]\n\n[capabilities.network.own_user_agent]\nhosts = []\nreason = \"r\"\n",
+      "error": "plugin.toml: capabilities.network.own_user_agent.hosts must list between 1 and 32 hosts"
+    },
+    {
+      "name": "own user agent blank reason",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"openlibrary.org\"]\n\n[capabilities.network.own_user_agent]\nhosts = [\"openlibrary.org\"]\nreason = \"  \"\n",
+      "error": "plugin.toml: capabilities.network.own_user_agent.reason must be one line of 1 to 300 characters"
     }
   ]
 }
