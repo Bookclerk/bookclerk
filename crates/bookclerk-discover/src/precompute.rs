@@ -627,6 +627,131 @@ mod tests {
         }
     }
 
+    /// A library with two members' books: Alice's account is linked to her
+    /// identity, Bob's is not linked to anyone.
+    async fn two_member_library() -> (LibraryStore, bookclerk_library::PortalIdentity) {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        for (account, product, title) in [
+            ("alice@example.com", "a1", "Alice Book"),
+            ("bob@example.com", "b1", "Bob Book"),
+        ] {
+            library
+                .upsert_account("libro", account, "us", None, true, "libro")
+                .await
+                .unwrap();
+            let mut book = bookclerk_library::NewBook::minimal(product, account, "us", title);
+            book.source = "libro".into();
+            book.plugin_key = "libro".into();
+            book.asin = None;
+            book.authors = Some("Ann Author".into());
+            library.upsert_book(&book).await.unwrap();
+        }
+        let alice = library
+            .upsert_portal_identity("oidc", "alice", Some("Alice"))
+            .await
+            .unwrap();
+        library
+            .link_account(alice.id, "libro", "alice@example.com", "libro")
+            .await
+            .unwrap();
+        (library, alice)
+    }
+
+    #[tokio::test]
+    async fn a_member_seeds_from_their_own_books_and_others_from_the_household() {
+        let (library, alice) = two_member_library().await;
+        let opts = RecommendOptions::default();
+        let user = alice.user_id.unwrap();
+
+        let own = load_subject_taste(&library, &DiscoverSubject::User(user), &opts)
+            .await
+            .unwrap();
+        assert_eq!(own.scope, SeedScope::Own);
+        let titles: Vec<&str> = own.books.iter().map(|b| b.title.as_str()).collect();
+        assert_eq!(titles, vec!["Alice Book"]);
+
+        let portal = load_subject_taste(&library, &DiscoverSubject::Portal(alice.id), &opts)
+            .await
+            .unwrap();
+        assert_eq!(portal.scope, SeedScope::Own);
+        assert_eq!(portal.books.len(), 1);
+
+        let operator = load_subject_taste(&library, &DiscoverSubject::Operator, &opts)
+            .await
+            .unwrap();
+        assert_eq!(operator.scope, SeedScope::Household);
+        assert_eq!(operator.books.len(), 2);
+
+        // An identity with nothing linked, and a user with no identity, fall
+        // back to the household.
+        let carol = library
+            .upsert_portal_identity("oidc", "carol", Some("Carol"))
+            .await
+            .unwrap();
+        for subject in [
+            DiscoverSubject::Portal(carol.id),
+            DiscoverSubject::User(9_999),
+        ] {
+            let taste = load_subject_taste(&library, &subject, &opts).await.unwrap();
+            assert_eq!(taste.scope, SeedScope::Household, "{subject:?}");
+            assert_eq!(taste.books.len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_ranked_feed_is_stored_and_read_without_hidden_shelves() {
+        let (library, alice) = two_member_library().await;
+        let subject = DiscoverSubject::User(alice.user_id.unwrap());
+        let mut registry = SourceRegistry::new();
+        registry.register(std::sync::Arc::new(FakeStore {
+            id: "up",
+            deals: Some(vec!["d1", "d2", "d3"]),
+            calls: std::sync::Arc::default(),
+        }));
+        let opts = RecommendOptions::default();
+        assert!(stored_subject_feed(&library, &subject, &[])
+            .await
+            .unwrap()
+            .is_none());
+
+        let fetched = fetch_subject_candidates(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        assert_eq!(fetched.candidates, 3);
+        let ranked = rank_subject_feed(&library, &registry, &subject, &opts)
+            .await
+            .unwrap();
+        assert_eq!(ranked.scope, SeedScope::Own);
+        assert_eq!(ranked.candidates, 3);
+        assert!(ranked.shelves > 0);
+
+        let read = stored_subject_feed(&library, &subject, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.scope, SeedScope::Own);
+        assert_eq!(read.feed.shelves.len(), ranked.shelves);
+        assert!(read.candidates_fetched_at.is_some());
+        let hidden: Vec<String> = read.feed.shelves.iter().map(|s| s.id.clone()).collect();
+        let filtered = stored_subject_feed(&library, &subject, &hidden)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(filtered.feed.shelves.is_empty());
+
+        // A feed another release wrote, which no longer decodes, reads as none.
+        library
+            .put_discover_feed(&subject, "not json", SeedScope::Own, None)
+            .await
+            .unwrap();
+        assert!(stored_subject_feed(&library, &subject, &[])
+            .await
+            .unwrap()
+            .is_none());
+    }
+
     #[tokio::test]
     async fn each_store_saves_alone_and_a_failed_store_keeps_its_rows() {
         let library = bookclerk_plugin_database_sqlite::open_store_memory()

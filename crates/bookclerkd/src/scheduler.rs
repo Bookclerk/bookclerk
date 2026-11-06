@@ -27,37 +27,7 @@ fn spawn_discover_refresh_loop(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(jittered_delay(DISCOVER_REFRESH_CHECK)).await;
-            let library = state.library_snapshot().await;
-            let subjects = match library.list_discover_feed_subjects().await {
-                Ok(subjects) => subjects,
-                Err(err) => {
-                    warn!(error = %err, "discover refresh could not list subjects");
-                    continue;
-                }
-            };
-            let now = chrono::Utc::now();
-            for subject in subjects {
-                let newest = library
-                    .newest_discover_candidate_fetch(&subject)
-                    .await
-                    .ok()
-                    .flatten();
-                let stale =
-                    newest.is_none_or(|at| at + crate::discover_jobs::CANDIDATES_MAX_AGE <= now);
-                if !stale {
-                    continue;
-                }
-                if let Err(err) = crate::discover_jobs::enqueue_discover_candidates(
-                    &state,
-                    &subject,
-                    JobTrigger::Scheduler,
-                    Duration::ZERO,
-                )
-                .await
-                {
-                    warn!(subject = %subject.key(), error = %err, "daily discover refresh enqueue failed");
-                }
-            }
+            crate::discover_jobs::queue_daily_refresh(&state).await;
         }
     });
 }

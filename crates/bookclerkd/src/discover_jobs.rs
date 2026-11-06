@@ -285,6 +285,44 @@ pub async fn queue_refresh(state: &AppState, subject: &DiscoverSubject, refresh:
     }
 }
 
+/// Queues a candidate fetch for every subject with a stored feed whose
+/// candidates are older than [`CANDIDATES_MAX_AGE`] (the daily refresh).
+///
+/// # Returns
+///
+/// How many fetches were admitted. Failures are logged, not returned.
+pub async fn queue_daily_refresh(state: &AppState) -> usize {
+    let library = state.library_snapshot().await;
+    let subjects = match library.list_discover_feed_subjects().await {
+        Ok(subjects) => subjects,
+        Err(err) => {
+            tracing::warn!(error = %err, "discover refresh could not list subjects");
+            return 0;
+        }
+    };
+    let now = Utc::now();
+    let mut queued = 0;
+    for subject in subjects {
+        let newest = library
+            .newest_discover_candidate_fetch(&subject)
+            .await
+            .ok()
+            .flatten();
+        if newest.is_some_and(|at| at + CANDIDATES_MAX_AGE > now) {
+            continue;
+        }
+        match enqueue_discover_candidates(state, &subject, JobTrigger::Scheduler, Duration::ZERO)
+            .await
+        {
+            Ok(_) => queued += 1,
+            Err(err) => {
+                tracing::warn!(subject = %subject.key(), error = %err, "daily discover refresh enqueue failed");
+            }
+        }
+    }
+    queued
+}
+
 #[cfg(test)]
 mod tests {
     use bookclerk_library::SeedScope;
@@ -338,5 +376,155 @@ mod tests {
             ..JobPayload::default()
         };
         assert!(job_subject(&bad).is_err());
+    }
+
+    /// Answers one GET on the daemon's router as JSON.
+    async fn get(app: &axum::Router, uri: &str) -> (axum::http::StatusCode, serde_json::Value) {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let request = axum::http::Request::builder()
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// Pending Discover jobs as `(kind, subject)` pairs.
+    async fn queued(library: &bookclerk_library::LibraryStore) -> Vec<(JobKind, String)> {
+        let mut jobs: Vec<(JobKind, String)> = library
+            .list_jobs(100)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|j| matches!(j.kind, JobKind::DiscoverCandidates | JobKind::DiscoverFeed))
+            .filter(|j| j.state == bookclerk_library::JobState::Pending)
+            .map(|j| (j.kind, j.payload.subject.unwrap_or_default()))
+            .collect();
+        jobs.sort_by_key(|(kind, subject)| (kind.as_str().to_string(), subject.clone()));
+        jobs
+    }
+
+    #[tokio::test]
+    async fn the_page_reads_stored_shelves_and_queues_what_is_stale() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, library) = crate::node_api::tests::test_state_with(
+            &files,
+            "[discovery]\nembeddings_enabled = false\n",
+        )
+        .await;
+        let app = crate::api::router(std::sync::Arc::clone(&state), None);
+
+        // An empty library answers at once and queues nothing.
+        let (status, feed) = get(&app, "/api/discover/recommendations").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{feed}");
+        assert_eq!(feed["state"], "ready");
+        assert!(queued(&library).await.is_empty());
+
+        library
+            .upsert_account("libro", "reader@example.com", "us", None, true, "libro")
+            .await
+            .unwrap();
+        let mut book =
+            bookclerk_library::NewBook::minimal("p1", "reader@example.com", "us", "Dune");
+        book.source = "libro".into();
+        book.plugin_key = "libro".into();
+        library.upsert_book(&book).await.unwrap();
+
+        // No feed yet: placeholders, and the fetch is queued once.
+        let (_, feed) = get(&app, "/api/discover/recommendations").await;
+        assert_eq!(feed["state"], "preparing");
+        assert!(feed["shelves"].as_array().unwrap().is_empty());
+        get(&app, "/api/discover/recommendations").await;
+        assert_eq!(
+            queued(&library).await,
+            vec![(JobKind::DiscoverCandidates, String::from("operator"))]
+        );
+
+        // The fetch runs (no stores deployed) and admits the ranking.
+        let payload = JobPayload {
+            subject: Some(String::from("operator")),
+            ..JobPayload::default()
+        };
+        let summary = run_discover_candidates(&state, &payload, None)
+            .await
+            .unwrap();
+        assert!(summary.starts_with("subject=operator"), "{summary}");
+        assert!(queued(&library)
+            .await
+            .contains(&(JobKind::DiscoverFeed, String::from("operator"))));
+        let summary = run_discover_feed(&state, &payload, None).await.unwrap();
+        assert!(summary.contains("scope=household"), "{summary}");
+
+        // A stored feed with no candidates still asks for a fetch.
+        let (_, feed) = get(&app, "/api/discover/recommendations").await;
+        assert_eq!(feed["state"], "refreshing");
+        assert!(feed["computed_at"].is_string());
+
+        let (status, report) = get(&app, "/api/discover/status").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{report}");
+        assert_eq!(report["subjects"][0]["subject"], "operator");
+        assert_eq!(report["subjects"][0]["ready"], true);
+        assert_eq!(report["subjects"][0]["scope"], "household");
+
+        // Naming a new subject reports it and queues its fetch.
+        let (_, report) = get(&app, "/api/discover/status?subject=user:5").await;
+        let five = report["subjects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["subject"] == "user:5")
+            .cloned()
+            .unwrap();
+        assert_eq!(five["ready"], false);
+        assert!(queued(&library)
+            .await
+            .contains(&(JobKind::DiscoverCandidates, String::from("user:5"))));
+        let (status, _) = get(&app, "/api/discover/status?subject=user:x").await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+        // A job without a subject fails instead of guessing one.
+        assert!(run_discover_feed(&state, &JobPayload::default(), None)
+            .await
+            .is_err());
+        assert!(
+            run_discover_candidates(&state, &JobPayload::default(), None)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_daily_refresh_queues_only_stale_subjects() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, library) = crate::node_api::tests::test_state(&files).await;
+        assert_eq!(queue_daily_refresh(&state).await, 0);
+        let fresh = DiscoverSubject::User(1);
+        let stale = DiscoverSubject::User(2);
+        for subject in [&fresh, &stale] {
+            library
+                .put_discover_feed(subject, "{}", SeedScope::Own, None)
+                .await
+                .unwrap();
+        }
+        library
+            .replace_discover_candidates(
+                &fresh,
+                "libro",
+                SeedScope::Own,
+                &[(String::from("k"), String::from("{}"))],
+            )
+            .await
+            .unwrap();
+        assert_eq!(queue_daily_refresh(&state).await, 1);
+        assert_eq!(
+            queued(&library).await,
+            vec![(JobKind::DiscoverCandidates, String::from("user:2"))]
+        );
     }
 }
