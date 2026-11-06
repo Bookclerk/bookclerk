@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authMeUntilAnswered, fetchRetryingBusy, type AuthSession } from "./api";
+import { ApiError, authMeUntilAnswered, fetchRetryingBusy, type AuthSession } from "./api";
 
 const SIGNED_IN: AuthSession = {
   authenticated: true,
@@ -78,7 +78,16 @@ describe("authMeUntilAnswered", () => {
       () => false,
       () => {
         calls += 1;
-        return calls < 6 ? Promise.reject(new Error("timed out")) : Promise.resolve(SIGNED_IN);
+        const failures = [
+          new ApiError(504, "Session check timed out"),
+          new TypeError("Failed to fetch"),
+          new ApiError(503, "busy"),
+          new ApiError(502, "bad gateway"),
+          new ApiError(504, "Session check timed out"),
+        ];
+        return calls <= failures.length
+          ? Promise.reject(failures[calls - 1])
+          : Promise.resolve(SIGNED_IN);
       },
       (ms) => {
         waits.push(ms);
@@ -93,12 +102,29 @@ describe("authMeUntilAnswered", () => {
     let stop = false;
     const session = await authMeUntilAnswered(
       () => stop,
-      () => Promise.reject(new Error("down")),
+      () => Promise.reject(new TypeError("Failed to fetch")),
       () => {
         stop = true;
         return Promise.resolve();
       },
     );
     expect(session).toBeNull();
+  });
+
+  it("gives up at once on an answer asking again cannot change", async () => {
+    for (const failure of [new ApiError(410, "Your demo has ended."), new Error("bad JSON")]) {
+      let calls = 0;
+      await expect(
+        authMeUntilAnswered(
+          () => false,
+          () => {
+            calls += 1;
+            return Promise.reject(failure);
+          },
+          () => Promise.resolve(),
+        ),
+      ).rejects.toBe(failure);
+      expect(calls).toBe(1);
+    }
   });
 });

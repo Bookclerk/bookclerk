@@ -554,20 +554,40 @@ function toAuthSession(body: {
   };
 }
 
+/** Statuses of a session check that asking again can change. */
+const PASSING_SESSION_CHECK_STATUSES = new Set([502, 503, 504]);
+
+/**
+ * Whether a failed session check is worth asking again: the request never
+ * got an answer (a network error), timed out, or the server or a proxy said
+ * it was busy. Any other answer, such as a demo that has ended (410), is
+ * final and goes to the caller.
+ *
+ * @param err - What the session check threw.
+ * @returns True when the check should be asked again.
+ */
+function isPassingSessionCheckFailure(err: unknown): boolean {
+  if (err instanceof ApiError) return PASSING_SESSION_CHECK_STATUSES.has(err.status);
+  return err instanceof TypeError;
+}
+
 /** Longest wait between {@link authMeUntilAnswered} attempts, in ms. */
 const SESSION_CHECK_MAX_BACKOFF_MS = 10_000;
 
 /**
  * Asks {@link authMe} until it answers, backing off between attempts.
  *
- * A failed or timed-out check is not a sign-out, so the app keeps its
- * loading screen and asks again rather than showing the sign-in page to
- * someone whose session is fine. Waits 1 s, 2 s, 4 s … up to 10 s.
+ * A check that timed out, could not reach the server, or found it busy
+ * (502, 503 or 504) is not a sign-out, so the app keeps its loading screen
+ * and asks again rather than showing the sign-in page to someone whose
+ * session is fine. Waits 1 s, 2 s, 4 s … up to 10 s. Any other failure is
+ * thrown to the caller.
  *
  * @param stopped - True once the caller no longer wants the answer.
  * @param check - Performs one session check (defaults to {@link authMe}).
  * @param sleep - Waits the given milliseconds (defaults to a timer).
  * @returns The session, or null when `stopped` turned true first.
+ * @throws {ApiError} When the check fails in a way asking again cannot fix.
  */
 export async function authMeUntilAnswered(
   stopped: () => boolean,
@@ -579,7 +599,8 @@ export async function authMeUntilAnswered(
   while (!stopped()) {
     try {
       return await check();
-    } catch {
+    } catch (err) {
+      if (!isPassingSessionCheckFailure(err)) throw err;
       await sleep(backoff);
       backoff = Math.min(backoff * 2, SESSION_CHECK_MAX_BACKOFF_MS);
     }

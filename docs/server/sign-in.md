@@ -179,7 +179,10 @@ When the library does not answer in time to check a portal session (a
 busy or still-starting server), `/api/auth/me` and the signed-in API routes
 answer `503` with `Retry-After` and the slug `session_check_unavailable`,
 not `401`. The request is still refused, but the web app waits and asks
-again instead of showing the sign-in screen. Only a `401` means signed out.
+again instead of showing the sign-in screen. A few handlers that check the
+session again themselves, such as elevation and the session list, still
+answer `401` in that case
+([#726](https://github.com/Bookclerk/bookclerk/issues/726)).
 
 ## Client routes
 

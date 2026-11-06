@@ -5,7 +5,8 @@
 //!
 //! `bookclerk-demo-seed --write-records <path>` instead looks the sample
 //! titles up and writes the records it found to `<path>` (the crate's
-//! `records.json`), seeding nothing. Run it against a scratch
+//! `records.json`), keeping the committed record of any title it missed,
+//! and seeds nothing. Run it against a scratch
 //! `BOOKCLERK_FILES_DIR` from a network the storefronts answer.
 
 use std::collections::BTreeMap;
@@ -91,7 +92,8 @@ async fn run() -> anyhow::Result<()> {
         let enabled = bookclerk_plugin_host::open_host_control_plane(&config)
             .await
             .context("reopen the library")?;
-        let records = store_records(&enabled).await;
+        // A store that refuses this network keeps its committed records.
+        let records = merge_records(store_records(&enabled).await, committed_records()?);
         let missing = lookups().len().saturating_sub(records.len());
         std::fs::write(&path, records_json(&records)?)
             .with_context(|| format!("write {}", path.display()))?;
@@ -161,6 +163,7 @@ async fn run() -> anyhow::Result<()> {
 async fn store_records(host: &HostControlPlane) -> StoreRecords {
     let started = tokio::time::Instant::now();
     let deadline = started + LOOKUP_BUDGET;
+    let now = Utc::now();
     let services = SessionServices::from_outbox(Some(&host.store));
     let loading = host.load_sources(&services);
     let sources = match tokio::time::timeout_at(deadline, loading).await {
@@ -201,7 +204,7 @@ async fn store_records(host: &HostControlPlane) -> StoreRecords {
                     return None;
                 }
             };
-            best_match(&lookup, &hits).map(|hit| (lookup, hit.clone()))
+            best_match(&lookup, &hits, now).map(|hit| (lookup, hit.clone()))
         }
     });
     let found: Vec<Option<(Lookup, CatalogHit)>> = futures::future::join_all(searches).await;

@@ -402,3 +402,17 @@ async fn a_member_hears_only_their_topics_until_signed_out() {
     let closed = closed.expect("the socket closes once the session is gone");
     assert_eq!(closed["code"], CLOSE_UNAUTHORIZED);
 }
+
+#[test]
+fn only_an_unchecked_session_keeps_the_socket_open() {
+    use axum::response::IntoResponse;
+    assert!(session_check_unavailable(&UserCallerRefusal::Response(
+        crate::auth::session_check_unavailable()
+    )));
+    assert!(!session_check_unavailable(&UserCallerRefusal::Response(
+        axum::http::StatusCode::FORBIDDEN.into_response()
+    )));
+    assert!(!session_check_unavailable(&UserCallerRefusal::Status(
+        axum::http::StatusCode::UNAUTHORIZED
+    )));
+}

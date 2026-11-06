@@ -16,9 +16,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::Json;
 use bookclerk_config::{register_secret, session_cookie_flags};
-use bookclerk_integrations::{
-    identity_from_session, portal_identity_from_headers, session_for_identity,
-};
+use bookclerk_integrations::{identity_from_session, session_for_identity};
 use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
     classify_session_client, hash_password, hash_token, portal_prefs_key, user_prefs_key,
@@ -1951,25 +1949,20 @@ pub async fn prefs_subject_for_caller(
         return Ok((OPERATOR_PREFS_KEY.to_string(), None));
     }
     let library = state.library_snapshot().await;
-    match timeout(
-        AUTH_DB_TIMEOUT,
-        portal_identity_from_headers(&library, headers),
-    )
-    .await
-    {
-        Ok(Some(identity)) => {
+    match portal_lookup_from_headers(&library, headers).await {
+        PortalLookup::SignedIn(identity) => {
             let key = match identity.user_id {
                 Some(user_id) => user_prefs_key(user_id),
                 None => portal_prefs_key(identity.id),
             };
             Ok((key, Some(identity.id)))
         }
-        Ok(None) => {
+        PortalLookup::SignedOut => {
             tracing::warn!("portal identity missing for prefs subject");
             Err(StatusCode::UNAUTHORIZED)
         }
-        Err(_) => {
-            tracing::warn!("portal identity lookup timed out for prefs subject");
+        PortalLookup::Unavailable => {
+            tracing::warn!("portal identity lookup failed or timed out for prefs subject");
             Err(StatusCode::GATEWAY_TIMEOUT)
         }
     }

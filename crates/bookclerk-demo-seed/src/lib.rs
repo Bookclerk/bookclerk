@@ -322,13 +322,31 @@ pub fn parse_records(json: &str) -> anyhow::Result<StoreRecords> {
 }
 
 /// Live lookups over the committed records: a title the live lookup found
-/// keeps that record, one it missed falls back to `committed`, and
-/// [`distinct_records`] still keeps two titles from sharing a product id.
+/// keeps that record, and one it missed falls back to `committed` unless a
+/// live record already holds that product id, so a stale committed record
+/// never pushes out a fresh one. No two titles share a product id.
 #[must_use]
 pub fn merge_records(live: StoreRecords, committed: StoreRecords) -> StoreRecords {
-    let mut records = committed;
-    records.extend(live);
-    distinct_records(records)
+    let mut records = distinct_records(live);
+    let mut taken: BTreeSet<(&str, String)> = lookups()
+        .into_iter()
+        .filter_map(|lookup| {
+            records
+                .get(lookup.key)
+                .map(|hit| (lookup.store, hit.product_id.clone()))
+        })
+        .collect();
+    for lookup in lookups() {
+        if records.contains_key(lookup.key) {
+            continue;
+        }
+        if let Some(hit) = committed.get(lookup.key) {
+            if taken.insert((lookup.store, hit.product_id.clone())) {
+                records.insert(lookup.key, hit.clone());
+            }
+        }
+    }
+    records
 }
 
 /// `records` as the pretty-printed JSON `records.json` holds, one key per
@@ -466,11 +484,14 @@ pub fn search_query(lookup: &Lookup) -> String {
 /// title alone, because that store never returns them; any other store's
 /// authorless hit is refused. Among
 /// matching hits the closest title wins, then one already released (a
-/// pre-order of a new recording is not the edition a listener owns), then
-/// the store's own ranking.
+/// pre-order of a new recording is not the edition a listener owns, by
+/// `now`), then the store's own ranking.
 #[must_use]
-pub fn best_match<'a>(lookup: &Lookup, hits: &'a [CatalogHit]) -> Option<&'a CatalogHit> {
-    let now = Utc::now();
+pub fn best_match<'a>(
+    lookup: &Lookup,
+    hits: &'a [CatalogHit],
+    now: DateTime<Utc>,
+) -> Option<&'a CatalogHit> {
     hits.iter()
         .filter(|hit| !hit.product_id.trim().is_empty())
         .filter(|hit| match present(hit.authors().as_ref()) {

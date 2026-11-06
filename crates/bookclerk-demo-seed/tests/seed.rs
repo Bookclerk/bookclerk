@@ -187,9 +187,12 @@ fn matches_the_store_record_of_the_title_and_author() {
     ];
     // Exact title beats the subtitle form; the sequel and a namesake by
     // other authors never match.
-    assert_eq!(best_match(&dune, &hits).unwrap().product_id, "B4");
-    assert_eq!(best_match(&dune, &hits[..3]).unwrap().product_id, "B3");
-    assert!(best_match(&dune, &hits[..1]).is_none());
+    assert_eq!(best_match(&dune, &hits, now()).unwrap().product_id, "B4");
+    assert_eq!(
+        best_match(&dune, &hits[..3], now()).unwrap().product_id,
+        "B3"
+    );
+    assert!(best_match(&dune, &hits[..1], now()).is_none());
 
     let mistborn = lookup("demo-mistborn-1-part-2");
     let parts = [
@@ -204,7 +207,10 @@ fn matches_the_store_record_of_the_title_and_author() {
             "Brandon Sanderson",
         ),
     ];
-    assert_eq!(best_match(&mistborn, &parts).unwrap().product_id, "GA2");
+    assert_eq!(
+        best_match(&mistborn, &parts, now()).unwrap().product_id,
+        "GA2"
+    );
 
     // GraphicAudio returns no authors; its titles add a series number.
     let authorless = |id: &str, title: &str| CatalogHit {
@@ -216,9 +222,9 @@ fn matches_the_store_record_of_the_title_and_author() {
         authorless("GA1", "Mistborn 1: The Final Empire 1 of 3"),
         authorless("GA2", "Mistborn 1: The Final Empire 2 of 3"),
     ];
-    assert_eq!(best_match(&mistborn, &ga).unwrap().product_id, "GA2");
+    assert_eq!(best_match(&mistborn, &ga, now()).unwrap().product_id, "GA2");
     assert_eq!(
-        best_match(&lookup("demo-mistborn-1-part-1"), &ga)
+        best_match(&lookup("demo-mistborn-1-part-1"), &ga, now())
             .unwrap()
             .product_id,
         "GA1"
@@ -230,7 +236,7 @@ fn matches_the_store_record_of_the_title_and_author() {
         hit("B", "Circe", "Madeline Miller"),
     ];
     assert_eq!(
-        best_match(&lookup("demo-circe"), &twice)
+        best_match(&lookup("demo-circe"), &twice, now())
             .unwrap()
             .product_id,
         "A"
@@ -357,7 +363,7 @@ fn the_committed_records_parse_and_are_real_store_records() {
             "{key}: a committed record must carry the store's product id"
         );
         assert!(
-            best_match(&lookup, std::slice::from_ref(hit)).is_some(),
+            best_match(&lookup, std::slice::from_ref(hit), now()).is_some(),
             "{key}: the committed record must match its title and author"
         );
     }
@@ -404,6 +410,25 @@ fn live_records_win_and_committed_ones_fill_the_gaps() {
 }
 
 #[test]
+fn a_stale_committed_record_never_pushes_out_a_live_one() {
+    // The live lookup found the later title under a product id an earlier
+    // title's committed record also holds, and missed the earlier title.
+    let mut live = StoreRecords::new();
+    live.insert(
+        "demo-wish-iron-flame",
+        hit("B0SHARED", "Iron Flame", "Rebecca Yarros"),
+    );
+    let mut committed = StoreRecords::new();
+    committed.insert(
+        "demo-wish-wind-and-truth",
+        hit("B0SHARED", "Wind and Truth", "Brandon Sanderson"),
+    );
+    let merged = merge_records(live, committed);
+    assert_eq!(merged["demo-wish-iron-flame"].product_id, "B0SHARED");
+    assert!(!merged.contains_key("demo-wish-wind-and-truth"));
+}
+
+#[test]
 fn prefers_a_released_edition_over_a_pre_order() {
     let dune = lookup("demo-dune");
     let mut pre_order = hit("B0PREORDER", "Dune", "Frank Herbert");
@@ -412,10 +437,13 @@ fn prefers_a_released_edition_over_a_pre_order() {
     classic.published_at = Some("2007-03-01".into());
     let undated = hit("B0UNDATED", "Dune", "Frank Herbert");
     let hits = [pre_order.clone(), classic, undated];
-    assert_eq!(best_match(&dune, &hits).unwrap().product_id, "B002V1OF70");
+    assert_eq!(
+        best_match(&dune, &hits, now()).unwrap().product_id,
+        "B002V1OF70"
+    );
     // With only the pre-order, it is still the match.
     assert_eq!(
-        best_match(&dune, std::slice::from_ref(&pre_order))
+        best_match(&dune, std::slice::from_ref(&pre_order), now())
             .unwrap()
             .product_id,
         "B0PREORDER"
@@ -442,4 +470,12 @@ fn reads_the_write_records_argument_and_refuses_anything_else() {
     ] {
         assert!(records_path(args(bad)).is_err(), "{bad:?}");
     }
+}
+
+/// A fixed "today" for matching, so which edition is out does not depend
+/// on when the tests run.
+fn now() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339("2026-11-06T00:00:00Z")
+        .unwrap()
+        .to_utc()
 }

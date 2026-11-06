@@ -59,7 +59,9 @@ every content signal to `no` (`use=immediate`).
      authorizes everything as the visitor's Owner account and
      scans only the visitor's store accounts. The visitor may elevate to
      operator with the Owner password and impersonate the seeded users, as
-     an Owner would; elevated, they still reach only the allowed routes;
+     an Owner would. Elevated, they act as the operator of their own
+     container, so a scan covers every account in it (their own and the
+     seeded ones), and they still reach only the allowed routes;
    - rewrites `Set-Cookie` so the container cannot set the Worker's cookies,
      and adds a banner with the time left and a **Start over** button. Its
      **Demo** label opens a panel that shows the Owner password and how to
