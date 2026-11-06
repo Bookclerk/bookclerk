@@ -22,6 +22,10 @@ your library owns yet. The more you rate and finish, the better they get.
 If your household uses Audiobookshelf, Bookclerk can also learn from what
 you listen to there.
 
+Your rows are built in the background, from your own books, listening and
+wishlist, and refreshed every day. The first time you open Discover they may
+take a minute; the page shows placeholders and fills in on its own.
+
 To hide rows you do not want, open **Preferences** in the top bar.
 
 ## Search every store

@@ -43,10 +43,50 @@ Listening taste is **optional** and **provider-agnostic**. Integrations that
 support listening sync (Audiobookshelf today; third-party plugins via capability
 `sync_listening`) write into the shared `listening_progress` table. Ranking never
 calls those adapters — if no listening data is present, or you pass
-`--no-listening` / `?no_listening=1`, discovery still runs on owned-library taste
-alone. Scope with optional `external_user_id` / `?user=` and/or
-`--listening-provider` / `?listening_providers=` for multi-user or multi-integration
-libraries.
+`--no-listening` to the CLI, discovery still runs on owned-library taste
+alone. The CLI scopes with `external_user_id` and/or `--listening-provider` for
+multi-user or multi-integration libraries; the daemon scopes each stored feed
+to its person (see [Precomputed shelves](#precomputed-shelves)).
+
+## Precomputed shelves
+
+The daemon never builds shelves while a page waits. Each person (the
+operator, a household user, or a portal identity) has a **subject key**
+(`operator`, `user:{id}`, `portal:{id}`) and two stored layers:
+
+1. **Candidates** (`discover_candidates`): a `discover_candidates` job seeds
+   from that person's own taste (books on the store accounts linked to their
+   identities, their listening, their open wishlist) and asks **every
+   deployed storefront**, not only the stores they have accounts with. A
+   person with no signal yet (and the operator) seeds from the household.
+   Stores run concurrently, each call has a 10 s timeout, and each store's
+   rows are saved as that store finishes, so one slow store never discards
+   the others. A store whose calls all fail keeps its previous rows.
+2. **Feed** (`discover_feeds`): when the fetch finishes it admits a
+   `discover_feed` job, which ranks the stored candidates into shelves with
+   no network calls and stores the result.
+
+Storefront answers are cached for 24 hours in `discover_store_calls`, keyed by
+a hash of the store and the request, so people whose seeds overlap share one
+call. Both jobs are deduplicated per subject, so a burst of triggers folds into
+the job already waiting.
+
+`GET /api/discover/recommendations` reads the stored feed and returns at once,
+filtering the caller's hidden shelves. Its `state` says what the page is
+seeing:
+
+| `state` | Meaning |
+| --- | --- |
+| `ready` | The stored feed is current. |
+| `refreshing` | The stored feed is shown while a newer one is built. |
+| `preparing` | No feed yet; shelves are empty and the page shows placeholders. |
+
+A read queues what is stale: a ranking when stored candidates are newer than
+the feed, and a fetch when there are no candidates or they are older than 24
+hours. The scheduler also queues the daily fetch for every subject with a
+stored feed. `GET /api/discover/status` reports each subject's readiness
+(`?subject=` names one and queues its refresh), for callers that need to wait
+on shelves, such as the hosted demo.
 
 ## Metadata gap-fill (Open Library compliance)
 
@@ -227,7 +267,7 @@ still resolve by ASIN (e.g. English *A Game of Thrones* `B002UZZ93G`).
 | Surface | Commands / routes |
 | --- | --- |
 | CLI | `bookclerk discover recommend` (prints shelves), `embed`, `sync-listening`, `wishlist …` |
-| Daemon | `GET /api/discover/recommendations`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
+| Daemon | `GET /api/discover/recommendations` (stored feed), `GET /api/discover/status`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
 | GUI | **Discover** — personalized shelves + catalog search (filter rail, sort + direction, language, Hide Virtual Voice); **Wishlist** — personal list with global queue sidebar |
 
 Wishlists are **store-agnostic**. Rows share a `work_key` plus runtime identity

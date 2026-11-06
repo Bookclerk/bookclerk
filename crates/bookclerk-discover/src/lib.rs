@@ -22,6 +22,7 @@ mod embed;
 mod error;
 mod identity;
 mod metadata_enrich;
+mod precompute;
 mod purchase;
 mod recommend;
 mod shelves;
@@ -33,7 +34,8 @@ pub use bookclerk_source::{
     CatalogSearchSort, CatalogSortDir,
 };
 pub use candidates::{
-    gather_storefront_candidates, select_taste_seeds, CandidateFetchOptions, StorefrontCandidate,
+    gather_storefront_candidates, select_taste_seeds, CandidateFetchOptions, SeedTitle,
+    StorefrontCandidate,
 };
 pub use catalog_search::{
     catalog_search, catalog_search_page, catalog_search_with_field, CatalogSearchFilters,
@@ -54,6 +56,11 @@ pub use metadata_enrich::{
     enrich_books_from_metadata, MetadataEnrichOptions, DEFAULT_MAX_REQUESTS_PER_RUN,
     METADATA_ENRICH_SOURCE_PREFIX,
 };
+pub use precompute::{
+    fetch_subject_candidates, load_subject_taste, rank_subject_feed, stored_subject_feed,
+    FetchReport, RankReport, StoredSubjectFeed, SubjectTaste, STORE_CALL_MAX_AGE,
+    STORE_CALL_TIMEOUT,
+};
 pub use purchase::{
     best_purchase_hint, best_purchase_hint_preferring, format_money_label,
     parse_money_label_to_cents, purchase_hints_for, resolve_purchase_hints,
@@ -66,7 +73,7 @@ pub use recommend::{
 };
 pub use shelves::{
     build_discover_feed, flatten_feed, shelf_is_disabled, shelf_kind_catalog, DiscoverFeed,
-    DiscoverShelf, ShelfKindInfo, ShelfTaste,
+    DiscoverShelf, FeedState, ShelfKindInfo, ShelfTaste,
 };
 pub use title_meta::{
     resolve_title_meta, resolve_title_meta_batch, resolve_title_reviews, TitleMeta, TitleMetaQuery,

@@ -575,6 +575,43 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_user_preferences_identity ON user_preferences(identity_id)",
     ),
     MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS discover_candidates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject_key TEXT NOT NULL,
+        source TEXT NOT NULL,
+        candidate_key TEXT NOT NULL,
+        seed_scope TEXT NOT NULL,
+        candidate_json TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        UNIQUE(subject_key, source, candidate_key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_discover_candidates_subject ON discover_candidates(subject_key)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS discover_store_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        call_key TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL,
+        response_json TEXT NOT NULL,
+        fetched_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_discover_store_calls_fetched ON discover_store_calls(fetched_at)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS discover_feeds (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject_key TEXT NOT NULL UNIQUE,
+        feed_json TEXT NOT NULL,
+        seed_scope TEXT NOT NULL,
+        candidates_fetched_at TEXT,
+        computed_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS encrypted_secrets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         kind TEXT NOT NULL,

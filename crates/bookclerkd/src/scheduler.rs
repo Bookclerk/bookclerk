@@ -14,7 +14,52 @@ use crate::jobs::{enqueue_acquire, enqueue_listen_sync, enqueue_scan};
 /// Spawn periodic library scan and optional listening-sync loops.
 pub fn spawn_scheduler(state: Arc<AppState>) {
     spawn_scan_loop(state.clone());
-    spawn_listen_sync_loop(state);
+    spawn_listen_sync_loop(state.clone());
+    spawn_discover_refresh_loop(state);
+}
+
+/// How often stored Discover data is checked for the daily refresh.
+const DISCOVER_REFRESH_CHECK: Duration = Duration::from_secs(60 * 60);
+
+/// Hourly, queues a candidate fetch for every subject with a stored feed
+/// whose candidates are older than a day (prices and deals drift).
+fn spawn_discover_refresh_loop(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(jittered_delay(DISCOVER_REFRESH_CHECK)).await;
+            let library = state.library_snapshot().await;
+            let subjects = match library.list_discover_feed_subjects().await {
+                Ok(subjects) => subjects,
+                Err(err) => {
+                    warn!(error = %err, "discover refresh could not list subjects");
+                    continue;
+                }
+            };
+            let now = chrono::Utc::now();
+            for subject in subjects {
+                let newest = library
+                    .newest_discover_candidate_fetch(&subject)
+                    .await
+                    .ok()
+                    .flatten();
+                let stale =
+                    newest.is_none_or(|at| at + crate::discover_jobs::CANDIDATES_MAX_AGE <= now);
+                if !stale {
+                    continue;
+                }
+                if let Err(err) = crate::discover_jobs::enqueue_discover_candidates(
+                    &state,
+                    &subject,
+                    JobTrigger::Scheduler,
+                    Duration::ZERO,
+                )
+                .await
+                {
+                    warn!(subject = %subject.key(), error = %err, "daily discover refresh enqueue failed");
+                }
+            }
+        }
+    });
 }
 
 /// Periodically admits a library scan (and optional auto-acquire) with jitter.

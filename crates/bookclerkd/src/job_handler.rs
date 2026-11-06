@@ -185,6 +185,13 @@ impl JobTransport for InProcessJobTransport {
             JobKind::PluginScheduled => {
                 crate::jobs::run_plugin_scheduled(&self.state, &cmd.payload, Some(&ctx)).await
             }
+            JobKind::DiscoverCandidates => {
+                crate::discover_jobs::run_discover_candidates(&self.state, &cmd.payload, Some(&ctx))
+                    .await
+            }
+            JobKind::DiscoverFeed => {
+                crate::discover_jobs::run_discover_feed(&self.state, &cmd.payload, Some(&ctx)).await
+            }
             JobKind::Invalid => anyhow::bail!("invalid_job"),
         }
     }

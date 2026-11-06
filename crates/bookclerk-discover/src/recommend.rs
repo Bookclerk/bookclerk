@@ -378,13 +378,30 @@ pub async fn recommend_feed(
     let recs = recommend_all(library, registry, opts).await?;
     let books = library.list_books(None).await?;
     let listening = load_listening(library, opts).await?;
-    let taste = build_shelf_taste(&books, &listening);
-    Ok(crate::shelves::build_discover_feed(
-        &recs,
+    Ok(feed_from_recommendations(&recs, &books, &listening, opts))
+}
+
+/// Groups ranked recommendations into shelves for one taste.
+///
+/// # Arguments
+///
+/// * `recs` - Ranked recommendations (any order; shelves sort them).
+/// * `taste_books` - Books whose authors, narrators and genres name shelves.
+/// * `listening` - Listening rows that feed the same shelf taste.
+/// * `opts` - Supplies the per-shelf limit and hidden shelves.
+pub(crate) fn feed_from_recommendations(
+    recs: &[Recommendation],
+    taste_books: &[BookRecord],
+    listening: &[ListeningProgressRecord],
+    opts: &RecommendOptions,
+) -> crate::shelves::DiscoverFeed {
+    let taste = build_shelf_taste(taste_books, listening);
+    crate::shelves::build_discover_feed(
+        recs,
         &taste,
         opts.limit.clamp(12, 48),
         &opts.disabled_shelves,
-    ))
+    )
 }
 
 /// Rank the global wishlist queue with **overall / operator** recommend taste
@@ -488,6 +505,63 @@ async fn recommend_all(
 ) -> Result<Vec<Recommendation>> {
     let books = library.list_books(None).await?;
 
+    let (owned_asins, owned_isbns, owned_product_keys) = owned_identity_sets(&books);
+
+    let listening = load_listening(library, opts).await?;
+    let seeds = select_taste_seeds(&books, &engagement_by_book(&listening));
+    let mut candidates = Vec::new();
+    if opts.fetch_storefront_candidates && !seeds.is_empty() {
+        let fetch_opts = CandidateFetchOptions {
+            region: opts.region.clone(),
+            seed_limit: opts.storefront_seed_limit,
+            max_remote_calls: opts.storefront_max_remote_calls,
+            exclude_graphicaudio_series_sets: opts.exclude_graphicaudio_series_sets,
+            ..CandidateFetchOptions::default()
+        };
+        candidates = gather_storefront_candidates(
+            library,
+            registry,
+            &seeds,
+            &owned_asins,
+            &owned_isbns,
+            &owned_product_keys,
+            &fetch_opts,
+        )
+        .await?;
+    }
+    rank_candidates(
+        library, registry, &books, &books, &listening, candidates, opts,
+    )
+    .await
+}
+
+/// Strongest listening engagement per book uuid (rows without a book are skipped).
+pub(crate) fn engagement_by_book(listening: &[ListeningProgressRecord]) -> HashMap<String, f64> {
+    let mut by_uuid: HashMap<String, f64> = HashMap::new();
+    for row in listening {
+        let weight = listening_engagement(row);
+        if weight <= 0.0 {
+            continue;
+        }
+        if let Some(uuid) = &row.book_uuid {
+            by_uuid
+                .entry(uuid.clone())
+                .and_modify(|e| *e = (*e).max(weight))
+                .or_insert(weight);
+        }
+    }
+    by_uuid
+}
+
+/// ASINs, canonical ISBNs and `source:product` keys the household owns.
+///
+/// # Returns
+///
+/// `(asins, isbns, product_keys)`; ASINs upper-cased, ISBNs canonicalized,
+/// product keys both as `source:product_id` and bare `product_id`.
+pub(crate) fn owned_identity_sets(
+    books: &[BookRecord],
+) -> (HashSet<String>, HashSet<String>, HashSet<String>) {
     let owned_asins: HashSet<String> = books
         .iter()
         .filter_map(|b| b.asin.clone())
@@ -508,143 +582,138 @@ async fn recommend_all(
             ]
         })
         .collect();
+    (owned_asins, owned_isbns, owned_product_keys)
+}
 
-    let listening = load_listening(library, opts).await?;
-    let mut listening_engagement_by_uuid: HashMap<String, f64> = HashMap::new();
-    for row in &listening {
-        let weight = listening_engagement(row);
-        if weight <= 0.0 {
-            continue;
-        }
-        if let Some(uuid) = &row.book_uuid {
-            listening_engagement_by_uuid
-                .entry(uuid.clone())
-                .and_modify(|e| *e = (*e).max(weight))
-                .or_insert(weight);
-        }
-    }
-    let seeds = select_taste_seeds(&books, &listening_engagement_by_uuid);
-    let profile = build_taste_profile(library, &books, &listening, opts).await?;
+/// Scores storefront candidates and open wishlist works against one taste.
+///
+/// # Arguments
+///
+/// * `library` - Library store (wishlist queue, stored embeddings).
+/// * `registry` - Storefronts, used only for live purchase hints when asked.
+/// * `owned_books` - The household library; owned titles are never recommended.
+/// * `taste_books` - Books whose finishes, ratings and series shape the taste
+///   (the subject's own books, or the household's).
+/// * `listening` - The subject's listening rows.
+/// * `candidates` - Unowned storefront candidates, already merged by identity.
+/// * `opts` - Ranking options.
+///
+/// # Returns
+///
+/// Every recommendation, highest score first.
+///
+/// # Errors
+///
+/// Returns the library read error.
+pub(crate) async fn rank_candidates(
+    library: &LibraryStore,
+    registry: &SourceRegistry,
+    owned_books: &[BookRecord],
+    taste_books: &[BookRecord],
+    listening: &[ListeningProgressRecord],
+    candidates: Vec<crate::candidates::StorefrontCandidate>,
+    opts: &RecommendOptions,
+) -> Result<Vec<Recommendation>> {
+    let books = owned_books;
+    let profile = build_taste_profile(library, taste_books, listening, opts).await?;
     let mut embedder = open_candidate_embedder(opts)?;
-
-    // --- Primary path: storefront candidates not in the owned library ---
     let mut scored: HashMap<String, Recommendation> = HashMap::new();
 
-    if opts.fetch_storefront_candidates && !seeds.is_empty() {
-        let fetch_opts = CandidateFetchOptions {
-            region: opts.region.clone(),
-            seed_limit: opts.storefront_seed_limit,
-            max_remote_calls: opts.storefront_max_remote_calls,
-            exclude_graphicaudio_series_sets: opts.exclude_graphicaudio_series_sets,
-            ..CandidateFetchOptions::default()
-        };
-        let candidates = gather_storefront_candidates(
-            library,
-            registry,
-            &seeds,
-            &owned_asins,
-            &owned_isbns,
-            &owned_product_keys,
-            &fetch_opts,
-        )
-        .await?;
-
-        for c in candidates {
-            let (mut score, mut reasons, mut categories) = score_work_against_taste(
-                &c.title,
-                c.authors.as_deref(),
-                c.narrators.as_deref(),
-                c.series.as_deref(),
-                c.series_index.as_deref(),
-                &profile,
-                embedder.as_mut(),
-            );
-            // Origin / category / deals are candidate-specific (not on wishlist rows).
-            reasons.insert(0, c.origin.clone());
-            if let Some(cats) = &c.seed_categories {
-                for cat in split_tokens_display(cats) {
-                    let key = cat.to_lowercase();
-                    if let Some(w) = profile.liked_categories.get(&key) {
-                        score += w * 0.45;
-                        reasons.push(format!("matches liked category ({cat})"));
-                        push_shelf_category(&mut categories, "genre");
-                    }
+    for c in candidates {
+        let (mut score, mut reasons, mut categories) = score_work_against_taste(
+            &c.title,
+            c.authors.as_deref(),
+            c.narrators.as_deref(),
+            c.series.as_deref(),
+            c.series_index.as_deref(),
+            &profile,
+            embedder.as_mut(),
+        );
+        // Origin / category / deals are candidate-specific (not on wishlist rows).
+        reasons.insert(0, c.origin.clone());
+        if let Some(cats) = &c.seed_categories {
+            for cat in split_tokens_display(cats) {
+                let key = cat.to_lowercase();
+                if let Some(w) = profile.liked_categories.get(&key) {
+                    score += w * 0.45;
+                    reasons.push(format!("matches liked category ({cat})"));
+                    push_shelf_category(&mut categories, "genre");
                 }
             }
-            if c.origin.contains("chirp top deals") || c.origin.contains("chirp free deals") {
-                score += 1.5;
-                push_shelf_category(&mut categories, "chirp_deals");
-            }
-            if c.origin.contains("related") {
-                push_shelf_category(&mut categories, "because");
-            }
-            push_shelf_category(&mut categories, "from_store");
-
-            let mut store_editions = c.store_editions;
-            push_edition(
-                &mut store_editions,
-                StoreEdition::new(&c.source, &c.product_id),
-            );
-
-            let mut purchase_hints = Vec::new();
-            // Card seeds must match resolve_purchase_hints: Audible-only URL
-            // seeds. Soft Magento/Chirp ids need live title-matched verification.
-            if seed_source_is_trusted(&c.source) {
-                if let Some(label) = c.price_label.clone().filter(|s| !s.is_empty()) {
-                    if let Some(hint) = seed_purchase_hint(
-                        &c.source,
-                        &c.product_id,
-                        Some(c.title.clone()),
-                        &opts.region,
-                    ) {
-                        purchase_hints.push(PurchaseHint {
-                            price_cents: c.price_cents,
-                            currency: c.currency.clone(),
-                            price_label: Some(label),
-                            ..hint
-                        });
-                    }
-                }
-            }
-            let mut rec = Recommendation {
-                work_id: None,
-                title: c.title,
-                authors: c.authors,
-                narrators: c.narrators,
-                series: c.series,
-                series_index: c.series_index,
-                asin: c.asin.clone(),
-                isbn: c.isbn.clone(),
-                score,
-                reasons,
-                purchase_hints,
-                from_request: false,
-                request_uuid: None,
-                candidate_source: Some(c.source),
-                candidate_product_id: Some(c.product_id),
-                store_editions,
-                seed_categories: c.seed_categories,
-                categories,
-                work_key: String::new(),
-                cover_url: c.cover_url,
-                subtitle: c.subtitle,
-                description: c.description,
-                publisher: c.publisher,
-                length_minutes: c.length_minutes,
-                published_at: c.published_at,
-                genres: c.categories,
-                language: c.language,
-                ..Default::default()
-            };
-            rec.work_key = recommendation_map_key(&rec);
-            upsert_recommendation(&mut scored, rec);
         }
+        if c.origin.contains("chirp top deals") || c.origin.contains("chirp free deals") {
+            score += 1.5;
+            push_shelf_category(&mut categories, "chirp_deals");
+        }
+        if c.origin.contains("related") {
+            push_shelf_category(&mut categories, "because");
+        }
+        push_shelf_category(&mut categories, "from_store");
+
+        let mut store_editions = c.store_editions;
+        push_edition(
+            &mut store_editions,
+            StoreEdition::new(&c.source, &c.product_id),
+        );
+
+        let mut purchase_hints = Vec::new();
+        // Card seeds must match resolve_purchase_hints: Audible-only URL
+        // seeds. Soft Magento/Chirp ids need live title-matched verification.
+        if seed_source_is_trusted(&c.source) {
+            if let Some(label) = c.price_label.clone().filter(|s| !s.is_empty()) {
+                if let Some(hint) = seed_purchase_hint(
+                    &c.source,
+                    &c.product_id,
+                    Some(c.title.clone()),
+                    &opts.region,
+                ) {
+                    purchase_hints.push(PurchaseHint {
+                        price_cents: c.price_cents,
+                        currency: c.currency.clone(),
+                        price_label: Some(label),
+                        ..hint
+                    });
+                }
+            }
+        }
+        let mut rec = Recommendation {
+            work_id: None,
+            title: c.title,
+            authors: c.authors,
+            narrators: c.narrators,
+            series: c.series,
+            series_index: c.series_index,
+            asin: c.asin.clone(),
+            isbn: c.isbn.clone(),
+            score,
+            reasons,
+            purchase_hints,
+            from_request: false,
+            request_uuid: None,
+            candidate_source: Some(c.source),
+            candidate_product_id: Some(c.product_id),
+            store_editions,
+            seed_categories: c.seed_categories,
+            categories,
+            work_key: String::new(),
+            cover_url: c.cover_url,
+            subtitle: c.subtitle,
+            description: c.description,
+            publisher: c.publisher,
+            length_minutes: c.length_minutes,
+            published_at: c.published_at,
+            genres: c.categories,
+            language: c.language,
+            ..Default::default()
+        };
+        rec.work_key = recommendation_map_key(&rec);
+        upsert_recommendation(&mut scored, rec);
     }
 
     // Global wishlist works: recommend taste + heavy multi-user wish boost.
     for entry in merge_global_queue_entries(library.list_global_request_queue().await?) {
         if library_owns_identity(
-            &books,
+            books,
             entry.asin.as_deref(),
             entry.isbn.as_deref(),
             &entry.title,

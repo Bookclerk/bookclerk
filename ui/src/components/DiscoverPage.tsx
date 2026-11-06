@@ -81,6 +81,10 @@ import { descriptionPlainText } from "@/lib/safeHtml";
 const SHELF_CHUNK = 8;
 const SHELVES_INITIAL = 6;
 const RESULTS_PAGE_SIZE = 24;
+/** Delay between re-reads of a Discover feed that is still being prepared. */
+const FEED_POLL_MS = 4_000;
+/** Most re-reads of a preparing feed before waiting for the next visit. */
+const FEED_POLL_LIMIT = 15;
 
 const selectClassName =
   "rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30";
@@ -210,12 +214,31 @@ export function DiscoverPage({
   }
 
   async function refreshFeed() {
-    const [f, w] = await Promise.all([fetchDiscoverFeed(36), fetchWishlist()]);
+    const [f, w] = await Promise.all([fetchDiscoverFeed(), fetchWishlist()]);
     setFeed(f);
     setWishlist(w);
     setVisibleShelvesCount(SHELVES_INITIAL);
     return { feed: f, wishlist: w };
   }
+
+  // While the daemon is still building the caller's shelves, re-read the
+  // stored feed a few times so they appear without a reload.
+  const feedState = feed.state;
+  const feedPolls = useRef(0);
+  useEffect(() => {
+    if (feedState !== "preparing" && feedState !== "refreshing") {
+      feedPolls.current = 0;
+      return;
+    }
+    if (feedPolls.current >= FEED_POLL_LIMIT) return;
+    const timer = window.setTimeout(() => {
+      feedPolls.current += 1;
+      void fetchDiscoverFeed()
+        .then((next) => setFeed(next))
+        .catch(() => undefined);
+    }, FEED_POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [feed, feedState]);
 
   async function refresh() {
     setError(null);
@@ -1072,7 +1095,23 @@ export function DiscoverPage({
                 </p>
               </div>
 
-              {feed.shelves.length === 0 ? (
+              {feed.shelves.length === 0 && feed.state === "preparing" ? (
+                <div aria-busy="true" className="space-y-3">
+                  <p className="text-sm text-ink/60" role="status">
+                    Preparing your shelves…
+                  </p>
+                  {[0, 1, 2].map((row) => (
+                    <div key={row} className="flex gap-3 overflow-hidden" aria-hidden="true">
+                      {[0, 1, 2, 3, 4, 5].map((card) => (
+                        <div
+                          key={card}
+                          className="h-40 w-28 shrink-0 animate-pulse rounded-md bg-ink/5"
+                        />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              ) : feed.shelves.length === 0 ? (
                 <p className="text-sm text-ink/50">
                   No recommendations yet — finish or rate a few titles.
                 </p>

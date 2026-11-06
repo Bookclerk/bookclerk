@@ -314,9 +314,86 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
 }
 
 /// True when the title looks like a boxed series set (usually dropped from recs).
-fn looks_like_series_set(hit: &CatalogHit) -> bool {
+pub(crate) fn looks_like_series_set(hit: &CatalogHit) -> bool {
     let title = hit.title.to_ascii_lowercase();
     title.contains("series set") || title.ends_with(" set")
+}
+
+/// One taste seed for storefront expansion: a book the subject has, or a
+/// title on their wishlist.
+#[derive(Debug, Clone)]
+pub struct SeedTitle {
+    /// What the storefront is asked about.
+    pub seed: ExpandSeed,
+    /// The seed's genres or subjects, copied onto candidates that lack their own.
+    pub categories: Option<String>,
+}
+
+impl SeedTitle {
+    /// A seed from a library book.
+    #[must_use]
+    pub fn from_book(book: &BookRecord, region: &str) -> Self {
+        Self {
+            seed: ExpandSeed {
+                source: book.source.clone(),
+                product_id: book.product_id.clone(),
+                title: book.title.clone(),
+                authors: book.authors.clone(),
+                narrators: book.narrators.clone(),
+                series: book.series.clone(),
+                series_asin: book.series_asin.clone(),
+                asin: book.asin.clone(),
+                isbn: book.isbn.clone(),
+                region: region.to_string(),
+            },
+            categories: book
+                .categories
+                .as_ref()
+                .or(book.subjects.as_ref())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+        }
+    }
+
+    /// A seed from an open wishlist title (no store of its own; stores
+    /// expand it by title, author and identifiers).
+    #[must_use]
+    pub fn from_wish(
+        title: &str,
+        authors: Option<String>,
+        asin: Option<String>,
+        isbn: Option<String>,
+    ) -> Self {
+        Self {
+            seed: ExpandSeed {
+                source: String::from("wishlist"),
+                product_id: asin.clone().or_else(|| isbn.clone()).unwrap_or_default(),
+                title: title.to_string(),
+                authors,
+                narrators: None,
+                series: None,
+                series_asin: None,
+                asin,
+                isbn,
+                region: String::from("us"),
+            },
+            categories: None,
+        }
+    }
+}
+
+/// Copies a [`SeedTitle`]'s title and categories onto a candidate when still empty.
+pub(crate) fn apply_seed_title(
+    mut c: StorefrontCandidate,
+    seed: &SeedTitle,
+) -> StorefrontCandidate {
+    if c.seed_title.is_none() {
+        c.seed_title = Some(seed.seed.title.clone());
+    }
+    if c.seed_categories.is_none() {
+        c.seed_categories.clone_from(&seed.categories);
+    }
+    c
 }
 
 /// Copies seed title/categories onto a candidate when those fields are still empty.
@@ -364,7 +441,7 @@ fn merge_category_strings(into: &mut Option<String>, extra: Option<&str>) {
 }
 
 /// Inserts a candidate unless its ASIN, ISBN, or source:product id is already owned.
-fn insert_candidate(
+pub(crate) fn insert_candidate(
     map: &mut HashMap<String, StorefrontCandidate>,
     mut c: StorefrontCandidate,
     owned_asins: &HashSet<String>,
