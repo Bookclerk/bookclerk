@@ -1213,15 +1213,10 @@ fn open_installed_plugin(
         .map_err(|err| format!("read plugin.toml: {err}"))?;
     let manifest =
         bookclerk_plugin_manifest::parse(&text).map_err(|err| format!("plugin.toml: {err}"))?;
-    let command = manifest
-        .command
-        .clone()
-        .ok_or_else(|| "plugin.toml missing command".to_string())?;
-    let command = if command.is_absolute() {
-        command
-    } else {
-        plugin_root.join(command)
-    };
+    // Same resolution as discovery: a native guest's own binary, or the
+    // `bookclerk-workerd` launcher for a `runtime = "workerd"` package.
+    let command = crate::discover::resolve_spawn_command(plugin_root, &manifest)
+        .map_err(|err| err.to_string())?;
     if !command.is_file() {
         return Err(format!("staged guest is missing {}", command.display()));
     }
@@ -1408,4 +1403,80 @@ async fn spawn_storage(
         },
     );
     SpawnHealth::Healthy
+}
+
+#[cfg(test)]
+mod open_staged_tests {
+    //! Opening a staged package that has no installed version, the path a
+    //! demo or `cargo dev` image takes for plugins it ships beside the host.
+
+    use super::open_installed_plugin;
+
+    /// Writes `manifest` as the package's `plugin.toml` in a fresh directory.
+    fn staged(manifest: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("plugin.toml"), manifest).expect("write plugin.toml");
+        dir
+    }
+
+    #[test]
+    fn a_workerd_package_without_command_resolves_the_launcher() {
+        let pkg = staged(
+            r#"api_version = 3
+id = "workerd_covers"
+name = "Workerd covers"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["covers"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[capabilities.network]
+mode = "deny"
+"#,
+        );
+        std::fs::write(pkg.path().join("index.js"), "export default {};").expect("module");
+        let files = tempfile::tempdir().expect("files dir");
+        let opened = open_installed_plugin(pkg.path(), files.path());
+        match crate::spawn_plan::locate_launcher() {
+            Ok(launcher) => {
+                let plugin = opened.expect("staged workerd package opens");
+                assert_eq!(plugin.command, launcher);
+            }
+            // Without a built launcher the error names it, never a missing
+            // `command`, which a workerd manifest does not have.
+            Err(_) => {
+                let err = opened.expect_err("no launcher to spawn through");
+                assert!(!err.contains("missing command"), "{err}");
+                assert!(err.contains("bookclerk-workerd"), "{err}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_native_package_whose_binary_is_absent_is_refused() {
+        let pkg = staged(
+            r#"api_version = 3
+id = "native_gone"
+name = "Native with no binary"
+version = "0.1.0"
+runtime = "native"
+command = "guest"
+entrypoints = ["covers"]
+
+[capabilities.network]
+mode = "deny"
+"#,
+        );
+        let files = tempfile::tempdir().expect("files dir");
+        let err = open_installed_plugin(pkg.path(), files.path()).expect_err("refused");
+        assert!(err.contains("staged guest is missing"), "{err}");
+    }
 }

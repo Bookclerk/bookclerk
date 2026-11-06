@@ -10,6 +10,7 @@ import {
   CONCURRENCY,
   CoverFailure,
   MAX_BYTES,
+  MAX_HEADER_BYTES,
   MAX_REDIRECTS,
   MAX_URLS,
   capped,
@@ -18,7 +19,9 @@ import {
   declaredLength,
   fetchCovers,
   fetchOne,
+  headerValueOk,
   maybeImage,
+  passHeaders,
   type CoverSink,
   type Fetch,
   type FetcherOptions,
@@ -93,6 +96,7 @@ test("checkParams accepts the ABI bounds only", () => {
   assert.deepEqual(checkParams({ urls: ["https://a.example/"], maxBytes: 1 }), {
     urls: ["https://a.example/"],
     maxBytes: 1,
+    conditions: [],
   });
   const full = Array.from({ length: MAX_URLS }, (_, i) => `https://a.example/${i}`);
   assert.equal(checkParams({ urls: full, maxBytes: MAX_BYTES }).urls.length, MAX_URLS);
@@ -108,6 +112,15 @@ test("checkParams accepts the ABI bounds only", () => {
     { urls: ["https://a.example/"], maxBytes: MAX_BYTES + 1 },
     { urls: ["https://a.example/"], maxBytes: 1.5 },
     { urls: ["https://a.example/"], maxBytes: "1" },
+    { urls: ["https://a.example/"], maxBytes: 1, conditions: "x" },
+    { urls: ["https://a.example/"], maxBytes: 1, conditions: [{}, {}] },
+    { urls: ["https://a.example/"], maxBytes: 1, conditions: [{ ifNoneMatch: 1 }] },
+    { urls: ["https://a.example/"], maxBytes: 1, conditions: [{ ifNoneMatch: '"a"\r\nx: y' }] },
+    {
+      urls: ["https://a.example/"],
+      maxBytes: 1,
+      conditions: [{ ifModifiedSince: "x".repeat(MAX_HEADER_BYTES + 1) }],
+    },
   ]) {
     assert.throws(() => checkParams(bad), CoverFailure, JSON.stringify(bad));
   }
@@ -200,9 +213,9 @@ test("fetchCovers stores bodies under their index, in request order", async () =
     sink,
   );
   assert.deepEqual(images, [
-    { url: "https://a.example/0.jpg", stored: true, contentType: "image/jpeg" },
-    { url: "https://a.example/gone.jpg", stored: false, error: "HTTP 404" },
-    { url: "https://b.example/2.png", stored: true, contentType: "image/jpeg" },
+    { url: "https://a.example/0.jpg", stored: true, notModified: false, contentType: "image/jpeg" },
+    { url: "https://a.example/gone.jpg", stored: false, notModified: false, error: "HTTP 404" },
+    { url: "https://b.example/2.png", stored: true, notModified: false, contentType: "image/jpeg" },
   ]);
   assert.deepEqual(stored.map((s) => [s.key, [...s.bytes]]).sort(), [
     ["0", [0xff, 0xd8, 0xff, 0]],
@@ -298,7 +311,7 @@ test("fetchOne turns every failure into an answer", async () => {
     4,
     sink,
   );
-  assert.deepEqual(untyped, { url: "https://a.example/x", stored: true });
+  assert.deepEqual(untyped, { url: "https://a.example/x", stored: true, notModified: false });
   assert.deepEqual(stored[0]?.options, {});
 });
 
@@ -321,6 +334,7 @@ test("fetchOne follows redirects itself and vets every hop", async () => {
   assert.deepEqual(followed.answer, {
     url: "https://a.example/start",
     stored: true,
+    notModified: false,
     contentType: "image/jpeg",
   });
   assert.deepEqual(
@@ -353,4 +367,97 @@ test("fetchOne follows redirects itself and vets every hop", async () => {
   const loop = await run(() => redirect("/again"));
   assert.equal(loop.answer.error, "too many redirects");
   assert.equal(loop.seen.length, MAX_REDIRECTS + 1);
+});
+
+test("checkParams keeps conditions and drops empty values", () => {
+  assert.deepEqual(
+    checkParams({
+      urls: ["https://a.example/1", "https://a.example/2"],
+      maxBytes: 1,
+      conditions: [{ ifNoneMatch: '"abc"', ifModifiedSince: "" }, null],
+    }).conditions,
+    [{ ifNoneMatch: '"abc"' }, {}],
+  );
+});
+
+test("headerValueOk allows visible ASCII up to the cap only", () => {
+  assert.equal(headerValueOk('W/"abc", "d e"\t'), true);
+  assert.equal(headerValueOk("x".repeat(MAX_HEADER_BYTES)), true);
+  assert.equal(headerValueOk("x".repeat(MAX_HEADER_BYTES + 1)), false);
+  assert.equal(headerValueOk("a\nb"), false);
+  assert.equal(headerValueOk("caf\u00e9"), false);
+});
+
+test("passHeaders copies the freshness headers that fit", () => {
+  const image = { url: "u", stored: true, notModified: false };
+  passHeaders(
+    new Headers({
+      etag: '"v1"',
+      "last-modified": "Tue, 01 Sep 2026 00:00:00 GMT",
+      "cache-control": "max-age=60",
+      expires: "Wed, 02 Sep 2026 00:00:00 GMT",
+      date: "Tue, 01 Sep 2026 00:00:00 GMT",
+      age: "5",
+      "x-other": "ignored",
+    }),
+    image,
+  );
+  assert.deepEqual(image, {
+    url: "u",
+    stored: true,
+    notModified: false,
+    etag: '"v1"',
+    lastModified: "Tue, 01 Sep 2026 00:00:00 GMT",
+    cacheControl: "max-age=60",
+    expires: "Wed, 02 Sep 2026 00:00:00 GMT",
+    date: "Tue, 01 Sep 2026 00:00:00 GMT",
+    age: "5",
+  });
+  const long = { url: "u", stored: true, notModified: false };
+  passHeaders(new Headers({ etag: `"${"x".repeat(MAX_HEADER_BYTES)}"`, age: "" }), long);
+  assert.deepEqual(long, { url: "u", stored: true, notModified: false });
+});
+
+test("fetchOne sends the conditions and reports a 304 without storing", async () => {
+  const { options, seen } = scripted(
+    () =>
+      new Response(null, { status: 304, headers: { etag: '"v1"', "cache-control": "max-age=9" } }),
+  );
+  const { sink, stored } = recordingSink();
+  const answer = await fetchOne(options, "https://a.example/x.jpg", 0, 8, sink, {
+    ifNoneMatch: '"v1"',
+    ifModifiedSince: "Tue, 01 Sep 2026 00:00:00 GMT",
+  });
+  assert.deepEqual(answer, {
+    url: "https://a.example/x.jpg",
+    stored: false,
+    notModified: true,
+    etag: '"v1"',
+    cacheControl: "max-age=9",
+  });
+  assert.equal(stored.length, 0);
+  const headers = new Headers(seen[0]?.init.headers);
+  assert.equal(headers.get("if-none-match"), '"v1"');
+  assert.equal(headers.get("if-modified-since"), "Tue, 01 Sep 2026 00:00:00 GMT");
+});
+
+test("fetchCovers pairs each condition with its URL and passes headers on", async () => {
+  const { options, seen } = scripted(() =>
+    image(new Uint8Array([1]), { etag: '"new"', "last-modified": "Mon, 31 Aug 2026 00:00:00 GMT" }),
+  );
+  const images = await fetchCovers(
+    options,
+    {
+      urls: ["https://a.example/1", "https://a.example/2"],
+      maxBytes: 8,
+      conditions: [{ ifNoneMatch: '"old"' }],
+    },
+    recordingSink().sink,
+  );
+  assert.equal(images[0]?.etag, '"new"');
+  assert.equal(images[1]?.lastModified, "Mon, 31 Aug 2026 00:00:00 GMT");
+  const sent = (url: string) =>
+    new Headers(seen.find((s) => s.url === url)?.init.headers).get("if-none-match");
+  assert.equal(sent("https://a.example/1"), '"old"');
+  assert.equal(sent("https://a.example/2"), null);
 });

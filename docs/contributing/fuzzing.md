@@ -33,6 +33,7 @@ boundary extends it.
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
 | `cover_token` | Cover tokens in `/api/covers` and `/api/images` paths, and Gravatar hashes in `/api/avatars` paths: which remote URL a route may fetch | `bookclerk-cover::token` |
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
+| `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `guest_sql_authz` | Guest SQL authorization, every host-issued policy shape | `bookclerk-plugin-abi::GuestSqlPolicy` |
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
@@ -107,6 +108,16 @@ only that. The others check:
   An accepted frame re-encodes to exactly its own bytes, and an accepted
   reply carries only JPEG-signed images and a nonzero size. The shared
   oracle is `fuzz/oracles/cover_wire.rs`, replayed from `bookclerk-cover`.
+- **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
+  `If-None-Match` list of well-formed tags matches exactly when one of
+  them is the current tag, strong or weak. Any raw header that matches,
+  other than `*`, contains the quoted tag, and padding it with whitespace
+  never changes the answer. A built `Cache-Control` list (with `Age`) gets
+  the storage decision and freshness lifetime the oracle works out on its
+  own. Any raw set of upstream headers gives a lifetime between the floor
+  and ceiling, is refused storage only when `no-store` appears, and keeps
+  an `ETag` only as the trimmed header. The shared oracle is `fuzz/oracles/cache_headers.rs`,
+  replayed from `bookclerk-cover`.
 - **`abi_roundtrip`**: a value the decoder accepts re-encodes, re-decodes
   and compares equal (`read(write(v)) == v`).
 - **`guest_sql_authz`**: every table, column, function and schema action
@@ -729,8 +740,10 @@ tree and on its text, in `npm test` (the `workerd_guests` check).
 ### Cover fetcher guest
 
 The `covers` guest decides which URLs it requests: the host's URLs and every
-redirect `Location` an upstream server sends. Its `test/fuzz.test.ts` replays
-`fuzz/url/` and `fuzz/location/` and runs seeded text mutations in
+redirect `Location` an upstream server sends. It also passes header values
+both ways: the host's validators out as request headers, and an upstream
+server's caching headers back in its answer. Its `test/fuzz.test.ts` replays
+`fuzz/url/`, `fuzz/location/` and `fuzz/header/` and runs seeded text mutations in
 `npm test` (the `workerd_guests` check); `FUZZ_SEED` and `FUZZ_ITERATIONS`
 pick another run.
 
@@ -746,6 +759,12 @@ pick another run.
   request is a policy URL, each hop is the previous `Location` resolved
   against the URL that sent it, no more than `MAX_REDIRECTS` are followed,
   and a body is stored only after a chain the policy allowed in full.
+- **Header values** (`headerValueOk`, `checkParams` conditions and
+  `passHeaders`). Oracle, written from the ABI's `maxCoverHeaderBytes` and
+  the visible-ASCII part of RFC 9110's `field-value`: a value passes
+  exactly when it is at most 1024 bytes of tab, space and `VCHAR`. A
+  condition outside that is refused, and a response header outside it is
+  dropped from the answer.
 
 ## Still to add
 

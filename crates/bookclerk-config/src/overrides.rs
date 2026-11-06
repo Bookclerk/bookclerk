@@ -387,7 +387,7 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
             }
         }
         "discovery.embeddings_enabled" => {
-            config.discovery.embeddings_enabled = parse_bool(v).unwrap_or(true);
+            config.discovery.embeddings_enabled = parse_bool(v).unwrap_or(false);
         }
         "discovery.embedding_model" => {
             config.discovery.embedding_model = v.to_string();
@@ -484,6 +484,15 @@ fn parse_bool(value: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embeddings_override_defaults_to_off_for_an_unparsable_value() {
+        let mut cfg = Config::default();
+        apply_setting_overrides(&mut cfg, &[("discovery.embeddings_enabled", "true")]);
+        assert!(cfg.discovery.embeddings_enabled);
+        apply_setting_overrides(&mut cfg, &[("discovery.embeddings_enabled", "maybe")]);
+        assert!(!cfg.discovery.embeddings_enabled);
+    }
 
     #[test]
     fn dotted_override_sets_widevine() {

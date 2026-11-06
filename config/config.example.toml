@@ -220,8 +220,10 @@ json_logs = true
 # Storefront candidates (Libro related + Audible catalog) are the primary
 # discovery path; local embeddings score those unowned hits.
 [discovery]
-embeddings_enabled = true
-# Preferred model id; runtime falls back to local-hash-v1 if ONNX cannot load.
+# ONNX MiniLM scoring is off by default; shelves rank with local-hash-v1.
+embeddings_enabled = false
+# Model id used when embeddings are on; runtime falls back to local-hash-v1
+# if ONNX cannot load.
 embedding_model = "all-minilm-l6-v2-q"
 embed_intra_threads = 1
 storefront_candidates = true

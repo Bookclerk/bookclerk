@@ -44,6 +44,12 @@ MAX_COVER_URLS: int = 32
 MAX_COVER_BYTES: int = 10485760
 """Largest image body `CoverFetcher.fetchCovers` may return for one URL."""
 
+MAX_COVER_HEADER_BYTES: int = 1024
+"""Longest cache header value, in bytes, `CoverFetcher.fetchCovers` carries in
+either direction (a condition the host sends, a header the server sent).
+The host ignores a longer header the fetcher returns.
+"""
+
 MAX_KV_KEY_BYTES: int = 512
 """Longest `KvNamespace` key in UTF-8 bytes."""
 
@@ -205,6 +211,7 @@ __all__ = [
     "MAX_KV_VALUE_BYTES",
     "MAX_COVER_URLS",
     "MAX_COVER_BYTES",
+    "MAX_COVER_HEADER_BYTES",
     "MAX_KV_KEY_BYTES",
     "MAX_KV_METADATA_BYTES",
     "MAX_PLUGIN_MIGRATION_OPS",

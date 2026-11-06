@@ -253,6 +253,7 @@ mod tests {
             stored,
             content_type: stored.then(|| "image/png".into()),
             error: error.map(Into::into),
+            ..CoverImage::default()
         }
     }
 

@@ -19,6 +19,8 @@ base64.workspace = true
 hmac.workspace = true
 sha2.workspace = true
 url.workspace = true
+# `Expires`, `Date` and `Last-Modified` in `http_cache`.
+httpdate = "1"
 
 [lints]
 workspace = true

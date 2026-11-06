@@ -44,6 +44,13 @@ export const MAX_COVER_URLS = 32 as const;
 /** Largest image body `CoverFetcher.fetchCovers` may return for one URL. */
 export const MAX_COVER_BYTES = 10485760 as const;
 
+/**
+ * Longest cache header value, in bytes, `CoverFetcher.fetchCovers` carries in
+ * either direction (a condition the host sends, a header the server sent).
+ * The host ignores a longer header the fetcher returns.
+ */
+export const MAX_COVER_HEADER_BYTES = 1024 as const;
+
 /** Longest `KvNamespace` key in UTF-8 bytes. */
 export const MAX_KV_KEY_BYTES = 512 as const;
 

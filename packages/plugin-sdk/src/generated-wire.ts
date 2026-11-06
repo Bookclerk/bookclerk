@@ -6889,35 +6889,74 @@ export const MetadataChaptersReplyCodec: StructCodec<T.MetadataChaptersReply> = 
 };
 
 /**
- * Wire codec for `CoverFetchParams` (1 data words, 1 pointers).
+ * Wire codec for `CoverFetchParams` (1 data words, 2 pointers).
  *
  * @internal
  */
 export const CoverFetchParamsCodec: StructCodec<T.CoverFetchParams> = {
   dataWords: 1,
-  pointerCount: 1,
+  pointerCount: 2,
   write(s, v, caps) {
-    void caps;
     s.setTextList(0, v.urls ?? []);
     s.setUint32(0, v.maxBytes ?? 0);
+    {
+      const list = v.conditions ?? [];
+      const items = s.initStructList(1, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        CoverConditionCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
   },
   read(s, caps) {
-    void caps;
     return {
       urls: s.getTextList(0),
       maxBytes: s.getUint32(0),
+      conditions: s.getStructList(1, 0, 2).map((item) => CoverConditionCodec.read(item, caps)),
     };
   },
 };
 
 /**
- * Wire codec for `CoverImage` (1 data words, 3 pointers).
+ * Wire codec for `CoverCondition` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const CoverConditionCodec: StructCodec<T.CoverCondition> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    if (v.ifNoneMatch !== undefined) {
+      s.setText(0, v.ifNoneMatch ?? "");
+    }
+    if (v.ifModifiedSince !== undefined) {
+      s.setText(1, v.ifModifiedSince ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.CoverCondition = {
+    };
+    const ifNoneMatchValue = s.getText(0);
+    if (!(ifNoneMatchValue === "")) {
+      out.ifNoneMatch = ifNoneMatchValue;
+    }
+    const ifModifiedSinceValue = s.getText(1);
+    if (!(ifModifiedSinceValue === "")) {
+      out.ifModifiedSince = ifModifiedSinceValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `CoverImage` (1 data words, 9 pointers).
  *
  * @internal
  */
 export const CoverImageCodec: StructCodec<T.CoverImage> = {
   dataWords: 1,
-  pointerCount: 3,
+  pointerCount: 9,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.url ?? "");
@@ -6928,12 +6967,32 @@ export const CoverImageCodec: StructCodec<T.CoverImage> = {
     if (v.error !== undefined) {
       s.setText(2, v.error ?? "");
     }
+    s.setBool(1, v.notModified ?? false);
+    if (v.etag !== undefined) {
+      s.setText(3, v.etag ?? "");
+    }
+    if (v.lastModified !== undefined) {
+      s.setText(4, v.lastModified ?? "");
+    }
+    if (v.cacheControl !== undefined) {
+      s.setText(5, v.cacheControl ?? "");
+    }
+    if (v.expires !== undefined) {
+      s.setText(6, v.expires ?? "");
+    }
+    if (v.date !== undefined) {
+      s.setText(7, v.date ?? "");
+    }
+    if (v.age !== undefined) {
+      s.setText(8, v.age ?? "");
+    }
   },
   read(s, caps) {
     void caps;
     const out: T.CoverImage = {
       url: s.getText(0),
       stored: s.getBool(0),
+      notModified: s.getBool(1),
     };
     const contentTypeValue = s.getText(1);
     if (!(contentTypeValue === "")) {
@@ -6942,6 +7001,30 @@ export const CoverImageCodec: StructCodec<T.CoverImage> = {
     const errorValue = s.getText(2);
     if (!(errorValue === "")) {
       out.error = errorValue;
+    }
+    const etagValue = s.getText(3);
+    if (!(etagValue === "")) {
+      out.etag = etagValue;
+    }
+    const lastModifiedValue = s.getText(4);
+    if (!(lastModifiedValue === "")) {
+      out.lastModified = lastModifiedValue;
+    }
+    const cacheControlValue = s.getText(5);
+    if (!(cacheControlValue === "")) {
+      out.cacheControl = cacheControlValue;
+    }
+    const expiresValue = s.getText(6);
+    if (!(expiresValue === "")) {
+      out.expires = expiresValue;
+    }
+    const dateValue = s.getText(7);
+    if (!(dateValue === "")) {
+      out.date = dateValue;
+    }
+    const ageValue = s.getText(8);
+    if (!(ageValue === "")) {
+      out.age = ageValue;
     }
     return out;
   },
@@ -6958,7 +7041,7 @@ export const CoverImagesCodec: StructCodec<T.CoverImages> = {
   write(s, v, caps) {
     {
       const list = v.images ?? [];
-      const items = s.initStructList(0, list.length, 1, 3);
+      const items = s.initStructList(0, list.length, 1, 9);
       for (let i = 0; i < items.length; i++) {
         CoverImageCodec.write(items[i]!, list[i]!, caps);
       }
@@ -6966,7 +7049,7 @@ export const CoverImagesCodec: StructCodec<T.CoverImages> = {
   },
   read(s, caps) {
     return {
-      images: s.getStructList(0, 1, 3).map((item) => CoverImageCodec.read(item, caps)),
+      images: s.getStructList(0, 1, 9).map((item) => CoverImageCodec.read(item, caps)),
     };
   },
 };
@@ -10405,7 +10488,7 @@ export const CoverFetcherFetchCoversParamsCodec: StructCodec<CoverFetcherFetchCo
   pointerCount: 2,
   write(s, v, caps) {
     if (v.params != null) {
-      CoverFetchParamsCodec.write(s.initStruct(0, 1, 1), v.params, caps);
+      CoverFetchParamsCodec.write(s.initStruct(0, 1, 2), v.params, caps);
     }
     if (v.sink != null) {
       s.setCap(1, caps.exportCap(v.sink));
@@ -10413,7 +10496,7 @@ export const CoverFetcherFetchCoversParamsCodec: StructCodec<CoverFetcherFetchCo
   },
   read(s, caps) {
     const out: CoverFetcherFetchCoversParams = {
-      params: CoverFetchParamsCodec.read(s.getStruct(0, 1, 1), caps),
+      params: CoverFetchParamsCodec.read(s.getStruct(0, 1, 2), caps),
     };
     const sinkValue = caps.importCap(s.getCapIndex(1)) as T.Destination;
     if (!(sinkValue == null)) {

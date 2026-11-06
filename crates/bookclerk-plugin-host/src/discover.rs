@@ -764,7 +764,12 @@ fn assert_unique_aliases(plugins: &[DiscoveredPlugin]) -> Result<()> {
 }
 
 /// Resolves the native guest binary or the host `bookclerk-workerd` helper.
-fn resolve_spawn_command(root: &Path, manifest: &PluginManifest) -> Result<PathBuf> {
+///
+/// # Errors
+///
+/// Returns an error when a native manifest has no `command`, or when a
+/// workerd plugin's launcher cannot be found beside the host.
+pub(crate) fn resolve_spawn_command(root: &Path, manifest: &PluginManifest) -> Result<PathBuf> {
     use crate::manifest::PluginRuntimeKind;
     match manifest.runtime {
         PluginRuntimeKind::Native => {

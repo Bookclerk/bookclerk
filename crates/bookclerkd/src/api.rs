@@ -1396,7 +1396,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 app = app.route_service(path, spa_index.clone());
             }
             let spa_files = axum::routing::get_service(ServeDir::new(dist))
-                .layer(middleware::from_fn(spa_document_csp));
+                .layer(middleware::from_fn(spa_document_csp))
+                .layer(middleware::map_response(crate::cache_policy::mark_static));
             app = app.fallback_service(spa_files);
         } else {
             tracing::warn!(
@@ -1406,14 +1407,14 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
         }
     }
 
-    // HTML documents get Cache-Control: no-cache (`/invite` is no-store).
-    // Brand empty 4xx/5xx bodies (auth, missing routes, handler StatusCode).
-    // Timeout wraps API handlers; normalize trailing slashes before matching.
-    // Trace outermost.
+    // Timeout wraps API handlers. Brand empty 4xx/5xx bodies (auth, missing
+    // routes, handler StatusCode). Cache-Control by response class, outside
+    // the branding so rewritten error pages get one too. Normalize trailing
+    // slashes before matching. Trace outermost.
     let app = app
-        .layer(middleware::from_fn(html_document_no_cache))
         .layer(middleware::from_fn(api_timeout_middleware))
-        .layer(middleware::from_fn(http_error::brand_error_responses));
+        .layer(middleware::from_fn(http_error::brand_error_responses))
+        .layer(middleware::from_fn(crate::cache_policy::apply));
     // Test builds compare every response with the OpenAPI document, after
     // the branding so the body compared is the one a client receives.
     #[cfg(test)]
@@ -1485,35 +1486,6 @@ async fn spa_document_csp(req: Request, next: Next) -> Response {
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(SPA_CSP),
         );
-    }
-    res
-}
-
-/// Sets HTML cache headers. `/invite` is `no-store` because the same URL can
-/// change from a live SPA to a 410 after redeem; other documents use `no-cache`
-/// so a rebuilt `ui/dist/index.html` is used on the next navigation. Hashed
-/// JS/CSS under `/assets/` stay cacheable.
-async fn html_document_no_cache(req: Request, next: Next) -> Response {
-    let invite = req.uri().path() == "/invite";
-    let mut res = next.run(req).await;
-    let is_html = res
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|ct| ct.starts_with("text/html"));
-    if is_html {
-        res.headers_mut().insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static(if invite {
-                "no-store, no-cache, must-revalidate"
-            } else {
-                "no-cache"
-            }),
-        );
-        if invite {
-            res.headers_mut()
-                .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
-        }
     }
     res
 }
@@ -8512,13 +8484,18 @@ mode = "deny"
         // node with no cover cache answers 503.
         let status = |res: axum::response::Response| res.status();
         let gravatar = |hash: &str| {
-            crate::covers::get_gravatar(State(state.clone()), axum::extract::Path(hash.to_owned()))
+            crate::covers::get_gravatar(
+                State(state.clone()),
+                axum::extract::Path(hash.to_owned()),
+                HeaderMap::new(),
+            )
         };
         assert_eq!(
             status(
                 crate::covers::get_image(
                     State(state.clone()),
-                    axum::extract::Path("forged.token".into())
+                    axum::extract::Path("forged.token".into()),
+                    HeaderMap::new()
                 )
                 .await
             ),
@@ -8536,7 +8513,8 @@ mode = "deny"
             status(
                 crate::covers::get_store_icon(
                     State(state.clone()),
-                    axum::extract::Path("nowhere".into())
+                    axum::extract::Path("nowhere".into()),
+                    HeaderMap::new()
                 )
                 .await
             ),

@@ -1108,7 +1108,7 @@ pub fn materialize_native_backend(
 
 const bookclerkPlugin :Workerd.Config = (
   services = [
-    (name = "internet", network = (allow = [{internet_allow}])),
+    (name = "internet", network = (allow = [{internet_allow}], tlsOptions = (trustBrowserCas = true))),
     (name = "blocked", network = (allow = [])),
     (name = "egress", worker = .egressWorker),
     (name = "adapter", worker = .adapterWorker),
@@ -1496,7 +1496,7 @@ pub fn materialize(
 
 const bookclerkPlugin :Workerd.Config = (
   services = [
-    (name = "internet", network = (allow = [{internet_allow}])),
+    (name = "internet", network = (allow = [{internet_allow}], tlsOptions = (trustBrowserCas = true))),
     (name = "blocked", network = (allow = [])),
     (name = "egress", worker = .egressWorker),
     (name = "plugin", worker = .pluginWorker),
@@ -2285,6 +2285,12 @@ address_cidrs = ["10.0.60.100/32"]
         );
         assert!(!capnp.contains("\"private\""));
         assert!(!capnp.contains("\"local\""));
+        // Without TLS options workerd's network service cannot open an HTTPS
+        // connection ("this client has no TLS configuration").
+        assert!(
+            capnp.contains("tlsOptions = (trustBrowserCas = true)"),
+            "internet service must verify TLS against browser CAs: {capnp}"
+        );
         assert!(
             capnp.contains(r#"compatibilityFlags = ["experimental"]"#),
             "egress worker must opt into inbound CONNECT: {capnp}"
@@ -2566,6 +2572,10 @@ mode = "deny"
             "native-behind-workerd must not require an author plugin isolate:\n{capnp}"
         );
         assert!(!dir.path().join("modules").is_dir());
+        assert!(
+            capnp.contains("tlsOptions = (trustBrowserCas = true)"),
+            "native guests' egress needs TLS on the internet service too:\n{capnp}"
+        );
     }
 
     #[test]

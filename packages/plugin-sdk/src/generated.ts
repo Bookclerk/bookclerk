@@ -2805,6 +2805,31 @@ export interface CoverFetchParams {
    * only.
    */
   maxBytes: number;
+  /**
+   * Conditional request headers per URL, in the same order as `urls`, from
+   * the host's cached copy. Empty, or shorter than `urls`, means the
+   * remaining URLs are fetched unconditionally.
+   */
+  conditions: CoverCondition[];
+}
+
+/**
+ * Validators the host already holds for one URL, sent as conditional request
+ * headers so an unchanged image costs a `304` instead of its body.
+ */
+export interface CoverCondition {
+  /**
+   * `If-None-Match` value: the `ETag` the host stored, verbatim; empty for
+   * none.
+   * Omitted when absent (wire zero value).
+   */
+  ifNoneMatch?: string;
+  /**
+   * `If-Modified-Since` value: the `Last-Modified` the host stored,
+   * verbatim; empty for none.
+   * Omitted when absent (wire zero value).
+   */
+  ifModifiedSince?: string;
 }
 
 /** What happened to one requested URL. */
@@ -2823,6 +2848,42 @@ export interface CoverImage {
    * Omitted when absent (wire zero value).
    */
   error?: string;
+  /**
+   * The server answered `304 Not Modified` to the URL's conditions: nothing
+   * was put into the sink and the host's copy is still current.
+   */
+  notModified: boolean;
+  /**
+   * `ETag` the server sent, verbatim. Advisory: the host parses and caps it.
+   * Omitted when absent (wire zero value).
+   */
+  etag?: string;
+  /**
+   * `Last-Modified` the server sent, verbatim.
+   * Omitted when absent (wire zero value).
+   */
+  lastModified?: string;
+  /**
+   * `Cache-Control` the server sent, verbatim (several lines joined with
+   * `, `).
+   * Omitted when absent (wire zero value).
+   */
+  cacheControl?: string;
+  /**
+   * `Expires` the server sent, verbatim.
+   * Omitted when absent (wire zero value).
+   */
+  expires?: string;
+  /**
+   * `Date` the server sent, verbatim.
+   * Omitted when absent (wire zero value).
+   */
+  date?: string;
+  /**
+   * `Age` the server (or a cache in front of it) sent, verbatim.
+   * Omitted when absent (wire zero value).
+   */
+  age?: string;
 }
 
 /** Success payload of `CoverFetcher.fetchCovers`. */
