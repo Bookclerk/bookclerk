@@ -57,7 +57,8 @@ operator, a household user, or a portal identity) has a **subject key**
 1. **Candidates** (`discover_candidates`): a `discover_candidates` job seeds
    from that person's own taste (books on the store accounts linked to their
    identities, household books they have listened to, their listening and
-   their open wishlist) and asks **every
+   their open wishlist, with book and wishlist seeds alternating so each
+   store's call budget reaches both) and asks **every
    deployed storefront**, not only the stores they have accounts with. A
    person with no signal yet (and the operator) seeds from the household.
    Stores run concurrently, each call has a 10 s timeout, and each store's

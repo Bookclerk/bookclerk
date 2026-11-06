@@ -219,16 +219,22 @@ pub async fn fetch_subject_candidates(
     let taste = load_subject_taste(library, subject, opts).await?;
     let household = library.list_books(None).await?;
     let owned = owned_identity_sets(&household);
-    let mut seeds: Vec<SeedTitle> =
+    let book_seeds: Vec<SeedTitle> =
         select_taste_seeds(&taste.books, &engagement_by_book(&taste.listening))
             .iter()
             .take(opts.storefront_seed_limit)
             .map(|b| SeedTitle::from_book(b, &opts.region))
             .collect();
-    seeds.extend(taste.wishlist.iter().cloned().map(|mut s| {
-        s.seed.region.clone_from(&opts.region);
-        s
-    }));
+    let wish_seeds: Vec<SeedTitle> = taste
+        .wishlist
+        .iter()
+        .cloned()
+        .map(|mut s| {
+            s.seed.region.clone_from(&opts.region);
+            s
+        })
+        .collect();
+    let seeds = interleave_seeds(book_seeds, wish_seeds);
     let mut report = FetchReport {
         seeds: seeds.len(),
         ..FetchReport::default()
@@ -292,6 +298,26 @@ pub async fn fetch_subject_candidates(
         "stored discover candidates"
     );
     Ok(report)
+}
+
+/// Alternates book and wishlist seeds, so a store's call budget reaches
+/// both kinds even when it runs out before the end of the list.
+///
+/// # Returns
+///
+/// Every seed of both lists: a book seed, then a wish seed, and so on, with
+/// the longer list's remainder at the end.
+fn interleave_seeds(books: Vec<SeedTitle>, wishes: Vec<SeedTitle>) -> Vec<SeedTitle> {
+    let mut out = Vec::with_capacity(books.len() + wishes.len());
+    let mut books = books.into_iter();
+    let mut wishes = wishes.into_iter();
+    loop {
+        match (books.next(), wishes.next()) {
+            (None, None) => break,
+            (book, wish) => out.extend(book.into_iter().chain(wish)),
+        }
+    }
+    out
 }
 
 /// Asks one store about every seed (up to `budget` calls) plus its deals.
@@ -550,6 +576,24 @@ pub async fn stored_subject_feed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seeds_alternate_books_and_wishes() {
+        let seed = |t: &str| SeedTitle::from_wish(t, None, None, None);
+        let titles =
+            |v: Vec<SeedTitle>| -> Vec<String> { v.into_iter().map(|s| s.seed.title).collect() };
+        assert_eq!(
+            titles(interleave_seeds(
+                vec![seed("b1"), seed("b2"), seed("b3")],
+                vec![seed("w1")]
+            )),
+            vec!["b1", "w1", "b2", "b3"]
+        );
+        assert_eq!(
+            titles(interleave_seeds(Vec::new(), vec![seed("w1"), seed("w2")])),
+            vec!["w1", "w2"]
+        );
+    }
 
     #[test]
     fn call_keys_separate_their_parts() {
