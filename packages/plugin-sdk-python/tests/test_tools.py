@@ -1664,6 +1664,10 @@ def test_own_user_agent_hosts_match_the_host_rules(host: str, valid: bool) -> No
     ("own", "message"),
     [
         ("not a table", "capabilities.network.own_user_agent must be a table"),
+        ({"hosts": [], "reason": "r"}, "hosts must list between 1 and 32 hosts"),
+        ({"hosts": ["a.example"] * 33, "reason": "r"}, "hosts must list between 1 and 32 hosts"),
+        ({"hosts": "a.example", "reason": "r"}, "hosts must list between 1 and 32 hosts"),
+        ({"hosts": ["a.example"], "reason": None}, "reason must be one line"),
         ({"hosts": [7], "reason": "r"}, "hosts entry `7` is not a valid hostname"),
         ({"hosts": ["a.example"], "reason": "x" * 301}, "reason must be one line"),
         ({"hosts": ["a.example"], "reason": "two\nlines"}, "reason must be one line"),
@@ -1674,3 +1678,16 @@ def test_own_user_agent_table_is_validated(own: Any, message: str) -> None:
 
     with pytest.raises(ValueError, match=message):
         _validate_own_user_agent({"mode": "outbound", "own_user_agent": own})
+
+
+def test_own_user_agent_needs_outbound_mode() -> None:
+    from bookclerk_plugin_sdk.tools import _validate_own_user_agent
+
+    _validate_own_user_agent({"mode": "outbound"})
+    _validate_own_user_agent(
+        {"mode": "outbound", "own_user_agent": {"hosts": ["a.example"], "reason": "App API."}}
+    )
+    with pytest.raises(ValueError, match='needs mode = "outbound"'):
+        _validate_own_user_agent(
+            {"mode": "deny", "own_user_agent": {"hosts": ["a.example"], "reason": "r"}}
+        )
