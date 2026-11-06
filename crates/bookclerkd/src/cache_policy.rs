@@ -8,7 +8,7 @@
 //! | HTML documents | `no-cache` (`/invite`: `no-store, no-cache, must-revalidate`) |
 //! | Hashed web app files under `/assets/` | [`IMMUTABLE_ASSET`] |
 //! | Other web app files (icons, manifest, fonts) | [`REVALIDATE`] |
-//! | Everything else (API JSON, errors, legacy routes) | [`NO_STORE`] |
+//! | Everything else (API JSON, errors including HTML error pages, legacy routes) | [`NO_STORE`] |
 //!
 //! Handlers with their own policy set the header themselves: cover and
 //! image routes ([`crate::covers`]), plugin logos and profile pictures. Image
@@ -85,6 +85,10 @@ enum Class {
 
 /// Picks the class of a response.
 ///
+/// An error status (`4xx` or `5xx`) is [`Class::Uncached`] even when it is
+/// an HTML page, such as the branded `404` a browser gets, so no cache keeps
+/// it; only `/invite` keeps its own policy, since its `410` is the page.
+///
 /// # Arguments
 ///
 /// * `path` - The request path.
@@ -95,15 +99,18 @@ fn classify(path: &str, response: &Response) -> Class {
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|ct| ct.starts_with("text/html"));
-    if is_html {
-        return Class::Document {
-            invite: path == "/invite",
-        };
+    let invite = path == "/invite";
+    let status = response.status();
+    let error = status.is_client_error() || status.is_server_error();
+    if is_html && (invite || !error) {
+        return Class::Document { invite };
+    }
+    if error {
+        return Class::Uncached;
     }
     if response.headers().contains_key(header::CACHE_CONTROL) {
         return Class::Chosen;
     }
-    let status = response.status();
     let served_file = response.extensions().get::<StaticFile>().is_some()
         && (status.is_success() || status == StatusCode::NOT_MODIFIED);
     if !served_file {
@@ -224,6 +231,15 @@ mod tests {
                 get(|| async { axum::response::Html("<p>invite</p>") }),
             )
             .route(
+                "/gone",
+                get(|| async {
+                    (
+                        StatusCode::NOT_FOUND,
+                        axum::response::Html("<p>branded 404</p>"),
+                    )
+                }),
+            )
+            .route(
                 "/api/own",
                 get(|| async { ([(header::CACHE_CONTROL, "private, max-age=60")], "own") }),
             )
@@ -274,6 +290,8 @@ mod tests {
         assert_eq!(cache_control("/assets/not-a-file").await, NO_STORE);
         assert_eq!(cache_control("/missing.png").await, NO_STORE);
         assert_eq!(cache_control("/nowhere").await, NO_STORE);
+        // An HTML error page is not a document anyone may keep.
+        assert_eq!(cache_control("/gone").await, NO_STORE);
     }
 
     #[test]
