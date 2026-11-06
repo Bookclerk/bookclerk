@@ -12,7 +12,7 @@
 use chrono::{DateTime, Utc};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter,
-    QueryOrder, TransactionTrait,
+    QueryOrder, QuerySelect, TransactionTrait,
 };
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
@@ -21,6 +21,14 @@ use crate::entities::{
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
+
+/// Rows read per query when a Discover listing walks a table, so no single
+/// statement returns an unbounded result set.
+///
+/// Small enough to stay well under a remote database's per-query row and
+/// response-size limits (D1 caps a response at a few megabytes), large
+/// enough that a typical subject's candidates arrive in one or two reads.
+const DISCOVER_READ_PAGE: u64 = 200;
 
 /// Whose Discover shelves a stored row belongs to.
 ///
@@ -212,15 +220,22 @@ impl LibraryStore {
         &self,
         subject: &DiscoverSubject,
     ) -> Result<Vec<StoredCandidate>> {
-        let rows = discover_candidates::Entity::find()
-            .filter(discover_candidates::Column::SubjectKey.eq(subject.key()))
-            .order_by_asc(discover_candidates::Column::Id)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|m| {
+        let key = subject.key();
+        let mut out = Vec::new();
+        let mut after: i64 = 0;
+        loop {
+            let rows = discover_candidates::Entity::find()
+                .filter(discover_candidates::Column::SubjectKey.eq(key.as_str()))
+                .filter(discover_candidates::Column::Id.gt(after))
+                .order_by_asc(discover_candidates::Column::Id)
+                .limit(DISCOVER_READ_PAGE)
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            let Some(last) = rows.last() else { break };
+            after = last.id;
+            let full = u64::try_from(rows.len()).is_ok_and(|n| n >= DISCOVER_READ_PAGE);
+            out.extend(rows.into_iter().filter_map(|m| {
                 Some(StoredCandidate {
                     seed_scope: SeedScope::parse(&m.seed_scope)?,
                     fetched_at: parse_dt(&m.fetched_at),
@@ -228,8 +243,12 @@ impl LibraryStore {
                     candidate_key: m.candidate_key,
                     candidate_json: m.candidate_json,
                 })
-            })
-            .collect())
+            }));
+            if !full {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// Records that one subject's candidate fetch finished at `at`.
@@ -456,15 +475,31 @@ impl LibraryStore {
     ///
     /// Returns the database error.
     pub async fn list_discover_feed_subjects(&self) -> Result<Vec<DiscoverSubject>> {
-        let rows = discover_feeds::Entity::find()
-            .order_by_asc(discover_feeds::Column::Id)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(rows
-            .iter()
-            .filter_map(|m| DiscoverSubject::parse(&m.subject_key))
-            .collect())
+        let mut out = Vec::new();
+        let mut after: i64 = 0;
+        loop {
+            // Only the id and key: a feed body can be large, and this walk
+            // touches every subject.
+            let rows: Vec<(i64, String)> = discover_feeds::Entity::find()
+                .select_only()
+                .column(discover_feeds::Column::Id)
+                .column(discover_feeds::Column::SubjectKey)
+                .filter(discover_feeds::Column::Id.gt(after))
+                .order_by_asc(discover_feeds::Column::Id)
+                .limit(DISCOVER_READ_PAGE)
+                .into_tuple()
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            let Some((last, _)) = rows.last() else { break };
+            after = *last;
+            let full = u64::try_from(rows.len()).is_ok_and(|n| n >= DISCOVER_READ_PAGE);
+            out.extend(rows.iter().filter_map(|(_, k)| DiscoverSubject::parse(k)));
+            if !full {
+                break;
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -642,6 +677,39 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn listings_walk_past_one_read_page() {
+        let store = store().await;
+        let alice = DiscoverSubject::User(1);
+        let count = usize::try_from(DISCOVER_READ_PAGE).unwrap() * 2 + 3;
+        let keys: Vec<String> = (0..count).map(|i| format!("k{i}")).collect();
+        let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&key_refs))
+            .await
+            .unwrap();
+        let listed = store.list_discover_candidates(&alice).await.unwrap();
+        assert_eq!(listed.len(), count);
+        assert_eq!(listed[0].candidate_key, "k0");
+        assert_eq!(listed[count - 1].candidate_key, format!("k{}", count - 1));
+
+        for id in 0..count {
+            store
+                .put_discover_feed(
+                    &DiscoverSubject::User(i64::try_from(id).unwrap()),
+                    "{}",
+                    SeedScope::Own,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            store.list_discover_feed_subjects().await.unwrap().len(),
+            count
+        );
     }
 
     #[tokio::test]

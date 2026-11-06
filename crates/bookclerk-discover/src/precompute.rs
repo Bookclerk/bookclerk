@@ -129,11 +129,12 @@ pub async fn load_subject_taste(
         }
     }
     let listening: Vec<ListeningProgressRecord> = all_listening
-        .into_iter()
+        .iter()
         .filter(|r| match r.identity_id {
             Some(id) => identity_ids.contains(&id),
             None => external_ids.contains(&(r.provider.as_str(), r.external_user_id.as_str())),
         })
+        .cloned()
         .collect();
     // Their books: those on store accounts linked to them, plus any household
     // book they have listened to (a member may listen without owning).
@@ -159,10 +160,12 @@ pub async fn load_subject_taste(
         .collect();
 
     if books.is_empty() && listening.is_empty() && wishlist.is_empty() {
+        // Nothing of their own yet: fall back to the whole household's
+        // taste, listening included, as for a subject with no identity.
         return Ok(SubjectTaste {
             scope: SeedScope::Household,
             books: household,
-            listening: Vec::new(),
+            listening: all_listening,
             wishlist: Vec::new(),
         });
     }
@@ -776,6 +779,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(none.scope, SeedScope::Household);
+        // The household fallback keeps the household's listening.
+        assert_eq!(none.listening.len(), 2);
 
         // A legacy row on Carol's own provider and external id is hers, and
         // the book she listened to seeds her fetch without her owning it.
