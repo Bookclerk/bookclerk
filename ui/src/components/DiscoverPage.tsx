@@ -50,6 +50,8 @@ import {
   type CatalogTitle,
   type RuntimeBucket,
 } from "@/lib/catalogTitle";
+import { LatestRead } from "@/lib/latestRead";
+import { useLiveRefresh } from "@/lib/live";
 import {
   createWishlistItem,
   fetchDiscoverFeed,
@@ -86,8 +88,9 @@ const FEED_POLL_MS = 4_000;
 /** Quick re-reads of an unfinished feed before slowing to {@link FEED_POLL_SLOW_MS}. */
 const FEED_POLL_LIMIT = 15;
 /**
- * Delay between re-reads once {@link FEED_POLL_LIMIT} is spent, while the feed
- * is still preparing (a refreshing feed already shows shelves, so it stops).
+ * Delay between slow re-reads: once {@link FEED_POLL_LIMIT} is spent while the
+ * feed is still preparing, while an unfinished feed waits on the live socket,
+ * and before retrying a live re-read that failed.
  */
 const FEED_POLL_SLOW_MS = 30_000;
 
@@ -219,39 +222,71 @@ export function DiscoverPage({
   }
 
   async function refreshFeed() {
-    // A poll that started before this refresh must not overwrite its result.
-    feedGeneration.current += 1;
+    // Every feed read (this refresh, a poll, a live update) takes a ticket,
+    // so a read that answers late never replaces a newer one's shelves.
+    const ticket = feedReads.current.begin();
     const [f, w] = await Promise.all([fetchDiscoverFeed(), fetchWishlist()]);
-    setFeed(f);
+    if (feedReads.current.accept(ticket)) setFeed(f);
     setWishlist(w);
     setVisibleShelvesCount(SHELVES_INITIAL);
     return { feed: f, wishlist: w };
   }
 
+  // A ranking job that writes someone's shelves moves the live socket's
+  // `discover` topic; re-read the stored feed then, in place (the shelves
+  // already shown and how many are open stay as they are).
+  // A live re-read that fails is retried after FEED_POLL_SLOW_MS whatever
+  // the feed shows, so ready shelves never stay stale until the next change.
+  const feedReads = useRef(new LatestRead());
+  // Only a read that started after the newest failed one clears the retry,
+  // so an older read answering late cannot cancel it.
+  const [liveRetry, setLiveRetry] = useState(0);
+  const lastFailedLiveRead = useRef(0);
+  const readLiveFeed = () => {
+    const ticket = feedReads.current.begin();
+    return fetchDiscoverFeed()
+      .then((next) => {
+        if (feedReads.current.accept(ticket)) setFeed(next);
+        if (ticket > lastFailedLiveRead.current) setLiveRetry(0);
+      })
+      .catch(() => {
+        lastFailedLiveRead.current = Math.max(lastFailedLiveRead.current, ticket);
+        setLiveRetry((n) => n + 1);
+      });
+  };
+  const liveState = useLiveRefresh(["discover"], readLiveFeed, { pollMs: 0 });
+  useEffect(() => {
+    if (liveRetry === 0) return;
+    const timer = window.setTimeout(() => void readLiveFeed(), FEED_POLL_SLOW_MS);
+    return () => window.clearTimeout(timer);
+  }, [liveRetry]);
+
   // While the daemon is still building the caller's shelves, re-read the
   // stored feed so they appear without a reload: quickly at first, then
-  // slowly for as long as there are no shelves yet. A failed read counts
-  // as a poll and tries again.
+  // slowly for as long as there are no shelves yet. With the live socket
+  // open the topic brings the update, so only the slow re-read runs while
+  // the feed is unfinished, as a safety net for a write the revision missed
+  // or a live re-read that failed. A failed read counts as a poll and tries
+  // again.
   const feedState = feed.state;
   const feedPolls = useRef(0);
-  const feedGeneration = useRef(0);
   const [pollRetry, setPollRetry] = useState(0);
   useEffect(() => {
     if (feedState !== "preparing" && feedState !== "refreshing") {
       feedPolls.current = 0;
       return;
     }
-    const quick = feedPolls.current < FEED_POLL_LIMIT;
-    if (!quick && feedState !== "preparing") return;
-    const generation = feedGeneration.current;
+    const quick = liveState !== "open" && feedPolls.current < FEED_POLL_LIMIT;
+    if (!quick && feedState !== "preparing" && liveState !== "open") return;
     const timer = window.setTimeout(
       () => {
         feedPolls.current += 1;
+        const ticket = feedReads.current.begin();
         void fetchDiscoverFeed()
           .then((next) => {
-            if (generation === feedGeneration.current) setFeed(next);
-            // A refresh started after this poll; run the effect again so
-            // polling continues even if that refresh fails.
+            if (feedReads.current.accept(ticket)) setFeed(next);
+            // A newer read was applied first; run the effect again so
+            // polling continues from what it showed.
             else setPollRetry((n) => n + 1);
           })
           .catch(() => setPollRetry((n) => n + 1));
@@ -259,7 +294,7 @@ export function DiscoverPage({
       quick ? FEED_POLL_MS : FEED_POLL_SLOW_MS,
     );
     return () => window.clearTimeout(timer);
-  }, [feed, feedState, pollRetry]);
+  }, [feed, feedState, pollRetry, liveState]);
 
   async function refresh() {
     setError(null);

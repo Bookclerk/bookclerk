@@ -13,8 +13,8 @@ use sea_orm::{EntityTrait, PaginatorTrait, QueryOrder, QuerySelect};
 use sha2::{Digest as _, Sha256};
 
 use crate::entities::{
-    books, cluster_links, configuration_changes, event_deliveries, jobs, node_status,
-    remote_plugin_consents, users,
+    books, cluster_links, configuration_changes, discover_feeds, event_deliveries, jobs,
+    node_status, remote_plugin_consents, users,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -38,11 +38,14 @@ pub enum LiveTopic {
     Clusters,
     /// Users (`users`).
     Users,
+    /// Stored Discover shelves (`discover_feeds`): a ranking job wrote or
+    /// dropped someone's shelves.
+    Discover,
 }
 
 impl LiveTopic {
     /// Every topic.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Library,
         Self::Jobs,
         Self::Deliveries,
@@ -51,6 +54,7 @@ impl LiveTopic {
         Self::Consents,
         Self::Clusters,
         Self::Users,
+        Self::Discover,
     ];
 
     /// The topic's wire name.
@@ -65,6 +69,7 @@ impl LiveTopic {
             Self::Consents => "consents",
             Self::Clusters => "clusters",
             Self::Users => "users",
+            Self::Discover => "discover",
         }
     }
 }
@@ -189,6 +194,10 @@ pub async fn live_revisions(store: &LibraryStore) -> Result<LiveRevisions> {
             LiveTopic::Users => {
                 revision::<users::Entity, _>(store, users::Column::UpdatedAt).await?
             }
+            LiveTopic::Discover => {
+                revision::<discover_feeds::Entity, _>(store, discover_feeds::Column::ComputedAt)
+                    .await?
+            }
         };
         out.push((topic, value));
     }
@@ -256,6 +265,40 @@ mod tests {
             .unwrap();
         assert_eq!(jobs.1.rows, 1);
         assert!(jobs.1.newest.is_some());
+    }
+
+    /// Writing someone's shelves, re-ranking them and dropping them each
+    /// change only the discover topic.
+    #[tokio::test]
+    async fn stored_shelves_change_the_discover_topic() {
+        use crate::{DiscoverSubject, SeedScope};
+        let store = store().await;
+        let before = live_revisions(&store).await.unwrap();
+        let subject = DiscoverSubject::Operator;
+        store
+            .put_discover_feed(&subject, "{}", SeedScope::Own, None)
+            .await
+            .unwrap();
+        let written = live_revisions(&store).await.unwrap();
+        assert_eq!(changed_topics(&before, &written), vec![LiveTopic::Discover]);
+        // A later ranking of the same person moves the change stamp.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        store
+            .put_discover_feed(&subject, "{}", SeedScope::Own, None)
+            .await
+            .unwrap();
+        let reranked = live_revisions(&store).await.unwrap();
+        assert_eq!(
+            changed_topics(&written, &reranked),
+            vec![LiveTopic::Discover]
+        );
+        store.forget_discover_subject(&subject).await.unwrap();
+        let dropped = live_revisions(&store).await.unwrap();
+        assert_eq!(
+            changed_topics(&reranked, &dropped),
+            vec![LiveTopic::Discover]
+        );
+        assert_eq!(LiveTopic::Discover.as_str(), "discover");
     }
 
     /// Joining a cluster, a state change (revoked by the owner) and leaving
