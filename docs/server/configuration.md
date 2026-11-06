@@ -71,7 +71,7 @@ Environment variables win over `config.toml`. Settings the database owns
 | `BOOKCLERK_LOG`, `RUST_LOG` | Log filter |
 | `BOOKCLERK_AUTH_PASSWORD` | Wraps `master.key` at rest (preferred over `[auth].password`); needed for legacy `json-encrypted` rows |
 | `BOOKCLERK_OIDC_<ID>_CLIENT_SECRET` | Client secret of sign-in provider `<ID>` (hyphens become underscores) |
-| `BOOKCLERK_DISCOVERY_EMBEDDINGS_ENABLED` | Local ONNX embeddings on or off |
+| `BOOKCLERK_DISCOVERY_EMBEDDINGS_ENABLED` | Local ONNX embeddings on or off (default off) |
 | `BOOKCLERK_DISCOVERY_RECOMMEND_LIMIT` | How many recommendations by default |
 | `BOOKCLERK_JOBS_MAX_PENDING` | Cap on pending and running jobs (default 32) |
 | `BOOKCLERK_JOBS_LEASE_SECONDS` | Worker lease length (default 60) |

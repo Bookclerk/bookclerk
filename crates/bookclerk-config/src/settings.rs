@@ -132,7 +132,11 @@ pub struct LibraryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct DiscoveryConfig {
-    /// Run local embeddings for similarity scoring of storefront candidates.
+    /// Load the ONNX MiniLM model to score storefront candidates.
+    ///
+    /// Off by default: the shelves rank with the built-in local-hash
+    /// embedder. The ONNX path stays for opt-in experiments until
+    /// AI-assisted recommendations are designed.
     pub embeddings_enabled: bool,
     /// Model id (`all-minilm-l6-v2-q` preferred; runtime may fall back to `local-hash-v1`).
     pub embedding_model: String,
@@ -158,7 +162,7 @@ pub struct DiscoveryConfig {
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
-            embeddings_enabled: true,
+            embeddings_enabled: false,
             embedding_model: String::from("all-minilm-l6-v2-q"),
             embed_intra_threads: 1,
             worldcat_enabled: false,
