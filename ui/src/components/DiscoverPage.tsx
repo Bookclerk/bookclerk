@@ -251,9 +251,10 @@ export function DiscoverPage({
   // While the daemon is still building the caller's shelves, re-read the
   // stored feed so they appear without a reload: quickly at first, then
   // slowly for as long as there are no shelves yet. With the live socket
-  // open the topic brings the update, so only the slow re-read runs, as a
-  // safety net for a write the revision missed. A failed read counts as a
-  // poll and tries again.
+  // open the topic brings the update, so only the slow re-read runs while
+  // the feed is unfinished, as a safety net for a write the revision missed
+  // or a live re-read that failed. A failed read counts as a poll and tries
+  // again.
   const feedState = feed.state;
   const feedPolls = useRef(0);
   const [pollRetry, setPollRetry] = useState(0);
@@ -263,7 +264,7 @@ export function DiscoverPage({
       return;
     }
     const quick = liveState !== "open" && feedPolls.current < FEED_POLL_LIMIT;
-    if (!quick && feedState !== "preparing") return;
+    if (!quick && feedState !== "preparing" && liveState !== "open") return;
     const timer = window.setTimeout(
       () => {
         feedPolls.current += 1;
