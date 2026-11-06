@@ -1,0 +1,87 @@
+{
+  "total_count": 6,
+  "artifacts": [
+    null,
+    "x",
+    {
+      "id": "13432161099",
+      "node_id": "MDg6QXJ0aWZhY3QxMzQzMjE2MTA5OQ==",
+      "name": "cifuzz-corpus-node_frame",
+      "size_in_bytes": 327979,
+      "url": "https://api.github.com/repos/Bookclerk/bookclerk/actions/artifacts/13432161099",
+      "archive_download_url": "https://api.github.com/repos/Bookclerk/bookclerk/actions/artifacts/13432161099/zip",
+      "expired": false,
+      "digest": "sha256:bf7c24390b94f3c56d9d41da8014ecf0f9567c176c1ec5415ea99a5337161c41",
+      "created_at": "2026-11-05T15:58:46Z",
+      "updated_at": "2026-11-05T15:58:46Z",
+      "expires_at": "2027-02-03T14:56:20Z",
+      "workflow_run": {
+        "id": 42049874585,
+        "repository_id": 1306165442,
+        "head_repository_id": 1306165442,
+        "head_branch": "main",
+        "head_sha": "ef0aa3b31a4f2bfb837afc2ba45141e8ac246fc1"
+      }
+    },
+    {
+      "id": 13432161099,
+      "node_id": "MDg6QXJ0aWZhY3QxMzQzMjE2MTA5OQ==",
+      "name": "cifuzz-corpus-node_frame",
+      "size_in_bytes": 327979,
+      "url": "https://api.github.com/repos/Bookclerk/bookclerk/actions/artifacts/13432161099",
+      "archive_download_url": "https://api.github.com/repos/Bookclerk/bookclerk/actions/artifacts/13432161099/zip",
+      "expired": "false",
+      "digest": "sha256:bf7c24390b94f3c56d9d41da8014ecf0f9567c176c1ec5415ea99a5337161c41",
+      "created_at": "2026-11-05T15:58:46Z",
+      "updated_at": "2026-11-05T15:58:46Z",
+      "expires_at": "2027-02-03T14:56:20Z",
+      "workflow_run": {
+        "id": 42049874585,
+        "repository_id": 1306165442,
+        "head_repository_id": 1306165442,
+        "head_branch": "main",
+        "head_sha": "ef0aa3b31a4f2bfb837afc2ba45141e8ac246fc1"
+      }
+    },
+    {
+      "id": true,
+      "node_id": "MDg6QXJ0aWZhY3QxMzQzMjE2MTA5OQ==",
+      "name": "cifuzz-corpus-node_frame",
+      "size_in_bytes": 327979,
+      "url": "https://api.github.com/repos/Bookclerk/bookclerk/actions/artifacts/13432161099",
+      "archive_download_url": "https://api.github.com/repos/Bookclerk/bookclerk/actions/artifacts/13432161099/zip",
+      "expired": false,
+      "digest": "sha256:bf7c24390b94f3c56d9d41da8014ecf0f9567c176c1ec5415ea99a5337161c41",
+      "created_at": "2026-11-05T15:58:46Z",
+      "updated_at": "2026-11-05T15:58:46Z",
+      "expires_at": "2027-02-03T14:56:20Z",
+      "workflow_run": {
+        "id": 42049874585,
+        "repository_id": 1306165442,
+        "head_repository_id": 1306165442,
+        "head_branch": "main",
+        "head_sha": "ef0aa3b31a4f2bfb837afc2ba45141e8ac246fc1"
+      }
+    },
+    {
+      "id": 0,
+      "node_id": "MDg6QXJ0aWZhY3QxMzQzMjE2MTA5OQ==",
+      "name": "cifuzz-corpus-node_frame",
+      "size_in_bytes": 327979,
+      "url": "https://api.github.com/repos/Bookclerk/bookclerk/actions/artifacts/13432161099",
+      "archive_download_url": "https://api.github.com/repos/Bookclerk/bookclerk/actions/artifacts/0/zip",
+      "expired": false,
+      "digest": "sha256:bf7c24390b94f3c56d9d41da8014ecf0f9567c176c1ec5415ea99a5337161c41",
+      "created_at": "2026-11-05T15:58:46Z",
+      "updated_at": "2026-11-05T15:58:46Z",
+      "expires_at": "2027-02-03T14:56:20Z",
+      "workflow_run": {
+        "id": 42049874585,
+        "repository_id": 1306165442,
+        "head_repository_id": 1306165442,
+        "head_branch": "main",
+        "head_sha": "ef0aa3b31a4f2bfb837afc2ba45141e8ac246fc1"
+      }
+    }
+  ]
+}

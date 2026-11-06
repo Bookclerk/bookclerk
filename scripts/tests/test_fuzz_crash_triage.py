@@ -253,12 +253,25 @@ class BoundariesTest(unittest.TestCase):
 
 class WorkflowTest(unittest.TestCase):
     def test_one_runner_image(self) -> None:
-        """Triage reproduces in the image the fuzzers ran in."""
+        """Triage reproduces in the image the fuzzers ran in, and pull
+        requests fuzz in that image too (both patch the same methods)."""
         pattern = r"gcr\.io/oss-fuzz-base/clusterfuzzlite-run-fuzzers@sha256:[0-9a-f]{64}"
         action = (ROOT / ".github" / "actions" / "cflite-private-run" / "action.yml").read_text(encoding="utf-8")
+        pr_action = (ROOT / ".github" / "actions" / "cflite-run-fuzzers" / "action.yml").read_text(encoding="utf-8")
         workflow = (ROOT / ".github" / "workflows" / "cflite-batch.yml").read_text(encoding="utf-8")
-        images = set(re.findall(pattern, action)) | set(re.findall(pattern, workflow))
+        images = set(re.findall(pattern, action)) | set(re.findall(pattern, pr_action)) | set(re.findall(pattern, workflow))
         self.assertEqual(len(images), 1, images)
+        self.assertIn(images.pop(), pr_action)
+
+    def test_no_fuzzing_uses_the_unbounded_artifact_lookup(self) -> None:
+        """The stock run_fuzzers action can page through every artifact."""
+        for name in ("cflite-pr.yml", "cflite-batch.yml"):
+            workflow = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            self.assertNotIn("actions/run_fuzzers@", workflow, name)
+        pr = (ROOT / ".github" / "workflows" / "cflite-pr.yml").read_text(encoding="utf-8")
+        self.assertEqual(pr.count("uses: ./.github/actions/cflite-run-fuzzers"), 1)
+        source = (ROOT / "scripts" / "fuzz-crash-triage.py").read_text(encoding="utf-8")
+        self.assertIn("cflite_artifacts.install_in_image()", source)
 
     def test_scheduled_fuzzing_never_uses_the_public_runner(self) -> None:
         """The stock run_fuzzers action logs crashes publicly."""

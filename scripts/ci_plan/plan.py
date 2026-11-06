@@ -179,7 +179,8 @@ PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 # bundle uploader in tools/codecov only runs in coverage-upload.yml; the
 # mutation testing reports, settings and starting commit only run in mutation.yml,
 # mutation-workers.yml and mutation-python.yml; the merge-queue re-enqueue
-# check only runs in merge-queue-requeue.yml).
+# check only runs in merge-queue-requeue.yml; the ClusterFuzzLite artifact
+# lookup only runs inside the cflite-*.yml fuzzing jobs).
 PLAN_JOB_SCRIPT_FILES = frozenset(
     {
         "scripts/cla_check.py",
@@ -195,6 +196,7 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
         "scripts/codeql_languages.py",
         "scripts/codeql_reuse.py",
         "scripts/merge_queue_requeue.py",
+        "scripts/cflite_artifacts.py",
         ".cargo/mutants.toml",
         "scripts/stryker_report.py",
         "scripts/stryker.config.json",
