@@ -1,9 +1,10 @@
 //! Shared helpers for integration listening / progress sync.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use bookclerk_library::{BookRecord, LibraryStore, NewListeningProgress, PublishDomainEventSpec};
-use sha2::{Digest, Sha256};
+use bookclerk_library::{
+    BookRecord, LibraryStore, ListeningProgressRecord, NewListeningProgress, PublishDomainEventSpec,
+};
 
 use crate::error::Result;
 use crate::types::ListeningProgressSnapshot;
@@ -11,10 +12,10 @@ use crate::types::ListeningProgressSnapshot;
 /// Upsert provider-agnostic listening snapshots into `listening_progress`.
 ///
 /// `provider` should be the integration id (`audiobookshelf`, plugin id, …).
-/// When anything was written and what the sync says each person has started
-/// or finished (see `taste_line`) differs from the provider's previous
-/// `listening_synced`, publishes a new one; a sync that changes nothing
-/// Discover reads queues no refresh.
+/// When the sync changes what Discover reads from any stored row (see
+/// `TasteState`: who the row belongs to, which owned book it matched, and how
+/// far they got), publishes one `listening_synced`; a sync that changes
+/// nothing Discover reads queues no refresh.
 ///
 /// # Arguments
 ///
@@ -38,8 +39,9 @@ pub async fn upsert_listening_snapshots(
     // not O(items) full-table DB reads.
     let books = library.list_books(None).await?;
     let mut upserted = 0usize;
-    let mut taste = BTreeSet::new();
-    let mut identities = BTreeSet::new();
+    // Per stored row: its state before this sync (first sighting) and after
+    // (last write), so a row the sync reports twice compares end to end.
+    let mut rows: BTreeMap<(String, String), (Option<TasteState>, TasteState)> = BTreeMap::new();
     for item in items {
         let identity_id = library
             .get_portal_identity(provider, &item.external_user_id)
@@ -60,12 +62,14 @@ pub async fn upsert_listening_snapshots(
             None
         };
 
-        let identity_id = item.identity_id.or(identity_id);
-        identities.extend(identity_id);
-        taste.insert(taste_line(item, identity_id));
-        library
+        let before = library
+            .get_listening_progress(provider, &item.external_user_id, &item.external_item_id)
+            .await?
+            .as_ref()
+            .map(TasteState::of);
+        let stored = library
             .upsert_listening_progress(&NewListeningProgress {
-                identity_id,
+                identity_id: item.identity_id.or(identity_id),
                 provider: provider.into(),
                 external_user_id: item.external_user_id.clone(),
                 book_uuid,
@@ -82,12 +86,54 @@ pub async fn upsert_listening_snapshots(
                 last_listened_at: item.last_listened_at,
             })
             .await?;
+        let after = TasteState::of(&stored);
+        rows.entry((stored.external_user_id, stored.external_item_id))
+            .and_modify(|(_, last)| *last = after.clone())
+            .or_insert((before, after));
         upserted += 1;
     }
-    if upserted > 0 {
-        publish_listening_synced(library, provider, &taste, &identities).await;
+    let mut identities = BTreeSet::new();
+    let mut changed = false;
+    for (before, after) in rows.values() {
+        if before.as_ref() != Some(after) {
+            changed = true;
+            identities.extend(after.identity_id);
+            identities.extend(before.as_ref().and_then(|b| b.identity_id));
+        }
+    }
+    if changed {
+        publish_listening_synced(library, provider, &identities).await;
     }
     Ok(upserted)
+}
+
+/// What Discover reads from one stored listening row: whose it is, which
+/// owned book it matched (a seed), and how far they got
+/// ([`listening_stage`]; Discover weighs progress, not the exact second).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TasteState {
+    /// Portal identity the row is stored under, when any.
+    identity_id: Option<i64>,
+    /// Owned book the row matched, when any.
+    book_uuid: Option<String>,
+    /// [`listening_stage`] of the stored progress.
+    stage: u8,
+}
+
+impl TasteState {
+    /// The taste-relevant part of a stored row.
+    fn of(row: &ListeningProgressRecord) -> Self {
+        Self {
+            identity_id: row.identity_id,
+            book_uuid: row.book_uuid.clone(),
+            stage: listening_stage(
+                row.progress,
+                row.current_time_seconds,
+                row.duration_seconds,
+                row.is_finished,
+            ),
+        }
+    }
 }
 
 /// How far someone got in one item, as Discover's engagement reads it:
@@ -100,18 +146,25 @@ pub async fn upsert_listening_snapshots(
 ///
 /// # Arguments
 ///
-/// * `item` - The synced snapshot.
-fn listening_stage(item: &ListeningProgressSnapshot) -> u8 {
-    if item.is_finished {
+/// * `progress` - Reported fraction in `0.0..=1.0`, when any.
+/// * `current_time_seconds` - Playback position in seconds, when any.
+/// * `duration_seconds` - Item length in seconds, when any.
+/// * `is_finished` - Whether the provider marked the item finished.
+fn listening_stage(
+    progress: Option<f64>,
+    current_time_seconds: Option<f64>,
+    duration_seconds: Option<f64>,
+    is_finished: bool,
+) -> u8 {
+    if is_finished {
         return 5;
     }
-    let seconds = item.current_time_seconds.unwrap_or(0.0);
-    let from_time = match item.duration_seconds {
+    let seconds = current_time_seconds.unwrap_or(0.0);
+    let from_time = match duration_seconds {
         Some(duration) if duration > 0.0 => seconds / duration,
         _ => 0.0,
     };
-    let progress = item
-        .progress
+    let progress = progress
         .filter(|p| *p > 0.0)
         .unwrap_or(from_time)
         .clamp(0.0, 1.0);
@@ -130,69 +183,32 @@ fn listening_stage(item: &ListeningProgressSnapshot) -> u8 {
     }
 }
 
-/// One snapshot's part of the sync digest: who, which item, and their
-/// [`listening_stage`] (Discover weighs progress, not the exact second).
-///
-/// # Arguments
-///
-/// * `item` - The synced snapshot.
-/// * `identity_id` - The portal identity the row was stored under, when any.
-fn taste_line(item: &ListeningProgressSnapshot, identity_id: Option<i64>) -> String {
-    let identity = identity_id.map(|id| id.to_string()).unwrap_or_default();
-    format!(
-        "{identity}\u{1f}{}\u{1f}{}\u{1f}{}",
-        item.external_user_id,
-        item.external_item_id,
-        listening_stage(item)
-    )
-}
-
 /// Publishes `listening_synced` for one sync, best effort (the rows are
 /// already written; Discover's daily refresh still catches up on failure).
+///
+/// Every publication is a new event (the dedup key carries a fresh UUID):
+/// the caller only calls this when a stored row changed.
 ///
 /// # Arguments
 ///
 /// * `library` - Open library store.
 /// * `provider` - Integration id that synced.
-/// * `taste` - The sync's [`taste_line`]s, sorted.
-/// * `identities` - Portal identities whose rows the sync wrote.
+/// * `identities` - Portal identities whose rows changed, before or after.
 async fn publish_listening_synced(
     library: &LibraryStore,
     provider: &str,
-    taste: &BTreeSet<String>,
     identities: &BTreeSet<i64>,
 ) {
-    let mut digest = Sha256::new();
-    for line in taste {
-        digest.update(line.as_bytes());
-        digest.update(b"\n");
-    }
-    let digest = hex::encode(digest.finalize());
-    // Compare with the provider's last event only, so a state that comes back
-    // after a change (finished, unfinished, finished again) is a new event.
-    match library
-        .latest_domain_event(bookclerk_library::LISTENING_SYNCED, provider)
-        .await
-    {
-        Ok(Some(last)) if last_digest(&last.payload).as_deref() == Some(digest.as_str()) => {
-            return;
-        }
-        Ok(_) => {}
-        Err(err) => {
-            tracing::warn!(provider, error = %err, "could not read the last listening_synced");
-        }
-    }
     let payload = serde_json::json!({
         "provider": provider,
         "identityIds": identities.iter().collect::<Vec<_>>(),
-        "digest": digest,
     });
     let spec = PublishDomainEventSpec {
         event_type: bookclerk_library::LISTENING_SYNCED.into(),
         schema_version: 1,
         source: provider.to_string(),
         dedup_key: format!(
-            "{}:{digest}:{}",
+            "{}:{provider}:{}",
             bookclerk_library::LISTENING_SYNCED,
             uuid::Uuid::new_v4()
         ),
@@ -203,15 +219,6 @@ async fn publish_listening_synced(
     if let Err(err) = library.publish_domain_event(spec).await {
         tracing::warn!(provider, error = %err, "could not publish listening_synced");
     }
-}
-
-/// The `digest` a published `listening_synced` payload carries, when any.
-fn last_digest(payload: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(payload)
-        .ok()?
-        .get("digest")?
-        .as_str()
-        .map(str::to_string)
 }
 
 /// Best-effort match to an owned library book via ASIN, ISBN, or exact title.
@@ -345,7 +352,8 @@ mod tests {
         assert_eq!(synced_events(&library).await.len(), 3);
         let mut again = snapshot("u2", "b", 0.7);
         again.is_finished = true;
-        upsert_listening_snapshots(&library, "audiobookshelf", &[same[0].clone(), again])
+        let current = [same[0].clone(), again];
+        upsert_listening_snapshots(&library, "audiobookshelf", &current)
             .await
             .expect("sync");
         assert_eq!(synced_events(&library).await.len(), 4);
@@ -359,17 +367,48 @@ mod tests {
             .await
             .expect("sync");
         assert_eq!(synced_events(&library).await.len(), 6);
+
+        // A sync that reports only some people (alternating subsets) changes
+        // nothing stored, so it publishes nothing.
+        for subset in [&current[..1], &current[1..], &current[..1]] {
+            upsert_listening_snapshots(&library, "audiobookshelf", subset)
+                .await
+                .expect("sync");
+        }
+        assert_eq!(synced_events(&library).await.len(), 6, "subsets coalesce");
+
+        // Two reports of one row in one sync compare first-before to
+        // last-after: back where it started is no change.
+        let jitter = [snapshot("u1", "a", 0.9), snapshot("u1", "a", 0.2)];
+        upsert_listening_snapshots(&library, "audiobookshelf", &jitter)
+            .await
+            .expect("sync");
+        assert_eq!(synced_events(&library).await.len(), 6, "net unchanged");
+
+        // A row that gains an identity is a change for that person, and the
+        // event names whose rows changed.
+        let dana = library
+            .upsert_portal_identity("audiobookshelf", "u1", Some("Dana"))
+            .await
+            .expect("identity");
+        upsert_listening_snapshots(&library, "audiobookshelf", &same[..1])
+            .await
+            .expect("sync");
+        let events = synced_events(&library).await;
+        assert_eq!(events.len(), 7);
+        let named: Vec<serde_json::Value> = events
+            .iter()
+            .map(|e| serde_json::from_str::<serde_json::Value>(&e.payload).expect("payload"))
+            .map(|p| p["identityIds"].clone())
+            .filter(|ids| ids.as_array().is_some_and(|a| !a.is_empty()))
+            .collect();
+        assert_eq!(named, vec![serde_json::json!([dana.id])]);
     }
 
     #[test]
     fn stages_follow_what_engagement_reads() {
         let stage = |progress: Option<f64>, seconds: Option<f64>, duration: Option<f64>| {
-            listening_stage(&ListeningProgressSnapshot {
-                progress,
-                current_time_seconds: seconds,
-                duration_seconds: duration,
-                ..ListeningProgressSnapshot::default()
-            })
+            listening_stage(progress, seconds, duration, false)
         };
         assert_eq!(stage(None, None, None), 0);
         assert_eq!(stage(Some(0.0), Some(0.0), Some(100.0)), 0);
@@ -388,13 +427,6 @@ mod tests {
         assert_eq!(stage(Some(0.8), None, None), 4);
         assert_eq!(stage(Some(1.0), None, None), 4, "only the flag finishes");
         assert_eq!(stage(None, Some(100.0), Some(100.0)), 4);
-        let mut finished = snapshot("u", "i", 0.0);
-        finished.is_finished = true;
-        assert_eq!(listening_stage(&finished), 5);
-        assert!(taste_line(&finished, Some(7)).starts_with("7\u{1f}u\u{1f}i\u{1f}5"));
-        assert!(taste_line(&finished, None).starts_with('\u{1f}'));
-        assert_eq!(last_digest(r#"{"digest":"ab"}"#).as_deref(), Some("ab"));
-        assert_eq!(last_digest("{}"), None);
-        assert_eq!(last_digest("not json"), None);
+        assert_eq!(listening_stage(Some(0.0), None, None, true), 5);
     }
 }

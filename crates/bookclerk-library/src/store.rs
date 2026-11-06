@@ -1157,16 +1157,36 @@ impl LibraryStore {
     ///
     /// Removes portal identities, account links, wishlist rows, claim tickets,
     /// sessions, and prefs for the user. Acquired library books are retained.
-    /// Refuses to delete the last active owner.
+    /// Refuses to delete the last active owner. Publishes `wishlist_changed`
+    /// (status `deleted`) for each open wish removed with the user, so
+    /// Discover stops counting it for everyone else.
     ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
     pub async fn delete_user(&self, id: i64) -> Result<()> {
+        let identities: Vec<i64> = self
+            .list_portal_identities_for_user(id)
+            .await?
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        let wishes = title_requests::Entity::find()
+            .filter(title_requests::Column::IdentityId.is_in(identities))
+            .filter(title_requests::Column::Status.eq(RequestStatus::Open.as_str()))
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
         if let Some(atomic) = &self.atomic {
-            return atomic.delete_user(id).await;
+            atomic.delete_user(id).await?;
+        } else {
+            crate::db_atomic::delete_user(&self.db, id).await?;
         }
-        crate::db_atomic::delete_user(&self.db, id).await
+        for wish in wishes {
+            self.publish_wishlist_changed(&wish.uuid, wish.identity_id, "deleted")
+                .await;
+        }
+        Ok(())
     }
 
     /// Deletes a user and related portal rows inside an open transaction; refuses the last owner.
@@ -5027,7 +5047,8 @@ impl LibraryStore {
     ///
     /// * `uuid` - The wishlist row's uuid.
     /// * `identity_id` - The portal identity that wished for it, when any.
-    /// * `status` - The row's status after the write (`open` or `cancelled`).
+    /// * `status` - The row's status after the write (`open` or `cancelled`),
+    ///   or `deleted` when the row was removed with its user.
     async fn publish_wishlist_changed(&self, uuid: &str, identity_id: Option<i64>, status: &str) {
         let payload = serde_json::json!({
             "requestId": uuid,

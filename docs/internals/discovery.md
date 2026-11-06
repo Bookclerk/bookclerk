@@ -124,8 +124,8 @@ events:
 
 | Event | Published when | Discover queues |
 | --- | --- | --- |
-| `wishlist_changed` | A wishlist entry is added or changes status. | A fetch for the person who wished (their seeds changed), and a ranking for everyone else with shelves (wish counts changed). |
-| `listening_synced` | A listening sync changed whether someone has started a book, which quarter of it they are in, or whether they finished it. | A fetch for everyone with shelves. |
+| `wishlist_changed` | A wishlist entry is added or changes status, or an open one is deleted with its user. | A fetch for the person who wished (their seeds changed), and a ranking for everyone else with shelves (wish counts changed). |
+| `listening_synced` | A listening sync changed, for some stored row, whose it is, which owned book it matched, whether they started it, which quarter they are in, or whether they finished it. | A fetch for everyone with shelves. |
 | `book_acquired` | The household acquires a book. | A fetch for everyone with shelves. |
 
 Each job it queues may only run 30 seconds later, so the changes of one
@@ -139,12 +139,21 @@ so a change only folds into a job that is still pending. When the job the
 consumer needs is running or has just finished (or the queue is full), the
 delivery comes back 30 seconds later and queues again, up to 20 times.
 Every node registers the same consumer and the outbox delivers each event
-once in the cluster. A listening sync publishes only when its digest of what each
-person has started, reached or finished differs from that provider's
-previous event, so a book finished, unfinished and finished again is three
-changes.
+once in the cluster.
 
-There is no rating event yet, because Bookclerk does not store ratings.
+A listening sync compares each row it writes with the row stored before it,
+so a sync that reports only some people, or repeats what is stored, publishes
+nothing, while a book finished, unfinished and finished again is three
+changes. When one sync reports a row twice, its first stored state is
+compared with its last.
+
+A ranking job checks the newest candidate fetch again when it finishes. A
+fetch that finished while it ranked had its follow-up ranking folded into the
+running job, so the job ranks again, up to three passes in all.
+
+Ratings have no event. Discover weighs a book's own rating, but ratings
+change only when a Libation library is imported, and the next daily refresh
+picks that import up.
 
 ## Metadata gap-fill (Open Library compliance)
 

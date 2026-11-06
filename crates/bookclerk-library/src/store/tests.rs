@@ -7052,4 +7052,40 @@ async fn wishlist_writes_publish_wishlist_changed() {
         .collect();
     seen.sort_unstable();
     assert_eq!(seen, vec!["cancelled", "open"]);
+
+    // Deleting a user drops their open wishes from everyone's ranking, so
+    // each one publishes a change; their cancelled wish does not.
+    store
+        .create_user(UserRole::Owner, Some("Keep"), None)
+        .await
+        .unwrap();
+    let doomed = store
+        .create_user(UserRole::Member, Some("Go"), None)
+        .await
+        .unwrap();
+    let theirs = store
+        .link_portal_identity_to_user("oidc", "go", doomed.id, None)
+        .await
+        .unwrap();
+    let open = store
+        .create_title_request(&NewTitleRequest {
+            identity_id: Some(theirs.id),
+            title: "Artemis".into(),
+            asin: Some("B00ARTEMIS".into()),
+            ..wish.clone()
+        })
+        .await
+        .unwrap();
+    store.delete_user(doomed.id).await.unwrap();
+    let deleted: Vec<serde_json::Value> = store
+        .list_domain_events_for_queue(crate::CORE_EVENTS_QUEUE, 50)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.event_type == crate::WISHLIST_CHANGED)
+        .map(|e| serde_json::from_str::<serde_json::Value>(&e.payload).unwrap())
+        .filter(|p| p["status"] == "deleted")
+        .collect();
+    assert_eq!(deleted.len(), 1, "{deleted:?}");
+    assert_eq!(deleted[0]["requestId"], open.uuid.as_str());
 }

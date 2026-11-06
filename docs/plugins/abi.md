@@ -682,13 +682,14 @@ Their `source` is the storefront plugin that reported the listing.
 describe, best effort (a failed publish is logged, and the write stands):
 
 - `wishlist_changed` (`requestId`, `identityId`, `status`) when a wishlist
-  entry is added or changes status (`open` or `cancelled`); `identityId` is
-  the portal identity that wished, or null;
-- `listening_synced` (`provider`, `identityIds`, `digest`) when a
-  listening sync changed what someone has started, how far in quarters, or
-  finished; its `source` is the integration that synced, and `digest`
-  fingerprints that state. A sync whose digest matches the provider's
-  previous event publishes nothing.
+  entry is added or changes status (`open` or `cancelled`), or an open entry
+  is removed with its user (`deleted`); `identityId` is the portal identity
+  that wished, or null;
+- `listening_synced` (`provider`, `identityIds`) when a listening sync
+  changed a stored row's owner, matched book, start, quarter or finish; its
+  `source` is the integration that synced, and `identityIds` names the
+  portal identities whose rows changed. A sync that changes none of these
+  publishes nothing.
 
 Discover's host consumer reads them to refresh shelves (see
 [Discovery design](../internals/discovery.md#taste-events)).

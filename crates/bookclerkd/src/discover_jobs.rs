@@ -204,7 +204,12 @@ pub async fn run_discover_candidates(
     ))
 }
 
-/// Runs a `discover_feed` job: ranks stored candidates into stored shelves.
+/// Most rankings one `discover_feed` job runs when candidate fetches keep
+/// finishing under it; past this the next read or event queues another.
+const MAX_RANK_PASSES: u32 = 3;
+
+/// Runs a `discover_feed` job: ranks stored candidates into stored shelves,
+/// again when a candidate fetch finished during the ranking.
 ///
 /// # Errors
 ///
@@ -247,7 +252,21 @@ pub async fn run_discover_feed(
     };
     let opts = discover_options(&cfg, use_onnx, model_id);
     let sources = state.sources.read().await.clone();
-    let report = bookclerk_discover::rank_subject_feed(&library, &sources, &subject, &opts).await?;
+    // A candidate fetch that finishes while this ranking runs folds its
+    // follow-up ranking into this job (the dedup key covers running jobs),
+    // so rank again until the candidates read are the newest stored.
+    let mut passes = 0;
+    let report = loop {
+        passes += 1;
+        let read = library.newest_discover_candidate_fetch(&subject).await?;
+        let report =
+            bookclerk_discover::rank_subject_feed(&library, &sources, &subject, &opts).await?;
+        if passes >= MAX_RANK_PASSES
+            || library.newest_discover_candidate_fetch(&subject).await? == read
+        {
+            break report;
+        }
+    };
     if forget_if_removed(&library, &subject).await? {
         return Ok(format!("subject={} removed", subject.key()));
     }
@@ -258,7 +277,7 @@ pub async fn run_discover_feed(
         "stored discover feed"
     );
     Ok(format!(
-        "subject={} scope={} shelves={} candidates={}",
+        "subject={} scope={} shelves={} candidates={} passes={passes}",
         subject.key(),
         report.scope.as_str(),
         report.shelves,
@@ -509,6 +528,7 @@ mod tests {
             .contains(&(JobKind::DiscoverFeed, String::from("operator"))));
         let summary = run_discover_feed(&state, &payload, None).await.unwrap();
         assert!(summary.contains("scope=household"), "{summary}");
+        assert!(summary.ends_with("passes=1"), "{summary}");
 
         // A fetch that found nothing still counts as fresh: the feed is ready
         // and nothing more is queued.
