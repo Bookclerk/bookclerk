@@ -703,7 +703,14 @@ mod tests {
         let space = filesystem_space(dir.path()).expect("space");
         assert!(space.total > 0);
         assert!(space.available <= space.total);
-        assert_eq!(filesystem_free_bytes(dir.path()), Some(space.available));
+        // Free space moves while other processes write, so two reads need
+        // not match; both must stay within the same disk.
+        let free = filesystem_free_bytes(dir.path()).expect("free");
+        assert!(free <= space.total);
+        assert_eq!(
+            filesystem_space(dir.path()).expect("again").total,
+            space.total
+        );
         assert_eq!(filesystem_space(&dir.path().join("missing")), None);
     }
 
