@@ -2676,7 +2676,7 @@ pub async fn impersonate(
     path = "/api/auth/impersonate",
     security(("operatorSession" = [])),
     responses(
-        (status = 200, description = "Impersonation ended.", body = OkResponse),
+        (status = 200, description = "Impersonation ended. An elevated Owner's own portal session cookie is set again; otherwise the impersonation's portal cookie is cleared.", body = OkResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 500, description = "The session could not be updated."),
     ),
@@ -2710,17 +2710,63 @@ pub async fn impersonate_end(
     let _ = library
         .insert_security_audit_event(&actor, "impersonate_end", detail.as_deref())
         .await;
-    let flags = {
-        let cfg = state.config.read().await;
-        session_cookie_flags(cfg.integrations.public_origin.as_deref())
+    // An Owner who elevated gets their own portal session back, replacing
+    // the one impersonation swapped in, so ending elevation later leaves
+    // them signed in as themselves rather than with no session at all.
+    let restored = match op.elevated_from_user_id {
+        Some(user_id) => own_portal_cookie(&state, &library, user_id).await,
+        None => None,
     };
-    let clear = format!("{PORTAL_SESSION_COOKIE}=; {flags}; Max-Age=0");
+    let cookie = match restored {
+        Some(cookie) => cookie,
+        None => {
+            let cfg = state.config.read().await;
+            let flags = session_cookie_flags(cfg.integrations.public_origin.as_deref());
+            format!("{PORTAL_SESSION_COOKIE}=; {flags}; Max-Age=0")
+        }
+    };
     Ok((
         StatusCode::OK,
-        [(header::SET_COOKIE, clear)],
+        [(header::SET_COOKIE, cookie)],
         Json(OkResponse::OK),
     )
         .into_response())
+}
+
+/// A fresh portal session cookie for `user_id`, or `None` when the user is
+/// gone, disabled, or the session cannot be made.
+///
+/// # Arguments
+///
+/// * `state` - Daemon state, for the session settings.
+/// * `library` - The library the user lives in.
+/// * `user_id` - The user to sign back in.
+///
+/// # Returns
+///
+/// The `Set-Cookie` value, or `None`.
+async fn own_portal_cookie(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    user_id: i64,
+) -> Option<String> {
+    let user = library.get_user(user_id).await.ok()??;
+    if matches!(user.status, UserStatus::Disabled) {
+        return None;
+    }
+    let identity = library
+        .ensure_local_portal_identity(user.id, user.display_name.as_deref())
+        .await
+        .ok()?;
+    let cfg = state.config.read().await;
+    let session_raw = session_for_identity(library, &cfg.integrations, &identity)
+        .await
+        .ok()?;
+    let flags = session_cookie_flags(cfg.integrations.public_origin.as_deref());
+    let max_age = cfg.integrations.portal_session_ttl_hours * 3600;
+    Some(format!(
+        "{PORTAL_SESSION_COOKIE}={session_raw}; {flags}; Max-Age={max_age}"
+    ))
 }
 
 /// Unfinished listens older than this are omitted from `GET /api/users`.
@@ -5255,6 +5301,102 @@ pub(crate) mod tests {
 
         let events = library.list_security_audit_events(20).await.unwrap();
         assert!(events.iter().any(|e| e.action == "impersonate_start"));
+    }
+
+    #[tokio::test]
+    async fn ending_impersonation_gives_an_elevated_owner_their_session_back() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (_state, app, library) = phase2_harness("op-token-phase2").await;
+        let owner_cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        let owner_id = library
+            .get_portal_identity("test", "admin-ext")
+            .await
+            .unwrap()
+            .unwrap()
+            .user_id
+            .expect("bridged");
+        let member_id = library
+            .get_portal_identity("test", "member-ext")
+            .await
+            .unwrap()
+            .unwrap()
+            .user_id
+            .expect("bridged");
+        let send = |method: &str, uri: &str, cookies: String, body: String| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, cookies)
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let set_cookie = |res: &Response| {
+            cookie_from_set_cookie(
+                res.headers()
+                    .get(header::SET_COOKIE)
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+            )
+        };
+
+        let elevated = app
+            .clone()
+            .oneshot(send(
+                "POST",
+                "/api/auth/elevate",
+                owner_cookie.clone(),
+                format!(r#"{{"password":"{}"}}"#, phase2_owner_password()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(elevated.status(), StatusCode::OK);
+        let op_cookie = set_cookie(&elevated);
+
+        let started = app
+            .clone()
+            .oneshot(send(
+                "POST",
+                "/api/auth/impersonate",
+                format!("{op_cookie}; {owner_cookie}"),
+                format!(r#"{{"user_id":{member_id}}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(started.status(), StatusCode::OK);
+        let member_portal = set_cookie(&started);
+
+        let ended = app
+            .clone()
+            .oneshot(send(
+                "DELETE",
+                "/api/auth/impersonate",
+                format!("{op_cookie}; {member_portal}"),
+                String::new(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(ended.status(), StatusCode::OK);
+        let restored = set_cookie(&ended);
+        assert!(restored.starts_with(&format!("{PORTAL_SESSION_COOKIE}=")));
+        assert_ne!(restored, format!("{PORTAL_SESSION_COOKIE}="));
+
+        // Without the elevated session, the restored cookie alone signs the
+        // Owner in as themselves.
+        let me = app
+            .oneshot(send("GET", "/api/auth/me", restored, String::new()))
+            .await
+            .unwrap();
+        assert_eq!(me.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&me.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["authenticated"], true);
+        assert_eq!(body["user"]["id"], owner_id);
     }
 
     #[tokio::test]

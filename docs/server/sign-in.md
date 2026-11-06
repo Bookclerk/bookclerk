@@ -340,6 +340,8 @@ banner at the top names them (`Impersonating Alex as Owner`), with
 - The Settings tabs follow the impersonated role: User Management for
   Owners and Administrators, Sign-in for Owners.
 - **Server** and **Plugins** stay operator-only until impersonation ends.
+- **Stop** signs an elevated Owner back in as themselves, so ending
+  elevation afterwards leaves them signed in rather than signed out.
 
 ### Settings → Server and Plugins
 

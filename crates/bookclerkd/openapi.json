@@ -10791,7 +10791,7 @@
         "operationId": "impersonate_end",
         "responses": {
           "200": {
-            "description": "Impersonation ended.",
+            "description": "Impersonation ended. An elevated Owner's own portal session cookie is set again; otherwise the impersonation's portal cookie is cleared.",
             "content": {
               "application/json": {
                 "schema": {
