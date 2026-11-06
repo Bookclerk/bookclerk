@@ -877,3 +877,30 @@ fn catalog_title(sample: &SampleTitle, hit: Option<&CatalogHit>) -> CatalogTitle
         }],
     }
 }
+
+/// The `--write-records <path>` argument the seed binary was given, if any.
+///
+/// # Arguments
+///
+/// * `args` - The command-line arguments after the program name.
+///
+/// # Returns
+///
+/// Where to write the store records, or `None` to seed the library.
+///
+/// # Errors
+///
+/// Returns an error for any other argument, or a missing path.
+pub fn records_path(
+    mut args: impl Iterator<Item = String>,
+) -> anyhow::Result<Option<std::path::PathBuf>> {
+    match args.next() {
+        None => Ok(None),
+        Some(flag) if flag == "--write-records" => match (args.next(), args.next()) {
+            (Some(path), None) => Ok(Some(path.into())),
+            (None, _) => bail!("--write-records needs a path"),
+            (Some(_), Some(extra)) => bail!("unexpected argument `{extra}`"),
+        },
+        Some(other) => bail!("unexpected argument `{other}`"),
+    }
+}

@@ -16,7 +16,7 @@ use anyhow::{bail, Context};
 use bookclerk_config::Config;
 use bookclerk_demo_seed::{
     best_match, committed_records, distinct_records, lookups, merge_records, records_json,
-    search_query, seed, Lookup, Seeded, StoreRecords, STOREFRONTS,
+    records_path, search_query, seed, Lookup, Seeded, StoreRecords, STOREFRONTS,
 };
 use bookclerk_library::control_plane::{
     default_instance_for_key, ensure_hand_managed, ensure_plugin_deployment,
@@ -151,25 +151,6 @@ async fn run() -> anyhow::Result<()> {
         Seeded::AlreadySeeded => eprintln!("bookclerk-demo-seed: already seeded"),
     }
     Ok(())
-}
-
-/// The `--write-records <path>` argument, if given.
-///
-/// # Errors
-///
-/// Returns an error for any other argument, or a missing path.
-fn records_path(
-    mut args: impl Iterator<Item = String>,
-) -> anyhow::Result<Option<std::path::PathBuf>> {
-    match args.next() {
-        None => Ok(None),
-        Some(flag) if flag == "--write-records" => match (args.next(), args.next()) {
-            (Some(path), None) => Ok(Some(path.into())),
-            (None, _) => bail!("--write-records needs a path"),
-            (Some(_), Some(extra)) => bail!("unexpected argument `{extra}`"),
-        },
-        Some(other) => bail!("unexpected argument `{other}`"),
-    }
 }
 
 /// Looks every sample title up in its storefront's public catalog, through

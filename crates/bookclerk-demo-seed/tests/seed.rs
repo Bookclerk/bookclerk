@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bookclerk_demo_seed::{
     best_match, committed_records, distinct_records, lookups, merge_records, parse_records,
-    records_json, search_query, seed, Lookup, SeedReport, Seeded, StoreRecords, SAMPLE_BRANCH,
-    SAMPLE_LOGIN, STOREFRONTS,
+    records_json, records_path, search_query, seed, Lookup, SeedReport, Seeded, StoreRecords,
+    SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
 };
 use bookclerk_library::control_plane::branch_title_counts;
 use bookclerk_library::entities::nodes;
@@ -420,4 +420,26 @@ fn prefers_a_released_edition_over_a_pre_order() {
             .product_id,
         "B0PREORDER"
     );
+}
+
+#[test]
+fn reads_the_write_records_argument_and_refuses_anything_else() {
+    let args = |list: &[&str]| {
+        list.iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+    };
+    assert_eq!(records_path(args(&[])).unwrap(), None);
+    assert_eq!(
+        records_path(args(&["--write-records", "out.json"])).unwrap(),
+        Some(std::path::PathBuf::from("out.json"))
+    );
+    for bad in [
+        &["--write-records"][..],
+        &["--write-records", "out.json", "extra"][..],
+        &["--seed"][..],
+    ] {
+        assert!(records_path(args(bad)).is_err(), "{bad:?}");
+    }
 }
