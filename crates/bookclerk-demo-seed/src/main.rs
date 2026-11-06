@@ -177,7 +177,9 @@ async fn store_records(host: &HostControlPlane) -> StoreRecords {
                     return None;
                 }
             };
-            best_match(&lookup, &hits).map(|hit| (lookup, hit.clone()))
+            let hit = best_match(&lookup, &hits)?.clone();
+            let hit = bookclerk_demo_seed::with_details(source.as_ref(), hit, deadline).await;
+            Some((lookup, hit))
         }
     });
     let found: Vec<Option<(Lookup, CatalogHit)>> = futures::future::join_all(searches).await;

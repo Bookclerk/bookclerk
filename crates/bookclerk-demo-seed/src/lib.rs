@@ -14,7 +14,9 @@
 //!
 //! The titles are real audiobooks. Before seeding, the binary looks each one
 //! up in its storefront's public catalog through the storefront plugin, the
-//! search Discover uses, and the seed writes the record the store returned:
+//! search Discover uses, then fetches the matched title's full record (the
+//! details call title dialogs use), and the seed writes the record the store
+//! returned:
 //! its product id, cover art, description and the rest, as a scan and
 //! enrichment would. A title whose lookup fails (store unreachable, no
 //! confident match) keeps the fields listed here under a made-up product id
@@ -36,7 +38,7 @@ use bookclerk_library::{
     AcquireStatus, LibraryStore, NewBook, NewTitleRequest, RequestStatus, UserRole,
 };
 use bookclerk_node_proto::{CatalogFile, CatalogMetadata, CatalogTitle};
-use bookclerk_source::CatalogHit;
+use bookclerk_source::{CatalogHit, ContentSource};
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
@@ -803,5 +805,41 @@ fn catalog_title(sample: &SampleTitle, hit: Option<&CatalogHit>) -> CatalogTitle
                 .saturating_mul(480_000),
             content_type: Some("audio/mp4".into()),
         }],
+    }
+}
+
+/// Replaces a search hit with its storefront's full catalog record (the
+/// details call Discover makes for title dialogs), so a store whose search
+/// rows are lean, such as Libro.fm, still seeds a description, publisher,
+/// genres and price.
+///
+/// # Arguments
+///
+/// * `source` - The storefront the hit came from.
+/// * `hit` - The search row [`best_match`] chose.
+/// * `deadline` - When the lookup budget runs out.
+///
+/// # Returns
+///
+/// The full record, or `hit` unchanged when the details call fails, times
+/// out, finds nothing, or returns a different product than the search
+/// matched.
+pub async fn with_details(
+    source: &dyn ContentSource,
+    hit: CatalogHit,
+    deadline: tokio::time::Instant,
+) -> CatalogHit {
+    let lookup = tokio::time::timeout_at(deadline, source.catalog_detail(&hit.product_id));
+    match lookup.await {
+        Ok(Ok(Some(full))) if full.product_id == hit.product_id => full,
+        Ok(Ok(_)) => hit,
+        Ok(Err(err)) => {
+            tracing::warn!(product = %hit.product_id, %err, "catalog details failed");
+            hit
+        }
+        Err(_) => {
+            tracing::warn!(product = %hit.product_id, "catalog details timed out");
+            hit
+        }
     }
 }
