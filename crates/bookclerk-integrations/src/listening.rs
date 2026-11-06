@@ -13,8 +13,8 @@ use crate::types::ListeningProgressSnapshot;
 ///
 /// `provider` should be the integration id (`audiobookshelf`, plugin id, …).
 /// When the sync changes what Discover reads from any stored row (see
-/// `TasteState`: who the row belongs to, which owned book it matched, and how
-/// far they got), publishes one `listening_synced`; a sync that changes
+/// `TasteState`: who the row belongs to, which owned book and work it matched,
+/// its authors, and how far they got), publishes one `listening_synced`; a sync that changes
 /// nothing Discover reads queues no refresh.
 ///
 /// # Arguments
@@ -108,7 +108,7 @@ pub async fn upsert_listening_snapshots(
 }
 
 /// What Discover reads from one stored listening row: whose it is, which
-/// owned book it matched (a seed), and how far they got
+/// owned book and work it matched (seeds), its authors, and how far they got
 /// ([`listening_stage`]; Discover weighs progress, not the exact second).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TasteState {
@@ -116,6 +116,10 @@ struct TasteState {
     identity_id: Option<i64>,
     /// Owned book the row matched, when any.
     book_uuid: Option<String>,
+    /// Work the row resolved to (an embedding seed), when any.
+    work_id: Option<String>,
+    /// Authors the sync reported (they weigh liked authors), when any.
+    authors: Option<String>,
     /// [`listening_stage`] of the stored progress.
     stage: u8,
 }
@@ -126,6 +130,8 @@ impl TasteState {
         Self {
             identity_id: row.identity_id,
             book_uuid: row.book_uuid.clone(),
+            work_id: row.work_id.clone(),
+            authors: row.authors.clone(),
             stage: listening_stage(
                 row.progress,
                 row.current_time_seconds,
@@ -403,6 +409,14 @@ mod tests {
             .filter(|ids| ids.as_array().is_some_and(|a| !a.is_empty()))
             .collect();
         assert_eq!(named, vec![serde_json::json!([dana.id])]);
+
+        // Authors filled in later feed liked authors, so they are a change.
+        let mut credited = same[0].clone();
+        credited.authors = Some("Ursula K. Le Guin".into());
+        upsert_listening_snapshots(&library, "audiobookshelf", &[credited])
+            .await
+            .expect("sync");
+        assert_eq!(synced_events(&library).await.len(), 8);
     }
 
     #[test]

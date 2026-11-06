@@ -2001,8 +2001,8 @@ pub const CORE_EVENTS_QUEUE: &str = "core.events";
 /// `cancelled`, or `deleted`).
 pub const WISHLIST_CHANGED: &str = "wishlist_changed";
 /// Host event published when a listening sync changed what Discover reads
-/// from a stored row: its owner, matched book, or how far they got (started,
-/// quarter, finished).
+/// from a stored row: its owner, matched book or work, authors, or how far
+/// they got (started, quarter, finished).
 ///
 /// Payload: `provider` (the integration that synced) and `identityIds` (the
 /// portal identities whose rows changed, before or after; rows not tied to

@@ -686,7 +686,8 @@ describe, best effort (a failed publish is logged, and the write stands):
   is removed with its user (`deleted`); `identityId` is the portal identity
   that wished, or null;
 - `listening_synced` (`provider`, `identityIds`) when a listening sync
-  changed a stored row's owner, matched book, start, quarter or finish; its
+  changed a stored row's owner, matched book or work, authors, start,
+  quarter or finish; its
   `source` is the integration that synced, and `identityIds` names the
   portal identities whose rows changed. A sync that changes none of these
   publishes nothing.

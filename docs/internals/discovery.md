@@ -125,7 +125,7 @@ events:
 | Event | Published when | Discover queues |
 | --- | --- | --- |
 | `wishlist_changed` | A wishlist entry is added or changes status, or an open one is deleted with its user. | A fetch for the person who wished (their seeds changed), and a ranking for everyone else with shelves (wish counts changed). |
-| `listening_synced` | A listening sync changed, for some stored row, whose it is, which owned book it matched, whether they started it, which quarter they are in, or whether they finished it. | A fetch for everyone with shelves. |
+| `listening_synced` | A listening sync changed, for some stored row, whose it is, which owned book or work it matched, its authors, whether they started it, which quarter they are in, or whether they finished it. | A fetch for everyone with shelves. |
 | `book_acquired` | The household acquires a book. | A fetch for everyone with shelves. |
 
 Each job it queues may only run 30 seconds later, so the changes of one
