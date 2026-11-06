@@ -416,6 +416,31 @@
               }
             }
           },
+          "503": {
+            "description": "The portal session could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than showing the sign-in screen.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "session_check_unavailable",
+                  "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {

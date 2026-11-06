@@ -40,7 +40,8 @@ every content signal to `no` (`use=immediate`).
    cross-site checks and store sign-in callbacks use it), waits for
    `/health`, approves and deploys the four storefronts as the operator
    (as an operator would in Settings; visitors cannot), makes the visitor
-   the host's Owner and redeems the Owner's claim ticket. The
+   the host's Owner (with the fixed password `VISITOR_PASSWORD` in
+   `src/lifecycle.ts`) and redeems the Owner's claim ticket. The
    Durable Object then forgets the operator token. The visitor waits on
    `/_demo/wait`, which says how long a start usually takes: the median of
    the last week's recorded startup times (`sessions.startup_seconds`).
@@ -56,9 +57,13 @@ every content signal to `no` (`use=immediate`).
    - counts store sign-in starts against per-session and per-day limits;
    - forwards the request as the visitor's own session, so bookclerkd
      authorizes everything as the visitor's Owner account and
-     scans only the visitor's store accounts;
+     scans only the visitor's store accounts. The visitor may elevate to
+     operator with the Owner password and impersonate the seeded users, as
+     an Owner would; elevated, they still reach only the allowed routes;
    - rewrites `Set-Cookie` so the container cannot set the Worker's cookies,
-     and adds a banner with the time left and a **Start over** button;
+     and adds a banner with the time left and a **Start over** button. Its
+     **Demo** label opens a panel that shows the Owner password and how to
+     elevate;
    - marks the app's HTML `Cache-Control: no-transform`, so Cloudflare does
      not add its Web Analytics beacon inside the visitor's copy.
 

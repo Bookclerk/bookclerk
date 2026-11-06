@@ -469,6 +469,47 @@ async function parseJobAdmit(res: Response): Promise<ActionResponse> {
   return parseJson(res);
 }
 
+/** Most `Retry-After` waits {@link fetchRetryingBusy} honors, in seconds. */
+const MAX_RETRY_AFTER_SECONDS = 10;
+
+/** How many times {@link fetchRetryingBusy} asks again after a 503. */
+const BUSY_RETRIES = 4;
+
+/**
+ * Fetches a read, asking again while the daemon answers 503 with
+ * `Retry-After`.
+ *
+ * The daemon answers that way when it could not check the session yet (a
+ * busy library, as on a small server that is still starting), which is not
+ * the same as being signed out. Only for GET requests, which are safe to
+ * repeat.
+ *
+ * @param input - Request URL.
+ * @param init - Request options; the method must be GET.
+ * @param fetcher - Performs one request (defaults to `fetch`).
+ * @param sleep - Waits the given milliseconds (defaults to a timer).
+ * @returns The first response that is not such a 503, or the last 503.
+ */
+export async function fetchRetryingBusy(
+  input: string,
+  init: RequestInit | undefined,
+  fetcher: (input: string, init?: RequestInit) => Promise<Response> = (i, o) => fetch(i, o),
+  sleep: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => window.setTimeout(resolve, ms)),
+): Promise<Response> {
+  let res = await fetcher(input, init);
+  for (let attempt = 0; attempt < BUSY_RETRIES; attempt += 1) {
+    const header = res.status === 503 ? res.headers.get("Retry-After") : null;
+    // Only delay-seconds; an HTTP-date or a missing header is not retried.
+    if (header === null || !/^\d+$/.test(header.trim())) return res;
+    const wait = Number(header.trim());
+    await res.body?.cancel();
+    await sleep(Math.min(wait, MAX_RETRY_AFTER_SECONDS) * 1000);
+    res = await fetcher(input, init);
+  }
+  return res;
+}
+
 async function fetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit | undefined,
@@ -513,17 +554,52 @@ function toAuthSession(body: {
   };
 }
 
+/** Longest wait between {@link authMeUntilAnswered} attempts, in ms. */
+const SESSION_CHECK_MAX_BACKOFF_MS = 10_000;
+
+/**
+ * Asks {@link authMe} until it answers, backing off between attempts.
+ *
+ * A failed or timed-out check is not a sign-out, so the app keeps its
+ * loading screen and asks again rather than showing the sign-in page to
+ * someone whose session is fine. Waits 1 s, 2 s, 4 s … up to 10 s.
+ *
+ * @param stopped - True once the caller no longer wants the answer.
+ * @param check - Performs one session check (defaults to {@link authMe}).
+ * @param sleep - Waits the given milliseconds (defaults to a timer).
+ * @returns The session, or null when `stopped` turned true first.
+ */
+export async function authMeUntilAnswered(
+  stopped: () => boolean,
+  check: () => Promise<AuthSession> = authMe,
+  sleep: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => window.setTimeout(resolve, ms)),
+): Promise<AuthSession | null> {
+  let backoff = 1_000;
+  while (!stopped()) {
+    try {
+      return await check();
+    } catch {
+      await sleep(backoff);
+      backoff = Math.min(backoff * 2, SESSION_CHECK_MAX_BACKOFF_MS);
+    }
+  }
+  return null;
+}
+
 /**
  * Loads the current session from `GET /api/auth/me`.
  *
+ * A 503 with `Retry-After` (the session could not be checked yet) is asked
+ * again a few times; only a 401 means signed out.
+ *
  * @returns Anonymous session when the response is 401.
+ * @throws {ApiError} When the check fails or times out, which is not a
+ *   sign-out.
  */
 export async function authMe(): Promise<AuthSession> {
-  const res = await fetchWithTimeout(
-    "/api/auth/me",
-    { credentials: "include" },
-    8_000,
-    "Session check",
+  const res = await fetchRetryingBusy("/api/auth/me", { credentials: "include" }, (input, init) =>
+    fetchWithTimeout(input, init, 8_000, "Session check"),
   );
   if (res.status === 401) return ANON_SESSION;
   const body = await parseJson<{
@@ -2762,7 +2838,7 @@ export async function fetchBooks(params: {
   if (params.status && params.status !== "all") sp.set("status", params.status);
   sp.set("limit", String(params.limit ?? 40));
   sp.set("offset", String(params.offset ?? 0));
-  const res = await fetch(`/api/library/books?${sp}`, {
+  const res = await fetchRetryingBusy(`/api/library/books?${sp}`, {
     credentials: "include",
   });
   return parseJson(res);
