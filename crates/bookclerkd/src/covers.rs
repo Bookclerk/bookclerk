@@ -647,7 +647,9 @@ impl CoverService {
 
     /// Asks upstream about the cached entry for `key` with its validators:
     /// a `304` extends its lifetime, a new image replaces it, and a failure
-    /// keeps the old copy and is remembered for [`FAILURE_TTL`].
+    /// keeps the old copy and is remembered for [`FAILURE_TTL`], whatever
+    /// its kind, so a broken plugin or media worker is not asked again on
+    /// every view of a stale image.
     async fn refresh_entry(&self, backend: &impl CoverBackend, url: String, key: &str) {
         let Some(dir) = self.dir.clone() else {
             return;
@@ -678,7 +680,9 @@ impl CoverService {
                 ?failure,
                 "image revalidation failed; keeping the cached copy"
             );
-            self.note_failure(key, &failure);
+            // Unlike a request's failure, an unavailable fetcher is
+            // remembered too: the cached copy is served meanwhile.
+            self.remember_failure(key, &failure);
         }
     }
 
@@ -2135,6 +2139,26 @@ mod tests {
         }
         assert_eq!(failing.calls.load(Ordering::SeqCst), 1);
         assert!(lock(&service.index).get(&key).is_some());
+
+        // Nothing can fetch at all: the same backoff applies.
+        lock(&service.failures).clear();
+        let unavailable = Arc::new(Fake {
+            unavailable: true,
+            ..Fake::default()
+        });
+        for _ in 0..2 {
+            service
+                .image_detached(
+                    Arc::clone(&unavailable),
+                    url.clone(),
+                    CoverSize::Thumb,
+                    Refresh::WhenStale,
+                )
+                .await
+                .expect("old copy kept");
+            settle(&service).await;
+        }
+        assert_eq!(unavailable.calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
