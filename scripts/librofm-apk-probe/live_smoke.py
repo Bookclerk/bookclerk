@@ -7,7 +7,8 @@ catalog metadata via ``explore/audiobook_details/{isbn}`` (works for ISBNs
 at least one title, also hits packaged_m4b / download-manifest and downloads
 **one** media asset to probe magic bytes / zip contents.
 
-Optional `public` profile hits explore endpoints without auth (informational).
+`public` profile hits the explore endpoints exactly as source-libro's catalog
+calls do (honest user agent + X-LibroFm-AppVer, no auth).
 
 Credentials (auth profiles; first match wins):
   email:    TEST_LIBRO_EMAIL | TEST_LIBRO_USERNAME | TEST_LIBRO_USER |
@@ -38,6 +39,7 @@ import re
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -76,6 +78,34 @@ class Profile:
     user_agent: str
     extra_headers: dict[str, str]
     manifest_extra_query: dict[str, str]
+
+
+CATALOG_USER_AGENT_TEMPLATE = "bookclerk/{version} (+https://bookclerk.app)"
+
+
+def workspace_version(repo: Path) -> str:
+    """The `[workspace.package]` version, which `CARGO_PKG_VERSION` gives the plugin."""
+    with (repo / "Cargo.toml").open("rb") as f:
+        manifest = tomllib.load(f)
+    version = manifest.get("workspace", {}).get("package", {}).get("version")
+    if not isinstance(version, str) or not version:
+        raise ValueError("no [workspace.package] version in Cargo.toml")
+    return version
+
+
+def catalog_headers(app_ver: str, version: str, *, with_app_ver: bool = True) -> dict[str, str]:
+    """Exactly the headers source-libro/src/catalog.rs sends on signed-out calls.
+
+    An honest Bookclerk user agent, a JSON Accept and the app's
+    X-LibroFm-AppVer; no Authorization, device or OS headers.
+    """
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": CATALOG_USER_AGENT_TEMPLATE.format(version=version),
+    }
+    if with_app_ver:
+        headers["X-LibroFm-AppVer"] = app_ver
+    return headers
 
 
 def load_client_profile(repo: Path) -> Profile:
@@ -945,11 +975,15 @@ def run_public_smoke(
     apk_shapes: dict[str, Any] | None = None,
     search_query: str = "Foundation",
     preferred_isbn: str | None = None,
+    plugin_version: str = "0.0.0",
 ) -> dict[str, Any]:
-    """Hit public explore endpoints (no Authorization) and compare shapes.
+    """Hit public explore endpoints the way source-libro does and compare shapes.
 
-    Catalog metadata is available without login for any ISBN in the store;
-    library / download-manifest / packaged_m4b remain auth-only (401).
+    Sends exactly the plugin's catalog headers (see :func:`catalog_headers`),
+    so a server-side change (a new required header, a block on our user
+    agent) fails here even when the APK did not change. Catalog metadata is
+    available without login for any ISBN in the store; library /
+    download-manifest / packaged_m4b remain auth-only (401).
     """
     result: dict[str, Any] = {
         "profile": f"{profile.name}-public",
@@ -960,7 +994,7 @@ def run_public_smoke(
     }
     base = profile.base_url.rstrip("/")
     prefix = api_prefix_from_library_path(profile.library_path)
-    headers = profile_headers(profile, token=None)
+    headers = catalog_headers(profile.app_ver, plugin_version)
     apk_shapes = apk_shapes or {}
 
     # 1) Search (QueryMap: q=…)
@@ -1051,7 +1085,10 @@ def run_public_smoke(
         return result
     data = parsed.get("data") or {}
     book = data.get("audiobook") or {}
-    step["ok"] = True
+    step["ok"] = bool(isinstance(book, dict) and book.get("title") and book.get("isbn"))
+    # Fields the plugin maps from details; a missing one is reported, not
+    # failed, because individual titles may lack it.
+    step["missing_mapped_fields"] = details_missing_fields(data)
     step["title"] = book.get("title")
     step["signed_in"] = (parsed.get("user_info") or {}).get("signed_in")
     result["steps"].append(step)
@@ -1073,11 +1110,47 @@ def run_public_smoke(
             }
         )
 
+    # Whether the AppVer header is still what admits signed-out details.
+    status, _, _ = http_json(
+        "GET",
+        f"{base}{details_path}",
+        headers=catalog_headers(profile.app_ver, plugin_version, with_app_ver=False),
+    )
+    result["steps"].append(
+        {
+            "name": "explore_audiobook_details_without_appver",
+            "status": status,
+            "ok": True,
+            "note": "informational: 404 means X-LibroFm-AppVer is still required",
+        }
+    )
+
     schema_ok = all(c.get("ok") for c in result["schema_checks"])
     result["ok"] = all(s.get("ok") for s in result["steps"]) and schema_ok
     if not schema_ok:
         result["schema_error"] = True
     return result
+
+
+def details_missing_fields(data: Any) -> list[str]:
+    """Fields source-libro maps from explore/audiobook_details that `data` lacks."""
+    if not isinstance(data, dict):
+        return ["data"]
+    book = data.get("audiobook") if isinstance(data.get("audiobook"), dict) else {}
+    info = book.get("audiobook_info") if isinstance(book.get("audiobook_info"), dict) else {}
+    purchase = data.get("purchase_info") if isinstance(data.get("purchase_info"), dict) else {}
+    checks = {
+        "audiobook.description": book.get("description"),
+        "audiobook.publisher": book.get("publisher"),
+        "audiobook.genres": book.get("genres"),
+        "audiobook.authors": book.get("authors"),
+        "audiobook.audiobook_info.duration": info.get("duration"),
+        "audiobook.audiobook_info.narrators": info.get("narrators"),
+        "purchase_info.price": purchase.get("price"),
+        "purchase_info.for_sale": purchase.get("for_sale"),
+        "related_audiobooks": data.get("related_audiobooks"),
+    }
+    return [name for name, value in checks.items() if value in (None, "", [])]
 
 
 def _run_self_test() -> int:
@@ -1293,6 +1366,7 @@ def main(argv: list[str] | None = None) -> int:
                 apk_shapes=apk_shapes,
                 search_query=args.search_query,
                 preferred_isbn=catalog_isbn or isbn,
+                plugin_version=workspace_version(args.repo_root),
             )
         )
 

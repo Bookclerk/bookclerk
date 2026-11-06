@@ -14,6 +14,8 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 httparse = "1"
 serde_json = "1"
+# Determinism checks in the libro_catalog oracle serialize the records.
+serde = "1"
 bookclerk-plugin-abi = { path = "../crates/bookclerk-plugin-abi", features = ["host"] }
 bookclerk-plugin-manifest = { path = "../crates/bookclerk-plugin-manifest" }
 bookclerk-db-exec = { path = "../crates/bookclerk-db-exec" }
@@ -24,6 +26,8 @@ bookclerk-resolve = { path = "../crates/bookclerk-resolve" }
 bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
 bookclerk-config = { path = "../crates/bookclerk-config" }
+bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
+bookclerk-source = { path = "../crates/bookclerk-source" }
 # Independent re-signing oracle for cover_token.
 base64 = "0.23"
 hmac = "0.13"
@@ -174,6 +178,13 @@ bench = false
 [[bin]]
 name = "cache_settings"
 path = "fuzz_targets/cache_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "libro_catalog"
+path = "fuzz_targets/libro_catalog.rs"
 test = false
 doc = false
 bench = false

@@ -13,6 +13,7 @@ export type PluginConsentGrantDraft = {
   tcp?: { host: string; ports: number[] }[];
   addressCidrs?: string[];
   allowUndeclaredPublicRedirects?: boolean;
+  ownUserAgentHosts?: string[];
   bindings: string[];
   compatibilityFlags: string[];
   cpuMs?: number;
@@ -69,6 +70,71 @@ function parseNonNegInt(value: string, max?: number): number | undefined {
   const parsed = Number.parseInt(trimmed, 10);
   if (!Number.isFinite(parsed) || parsed < 0) return undefined;
   return max == null ? parsed : Math.min(parsed, max);
+}
+
+/**
+ * The consent form's User-Agent block: the agent the host sends, and one
+ * checkbox per host where the plugin asks to send its own agent instead.
+ *
+ * @param props.hostAgent - The host's agent, when the server reported it.
+ * @param props.requested - Hosts the plugin asks to keep its own agent for.
+ * @param props.reason - The plugin's reason, from `plugin.toml`.
+ * @param props.selected - Hosts currently approved in the draft.
+ * @param props.disabled - True while a request is in flight.
+ * @param props.onChange - Receives the new approved host list.
+ */
+function UserAgentGrant({
+  hostAgent,
+  requested,
+  reason,
+  selected,
+  disabled,
+  onChange,
+}: {
+  hostAgent?: string;
+  requested: string[];
+  reason?: string;
+  selected: string[];
+  disabled: boolean;
+  onChange: (hosts: string[]) => void;
+}) {
+  const agent = hostAgent ? <code className="font-mono">{hostAgent}</code> : "Bookclerk's agent";
+  return (
+    <div className="space-y-2 text-sm text-ink">
+      <p className="font-medium">User-Agent</p>
+      <p className="text-xs text-ink/55">Requests identify as {agent}.</p>
+      {requested.length > 0 ? (
+        <>
+          <p className="text-xs text-ink/70">
+            The plugin asks to send its own User-Agent to these hosts instead
+            {reason ? `: ${reason}` : "."} Clear a host to send Bookclerk&apos;s agent there.
+          </p>
+          <ul className="space-y-1">
+            {requested.map((host) => (
+              <li key={host}>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-teal"
+                    checked={selected.includes(host)}
+                    disabled={disabled}
+                    onChange={(e) =>
+                      onChange(
+                        e.target.checked
+                          ? uniqueValues([...selected, host])
+                          : selected.filter((item) => item !== host),
+                      )
+                    }
+                  />
+                  <span className="font-mono text-xs">{host}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 function initialList(requested: string[], existing?: string[]): string[] {
@@ -196,6 +262,7 @@ export function PluginConsentDialog({
   const [addressCidrs, setAddressCidrs] = useState<string[]>([]);
   const [cidrDraft, setCidrDraft] = useState("");
   const [allowUndeclaredPublicRedirects, setAllowUndeclaredPublicRedirects] = useState(false);
+  const [ownUserAgentHosts, setOwnUserAgentHosts] = useState<string[]>([]);
   const [bindings, setBindings] = useState<string[]>([]);
   const [compatibilityFlags, setCompatibilityFlags] = useState<string[]>([]);
   const [flagDraft, setFlagDraft] = useState("");
@@ -213,6 +280,11 @@ export function PluginConsentDialog({
     setAddressCidrs(initialList(request.addressCidrs ?? [], existing?.addressCidrs));
     setAllowUndeclaredPublicRedirects(
       existing?.allowUndeclaredPublicRedirects ?? request.allowUndeclaredPublicRedirects ?? false,
+    );
+    setOwnUserAgentHosts(
+      initialList(request.ownUserAgentHosts ?? [], existing?.ownUserAgentHosts).filter((host) =>
+        (request.ownUserAgentHosts ?? []).includes(host),
+      ),
     );
     setBindings(initialList(request.bindings, existing?.bindings));
     setCompatibilityFlags(initialList(request.compatibilityFlags, existing?.compatibilityFlags));
@@ -254,6 +326,11 @@ export function PluginConsentDialog({
     if (allowUndeclaredPublicRedirects) {
       parts.push("undeclared public redirects");
     }
+    if (ownUserAgentHosts.length > 0) {
+      parts.push(
+        `own User-Agent for ${ownUserAgentHosts.length} host${ownUserAgentHosts.length === 1 ? "" : "s"}`,
+      );
+    }
     if (parts.length === 0) {
       return isWorkerd
         ? "Outbound network with no destinations selected"
@@ -265,6 +342,7 @@ export function PluginConsentDialog({
     addressCidrs.length,
     isWorkerd,
     networkMode,
+    ownUserAgentHosts.length,
     selectedDomains,
     tcp.length,
   ]);
@@ -672,6 +750,14 @@ export function PluginConsentDialog({
                     </span>
                   </label>
                 ) : null}
+                <UserAgentGrant
+                  hostAgent={consent.host_user_agent}
+                  requested={request.ownUserAgentHosts ?? []}
+                  reason={request.ownUserAgentReason}
+                  selected={ownUserAgentHosts}
+                  disabled={busy}
+                  onChange={setOwnUserAgentHosts}
+                />
               </div>
             ) : null}
           </ConsentSection>
@@ -928,6 +1014,7 @@ export function PluginConsentDialog({
                 addressCidrs: networkMode === "deny" ? [] : addressCidrs,
                 allowUndeclaredPublicRedirects:
                   networkMode === "deny" ? false : allowUndeclaredPublicRedirects,
+                ownUserAgentHosts: networkMode === "deny" ? [] : ownUserAgentHosts,
                 bindings,
                 compatibilityFlags: isWorkerd ? compatibilityFlags : [],
                 cpuMs: isWorkerd ? parsePositiveInt(cpuMs, limits.max_cpu_ms) : undefined,

@@ -1619,6 +1619,7 @@ Options:
 - `--request <DIGEST>`: The `request_digest` of the request you reviewed, from `clusters consents` (refused when the cluster now asks for anything else) (required)
 - `--deny-domain <DOMAIN>`: Take a domain out of the request. Repeatable
 - `--deny-binding <BINDING>`: Take a binding out of the request (`secrets`, `kv`, ...). Repeatable
+- `--deny-own-user-agent <HOST>`: Refuse the plugin's own User-Agent on a host it asks for; its requests there carry Bookclerk's agent. Repeatable
 - `--deny-network`: Deny all network access
 
 ### `bookclerk clusters scan`

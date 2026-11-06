@@ -166,6 +166,11 @@ supports_suspend = true
 - Unknown capability keys are parse errors, not silent defaults. A typo in
   a security-relevant field must not read as "whatever we would have
   picked".
+- `[capabilities.network]` takes `mode`, `domains` (workerd), `tcp`,
+  `address_cidrs`, `allow_undeclared_public_redirects` and an optional
+  `[capabilities.network.own_user_agent]` table for hosts that need the
+  plugin's own `User-Agent`. See
+  [Capabilities and consent](capabilities.md#declaring-what-a-plugin-needs).
 
 ### `command` (native)
 

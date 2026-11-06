@@ -342,8 +342,8 @@ async fn a_write_right_after_hello_is_reported() {
     }
 }
 
-/// A member hears only `library` and `nodes`: a jobs poke is filtered
-/// out, a library poke comes through; signing the member out closes the
+/// A member hears only `library`, `nodes` and `discover`: a jobs poke is
+/// filtered out, library and discover pokes come through; signing the member out closes the
 /// socket with 4401.
 #[tokio::test]
 async fn a_member_hears_only_their_topics_until_signed_out() {
@@ -369,7 +369,11 @@ async fn a_member_hears_only_their_topics_until_signed_out() {
         .unwrap();
     assert_eq!(
         topics(&hello),
-        vec!["library".to_string(), "nodes".to_string()]
+        vec![
+            "library".to_string(),
+            "nodes".to_string(),
+            "discover".to_string()
+        ]
     );
 
     poke(LiveTopic::Jobs);
@@ -383,6 +387,11 @@ async fn a_member_hears_only_their_topics_until_signed_out() {
         vec!["library".to_string()],
         "operator topics are filtered out"
     );
+    poke(LiveTopic::Discover);
+    let shelves = next_frame(&mut socket, Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(topics(&shelves), vec!["discover".to_string()]);
 
     store
         .delete_portal_sessions_for_user(user_id)
@@ -401,4 +410,18 @@ async fn a_member_hears_only_their_topics_until_signed_out() {
     }
     let closed = closed.expect("the socket closes once the session is gone");
     assert_eq!(closed["code"], CLOSE_UNAUTHORIZED);
+}
+
+#[test]
+fn only_an_unchecked_session_keeps_the_socket_open() {
+    use axum::response::IntoResponse;
+    assert!(session_check_unavailable(&UserCallerRefusal::Response(
+        crate::auth::session_check_unavailable()
+    )));
+    assert!(!session_check_unavailable(&UserCallerRefusal::Response(
+        axum::http::StatusCode::FORBIDDEN.into_response()
+    )));
+    assert!(!session_check_unavailable(&UserCallerRefusal::Status(
+        axum::http::StatusCode::UNAUTHORIZED
+    )));
 }

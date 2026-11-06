@@ -25,6 +25,7 @@ from ..tools import (
     apply_author_compatibility_date,
     declares_python,
     module_load_key,
+    own_user_agent_host_ascii,
     unimplemented_surface,
     validate_author_compatibility_flags,
     workerd_module_is_embedded,
@@ -266,6 +267,28 @@ def plugin_global_outbound(mode: str) -> str:
     return "egress" if mode == "outbound" else "blocked"
 
 
+def own_user_agent_hosts_for(hosts: list[Any]) -> list[str]:
+    """Put own-agent host patterns into the ASCII form the egress worker matches.
+
+    As the host's policy does: UTS 46 IDNA for the name, the ``*.`` prefix
+    kept; a host it would refuse is left out.
+
+    Args:
+        hosts: ``capabilities.network.own_user_agent.hosts`` as written.
+
+    Returns:
+        The patterns that normalize, lowercased and in A-label form.
+    """
+    out: list[str] = []
+    for raw in hosts:
+        if not isinstance(raw, str):
+            continue
+        pattern = own_user_agent_host_ascii(raw)
+        if pattern is not None:
+            out.append(pattern)
+    return out
+
+
 def egress_domains_for(needs_python: bool, mode: str, base: list[str]) -> list[str]:
     """Build the egress allow-list, adding Pyodide hosts when needed.
 
@@ -418,6 +441,10 @@ def materialize_config(
     net = (manifest.get("capabilities") or {}).get("network") or {}
     network_mode = net.get("mode") or "deny"
     network_domains = list(net.get("domains") or [])
+    own_user_agent = net.get("own_user_agent")
+    own_user_agent_hosts = own_user_agent_hosts_for(
+        list(own_user_agent.get("hosts") or []) if isinstance(own_user_agent, dict) else []
+    )
 
     bookclerk_dir = ensure_dir_under(state_dir, ".bookclerk")
     refuse_symlink_path(state_dir, bookclerk_dir)
@@ -552,6 +579,7 @@ def materialize_config(
             "mode": "outbound" if network_mode == "outbound" else "deny",
             "domains": domains,
             "maxRedirects": 10,
+            "ownUserAgentHosts": own_user_agent_hosts,
         },
         separators=(",", ":"),
     )

@@ -1,0 +1,9 @@
+{
+  "host": "bücher.example",
+  "patterns": [
+    "*.xn--bcher-kva.example",
+    "bücher.example"
+  ],
+  "userAgent": "bookclerk/1.0.0 (+https://bookclerk.app)",
+  "own": "App/1"
+}

@@ -193,7 +193,8 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
 }
 
 const { parse } = await import("smol-toml");
-const { materializeConfig } = await import("../dist/sparse-workerd/config.js");
+const { materializeConfig, ownUserAgentHostsFor } =
+  await import("../dist/sparse-workerd/config.js");
 const conflictDir = path.join(fixtures, "invalid-module-path");
 const conflictManifest = parse(fs.readFileSync(path.join(conflictDir, "plugin.toml"), "utf8"));
 try {
@@ -309,6 +310,59 @@ function bindingMessage(manifest) {
     return err instanceof Error ? err.message : "";
   }
   return "";
+}
+// [capabilities.network.own_user_agent]: outbound, 1-32 hosts that are not `*`,
+// and a one-line reason.
+{
+  const own = (mode, table) => ({
+    ...bindingBase,
+    capabilities: { network: { mode, own_user_agent: table } },
+  });
+  const ok = { hosts: ["*.libro.fm"], reason: "App API contract." };
+  const hosts = Array.from({ length: 33 }, (_, i) => `h${i}.example.com`);
+  const cases = [
+    [own("outbound", ok), ""],
+    [own("deny", ok), 'needs mode = "outbound"'],
+    [own("outbound", { hosts: [], reason: "r" }), "between 1 and 32"],
+    [own("outbound", { hosts, reason: "r" }), "between 1 and 32"],
+    [own("outbound", { hosts: ["*"], reason: "r" }), "is not allowed"],
+    [own("outbound", { hosts: ["a%41.example.com"], reason: "r" }), "not a valid hostname"],
+    [own("outbound", { hosts: ["a.example.com"], reason: " " }), "one line"],
+    [own("outbound", { hosts: ["a.example.com"], reason: "a\nb" }), "one line"],
+    [own("outbound", { hosts: ["a.example.com"], reason: "x".repeat(301) }), "one line"],
+    [own("outbound", { ...ok, extra: true }), "unknown field `extra`"],
+  ];
+  for (const [manifest, needle] of cases) {
+    const message = bindingMessage(manifest);
+    if (needle ? !message.includes(needle) : message !== "") {
+      console.error("FAIL own_user_agent", JSON.stringify(manifest), message);
+      process.exit(1);
+    }
+  }
+  const asciiHosts = ownUserAgentHostsFor([
+    " *.Bücher.example. ",
+    "API.example.com",
+    "xn--",
+    "*.API.123",
+  ]);
+  if (
+    JSON.stringify(asciiHosts) !==
+    JSON.stringify(["*.xn--bcher-kva.example", "api.example.com", "*.api.123"])
+  ) {
+    console.error("FAIL ownUserAgentHostsFor", JSON.stringify(asciiHosts));
+    process.exit(1);
+  }
+  // The A-label check itself, independent of what this Node's URL parser does.
+  const { isValidALabel } = await import("../dist/tools/idna.js");
+  const aLabels = { "xn--fa-hia": true, "xn--3xa": true, example: true };
+  for (const bad of ["xn--", "xn--99999999", "xn--abc-", "xn---"]) aLabels[bad] = false;
+  for (const [label, valid] of Object.entries(aLabels)) {
+    if (isValidALabel(label) !== valid) {
+      console.error("FAIL isValidALabel", label, !valid);
+      process.exit(1);
+    }
+  }
+  console.log("ok own_user_agent validation");
 }
 // [triggers] crons: shape, count and duplicates; a cron-only manifest is valid.
 {

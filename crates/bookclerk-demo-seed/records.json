@@ -1,0 +1,875 @@
+{
+  "demo-circe": {
+    "product_id": "9781478975311",
+    "title": "Circe",
+    "url": "https://libro.fm/audiobooks/9781478975311",
+    "cover_url": "https://covers.libro.fm/9781478975311_1120.jpg",
+    "origin": "libro details",
+    "subtitle": null,
+    "description": "<p><b>This #1 </b><i><b>New York Times</b></i><b> bestseller brilliantly reimagines the life of Circe, formidable sorceress of </b><i><b>The Odyssey</b></i><b>, as she discovers her own power, forges her identity, and challenges the gods who seek to control her. </b><br><br><b>\"[A] bold and subversive retelling of the goddess's story.\" —</b><i><b>The New York Times</b></i></p><p>In the house of Helios, god of the sun and mightiest of the Titans, a daughter is born. But Circe is a strange child—not powerful, like her father, nor viciously alluring like her mother. Turning to the world of mortals for companionship, she discovers that she does possess power—the power of witchcraft, which can transform rivals into monsters and menace the gods themselves.</p><p>Threatened, Zeus banishes her to a deserted island, where she hones her occult craft, tames wild beasts and crosses paths with many of the most famous figures in all of mythology, including the Minotaur, Daedalus and his doomed son Icarus, the murderous Medea, and, of course, wily Odysseus.</p><p>But there is danger, too, for a woman who stands alone, and Circe unwittingly draws the wrath of both men and gods, ultimately finding herself pitted against one of the most terrifying and vengeful of the Olympians. To protect what she loves most, Circe must summon all her strength and choose, once and for all, whether she belongs with the gods she is born from, or the mortals she has come to love.</p><p>With unforgettably vivid characters, mesmerizing language, and page-turning suspense, <i>Circe </i>is a triumph of storytelling, an intoxicating epic of family rivalry, palace intrigue, love and loss, as well as a celebration of indomitable female strength in a man's world.</p><p>Named one of the Best Books of the Year by NPR, <i>Washington Post</i>, <i>People</i>, <i>Time</i>, Amazon, <i>Entertainment Weekly</i>, <i>Bustle</i>, <i>Newsweek</i>, <i>A.V. Club</i>, <i>Christian Science Monitor</i>, <i>Refinery 29</i>, <i>Buzzfeed</i>, <i>Paste</i>, Audible, <i>Kirkus Reviews</i>, <i>Publishers Weekly</i>, <i>Thrillist</i>, NYPL, <i>Self</i>, <i>Real Simple</i>, Goodreads,<i> Boston Globe</i>, <i>Electric Literature</i>, <i>BookPage</i>, <i>Guardian</i>, <i>Book Riot</i>, <i>Seattle Times</i>, and <i>Business Insider</i>.</p>",
+    "publisher": "Hachette Audio",
+    "length_minutes": 728,
+    "published_at": "2018-04-10T00:00:00.000Z",
+    "categories": "Classics, Fiction, Fiction - Literary, Historical Fiction",
+    "language": "eng",
+    "price_cents": 3359,
+    "currency": "USD",
+    "price_label": "$33.59",
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": false,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "isbn",
+        "value": "9781478975311"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Madeline Miller",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Perdita Weeks",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [],
+    "parent_product_id": null
+  },
+  "demo-dune": {
+    "product_id": "B002V1OF70",
+    "title": "Dune",
+    "url": null,
+    "cover_url": "https://m.media-amazon.com/images/I/41rrXYM-wHL._SL500_.jpg",
+    "origin": "search",
+    "subtitle": "Book One in the Dune Chronicles",
+    "description": "<p><b>NOW A MAJOR MOTION PICTURE directed by Denis Villeneuve, starring Timothée Chalamet, Zendaya, Rebecca Ferguson, Javier Bardem, Josh Brolin, Austin Butler, Florence Pugh, Dave Bautista, Christopher Walken, Léa Seydoux, Stellan Skarsgård, and Charlotte Rampling<br /></b> <br />Set on the desert planet Arrakis, Dune is the story of the boy Paul Atreides, who would become the mysterious man known as Muad'dib. He would avenge the traitorous plot against his noble family—and would bring to fruition humankind's most ancient and unattainable dream.<br /><br />A stunning blend of adventure and mysticism, environmentalism and politics, Dune won the first Nebula Award, shared the Hugo Award, and formed the basis of what is undoubtedly the grandest epic in science fiction. Frank Herbert's death in 1986 was a tragic loss, yet the astounding legacy of his visionary fiction will live forever.<br /><br /><b> Long-listed, Audible.com Best of the Year, 2007<br /><br /> Long-listed, Audible.com 100 Audible Essentials, 2007<br /><br /> Audie Award winner, 2008 </b></p>",
+    "publisher": "Macmillan Audio",
+    "length_minutes": 1262,
+    "published_at": "2007-05-29",
+    "categories": "Literature & Fiction; Classics; Science Fiction & Fantasy; Fantasy; Epic; Science Fiction; Adventure; Space Opera",
+    "language": "english",
+    "price_cents": 3374,
+    "currency": "USD",
+    "price_label": "$33.74",
+    "rating_overall": 4.673579730759861,
+    "rating_count": 127247,
+    "is_abridged": null,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "asin",
+        "value": "B002V1OF70"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Frank Herbert",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Scott Brick",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Orlagh Cassidy",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Euan Morton",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Simon Vance",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Ilyana Kadushin",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Byron Jennings",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "David R. Gordon",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Jason Culp",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Kent Broadhurst",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Oliver Wyman",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Patricia Kilgarriff",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Scott Sowers",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [
+      {
+        "name": "Dune",
+        "position": "1",
+        "storeSeriesId": "B005NALAG0"
+      }
+    ],
+    "parent_product_id": null
+  },
+  "demo-educated": {
+    "product_id": "358077",
+    "title": "Educated",
+    "url": "https://www.chirpbooks.com/audiobooks/educated-by-tara-westover",
+    "cover_url": "https://img.chirpbooks.com/image/upload/f_jpg,q_auto:eco,w_200,h_200/v1659721603/cover_images/penguin_rh/9780525528067.jpg",
+    "origin": "search",
+    "subtitle": "A Memoir",
+    "description": "<b>#1 <i>NEW YORK TIMES</i> BESTSELLER WITH FOUR MILLION COPIES SOLD • “A heartbreaking, heartwarming, best-in-years memoir about striding beyond the limitations of birth and environment into a better life.”—<i>USA Today</i><br><br>One of the most acclaimed books of our time: an unforgettable memoir about a young woman who, kept out of school, leaves her survivalist family and goes on to earn a PhD from Cambridge University</b><br><br><b>“Extraordinary . . . an act of courage and self-invention.”—<i>The New York Times</i></b><br><br><b>• #6 <i>New York Times </i>Readers Pick for the 100 Best Books of the 21st Century</b><br><b>• One of Barack Obama’s Favorite Books of the Year</b><br><b>• Finalist for the <i>Los Angeles Times </i>Book Prize, National Book Critics Circle Award, and PEN/Jean Stein Book Award</b><br><b>• Named a Best Book of the Year by <i>The Washington Post, O: The Oprah Magazine, Time,</i> NPR, <i>Good Morning America, San Francisco Chronicle, The Guardian, </i>and many more</b><br><br>Born to survivalists in the mountains of Idaho, Tara Westover was seventeen the first time she set foot in a classroom. Her family was so isolated from mainstream society that there was no one to ensure the children received an education, and no one to intervene when one of Tara’s older brothers became violent. When another brother got himself into college, Tara decided to try a new kind of life. Her quest for knowledge transformed her, taking her over oceans and across continents, to Harvard and to Cambridge University. Only then would she wonder if she’d traveled too far, if there was still a way home.<br><br><b>“Beautiful and propulsive . . . Despite the singularity of [Westover’s] childhood, the questions her book poses are universal: How much of ourselves should we give to those we love? And how much must we betray them to grow up?”—<i>Vogue</i></b>",
+    "publisher": "Penguin Random House Audio Publishing Group",
+    "length_minutes": 730,
+    "published_at": "2018-02-20",
+    "categories": "Biographies & Memoirs; Perfect for Book Clubs; General Nonfiction",
+    "language": "English",
+    "price_cents": null,
+    "currency": null,
+    "price_label": null,
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": false,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [],
+    "credits": [
+      {
+        "name": "Tara Westover",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Julia Whelan",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [],
+    "parent_product_id": null
+  },
+  "demo-fourth-wing": {
+    "product_id": "B0BVD25SYT",
+    "title": "Fourth Wing",
+    "url": null,
+    "cover_url": "https://m.media-amazon.com/images/I/61DeDp4b3GL._SL500_.jpg",
+    "origin": "search",
+    "subtitle": "Empyrean, Book 1",
+    "description": "<p><i>Now with </i><b><i>three</i></b><i> bonus chapters read by Teddy Hamilton. Re-download the title now to listen to the extended version!</i></p> <p><b>A #1 </b><b><i>New York Times</i></b><b> bestseller • TV series in development at MGM Amazon Studios with Michael B. Jordan’s Outlier Society • Amazon Best Books of the Year, #4 • Apple Best Books of the Year 2023 • Barnes & Noble Best Fantasy Book of 2023 • NPR “Books We Love” 2023 • Audible Best Books of 2023 • Hudson Book of the Year • Google Play Best Books of 2023 • Indigo Best Books of 2023 • Waterstones Book of the Year finalist • Goodreads Choice Award Winner • </b><b><i>Newsweek</i></b><b> Staffers’ Favorite Books of 2023 • </b><b><i>Paste</i></b><b> Magazine's Best Books of 2023</b></p> <p><i>\"Suspenseful, sexy, and with incredibly entertaining storytelling, the first in Yarros' Empyrean series will delight fans of romantic, adventure-filled fantasy.\"</i>—<b>Booklist</b>, starred review</p> <p><i>\"</i>Fourth Wing<i> will have your heart pounding from beginning to end ... A fantasy like you've never read before.\"</i>―<b>Jennifer L. Armentrout</b>, #1 <i>New York Times</i> bestselling author</p> <p><b>Enter the brutal and elite world of a war college for dragon riders from </b><b><i>USA Today</i></b><b> bestselling author Rebecca Yarros.</b></p> <p>Twenty-year-old Violet Sorrengail was supposed to enter the Scribe Quadrant, living a quiet life among books and history. Now, the commanding general—also known as her tough-as-talons mother—has ordered Violet to join the hundreds of candidates striving to become the elite of Navarre: <i>dragon riders</i>.</p> <p>But when you’re smaller than everyone else and your body is brittle, death is only a heartbeat away … because dragons don’t bond to “fragile” humans. They incinerate them.</p> <p>With fewer dragons willing to bond than cadets, most would kill Violet to better their own chances of success. The rest would kill her just for being her mother’s daughter—like Xaden Riorson, the most powerful and ruthless wingleader in the Riders Quadrant.</p> <p>She’ll need every edge her wits can give her just to see the next sunrise.</p> <p>Yet, with every day that passes, the war outside grows more deadly, the kingdom’s protective wards are failing, and the death toll continues to rise. Even worse, Violet begins to suspect leadership is hiding a terrible secret.</p> <p>Friends, enemies, lovers. Everyone at Basgiath War College has an agenda—because once you enter, there are only two ways out: <i>graduate or die</i>.</p>",
+    "publisher": "Recorded Books",
+    "length_minutes": 1322,
+    "published_at": "2023-05-02",
+    "categories": "Science Fiction & Fantasy; Fantasy; Action & Adventure; Dragons & Mythical Creatures; Epic",
+    "language": "english",
+    "price_cents": 3164,
+    "currency": "USD",
+    "price_label": "$31.64",
+    "rating_overall": 4.661278446548742,
+    "rating_count": 58399,
+    "is_abridged": null,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "asin",
+        "value": "B0BVD25SYT"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Rebecca Yarros",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Rebecca Soler",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Teddy Hamilton",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [
+      {
+        "name": "The Empyrean",
+        "position": "1",
+        "storeSeriesId": "B0CB11LYGJ"
+      }
+    ],
+    "parent_product_id": null
+  },
+  "demo-lessons-in-chemistry": {
+    "product_id": "9780593507537",
+    "title": "Lessons in Chemistry",
+    "url": "https://libro.fm/audiobooks/9780593507537",
+    "cover_url": "https://covers.libro.fm/9780593507537_1120.jpg",
+    "origin": "libro details",
+    "subtitle": "A Novel",
+    "description": "<b>#1 GLOBAL BESTSELLER WITH MORE THAN 8 MILLION COPIES SOLD • Meet Elizabeth Zott: “a gifted research chemist, absurdly self-assured and immune to social convention” (<i>The Washington Post</i>) in 1960s California whose career takes a detour when she becomes the unlikely star of a beloved TV cooking show. <b>• <b>STREAM ON APPLE TV+</b><br></b><br>This novel is “irresistible, satisfying and full of fuel” (<i>The New York Times Book Review</i>) and “witty, sometimes hilarious...the <i>Catch-22 </i>of early feminism” (Stephen King, via Twitter).</b><br><b><br>A BEST BOOK OF THE YEAR: <i>The New York Times, Washington Post, NPR, Oprah Daily, Entertainment Weekly, Newsweek</i></b><br><br><b><i> </i></b>Chemist Elizabeth Zott is not your average woman. In fact, Elizabeth Zott would be the first to point out that there is no such thing as an <i>average</i> woman. But it’s the early 1960s and her all-male team at Hastings Research Institute takes a very unscientific view of equality. Except for one: Calvin Evans; the lonely, brilliant, Nobel–prize nominated grudge-holder who falls in love with—of all things—her mind. True chemistry results. <br><br>But like science, life is unpredictable. Which is why a few years later Elizabeth Zott finds herself not only a single mother, but the reluctant star of America’s most beloved cooking show <i>Supper at Six</i>. Elizabeth’s unusual approach to cooking (“combine one tablespoon acetic acid with a pinch of sodium chloride”) proves revolutionary. But as her following grows, not everyone is happy. Because as it turns out, Elizabeth Zott isn’t just teaching women to cook. She’s daring them to change the status quo.  <br><br>Laugh-out-loud funny, shrewdly observant, and studded with a dazzling cast of supporting characters, <i>Lessons in Chemistry</i> is as original and vibrant as its protagonist.",
+    "publisher": "Penguin Random House Audio Publishing Group",
+    "length_minutes": 715,
+    "published_at": "2022-04-05T00:00:00.000Z",
+    "categories": "Humor, Fiction, Fiction - Literary",
+    "language": "eng",
+    "price_cents": 2250,
+    "currency": "USD",
+    "price_label": "$22.50",
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": false,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "isbn",
+        "value": "9780593507537"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Bonnie Garmus",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Miranda Raison",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Bonnie Garmus",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Pandora Sykes",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [],
+    "parent_product_id": null
+  },
+  "demo-mistborn-1-part-1": {
+    "product_id": "1716",
+    "title": "Mistborn 1: The Final Empire 1 of 3",
+    "url": "https://www.graphicaudio.net/mistborn-1-the-final-empire-1-of-3.html",
+    "cover_url": "https://www.graphicaudio.net/media/catalog/product/cache/580bce3b044d0b0a78a636a27ee66f51/9/7/9781648812989_3.jpg",
+    "origin": "search",
+    "subtitle": null,
+    "description": null,
+    "publisher": null,
+    "length_minutes": null,
+    "published_at": null,
+    "categories": null,
+    "language": null,
+    "price_cents": null,
+    "currency": null,
+    "price_label": null,
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": null,
+    "work_kind": "book",
+    "expression_kind": "dramatisation",
+    "media_kind": "audiobook",
+    "identifiers": [],
+    "credits": [],
+    "series_entries": [
+      {
+        "name": "Mistborn"
+      }
+    ],
+    "parent_product_id": null
+  },
+  "demo-mistborn-1-part-2": {
+    "product_id": "2096",
+    "title": "Mistborn 1: The Final Empire 2 of 3",
+    "url": "https://www.graphicaudio.net/mistborn-1-the-final-empire-2-of-3.html",
+    "cover_url": "https://www.graphicaudio.net/media/catalog/product/cache/580bce3b044d0b0a78a636a27ee66f51/9/7/9781648813009.jpg",
+    "origin": "search",
+    "subtitle": null,
+    "description": null,
+    "publisher": null,
+    "length_minutes": null,
+    "published_at": null,
+    "categories": null,
+    "language": null,
+    "price_cents": null,
+    "currency": null,
+    "price_label": null,
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": null,
+    "work_kind": "book",
+    "expression_kind": "dramatisation",
+    "media_kind": "audiobook",
+    "identifiers": [],
+    "credits": [],
+    "series_entries": [
+      {
+        "name": "Mistborn"
+      }
+    ],
+    "parent_product_id": null
+  },
+  "demo-project-hail-mary": {
+    "product_id": "B08G9PRS1K",
+    "title": "Project Hail Mary",
+    "url": null,
+    "cover_url": "https://m.media-amazon.com/images/I/51POf8gOyLL._SL500_.jpg",
+    "origin": "search",
+    "subtitle": null,
+    "description": "<p><b>THE #1 </b><b><i> NEW YORK TIMES </i></b><b> BESTSELLER FROM THE AUTHOR OF </b><b><i> THE MARTIAN. </i></b><b> Now a major motion picture starring Ryan Gosling, directed by Phil Lord and Christopher Miller, with a screenplay by Drew Goddard. Project Hail Mary is now playing exclusively in theaters.</b></p> <p><b><i>Winner of the 2022 Audie Awards' Audiobook of the Year</i></b></p> <p><b><i>Number-One Audible and </i></b><b>New York Times</b><b><i> Audio Best Seller</i></b></p> <p><b><i>More than three million audiobooks sold</i></b></p> <p><b>A lone astronaut must save the earth from disaster in this incredible new science-based thriller from the number-one </b><b><i>New York Times</i></b><b> best-selling author of </b><b><i>The Martian</i></b><b>.</b></p> <p>Ryland Grace is the sole survivor on a desperate, last-chance mission - and if he fails, humanity and the Earth itself will perish.</p> <p>Except that right now, he doesn't know that. He can't even remember his own name, let alone the nature of his assignment or how to complete it.</p> <p>All he knows is that he's been asleep for a very, very long time. And he's just been awakened to find himself millions of miles from home, with nothing but two corpses for company.</p> <p>His crewmates dead, his memories fuzzily returning, he realizes that an impossible task now confronts him. Alone on this tiny ship that's been cobbled together by every government and space agency on the planet and hurled into the depths of space, it's up to him to conquer an extinction-level threat to our species.</p> <p>And thanks to an unexpected ally, he just might have a chance.</p> <p>Part scientific mystery, part dazzling interstellar journey, <i>Project Hail Mary</i> is a tale of discovery, speculation, and survival to rival <i>The Martian</i> - while taking us to places it never dreamed of going.</p> <p>PLEASE NOTE: To accommodate this audio edition, some changes to the original text have been made with the approval of author Andy Weir.</p>",
+    "publisher": "Audible Studios",
+    "length_minutes": 970,
+    "published_at": "2021-05-04",
+    "categories": "Mystery, Thriller & Suspense; Thriller & Suspense; Suspense; Science Fiction & Fantasy; Science Fiction; Adventure; Hard Science Fiction; Space Opera",
+    "language": "english",
+    "price_cents": 2522,
+    "currency": "USD",
+    "price_label": "$25.22",
+    "rating_overall": 4.874500121709497,
+    "rating_count": 316327,
+    "is_abridged": null,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "asin",
+        "value": "B08G9PRS1K"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Andy Weir",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Ray Porter",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [],
+    "parent_product_id": null
+  },
+  "demo-the-hobbit": {
+    "product_id": "1705009050",
+    "title": "The Hobbit",
+    "url": null,
+    "cover_url": "https://m.media-amazon.com/images/I/51yjW++Ko+L._SL500_.jpg",
+    "origin": "search",
+    "subtitle": null,
+    "description": "<p>THE GREAT MODERN CLASSIC AND PRELUDE TO THE LORD OF THE RINGS<br /> <br /> Deep down here by the dark water lived old Gollum, a small slimy creature. I don’t know where he came from, nor who or what he was. He was Gollum—as dark as darkness, except for two big round pale eyes in his thin face. He had a little boat, and he rowed about quite quietly on the lake; for lake it was, wide and deep and deadly cold.<br /> <br /> Whisked away from his comfortable, unambitious life in his hobbit-hole in Bag End by Gandalf the wizard and a band of dwarves, Bilbo Baggins finds himself caught up in a plot to raid the treasure hoard of Smaug the Magnificent, a large and very dangerous dragon.<br /> <br /> This brand-new unabridged recording is narrated by the acclaimed actor, director and author, Andy Serkis.</p>",
+    "publisher": "Recorded Books",
+    "length_minutes": 625,
+    "published_at": "2020-09-21",
+    "categories": "Literature & Fiction; Action & Adventure; Classics; Genre Fiction; Literary Fiction; Science Fiction & Fantasy; Fantasy; Teen & Young Adult",
+    "language": "english",
+    "price_cents": 2053,
+    "currency": "USD",
+    "price_label": "$20.53",
+    "rating_overall": 4.918422492817075,
+    "rating_count": 29236,
+    "is_abridged": null,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "asin",
+        "value": "1705009050"
+      }
+    ],
+    "credits": [
+      {
+        "name": "J. R. R. Tolkien",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Andy Serkis",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [
+      {
+        "name": "The Lord of the Rings",
+        "position": "0.5",
+        "storeSeriesId": "B009CFOEGK"
+      }
+    ],
+    "parent_product_id": null
+  },
+  "demo-the-midnight-library": {
+    "product_id": "9780593340233",
+    "title": "The Midnight Library",
+    "url": "https://libro.fm/audiobooks/9780593340233",
+    "cover_url": "https://covers.libro.fm/9780593340233_1120.jpg",
+    "origin": "libro details",
+    "subtitle": "A GMA Book Club Pick (A Novel)",
+    "description": "<b><b><b><b>The #1 <i>New York Times </i>bestselling WORLDWIDE phenomenon </b><br><br><b>Winner of the Goodreads Choice Award for Fiction | A Good Morning America Book Club Pick | <i>Independent (</i>London) Ten Best Books of the Year</b><br><br><b>\"A feel-good book guaranteed to lift your spirits.\"<i>—The Washington Post</i> <br><br>The dazzling reader-favorite about the choices that go into a life well lived. Don’t miss Matt Haig’s latest <i>New York Times</i> bestseller, <i>The Midnight Train</i>, available now<br></b></b></b></b><br>Somewhere out beyond the edge of the universe there is a library that contains an infinite number of books, each one the story of another reality. One tells the story of your life as it is, along with another book for the other life you could have lived if you had made a different choice at any point in your life. While we all wonder how our lives might have been, what if you had the chance to go to the library and see for yourself? Would any of these other lives truly be better?<br><br>In <i>The Midnight Library</i>, Matt Haig's enchanting blockbuster novel, Nora Seed finds herself faced with this decision. Faced with the possibility of changing her life for a new one, following a different career, undoing old breakups, realizing her dreams of becoming a glaciologist; she must search within herself as she travels through the Midnight Library to decide what is truly fulfilling in life, and what makes it worth living in the first place.",
+    "publisher": "Penguin Random House Audio Publishing Group",
+    "length_minutes": 530,
+    "published_at": "2020-09-29T00:00:00.000Z",
+    "categories": "Fiction, Fiction - Literary, Science Fiction",
+    "language": "eng",
+    "price_cents": 2000,
+    "currency": "USD",
+    "price_label": "$20.00",
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": false,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "isbn",
+        "value": "9780593340233"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Matt Haig",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Carey Mulligan",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [
+      {
+        "name": "The Midnight World"
+      }
+    ],
+    "parent_product_id": null
+  },
+  "demo-the-silent-patient": {
+    "product_id": "372695",
+    "title": "The Silent Patient",
+    "url": "https://www.chirpbooks.com/audiobooks/the-silent-patient-by-alex-michaelides",
+    "cover_url": "https://img.chirpbooks.com/image/upload/f_jpg,q_auto:eco,w_200,h_200/v1651758412/cover_images/macmillan/9781250317537.jpg",
+    "origin": "search",
+    "subtitle": null,
+    "description": "<p><b>\"The perfect binge listen.\" —<i> Yahoo Lifestyle</i></b><br><br> <b>Instant #1 <i>New York Times </i>bestseller.</b><br><br><b><i>The Silent Patient</i> is a shocking psychological thriller of a woman’s act of violence against her husband—and of the therapist obsessed with uncovering her motive.</b> <br><br>Alicia Berenson’s life is seemingly perfect. A famous painter married to an in-demand fashion photographer, she lives in a grand house with big windows overlooking a park in one of London’s most desirable areas. One evening her husband Gabriel returns home late from a fashion shoot, and Alicia shoots him five times in the face, and then never speaks another word.<br><br>Alicia’s refusal to talk, or give any kind of explanation, turns a domestic tragedy into something far grander, a mystery that captures the public imagination and casts Alicia into notoriety. The price of her art skyrockets, and she, the silent patient, is hidden away from the tabloids and spotlight at the Grove, a secure forensic unit in North London.<br><br>Theo Faber is a criminal psychotherapist who has waited a long time for the opportunity to work with Alicia. His determination to get her to talk and unravel the mystery of why she shot her husband takes him down a twisting path into his own motivations—a search for the truth that threatens to consume him....  <br><br><b>More praise for <i>The Silent Patient:</i></b> <br><br>“Absolutely brilliant… I read it in a state of intense, breathless excitement.” — Stephen Fry  <br><br>“Smart, sophisticated storytelling freighted with real suspense - a very fine novel by any standard.”  — Lee Child<br><br>“<i>The Silent Patient</i> sneaks up on you like a slash of intimidating shadow on a badly lit street. Michaelides has crafted a totally original, spellbinding psychological mystery so quirky, so unique that it should have its own genre.”  — David Baldacci</p>",
+    "publisher": "Macmillan Audio",
+    "length_minutes": 513,
+    "published_at": "2019-02-05",
+    "categories": "Thrillers; Psychological Thrillers; Perfect for Book Clubs",
+    "language": "English",
+    "price_cents": null,
+    "currency": null,
+    "price_label": null,
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": false,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [],
+    "credits": [
+      {
+        "name": "Alex Michaelides",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Jack Hawkins",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Louise Brealey",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [],
+    "parent_product_id": null
+  },
+  "demo-the-way-of-kings": {
+    "product_id": "B003ZWFO7E",
+    "title": "The Way of Kings",
+    "url": null,
+    "cover_url": "https://m.media-amazon.com/images/I/51hAwcG3oNL._SL500_.jpg",
+    "origin": "search",
+    "subtitle": "Book One of the Stormlight Archive",
+    "description": "<p><b>From #1 <i>New York Times</i> bestselling author Brandon Sanderson, <i>The Way of Kings</i>, Book One of the Stormlight Archive begins an incredible new saga of epic proportion.</b><br /><br />Roshar is a world of stone and storms. Uncanny tempests of incredible power sweep across the rocky terrain so frequently that they have shaped ecology and civilization alike. Animals hide in shells, trees pull in branches, and grass retracts into the soilless ground. Cities are built only where the topography offers shelter.<br /><br />It has been centuries since the fall of the ten consecrated orders known as the Knights Radiant, but their Shardblades and Shardplate remain: mystical swords and suits of armor that transform ordinary men into near-invincible warriors. Men trade kingdoms for Shardblades. Wars were fought for them, and won by them.<br /><br />One such war rages on a ruined landscape called the Shattered Plains. There, Kaladin, who traded his medical apprenticeship for a spear to protect his little brother, has been reduced to slavery. In a war that makes no sense, where ten armies fight separately against a single foe, he struggles to save his men and to fathom the leaders who consider them expendable.<br /><br />Brightlord Dalinar Kholin commands one of those other armies. Like his brother, the late king, he is fascinated by an ancient text called <i>The Way of Kings</i>. Troubled by over-powering visions of ancient times and the Knights Radiant, he has begun to doubt his own sanity.<br /><br />Across the ocean, an untried young woman named Shallan seeks to train under an eminent scholar and notorious heretic, Dalinar's niece, Jasnah. Though she genuinely loves learning, Shallan's motives are less than pure. As she plans a daring theft, her research for Jasnah hints at secrets of the Knights Radiant and the true cause of the war.<br /><br />The result of over ten years of planning, writing, and world-building, <i>The Way of Kings</i> is but the opening movement of the Stormlight Archive, a bold masterpiece in the making.<br /><br />Speak again the ancient oaths:<br /><br /><b>Life before death.<br /></b><b>Strength before weakness.<br /></b><b>Journey before Destination.<br /><br /></b>and return to men the Shards they once bore.<br /><br />The Knights Radiant must stand again.<br /><br /><b>Other Tor books by Brandon Sanderson</b><br /><br /><b><u>The Cosmere</u></b><br /><b><br />The Stormlight Archive</b><br /><i>The Way of Kings</i><br /><i>Words of Radiance</i><br /><i>Edgedancer </i>(Novella)<br /><i>Oathbringer</i> <b><br /><br />The Mistborn trilogy</b><br /><i>Mistborn: The Final Empire<br />The Well of Ascension<br />The Hero of Ages<br /><br /></i><b>Mistborn: The Wax and Wayne series</b><br /><i>Alloy of Law<br />Shadows of Self<br />Bands of Mourning</i><br /><br /><b>Collection</b><br /><i>Arcanum Unbounded</i><br /><br /><b>Other Cosmere novels</b><br /><i>Elantris</i><br /><i>Warbreaker</i><br /><br /><b><u>The Alcatraz vs. the Evil Librarians series</u></b><br /><i>Alcatraz vs. the Evil Librarians</i><br /><i>The Scrivener's Bones</i><br /><i>The Knights of Crystallia</i><br /><i>The Shattered Lens</i><br /><i>The Dark Talent</i><br /><br /><b><u>The Rithmatist series<br /></u></b><i>The Rithmatist</i><br /><br /><b>Other books by Brandon Sanderson</b><br /><b><br /><u>The Reckoners</u></b><br /><i>Steelheart</i><br /><i>Firefight</i><br /><i>Calamity</i></p>",
+    "publisher": "Macmillan Audio",
+    "length_minutes": 2730,
+    "published_at": "2010-08-31",
+    "categories": "Science Fiction & Fantasy; Fantasy; Action & Adventure; Epic; Military",
+    "language": "english",
+    "price_cents": 3749,
+    "currency": "USD",
+    "price_label": "$37.49",
+    "rating_overall": 4.8370641656541995,
+    "rating_count": 114407,
+    "is_abridged": null,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "asin",
+        "value": "B003ZWFO7E"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Brandon Sanderson",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Michael Kramer",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Kate Reading",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [
+      {
+        "name": "The Cosmere",
+        "storeSeriesId": "B0DMXTJ8WH"
+      }
+    ],
+    "parent_product_id": null
+  },
+  "demo-tomorrow-and-tomorrow": {
+    "product_id": "9780593591635",
+    "title": "Tomorrow, and Tomorrow, and Tomorrow",
+    "url": "https://libro.fm/audiobooks/9780593591635",
+    "cover_url": "https://covers.libro.fm/9780593591635_1120.jpg",
+    "origin": "libro details",
+    "subtitle": "A novel",
+    "description": "<b><i>NEW YORK TIMES </i>BESTSELLER • Sam and Sadie—two college friends, often in love, but never lovers—become creative partners in a dazzling and intricately imagined world of video game design, where success brings them fame, joy, tragedy, duplicity, and, ultimately, a kind of immortality. It is a love story, but not one you have heard before.</b><br> <b><br>\"Delightful and absorbing.\" —<i>The New York Times </i>• \"Utterly brilliant.\" —John Green</b><br>  <br><b>One of the <i>New York Times</i>’s 100 Best Books of the 21st Century • One of the Best Books of the Year: <i>The New York Times, Entertainment Weekly, TIME, </i>GoodReads, <i>Oprah Daily</i></b><br><br>From the best-selling author of <i>The Storied Life of A. J. Fikry</i>: On a bitter-cold day, in the December of his junior year at Harvard, Sam Masur exits a subway car and sees, amid the hordes of people waiting on the platform, Sadie Green. He calls her name. For a moment, she pretends she hasn’t heard him, but then, she turns, and a game begins: a legendary collaboration that will launch them to stardom. <br><br>These friends, intimates since childhood, borrow money, beg favors, and, before even graduating college, they have created their first blockbuster, Ichigo. Overnight, the world is theirs. Not even twenty-five years old, Sam and Sadie are brilliant, successful, and rich, but these qualities won’t protect them from their own creative ambitions or the betrayals of their hearts.<br><br>Spanning thirty years, from Cambridge, Massachusetts, to Venice Beach, California, and lands in between and far beyond, Gabrielle Zevin’s <i>Tomorrow, and Tomorrow, and Tomorrow </i>examines the multifarious nature of identity, disability, failure, the redemptive possibilities in play, and above all, our need to connect: to be loved and to love.",
+    "publisher": "Penguin Random House Audio Publishing Group",
+    "length_minutes": 832,
+    "published_at": "2022-07-05T00:00:00.000Z",
+    "categories": "Fiction, Fiction - Literary",
+    "language": "eng",
+    "price_cents": 2600,
+    "currency": "USD",
+    "price_label": "$26.00",
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": false,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "isbn",
+        "value": "9780593591635"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Gabrielle Zevin",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Jennifer Kim",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Julian Cihi",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [],
+    "parent_product_id": null
+  },
+  "demo-where-the-crawdads-sing": {
+    "product_id": "267611",
+    "title": "Where the Crawdads Sing: Reese's Book Club",
+    "url": "https://www.chirpbooks.com/audiobooks/where-the-crawdads-sing-reese-s-book-club-by-delia-owens",
+    "cover_url": "https://img.chirpbooks.com/image/upload/f_jpg,q_auto:eco,w_200,h_200/v1700290508/cover_images/penguin_rh/9780525640370.jpg",
+    "origin": "search",
+    "subtitle": null,
+    "description": "<b>#1 <i>NEW YORK TIMES </i>BESTSELLING PHENOMENON—NOW A MAJOR MOTION PICTURE!<br>More than 18 million copies sold worldwide<br>A Reese’s Book Club Pick<br>A <i>Business Insider</i> Defining Book of the Decade <br><br>“I can't even express how much I love this book! I didn't want this story to end!”—Reese Witherspoon<br><br><b>“</b>Painfully beautiful.<b>”—</b><i>The New York Times Book Review<br></i><br></b>For years, rumors of the “Marsh Girl” have haunted Barkley Cove, a quiet town on the North Carolina coast. So in late 1969, when handsome Chase Andrews is found dead, the locals immediately suspect Kya Clark, the so-called Marsh Girl. But Kya is not what they say. Sensitive and intelligent, she has survived for years alone in the marsh that she calls home, finding friends in the gulls and lessons in the sand. Then the time comes when she yearns to be touched and loved. When two young men from town become intrigued by her wild beauty, Kya opens herself to a new life—until the unthinkable happens.<br><br><i>Where the Crawdads Sing</i> is at once an exquisite ode to the natural world, a heartbreaking coming-of-age story, and a surprising tale of possible murder. Owens reminds us that we are forever shaped by the children we once were, and that we are all subject to the beautiful and violent secrets that nature keeps.",
+    "publisher": "Penguin Random House Audio Publishing Group",
+    "length_minutes": 732,
+    "published_at": "2018-08-14",
+    "categories": "Historical Fiction; Women's Fiction; Crime Fiction & Mysteries; Literary Fiction; Perfect for Book Clubs",
+    "language": "English",
+    "price_cents": null,
+    "currency": null,
+    "price_label": null,
+    "rating_overall": null,
+    "rating_count": null,
+    "is_abridged": false,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [],
+    "credits": [
+      {
+        "name": "Delia Owens",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Cassandra Campbell",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [],
+    "parent_product_id": null
+  },
+  "demo-wish-iron-flame": {
+    "product_id": "B0C9V5SLQQ",
+    "title": "Iron Flame",
+    "url": null,
+    "cover_url": "https://m.media-amazon.com/images/I/61ECOUEnoTL._SL500_.jpg",
+    "origin": "search",
+    "subtitle": "Empyrean, Book 2",
+    "description": "<p>“The first year is when some of us lose our lives. The second year is when the rest of us lose our humanity.\" Xaden Riorson</p> <p>Everyone expected Violet Sorrengail to die during her first year at Basgiath War College-Violet included. But Threshing was only the first impossible test meant to weed out the weak-willed, the unworthy, and the unlucky.</p> <p>Now the real training begins, and Violet’s already wondering how she’ll get through. It’s not just that it’s grueling and maliciously brutal, or even that it’s designed to stretch the riders’ capacity for pain beyond endurance. It’s the new vice commandant, who’s made it his personal mission to teach Violet exactly how powerless she is–unless she betrays the man she loves.</p> <p>Although Violet’s body might be weaker and frailer than everyone else’s, she still has her wits and a will of iron. And leadership is forgetting the most important lesson Basgiath has taught her: Dragon riders make their own rules.</p> <p>But a determination to survive won’t be enough this year. Because Violet knows the real secret hidden for centuries at Basgiath War College and nothing, not even dragon fire, may be enough to save them in the end.</p> <p>The Empyrean series is best enjoyed in order.</p> <p>Book #1 Fourth Wing</p> <p>Book #2 Iron Flame</p>",
+    "publisher": "Recorded Books",
+    "length_minutes": 1696,
+    "published_at": "2023-11-07",
+    "categories": "Science Fiction & Fantasy; Fantasy; Epic",
+    "language": "english",
+    "price_cents": 3164,
+    "currency": "USD",
+    "price_label": "$31.64",
+    "rating_overall": 4.755574217929876,
+    "rating_count": 47630,
+    "is_abridged": null,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "asin",
+        "value": "B0C9V5SLQQ"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Rebecca Yarros",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Rebecca Soler",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Teddy Hamilton",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [
+      {
+        "name": "The Empyrean",
+        "position": "2",
+        "storeSeriesId": "B0CB11LYGJ"
+      }
+    ],
+    "parent_product_id": null
+  },
+  "demo-wish-james": {
+    "product_id": "B0CBCY41WF",
+    "title": "James",
+    "url": null,
+    "cover_url": "https://m.media-amazon.com/images/I/31pWkSAaXpL._SL500_.jpg",
+    "origin": "search",
+    "subtitle": "A Novel",
+    "description": "<b>PULITZER PRIZE WINNER • #1<i> NEW YORK TIMES</i> BESTSELLER • NATIONAL BOOK AWARD WINNER • A brilliant, action-packed reimagining of <i>Adventures of Huckleberry Finn</i>, both harrowing and darkly humorous, told from the enslaved Jim's point of view<br /><br />NATIONAL BOOK CRITICS CIRCLE AWARD FINALIST • ONE OF <i>THE NEW YORK TIMES BOOK REVIEW'S </i>10 BEST BOOKS OF THE YEAR • SHORTLISTED FOR THE BOOKER PRIZE • KIRKUS PRIZE WINNER • A <i>LOS ANGELES TIMES </i>BEST FICTION BOOK OF THE LAST 30 YEARS<br /><br />In development as a feature film to be produced by Steven Spielberg • A Best Book of the Year: <i>The New York Times Book Review, LA Times, The New Yorker, The Atlantic, The Economist, TIME, </i>and more.<br /><br />\"Genius\"<i>—The Atlantic • </i>\"A masterpiece that will help redefine one of the classics of American literature, while also being a major achievement on its own.\"<i>—Chicago Tribune •</i> \"A provocative, enlightening literary work of art.\"<i>—The Boston Globe • </i>\"Everett’s most thrilling novel, but also his most soulful.\"<i>—The New York Times</i></b><br /><br />When Jim overhears that he is about to be sold to a man in New Orleans, separated from his wife and daughter forever, he runs away until he can formulate a plan. Meanwhile, Huck has faked his own death to escape his violent father. As all readers of American literature know, thus begins the dangerous and transcendent journey by raft down the Mississippi River toward the elusive and unreliable promise of the Free States and beyond.  <br /><br />Brimming with the electrifying humor and lacerating observations that have made Everett a literary icon, this brilliant and tender novel radically illuminates Jim’s agency, intelligence, and compassion as never before. James is destined to be a major publishing event and a cornerstone of twenty-first century American literature.",
+    "publisher": "Random House Audio",
+    "length_minutes": 469,
+    "published_at": "2024-03-19",
+    "categories": "Literature & Fiction; Genre Fiction; Literary Fiction; Historical Fiction; Comedy & Humor; Satire",
+    "language": "english",
+    "price_cents": 2025,
+    "currency": "USD",
+    "price_label": "$20.25",
+    "rating_overall": 4.762267510882469,
+    "rating_count": 20216,
+    "is_abridged": null,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "asin",
+        "value": "B0CBCY41WF"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Percival Everett",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Dominic Hoffman",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [],
+    "parent_product_id": null
+  },
+  "demo-wish-the-women": {
+    "product_id": "B0C4Q8SZRW",
+    "title": "The Women",
+    "url": null,
+    "cover_url": "https://m.media-amazon.com/images/I/51ujOH49gJL._SL500_.jpg",
+    "origin": "search",
+    "subtitle": "A Novel",
+    "description": "<p><b>A 2025 Audie Award winner for Best Fiction Narrator!</b><br /><b><br />\"Kristin Hannah’s potent storytelling skills are brilliantly served by narrator Julia Whelan, whose limber, low-pitched voice moves nimbly from person to person, capturing personality and mood, her empathy palpable.\" —<i>The Washington Post</i></b><br /><br /><b>\"</b><b>A moving, skillfully narrated story about women’s friendships and the ongoing physical and mental consequences of war.<i>”—Library Journal</i></b><br /><br /><b>From the celebrated author of </b><i>The Nightingale</i><b> and</b><i> The Four Winds</i><b> comes</b> <b>Kristin Hannah's </b><i>T</i><i>he Women</i><b>—at once an intimate portrait of coming of age in a dangerous time and an epic tale of a nation divided.</b><br /><br /><i>Women can be heroes.</i> When twenty-year-old nursing student Frances “Frankie” McGrath hears these words, it is a revelation. Raised in the sun-drenched, idyllic world of Southern California and sheltered by her conservative parents, she has always prided herself on doing the right thing. But in 1965, the world is changing, and she suddenly dares to imagine a different future for herself. When her brother ships out to serve in Vietnam, she joins the Army Nurse Corps and follows his path.<br /><br />As green and inexperienced as the men sent to Vietnam to fight, Frankie is overwhelmed by the chaos and destruction of war. Each day is a gamble of life and death, hope and betrayal; friendships run deep and can be shattered in an instant. In war, she meets—and becomes one of—the lucky, the brave, the broken, and the lost.<br /><br />But war is just the beginning for Frankie and her veteran friends. The real battle lies in coming home to a changed and divided America, to angry protesters, and to a country that wants to forget Vietnam.<br /><br /><i>The Women </i>is the story of one woman gone to war, but it shines a light on all women who put themselves in harm’s way and whose sacrifice and commitment to their country has too often been forgotten. A novel about deep friendships and bold patriotism, <i>The Women </i>is a richly drawn story with a memorable heroine whose idealism and courage under fire will come to define an era.<br /><b><br />A Macmillan Audio production from St. Martin's Press.</b></p>",
+    "publisher": "Macmillan Audio",
+    "length_minutes": 897,
+    "published_at": "2024-02-06",
+    "categories": "Literature & Fiction; Genre Fiction; Coming of Age; Family Life; Historical Fiction; 20th Century; Women's Fiction",
+    "language": "english",
+    "price_cents": 2474,
+    "currency": "USD",
+    "price_label": "$24.74",
+    "rating_overall": 4.842467908902692,
+    "rating_count": 60375,
+    "is_abridged": null,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "asin",
+        "value": "B0C4Q8SZRW"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Kristin Hannah",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Julia Whelan",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Kristin Hannah",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [],
+    "parent_product_id": null
+  },
+  "demo-wish-wind-and-truth": {
+    "product_id": "B0CQ3759C3",
+    "title": "Wind and Truth",
+    "url": null,
+    "cover_url": "https://m.media-amazon.com/images/I/51bCtVYcLHL._SL500_.jpg",
+    "origin": "search",
+    "subtitle": "Book Five of the Stormlight Archive",
+    "description": "<p><b>“Kramer and Reading continue an excellent partnership as narrators, imbuing each character with distinct, complementary voices regardless of which reader is narrating.”—<i>Library Journal </i>(Starred Review)</b><br /><b><br />\"The endearing husband-and-wife team of Kate Reading and Michael Kramer continue their stunning narration of the Stormlight Archive series...The narration coupled with the fascinating fantasy epic is a must-listen for series fans—and will keep newcomers intrigued by its deep world-building.\" —<i>AudioFile</i><br /><br /> Long-listed, Barnes and Noble Best New Books of the Year, 2024<br /><br /> Long-listed, Audible.com Best of the Year, 2024</b><br /><br /> The long-awaited explosive climax to the first arc of the #1 New York Times bestselling Stormlight Archive—the iconic epic fantasy masterpiece that has sold more than 10 million copies, from acclaimed bestselling author Brandon Sanderson.<br /><br /> Dalinar Kholin challenged the evil god Odium to a contest of champions with the future of Roshar on the line. The Knights Radiant have only ten days to prepare—and the sudden ascension of the crafty and ruthless Taravangian to take Odium’s place has thrown everything into disarray.<br /><br /> Desperate fighting continues simultaneously worldwide—Adolin in Azir, Sigzil and Venli at the Shattered Plains, and Jasnah in Thaylenah. The former assassin, Szeth, must cleanse his homeland of Shinovar from the dark influence of the Unmade. He is accompanied by Kaladin, who faces a new battle helping Szeth fight his own demons . . . and who must do the same for the insane Herald of the Almighty, Ishar.<br /><br /> At the same time, Shallan, Renarin, and Rlain work to unravel the mystery behind the Unmade Ba-Ado-Mishram and her involvement in the enslavement of the singer race and in the ancient Knights Radiant killing their spren. And Dalinar and Navani seek an edge against Odium’s champion that can be found only in the Spiritual Realm, where memory and possibility combine in chaos. The fate of the entire Cosmere hangs in the balance.<br /><br /> Other Tor books by Brandon Sanderson<br /><br /> The Cosmere<br /> The Stormlight Archive<br /> ● The Way of Kings<br /> ● Words of Radiance<br /> ● Edgedancer (novella)<br /> ● Oathbringer<br /> ● Dawnshard (novella)<br /> ● Rhythm of War<br /><br /> The Mistborn Saga<br /> The Original Trilogy<br /> ● Mistborn<br /> ● The Well of Ascension<br /> ● The Hero of Ages<br /><br /> Wax & Wayne<br /> ● The Alloy of Law<br /> ● Shadows of Self<br /> ● The Bands of Mourning<br /> ● The Lost Metal<br /><br /> Other Cosmere novels<br /> ● Elantris<br /> ● Warbreaker<br /> ● Tress of the Emerald Sea<br /> ● Yumi and the Nightmare Painter<br /> ● The Sunlit Man<br /><br /> Collection<br /> ● Arcanum Unbounded: The Cosmere Collection<br /><br /> Alcatraz vs. the Evil Librarians<br /> ● Alcatraz vs. the Evil Librarians<br /> ● The Scrivener's Bones<br /> ● The Knights of Crystallia<br /> ● The Shattered Lens<br /> ● The Dark Talent<br /> ● Bastille vs. the Evil Librarians (with Janci Patterson)<br /><br /> Other novels<br /> ● The Rithmatist<br /> ● Legion: The Many Lives of Stephen Leeds<br /> ● The Frugal Wizard’s Handbook for Surviving Medieval England<br /><br /> Other books by Brandon Sanderson<br /><br /> The Reckoners<br /> ● Steelheart<br /> ● Firefight<br /> ● Calamity<br /> ● Lux (with Steven Michael Bohls)<br /><br /> Skyward<br /> ● Skyward<br /> ● Starsight<br /> ● Cytonic<br /> ● Skyward Flight (with Janci Patterson)<br /> ● Defiant<br /><br /><b>A Macmillan Audio production from Tor Books.</b></p>",
+    "publisher": "Macmillan Audio",
+    "length_minutes": 3768,
+    "published_at": "2024-12-06",
+    "categories": "Science Fiction & Fantasy; Fantasy; Action & Adventure; Epic; Military",
+    "language": "english",
+    "price_cents": 4124,
+    "currency": "USD",
+    "price_label": "$41.24",
+    "rating_overall": 4.590913043478261,
+    "rating_count": 23000,
+    "is_abridged": null,
+    "work_kind": "book",
+    "expression_kind": "narration",
+    "media_kind": "audiobook",
+    "identifiers": [
+      {
+        "scheme": "asin",
+        "value": "B0CQ3759C3"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Brandon Sanderson",
+        "role": "author",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Kate Reading",
+        "role": "narrator",
+        "level": "roleDefault"
+      },
+      {
+        "name": "Michael Kramer",
+        "role": "narrator",
+        "level": "roleDefault"
+      }
+    ],
+    "series_entries": [
+      {
+        "name": "The Cosmere",
+        "storeSeriesId": "B0DMXTJ8WH"
+      }
+    ],
+    "parent_product_id": null
+  }
+}

@@ -16,7 +16,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::Json;
 use bookclerk_config::{register_secret, session_cookie_flags};
-use bookclerk_integrations::{portal_identity_from_headers, session_for_identity};
+use bookclerk_integrations::{identity_from_session, session_for_identity};
 use bookclerk_library::control_plane::ScanRequester;
 use bookclerk_library::{
     classify_session_client, hash_password, hash_token, portal_prefs_key, user_prefs_key,
@@ -1326,9 +1326,10 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     responses(
         (status = 200, description = "Who the caller is (operator, portal user, or impersonation).", body = AuthMeResponse),
         (status = 401, description = "Nobody is signed in: the same body with `authenticated` false, so the app can show the sign-in screen.", body = AuthMeResponse, example = json!({"authenticated": false, "default_view": "discover", "can_acquire": false, "elevated": false})),
+        (status = 503, description = "The portal session could not be checked because the library did not answer in time. The response carries `Retry-After`; ask again rather than showing the sign-in screen.", body = crate::http_error::ErrorJson, headers(("Retry-After" = u64, description = "Seconds to wait before asking again.")), example = json!({"error": "session_check_unavailable", "message": "Your sign-in could not be checked yet. Try again in a moment.", "status": 503})),
     ),
 )]
-pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
+pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let auth = state.auth_snapshot().await;
 
     if !auth.enabled {
@@ -1347,7 +1348,8 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
                 user: None,
                 second_factor: None,
             }),
-        );
+        )
+            .into_response();
     }
 
     let files_dir = crate::profile::files_dir(&state).await;
@@ -1381,7 +1383,8 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
                     },
                     second_factor: second_factor_for(&state, &library, Some(target_id)).await,
                 }),
-            );
+            )
+                .into_response();
         }
         let default_view = default_view_for_subject(&library, OPERATOR_PREFS_KEY, None).await;
         let user = if let Some(uid) = op.elevated_from_user_id {
@@ -1413,7 +1416,8 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
                 user,
                 second_factor: None,
             }),
-        );
+        )
+            .into_response();
     }
 
     if authorize_operator_bearer_only(&auth, &headers) {
@@ -1432,11 +1436,19 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
                 user: None,
                 second_factor: None,
             }),
-        );
+        )
+            .into_response();
     }
 
     let library = state.library_snapshot().await;
-    if let Some(identity) = timed_portal_identity_from_headers(&library, &headers).await {
+    let identity = match portal_lookup_from_headers(&library, &headers).await {
+        PortalLookup::SignedIn(identity) => Some(identity),
+        // Not a 401: the app would show the sign-in screen for a session
+        // that is fine and only could not be checked yet.
+        PortalLookup::Unavailable => return session_check_unavailable(),
+        PortalLookup::SignedOut => None,
+    };
+    if let Some(identity) = identity {
         let (role, can_acquire, user, prefs_key) =
             resolve_portal_caller_identity(&library, &identity).await;
         let default_view = default_view_for_subject(&library, &prefs_key, Some(identity.id)).await;
@@ -1464,7 +1476,8 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
                 },
                 second_factor: second_factor_for(&state, &library, identity.user_id).await,
             }),
-        );
+        )
+            .into_response();
     }
 
     (
@@ -1481,6 +1494,7 @@ pub async fn me(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl 
             second_factor: None,
         }),
     )
+        .into_response()
 }
 
 /// Middleware that admits operator sessions or Bearer tokens; impersonation is forbidden except ending it.
@@ -1549,7 +1563,12 @@ pub async fn require_operator_or_owner_auth(
         return Ok(next.run(req).await);
     }
     let library = state.library_snapshot().await;
-    if let Some(identity) = timed_portal_identity_from_headers(&library, req.headers()).await {
+    let identity = match portal_lookup_from_headers(&library, req.headers()).await {
+        PortalLookup::SignedIn(identity) => Some(identity),
+        PortalLookup::Unavailable => return Ok(session_check_unavailable()),
+        PortalLookup::SignedOut => None,
+    };
+    if let Some(identity) = identity {
         let (role, _, _, _) = resolve_portal_caller_identity(&library, &identity).await;
         if role == "owner" {
             if let Some(user_id) = identity.user_id {
@@ -1638,7 +1657,12 @@ pub async fn require_operator_or_node_owner_auth(
         return Ok(next.run(req).await);
     }
     let library = state.library_snapshot().await;
-    if let Some(identity) = timed_portal_identity_from_headers(&library, req.headers()).await {
+    let identity = match portal_lookup_from_headers(&library, req.headers()).await {
+        PortalLookup::SignedIn(identity) => Some(identity),
+        PortalLookup::Unavailable => return Ok(session_check_unavailable()),
+        PortalLookup::SignedOut => None,
+    };
+    if let Some(identity) = identity {
         let (role, _, _, _) = resolve_portal_caller_identity(&library, &identity).await;
         let Some(user_id) = identity.user_id else {
             return Err(StatusCode::FORBIDDEN);
@@ -1731,7 +1755,14 @@ pub async fn resolve_user_caller(
         return Ok(UserCaller::Operator);
     }
     let library = state.library_snapshot().await;
-    if let Some(identity) = timed_portal_identity_from_headers(&library, headers).await {
+    let identity = match portal_lookup_from_headers(&library, headers).await {
+        PortalLookup::SignedIn(identity) => Some(identity),
+        PortalLookup::Unavailable => {
+            return Err(UserCallerRefusal::Response(session_check_unavailable()))
+        }
+        PortalLookup::SignedOut => None,
+    };
+    if let Some(identity) = identity {
         let Some(user_id) = identity.user_id else {
             return Err(UserCallerRefusal::Status(StatusCode::FORBIDDEN));
         };
@@ -1785,7 +1816,12 @@ pub async fn require_operator_or_administrator_auth(
         return Ok(next.run(req).await);
     }
     let library = state.library_snapshot().await;
-    if let Some(identity) = timed_portal_identity_from_headers(&library, req.headers()).await {
+    let identity = match portal_lookup_from_headers(&library, req.headers()).await {
+        PortalLookup::SignedIn(identity) => Some(identity),
+        PortalLookup::Unavailable => return Ok(session_check_unavailable()),
+        PortalLookup::SignedOut => None,
+    };
+    if let Some(identity) = identity {
         let (role, can_acquire, _, _) = resolve_portal_caller_identity(&library, &identity).await;
         if can_acquire || role == "administrator" || role == "owner" {
             if let Some(user_id) = identity.user_id {
@@ -1824,15 +1860,22 @@ pub async fn require_operator_or_portal_auth(
     }
     if check_portal {
         let library = state.library_snapshot().await;
-        if let Some(identity) = timed_portal_identity_from_headers(&library, req.headers()).await {
-            if let Some(user_id) = identity.user_id {
-                if let Some(denied) =
-                    reject_if_enrollment_required(&state, &library, user_id, req.uri().path()).await
-                {
-                    return Ok(denied);
+        match portal_lookup_from_headers(&library, req.headers()).await {
+            PortalLookup::SignedIn(identity) => {
+                if let Some(user_id) = identity.user_id {
+                    if let Some(denied) =
+                        reject_if_enrollment_required(&state, &library, user_id, req.uri().path())
+                            .await
+                    {
+                        return Ok(denied);
+                    }
                 }
+                return Ok(next.run(req).await);
             }
-            return Ok(next.run(req).await);
+            // Still refused, but as "try again": a slow library must not
+            // look like a signed-out session.
+            PortalLookup::Unavailable => return Ok(session_check_unavailable()),
+            PortalLookup::SignedOut => {}
         }
     }
     Err(StatusCode::UNAUTHORIZED)
@@ -1906,25 +1949,20 @@ pub async fn prefs_subject_for_caller(
         return Ok((OPERATOR_PREFS_KEY.to_string(), None));
     }
     let library = state.library_snapshot().await;
-    match timeout(
-        AUTH_DB_TIMEOUT,
-        portal_identity_from_headers(&library, headers),
-    )
-    .await
-    {
-        Ok(Some(identity)) => {
+    match portal_lookup_from_headers(&library, headers).await {
+        PortalLookup::SignedIn(identity) => {
             let key = match identity.user_id {
                 Some(user_id) => user_prefs_key(user_id),
                 None => portal_prefs_key(identity.id),
             };
             Ok((key, Some(identity.id)))
         }
-        Ok(None) => {
+        PortalLookup::SignedOut => {
             tracing::warn!("portal identity missing for prefs subject");
             Err(StatusCode::UNAUTHORIZED)
         }
-        Err(_) => {
-            tracing::warn!("portal identity lookup timed out for prefs subject");
+        PortalLookup::Unavailable => {
+            tracing::warn!("portal identity lookup failed or timed out for prefs subject");
             Err(StatusCode::GATEWAY_TIMEOUT)
         }
     }
@@ -2068,28 +2106,113 @@ pub(crate) async fn timed_portal_identity_from_headers(
     library: &bookclerk_library::LibraryStore,
     headers: &HeaderMap,
 ) -> Option<PortalIdentity> {
-    let identity = match timeout(
-        AUTH_DB_TIMEOUT,
-        portal_identity_from_headers(library, headers),
-    )
-    .await
-    {
-        Ok(identity) => identity?,
+    match portal_lookup_from_headers(library, headers).await {
+        PortalLookup::SignedIn(identity) => Some(identity),
+        PortalLookup::SignedOut | PortalLookup::Unavailable => None,
+    }
+}
+
+/// What a portal session cookie turned out to mean.
+///
+/// Splits "nobody is signed in" from "the library did not answer", so a
+/// caller can tell the browser to sign in only in the first case and to try
+/// again in the second. Both still refuse the request.
+#[derive(Debug)]
+pub(crate) enum PortalLookup {
+    /// The cookie names a live session of a user who is not disabled.
+    SignedIn(PortalIdentity),
+    /// No cookie, an unknown or expired session, or a disabled user.
+    SignedOut,
+    /// The library failed or did not answer within `AUTH_DB_TIMEOUT`, so
+    /// the session could not be checked.
+    Unavailable,
+}
+
+/// Resolves the portal session cookie into a [`PortalLookup`], bounding
+/// each library read by `AUTH_DB_TIMEOUT`.
+///
+/// # Arguments
+///
+/// * `library` - Library store holding portal sessions and users.
+/// * `headers` - Request headers carrying the portal session cookie.
+///
+/// # Returns
+///
+/// [`PortalLookup::Unavailable`] when a read fails or times out; a disabled
+/// user's session is [`PortalLookup::SignedOut`].
+pub(crate) async fn portal_lookup_from_headers(
+    library: &bookclerk_library::LibraryStore,
+    headers: &HeaderMap,
+) -> PortalLookup {
+    let Some(raw) = cookie_value(headers, PORTAL_SESSION_COOKIE) else {
+        return PortalLookup::SignedOut;
+    };
+    let identity = match timeout(AUTH_DB_TIMEOUT, identity_from_session(library, &raw)).await {
+        Ok(Ok(Some(identity))) => identity,
+        Ok(Ok(None)) => return PortalLookup::SignedOut,
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, "portal identity lookup failed");
+            return PortalLookup::Unavailable;
+        }
         Err(_) => {
             tracing::warn!("portal identity lookup timed out");
-            return None;
+            return PortalLookup::Unavailable;
         }
     };
     if let Some(user_id) = identity.user_id {
         match timeout(AUTH_DB_TIMEOUT, library.get_user(user_id)).await {
             Ok(Ok(Some(user))) if matches!(user.status, UserStatus::Disabled) => {
                 tracing::info!(user_id, "rejecting disabled user session");
-                return None;
+                return PortalLookup::SignedOut;
             }
-            _ => {}
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                tracing::warn!(error = %err, user_id, "portal user lookup failed");
+                return PortalLookup::Unavailable;
+            }
+            Err(_) => {
+                tracing::warn!(user_id, "portal user lookup timed out");
+                return PortalLookup::Unavailable;
+            }
         }
     }
-    Some(identity)
+    PortalLookup::SignedIn(identity)
+}
+
+/// Seconds a browser is told to wait before retrying when its session
+/// could not be checked.
+const SESSION_CHECK_RETRY_AFTER_SECS: u64 = 2;
+
+/// Machine slug of [`session_check_unavailable`]'s body.
+pub(crate) const SESSION_CHECK_UNAVAILABLE: &str = "session_check_unavailable";
+
+/// The message of the [`SESSION_CHECK_UNAVAILABLE`] refusal.
+pub(crate) const SESSION_CHECK_UNAVAILABLE_MESSAGE: &str =
+    "Your sign-in could not be checked yet. Try again in a moment.";
+
+/// The 503 answered when a session could not be checked, with
+/// `Retry-After`, so the browser retries instead of signing the person out.
+///
+/// The body is JSON with its own slug, which also keeps the branded-error
+/// middleware from replacing the response and dropping `Retry-After`.
+///
+/// # Returns
+///
+/// A 503 JSON error carrying `Retry-After`.
+pub(crate) fn session_check_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(
+            header::RETRY_AFTER,
+            HeaderValue::from(SESSION_CHECK_RETRY_AFTER_SECS),
+        )],
+        Json(crate::http_error::ErrorJson::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            SESSION_CHECK_UNAVAILABLE,
+            SESSION_CHECK_UNAVAILABLE_MESSAGE,
+        )),
+    )
+        .into_response()
 }
 
 /// True when Bearer or a stored operator session authenticates; lookup errors fail closed.
@@ -2553,7 +2676,7 @@ pub async fn impersonate(
     path = "/api/auth/impersonate",
     security(("operatorSession" = [])),
     responses(
-        (status = 200, description = "Impersonation ended.", body = OkResponse),
+        (status = 200, description = "Impersonation ended. An elevated Owner's own portal session cookie is set again; otherwise the impersonation's portal cookie is cleared.", body = OkResponse),
         (status = 401, description = "The caller is not signed in."),
         (status = 500, description = "The session could not be updated."),
     ),
@@ -2587,17 +2710,63 @@ pub async fn impersonate_end(
     let _ = library
         .insert_security_audit_event(&actor, "impersonate_end", detail.as_deref())
         .await;
-    let flags = {
-        let cfg = state.config.read().await;
-        session_cookie_flags(cfg.integrations.public_origin.as_deref())
+    // An Owner who elevated gets their own portal session back, replacing
+    // the one impersonation swapped in, so ending elevation later leaves
+    // them signed in as themselves rather than with no session at all.
+    let restored = match op.elevated_from_user_id {
+        Some(user_id) => own_portal_cookie(&state, &library, user_id).await,
+        None => None,
     };
-    let clear = format!("{PORTAL_SESSION_COOKIE}=; {flags}; Max-Age=0");
+    let cookie = match restored {
+        Some(cookie) => cookie,
+        None => {
+            let cfg = state.config.read().await;
+            let flags = session_cookie_flags(cfg.integrations.public_origin.as_deref());
+            format!("{PORTAL_SESSION_COOKIE}=; {flags}; Max-Age=0")
+        }
+    };
     Ok((
         StatusCode::OK,
-        [(header::SET_COOKIE, clear)],
+        [(header::SET_COOKIE, cookie)],
         Json(OkResponse::OK),
     )
         .into_response())
+}
+
+/// A fresh portal session cookie for `user_id`, or `None` when the user is
+/// gone, disabled, or the session cannot be made.
+///
+/// # Arguments
+///
+/// * `state` - Daemon state, for the session settings.
+/// * `library` - The library the user lives in.
+/// * `user_id` - The user to sign back in.
+///
+/// # Returns
+///
+/// The `Set-Cookie` value, or `None`.
+async fn own_portal_cookie(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    user_id: i64,
+) -> Option<String> {
+    let user = library.get_user(user_id).await.ok()??;
+    if matches!(user.status, UserStatus::Disabled) {
+        return None;
+    }
+    let identity = library
+        .ensure_local_portal_identity(user.id, user.display_name.as_deref())
+        .await
+        .ok()?;
+    let cfg = state.config.read().await;
+    let session_raw = session_for_identity(library, &cfg.integrations, &identity)
+        .await
+        .ok()?;
+    let flags = session_cookie_flags(cfg.integrations.public_origin.as_deref());
+    let max_age = cfg.integrations.portal_session_ttl_hours * 3600;
+    Some(format!(
+        "{PORTAL_SESSION_COOKIE}={session_raw}; {flags}; Max-Age={max_age}"
+    ))
 }
 
 /// Unfinished listens older than this are omitted from `GET /api/users`.
@@ -4861,6 +5030,93 @@ pub(crate) mod tests {
             .await
     }
 
+    /// Drops the table portal sessions live in, so every portal lookup
+    /// fails as it would when the database stops answering.
+    async fn break_portal_sessions(library: &bookclerk_library::LibraryStore) {
+        use sea_orm::ConnectionTrait;
+        library
+            .db()
+            .execute_unprepared("DROP TABLE portal_sessions")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_portal_session_is_retry_later_not_signed_out() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (_state, app, library) = phase2_harness("op-token-portal-503").await;
+        let cookie = portal_cookie_for(&library, "test", "member-ext").await;
+        break_portal_sessions(&library).await;
+        // One route behind each session-resolving layer: any session,
+        // owner, node owner, administrator and user-scoped.
+        for uri in [
+            "/api/auth/me",
+            "/api/library/books",
+            "/api/auth/mfa-policy",
+            "/api/config/nodes",
+            "/status",
+            "/api/config/node-invites",
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header(header::COOKIE, &cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+            assert_eq!(
+                res.headers().get(header::RETRY_AFTER).unwrap(),
+                &SESSION_CHECK_RETRY_AFTER_SECS.to_string(),
+                "{uri}"
+            );
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], SESSION_CHECK_UNAVAILABLE, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn portal_lookup_tells_signed_in_signed_out_and_unavailable_apart() {
+        let (_state, _app, library) = phase2_harness("op-token-portal-lookup").await;
+        let cookie = portal_cookie_for(&library, "test", "member-ext").await;
+        let mut headers = HeaderMap::new();
+        assert!(matches!(
+            portal_lookup_from_headers(&library, &headers).await,
+            PortalLookup::SignedOut
+        ));
+        headers.insert(header::COOKIE, HeaderValue::from_str(&cookie).unwrap());
+        assert!(matches!(
+            portal_lookup_from_headers(&library, &headers).await,
+            PortalLookup::SignedIn(_)
+        ));
+        let mut unknown = HeaderMap::new();
+        unknown.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("{PORTAL_SESSION_COOKIE}=not-a-session")).unwrap(),
+        );
+        assert!(matches!(
+            portal_lookup_from_headers(&library, &unknown).await,
+            PortalLookup::SignedOut
+        ));
+        break_portal_sessions(&library).await;
+        assert!(matches!(
+            portal_lookup_from_headers(&library, &headers).await,
+            PortalLookup::Unavailable
+        ));
+        assert!(timed_portal_identity_from_headers(&library, &headers)
+            .await
+            .is_none());
+    }
+
     #[tokio::test]
     async fn member_cannot_elevate() {
         use axum::body::Body;
@@ -5045,6 +5301,102 @@ pub(crate) mod tests {
 
         let events = library.list_security_audit_events(20).await.unwrap();
         assert!(events.iter().any(|e| e.action == "impersonate_start"));
+    }
+
+    #[tokio::test]
+    async fn ending_impersonation_gives_an_elevated_owner_their_session_back() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let (_state, app, library) = phase2_harness("op-token-phase2").await;
+        let owner_cookie = portal_cookie_for(&library, "test", "admin-ext").await;
+        let owner_id = library
+            .get_portal_identity("test", "admin-ext")
+            .await
+            .unwrap()
+            .unwrap()
+            .user_id
+            .expect("bridged");
+        let member_id = library
+            .get_portal_identity("test", "member-ext")
+            .await
+            .unwrap()
+            .unwrap()
+            .user_id
+            .expect("bridged");
+        let send = |method: &str, uri: &str, cookies: String, body: String| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, cookies)
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let set_cookie = |res: &Response| {
+            cookie_from_set_cookie(
+                res.headers()
+                    .get(header::SET_COOKIE)
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+            )
+        };
+
+        let elevated = app
+            .clone()
+            .oneshot(send(
+                "POST",
+                "/api/auth/elevate",
+                owner_cookie.clone(),
+                format!(r#"{{"password":"{}"}}"#, phase2_owner_password()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(elevated.status(), StatusCode::OK);
+        let op_cookie = set_cookie(&elevated);
+
+        let started = app
+            .clone()
+            .oneshot(send(
+                "POST",
+                "/api/auth/impersonate",
+                format!("{op_cookie}; {owner_cookie}"),
+                format!(r#"{{"user_id":{member_id}}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(started.status(), StatusCode::OK);
+        let member_portal = set_cookie(&started);
+
+        let ended = app
+            .clone()
+            .oneshot(send(
+                "DELETE",
+                "/api/auth/impersonate",
+                format!("{op_cookie}; {member_portal}"),
+                String::new(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(ended.status(), StatusCode::OK);
+        let restored = set_cookie(&ended);
+        assert!(restored.starts_with(&format!("{PORTAL_SESSION_COOKIE}=")));
+        assert_ne!(restored, format!("{PORTAL_SESSION_COOKIE}="));
+
+        // Without the elevated session, the restored cookie alone signs the
+        // Owner in as themselves.
+        let me = app
+            .oneshot(send("GET", "/api/auth/me", restored, String::new()))
+            .await
+            .unwrap();
+        assert_eq!(me.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&me.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["authenticated"], true);
+        assert_eq!(body["user"]["id"], owner_id);
     }
 
     #[tokio::test]

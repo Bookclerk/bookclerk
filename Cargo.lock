@@ -1633,14 +1633,17 @@ dependencies = [
  "bookclerk-node-proto",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-host",
+ "bookclerk-plugin-source-libro",
  "bookclerk-source",
  "chrono",
  "futures",
  "sea-orm",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]

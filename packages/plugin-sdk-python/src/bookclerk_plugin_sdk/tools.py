@@ -15,10 +15,13 @@ import hashlib
 import os
 import re
 import shutil
+import stringprep
 import subprocess
 import sys
 import time
 import tomllib
+import unicodedata
+from encodings import idna as encodings_idna
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -38,7 +41,7 @@ from .path_guard import (
 PYTHON_WORKERD_FLAGS = ("python_workers", "disable_python_external_sdk")
 """Compatibility flags required for Python Workers under bookclerk-workerd."""
 
-WORKERD_PIN_COMPAT_DATE = "2026-10-29"
+WORKERD_PIN_COMPAT_DATE = "2026-10-30"
 """Newest ``compatibility_date`` the pinned workerd binary honors."""
 
 _LOAD_SUFFIXES = (".js", ".mjs", ".py", ".wasm", ".json")
@@ -562,6 +565,161 @@ def validate_plugin_id(id: str) -> None:
         raise ValueError(f"plugin id `{id}` must not start/end with `_` or contain `__`")
 
 
+MAX_OWN_USER_AGENT_HOSTS = 32
+"""Most hosts one ``[capabilities.network.own_user_agent]`` table may list."""
+
+MAX_OWN_USER_AGENT_REASON_CHARS = 300
+"""Longest ``own_user_agent.reason``, in characters."""
+
+
+_FORBIDDEN_HOST_CHARS = frozenset("#%,/:<>?@[\\]^|\x7f")
+"""Code points a URL host may not contain (WHATWG forbidden domain code points)."""
+
+
+_IDNA_DEVIATIONS = frozenset("\u00df\u03c2\u200c\u200d")
+"""Characters IDNA 2003 (Python's codec) maps away but UTS 46 keeps (``ß``, ``ς``, ZWNJ, ZWJ)."""
+
+
+def _label_to_ascii(label: str) -> str | None:
+    """Convert one host label to its lowercase A-label form, as UTS 46 does.
+
+    Python's ``idna`` codec is IDNA 2003, which maps ``ß`` to ``ss``; the
+    host, browsers and Node keep it (``faß`` is ``xn--fa-hia``), so a label
+    with such a character is Punycode-encoded directly.
+
+    Args:
+        label: One label, without dots.
+
+    Returns:
+        The ASCII label, or ``None`` when it does not convert.
+    """
+    if label.isascii():
+        lowered = label.lower()
+        if lowered.startswith("xn--"):
+            # An A-label must decode, as the host's IDNA step checks.
+            try:
+                if not lowered[4:].encode("ascii").decode("punycode"):
+                    return None
+            except UnicodeError:
+                return None
+        return lowered
+    try:
+        # UTS 46 maps compatibility forms and case first (``ｆａ`` is ``fa``,
+        # ``ẞ`` is ``ß``), then keeps the deviation characters.
+        # Characters UTS 46 ignores (a soft hyphen, variation selectors) go
+        # first; ZWNJ and ZWJ are deviations and stay.
+        kept = "".join(c for c in label if c in "\u200c\u200d" or not stringprep.in_table_b1(c))
+        mapped = unicodedata.normalize("NFC", unicodedata.normalize("NFKC", kept).lower())
+        if mapped.isascii():
+            return _label_to_ascii(mapped)
+        # A joiner must follow a virama (CONTEXTJ). The host also accepts a
+        # ZWNJ by Arabic joining type, which Python has no table for, so
+        # `check` refuses that rarer form.
+        if any(
+            c in "\u200c\u200d" and (i == 0 or unicodedata.combining(mapped[i - 1]) != 9)
+            for i, c in enumerate(mapped)
+        ):
+            return None
+        if any(c in _IDNA_DEVIATIONS for c in mapped):
+            return "xn--" + mapped.encode("punycode").decode("ascii")
+        return encodings_idna.ToASCII(label).decode("ascii").lower()
+    except UnicodeError:
+        return None
+
+
+def own_user_agent_host_ascii(raw: str) -> str | None:
+    """Normalize an own-agent host to the form the host's policy holds.
+
+    Trimmed, trailing dots dropped, the ``*.`` prefix kept, and every label
+    in lowercase A-label form. The result has no ``*`` name, no forbidden
+    host character (IDNA can map a fullwidth comma to ``,``) and no invalid
+    ``xn--`` label.
+
+    Args:
+        raw: Host as written in ``plugin.toml``.
+
+    Returns:
+        The normalized pattern, or ``None`` when the host would refuse it.
+    """
+    pattern = raw.strip().rstrip(".")
+    wildcard = pattern.startswith("*.")
+    host = pattern[2:] if wildcard else pattern
+    if not host or host == "*":
+        return None
+    if any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in host):
+        return None
+    if not host.isascii():
+        # UTS 46 also maps the full-width and ideographic full stops to `.`.
+        host = unicodedata.normalize("NFKC", host).replace("\u3002", ".")
+    labels = [_label_to_ascii(label) for label in host.split(".")]
+    if any(label is None for label in labels):
+        return None
+    ascii_host = ".".join(label for label in labels if label is not None)
+    if any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in ascii_host):
+        return None
+    return f"*.{ascii_host}" if wildcard else ascii_host
+
+
+def _is_own_user_agent_host(raw: str) -> bool:
+    """Return whether ``raw`` is a host the host's ``normalize_tcp_host`` accepts.
+
+    That is an exact hostname or a ``*.`` wildcard: trimmed, trailing dots
+    dropped, never ``*``, with no port, scheme, path or percent-encoding, and
+    valid IDNA (see :func:`own_user_agent_host_ascii`).
+
+    Args:
+        raw: Host as written in ``plugin.toml``.
+
+    Returns:
+        Whether the host would accept it.
+    """
+    return own_user_agent_host_ascii(raw) is not None
+
+
+def _validate_own_user_agent(net: dict[str, Any]) -> None:
+    """Validate ``[capabilities.network.own_user_agent]`` the way the host does.
+
+    The table needs outbound mode, 1 to 32 hosts that are not ``*``, and a
+    one-line reason of at most 300 characters.
+
+    Args:
+        net: The ``[capabilities.network]`` table.
+
+    Raises:
+        ValueError: When the table is present and malformed.
+    """
+    own = net.get("own_user_agent")
+    if own is None:
+        return
+    field = "plugin.toml: capabilities.network.own_user_agent"
+    if not isinstance(own, dict):
+        raise ValueError(f"{field} must be a table")
+    unknown = sorted(set(own) - {"hosts", "reason"})
+    if unknown:
+        raise ValueError(f"{field}: unknown field `{unknown[0]}` (expected hosts, reason)")
+    if net.get("mode") != "outbound":
+        raise ValueError(f'{field} needs mode = "outbound"')
+    hosts = own.get("hosts")
+    if not isinstance(hosts, list) or not 1 <= len(hosts) <= MAX_OWN_USER_AGENT_HOSTS:
+        raise ValueError(f"{field}.hosts must list between 1 and {MAX_OWN_USER_AGENT_HOSTS} hosts")
+    for host in hosts:
+        if not isinstance(host, str) or not _is_own_user_agent_host(host):
+            raise ValueError(
+                f"{field}.hosts entry `{host}` is not a valid hostname or `*.` wildcard "
+                "(`*` is not allowed)"
+            )
+    reason = own.get("reason")
+    reason = reason.strip() if isinstance(reason, str) else ""
+    if (
+        not reason
+        or len(reason) > MAX_OWN_USER_AGENT_REASON_CHARS
+        or any(ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F for c in reason)
+    ):
+        raise ValueError(
+            f"{field}.reason must be one line of 1 to {MAX_OWN_USER_AGENT_REASON_CHARS} characters"
+        )
+
+
 def validate_manifest(m: dict[str, Any]) -> None:
     """Validate a parsed ``plugin.toml`` mapping.
 
@@ -586,6 +744,7 @@ def validate_manifest(m: dict[str, Any]) -> None:
     _validate_surface(m)
     runtime = m.get("runtime") or "native"
     net = (m.get("capabilities") or {}).get("network") or {}
+    _validate_own_user_agent(net)
     if runtime == "native":
         if not str(m.get("command") or "").strip():
             raise ValueError('plugin.toml: `command` is required when runtime = "native"')

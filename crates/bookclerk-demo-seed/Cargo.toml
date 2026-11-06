@@ -24,12 +24,16 @@ futures.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 sea-orm.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 bookclerk-plugin-database-sqlite.workspace = true
+bookclerk-plugin-source-libro.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

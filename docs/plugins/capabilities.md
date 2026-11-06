@@ -67,6 +67,60 @@ tcp = [{ host = "api.example.com", ports = [443] }]
 > **workerd** plugin. Native plugins that need networking must use the SDK
 > socket capability.
 
+### User-Agent
+
+Plugin requests say honestly what sent them. Every HTTP request a plugin
+makes carries the host's `User-Agent`:
+
+```text
+bookclerk/<version> (+https://bookclerk.app)
+```
+
+The host sets it whether or not the plugin set an agent of its own, so a
+plugin can't pass itself off as a browser. Some store APIs answer only
+the store's own app, though. A plugin that follows such an app API
+contract lists those hosts, with a reason, and keeps its own agent there:
+
+```toml
+[capabilities.network.own_user_agent]
+hosts = ["*.libro.fm"]          # exact hosts or `*.` wildcards; never `*`
+reason = "Libro.fm's sign-in, library and download API answers the HTTP client of the Libro.fm Android app."
+```
+
+- The table needs `mode = "outbound"`, 1 to 32 hosts and a one-line
+  reason of at most 300 characters.
+- The consent form shows the host's agent, each listed host and the
+  reason. The operator can clear any host, and that host then gets the
+  host's agent too. A cleared host counts as answered, so the plugin
+  isn't marked as needing approval for it again. A host can't be cleared
+  while an approved wildcard still covers it (`api.example.com` under
+  `*.example.com`); clear both or neither.
+- On a listed host, a request with no agent of its own still gets the
+  host's agent.
+- A newer version that lists more hosts waits for consent before it gets
+  them. A grant approved before this permission existed keeps the hosts
+  the plugin lists, because those plugins already sent their own agents
+  everywhere.
+- A remote cluster's request lists the same hosts. The operator approves
+  them with the request or refuses some of them with
+  `bookclerk clusters approve --deny-own-user-agent <HOST>` (or the
+  **Deny** boxes in the cluster consents panel).
+
+Where the rule is applied depends on the runtime:
+
+| Runtime | Where the agent is set |
+| --- | --- |
+| Workerd | The host's egress worker sets it on every `fetch()` hop, redirects included. The plugin can't get around it. |
+| Native | Native guests own their TLS, so the SDK HTTP client (`bookclerk_plugin_sdk::http`) sets it on every hop from `BOOKCLERK_USER_AGENT` and `BOOKCLERK_OWN_USER_AGENT_HOSTS`, which the host puts in the guest's environment. |
+
+> [!NOTE]
+> Raw TCP (`connect()`) carries no HTTP headers, so the rule doesn't
+> reach a plugin that speaks HTTP over its own socket. The native rule
+> lives in the guest's SDK, so it holds for plugins that use the SDK
+> client, which every first-party plugin does. A native guest built
+> with an older SDK, or one that brings its own HTTP client, sends
+> whatever agent it sets.
+
 The native path is tested end to end on Linux, macOS and Windows by
 `cargo test -p bookclerk-plugin-e2e --test native_gateway --test native_gateway_isolation --test native_gateway_lifecycle --test native_gateway_authenticated_endpoint`.
 It checks that:
@@ -184,6 +238,9 @@ baseline, and lets the operator **widen or narrow**:
 
 - domains, bindings and flags;
 - the network mode;
+- the hosts that keep the plugin's own [User-Agent](#user-agent) (only
+  narrowed: the operator approves or refuses the hosts the manifest
+  lists and can't add others);
 - workerd `cpuMs` and `subrequests`;
 - the shared `diskMib` (capped by the host).
 

@@ -21,9 +21,10 @@
 //!    (token, session, or auth disabled) or a signed-in user.
 //!
 //! **Topics.** The operator gets every [`LiveTopic`]. An Owner or
-//! Administrator gets `library`, `jobs`, `deliveries`, `nodes` and
-//! `users`; any other user gets `library` and `nodes` (the routes behind
-//! them are scoped to the caller). `config`, `consents` and `clusters`
+//! Administrator gets `library`, `jobs`, `deliveries`, `nodes`, `users`
+//! and `discover`; any other user gets `library`, `nodes` and `discover`
+//! (the routes behind them are scoped to the caller; `discover` says only
+//! that someone's stored shelves changed, and each page re-reads its own). `config`, `consents` and `clusters`
 //! are operator only.
 //!
 //! **Frames** (server to client, JSON text):
@@ -97,6 +98,21 @@ const MAX_CLIENT_FRAME: usize = 4 * 1024;
 
 /// Close code: the session is no longer valid.
 pub const CLOSE_UNAUTHORIZED: u16 = 4401;
+
+/// True when a refusal only says the session could not be checked yet
+/// ([`crate::auth::session_check_unavailable`]), not that it is invalid.
+///
+/// # Arguments
+///
+/// * `refusal` - Why [`resolve_user_caller`] admitted nobody.
+fn session_check_unavailable(refusal: &UserCallerRefusal) -> bool {
+    match refusal {
+        UserCallerRefusal::Response(response) => {
+            response.status() == axum::http::StatusCode::SERVICE_UNAVAILABLE
+        }
+        UserCallerRefusal::Status(_) => false,
+    }
+}
 
 /// In-process pokes: topics that changed in this process just now.
 static POKES: LazyLock<broadcast::Sender<LiveTopic>> = LazyLock::new(|| broadcast::channel(64).0);
@@ -176,7 +192,7 @@ async fn topics_for(state: &AppState, caller: UserCaller) -> Option<BTreeSet<Liv
 
 /// The topics every signed-in user may hear about.
 fn member_topics() -> BTreeSet<LiveTopic> {
-    BTreeSet::from([LiveTopic::Library, LiveTopic::Nodes])
+    BTreeSet::from([LiveTopic::Library, LiveTopic::Nodes, LiveTopic::Discover])
 }
 
 /// A refusal before the upgrade.
@@ -370,6 +386,10 @@ async fn run(
                             topics = now;
                         }
                     }
+                    // The library could not say whether the session is
+                    // still valid: keep the socket and its topics, and check
+                    // again on the next tick.
+                    Err(refusal) if session_check_unavailable(&refusal) => {}
                     Err(_) => {
                         let _ = tx.send(close(CLOSE_UNAUTHORIZED, "signed out")).await;
                         return;

@@ -175,6 +175,15 @@ than the OS hint alone:
 - Portal users also get
   `second_factor: { required, totp, passkey_count, enrolled }`.
 
+When the library does not answer in time to check a portal session (a
+busy or still-starting server), `/api/auth/me` and the signed-in API routes
+answer `503` with `Retry-After` and the slug `session_check_unavailable`,
+not `401`. The request is still refused, but the web app waits and asks
+again instead of showing the sign-in screen. A few handlers that check the
+session again themselves, such as elevation and the session list, still
+answer `401` in that case
+([#726](https://github.com/Bookclerk/bookclerk/issues/726)).
+
 ## Client routes
 
 The web app keeps the address bar in step with the screen:
@@ -331,6 +340,8 @@ banner at the top names them (`Impersonating Alex as Owner`), with
 - The Settings tabs follow the impersonated role: User Management for
   Owners and Administrators, Sign-in for Owners.
 - **Server** and **Plugins** stay operator-only until impersonation ends.
+- **Stop** signs an elevated Owner back in as themselves, so ending
+  elevation afterwards leaves them signed in rather than signed out.
 
 ### Settings → Server and Plugins
 
@@ -370,9 +381,9 @@ See [Libraries and branches](cluster-hosts.md).
 
 The web app keeps one WebSocket open: `GET /api/live`, subprotocol
 `bookclerk-live.v1`. It names topics whose data changed: `library`,
-`jobs`, `deliveries`, `nodes`, `config`, `consents`, `clusters` and
-`users`. Status, Library, Settings → Nodes, User Management and
-Settings → Library re-read their data when told.
+`jobs`, `deliveries`, `nodes`, `config`, `consents`, `clusters`,
+`users` and `discover`. Status, Library, Discover, Settings → Nodes,
+User Management and Settings → Library re-read their data when told.
 
 - The socket carries topic names only.
 - It needs an exact `Origin` match and a signed-in session, and is

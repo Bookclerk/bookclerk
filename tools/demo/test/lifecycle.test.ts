@@ -3,15 +3,19 @@
 // and teardown signs out every linked store account even when some fail.
 
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import {
   enableDemoPlugins,
   enableStorefronts,
   OPTIONAL_PLUGINS,
   STOREFRONTS,
   signInVisitor,
+  VISITOR_PASSWORD,
   signOutStores,
   waitForHealth,
+  prepareShelves,
+  SHELVES_WAIT,
+  waitForShelves,
 } from "../src/lifecycle.ts";
 import { type Sent, sent } from "../test-support/requests.ts";
 
@@ -55,7 +59,7 @@ describe("signInVisitor", () => {
     const boot = JSON.parse(seen[0]!.init.body);
     assert.equal(boot.login_name, "demo");
     assert.equal(boot.display_name, "Demo visitor");
-    assert.match(boot.password, /^[0-9a-f]{48}$/);
+    assert.equal(boot.password, VISITOR_PASSWORD);
     const redeem = JSON.parse(seen[1]!.init.body);
     assert.equal(redeem.ticket, ticket);
     assert.match(redeem.nonce, /^[0-9a-f]{64}$/);
@@ -151,6 +155,52 @@ describe("waitForHealth", () => {
   });
 });
 
+describe("waitForShelves", () => {
+  const session = "s".repeat(64);
+
+  it("reads the status as the visitor until the shelves are ready", async () => {
+    let n = 0;
+    const { call, seen } = scripted({
+      "GET /api/discover/status": () =>
+        ++n === 1
+          ? new Response("busy", { status: 503 })
+          : Response.json({ subject: "user:1", ready: n >= 3 }),
+    });
+    assert.equal(await waitForShelves(call, session, { timeoutMs: 1000, intervalMs: 1 }), true);
+    assert.equal(n, 3);
+    assert.ok(seen.every((s) => s.init.headers.Cookie === `bookclerk_portal_session=${session}`));
+  });
+
+  it("gives up at the deadline without throwing", async () => {
+    const { call } = scripted({
+      "GET /api/discover/status": () => Response.json({ subject: "user:1", ready: false }),
+    });
+    assert.equal(await waitForShelves(call, session, { timeoutMs: 20, intervalMs: 5 }), false);
+  });
+
+  it("treats a failed or unreadable read as not ready", async () => {
+    let n = 0;
+    const call = async (): Promise<Response> => {
+      n += 1;
+      if (n === 1) throw new Error("connection reset");
+      if (n === 2) return new Response("not json");
+      return Response.json({ ready: true });
+    };
+    assert.equal(await waitForShelves(call, session, { timeoutMs: 1000, intervalMs: 1 }), true);
+    assert.equal(n, 3);
+  });
+
+  it("does not read at all with no time left", async () => {
+    let n = 0;
+    const call = async (): Promise<Response> => {
+      n += 1;
+      return Response.json({ ready: true });
+    };
+    assert.equal(await waitForShelves(call, session, { timeoutMs: 0, intervalMs: 1 }), false);
+    assert.equal(n, 0);
+  });
+});
+
 describe("enableStorefronts", () => {
   const instances = {
     node_id: "node-1",
@@ -243,5 +293,33 @@ describe("enableDemoPlugins", () => {
       enableDemoPlugins(scripted(routes(["libro"])).call, "op", () => {}),
       /consent for audible answered 404/,
     );
+  });
+});
+
+describe("prepareShelves", () => {
+  const session = "s".repeat(64);
+
+  it("waits up to 25 seconds, a second apart, by default", () => {
+    assert.deepEqual(SHELVES_WAIT, { timeoutMs: 25_000, intervalMs: 1_000 });
+  });
+
+  it("returns quietly when the shelves are ready", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const call = async (): Promise<Response> => Response.json({ ready: true });
+    assert.equal(await prepareShelves(call, session, "demo-1"), true);
+    assert.equal(warn.mock.calls.length, 0);
+    warn.mockRestore();
+  });
+
+  it("warns and opens anyway when the shelves are late", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const call = async (): Promise<Response> => Response.json({ ready: false });
+    assert.equal(
+      await prepareShelves(call, session, "demo-1", { timeoutMs: 10, intervalMs: 2 }),
+      false,
+    );
+    assert.equal(warn.mock.calls.length, 1);
+    assert.match(String(warn.mock.calls[0]?.[0]), /demo session demo-1 opened before its shelves/);
+    warn.mockRestore();
   });
 });

@@ -284,6 +284,9 @@ pub async fn run_discover_feed(
         shelves = report.shelves,
         "stored discover feed"
     );
+    // Open Discover pages on this node re-read at once; other nodes see the
+    // new `computed_at` on their next revision read.
+    crate::live::poke(bookclerk_library::control_plane::LiveTopic::Discover);
     Ok(format!(
         "subject={} scope={} shelves={} candidates={} passes={passes}",
         subject.key(),

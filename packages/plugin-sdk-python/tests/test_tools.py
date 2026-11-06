@@ -1625,3 +1625,108 @@ def test_check_plugin_require_binary_resolves_an_absolute_command(tmp_path: Path
     binary.parent.mkdir()
     binary.touch()
     assert check_plugin(staging).startswith("ok id=echo_tools")
+
+
+@pytest.mark.parametrize(
+    ("host", "valid"),
+    [
+        ("api.example.com", True),
+        ("*.Libro.fm.", True),
+        ("*.bücher.example", True),
+        ("*.", False),
+        (" * ", False),
+        ("api.example.com:443", False),
+        ("https://api.example.com", False),
+        ("a b.example", False),
+        ("x%41.example", False),
+        ("bad\u200e.example", False),
+        ("a,b.example", False),
+        ("a.example\uff0cb.example", False),
+        ("xn--.b\u00fccher.example", False),
+        ("xn--.example", False),
+        ("xn--99999999.example", False),
+        ("xn--bcher-kva.example", True),
+        ("*.api.123", True),
+    ],
+    ids=[
+        "exact",
+        "wildcard-trailing-dot",
+        "unicode-wildcard",
+        "bare-wildcard-dot",
+        "padded-star",
+        "port",
+        "scheme",
+        "space",
+        "percent",
+        "disallowed-idna",
+        "comma",
+        "fullwidth-comma",
+        "unicode-with-empty-punycode",
+        "empty-punycode",
+        "bad-punycode",
+        "a-label",
+        "numeric-last-label",
+    ],
+)
+def test_own_user_agent_hosts_match_the_host_rules(host: str, valid: bool) -> None:
+    from bookclerk_plugin_sdk.tools import _is_own_user_agent_host
+
+    assert _is_own_user_agent_host(host) is valid
+
+
+@pytest.mark.parametrize(
+    ("own", "message"),
+    [
+        ("not a table", "capabilities.network.own_user_agent must be a table"),
+        ({"hosts": [], "reason": "r"}, "hosts must list between 1 and 32 hosts"),
+        ({"hosts": ["a.example"] * 33, "reason": "r"}, "hosts must list between 1 and 32 hosts"),
+        ({"hosts": "a.example", "reason": "r"}, "hosts must list between 1 and 32 hosts"),
+        ({"hosts": ["a.example"], "reason": None}, "reason must be one line"),
+        ({"hosts": [7], "reason": "r"}, "hosts entry `7` is not a valid hostname"),
+        ({"hosts": ["a.example"], "reason": "x" * 301}, "reason must be one line"),
+        ({"hosts": ["a.example"], "reason": "two\nlines"}, "reason must be one line"),
+        (
+            {"hosts": ["a.example"], "reason": "r", "extra": True},
+            "unknown field `extra`",
+        ),
+    ],
+)
+def test_own_user_agent_table_is_validated(own: Any, message: str) -> None:
+    from bookclerk_plugin_sdk.tools import _validate_own_user_agent
+
+    with pytest.raises(ValueError, match=message):
+        _validate_own_user_agent({"mode": "outbound", "own_user_agent": own})
+
+
+def test_own_user_agent_needs_outbound_mode() -> None:
+    from bookclerk_plugin_sdk.tools import _validate_own_user_agent
+
+    _validate_own_user_agent({"mode": "outbound"})
+    _validate_own_user_agent(
+        {"mode": "outbound", "own_user_agent": {"hosts": ["a.example"], "reason": "App API."}}
+    )
+    with pytest.raises(ValueError, match='needs mode = "outbound"'):
+        _validate_own_user_agent(
+            {"mode": "deny", "own_user_agent": {"hosts": ["a.example"], "reason": "r"}}
+        )
+
+
+def test_own_user_agent_hosts_are_put_in_ascii_form() -> None:
+    from bookclerk_plugin_sdk.sparse_workerd.config import own_user_agent_hosts_for
+
+    assert own_user_agent_hosts_for(
+        [" *.Bücher.example. ", "API.example.com", 7, "\u200e", ""]
+    ) == ["*.xn--bcher-kva.example", "api.example.com"]
+    # UTS 46 keeps `ß` (IDNA 2003 would map it to `ss`), as Node and the host do.
+    assert own_user_agent_hosts_for(["*.Faß.de", "xn--.example"]) == ["*.xn--fa-hia.de"]
+    # Case and compatibility forms map first, as the host's IDNA step does.
+    assert own_user_agent_hosts_for(["*.FAẞ.de", "*.ｆａß.de", "*.ＥＸＡＭＰＬＥ．com"]) == [
+        "*.xn--fa-hia.de",
+        "*.xn--fa-hia.de",
+        "*.example.com",
+    ]
+    # Characters UTS 46 ignores are dropped; a joiner outside a virama is refused.
+    assert own_user_agent_hosts_for(["*.fa\u00adß.de", "x\ufe0fy.example", "a\u200db.example"]) == [
+        "*.xn--fa-hia.de",
+        "xy.example",
+    ]

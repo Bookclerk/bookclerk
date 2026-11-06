@@ -19,6 +19,7 @@ import {
   signInVisitor,
   signOutStores,
   waitForHealth,
+  prepareShelves,
 } from "./lifecycle.ts";
 import {
   CLOSE_TOO_MANY,
@@ -257,6 +258,11 @@ export class DemoSession extends Container<Env> implements SessionApi {
       const portalSession = (await this.stillStarting())
         ? await signInVisitor(call, operatorToken)
         : null;
+      if (portalSession !== null && (await this.stillStarting())) {
+        // Discover is where a signed-in visitor lands: build their shelves
+        // now so the page opens full. Never fails the start.
+        await prepareShelves(call, portalSession, meta.id);
+      }
       if (portalSession === null || !(await this.stillStarting())) {
         // Ended meanwhile: close() may have run before the VM was up, so
         // make sure it is gone. The end is already recorded.

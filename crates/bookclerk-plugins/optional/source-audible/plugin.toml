@@ -16,6 +16,26 @@ tcp = [
     { host = "*.amazonaws.com", ports = [443] },
     { host = "api.audnex.us", ports = [443] },
 ]
+
+# Every other request (Audnexus included) carries Bookclerk's own agent.
+# Every Audible marketplace is listed, so a regional marketplace the operator
+# adds as a TCP destination keeps the app agent too.
+[capabilities.network.own_user_agent]
+hosts = [
+    "*.audible.com", "*.amazon.com",
+    "*.audible.co.uk", "*.amazon.co.uk",
+    "*.audible.de", "*.amazon.de",
+    "*.audible.fr", "*.amazon.fr",
+    "*.audible.ca", "*.amazon.ca",
+    "*.audible.it", "*.amazon.it",
+    "*.audible.com.au", "*.amazon.com.au",
+    "*.audible.in", "*.amazon.in",
+    "*.audible.co.jp", "*.amazon.co.jp",
+    "*.audible.es", "*.amazon.es",
+    "*.audible.com.br", "*.amazon.com.br",
+    "*.media-amazon.com", "*.amazonaws.com",
+]
+reason = "Audible's sign-in, device registration, app API and content servers answer only Audible's own iOS and Android apps."
 # Native TCP via `bookclerk_plugin_sdk::http` / `connect`. Fetch `domains`
 # are workerd-only. CDNs and regional Amazon hosts match the wildcards;
 # operator additions can extend the set.

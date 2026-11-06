@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { Bookmark, Download, ExternalLink, Trash2, X } from "lucide-react";
 import { StarRating } from "@/components/StarRating";
 import { Badge } from "@/components/ui/badge";
+import { storeBadgeSources } from "@/lib/storeBadges";
 import { Button } from "@/components/ui/button";
 import {
   coverSrc,
@@ -783,22 +784,13 @@ export function TitleDetailModal({
   // sources with a partial hint set (e.g. Audible-only while Chirp is still
   // resolving). Dropping a store still happens when it is absent from both
   // editions and the final hint list.
-  const sourceBadges = (() => {
-    const set = new Set<string>();
-    for (const s of detail.sources ?? []) {
-      if (s.trim()) set.add(s.trim().toLowerCase());
-    }
-    for (const e of detail.store_editions ?? []) {
-      if (e.source.trim()) set.add(e.source.trim().toLowerCase());
-    }
-    if (showCommerce) {
-      for (const h of commerceHints) {
-        if (h.source.trim()) set.add(h.source.trim().toLowerCase());
-      }
-    }
-    if (commerceAsin) set.add("audible");
-    return [...set];
-  })();
+  const sourceBadges = storeBadgeSources({
+    primary: detail.source,
+    sources: detail.sources ?? [],
+    editions: (detail.store_editions ?? []).map((e) => e.source),
+    hints: showCommerce ? commerceHints.map((h) => h.source) : [],
+    audible: Boolean(commerceAsin),
+  });
 
   return (
     <div
@@ -862,9 +854,6 @@ export function TitleDetailModal({
                   </Badge>
                 ) : null}
                 {wishlisted ? <Badge className="bg-teal/15 text-teal">On wishlist</Badge> : null}
-                {detail.source ? (
-                  <Badge className="bg-ink/8 text-ink/70">{detail.source}</Badge>
-                ) : null}
                 {sourceBadges.map((s) => (
                   <Badge key={s} className="bg-ink/8 text-ink/70">
                     {storeLabel(s)}

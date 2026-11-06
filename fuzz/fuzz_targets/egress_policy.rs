@@ -8,12 +8,14 @@
 //! are never allowed without an explicit CIDR grant; `*.suffix` never matches
 //! `xsuffix`; `*` never matches an IP literal and never grants TCP;
 //! percent-encoded hosts never match; hostname normalization is idempotent;
-//! the policy survives a JSON round trip.
+//! the policy survives a JSON round trip; the guest's own `User-Agent` is kept
+//! only on hosts an approved non-`*` own-agent pattern matches.
 
 #![no_main]
 
 use bookclerk_plugin_manifest::{
-    host_matches, normalize_hostname, EgressPolicy, NetworkMode, ANY_PUBLIC_HOST,
+    host_matches, normalize_domain_pattern, normalize_hostname, normalize_tcp_host, EgressPolicy,
+    NetworkMode, ANY_PUBLIC_HOST,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -158,7 +160,10 @@ fn check_policy(policy: &EgressPolicy) {
     // the hostname layer, and a `*` TCP grant opens no socket.
     if !policy.domains.is_empty() && policy.domains.iter().all(|d| d == ANY_PUBLIC_HOST) {
         for host in ["8.8.8.8", "1.1.1.1", "[2606:4700::1111]", "134744072"] {
-            assert!(!policy.allows_initial(host), "`*` allowed IP literal {host}");
+            assert!(
+                !policy.allows_initial(host),
+                "`*` allowed IP literal {host}"
+            );
         }
         assert!(host_matches("example.com", ANY_PUBLIC_HOST));
     }
@@ -179,6 +184,99 @@ fn check_policy(policy: &EgressPolicy) {
         !policy.allows_redirect("example.com", policy.max_redirects),
         "hop budget exceeded"
     );
+    check_user_agent(policy);
+}
+/// Plain lowercase ASCII form of `raw` (trimmed, trailing dots dropped), or
+/// `None` when it holds anything an IDNA step could reinterpret.
+fn plain_ascii(raw: &str) -> Option<String> {
+    let text = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+    let plain = !text.is_empty()
+        && text
+            .split('.')
+            .all(|label| !label.is_empty() && !label.starts_with("xn--"))
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    plain.then_some(text)
+}
+
+/// Independent own-agent decision for plain ASCII hosts and patterns, written
+/// without the crate's normalizers: exact match, or a `*.` suffix that matches
+/// the bare suffix and its subdomains; `*` never matches. `None` when any
+/// input is outside that plain subset.
+fn plain_keeps_own_agent(host: &str, patterns: &[String]) -> Option<bool> {
+    let host = plain_ascii(host)?;
+    let mut keeps = false;
+    for raw in patterns {
+        let pattern = raw.trim().trim_end_matches('.');
+        if pattern == "*" {
+            continue;
+        }
+        keeps |= match pattern.strip_prefix("*.") {
+            Some(suffix) => {
+                let suffix = plain_ascii(suffix)?;
+                host == suffix || host.ends_with(&format!(".{suffix}"))
+            }
+            None => host == plain_ascii(pattern)?,
+        };
+    }
+    Some(keeps)
+}
+
+/// User-agent oracle: the guest's own agent is kept exactly on hosts an
+/// approved non-`*` pattern matches, never via `*`, never for a
+/// percent-encoded host, and every other request carries the host's agent.
+fn check_user_agent(policy: &EgressPolicy) {
+    let mut hosts: Vec<String> = vec!["example.com".into(), "127.0.0.1".into(), "localhost".into()];
+    for pattern in policy
+        .own_user_agent_hosts
+        .iter()
+        .chain(policy.domains.iter())
+    {
+        let bare = pattern.strip_prefix("*.").unwrap_or(pattern).to_string();
+        hosts.push(format!("a.{bare}"));
+        hosts.push(format!("x{bare}"));
+        hosts.push(format!("{bare}%41"));
+        hosts.push(bare);
+    }
+    let agent = policy.effective_user_agent();
+    for host in &hosts {
+        let expected = policy
+            .own_user_agent_hosts
+            .iter()
+            .filter_map(|p| normalize_tcp_host(p))
+            .any(|p| host_matches(host, &p));
+        assert_eq!(
+            policy.keeps_own_user_agent(host),
+            expected,
+            "own user-agent decision for {host:?}"
+        );
+        if let Some(independent) = plain_keeps_own_agent(host, &policy.own_user_agent_hosts) {
+            assert_eq!(expected, independent, "plain oracle for {host:?}");
+        }
+        if host.contains('%') {
+            assert!(
+                !policy.keeps_own_user_agent(host),
+                "percent host kept {host:?}"
+            );
+        }
+        assert_eq!(policy.user_agent_for(host, None), agent);
+        let sent = policy.user_agent_for(host, Some("guest/1"));
+        assert_eq!(
+            sent == "guest/1",
+            expected || agent == "guest/1",
+            "{host:?}"
+        );
+    }
+    if policy
+        .own_user_agent_hosts
+        .iter()
+        .all(|p| normalize_domain_pattern(p).is_none_or(|n| n == ANY_PUBLIC_HOST))
+    {
+        for host in &hosts {
+            assert!(!policy.keeps_own_user_agent(host), "`*` kept {host:?}");
+        }
+    }
 }
 
 /// Spellings of one restricted destination that must all be refused without a

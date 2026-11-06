@@ -40,6 +40,9 @@ pub struct RemoteNarrowing {
     pub deny_domains: BTreeSet<String>,
     /// Host bindings to deny (`secrets`, `oauth`, `kv`, ...).
     pub deny_bindings: BTreeSet<String>,
+    /// Requested own-agent hosts to refuse: requests to them carry
+    /// Bookclerk's agent. The hosts stay reachable.
+    pub deny_own_user_agent_hosts: BTreeSet<String>,
     /// Turn outbound network off altogether.
     pub deny_network: bool,
 }
@@ -94,6 +97,15 @@ pub fn remote_request_within(reviewed: &PluginGrant, requested: &PluginGrant) ->
         && requested.address_cidrs.is_subset(&reviewed.address_cidrs)
         && (!requested.allow_undeclared_public_redirects
             || reviewed.allow_undeclared_public_redirects)
+        // A consent reviewed before the permission existed keeps what the
+        // manifest declares, as a local legacy grant does; a host the
+        // operator refused was answered.
+        && reviewed.own_user_agent_hosts.as_ref().is_none_or(|approved| {
+            requested
+                .approved_own_user_agent_hosts()
+                .iter()
+                .all(|host| approved.contains(host) || reviewed.own_user_agent_refused_hosts.contains(host))
+        })
         && requested.bindings.is_subset(&reviewed.bindings)
         && requested
             .compatibility_flags
@@ -109,8 +121,8 @@ pub fn remote_request_within(reviewed: &PluginGrant, requested: &PluginGrant) ->
 ///
 /// # Errors
 ///
-/// Returns an error when the narrowing names a domain or binding the
-/// request does not ask for (it would deny nothing, and a typo must not
+/// Returns an error when the narrowing names a domain, binding or own-agent
+/// host the request does not ask for (it would deny nothing, and a typo must not
 /// read as a narrowing that did not happen).
 pub fn remote_consent(requested: &PluginGrant, narrowing: &RemoteNarrowing) -> Result<PluginGrant> {
     let unknown_domains: Vec<_> = narrowing
@@ -135,7 +147,40 @@ pub fn remote_consent(requested: &PluginGrant, narrowing: &RemoteNarrowing) -> R
             unknown_bindings.join(", ")
         )));
     }
+    let requested_own = requested.approved_own_user_agent_hosts();
+    let unknown_own: Vec<_> = narrowing
+        .deny_own_user_agent_hosts
+        .difference(&requested_own)
+        .cloned()
+        .collect();
+    if !unknown_own.is_empty() {
+        return Err(crate::PluginError::message(format!(
+            "the request does not ask to keep its own User-Agent for {}",
+            unknown_own.join(", ")
+        )));
+    }
     let mut consent = requested.clone();
+    // An owner grant from before the permission (`None`) asks for nothing
+    // the operator could refuse, so it stays legacy and spawn resolves it
+    // against the manifest.
+    consent.own_user_agent_hosts = requested.own_user_agent_hosts.as_ref().map(|_| {
+        requested_own
+            .difference(&narrowing.deny_own_user_agent_hosts)
+            .cloned()
+            .collect()
+    });
+    consent.own_user_agent_refused_hosts = narrowing.deny_own_user_agent_hosts.clone();
+    // With network access off no request leaves, so an overlap has no
+    // effect to protect and the network refusal wins.
+    if let (false, Some(own)) = (narrowing.deny_network, &consent.own_user_agent_hosts) {
+        if let Some((refused, approved)) =
+            crate::consent::own_user_agent_conflict(own, &consent.own_user_agent_refused_hosts)
+        {
+            return Err(crate::consent::own_user_agent_conflict_error(
+                &refused, &approved,
+            ));
+        }
+    }
     for domain in &narrowing.deny_domains {
         consent.domains.remove(domain);
     }
@@ -148,6 +193,7 @@ pub fn remote_consent(requested: &PluginGrant, narrowing: &RemoteNarrowing) -> R
         consent.tcp.clear();
         consent.address_cidrs.clear();
         consent.allow_undeclared_public_redirects = false;
+        consent.own_user_agent_hosts = Some(BTreeSet::new());
     }
     consent.approved_at = chrono::Utc::now().to_rfc3339();
     Ok(consent)
@@ -262,6 +308,26 @@ pub fn narrow_remote_grant(requested: &PluginGrant, consent: &PluginGrant) -> Pl
         manifest_cidrs: requested.manifest_cidrs.clone(),
         allow_undeclared_public_redirects: redirects,
         operator_allow_undeclared_public_redirects: Some(redirects),
+        // The stored grant is what spawn reads back, so it holds the
+        // reviewed approval narrowed to the owner's current request (a
+        // consent reviewed before the permission existed approves every
+        // requested host). A host the owner withdraws is gone even while
+        // the manifest still declares it.
+        // An owner grant from before the permission (`None`) stays legacy,
+        // so spawn keeps what the manifest declares, as it does locally.
+        own_user_agent_hosts: if deny {
+            Some(BTreeSet::new())
+        } else {
+            requested.own_user_agent_hosts.as_ref().map(|asked| {
+                match &consent.own_user_agent_hosts {
+                    Some(approved) => both(approved, asked),
+                    None => asked.clone(),
+                }
+            })
+        },
+        own_user_agent_reason: requested.own_user_agent_reason.clone(),
+        own_user_agent_refused_hosts: consent.own_user_agent_refused_hosts.clone(),
+        declared_own_user_agent_hosts: requested.own_user_agent_hosts.clone(),
         bindings: both(&requested.bindings, &consent.bindings),
         compatibility_flags: both(&requested.compatibility_flags, &consent.compatibility_flags),
         cpu_ms: min_workerd_limit(
@@ -658,6 +724,160 @@ mod tests {
         )
         .is_err());
 
+        // The own-agent hosts are intersected like any destination.
+        let mut agent_request = request.clone();
+        agent_request.own_user_agent_hosts = Some(["api.store.example".to_string()].into());
+        agent_request.own_user_agent_reason = Some("App API.".into());
+        let mut agent_consent =
+            remote_consent(&agent_request, &RemoteNarrowing::default()).unwrap();
+        let effective = narrow_remote_grant(&agent_request, &agent_consent);
+        assert_eq!(
+            effective.own_user_agent_hosts,
+            Some(["api.store.example".to_string()].into())
+        );
+        assert_eq!(effective.own_user_agent_reason.as_deref(), Some("App API."));
+        agent_consent.own_user_agent_hosts = Some(BTreeSet::new());
+        let effective = narrow_remote_grant(&agent_request, &agent_consent);
+        assert_eq!(effective.own_user_agent_hosts, Some(BTreeSet::new()));
+        let off = remote_consent(
+            &agent_request,
+            &RemoteNarrowing {
+                deny_network: true,
+                ..RemoteNarrowing::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(off.own_user_agent_hosts, Some(BTreeSet::new()));
+        assert_eq!(
+            narrow_remote_grant(&agent_request, &off).own_user_agent_hosts,
+            Some(BTreeSet::new())
+        );
+        assert!(narrow_remote_grant(&agent_request, &off)
+            .egress_policy()
+            .own_user_agent_hosts
+            .is_empty());
+
+        // The operator can refuse one host and keep the others; the
+        // refused host is answered, so the same request stays covered.
+        let mut two = agent_request.clone();
+        two.own_user_agent_hosts = Some(
+            [
+                "api.store.example".to_string(),
+                "cdn.store.example".to_string(),
+            ]
+            .into(),
+        );
+        let refused = remote_consent(
+            &two,
+            &RemoteNarrowing {
+                deny_own_user_agent_hosts: ["cdn.store.example".to_string()].into(),
+                ..RemoteNarrowing::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            refused.own_user_agent_hosts,
+            Some(["api.store.example".to_string()].into())
+        );
+        assert!(refused
+            .own_user_agent_refused_hosts
+            .contains("cdn.store.example"));
+        assert!(remote_request_within(&refused, &two));
+        assert_eq!(
+            narrow_remote_grant(&two, &refused)
+                .egress_policy()
+                .own_user_agent_hosts,
+            vec!["api.store.example".to_string()]
+        );
+        assert!(remote_consent(
+            &two,
+            &RemoteNarrowing {
+                deny_own_user_agent_hosts: ["typo.example".to_string()].into(),
+                ..RemoteNarrowing::default()
+            }
+        )
+        .is_err());
+
+        // Refusing a host that an approved wildcard still covers is refused.
+        let mut overlap = agent_request.clone();
+        overlap.own_user_agent_hosts = Some(
+            [
+                "*.store.example".to_string(),
+                "api.store.example".to_string(),
+            ]
+            .into(),
+        );
+        assert!(remote_consent(
+            &overlap,
+            &RemoteNarrowing {
+                deny_own_user_agent_hosts: ["api.store.example".to_string()].into(),
+                ..RemoteNarrowing::default()
+            }
+        )
+        .is_err());
+        // With network access off the overlap is moot and the refusal stands.
+        let overlap_off = remote_consent(
+            &overlap,
+            &RemoteNarrowing {
+                deny_network: true,
+                deny_own_user_agent_hosts: ["api.store.example".to_string()].into(),
+                ..RemoteNarrowing::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(overlap_off.network_mode, "deny");
+        assert_eq!(overlap_off.own_user_agent_hosts, Some(BTreeSet::new()));
+        assert!(remote_consent(
+            &overlap,
+            &RemoteNarrowing {
+                deny_network: true,
+                deny_own_user_agent_hosts: ["typo.example".to_string()].into(),
+                ..RemoteNarrowing::default()
+            }
+        )
+        .is_err());
+
+        // A host the owner withdraws is gone from the stored grant, even
+        // though the reviewed consent approved it.
+        let both_hosts = remote_consent(&two, &RemoteNarrowing::default()).unwrap();
+        let stored = narrow_remote_grant(&agent_request, &both_hosts);
+        let reread: PluginGrant =
+            serde_json::from_str(&serde_json::to_string(&stored).unwrap()).unwrap();
+        assert_eq!(
+            reread.egress_policy().own_user_agent_hosts,
+            vec!["api.store.example".to_string()]
+        );
+
+        // A consent reviewed before the permission existed keeps the
+        // declared hosts and still covers the request.
+        let mut legacy = remote_consent(&agent_request, &RemoteNarrowing::default()).unwrap();
+        legacy.own_user_agent_hosts = None;
+        assert!(remote_request_within(&legacy, &agent_request));
+        let effective = narrow_remote_grant(&agent_request, &legacy);
+        assert_eq!(
+            effective.own_user_agent_hosts,
+            Some(["api.store.example".to_string()].into())
+        );
+        assert_eq!(
+            effective.egress_policy().own_user_agent_hosts,
+            vec!["api.store.example".to_string()]
+        );
+
+        // An owner grant from before the permission stays legacy end to
+        // end, so spawn keeps the hosts the manifest declares.
+        let mut legacy_owner = agent_request.clone();
+        legacy_owner.own_user_agent_hosts = None;
+        let legacy_consent = remote_consent(&legacy_owner, &RemoteNarrowing::default()).unwrap();
+        assert_eq!(legacy_consent.own_user_agent_hosts, None);
+        let stored = narrow_remote_grant(&legacy_owner, &legacy_consent);
+        assert_eq!(stored.own_user_agent_hosts, None);
+        let mut declared = stored.clone();
+        declared.declared_own_user_agent_hosts = Some(["api.store.example".to_string()].into());
+        assert_eq!(
+            declared.effective_own_user_agent_hosts(),
+            ["api.store.example".to_string()].into()
+        );
+
         // Network off clears every destination.
         let off = remote_consent(
             &request,
@@ -711,9 +931,17 @@ mod tests {
         wider_budget.memory_mib = Some(4096);
         let mut redirects = reviewed.clone();
         redirects.allow_undeclared_public_redirects = true;
+        let mut own_agent = reviewed.clone();
+        own_agent.own_user_agent_hosts = Some(["api.store.example".to_string()].into());
         let mut other_plugin = reviewed.clone();
         other_plugin.plugin_key = "path:file:///tmp/other#other".into();
-        for wider in [wider_domain, wider_binding, wider_budget, redirects] {
+        for wider in [
+            wider_domain,
+            wider_binding,
+            wider_budget,
+            redirects,
+            own_agent,
+        ] {
             assert_eq!(state(&wider), RemoteConsentState::NeedsReapproval);
         }
         assert_eq!(state(&other_plugin), RemoteConsentState::Invalid);

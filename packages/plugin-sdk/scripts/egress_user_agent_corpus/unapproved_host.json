@@ -1,0 +1,8 @@
+{
+  "host": "covers.openlibrary.org",
+  "patterns": [
+    "openlibrary.org"
+  ],
+  "userAgent": "bookclerk/1.0.0 (+https://bookclerk.app)",
+  "own": "Mozilla/5.0"
+}

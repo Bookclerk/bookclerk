@@ -305,6 +305,11 @@ pub struct ApproveBody {
     #[serde(default)]
     #[schema(example = json!(["oauth"]))]
     deny_bindings: BTreeSet<String>,
+    /// Requested hosts to refuse the plugin's own User-Agent on; requests to
+    /// them carry Bookclerk's agent instead.
+    #[serde(default)]
+    #[schema(example = json!(["*.libro.fm"]))]
+    deny_own_user_agent_hosts: BTreeSet<String>,
     /// Deny all network access.
     #[serde(default)]
     #[schema(example = false)]
@@ -339,6 +344,7 @@ pub async fn post_cluster_consent_approve(
         &RemoteNarrowing {
             deny_domains: body.deny_domains,
             deny_bindings: body.deny_bindings,
+            deny_own_user_agent_hosts: body.deny_own_user_agent_hosts,
             deny_network: body.deny_network,
         },
         RemoteApprover::Operator(API_APPROVER),

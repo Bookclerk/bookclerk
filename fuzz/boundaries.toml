@@ -10,7 +10,8 @@
 # Per target:
 #   crate      - crate that owns the boundary code
 #   boundary   - what crosses it, as in the docs table
-#   input_from - who controls the bytes: guest, store, plugin package, peer
+#   input_from - who controls the bytes: guest, store, plugin package, peer,
+#                operator
 #   side       - "host" when the code runs in a host process or confined host
 #                helper (a crash there stops something the operator runs),
 #                "guest" when it only runs inside a plugin guest
@@ -158,6 +159,20 @@ crate = "bookclerk-resolve"
 boundary = "Store listings resolved into works, expressions and editions"
 input_from = "guest"
 side = "host"
+artifacts = ["bookclerk"]
+
+[targets.cache_settings]
+crate = "bookclerk-config"
+boundary = "cache.* values from the settings API and CLI"
+input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.libro_catalog]
+crate = "bookclerk-plugin-source-libro"
+boundary = "Libro.fm catalog search pages and audiobook details from the store's app API"
+input_from = "store"
+side = "guest"
 artifacts = ["bookclerk"]
 
 [targets.node_frame]

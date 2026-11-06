@@ -14,7 +14,9 @@
 //!
 //! The titles are real audiobooks. Before seeding, the binary looks each one
 //! up in its storefront's public catalog through the storefront plugin, the
-//! search Discover uses, and the seed writes the record the store returned:
+//! search Discover uses, then fetches the matched title's full record (the
+//! details call title dialogs use), and the seed writes the record the store
+//! returned:
 //! its product id, cover art, description and the rest, as a scan and
 //! enrichment would. A title whose lookup fails (store unreachable, no
 //! confident match) keeps the fields listed here under a made-up product id
@@ -36,7 +38,7 @@ use bookclerk_library::{
     AcquireStatus, LibraryStore, NewBook, NewTitleRequest, RequestStatus, UserRole,
 };
 use bookclerk_node_proto::{CatalogFile, CatalogMetadata, CatalogTitle};
-use bookclerk_source::CatalogHit;
+use bookclerk_source::{CatalogHit, ContentSource};
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
@@ -285,6 +287,83 @@ const WISHLIST: &[WishTitle] = &[
 /// Storefront records found for the sample titles, by [`Lookup::key`].
 pub type StoreRecords = BTreeMap<&'static str, CatalogHit>;
 
+/// Storefront records for the sample titles as the storefront plugins
+/// returned them, by [`Lookup::key`], committed in `records.json`.
+///
+/// The demo's own lookups run from a datacenter, where a storefront may
+/// refuse or time out. These records stand in for a lookup that fails, so
+/// every sample title is a real store record. Libro.fm's records come from
+/// its app catalog's details, so they carry descriptions and prices. Refresh
+/// them from a network the stores answer with `bookclerk-demo-seed
+/// --write-records crates/bookclerk-demo-seed/records.json`.
+const RECORDS_JSON: &str = include_str!("../records.json");
+
+/// The committed storefront records (`records.json`) for the current
+/// sample titles; entries for titles no longer sampled are dropped.
+///
+/// # Errors
+///
+/// Returns an error when `records.json` is not a JSON object of catalog
+/// records.
+pub fn committed_records() -> anyhow::Result<StoreRecords> {
+    parse_records(RECORDS_JSON)
+}
+
+/// Parses a records file: a JSON object from [`Lookup::key`] to a catalog
+/// record, keeping only keys of current sample titles.
+///
+/// # Errors
+///
+/// Returns an error when `json` is not such an object.
+pub fn parse_records(json: &str) -> anyhow::Result<StoreRecords> {
+    let parsed: BTreeMap<String, CatalogHit> =
+        serde_json::from_str(json).context("parse the storefront records")?;
+    Ok(lookups()
+        .into_iter()
+        .filter_map(|lookup| parsed.get(lookup.key).map(|hit| (lookup.key, hit.clone())))
+        .collect())
+}
+
+/// Live lookups over the committed records: a title the live lookup found
+/// keeps that record, and one it missed falls back to `committed` unless a
+/// live record already holds that product id, so a stale committed record
+/// never pushes out a fresh one. No two titles share a product id.
+#[must_use]
+pub fn merge_records(live: StoreRecords, committed: StoreRecords) -> StoreRecords {
+    let mut records = distinct_records(live);
+    let mut taken: BTreeSet<(&str, String)> = lookups()
+        .into_iter()
+        .filter_map(|lookup| {
+            records
+                .get(lookup.key)
+                .map(|hit| (lookup.store, hit.product_id.clone()))
+        })
+        .collect();
+    for lookup in lookups() {
+        if records.contains_key(lookup.key) {
+            continue;
+        }
+        if let Some(hit) = committed.get(lookup.key) {
+            if taken.insert((lookup.store, hit.product_id.clone())) {
+                records.insert(lookup.key, hit.clone());
+            }
+        }
+    }
+    records
+}
+
+/// `records` as the pretty-printed JSON `records.json` holds, one key per
+/// title in sorted order, so a refresh diffs cleanly.
+///
+/// # Errors
+///
+/// Returns an error when a record cannot be serialized.
+pub fn records_json(records: &StoreRecords) -> anyhow::Result<String> {
+    let mut json = serde_json::to_string_pretty(records).context("write the records")?;
+    json.push('\n');
+    Ok(json)
+}
+
 /// One title to look up in a storefront's public catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lookup {
@@ -407,21 +486,38 @@ pub fn search_query(lookup: &Lookup) -> String {
 /// first initial). A GraphicAudio hit without authors is judged on its
 /// title alone, because that store never returns them; any other store's
 /// authorless hit is refused. Among
-/// matching hits the closest title wins, then the store's own ranking.
+/// matching hits the closest title wins, then one already released (a
+/// pre-order of a new recording is not the edition a listener owns, by
+/// `now`), then the store's own ranking.
 #[must_use]
-pub fn best_match<'a>(lookup: &Lookup, hits: &'a [CatalogHit]) -> Option<&'a CatalogHit> {
+pub fn best_match<'a>(
+    lookup: &Lookup,
+    hits: &'a [CatalogHit],
+    now: DateTime<Utc>,
+) -> Option<&'a CatalogHit> {
     hits.iter()
         .filter(|hit| !hit.product_id.trim().is_empty())
         .filter(|hit| match present(hit.authors().as_ref()) {
             Some(authors) => lists_author(&authors, lookup.author),
             None => lookup.store == GRAPHIC_AUDIO.id,
         })
-        .filter_map(|hit| title_score(lookup.title, &hit.title).map(|score| (score, hit)))
+        .filter_map(|hit| {
+            title_score(lookup.title, &hit.title).map(|score| (score, released(hit, now), hit))
+        })
         // `max_by_key` keeps the last of equal keys; reverse so the store's
         // first-ranked hit wins a tie.
         .rev()
-        .max_by_key(|(score, _)| *score)
-        .map(|(_, hit)| hit)
+        .max_by_key(|(score, released, _)| (*score, *released))
+        .map(|(_, _, hit)| hit)
+}
+
+/// Whether `hit` is out by `now`; a hit without a readable release date
+/// counts as released.
+fn released(hit: &CatalogHit, now: DateTime<Utc>) -> bool {
+    hit.published_at
+        .as_deref()
+        .and_then(release_date)
+        .is_none_or(|at| at <= now)
 }
 
 /// `records` without entries whose product id another title already took,
@@ -803,5 +899,80 @@ fn catalog_title(sample: &SampleTitle, hit: Option<&CatalogHit>) -> CatalogTitle
                 .saturating_mul(480_000),
             content_type: Some("audio/mp4".into()),
         }],
+    }
+}
+
+/// Replaces a search hit with its storefront's full catalog record (the
+/// details call Discover makes for title dialogs), so a store whose search
+/// rows are lean, such as Libro.fm, still seeds a description, publisher,
+/// genres and price.
+///
+/// # Arguments
+///
+/// * `source` - The storefront the hit came from.
+/// * `hit` - The search row [`best_match`] chose.
+/// * `deadline` - When the lookup budget runs out.
+///
+/// # Returns
+///
+/// The full record under `hit`'s product id, or `hit` unchanged when the
+/// details call fails, times out, finds nothing, or returns a different
+/// product than the search matched (neither the same product id nor the
+/// same ISBN).
+pub async fn with_details(
+    source: &dyn ContentSource,
+    hit: CatalogHit,
+    deadline: tokio::time::Instant,
+) -> CatalogHit {
+    let lookup = tokio::time::timeout_at(deadline, source.catalog_detail(&hit.product_id));
+    match lookup.await {
+        Ok(Ok(Some(mut full))) if same_product(&full, &hit) => {
+            // Keep the id the search matched, so records stay keyed alike.
+            full.product_id = hit.product_id;
+            full
+        }
+        Ok(Ok(_)) => hit,
+        Ok(Err(err)) => {
+            tracing::warn!(product = %hit.product_id, %err, "catalog details failed");
+            hit
+        }
+        Err(_) => {
+            tracing::warn!(product = %hit.product_id, "catalog details timed out");
+            hit
+        }
+    }
+}
+
+/// Whether a details record describes the same product as a search row: the
+/// same product id, or the same ISBN when a store keys its search rows and
+/// details differently (an ISBN on one, a slug on the other).
+fn same_product(full: &CatalogHit, hit: &CatalogHit) -> bool {
+    full.product_id == hit.product_id || hit.isbn().is_some_and(|isbn| full.isbn() == Some(isbn))
+}
+
+/// The `--write-records <path>` argument the seed binary was given, if any.
+///
+/// # Arguments
+///
+/// * `args` - The command-line arguments after the program name.
+///
+/// # Returns
+///
+/// Where to write the store records, or `None` to seed the library.
+///
+/// # Errors
+///
+/// Returns an error for any other argument, or a missing path.
+pub fn records_path(
+    mut args: impl Iterator<Item = String>,
+) -> anyhow::Result<Option<std::path::PathBuf>> {
+    match args.next() {
+        None => Ok(None),
+        Some(flag) if flag == "--write-records" => match (args.next(), args.next()) {
+            (Some(path), None) => Ok(Some(path.into())),
+            (None, _) => bail!("--write-records needs a path"),
+            (Some(_), Some(extra)) => bail!("unexpected argument `{extra}`"),
+        },
+        Some(other) => bail!("unexpected argument `{other}`"),
     }
 }

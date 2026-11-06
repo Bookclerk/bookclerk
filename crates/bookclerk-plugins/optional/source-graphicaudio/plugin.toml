@@ -15,6 +15,11 @@ tcp = [
     { host = "*.cloudfront.net", ports = [443] },
 ]
 
+# The public catalog sends no agent of its own, so it carries Bookclerk's.
+[capabilities.network.own_user_agent]
+hosts = ["www.graphicaudio.net", "media.graphicaudio.net", "*.cloudfront.net"]
+reason = "GraphicAudio's app API expects its Android app, and its web player sign-in and streams are only tested with a browser agent."
+
 [vars]
 
 [[settings]]
