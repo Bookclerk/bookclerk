@@ -19,6 +19,7 @@ import {
   signInVisitor,
   signOutStores,
   waitForHealth,
+  waitForShelves,
 } from "./lifecycle.ts";
 import {
   CLOSE_TOO_MANY,
@@ -41,6 +42,15 @@ const PORT = 8787;
 
 /** Longest wait for bookclerkd to answer /health after the VM starts. */
 const BOOT_TIMEOUT_MS = 120_000;
+
+/**
+ * Longest wait for the visitor's Discover shelves before the session opens
+ * anyway (the page then fills in as they arrive).
+ */
+const SHELVES_TIMEOUT_MS = 25_000;
+
+/** Pause between reads of the visitor's Discover status. */
+const SHELVES_INTERVAL_MS = 1_000;
 
 /** Longest wait for each store sign-out request at teardown. */
 const SIGN_OUT_TIMEOUT_MS = 10_000;
@@ -257,6 +267,15 @@ export class DemoSession extends Container<Env> implements SessionApi {
       const portalSession = (await this.stillStarting())
         ? await signInVisitor(call, operatorToken)
         : null;
+      if (portalSession !== null && (await this.stillStarting())) {
+        // Discover is where a signed-in visitor lands: build their shelves
+        // now so the page opens full. Never fails the start.
+        const ready = await waitForShelves(call, portalSession, {
+          timeoutMs: SHELVES_TIMEOUT_MS,
+          intervalMs: SHELVES_INTERVAL_MS,
+        });
+        if (!ready) console.warn(`demo session ${meta.id} opened before its shelves were ready`);
+      }
       if (portalSession === null || !(await this.stillStarting())) {
         // Ended meanwhile: close() may have run before the VM was up, so
         // make sure it is gone. The end is already recorded.

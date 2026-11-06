@@ -681,11 +681,12 @@ inputs live in `tools/demo/src/routes.ts`, `src/inputs.ts` and
   `Secure` and has no control characters. A portal session only when
   exactly one well-formed value is set.
 - **Container JSON answers** (`decodeConnections`, `decodeClaimTicket`,
-  `decodeInstances`). Corpora `connections/`, `claim_ticket/`,
-  `plugin_instances/`. Oracle: connections deduplicated, bounded and
-  well-formed; a claim ticket only when well-formed; only wanted default
-  plugin instances with well-formed ids, the first per plugin, on a
-  well-formed node id.
+  `decodeInstances`, `decodeDiscoverReady`). Corpora `connections/`,
+  `claim_ticket/`, `plugin_instances/`, `discover_status/`. Oracle:
+  connections deduplicated, bounded and well-formed; a claim ticket only
+  when well-formed; only wanted default plugin instances with well-formed
+  ids, the first per plugin, on a well-formed node id; a shelves-ready flag
+  only when `ready` is a boolean in an object.
 - **Launch form** (`decodeLaunchForm`). Corpus `launch_form/`. Oracle: the
   token equals a separate form-urlencoded parse's first
   `cf-turnstile-response` when that is printable ASCII, and there is none

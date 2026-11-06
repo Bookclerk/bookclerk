@@ -41,8 +41,12 @@ every content signal to `no` (`use=immediate`).
    `/health`, approves and deploys the four storefronts as the operator
    (as an operator would in Settings; visitors cannot), makes the visitor
    the host's Owner (with the fixed password `VISITOR_PASSWORD` in
-   `src/lifecycle.ts`) and redeems the Owner's claim ticket. The
-   Durable Object then forgets the operator token. The visitor waits on
+   `src/lifecycle.ts`) and redeems the Owner's claim ticket. It then reads
+   `GET /api/discover/status` as the visitor every second for up to 25
+   seconds, so the Discover shelves the visitor lands on are built before
+   the session opens; past that it opens anyway and the page fills in as
+   they arrive. The Durable Object then forgets the operator token. The
+   visitor waits on
    `/_demo/wait`, which says how long a start usually takes: the median of
    the last week's recorded startup times (`sessions.startup_seconds`).
 3. `/_demo/enter` hands the browser the portal session cookie. From then on
