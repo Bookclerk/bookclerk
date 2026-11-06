@@ -75,6 +75,9 @@ pub(super) async fn heartbeat_with(
         running_guests: 0,
         availability_ppm: 1_000_000,
         online_since_ms: at,
+        cache_bytes: None,
+        cache_budget_bytes: None,
+        cache_swept_ms: None,
     };
     edit(&mut status);
     super::node_status::upsert_node_status(store, &status)

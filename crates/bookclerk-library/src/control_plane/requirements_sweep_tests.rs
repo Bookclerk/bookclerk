@@ -702,3 +702,75 @@ twin!(
     sqlite_cron_fire_on_member_host_fails_after_grace,
     postgres_cron_fire_on_member_host_fails_after_grace
 );
+
+/// A job pinned to a node waits while the node heartbeats and fails as
+/// unroutable once it has been silent for the grace period; a node that
+/// never heartbeated fails its jobs at once. The heartbeat carries the
+/// node's cache use.
+#[tokio::test]
+async fn pinned_job_of_a_silent_node_fails_after_grace() {
+    let (_dir, store, _other) = sqlite_stores().await;
+    let pin = |node: &str| JobPayload {
+        node_id: Some(node.into()),
+        ..Default::default()
+    };
+    let mut ids = Vec::new();
+    for node in ["node-a", "node-gone"] {
+        let outcome = store
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::CacheSweep,
+                payload: pin(node),
+                priority: 0,
+                max_attempts: 3,
+                max_pending: 16,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        let EnqueueOutcome::Created { id } = outcome else {
+            panic!("expected a new job: {outcome:?}");
+        };
+        ids.push(id);
+    }
+    let heartbeat = NodeHeartbeat {
+        incarnation: "test".into(),
+        started_at: Utc::now().to_rfc3339(),
+        interval: NODE_HEARTBEAT_INTERVAL,
+        cpu_millicores: 1000,
+        memory_bytes: None,
+        cpu_used_millicores: None,
+        memory_available_bytes: None,
+        files_dir_free_bytes: None,
+        cache: Some(CacheUsage {
+            bytes: 4096,
+            budget_bytes: 1 << 30,
+            swept_ms: Some(1_793_212_800_000),
+        }),
+    };
+    let status = record_node_heartbeat(&store, "node-a", &heartbeat)
+        .await
+        .unwrap();
+    assert_eq!(status.cache_bytes, Some(4096));
+    let stored = load_node_status(&store, "node-a").await.unwrap().unwrap();
+    assert_eq!(stored.cache_budget_bytes, Some(1 << 30));
+    assert_eq!(stored.cache_swept_ms, Some(1_793_212_800_000));
+
+    let now = Utc::now();
+    let report = sweep(&store, now).await;
+    assert_eq!(report.examined, 2);
+    assert_eq!(report.failed, 1, "the node that never heartbeated");
+    let live = store.get_job(&ids[0]).await.unwrap().unwrap();
+    assert_eq!(live.state, JobState::Pending);
+    let gone = store.get_job(&ids[1]).await.unwrap().unwrap();
+    assert_eq!(gone.state, JobState::Failed);
+    assert_eq!(gone.error_kind.as_deref(), Some(UNROUTABLE_ERROR_KIND));
+
+    let later = now + chrono::Duration::from_std(GRACE).unwrap();
+    assert_eq!(sweep(&store, later).await.failed, 1);
+    let silent = store.get_job(&ids[0]).await.unwrap().unwrap();
+    assert_eq!(silent.state, JobState::Failed);
+    assert!(silent
+        .error_message
+        .as_deref()
+        .is_some_and(|reason| reason.contains("node-a")));
+}

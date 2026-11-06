@@ -1585,10 +1585,11 @@ fn claim_cursor_of(model: &jobs::Model) -> JobClaimCursor {
     }
 }
 
-/// True when the row's payload names instances the claimer must run.
+/// True when the row's payload names instances the claimer must run, or the
+/// one node that may claim it.
 fn job_has_requirements(model: &jobs::Model) -> bool {
     serde_json::from_str::<JobPayload>(&model.payload)
-        .map(|payload| !payload.requires.is_empty())
+        .map(|payload| !payload.requires.is_empty() || payload.node_id.is_some())
         .unwrap_or(false)
 }
 

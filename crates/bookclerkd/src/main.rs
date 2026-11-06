@@ -12,6 +12,7 @@
 
 mod api;
 mod auth;
+mod cache_jobs;
 mod cache_policy;
 mod cluster_link;
 mod config_authority;

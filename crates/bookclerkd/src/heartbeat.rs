@@ -7,8 +7,10 @@
 //! database; nodes never contact each other.
 //!
 //! Each beat also re-reads the image caches' retention limits (`core.cache`
-//! and this node's override) and hands them to the cover service, which
-//! sweeps when they changed or a sweep is due.
+//! and this node's override) and hands them to the cover service. When it
+//! says a sweep is due, the beat queues a `cache_sweep` job pinned to this
+//! node (see [`crate::cache_jobs`]). The row carries what the caches hold,
+//! their budget and when they were last swept.
 
 use std::sync::Arc;
 
@@ -44,7 +46,7 @@ async fn beat(
     state: &AppState,
     mut sampler: NodeSampler,
 ) -> (NodeSampler, anyhow::Result<NodeStatus>) {
-    let (sampler, heartbeat) = match tokio::task::spawn_blocking(move || {
+    let (sampler, mut heartbeat) = match tokio::task::spawn_blocking(move || {
         let heartbeat = sampler.sample();
         (sampler, heartbeat)
     })
@@ -65,18 +67,21 @@ async fn beat(
         Err(err) => return (sampler, Err(err.into())),
     };
     let library = state.library_snapshot().await;
+    let limits = match cache_limits(&library, &node_id).await {
+        Ok(limits) => limits,
+        Err(err) => {
+            // The disk check and the hourly sweep still run.
+            warn!(error = %err, "cache limits unavailable; keeping the previous ones");
+            state.covers.limits()
+        }
+    };
+    if state.covers.maintain(limits).await {
+        crate::cache_jobs::queue_cache_sweep(state, &node_id).await;
+    }
+    heartbeat.cache = Some(state.covers.usage());
     let status = record_node_heartbeat(&library, &node_id, &heartbeat)
         .await
         .map_err(anyhow::Error::from);
-    match cache_limits(&library, &node_id).await {
-        Ok(limits) => state.covers.maintain(limits).await,
-        Err(err) => {
-            warn!(error = %err, "cache limits unavailable; keeping the previous ones");
-            // The disk check and the hourly sweep still run.
-            let retained = state.covers.limits();
-            state.covers.maintain(retained).await;
-        }
-    }
     (sampler, status)
 }
 

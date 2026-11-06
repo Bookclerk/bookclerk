@@ -182,6 +182,7 @@ stateDiagram-v2
 | `plugin_scheduled` | `plugin_scheduled:instance={id}:cron={schedule}` | `network` | `scheduled(controller)` on the instance (`run_plugin_scheduled`) |
 | `discover_candidates` | `discover_candidates:subject={key}` | `network` | `run_discover_candidates`, then admits the subject's `discover_feed` |
 | `discover_feed` | `discover_feed:subject={key}` | `network` | `run_discover_feed` (no network; ranks stored candidates) |
+| `cache_sweep` | `cache_sweep:node={id}` | `network` | `run_cache_sweep` (no network; one node's image caches and job scratch) |
 
 `plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
 ticker claims a due fire with a compare-and-swap on the instance's
@@ -204,6 +205,19 @@ consumes `wishlist_changed`, `listening_synced` and `book_acquired` and
 admits jobs with a 30 s `run_after`) queue them. See
 [Precomputed shelves](discovery.md#precomputed-shelves) and
 [Taste events](discovery.md#taste-events).
+
+A `cache_sweep` job belongs to one node: `JobPayload.node_id` names it,
+and only that node's routed claim takes the job (the unrouted claim never
+does). Each daemon admits one for itself from its heartbeat when a sweep is
+due (see [Cache retention](../server/integrations.md#cache-retention)), at
+priority 100 so a backlog of store work does not hold it back. The dedup key
+folds a sweep that comes due while another is queued or running into that
+one. The job evicts from the node's image caches, then deletes scratch
+directories under `{cache}/acquire`, `{cache}/acquire-pdf` and
+`{cache}/convert` that no active job has registered and that have been
+unchanged for an hour (a job may create its directory just before
+registering it). When the queue is full or the admission fails, the
+heartbeat sweeps the image caches in the background instead.
 
 Reserved classes (no worker in this release): `media`, `transcription`,
 `indexing`.
@@ -312,7 +326,8 @@ clusters scan` ([Clusters and host nodes](../server/cluster-hosts.md)).
   to `error` (`orphaned_after_restart`). The next acquire job retries them.
 - Scratch dirs under `{cache}/acquire` and `{cache}/acquire-pdf` are reserved
   against `jobs.temp_quota_bytes` (default 2 GiB) and unregistered only after
-  that path is deleted (or already gone). Startup sweeps unregistered orphans.
+  that path is deleted (or already gone). Startup sweeps unregistered orphans,
+  and each node's `cache_sweep` job sweeps those unchanged for an hour.
   Fetch, remux/transcode, and companion-PDF downloads (PDF-only and sidecars
   discovered during audio acquire) are bounded by the remaining quota: sources
   can call `FetchOptions::enforce_cache_budget`, the pipeline watchdog cancels
@@ -403,6 +418,11 @@ read the instance list is skipped), and:
   it (an instance was only dropped, which is what admission would record
   now), or fails the job with `error_kind = "unroutable"` and a message naming
   the instances. A failed job frees its `max_pending` slot and dedup key.
+
+A job pinned to a node (`JobPayload.node_id`) has no instances to
+re-resolve. The sweep fails it as `unroutable` when that node has never
+sent a heartbeat, or its last one is older than the grace period, so a
+removed or long-stopped node does not keep its queued work.
 
 The grace period is a wall-clock stamp rather than a count of unsettled
 sweeps, because sweeps also run on wakeups and a count would expire faster

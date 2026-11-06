@@ -7,7 +7,9 @@
 //! when each of those instances has a deployment on it that should run
 //! (`present` or `placed`) and whose last observation there says the guest
 //! is up (`running` or `healthy`), the same test delivery routing uses. A job
-//! with no requirements stays claimable anywhere.
+//! with no requirements stays claimable anywhere. A job pinned to a node
+//! ([`crate::JobPayload::node_id`], work on that node's own disk) is claimed
+//! by that node only.
 //!
 //! Before the claim's compare-and-swap, the claimer takes one permit of
 //! every cluster semaphore the job counts against
@@ -584,7 +586,8 @@ pub fn job_permit_holder_prefix(owner: &str, job_id: &str, generation: i64) -> S
 ///
 /// Pages through the ready pending jobs of the class, best first
 /// ([`ROUTED_CLAIM_CANDIDATES`] per page); skips those the node is not
-/// trusted with ([`super::node_trust`]), those whose requirements this node
+/// trusted with ([`super::node_trust`]), those pinned to another node
+/// ([`crate::JobPayload::node_id`]), those whose requirements this node
 /// does not meet, and those whose account or instance semaphore is full;
 /// takes the permits of the first one left and claims it with
 /// [`LibraryStore::claim_job_by_id`] at the lease generation of the record
@@ -632,6 +635,14 @@ pub async fn claim_routed_job(
             .await?;
         for job in page.jobs {
             if !claimant_may_run(request.claimant, &job) {
+                continue;
+            }
+            if job
+                .payload
+                .node_id
+                .as_deref()
+                .is_some_and(|pinned| pinned != request.node_id)
+            {
                 continue;
             }
             let trusted = match (&trust, owned_job_account(&job)) {

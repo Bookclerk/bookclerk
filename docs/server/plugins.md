@@ -332,6 +332,10 @@ reports:
 - **Measured use**: CPU busy since the previous heartbeat, and memory
   available, for the whole machine (or the daemon's CPU-limited cgroup on
   Linux).
+- **Image cache**: what the node's image caches hold, their budget and
+  when they were last swept (see
+  [Cache retention](integrations.md#cache-retention)). A Host reports
+  none.
 - **Availability**: how much of the recent past the node was up, as a
   decaying average over about a day. A desktop that is off every night
   ends up around 60%; an always-on VPS stays near 100%.

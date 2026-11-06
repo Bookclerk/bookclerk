@@ -1239,7 +1239,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         reserved_memory_bytes INTEGER NOT NULL,
         running_guests INTEGER NOT NULL,
         availability_ppm INTEGER NOT NULL,
-        online_since_ms INTEGER NOT NULL
+        online_since_ms INTEGER NOT NULL,
+        cache_bytes INTEGER,
+        cache_budget_bytes INTEGER,
+        cache_swept_ms INTEGER
     )",
     ),
     MigrationOp::Schema(super::CLUSTER_LEASES_DDL),

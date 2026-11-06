@@ -26,6 +26,10 @@ const CLAIM_REPLAY_BUDGET: Duration = Duration::from_secs(2);
 /// Delay between bounded claim-replay attempts.
 const CLAIM_REPLAY_DELAY: Duration = Duration::from_millis(200);
 
+/// How long an unregistered scratch directory must have been unchanged
+/// before the periodic sweep deletes it.
+pub(crate) const SCRATCH_GRACE: Duration = Duration::from_secs(60 * 60);
+
 /// Reclaim leases, reconcile orphan acquire rows, sweep scratch dirs, start workers.
 pub async fn start_job_runtime(state: Arc<AppState>) {
     if let Err(err) = reconcile_on_startup(&state).await {
@@ -45,7 +49,8 @@ pub async fn reconcile_on_startup(state: &AppState) -> anyhow::Result<()> {
     let orphans = library.reconcile_orphaned_acquire_rows().await?;
     let cfg = state.config.read().await.clone();
     let cache = cfg.download_cache_dir();
-    let swept = sweep_orphan_temp_dirs(&library, &cache).await?;
+    // Nothing runs yet, so every unregistered directory is an orphan.
+    let swept = sweep_orphan_temp_dirs(&library, &cache, Duration::ZERO).await?;
     let stale_before = (chrono::Utc::now()
         - chrono::Duration::seconds(i64::try_from(cfg.jobs.lease_seconds).unwrap_or(60)))
     .to_rfc3339();
@@ -60,9 +65,29 @@ pub async fn reconcile_on_startup(state: &AppState) -> anyhow::Result<()> {
 }
 
 /// Delete `{cache}/acquire*` directories that are not registered to an active job.
+///
+/// At startup nothing runs yet, so `min_age` is zero. The periodic
+/// `cache_sweep` job passes [`SCRATCH_GRACE`] instead: a job may create its
+/// directory a moment before registering it, so a directory changed more
+/// recently than `min_age` is left alone.
+///
+/// # Arguments
+///
+/// * `library` - Holds the registered directories and their jobs.
+/// * `cache_dir` - The download cache root.
+/// * `min_age` - How long a directory must have been unchanged to go.
+///
+/// # Returns
+///
+/// How many directories were deleted.
+///
+/// # Errors
+///
+/// Returns the library error when the registered directories cannot be read.
 pub async fn sweep_orphan_temp_dirs(
     library: &LibraryStore,
     cache_dir: &Path,
+    min_age: Duration,
 ) -> anyhow::Result<u32> {
     let mut active_keep = HashSet::new();
     for row in library.list_all_job_temp_paths().await? {
@@ -77,7 +102,7 @@ pub async fn sweep_orphan_temp_dirs(
     }
     let mut swept = 0u32;
     for name in ["acquire", "acquire-pdf", "convert"] {
-        swept += sweep_dir(&cache_dir.join(name), &active_keep).await;
+        swept += sweep_dir(&cache_dir.join(name), &active_keep, min_age).await;
     }
     Ok(swept)
 }
@@ -103,8 +128,9 @@ fn require_under_sweep_root(root: &Path, path: &Path) -> Option<PathBuf> {
     Some(path_norm)
 }
 
-/// Deletes unregistered child directories under `root`.
-async fn sweep_dir(root: &Path, keep: &HashSet<PathBuf>) -> u32 {
+/// Deletes unregistered child directories under `root` unchanged for at
+/// least `min_age`.
+async fn sweep_dir(root: &Path, keep: &HashSet<PathBuf>, min_age: Duration) -> u32 {
     let mut n = 0u32;
     let Ok(root_canon) = tokio::fs::canonicalize(root).await else {
         return 0;
@@ -126,6 +152,18 @@ async fn sweep_dir(root: &Path, keep: &HashSet<PathBuf>) -> u32 {
         };
         if path == root_canon || keep.contains(&path) {
             continue;
+        }
+        if !min_age.is_zero() {
+            let young = entry
+                .metadata()
+                .await
+                .and_then(|meta| meta.modified())
+                .map(|modified| modified.elapsed().unwrap_or_default() < min_age)
+                // An unreadable time is treated as new: never delete on doubt.
+                .unwrap_or(true);
+            if young {
+                continue;
+            }
         }
         match tokio::fs::remove_dir_all(&entry.path()).await {
             Ok(()) => n += 1,
@@ -600,7 +638,16 @@ mod tests {
             .await
             .unwrap();
 
-        let swept = sweep_orphan_temp_dirs(&store, &cache).await.unwrap();
+        // The periodic sweep leaves a directory changed within the grace
+        // period alone: its job may not have registered it yet.
+        let young = sweep_orphan_temp_dirs(&store, &cache, SCRATCH_GRACE)
+            .await
+            .unwrap();
+        assert_eq!(young, 0);
+        assert!(orphan.exists());
+        let swept = sweep_orphan_temp_dirs(&store, &cache, Duration::ZERO)
+            .await
+            .unwrap();
         assert_eq!(swept, 2);
         assert!(!orphan.exists());
         assert!(!convert_orphan.exists());
@@ -655,7 +702,9 @@ mod tests {
             .await
             .unwrap();
 
-        let swept = sweep_orphan_temp_dirs(&store, &cache_link).await.unwrap();
+        let swept = sweep_orphan_temp_dirs(&store, &cache_link, Duration::ZERO)
+            .await
+            .unwrap();
         assert_eq!(swept, 0);
         assert!(kept_real.exists());
         assert!(lexical_kept.exists());

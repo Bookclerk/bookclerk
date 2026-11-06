@@ -307,7 +307,12 @@ pub async fn run(
                         owners.get(&node.node_id).map_or("-", String::as_str)
                     );
                     match status {
-                        Some(status) => println!("  {}", status_line(status)),
+                        Some(status) => {
+                            println!("  {}", status_line(status));
+                            if let Some(cache) = cache_line(status, now_ms) {
+                                println!("  {cache}");
+                            }
+                        }
                         None => println!("  no daemon heartbeat yet"),
                     }
                 }
@@ -613,11 +618,80 @@ fn status_line(status: &NodeStatus) -> String {
     )
 }
 
+/// The image caches' line of a node: what they hold of their budget and
+/// when they were last swept, or `None` for a node that reports no cache
+/// (a Host).
+///
+/// # Arguments
+///
+/// * `status` - The node's latest heartbeat.
+/// * `now_ms` - The current time in Unix milliseconds.
+fn cache_line(status: &NodeStatus, now_ms: i64) -> Option<String> {
+    let bytes = status.cache_bytes?;
+    let size = |bytes: i64| {
+        if bytes >= 1 << 30 {
+            format!("{:.1}G", bytes as f64 / f64::from(1u32 << 30))
+        } else {
+            format!("{:.0}M", bytes as f64 / f64::from(1u32 << 20))
+        }
+    };
+    let budget = status
+        .cache_budget_bytes
+        .map_or_else(|| "?".to_string(), size);
+    let swept = match status.cache_swept_ms {
+        Some(at) => {
+            let minutes = now_ms.saturating_sub(at).max(0) / 60_000;
+            format!("swept {minutes} min ago")
+        }
+        None => "not swept since start".to_string(),
+    };
+    Some(format!("cache {} of {budget}, {swept}", size(bytes)))
+}
+
 #[cfg(test)]
 mod tests {
     use bookclerk_library::{LibraryStore, UserRole};
 
-    use super::{invite_spki_pin, parse_ttl, resolve_user};
+    use super::{cache_line, invite_spki_pin, parse_ttl, resolve_user};
+
+    #[test]
+    fn the_cache_line_shows_use_budget_and_last_sweep() {
+        let mut status = bookclerk_library::control_plane::NodeStatus {
+            node_id: "node-a".into(),
+            incarnation: "i".into(),
+            started_at: String::new(),
+            heartbeat_at: String::new(),
+            heartbeat_ms: 0,
+            interval_ms: 15_000,
+            cpu_millicores: 1000,
+            memory_bytes: None,
+            cpu_budget_millicores: 1000,
+            memory_budget_bytes: None,
+            schedulable: true,
+            cpu_used_millicores: None,
+            memory_available_bytes: None,
+            files_dir_free_bytes: None,
+            reserved: bookclerk_library::control_plane::GuestReservation::default(),
+            running_guests: 0,
+            availability_ppm: 1_000_000,
+            online_since_ms: 0,
+            cache_bytes: None,
+            cache_budget_bytes: None,
+            cache_swept_ms: None,
+        };
+        assert_eq!(cache_line(&status, 0), None, "a Host keeps no cache");
+        status.cache_bytes = Some(300 << 20);
+        status.cache_budget_bytes = Some(1 << 30);
+        assert_eq!(
+            cache_line(&status, 0).as_deref(),
+            Some("cache 300M of 1.0G, not swept since start")
+        );
+        status.cache_swept_ms = Some(1_000);
+        assert_eq!(
+            cache_line(&status, 1_000 + 12 * 60_000).as_deref(),
+            Some("cache 300M of 1.0G, swept 12 min ago")
+        );
+    }
 
     #[test]
     fn ttl_parses_units_and_refuses_others() {

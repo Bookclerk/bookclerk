@@ -30,6 +30,11 @@
 //!   failed with `error_kind = "unroutable"` and a reason naming the
 //!   instances, which frees its pending slot and dedup key.
 //!
+//! A job pinned to one node ([`JobPayload::node_id`]) has no instances to
+//! re-resolve. The sweep fails it as unroutable once that node's last
+//! heartbeat is older than the grace period (or it never sent one), so a
+//! removed or long-stopped node does not keep its queued work forever.
+//!
 //! A grace period on a wall-clock stamp was chosen over counting consecutive
 //! unsettled sweeps because sweeps run both on a timer and on every
 //! deployment wakeup, so a count would expire faster on a busy cluster.
@@ -49,6 +54,7 @@ use chrono::{DateTime, Utc};
 use super::job_routing::{
     deployed_on_trusted_node, desired_requirements, no_common_node_message, requirements_routable,
 };
+use super::node_status::load_node_status;
 use crate::error::Result;
 use crate::models::{JobKind, JobPayload, JobRecord};
 use crate::store::LibraryStore;
@@ -125,6 +131,11 @@ pub async fn sweep_job_requirements(
             .list_pending_jobs_page(after.as_deref(), SWEEP_PAGE)
             .await?;
         for job in jobs {
+            if let Some(node_id) = job.payload.node_id.as_deref() {
+                report.examined += 1;
+                sweep_pinned(store, &job, node_id, now_ms, grace_ms, &mut report).await?;
+                continue;
+            }
             if !sweepable(&job) {
                 continue;
             }
@@ -278,6 +289,54 @@ async fn sweep_one(
             grace_ms / 60_000
         )
     };
+    if store
+        .fail_pending_job(
+            &job.id,
+            job.lease_generation,
+            UNROUTABLE_ERROR_KIND,
+            &reason,
+        )
+        .await?
+    {
+        report.failed += 1;
+    } else {
+        report.lost += 1;
+    }
+    Ok(())
+}
+
+/// Fails a job pinned to `node_id` once the node's last heartbeat is older
+/// than the grace period, or the node never sent one.
+///
+/// # Arguments
+///
+/// * `job` - The pending pinned job.
+/// * `node_id` - The node it is pinned to.
+/// * `now_ms` - The sweep's clock, in Unix milliseconds.
+/// * `grace_ms` - How long the node may be silent.
+///
+/// # Errors
+///
+/// Returns an error when the read or the write fails.
+async fn sweep_pinned(
+    store: &LibraryStore,
+    job: &JobRecord,
+    node_id: &str,
+    now_ms: i64,
+    grace_ms: i64,
+    report: &mut RequirementsSweepReport,
+) -> Result<()> {
+    let silent = match load_node_status(store, node_id).await? {
+        Some(status) => now_ms.saturating_sub(status.heartbeat_ms) >= grace_ms,
+        None => true,
+    };
+    if !silent {
+        return Ok(());
+    }
+    let reason = format!(
+        "node {node_id} has not sent a heartbeat for over {} minutes",
+        grace_ms / 60_000
+    );
     if store
         .fail_pending_job(
             &job.id,
