@@ -150,6 +150,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "cache_headers"
+path = "fuzz_targets/cache_headers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cover_token"
 path = "fuzz_targets/cover_token.rs"
 test = false

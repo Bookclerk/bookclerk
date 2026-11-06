@@ -87,6 +87,24 @@ OpenAPI document, with no sign-in needed:
   for tools that only read 3.0. Use it for
   [request validation at the proxy](#validate-api-requests-at-the-proxy).
 
+### Cache headers
+
+Every response says how long a browser or a caching proxy may keep it:
+
+| Response | `Cache-Control` |
+| --- | --- |
+| Web app pages | `no-cache`; `/invite` is `no-store` |
+| Web app files under `/assets/` (their names carry a content hash) | `public, max-age=31536000, immutable` |
+| Other web app files (icons, manifest, fonts) | `no-cache` |
+| Covers (`/api/covers/…`) | `private, max-age=31536000, immutable` |
+| Other images (`/api/images/…`, Gravatars, store icons) | `private, max-age=3600, stale-while-revalidate=86400` |
+| API JSON, errors and everything else | `no-store` |
+
+Covers and other images also send an `ETag`. A browser that asks again
+with `If-None-Match` gets `304 Not Modified` and no body when its copy is
+current. A proxy in front of Bookclerk needs no cache rules of its own:
+it may keep `/assets/` files and must not store the rest.
+
 ### The CLI against a running daemon
 
 These commands send the Bearer token when auth is on:

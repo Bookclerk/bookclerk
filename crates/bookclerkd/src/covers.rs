@@ -822,7 +822,8 @@ fn load_or_create_key(path: &Path) -> std::io::Result<TokenKey> {
 /// response; append `/128`, `/360` or `/full`. The first request fetches the
 /// image through the `covers` plugin and re-encodes it in the confined media
 /// worker; later ones are served from the node's cover cache. Responses are
-/// immutable: a path always names the same image.
+/// immutable, since a path always names the same image, and carry an `ETag`
+/// so a client revalidating anyway gets `304 Not Modified`.
 #[utoipa::path(
     get,
     path = "/api/covers/{token}/{size}",
@@ -832,6 +833,7 @@ fn load_or_create_key(path: &Path) -> std::io::Result<TokenKey> {
     ),
     responses(
         (status = 200, description = "The cover as a JPEG.", content_type = "image/jpeg"),
+        (status = 304, description = "`If-None-Match` names the current `ETag`; no body."),
         (status = 404, description = "The token was not issued by this node, or the size is unknown."),
         (status = 502, description = "The image could not be downloaded or is not a supported image."),
         (status = 503, description = "This node cannot fetch or process covers right now."),
@@ -840,6 +842,7 @@ fn load_or_create_key(path: &Path) -> std::io::Result<TokenKey> {
 pub(crate) async fn get_cover(
     axum::extract::State(state): axum::extract::State<Arc<crate::api::AppState>>,
     axum::extract::Path((token, size)): axum::extract::Path<(String, String)>,
+    headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
@@ -848,16 +851,18 @@ pub(crate) async fn get_cover(
         return StatusCode::NOT_FOUND.into_response();
     };
     let url = state.covers.open_token(&token);
-    serve(&state, url, size, IMMUTABLE, Admission::Signed).await
+    serve(&state, &headers, url, size, IMMUTABLE, Admission::Signed).await
 }
 
 /// `Cache-Control` for a cover path, which always names the same image.
 const IMMUTABLE: &str = "private, max-age=31536000, immutable";
 
 /// `Cache-Control` for an image whose remote copy can change under the same
-/// address (a Gravatar, a store icon): the browser asks Bookclerk again
-/// daily. Bookclerk answers from its disk cache until the entry is evicted.
-const DAILY: &str = "private, max-age=86400";
+/// address (a Gravatar, a store icon): the browser uses its copy for an
+/// hour, then shows it while asking Bookclerk again in the background for up
+/// to a day. The `ETag` makes that check a `304` when nothing changed.
+/// Bookclerk answers from its disk cache until the entry is evicted.
+const CHANGEABLE: &str = "private, max-age=3600, stale-while-revalidate=86400";
 
 /// How [`serve`] admits a download.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -876,18 +881,20 @@ enum Admission {
 ///
 /// * `state` - Daemon state holding the cover service and the plugins that
 ///   fetch for it.
+/// * `request` - The request's headers, for `If-None-Match`.
 /// * `url` - The remote image; `None` is a 404.
 /// * `size` - The size to serve.
 /// * `cache_control` - `Cache-Control` for a successful answer.
 /// * `admission` - Whether a download is limited by [`OPEN_FETCHES`].
 async fn serve(
     state: &crate::api::AppState,
+    request: &axum::http::HeaderMap,
     url: Option<String>,
     size: CoverSize,
     cache_control: &'static str,
     admission: Admission,
 ) -> axum::response::Response {
-    use axum::http::{header, StatusCode};
+    use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
     let backend = Arc::new(LiveBackend {
@@ -901,15 +908,9 @@ async fn serve(
         None => Err(CoverFailure::UnknownToken),
     };
     match outcome {
-        Ok(bytes) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "image/jpeg"),
-                (header::CACHE_CONTROL, cache_control),
-            ],
-            bytes,
-        )
-            .into_response(),
+        Ok(bytes) => {
+            crate::cache_policy::image_response(request, bytes, "image/jpeg", cache_control)
+        }
         Err(CoverFailure::UnknownToken) => StatusCode::NOT_FOUND.into_response(),
         Err(CoverFailure::Refused(reason)) => {
             tracing::debug!(reason = %reason, "cover refused");
@@ -926,9 +927,9 @@ async fn serve(
 ///
 /// The path comes from a `picture_path` or `logo` field: a sign-in
 /// provider's profile picture or a plugin's remote logo. It is fetched and
-/// processed like a cover, but answers with a daily browser cache header
-/// instead of `immutable`, because the remote image can change at the same
-/// address. Bookclerk keeps serving its cached copy until it is evicted.
+/// processed like a cover, but answers with an hour-long browser cache
+/// header instead of `immutable`, because the remote image can change at the
+/// same address. Bookclerk keeps serving its cached copy until it is evicted.
 #[utoipa::path(
     get,
     path = "/api/images/{token}",
@@ -937,6 +938,7 @@ async fn serve(
     ),
     responses(
         (status = 200, description = "The image as a JPEG.", content_type = "image/jpeg"),
+        (status = 304, description = "`If-None-Match` names the current `ETag`; no body."),
         (status = 404, description = "The token was not issued by this node."),
         (status = 502, description = "The image could not be downloaded or is not a supported image."),
         (status = 503, description = "This node cannot fetch or process images right now."),
@@ -945,9 +947,18 @@ async fn serve(
 pub(crate) async fn get_image(
     axum::extract::State(state): axum::extract::State<Arc<crate::api::AppState>>,
     axum::extract::Path(token): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
     let url = state.covers.open_token(&token);
-    serve(&state, url, CoverSize::Thumb, DAILY, Admission::Signed).await
+    serve(
+        &state,
+        &headers,
+        url,
+        CoverSize::Thumb,
+        CHANGEABLE,
+        Admission::Signed,
+    )
+    .await
 }
 
 /// Serves a user's Gravatar as a 128 px JPEG through the cover service.
@@ -963,6 +974,7 @@ pub(crate) async fn get_image(
     ),
     responses(
         (status = 200, description = "The picture as a JPEG.", content_type = "image/jpeg"),
+        (status = 304, description = "`If-None-Match` names the current `ETag`; no body."),
         (status = 404, description = "The hash is not 64 lowercase hex digits."),
         (status = 502, description = "The email has no Gravatar, or the image is not a supported image."),
         (status = 503, description = "This node cannot fetch or process images right now, or too many Gravatars are downloading at once."),
@@ -971,12 +983,14 @@ pub(crate) async fn get_image(
 pub(crate) async fn get_gravatar(
     axum::extract::State(state): axum::extract::State<Arc<crate::api::AppState>>,
     axum::extract::Path(hash): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
     serve(
         &state,
+        &headers,
         gravatar_url(&hash),
         CoverSize::Thumb,
-        DAILY,
+        CHANGEABLE,
         Admission::Open,
     )
     .await
@@ -995,6 +1009,7 @@ pub(crate) async fn get_gravatar(
     ),
     responses(
         (status = 200, description = "The icon as a JPEG.", content_type = "image/jpeg"),
+        (status = 304, description = "`If-None-Match` names the current `ETag`; no body."),
         (status = 404, description = "No deployed storefront or integration has this id, or it names no icon."),
         (status = 502, description = "The icon could not be downloaded or is not a supported image."),
         (status = 503, description = "This node cannot fetch or process images right now."),
@@ -1003,9 +1018,18 @@ pub(crate) async fn get_gravatar(
 pub(crate) async fn get_store_icon(
     axum::extract::State(state): axum::extract::State<Arc<crate::api::AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
     let url = store_icon_url(&state, &id).await;
-    serve(&state, url, CoverSize::Thumb, DAILY, Admission::Signed).await
+    serve(
+        &state,
+        &headers,
+        url,
+        CoverSize::Thumb,
+        CHANGEABLE,
+        Admission::Signed,
+    )
+    .await
 }
 
 /// The icon a deployed storefront, or failing that an integration, names

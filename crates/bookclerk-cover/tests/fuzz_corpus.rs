@@ -1,7 +1,7 @@
-//! Replays the checked-in `cover_process`, `cover_wire` and `cover_token`
-//! fuzz corpora in PR CI (no libFuzzer required), so an input that once broke
-//! the cover pipeline, the worker frames or the token and Gravatar checks
-//! stays fixed
+//! Replays the checked-in `cover_process`, `cover_wire`, `cover_token` and
+//! `cache_headers` fuzz corpora in PR CI (no libFuzzer required), so an input
+//! that once broke the cover pipeline, the worker frames, the token and
+//! Gravatar checks or the `If-None-Match` reader stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
 //! `UPDATE_FUZZ_SEEDS=1` rewrites the generated seeds; without it the test
@@ -28,6 +28,9 @@ mod cover_wire_oracle;
 
 #[path = "../../../fuzz/oracles/cover_token.rs"]
 mod cover_token_oracle;
+
+#[path = "../../../fuzz/oracles/cache_headers.rs"]
+mod cache_headers_oracle;
 
 /// `fuzz/corpus/<target>`.
 fn corpus_dir(target: &str) -> PathBuf {
@@ -191,8 +194,44 @@ fn token_seeds() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+/// The generated `cache_headers` seeds: built lists (mode byte 0) that hit
+/// and miss the current tag, and raw headers (mode byte 1), including one
+/// that names the tag of an empty body, which the raw mode also checks.
+fn cache_header_seeds() -> Vec<(&'static str, Vec<u8>)> {
+    let built = |elements: &[&[u8]]| {
+        let mut out = vec![0u8];
+        out.extend_from_slice(b"seed");
+        for element in elements {
+            out.push(0xff);
+            out.extend_from_slice(element);
+        }
+        out
+    };
+    let raw = |header: &[u8]| {
+        let mut out = vec![1u8];
+        out.extend_from_slice(header);
+        out
+    };
+    let empty_tag = bookclerk_cover::http_cache::EntityTag::of(b"").header_value();
+    vec![
+        ("built_current.bin", built(&[&[2]])),
+        ("built_weak_list.bin", built(&[b"\0old", &[3], b"\0older"])),
+        ("built_miss.bin", built(&[b"\0nope", b"\x01W/\"bad"])),
+        ("raw_star.bin", raw(b" * ")),
+        (
+            "raw_list_empty_tag.bin",
+            raw(format!("\"old\", W/{empty_tag}").as_bytes()),
+        ),
+        ("raw_junk_after_tag.bin", raw(b"\"abc\"x, ,")),
+        ("raw_unterminated.bin", raw(b"W/\"abc")),
+    ]
+}
+
 #[test]
 fn generated_seeds_are_current() {
+    for (name, bytes) in cache_header_seeds() {
+        seed("cache_headers", name, &bytes);
+    }
     for (name, bytes) in process_seeds() {
         seed("cover_process", name, &bytes);
     }
@@ -239,4 +278,19 @@ fn fuzz_corpus_cover_token_holds_invariants() {
     }
     // Only the one valid token in the corpus opens.
     assert_eq!(opened, 1);
+}
+
+#[test]
+fn fuzz_corpus_cache_headers_holds_invariants() {
+    let empty = bookclerk_cover::http_cache::EntityTag::of(b"");
+    let mut matched = 0;
+    for path in corpus_files("cache_headers") {
+        let data = std::fs::read(&path).expect("read");
+        cache_headers_oracle::check(&data);
+        if let Some((1, header)) = data.split_first().map(|(m, h)| (*m, h)) {
+            matched += usize::from(bookclerk_cover::http_cache::if_none_match(header, &empty));
+        }
+    }
+    // `*` and the list naming the empty body's tag match it.
+    assert_eq!(matched, 2);
 }
