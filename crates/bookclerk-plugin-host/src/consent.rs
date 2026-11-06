@@ -1974,10 +1974,13 @@ pub fn validate_approved_grant(
         .difference(&own_user_agent_hosts)
         .cloned()
         .collect();
-    if let Some((refused, approved_host)) =
-        own_user_agent_conflict(&own_user_agent_hosts, &own_user_agent_refused_hosts)
-    {
-        return Err(own_user_agent_conflict_error(&refused, &approved_host));
+    // With network access off no request leaves, so an overlap is moot.
+    if !network_mode.eq_ignore_ascii_case("deny") {
+        if let Some((refused, approved_host)) =
+            own_user_agent_conflict(&own_user_agent_hosts, &own_user_agent_refused_hosts)
+        {
+            return Err(own_user_agent_conflict_error(&refused, &approved_host));
+        }
     }
     let mut domains = BTreeSet::new();
     for raw in &approved.domains {
@@ -4485,6 +4488,10 @@ reason = "  App API contract.  "
         keep_wildcard.own_user_agent_hosts = own_agent(&["*.example.com"]);
         let err = validate_approved_grant(&keep_wildcard, &overlap_baseline).unwrap_err();
         assert!(err.to_string().contains("refuse both or neither"), "{err}");
+        // With network access off the overlap is moot.
+        let mut wildcard_offline = keep_wildcard.clone();
+        wildcard_offline.network_mode = "deny".into();
+        assert!(validate_approved_grant(&wildcard_offline, &overlap_baseline).is_ok());
         let mut keep_exact = overlap_baseline.clone();
         keep_exact.own_user_agent_hosts = own_agent(&["api.example.com"]);
         assert!(validate_approved_grant(&keep_exact, &overlap_baseline).is_ok());

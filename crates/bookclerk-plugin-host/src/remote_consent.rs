@@ -167,7 +167,9 @@ pub fn remote_consent(requested: &PluginGrant, narrowing: &RemoteNarrowing) -> R
             .collect(),
     );
     consent.own_user_agent_refused_hosts = narrowing.deny_own_user_agent_hosts.clone();
-    if let Some(own) = &consent.own_user_agent_hosts {
+    // With network access off no request leaves, so an overlap has no
+    // effect to protect and the network refusal wins.
+    if let (false, Some(own)) = (narrowing.deny_network, &consent.own_user_agent_hosts) {
         if let Some((refused, approved)) =
             crate::consent::own_user_agent_conflict(own, &consent.own_user_agent_refused_hosts)
         {
@@ -803,6 +805,27 @@ mod tests {
             &overlap,
             &RemoteNarrowing {
                 deny_own_user_agent_hosts: ["api.store.example".to_string()].into(),
+                ..RemoteNarrowing::default()
+            }
+        )
+        .is_err());
+        // With network access off the overlap is moot and the refusal stands.
+        let overlap_off = remote_consent(
+            &overlap,
+            &RemoteNarrowing {
+                deny_network: true,
+                deny_own_user_agent_hosts: ["api.store.example".to_string()].into(),
+                ..RemoteNarrowing::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(overlap_off.network_mode, "deny");
+        assert_eq!(overlap_off.own_user_agent_hosts, Some(BTreeSet::new()));
+        assert!(remote_consent(
+            &overlap,
+            &RemoteNarrowing {
+                deny_network: true,
+                deny_own_user_agent_hosts: ["typo.example".to_string()].into(),
                 ..RemoteNarrowing::default()
             }
         )
