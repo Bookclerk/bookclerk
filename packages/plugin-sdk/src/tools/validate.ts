@@ -627,8 +627,11 @@ function isOwnUserAgentHost(raw: string): boolean {
   if (!host || host === "*" || FORBIDDEN_HOST_CHARS.test(host)) return false;
   // The host checks IDNA only. A URL also parses a last label of digits as
   // IPv4, so a known label is appended to leave that check out.
+  // IDNA maps some Unicode forms (a fullwidth comma, say) to these ASCII
+  // characters, so the normalized name is checked again.
   try {
-    return new URL(`http://${host}.example/`).hostname.length > 0;
+    const ascii = new URL(`http://${host}.example/`).hostname;
+    return ascii.length > 0 && !FORBIDDEN_HOST_CHARS.test(ascii);
   } catch {
     return false;
   }

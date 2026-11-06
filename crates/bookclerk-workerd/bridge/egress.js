@@ -183,14 +183,24 @@ function allowsTcp(host, port, policy) {
   );
 }
 
-/** True when the guest's own `User-Agent` may go to `host`. */
+/**
+ * True when the guest's own `User-Agent` may go to `host`.
+ *
+ * Host and patterns are normalized once and compared as they are, never
+ * through `hostMatches` (which normalizes again), so a padded or dotted `*`
+ * never becomes a match-everything pattern.
+ */
 function keepsOwnUserAgent(host, policy) {
-  const normalized = normalizeHostToken(host);
-  if (normalized == null) return false;
-  // Normalize each pattern first so a padded or dotted `*` never matches.
+  const h = normalizeHostToken(host);
+  if (h == null) return false;
   return (policy.ownUserAgentHosts || []).some((p) => {
     const pattern = normalizeHostToken(p);
-    return pattern != null && pattern !== ANY_PUBLIC_HOST && hostMatches(normalized, pattern);
+    if (pattern == null || pattern === ANY_PUBLIC_HOST) return false;
+    if (pattern.startsWith("*.")) {
+      const suffix = pattern.slice(2);
+      return h === suffix || h.endsWith(`.${suffix}`);
+    }
+    return h === pattern;
   });
 }
 

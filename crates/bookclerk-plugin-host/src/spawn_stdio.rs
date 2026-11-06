@@ -2042,7 +2042,15 @@ fn apply_user_agent_env(cmd: &mut Command, grant: &PluginGrant) {
     );
     cmd.env(
         bookclerk_plugin_sdk::OWN_USER_AGENT_HOSTS_ENV,
-        policy.own_user_agent_hosts.join(","),
+        // The list is comma-separated, so a host holding a comma (never
+        // approved; manifests refuse it) is left out rather than split.
+        policy
+            .own_user_agent_hosts
+            .iter()
+            .filter(|host| !host.contains(','))
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(","),
     );
 }
 

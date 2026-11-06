@@ -1914,8 +1914,9 @@ fn validate_own_user_agent(mode: NetworkMode, own: &OwnUserAgent) -> Result<()> 
     }
     for host in &own.hosts {
         // A comma would split the host in the list a native guest receives
-        // (`BOOKCLERK_OWN_USER_AGENT_HOSTS`), so it is refused here.
-        if host.contains(',') || crate::egress::normalize_tcp_host(host).is_none() {
+        // (`BOOKCLERK_OWN_USER_AGENT_HOSTS`), so it is refused here, before
+        // and after IDNA (which maps some Unicode commas to `,`).
+        if host.contains(',') || crate::egress::normalize_own_user_agent_host(host).is_none() {
             return Err(Error::message(format!(
                 "{FIELD}.hosts entry `{host}` is not a valid hostname or `*.` wildcard \
                  (`*` is not allowed)"

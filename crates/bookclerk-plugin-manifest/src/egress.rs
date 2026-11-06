@@ -208,7 +208,7 @@ impl EgressPolicy {
         let mut own_user_agent_hosts = Vec::new();
         if let Some(own) = &caps.own_user_agent {
             for raw in &own.hosts {
-                let Some(host) = normalize_tcp_host(raw) else {
+                let Some(host) = normalize_own_user_agent_host(raw) else {
                     return Err(format!("invalid own user-agent host `{raw}`"));
                 };
                 own_user_agent_hosts.push(host);
@@ -339,7 +339,7 @@ impl EgressPolicy {
         // Normalize each pattern so a padded or Unicode `*` cannot slip past.
         self.own_user_agent_hosts
             .iter()
-            .filter_map(|pattern| normalize_tcp_host(pattern))
+            .filter_map(|pattern| normalize_own_user_agent_host(pattern))
             .any(|pattern| host_matches_normalized(&host, &pattern))
     }
 
@@ -727,6 +727,26 @@ pub fn normalize_tcp_host(host: &str) -> Option<String> {
     normalize_domain_pattern(host).filter(|pattern| pattern != ANY_PUBLIC_HOST)
 }
 
+/// Normalizes a host that may keep a guest's own `User-Agent`: a
+/// [`normalize_tcp_host`] pattern with no comma once normalized.
+///
+/// The comma check runs on the normalized form because IDNA maps some
+/// Unicode commas (such as U+FF0C) to `,`, and native guests receive the
+/// approved hosts as one comma-separated list.
+///
+/// # Arguments
+///
+/// * `host` - Author-supplied `capabilities.network.own_user_agent` host.
+///
+/// # Returns
+///
+/// The normalized pattern, or `None` when it is invalid, `*`, or would hold a
+/// comma.
+#[must_use]
+pub fn normalize_own_user_agent_host(host: &str) -> Option<String> {
+    normalize_tcp_host(host).filter(|pattern| !pattern.contains(','))
+}
+
 /// True when an IDNA-normalized request host is covered by an allowlist pattern.
 ///
 /// Both sides are IDNA-normalized first; invalid hosts or patterns never
@@ -920,6 +940,20 @@ mod tests {
                 "bookclerk/{} (+https://bookclerk.app)",
                 env!("CARGO_PKG_VERSION")
             )
+        );
+    }
+
+    #[test]
+    fn own_user_agent_hosts_never_normalize_to_a_comma() {
+        assert_eq!(
+            normalize_own_user_agent_host("*.Libro.FM."),
+            Some("*.libro.fm".to_string())
+        );
+        assert_eq!(normalize_own_user_agent_host("a.example,b.example"), None);
+        // IDNA maps a fullwidth comma to `,`, which would split the native list.
+        assert_eq!(
+            normalize_own_user_agent_host("a.example\u{ff0c}b.example"),
+            None
         );
     }
 

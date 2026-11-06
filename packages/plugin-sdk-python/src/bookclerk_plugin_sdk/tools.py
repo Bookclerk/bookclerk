@@ -587,10 +587,12 @@ def _is_own_user_agent_host(raw: str) -> bool:
         return False
     if not host.isascii():
         try:
-            host.encode("idna")
+            ascii_host = host.encode("idna").decode("ascii")
         except UnicodeError:
             return False
-        return True
+        # IDNA maps some Unicode forms (a fullwidth comma, say) to ASCII
+        # characters a host may not hold, so the result is checked again.
+        return not any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in ascii_host)
     # An ASCII A-label (`xn--`) must decode, as the host's IDNA step checks.
     for label in host.split("."):
         if label[:4].lower() == "xn--":

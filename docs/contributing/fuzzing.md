@@ -45,8 +45,9 @@ Some boundaries need more than a cell:
 - **`granted_http`** covers the request head, body framing, chunked bodies
   and the query string.
 - **`egress_policy`** fuzzes the JSON wire form. The workerd `egress.js`
-  gate is a separate implementation (see #335 in the
-  [boundaries still to add](#still-to-add)).
+  gate is a separate implementation: its User-Agent rule is fuzzed in
+  JavaScript ([egress bridge User-Agent rule](#egress-bridge-user-agent-rule)),
+  the rest is still to add (#335).
 - **`abi_decode`** goes through `read_any_message`, and
   **`abi_roundtrip`** through `roundtrip_any_message`.
 - **`guest_sql_authz`** lowers each policy as the SQLite adapter lowers it.
@@ -769,12 +770,34 @@ pick another run.
   condition outside that is refused, and a response header outside it is
   dropped from the answer.
 
+### Egress bridge User-Agent rule
+
+The workerd egress bridge (`bridge/egress.js`, one file synced into
+`bookclerk-workerd` and both plugin SDKs) decides on every hop whether a
+request keeps the guest's own `User-Agent` (`keepsOwnUserAgent`) and sets
+the host's agent otherwise (`withUserAgent`). The policy comes from the
+host, but a request's host comes from the guest.
+`packages/plugin-sdk/scripts/test-egress-user-agent.mjs` replays
+`egress_user_agent_corpus/` and runs seeded mutations of hosts, patterns
+and agents (`npm run test:egress-user-agent`, in the `plugin_sdk_abi`
+check); `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
+
+- Oracle, written from the [User-Agent](../plugins/capabilities.md#user-agent)
+  rule: host and pattern are trimmed once, lose trailing dots and are
+  lowercased, and one holding `%` or non-ASCII never matches. A `*` pattern
+  never matches. `*.suffix` matches the suffix and any name whose labels end
+  with its labels; any other pattern matches exactly. The guest's agent is
+  sent only when it set one and the host matches; otherwise the policy's
+  agent, or the bridge's fallback when the policy names none.
+
 ## Still to add
 
 These are tracked in the fuzzing ADR's follow-ups:
 
 - a full RPC session against a scripted guest;
-- the workerd `egress.js` gate checked against `EgressPolicy` (#335);
+- the rest of the workerd `egress.js` gate (destinations, redirects,
+  addresses) checked against `EgressPolicy` (#335; the User-Agent rule is
+  [covered](#egress-bridge-user-agent-rule));
 - Audible CENC/DASH parsing;
 - package extraction;
 - naming paths;
