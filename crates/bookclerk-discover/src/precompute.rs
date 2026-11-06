@@ -616,14 +616,19 @@ mod tests {
 
         async fn expand_candidates(
             &self,
-            _seed: &bookclerk_source::ExpandSeed,
+            seed: &bookclerk_source::ExpandSeed,
             _limit: usize,
         ) -> bookclerk_source::Result<Vec<CatalogHit>> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.deals.is_none() {
                 return Err(bookclerk_source::SourceError::api("store is down"));
             }
-            Ok(Vec::new())
+            Ok(vec![CatalogHit {
+                product_id: format!("near-{}", seed.product_id),
+                title: format!("Near {}", seed.title),
+                origin: String::from("related"),
+                ..CatalogHit::default()
+            }])
         }
     }
 
@@ -645,6 +650,7 @@ mod tests {
             book.source = "libro".into();
             book.plugin_key = "libro".into();
             book.asin = None;
+            book.isbn = Some(format!("97800000000{}", &product[1..]));
             book.authors = Some("Ann Author".into());
             library.upsert_book(&book).await.unwrap();
         }
@@ -719,12 +725,21 @@ mod tests {
         let fetched = fetch_subject_candidates(&library, &registry, &subject, &opts)
             .await
             .unwrap();
-        assert_eq!(fetched.candidates, 3);
+        // Alice's book seeds one expand call; the deals come regardless.
+        assert_eq!(fetched.seeds, 1);
+        assert_eq!(fetched.candidates, 4);
+        let stored = library.list_discover_candidates(&subject).await.unwrap();
+        let near = stored
+            .iter()
+            .map(|c| serde_json::from_str::<StorefrontCandidate>(&c.candidate_json).unwrap())
+            .find(|c| c.product_id == "near-a1")
+            .unwrap();
+        assert_eq!(near.seed_title.as_deref(), Some("Alice Book"));
         let ranked = rank_subject_feed(&library, &registry, &subject, &opts)
             .await
             .unwrap();
         assert_eq!(ranked.scope, SeedScope::Own);
-        assert_eq!(ranked.candidates, 3);
+        assert_eq!(ranked.candidates, 4);
         assert!(ranked.shelves > 0);
 
         let read = stored_subject_feed(&library, &subject, &[])

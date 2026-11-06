@@ -596,6 +596,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_wish_seeds_by_its_identifiers_and_lends_its_title() {
+        let wish = SeedTitle::from_wish(
+            "Dune",
+            Some("Frank Herbert".into()),
+            None,
+            Some("9780441172719".into()),
+        );
+        assert_eq!(wish.seed.source, "wishlist");
+        assert_eq!(wish.seed.product_id, "9780441172719");
+        assert_eq!(wish.seed.authors.as_deref(), Some("Frank Herbert"));
+        let by_asin = SeedTitle::from_wish("Dune", None, Some("B002".into()), Some("978".into()));
+        assert_eq!(by_asin.seed.product_id, "B002");
+
+        let hit = hit_to_candidate(
+            "libro",
+            CatalogHit {
+                product_id: String::from("p9"),
+                title: String::from("Children of Dune"),
+                ..CatalogHit::default()
+            },
+        );
+        let seeded = apply_seed_title(hit, &wish);
+        assert_eq!(seeded.seed_title.as_deref(), Some("Dune"));
+        // A title the candidate already carries is kept.
+        let other = SeedTitle::from_wish("Emma", None, None, None);
+        assert_eq!(
+            apply_seed_title(seeded, &other).seed_title.as_deref(),
+            Some("Dune")
+        );
+    }
+
+    #[test]
     fn insert_candidate_consolidates_isbn_and_soft_match() {
         let mut map = HashMap::new();
         let owned_asins = HashSet::new();

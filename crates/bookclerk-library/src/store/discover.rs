@@ -461,4 +461,187 @@ mod tests {
         }
         assert_eq!(SeedScope::parse("mine"), None);
     }
+
+    /// An empty in-memory library with the host schema.
+    async fn store() -> LibraryStore {
+        LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+    }
+
+    /// `(key, json)` rows for [`LibraryStore::replace_discover_candidates`].
+    fn rows(keys: &[&str]) -> Vec<(String, String)> {
+        keys.iter()
+            .map(|k| ((*k).to_string(), format!("{{\"k\":\"{k}\"}}")))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn candidates_replace_per_store_and_subject() {
+        let store = store().await;
+        let alice = DiscoverSubject::User(1);
+        let bob = DiscoverSubject::User(2);
+        assert!(store
+            .newest_discover_candidate_fetch(&alice)
+            .await
+            .unwrap()
+            .is_none());
+        store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["a", "b"]))
+            .await
+            .unwrap();
+        store
+            .replace_discover_candidates(&alice, "chirp", SeedScope::Own, &rows(&["c"]))
+            .await
+            .unwrap();
+        store
+            .replace_discover_candidates(&bob, "libro", SeedScope::Household, &rows(&["z"]))
+            .await
+            .unwrap();
+        // A new answer from one store replaces only that store's rows.
+        store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["d"]))
+            .await
+            .unwrap();
+
+        let mut keys: Vec<(String, String)> = store
+            .list_discover_candidates(&alice)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.source, c.candidate_key))
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                (String::from("chirp"), String::from("c")),
+                (String::from("libro"), String::from("d")),
+            ]
+        );
+        let bob_rows = store.list_discover_candidates(&bob).await.unwrap();
+        assert_eq!(bob_rows.len(), 1);
+        assert_eq!(bob_rows[0].seed_scope, SeedScope::Household);
+        assert_eq!(bob_rows[0].candidate_json, "{\"k\":\"z\"}");
+        assert!(store
+            .newest_discover_candidate_fetch(&alice)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn store_calls_are_cached_refreshed_and_pruned() {
+        let store = store().await;
+        let day = chrono::Duration::hours(24);
+        assert!(store
+            .get_discover_store_call("k1", day)
+            .await
+            .unwrap()
+            .is_none());
+        store
+            .put_discover_store_call("k1", "libro", "[1]")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_discover_store_call("k1", day).await.unwrap(),
+            Some(String::from("[1]"))
+        );
+        // A newer answer for the same call replaces the old one.
+        store
+            .put_discover_store_call("k1", "libro", "[2]")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_discover_store_call("k1", day).await.unwrap(),
+            Some(String::from("[2]"))
+        );
+        // Too old to reuse.
+        assert!(store
+            .get_discover_store_call("k1", chrono::Duration::seconds(-1))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .prune_discover_store_calls(Utc::now() - day)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .prune_discover_store_calls(Utc::now() + day)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(store
+            .get_discover_store_call("k1", day)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn feeds_are_stored_per_subject_and_listed() {
+        let store = store().await;
+        assert!(store
+            .list_discover_feed_subjects()
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .get_discover_feed(&DiscoverSubject::Operator)
+            .await
+            .unwrap()
+            .is_none());
+        let fetched = Utc::now() - chrono::Duration::minutes(5);
+        store
+            .put_discover_feed(&DiscoverSubject::Operator, "{}", SeedScope::Household, None)
+            .await
+            .unwrap();
+        store
+            .put_discover_feed(
+                &DiscoverSubject::Portal(4),
+                "{\"shelves\":[]}",
+                SeedScope::Own,
+                Some(fetched),
+            )
+            .await
+            .unwrap();
+        // Ranking again replaces the subject's feed.
+        store
+            .put_discover_feed(
+                &DiscoverSubject::Operator,
+                "{\"v\":2}",
+                SeedScope::Household,
+                Some(fetched),
+            )
+            .await
+            .unwrap();
+
+        let operator = store
+            .get_discover_feed(&DiscoverSubject::Operator)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(operator.feed_json, "{\"v\":2}");
+        assert_eq!(operator.seed_scope, SeedScope::Household);
+        assert_eq!(
+            operator.candidates_fetched_at.map(|t| t.timestamp()),
+            Some(fetched.timestamp())
+        );
+        let mut subjects: Vec<String> = store
+            .list_discover_feed_subjects()
+            .await
+            .unwrap()
+            .iter()
+            .map(DiscoverSubject::key)
+            .collect();
+        subjects.sort();
+        assert_eq!(subjects, vec!["operator", "portal:4"]);
+    }
 }
