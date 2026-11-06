@@ -298,7 +298,7 @@ pub struct Client {
 impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let kind = match self.inner {
-            Inner::Direct(_) => "direct",
+            Inner::Direct(..) => "direct",
             #[cfg(any(unix, windows))]
             Inner::Proxied(_) => "proxied",
         };
@@ -308,7 +308,10 @@ impl std::fmt::Debug for Client {
 
 #[derive(Clone)]
 enum Inner {
-    Direct(reqwest::Client),
+    /// Ambient reqwest client, with the guest's client-level `User-Agent`
+    /// (from `default_headers` or [`ClientBuilder::user_agent`]) kept apart
+    /// so the host agent rule can see it.
+    Direct(reqwest::Client, Option<String>),
     #[cfg(any(unix, windows))]
     Proxied(Box<ProxiedClient>),
 }
@@ -377,7 +380,7 @@ impl Client {
                 panic!("HTTP client failed under nested Deny / SOCKET_PROXY: {err}");
             }
             Err(_) => Self {
-                inner: Inner::Direct(reqwest::Client::new()),
+                inner: Inner::Direct(reqwest::Client::new(), None),
             },
         }
     }
@@ -402,7 +405,7 @@ impl Client {
                 )));
             }
             return Ok(Self {
-                inner: Inner::Direct(direct_reqwest(&builder)?),
+                inner: Inner::Direct(direct_reqwest(&builder)?, client_user_agent(&builder)),
             });
         }
         #[cfg(any(unix, windows))]
@@ -435,7 +438,7 @@ impl Client {
         #[cfg(not(any(unix, windows)))]
         {
             Ok(Self {
-                inner: Inner::Direct(direct_reqwest(&builder)?),
+                inner: Inner::Direct(direct_reqwest(&builder)?, client_user_agent(&builder)),
             })
         }
     }
@@ -600,7 +603,7 @@ impl RequestBuilder {
     pub async fn send(self) -> HttpResult<Response> {
         let inner = self.client.inner.clone();
         match inner {
-            Inner::Direct(http) => self.send_direct(http).await,
+            Inner::Direct(http, agent) => self.send_direct(http, agent).await,
             #[cfg(any(unix, windows))]
             Inner::Proxied(proxy) => self.send_proxied(*proxy).await,
         }
@@ -609,8 +612,13 @@ impl RequestBuilder {
     /// # Errors
     ///
     /// Returns when the URL is invalid or the ambient HTTP request fails.
-    async fn send_direct(self, http: reqwest::Client) -> HttpResult<Response> {
-        self.send_direct_with(http, host_user_agent_rule()).await
+    async fn send_direct(
+        self,
+        http: reqwest::Client,
+        client_agent: Option<String>,
+    ) -> HttpResult<Response> {
+        self.send_direct_with(http, client_agent.as_deref(), host_user_agent_rule())
+            .await
     }
 
     /// [`Self::send_direct`] under an explicit user-agent `rule`.
@@ -621,6 +629,7 @@ impl RequestBuilder {
     async fn send_direct_with(
         self,
         http: reqwest::Client,
+        client_agent: Option<&str>,
         rule: Option<&EgressPolicy>,
     ) -> HttpResult<Response> {
         let mut url = Url::parse(&self.url)?;
@@ -636,16 +645,18 @@ impl RequestBuilder {
             req = req.timeout(timeout);
         }
         if rule.is_some() {
-            // Redirect hops reuse this agent; the direct path is not a jailed
-            // guest's (those always go through the socket proxy). A client
-            // default agent is applied by reqwest after this point, so only a
-            // per-request agent counts as the guest's own here.
+            // reqwest follows redirects itself and reuses this hop's agent, so
+            // the per-hop rule holds on the socket-proxy path only. Jailed
+            // guests always take that path; this one is ambient and
+            // diagnostic. The request's own agent wins over the client's, as
+            // reqwest itself would merge them.
             let mut built = req.build()?;
             let requested = built
                 .headers()
                 .get(header::USER_AGENT)
                 .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
+                .map(str::to_string)
+                .or_else(|| client_agent.map(str::to_string));
             let url = built.url().clone();
             apply_user_agent(rule, &url, requested.as_deref(), built.headers_mut());
             let resp = http.execute(built).await?;
@@ -1010,6 +1021,25 @@ fn use_socket_proxy() -> bool {
     {
         false
     }
+}
+
+/// The guest's client-level `User-Agent`, merged as the proxied path merges it.
+///
+/// # Arguments
+///
+/// * `builder` - Client options the guest chose.
+///
+/// # Returns
+///
+/// The agent from `default_headers`, else [`ClientBuilder::user_agent`], else
+/// `None`.
+fn client_user_agent(builder: &ClientBuilder) -> Option<String> {
+    builder
+        .default_headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| builder.user_agent.clone())
 }
 
 /// # Errors
@@ -1484,7 +1514,7 @@ mod query_encoding_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
-            for _ in 0..2 {
+            for _ in 0..4 {
                 let (mut s, _) = listener.accept().await.unwrap();
                 let mut buf = vec![0_u8; 4096];
                 let n = s.read(&mut buf).await.unwrap();
@@ -1502,14 +1532,14 @@ mod query_encoding_tests {
         });
         let http = reqwest::Client::new();
         let client = Client {
-            inner: Inner::Direct(http.clone()),
+            inner: Inner::Direct(http.clone(), None),
         };
         let url = format!("http://127.0.0.1:{port}/");
         let replaced = user_agent_rule("bookclerk/9 (+https://bookclerk.app)", "");
         let resp = client
             .get(url.clone())
             .header(header::USER_AGENT, "own/1")
-            .send_direct_with(http.clone(), Some(&replaced))
+            .send_direct_with(http.clone(), None, Some(&replaced))
             .await
             .unwrap();
         assert_eq!(
@@ -1518,12 +1548,29 @@ mod query_encoding_tests {
         );
         let kept = user_agent_rule("bookclerk/9 (+https://bookclerk.app)", "127.0.0.1");
         let resp = client
-            .get(url)
+            .get(url.clone())
             .header(header::USER_AGENT, "own/1")
-            .send_direct_with(http, Some(&kept))
+            .send_direct_with(http.clone(), None, Some(&kept))
             .await
             .unwrap();
         assert_eq!(resp.text().await.unwrap(), "own/1");
+
+        // A client-level agent counts as the guest's own too.
+        let resp = client
+            .get(url.clone())
+            .send_direct_with(http.clone(), Some("okhttp/4"), Some(&kept))
+            .await
+            .unwrap();
+        assert_eq!(resp.text().await.unwrap(), "okhttp/4");
+        let resp = client
+            .get(url)
+            .send_direct_with(http, Some("okhttp/4"), Some(&replaced))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.text().await.unwrap(),
+            "bookclerk/9 (+https://bookclerk.app)"
+        );
     }
 
     #[test]

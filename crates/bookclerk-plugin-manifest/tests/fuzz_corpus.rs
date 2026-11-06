@@ -216,6 +216,42 @@ fn fuzz_corpus_egress_policy_holds_invariants() {
     }
     assert!(parsed > 0, "no egress_policy seed parsed");
 }
+/// Plain lowercase ASCII form of `raw` (trimmed, trailing dots dropped), or
+/// `None` when it holds anything an IDNA step could reinterpret.
+fn plain_ascii(raw: &str) -> Option<String> {
+    let text = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+    let plain = !text.is_empty()
+        && text
+            .split('.')
+            .all(|label| !label.is_empty() && !label.starts_with("xn--"))
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    plain.then_some(text)
+}
+
+/// Independent own-agent decision for plain ASCII hosts and patterns, written
+/// without the crate's normalizers: exact match, or a `*.` suffix that matches
+/// the bare suffix and its subdomains; `*` never matches. `None` when any
+/// input is outside that plain subset.
+fn plain_keeps_own_agent(host: &str, patterns: &[String]) -> Option<bool> {
+    let host = plain_ascii(host)?;
+    let mut keeps = false;
+    for raw in patterns {
+        let pattern = raw.trim().trim_end_matches('.');
+        if pattern == "*" {
+            continue;
+        }
+        keeps |= match pattern.strip_prefix("*.") {
+            Some(suffix) => {
+                let suffix = plain_ascii(suffix)?;
+                host == suffix || host.ends_with(&format!(".{suffix}"))
+            }
+            None => host == plain_ascii(pattern)?,
+        };
+    }
+    Some(keeps)
+}
 
 /// User-agent oracle: the guest's own agent is kept exactly on hosts an
 /// approved non-`*` pattern matches, never via `*`, never for a
@@ -245,6 +281,9 @@ fn check_user_agent(policy: &EgressPolicy) {
             expected,
             "own user-agent decision for {host:?}"
         );
+        if let Some(independent) = plain_keeps_own_agent(host, &policy.own_user_agent_hosts) {
+            assert_eq!(expected, independent, "plain oracle for {host:?}");
+        }
         if host.contains('%') {
             assert!(
                 !policy.keeps_own_user_agent(host),

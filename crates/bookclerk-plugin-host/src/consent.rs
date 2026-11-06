@@ -490,6 +490,20 @@ pub struct PluginGrant {
     /// consent form. Display only; it grants nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub own_user_agent_reason: Option<String>,
+    /// Declared own-agent hosts the operator reviewed and left unticked.
+    ///
+    /// They are not pending (the operator answered), and they grant nothing.
+    /// Not part of any revision.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub own_user_agent_refused_hosts: BTreeSet<String>,
+    /// Hosts a legacy grant (`own_user_agent_hosts: None`) keeps its own agent
+    /// on: the ones the current manifest declares.
+    ///
+    /// Set only by [`effective_grant`] for a spawn and never stored, so the
+    /// effective grant and the stored grant hash to the same revisions and a
+    /// running legacy session is not fenced as stale.
+    #[serde(skip)]
+    pub legacy_own_user_agent_hosts: BTreeSet<String>,
     /// Approved host binding names (`config`, `secrets`, `oauth`, …).
     pub bindings: BTreeSet<String>,
     /// Approved workerd compatibility flags from the consent snapshot.
@@ -590,6 +604,8 @@ impl PluginGrant {
             operator_allow_undeclared_public_redirects: None,
             own_user_agent_hosts: Some(BTreeSet::new()),
             own_user_agent_reason: None,
+            own_user_agent_refused_hosts: BTreeSet::new(),
+            legacy_own_user_agent_hosts: BTreeSet::new(),
             bindings: BTreeSet::new(),
             compatibility_flags: BTreeSet::new(),
             cpu_ms: None,
@@ -621,15 +637,31 @@ impl PluginGrant {
             tcp,
             address_cidrs: self.address_cidrs.iter().cloned().collect(),
             user_agent: Some(bookclerk_plugin_manifest::host_user_agent()),
-            own_user_agent_hosts: self.approved_own_user_agent_hosts().into_iter().collect(),
+            own_user_agent_hosts: self.effective_own_user_agent_hosts().into_iter().collect(),
         }
     }
 
-    /// Approved own-agent hosts; a legacy `None` grant approves none here
-    /// (fail closed) until [`effective_grant`] reconciles it.
+    /// Approved own-agent hosts; a legacy `None` grant approves none here.
+    ///
+    /// Revisions hash this set, so a legacy grant and its effective grant
+    /// agree. [`Self::effective_own_user_agent_hosts`] is what a guest gets.
     #[must_use]
     pub fn approved_own_user_agent_hosts(&self) -> BTreeSet<String> {
         self.own_user_agent_hosts.clone().unwrap_or_default()
+    }
+
+    /// Hosts where the guest keeps its own agent at run time.
+    ///
+    /// # Returns
+    ///
+    /// The approved set, or for a legacy `None` grant the declared hosts that
+    /// [`effective_grant`] filled in (empty on a stored grant).
+    #[must_use]
+    pub fn effective_own_user_agent_hosts(&self) -> BTreeSet<String> {
+        match &self.own_user_agent_hosts {
+            Some(approved) => approved.clone(),
+            None => self.legacy_own_user_agent_hosts.clone(),
+        }
     }
 }
 
@@ -1044,6 +1076,8 @@ pub fn consent_request_alias(manifest: &PluginManifest) -> PluginGrant {
         operator_allow_undeclared_public_redirects: None,
         own_user_agent_hosts: Some(own_user_agent_hosts),
         own_user_agent_reason,
+        own_user_agent_refused_hosts: BTreeSet::new(),
+        legacy_own_user_agent_hosts: BTreeSet::new(),
         bindings,
         compatibility_flags: flags,
         cpu_ms,
@@ -1309,7 +1343,7 @@ fn own_user_agent_summary(grant: &PluginGrant) -> Vec<String> {
         "User-Agent: requests identify as `{}`",
         bookclerk_plugin_manifest::host_user_agent()
     )];
-    let own = grant.approved_own_user_agent_hosts();
+    let own = grant.effective_own_user_agent_hosts();
     if !own.is_empty() {
         let hosts = own.into_iter().collect::<Vec<_>>().join(", ");
         let reason = grant
@@ -1404,9 +1438,11 @@ pub fn pending_structural(existing: &PluginGrant, requested: &PluginGrant) -> Pe
     let own_user_agent_hosts = match &existing.own_user_agent_hosts {
         // A pre-permission grant keeps what the manifest declares.
         None => BTreeSet::new(),
+        // A host the operator refused was answered, so it is not pending.
         Some(approved) => requested
             .approved_own_user_agent_hosts()
             .difference(approved)
+            .filter(|host| !existing.own_user_agent_refused_hosts.contains(*host))
             .cloned()
             .collect(),
     };
@@ -1688,13 +1724,18 @@ pub fn effective_grant(existing: &PluginGrant, requested: &PluginGrant) -> Plugi
             .unwrap_or(requested.allow_undeclared_public_redirects),
         operator_allow_undeclared_public_redirects: existing
             .operator_allow_undeclared_public_redirects,
-        own_user_agent_hosts: Some(match &existing.own_user_agent_hosts {
-            None => requested.approved_own_user_agent_hosts(),
-            Some(approved) => {
-                intersect_structural(approved, &requested.approved_own_user_agent_hosts())
-            }
+        // A legacy grant stays `None` so its revisions match the stored
+        // grant; the declared hosts ride in the unstored legacy field.
+        own_user_agent_hosts: existing.own_user_agent_hosts.as_ref().map(|approved| {
+            intersect_structural(approved, &requested.approved_own_user_agent_hosts())
         }),
         own_user_agent_reason: requested.own_user_agent_reason.clone(),
+        own_user_agent_refused_hosts: existing.own_user_agent_refused_hosts.clone(),
+        legacy_own_user_agent_hosts: if existing.own_user_agent_hosts.is_none() {
+            requested.approved_own_user_agent_hosts()
+        } else {
+            BTreeSet::new()
+        },
         bindings: intersect_structural(&existing.bindings, &requested.bindings),
         compatibility_flags: intersect_structural(
             &existing.compatibility_flags,
@@ -1856,8 +1897,9 @@ pub fn validate_approved_grant(
             "grant compatibility flag `{extra}` is not declared by plugin.toml (structural authority)"
         )));
     }
+    let declared_own_hosts = baseline.approved_own_user_agent_hosts();
     let own_user_agent_hosts = match &approved.own_user_agent_hosts {
-        None => baseline.approved_own_user_agent_hosts(),
+        None => declared_own_hosts.clone(),
         Some(hosts) => {
             let mut normalized = BTreeSet::new();
             for raw in hosts {
@@ -1866,7 +1908,7 @@ pub fn validate_approved_grant(
                         "invalid own user-agent host `{raw}`"
                     )));
                 };
-                if !baseline.approved_own_user_agent_hosts().contains(&host) {
+                if !declared_own_hosts.contains(&host) {
                     return Err(PluginError::message(format!(
                         "own user-agent host `{host}` is not declared by plugin.toml \
                          (structural authority)"
@@ -1973,8 +2015,13 @@ pub fn validate_approved_grant(
         } else {
             approved.operator_allow_undeclared_public_redirects
         },
+        own_user_agent_refused_hosts: declared_own_hosts
+            .difference(&own_user_agent_hosts)
+            .cloned()
+            .collect(),
         own_user_agent_hosts: Some(own_user_agent_hosts),
         own_user_agent_reason: baseline.own_user_agent_reason.clone(),
+        legacy_own_user_agent_hosts: BTreeSet::new(),
         bindings,
         compatibility_flags,
         cpu_ms,
@@ -4292,12 +4339,24 @@ reason = "  App API contract.  "
         let mut legacy = sample_grant(&[], &["config"], &[]);
         legacy.own_user_agent_hosts = None;
         let effective = effective_grant(&legacy, &requested);
+        assert_eq!(effective.own_user_agent_hosts, None);
         assert_eq!(
-            effective.own_user_agent_hosts,
+            Some(effective.effective_own_user_agent_hosts()),
             requested.own_user_agent_hosts
+        );
+        assert_eq!(
+            effective.egress_policy().own_user_agent_hosts,
+            vec!["*.libro.fm".to_string(), "api.example.com".to_string()]
         );
         assert_eq!(effective.own_user_agent_reason.as_deref(), Some("App API."));
         assert!(pending_structural(&legacy, &requested).is_empty());
+        // The stored legacy grant and its effective grant hash alike, so a
+        // grants write or a config reload does not fence the running session.
+        assert_eq!(grant_revision(&effective), grant_revision(&legacy));
+        assert_eq!(
+            crate::authority::authority_revision(&effective),
+            crate::authority::authority_revision(&legacy)
+        );
 
         // Operator approved one host: the other stays pending and off.
         let mut approved = sample_grant(&[], &["config"], &[]);
@@ -4332,6 +4391,17 @@ reason = "  App API contract.  "
         narrowed.own_user_agent_hosts = own_agent(&["*.LIBRO.fm"]);
         let grant = validate_approved_grant(&narrowed, &baseline).unwrap();
         assert_eq!(grant.own_user_agent_hosts, own_agent(&["*.libro.fm"]));
+        // The unticked host is answered: refused, not pending again.
+        assert_eq!(
+            grant.own_user_agent_refused_hosts,
+            ["api.example.com".to_string()].into_iter().collect()
+        );
+        assert!(pending_structural(&grant, &baseline).is_empty());
+        let mut refused_all = baseline.clone();
+        refused_all.own_user_agent_hosts = Some(BTreeSet::new());
+        let grant_none = validate_approved_grant(&refused_all, &baseline).unwrap();
+        assert!(pending_structural(&grant_none, &baseline).is_empty());
+        assert!(grant_none.egress_policy().own_user_agent_hosts.is_empty());
         assert_eq!(grant.own_user_agent_reason.as_deref(), Some("App API."));
 
         let mut unset = baseline.clone();

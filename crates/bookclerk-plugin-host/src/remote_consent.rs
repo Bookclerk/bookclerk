@@ -94,9 +94,11 @@ pub fn remote_request_within(reviewed: &PluginGrant, requested: &PluginGrant) ->
         && requested.address_cidrs.is_subset(&reviewed.address_cidrs)
         && (!requested.allow_undeclared_public_redirects
             || reviewed.allow_undeclared_public_redirects)
-        && requested
-            .approved_own_user_agent_hosts()
-            .is_subset(&reviewed.approved_own_user_agent_hosts())
+        // A consent reviewed before the permission existed keeps what the
+        // manifest declares, as a local legacy grant does.
+        && reviewed.own_user_agent_hosts.as_ref().is_none_or(|approved| {
+            requested.approved_own_user_agent_hosts().is_subset(approved)
+        })
         && requested.bindings.is_subset(&reviewed.bindings)
         && requested
             .compatibility_flags
@@ -266,15 +268,21 @@ pub fn narrow_remote_grant(requested: &PluginGrant, consent: &PluginGrant) -> Pl
         manifest_cidrs: requested.manifest_cidrs.clone(),
         allow_undeclared_public_redirects: redirects,
         operator_allow_undeclared_public_redirects: Some(redirects),
-        own_user_agent_hosts: Some(if deny {
-            BTreeSet::new()
+        own_user_agent_hosts: if deny {
+            Some(BTreeSet::new())
         } else {
-            both(
-                &requested.approved_own_user_agent_hosts(),
-                &consent.approved_own_user_agent_hosts(),
-            )
-        }),
+            consent
+                .own_user_agent_hosts
+                .as_ref()
+                .map(|approved| both(&requested.approved_own_user_agent_hosts(), approved))
+        },
         own_user_agent_reason: requested.own_user_agent_reason.clone(),
+        own_user_agent_refused_hosts: consent.own_user_agent_refused_hosts.clone(),
+        legacy_own_user_agent_hosts: if !deny && consent.own_user_agent_hosts.is_none() {
+            requested.approved_own_user_agent_hosts()
+        } else {
+            BTreeSet::new()
+        },
         bindings: both(&requested.bindings, &consent.bindings),
         compatibility_flags: both(&requested.compatibility_flags, &consent.compatibility_flags),
         cpu_ms: min_workerd_limit(
@@ -698,6 +706,22 @@ mod tests {
         assert_eq!(
             narrow_remote_grant(&agent_request, &off).own_user_agent_hosts,
             Some(BTreeSet::new())
+        );
+        assert!(narrow_remote_grant(&agent_request, &off)
+            .egress_policy()
+            .own_user_agent_hosts
+            .is_empty());
+
+        // A consent reviewed before the permission existed keeps the
+        // declared hosts and still covers the request.
+        let mut legacy = remote_consent(&agent_request, &RemoteNarrowing::default()).unwrap();
+        legacy.own_user_agent_hosts = None;
+        assert!(remote_request_within(&legacy, &agent_request));
+        let effective = narrow_remote_grant(&agent_request, &legacy);
+        assert_eq!(effective.own_user_agent_hosts, None);
+        assert_eq!(
+            effective.egress_policy().own_user_agent_hosts,
+            vec!["api.store.example".to_string()]
         );
 
         // Network off clears every destination.

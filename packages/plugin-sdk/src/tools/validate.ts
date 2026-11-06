@@ -607,6 +607,32 @@ const MAX_OWN_USER_AGENT_HOSTS = 32;
 const MAX_OWN_USER_AGENT_REASON_CHARS = 300;
 
 /**
+ * Code points a URL host may not contain (WHATWG forbidden domain code
+ * points), which the host's IDNA step rejects too.
+ */
+// eslint-disable-next-line no-control-regex
+const FORBIDDEN_HOST_CHARS = /[\u0000-\u0020#%/:<>?@[\\\]^|\u007f]/;
+
+/**
+ * True when `raw` is an exact hostname or a `*.` wildcard, as the host's
+ * `normalize_tcp_host` accepts it: trimmed, trailing dots dropped, never `*`,
+ * no port, scheme, path or percent-encoding, and valid IDNA.
+ *
+ * @param raw - Host as written in `plugin.toml`.
+ * @returns Whether the host would accept it.
+ */
+function isOwnUserAgentHost(raw: string): boolean {
+  const pattern = raw.trim().replace(/\.+$/, "");
+  const host = pattern.startsWith("*.") ? pattern.slice(2) : pattern;
+  if (!host || host === "*" || FORBIDDEN_HOST_CHARS.test(host)) return false;
+  try {
+    return new URL(`http://${host}/`).hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Validates `[capabilities.network.own_user_agent]` the way the host does:
  * outbound mode, 1 to 32 hosts that are not `*`, and a one-line reason.
  *
@@ -625,8 +651,7 @@ function validateOwnUserAgent(m: Manifest): void {
     throw new Error(`${field}.hosts must list between 1 and ${MAX_OWN_USER_AGENT_HOSTS} hosts`);
   }
   for (const host of hosts) {
-    const trimmed = typeof host === "string" ? host.trim() : "";
-    if (!trimmed || trimmed === "*" || trimmed.includes("%")) {
+    if (typeof host !== "string" || !isOwnUserAgentHost(host)) {
       throw new Error(
         `${field}.hosts entry \`${String(host)}\` is not a valid hostname or \`*.\` wildcard (\`*\` is not allowed)`,
       );

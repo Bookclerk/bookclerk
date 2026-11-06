@@ -562,6 +562,36 @@ MAX_OWN_USER_AGENT_REASON_CHARS = 300
 """Longest ``own_user_agent.reason``, in characters."""
 
 
+_FORBIDDEN_HOST_CHARS = frozenset("#%/:<>?@[\\]^|\x7f")
+"""Code points a URL host may not contain (WHATWG forbidden domain code points)."""
+
+
+def _is_own_user_agent_host(raw: str) -> bool:
+    """Return whether ``raw`` is a host the host's ``normalize_tcp_host`` accepts.
+
+    That is an exact hostname or a ``*.`` wildcard: trimmed, trailing dots
+    dropped, never ``*``, with no port, scheme, path or percent-encoding, and
+    valid IDNA.
+
+    Args:
+        raw: Host as written in ``plugin.toml``.
+
+    Returns:
+        Whether the host would accept it.
+    """
+    pattern = raw.strip().rstrip(".")
+    host = pattern[2:] if pattern.startswith("*.") else pattern
+    if not host or host == "*":
+        return False
+    if any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in host):
+        return False
+    try:
+        host.encode("idna")
+    except UnicodeError:
+        return False
+    return True
+
+
 def _validate_own_user_agent(net: dict[str, Any]) -> None:
     """Validate ``[capabilities.network.own_user_agent]`` the way the host does.
 
@@ -586,8 +616,7 @@ def _validate_own_user_agent(net: dict[str, Any]) -> None:
     if not isinstance(hosts, list) or not 1 <= len(hosts) <= MAX_OWN_USER_AGENT_HOSTS:
         raise ValueError(f"{field}.hosts must list between 1 and {MAX_OWN_USER_AGENT_HOSTS} hosts")
     for host in hosts:
-        trimmed = host.strip() if isinstance(host, str) else ""
-        if not trimmed or trimmed == "*" or "%" in trimmed:
+        if not isinstance(host, str) or not _is_own_user_agent_host(host):
             raise ValueError(
                 f"{field}.hosts entry `{host}` is not a valid hostname or `*.` wildcard "
                 "(`*` is not allowed)"

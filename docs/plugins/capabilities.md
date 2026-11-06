@@ -91,7 +91,8 @@ reason = "Libro.fm's sign-in, library and download API answers the HTTP client o
   reason of at most 300 characters.
 - The consent form shows the host's agent, each listed host and the
   reason. The operator can clear any host, and that host then gets the
-  host's agent too.
+  host's agent too. A cleared host counts as answered, so the plugin
+  isn't marked as needing approval for it again.
 - On a listed host, a request with no agent of its own still gets the
   host's agent.
 - A newer version that lists more hosts waits for consent before it gets
