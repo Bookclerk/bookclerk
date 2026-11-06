@@ -63,7 +63,9 @@ operator, a household user, or a portal identity) has a **subject key**
    person with no signal yet (and the operator) seeds from the household.
    Stores run concurrently, each call has a 10 s timeout, and each store's
    rows are saved as that store finishes, so one slow store never discards
-   the others. A store whose calls all fail keeps its previous rows. The
+   the others. A store whose calls all fail or come back empty keeps its
+   previous rows, since a plugin adapter can report a guest failure as an
+   empty answer. The
    finished fetch is recorded in `discover_fetches`, so a fetch that found
    nothing new still counts as fresh for a day.
 2. **Feed** (`discover_feeds`): when the fetch finishes it admits a
@@ -79,7 +81,7 @@ operator, a household user, or a portal identity) has a **subject key**
 
 Storefront answers are cached for 24 hours in `discover_store_calls`, keyed by
 a hash of the store and the request, so people whose seeds overlap share one
-call. Both jobs are deduplicated per subject, so a burst of triggers folds into
+call. Failed and empty answers are not cached. Both jobs are deduplicated per subject, so a burst of triggers folds into
 the job already waiting.
 
 `GET /api/discover/recommendations` reads the stored feed and returns at once,

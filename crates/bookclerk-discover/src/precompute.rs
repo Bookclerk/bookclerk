@@ -324,8 +324,10 @@ fn interleave_seeds(books: Vec<SeedTitle>, wishes: Vec<SeedTitle>) -> Vec<SeedTi
 ///
 /// # Returns
 ///
-/// The store's candidates, and `false` when every call failed (so the
-/// store's stored rows are kept rather than wiped).
+/// The store's candidates, and `false` when no call returned a title (so
+/// the store's stored rows are kept rather than wiped). An empty answer
+/// counts as no answer: plugin adapters report some guest failures as an
+/// empty success, and those must not erase the store's shelves.
 async fn fetch_one_store(
     library: &LibraryStore,
     source: &dyn ContentSource,
@@ -343,7 +345,7 @@ async fn fetch_one_store(
         exclude_series_sets && id.eq_ignore_ascii_case("graphicaudio") && looks_like_series_set(hit)
     };
     if let Some(hits) = cached_or_call(library, &id, &deal_key, || source.list_deals(32)).await {
-        answered += 1;
+        answered += usize::from(!hits.is_empty());
         out.extend(
             hits.into_iter()
                 .filter(|h| !skip_set(h))
@@ -375,7 +377,7 @@ async fn fetch_one_store(
         let hits = cached_or_call(library, &id, &key, || source.expand_candidates(s, 24)).await;
         calls += 1;
         let Some(hits) = hits else { continue };
-        answered += 1;
+        answered += usize::from(!hits.is_empty());
         for hit in hits {
             if skip_set(&hit) {
                 continue;
@@ -390,7 +392,9 @@ async fn fetch_one_store(
 ///
 /// # Returns
 ///
-/// `None` when the call failed or timed out; the failure is logged, not cached.
+/// `None` when the call failed or timed out; the failure is logged, not
+/// cached. An empty answer is returned but not cached either, since it may
+/// be a guest failure the adapter softened, so the next subject asks again.
 async fn cached_or_call<F, Fut>(
     library: &LibraryStore,
     store: &str,
@@ -416,6 +420,9 @@ where
     }
     match tokio::time::timeout(STORE_CALL_TIMEOUT, call()).await {
         Ok(Ok(hits)) => {
+            if hits.is_empty() {
+                return Some(hits);
+            }
             if let Ok(json) = serde_json::to_string(&hits) {
                 if let Err(err) = library.put_discover_store_call(key, store, &json).await {
                     tracing::debug!(%store, error = %err, "discover store cache write failed");
@@ -968,5 +975,41 @@ mod tests {
         assert_eq!(up_calls.load(std::sync::atomic::Ordering::SeqCst), before);
         // Failures are not cached: the down store is asked again.
         assert!(down_calls.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+    }
+
+    #[tokio::test]
+    async fn an_empty_answer_keeps_the_store_rows_and_is_not_cached() {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let subject = DiscoverSubject::User(1);
+        library
+            .replace_discover_candidates(
+                &subject,
+                "quiet",
+                SeedScope::Household,
+                &[(String::from("old"), String::from("{}"))],
+            )
+            .await
+            .unwrap();
+        let calls = std::sync::Arc::default();
+        let mut registry = SourceRegistry::new();
+        registry.register(std::sync::Arc::new(FakeStore {
+            id: "quiet",
+            deals: Some(Vec::new()),
+            calls: std::sync::Arc::clone(&calls),
+        }));
+        let opts = RecommendOptions::default();
+        for _ in 0..2 {
+            let report = fetch_subject_candidates(&library, &registry, &subject, &opts)
+                .await
+                .unwrap();
+            assert_eq!(report.stores_failed, vec![String::from("quiet")]);
+        }
+        let rows = library.list_discover_candidates(&subject).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].candidate_key, "old");
+        // The empty deals answer was not cached, so both fetches asked.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }
