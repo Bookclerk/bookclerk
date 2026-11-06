@@ -7,7 +7,8 @@
 # `scripts/fuzz-crash-triage.py run`, which sends the image's output to
 # `fuzz-private/batch.log` in the workspace and keeps crashes in
 # `out/artifacts/` instead of uploading them. Corpus and coverage artifacts
-# are still read and written as before, so PR fuzzing is unchanged. A caller
+# are still read and written, each lookup one API request by name
+# (scripts/cflite_artifacts.py, as for pull-request fuzzing). A caller
 # that wants the crashes seals both directories before anything leaves the
 # job; otherwise they die with the runner.
 #

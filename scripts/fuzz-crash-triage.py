@@ -12,7 +12,8 @@ replaces those public paths with three private steps:
   container action (`.github/actions/cflite-private-run`). It runs the
   image's own batch, prune or coverage mode with stdout and stderr
   redirected to a private log and with the crash upload disabled, so the
-  corpus and coverage artifacts work as before while crashes stay in the
+  corpus and coverage artifacts work as before (each looked up with one
+  request, ``scripts/cflite_artifacts.py``) while crashes stay in the
   job's workspace. It prints a crash count only.
 - ``reproduce`` runs inside the same image against a fresh build of the
   fuzzers. It re-runs each crash and drops the ones that do not reproduce,
@@ -1325,6 +1326,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             del self
 
         deployment.upload_crashes = keep_crashes_private
+        # One request per corpus or coverage lookup instead of paging
+        # through every artifact (scripts/cflite_artifacts.py).
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import cflite_artifacts  # type: ignore[import-not-found]  # noqa: PLC0415
+
+        cflite_artifacts.install_in_image()
         code = run_fuzzers_entrypoint.main()
     except Exception as err:  # noqa: BLE001 - reported below without details
         print(f"private run wrapper error: {err!r}", flush=True)

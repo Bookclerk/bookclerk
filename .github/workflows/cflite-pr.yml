@@ -44,6 +44,13 @@ jobs:
       matrix:
         sanitizer: [address]
     steps:
+      # The run step's action and its entrypoint script live in the
+      # repository. Check out before building: checkout cleans the
+      # workspace, which would remove the built fuzzers.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Build fuzzers
         id: build
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
@@ -52,11 +59,14 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           sanitizer: ${{ matrix.sanitizer }}
 
+      # The stock run_fuzzers action in code-change mode, except that each
+      # corpus and coverage lookup is one API request: the stock lookup can
+      # page through every artifact until the repository's API budget runs
+      # out (docs/contributing/fuzzing.md#artifact-lookups).
       - name: Run fuzzers
         id: run
-        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        uses: ./.github/actions/cflite-run-fuzzers
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fuzz-seconds: 600
-          mode: code-change
           sanitizer: ${{ matrix.sanitizer }}

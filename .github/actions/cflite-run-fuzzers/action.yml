@@ -1,0 +1,38 @@
+# Pull-request fuzzing: the stock ClusterFuzzLite `run_fuzzers` action in the
+# same pinned run-fuzzers image as `cflite-private-run`, entered through
+# `scripts/cflite_artifacts.py` so each corpus and coverage lookup is one
+# API request instead of a walk through every artifact in the repository
+# (docs/contributing/fuzzing.md#artifact-lookups). Output, crash upload and
+# failure on a new crash are the image's own. Needs the repository checked
+# out in the workspace.
+name: ClusterFuzzLite run fuzzers
+description: Code-change fuzzing with bounded artifact lookups.
+inputs:
+  fuzz-seconds:
+    description: Total fuzzing time, split across targets.
+    required: true
+  sanitizer:
+    description: Sanitizer the fuzzers were built with.
+    required: true
+  github-token:
+    description: Token for the corpus and coverage artifacts (GITHUB_TOKEN).
+    required: true
+runs:
+  using: docker
+  image: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-run-fuzzers@sha256:163155a2e32aa262507fa1c2c88d8d0be41fef3cad8b0d2bebffa31237e39a88
+  entrypoint: python3
+  args:
+    - /github/workspace/scripts/cflite_artifacts.py
+  env:
+    FUZZ_SECONDS: ${{ inputs.fuzz-seconds }}
+    MODE: code-change
+    LANGUAGE: rust
+    DRY_RUN: "false"
+    SANITIZER: ${{ inputs.sanitizer }}
+    GITHUB_TOKEN: ${{ inputs.github-token }}
+    LOW_DISK_SPACE: "True"
+    REPORT_UNREPRODUCIBLE_CRASHES: "False"
+    OUTPUT_SARIF: "false"
+    MINIMIZE_CRASHES: "False"
+    CFL_PLATFORM: github
+    PARALLEL_FUZZING: "false"
