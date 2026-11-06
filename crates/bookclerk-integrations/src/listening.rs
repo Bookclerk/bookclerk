@@ -11,10 +11,10 @@ use crate::types::ListeningProgressSnapshot;
 /// Upsert provider-agnostic listening snapshots into `listening_progress`.
 ///
 /// `provider` should be the integration id (`audiobookshelf`, plugin id, …).
-/// When anything was written, publishes `listening_synced` keyed by a digest
-/// of what the sync says each person has started or finished (see
-/// `taste_line`), so a sync that changes nothing Discover reads coalesces
-/// into the previous event instead of queueing another refresh.
+/// When anything was written and what the sync says each person has started
+/// or finished (see `taste_line`) differs from the provider's previous
+/// `listening_synced`, publishes a new one; a sync that changes nothing
+/// Discover reads queues no refresh.
 ///
 /// # Arguments
 ///
@@ -90,30 +90,59 @@ pub async fn upsert_listening_snapshots(
     Ok(upserted)
 }
 
-/// One snapshot's part of the sync digest: who, which item, and how far
-/// they got, in quarters (Discover weighs progress, not the exact second).
+/// How far someone got in one item, as Discover's engagement reads it:
+/// `0` not started, `1`–`4` the quarter they are in, `5` finished.
+///
+/// Progress comes from the reported fraction, or from playback position
+/// over duration when the fraction is missing; a position with no duration
+/// counts as started.
+///
+/// # Arguments
+///
+/// * `item` - The synced snapshot.
+fn listening_stage(item: &ListeningProgressSnapshot) -> u8 {
+    if item.is_finished {
+        return 5;
+    }
+    let seconds = item.current_time_seconds.unwrap_or(0.0);
+    let from_time = match item.duration_seconds {
+        Some(duration) if duration > 0.0 => seconds / duration,
+        _ => 0.0,
+    };
+    let progress = item
+        .progress
+        .filter(|p| *p > 0.0)
+        .unwrap_or(from_time)
+        .clamp(0.0, 1.0);
+    if progress >= 1.0 {
+        5
+    } else if progress >= 0.75 {
+        4
+    } else if progress >= 0.5 {
+        3
+    } else if progress >= 0.25 {
+        2
+    } else if progress > 0.0 || seconds > 0.0 {
+        1
+    } else {
+        0
+    }
+}
+
+/// One snapshot's part of the sync digest: who, which item, and their
+/// [`listening_stage`] (Discover weighs progress, not the exact second).
 ///
 /// # Arguments
 ///
 /// * `item` - The synced snapshot.
 /// * `identity_id` - The portal identity the row was stored under, when any.
 fn taste_line(item: &ListeningProgressSnapshot, identity_id: Option<i64>) -> String {
-    let progress = item.progress.unwrap_or(0.0);
-    let quarter = if item.is_finished || progress >= 1.0 {
-        4
-    } else if progress >= 0.75 {
-        3
-    } else if progress >= 0.5 {
-        2
-    } else if progress >= 0.25 {
-        1
-    } else {
-        0
-    };
     let identity = identity_id.map(|id| id.to_string()).unwrap_or_default();
     format!(
-        "{identity}\u{1f}{}\u{1f}{}\u{1f}{quarter}",
-        item.external_user_id, item.external_item_id
+        "{identity}\u{1f}{}\u{1f}{}\u{1f}{}",
+        item.external_user_id,
+        item.external_item_id,
+        listening_stage(item)
     )
 }
 
@@ -138,15 +167,34 @@ async fn publish_listening_synced(
         digest.update(b"\n");
     }
     let digest = hex::encode(digest.finalize());
+    // Compare with the provider's last event only, so a state that comes back
+    // after a change (finished, unfinished, finished again) is a new event.
+    match library
+        .latest_domain_event(bookclerk_library::LISTENING_SYNCED, provider)
+        .await
+    {
+        Ok(Some(last)) if last_digest(&last.payload).as_deref() == Some(digest.as_str()) => {
+            return;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            tracing::warn!(provider, error = %err, "could not read the last listening_synced");
+        }
+    }
     let payload = serde_json::json!({
         "provider": provider,
         "identityIds": identities.iter().collect::<Vec<_>>(),
+        "digest": digest,
     });
     let spec = PublishDomainEventSpec {
         event_type: bookclerk_library::LISTENING_SYNCED.into(),
         schema_version: 1,
         source: provider.to_string(),
-        dedup_key: format!("{}:{digest}", bookclerk_library::LISTENING_SYNCED),
+        dedup_key: format!(
+            "{}:{digest}:{}",
+            bookclerk_library::LISTENING_SYNCED,
+            uuid::Uuid::new_v4()
+        ),
         payload: payload.to_string(),
         ordering_key: provider.to_string(),
         ..PublishDomainEventSpec::default()
@@ -154,6 +202,15 @@ async fn publish_listening_synced(
     if let Err(err) = library.publish_domain_event(spec).await {
         tracing::warn!(provider, error = %err, "could not publish listening_synced");
     }
+}
+
+/// The `digest` a published `listening_synced` payload carries, when any.
+fn last_digest(payload: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()?
+        .get("digest")?
+        .as_str()
+        .map(str::to_string)
 }
 
 /// Best-effort match to an owned library book via ASIN, ISBN, or exact title.
@@ -278,22 +335,64 @@ mod tests {
             .await
             .expect("sync");
         assert_eq!(synced_events(&library).await.len(), 2);
+
+        // Unfinishing it and finishing it again are two more changes, even
+        // though the last state matches an earlier event.
+        upsert_listening_snapshots(&library, "audiobookshelf", &same)
+            .await
+            .expect("sync");
+        assert_eq!(synced_events(&library).await.len(), 3);
+        let mut again = snapshot("u2", "b", 0.7);
+        again.is_finished = true;
+        upsert_listening_snapshots(&library, "audiobookshelf", &[same[0].clone(), again])
+            .await
+            .expect("sync");
+        assert_eq!(synced_events(&library).await.len(), 4);
+
+        // Starting a book someone had not started is a change too.
+        let unstarted = [snapshot("u3", "c", 0.0)];
+        upsert_listening_snapshots(&library, "other", &unstarted)
+            .await
+            .expect("sync");
+        upsert_listening_snapshots(&library, "other", &[snapshot("u3", "c", 0.05)])
+            .await
+            .expect("sync");
+        assert_eq!(synced_events(&library).await.len(), 6);
     }
 
     #[test]
-    fn progress_is_counted_in_quarters() {
-        let quarter = |p: f64| {
-            taste_line(&snapshot("u", "i", p), Some(7))
-                .rsplit('\u{1f}')
-                .next()
-                .map(str::to_string)
+    fn stages_follow_what_engagement_reads() {
+        let stage = |progress: Option<f64>, seconds: Option<f64>, duration: Option<f64>| {
+            listening_stage(&ListeningProgressSnapshot {
+                progress,
+                current_time_seconds: seconds,
+                duration_seconds: duration,
+                ..ListeningProgressSnapshot::default()
+            })
         };
-        assert_eq!(quarter(0.0).as_deref(), Some("0"));
-        assert_eq!(quarter(0.3).as_deref(), Some("1"));
-        assert_eq!(quarter(0.5).as_deref(), Some("2"));
-        assert_eq!(quarter(0.8).as_deref(), Some("3"));
-        assert_eq!(quarter(1.0).as_deref(), Some("4"));
-        assert!(taste_line(&snapshot("u", "i", 0.0), Some(7)).starts_with("7\u{1f}"));
-        assert!(taste_line(&snapshot("u", "i", 0.0), None).starts_with('\u{1f}'));
+        assert_eq!(stage(None, None, None), 0);
+        assert_eq!(stage(Some(0.0), Some(0.0), Some(100.0)), 0);
+        assert_eq!(stage(Some(0.1), None, None), 1, "started is not unstarted");
+        assert_eq!(
+            stage(None, Some(30.0), None),
+            1,
+            "a position alone is started"
+        );
+        assert_eq!(
+            stage(None, Some(30.0), Some(100.0)),
+            2,
+            "fraction from time"
+        );
+        assert_eq!(stage(Some(0.5), None, None), 3);
+        assert_eq!(stage(Some(0.8), None, None), 4);
+        assert_eq!(stage(Some(1.0), None, None), 5);
+        let mut finished = snapshot("u", "i", 0.0);
+        finished.is_finished = true;
+        assert_eq!(listening_stage(&finished), 5);
+        assert!(taste_line(&finished, Some(7)).starts_with("7\u{1f}u\u{1f}i\u{1f}5"));
+        assert!(taste_line(&finished, None).starts_with('\u{1f}'));
+        assert_eq!(last_digest(r#"{"digest":"ab"}"#).as_deref(), Some("ab"));
+        assert_eq!(last_digest("{}"), None);
+        assert_eq!(last_digest("not json"), None);
     }
 }

@@ -1349,6 +1349,34 @@ impl LibraryStore {
             .collect()
     }
 
+    /// The newest retained host event of `event_type` from `source` (with no
+    /// account), when any.
+    ///
+    /// Producers that publish a state digest use it to publish only when the
+    /// state differs from the last one they published, so a state that comes
+    /// back after a change is a new event rather than a coalesced old one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn latest_domain_event(
+        &self,
+        event_type: &str,
+        source: &str,
+    ) -> Result<Option<DomainEventRecord>> {
+        domain_events::Entity::find()
+            .filter(domain_events::Column::AccountId.eq(""))
+            .filter(domain_events::Column::Source.eq(source))
+            .filter(domain_events::Column::EventType.eq(event_type))
+            .order_by_desc(domain_events::Column::CreatedAt)
+            .order_by_desc(domain_events::Column::Id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(map_event)
+            .transpose()
+    }
+
     /// Distinct queue names that hold at least one outbox row, sorted.
     ///
     /// # Errors

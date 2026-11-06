@@ -684,10 +684,11 @@ describe, best effort (a failed publish is logged, and the write stands):
 - `wishlist_changed` (`requestId`, `identityId`, `status`) when a wishlist
   entry is added or changes status (`open` or `cancelled`); `identityId` is
   the portal identity that wished, or null;
-- `listening_synced` (`provider`, `identityIds`) when a listening sync
-  wrote rows; its `source` is the integration that synced, and a sync whose
-  started and finished books (in quarters) match an earlier event coalesces
-  into it.
+- `listening_synced` (`provider`, `identityIds`, `digest`) when a
+  listening sync changed what someone has started, how far in quarters, or
+  finished; its `source` is the integration that synced, and `digest`
+  fingerprints that state. A sync whose digest matches the provider's
+  previous event publishes nothing.
 
 Discover's host consumer reads them to refresh shelves (see
 [Discovery design](../internals/discovery.md#taste-events)).

@@ -2001,9 +2001,10 @@ pub const WISHLIST_CHANGED: &str = "wishlist_changed";
 /// Host event published when a listening sync changed what someone has
 /// started or finished.
 ///
-/// Payload: `provider` (the integration that synced) and `identityIds` (the
+/// Payload: `provider` (the integration that synced), `identityIds` (the
 /// portal identities whose rows the sync wrote; rows not yet tied to an
-/// identity are not listed).
+/// identity are not listed) and `digest` (a fingerprint of what each person
+/// has started, reached in quarters, or finished).
 pub const LISTENING_SYNCED: &str = "listening_synced";
 /// Prefix of the per-node queues (`node.<node_id>`) node subsystems consume.
 pub const NODE_QUEUE_PREFIX: &str = "node.";
