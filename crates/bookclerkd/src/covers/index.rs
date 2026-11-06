@@ -70,6 +70,11 @@ impl Stamp {
         Self(self.0.saturating_add(after.as_secs()))
     }
 
+    /// The stamp `before` earlier, saturating at the epoch.
+    pub(super) fn before(self, before: Duration) -> Self {
+        Self(self.0.saturating_sub(before.as_secs()))
+    }
+
     /// Time from `earlier` to this stamp; zero when `earlier` is later.
     pub(super) fn since(self, earlier: Self) -> Duration {
         Duration::from_secs(self.0.saturating_sub(earlier.0))
@@ -251,17 +256,20 @@ impl Index {
         Some(removed)
     }
 
-    /// Forgets the least recently served entries until the index holds at
-    /// most `target` bytes.
+    /// Forgets every entry last served before `unviewed_before`, then the
+    /// least recently served until the index holds at most `target` bytes.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - Bytes the index may still hold afterwards.
+    /// * `unviewed_before` - Entries not served since this time go
+    ///   regardless of size.
     ///
     /// # Returns
     ///
     /// The keys forgotten with their entries. The caller deletes their
     /// directories and [`Self::restore`]s any it could not delete.
-    pub(super) fn evict_to(&mut self, target: u64) -> Vec<(String, Entry)> {
-        if self.total <= target {
-            return Vec::new();
-        }
+    pub(super) fn evict(&mut self, target: u64, unviewed_before: Stamp) -> Vec<(String, Entry)> {
         let mut by_age: Vec<(Stamp, String)> = self
             .entries
             .iter()
@@ -269,8 +277,8 @@ impl Index {
             .collect();
         by_age.sort();
         let mut evicted = Vec::new();
-        for (_, key) in by_age {
-            if self.total <= target {
+        for (served, key) in by_age {
+            if self.total <= target && served >= unviewed_before {
                 break;
             }
             if let Some(entry) = self.remove(&key) {
@@ -526,8 +534,8 @@ mod tests {
         for n in 0..4u8 {
             index.put(&key(n), entry(u64::from(10 - n) * 1000, 10));
         }
-        assert!(index.evict_to(40).is_empty());
-        let evicted = index.evict_to(25);
+        assert!(index.evict(40, Stamp(0)).is_empty());
+        let evicted = index.evict(25, Stamp(0));
         assert_eq!(
             evicted
                 .iter()
@@ -549,6 +557,24 @@ mod tests {
         // Replacing an entry replaces its bytes.
         index.put(&key(0), entry(1, 3));
         assert_eq!(index.total(), 13);
+    }
+
+    #[test]
+    fn eviction_drops_entries_unviewed_since_the_cutoff_under_budget_too() {
+        let mut index = Index::detached();
+        index.put(&key(0), entry(100, 10));
+        index.put(&key(1), entry(200, 10));
+        index.put(&key(2), entry(300, 10));
+        let evicted = index.evict(u64::MAX, Stamp(250));
+        assert_eq!(
+            evicted
+                .iter()
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>(),
+            vec![key(0), key(1)]
+        );
+        assert_eq!(index.total(), 10);
+        assert!(index.evict(u64::MAX, Stamp(300)).is_empty());
     }
 
     #[test]

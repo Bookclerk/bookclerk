@@ -430,7 +430,7 @@ async fn main() -> anyhow::Result<()> {
 /// The cover service caching under `<cache>/covers`, or a detached one that
 /// serves no covers (logged) when that directory cannot be prepared.
 fn open_cover_service(cache_dir: &std::path::Path) -> covers::CoverService {
-    covers::CoverService::open(cache_dir.join("covers"), covers::CACHE_BUDGET_BYTES).unwrap_or_else(
+    covers::CoverService::open(cache_dir.join("covers"), covers::Limits::default()).unwrap_or_else(
         |err| {
             tracing::error!(error = %err, "cover cache unavailable; covers will not be served");
             covers::CoverService::detached()

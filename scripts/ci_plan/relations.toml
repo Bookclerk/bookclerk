@@ -109,6 +109,14 @@ paths = [
 ]
 
 [[test_input]]
+package = "bookclerk-config"
+# The cache settings oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/cache_settings/**",
+    "fuzz/oracles/cache_settings.rs",
+]
+
+[[test_input]]
 package = "bookclerk-cover"
 # The cover oracles are shared with the replay test through `#[path]`.
 paths = [

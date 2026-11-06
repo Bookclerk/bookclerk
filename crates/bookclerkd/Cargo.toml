@@ -41,6 +41,8 @@ bookclerk-plugin-host.workspace = true
 bookclerk-plugin-abi.workspace = true
 bookclerk-plugin-manifest.workspace = true
 bookclerk-plugin-catalog.workspace = true
+# Free and total space of the disk holding the image caches.
+bookclerk-sandbox.workspace = true
 bookclerk-tray.workspace = true
 serde.workspace = true
 serde_json.workspace = true

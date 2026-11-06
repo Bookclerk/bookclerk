@@ -16,11 +16,17 @@
 //! - **Cache.** The three JPEGs land in `cache/covers/<sha256(url)>/`, written
 //!   to a temporary directory and renamed into place. The cache's journal
 //!   index (see [`index`]) records when each entry was fetched, until when
-//!   it is fresh, upstream's validators and when it was last served. Least
-//!   recently served entries are evicted once the cache passes
-//!   [`CACHE_BUDGET_BYTES`]. One request per URL does the work while the
-//!   others wait for it, and a URL that failed is not retried for
-//!   [`FAILURE_TTL`].
+//!   it is fresh, upstream's validators and when it was last served. One
+//!   request per URL does the work while the others wait for it, and a URL
+//!   that failed is not retried for [`FAILURE_TTL`].
+//! - **Retention.** The [`Limits`] come from the cluster's `core.cache`
+//!   document and this node's override, re-read at every heartbeat. Least
+//!   recently served entries are evicted once the cache passes its budget,
+//!   and entries unviewed for longer than the limit are evicted at least
+//!   every [`SWEEP_INTERVAL`]. When the disk holding the cache has less free
+//!   space than [`free_floor`], the cache shrinks to half its budget and
+//!   new images are served without being kept. An evicted entry is first
+//!   renamed into `.trash`, so a half-deleted entry is never served.
 //! - **Freshness.** Upstream's caching headers decide how long an image is
 //!   fresh (see [`upstream_policy`]); an image sent with `no-store` is
 //!   served but not kept. A cover path always names the same image, so a
@@ -55,10 +61,55 @@ pub(crate) const ROUTE_PREFIX: &str = "/api/covers";
 /// daily browser cache header instead of `immutable`.
 pub(crate) const IMAGE_PREFIX: &str = "/api/images";
 
-/// Bytes of processed covers kept on disk before the least recently served
-/// are evicted. Three JPEGs per cover average well under 300 KiB, so this
-/// holds on the order of a thousand covers.
-pub(crate) const CACHE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+/// Longest time between two sweeps of a cache that is under budget, so
+/// entries unviewed for longer than the limit go within the hour.
+pub(crate) const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// Largest free-disk floor: the cache stops growing when its disk has less
+/// than 5% of its size free, or less than this on a disk over 40 GiB.
+const MAX_FREE_FLOOR_BYTES: u64 = 2 << 30;
+
+/// Reads the free and total space of the disk holding a directory, or
+/// `None` when the platform cannot tell.
+type DiskSpace = fn(&Path) -> Option<bookclerk_sandbox::FilesystemSpace>;
+
+/// Retention limits a cache enforces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Limits {
+    /// Bytes the cache may hold before the least recently served entries
+    /// are evicted.
+    pub(crate) budget: u64,
+    /// How long an entry may go unserved before it is evicted.
+    pub(crate) unviewed: Duration,
+}
+
+impl Limits {
+    /// The limits a node applies: its own budget override, else the
+    /// cluster's budget, and the cluster's unviewed age.
+    ///
+    /// # Arguments
+    ///
+    /// * `cluster` - The cluster's `core.cache` document, or its defaults.
+    /// * `node` - This node's runtime document, or its defaults.
+    pub(crate) fn from_settings(
+        cluster: &bookclerk_library::control_plane::CacheSettingsV1,
+        node: &bookclerk_library::control_plane::NodeRuntimeSettingsV1,
+    ) -> Self {
+        Self {
+            budget: cluster.budget_for(node),
+            unviewed: Duration::from_secs(u64::from(cluster.unviewed_days) * 24 * 60 * 60),
+        }
+    }
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self::from_settings(
+            &bookclerk_library::control_plane::CacheSettingsV1::default(),
+            &bookclerk_library::control_plane::NodeRuntimeSettingsV1::new(),
+        )
+    }
+}
 
 /// How long a URL that could not be fetched or decoded is answered from
 /// memory with the same failure instead of being fetched again.
@@ -90,6 +141,10 @@ const KEY_FILE: &str = "token.key";
 /// Directory, inside the cache, where entries are assembled before they are
 /// renamed into place.
 const STAGING_DIR: &str = ".staging";
+
+/// Directory, inside the cache, where evicted entries are renamed before
+/// they are deleted.
+const TRASH_DIR: &str = ".trash";
 
 /// Why a cover could not be served.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -310,8 +365,20 @@ pub(crate) struct CoverService {
     index: Arc<Mutex<Index>>,
     /// Whether an eviction sweep is running.
     sweeping: Arc<AtomicBool>,
-    /// Eviction threshold in bytes.
-    budget: u64,
+    /// Whether a sweep was asked for while one was running; the next
+    /// [`CoverService::maintain`] runs it, so a limit change made during a
+    /// sweep is not lost.
+    sweep_pending: Arc<AtomicBool>,
+    /// Whether the last check found the disk below [`free_floor`]; new
+    /// images are then served without being kept.
+    low_disk: Arc<AtomicBool>,
+    /// The retention limits in force.
+    limits: Mutex<Limits>,
+    /// When the last sweep started, for [`SWEEP_INTERVAL`].
+    last_sweep: Mutex<Option<Instant>>,
+    /// Reads the free and total space of the disk holding a directory:
+    /// [`bookclerk_sandbox::filesystem_space`] outside tests.
+    disk: DiskSpace,
     /// One lock per URL being processed, by cache key.
     flights: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Recent failures by cache key: when, and why.
@@ -332,7 +399,7 @@ impl std::fmt::Debug for CoverService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoverService")
             .field("dir", &self.dir)
-            .field("budget", &self.budget)
+            .field("limits", &*lock(&self.limits))
             .finish_non_exhaustive()
     }
 }
@@ -344,30 +411,35 @@ impl CoverService {
     /// # Errors
     ///
     /// The I/O error when the directory or the key cannot be created or read.
-    pub(crate) fn open(dir: PathBuf, budget: u64) -> std::io::Result<Self> {
+    pub(crate) fn open(dir: PathBuf, limits: Limits) -> std::io::Result<Self> {
         std::fs::create_dir_all(&dir)?;
         let key = load_or_create_key(&dir.join(KEY_FILE))?;
-        // Leftovers of an interrupted write.
+        // Leftovers of an interrupted write or sweep.
         let _ = std::fs::remove_dir_all(dir.join(STAGING_DIR));
+        let _ = std::fs::remove_dir_all(dir.join(TRASH_DIR));
         let index = Index::open(&dir);
-        Ok(Self::with(Some(dir), key, budget, index))
+        Ok(Self::with(Some(dir), key, limits, index))
     }
 
     /// A service that signs paths but has nowhere to cache, so every image
     /// request is [`CoverFailure::Unavailable`]. Used when the cache directory
     /// cannot be created, and by tests that do not serve covers.
     pub(crate) fn detached() -> Self {
-        Self::with(None, random_key(), CACHE_BUDGET_BYTES, Index::detached())
+        Self::with(None, random_key(), Limits::default(), Index::detached())
     }
 
     /// The service from its parts.
-    fn with(dir: Option<PathBuf>, key: TokenKey, budget: u64, index: Index) -> Self {
+    fn with(dir: Option<PathBuf>, key: TokenKey, limits: Limits, index: Index) -> Self {
         Self {
             dir,
             key,
             index: Arc::new(Mutex::new(index)),
             sweeping: Arc::new(AtomicBool::new(false)),
-            budget,
+            sweep_pending: Arc::new(AtomicBool::new(false)),
+            low_disk: Arc::new(AtomicBool::new(false)),
+            limits: Mutex::new(limits),
+            last_sweep: Mutex::new(None),
+            disk: bookclerk_sandbox::filesystem_space,
             flights: Mutex::default(),
             failures: Mutex::default(),
             prefetching: Mutex::default(),
@@ -890,7 +962,13 @@ impl CoverService {
             let key = key.to_owned();
             let set = set.clone();
             let index = Arc::clone(&self.index);
+            let low_disk = Arc::clone(&self.low_disk);
+            let disk = self.disk;
             tokio::task::spawn_blocking(move || {
+                if below_floor(disk, &dir) {
+                    low_disk.store(true, Ordering::Release);
+                    return Ok(false);
+                }
                 let bytes = write_entry(&dir, &key, &set)?;
                 let now = Stamp::now();
                 let entry = Entry {
@@ -902,34 +980,104 @@ impl CoverService {
                     bytes,
                 };
                 lock(&index).put(&key, entry);
-                Ok::<_, std::io::Error>(())
+                Ok::<_, std::io::Error>(true)
             })
             .await
             .map_err(|err| err.to_string())
             .and_then(|result| result.map_err(|err| err.to_string()))
         };
         match written {
-            Ok(()) => self.maybe_sweep(dir),
+            Ok(true) => self.maybe_sweep(dir),
+            Ok(false) => {
+                tracing::debug!("disk below the free-space floor; image served without caching");
+                self.sweep_now(dir);
+            }
             // Still serve this request; the next one tries the write again.
             Err(err) => tracing::warn!(error = %err, "could not cache a cover"),
         }
         Ok(set)
     }
 
+    /// The retention limits in force on this node.
+    ///
+    /// # Returns
+    ///
+    /// The limits the last [`CoverService::maintain`] applied, or the ones
+    /// the service was opened with.
+    pub(crate) fn limits(&self) -> Limits {
+        *lock(&self.limits)
+    }
+
     /// Starts an eviction sweep when the cache is over budget.
     fn maybe_sweep(&self, dir: &Path) {
-        if lock(&self.index).total() <= self.budget {
+        let budget = lock(&self.limits).budget;
+        if lock(&self.index).total() <= budget {
             return;
         }
+        self.sweep_now(dir);
+    }
+
+    /// Applies new retention limits and sweeps when they changed, the disk
+    /// is below [`free_floor`] now or was at the last check, or
+    /// [`SWEEP_INTERVAL`] has passed since the last sweep. Called at every
+    /// heartbeat, so a disk that another workload fills shrinks the cache
+    /// within one heartbeat even when no image is being written.
+    ///
+    /// # Arguments
+    ///
+    /// * `limits` - The limits now in force on this node.
+    pub(crate) async fn maintain(&self, limits: Limits) {
+        let changed = {
+            let mut current = lock(&self.limits);
+            std::mem::replace(&mut *current, limits) != limits
+        };
+        let Some(dir) = self.dir.as_deref() else {
+            return;
+        };
+        let low_now = {
+            let dir = dir.to_path_buf();
+            let disk = self.disk;
+            tokio::task::spawn_blocking(move || below_floor(disk, &dir))
+                .await
+                .unwrap_or(false)
+        };
+        let due = lock(&self.last_sweep).is_none_or(|at| at.elapsed() >= SWEEP_INTERVAL);
+        let pending = self.sweep_pending.swap(false, Ordering::AcqRel);
+        if changed || due || pending || low_now || self.low_disk.load(Ordering::Acquire) {
+            self.sweep_now(dir);
+        } else {
+            self.maybe_sweep(dir);
+        }
+    }
+
+    /// Starts an eviction sweep unless one is running: entries unviewed
+    /// for longer than the limit go, then the least recently served until
+    /// the cache is at 90% of its budget when over it, or at half of it
+    /// when the disk is below [`free_floor`].
+    fn sweep_now(&self, dir: &Path) {
         if self.sweeping.swap(true, Ordering::AcqRel) {
+            self.sweep_pending.store(true, Ordering::Release);
             return;
         }
+        *lock(&self.last_sweep) = Some(Instant::now());
         let dir = dir.to_path_buf();
-        let budget = self.budget;
+        let limits = *lock(&self.limits);
         let sweeping = Arc::clone(&self.sweeping);
+        let low_disk = Arc::clone(&self.low_disk);
         let index = Arc::clone(&self.index);
+        let disk = self.disk;
         tokio::task::spawn_blocking(move || {
-            sweep(&dir, &index, budget);
+            let low = below_floor(disk, &dir);
+            low_disk.store(low, Ordering::Release);
+            let total = lock(&index).total();
+            let target = if low {
+                limits.budget / 2
+            } else if total > limits.budget {
+                limits.budget / 10 * 9
+            } else {
+                limits.budget
+            };
+            sweep(&dir, &index, target, Stamp::now().before(limits.unviewed));
             sweeping.store(false, Ordering::Release);
         });
     }
@@ -1078,24 +1226,73 @@ fn write_entry(dir: &Path, key: &str, set: &CoverSet) -> std::io::Result<u64> {
     Ok(total)
 }
 
-/// Deletes the least recently served entries until the cache is at most 90%
-/// of `budget`.
+/// Evicts every entry last served before `unviewed_before`, then the least
+/// recently served until the cache holds at most `target` bytes.
 ///
-/// An entry that cannot be deleted (a file held open on Windows) is
-/// indexed again, so it still counts toward the budget and goes on a later
-/// sweep. An entry written again between being picked and being deleted is
-/// lost from disk while still indexed; its next request downloads it again.
-fn sweep(dir: &Path, index: &Mutex<Index>, budget: u64) {
-    let evicted = lock(index).evict_to(budget / 10 * 9);
+/// Each entry is renamed into `.trash` and the trash emptied afterwards, so
+/// a request never reads a half-deleted entry. An entry that cannot be
+/// moved (a file held open on Windows) is indexed again, so it still
+/// counts toward the budget and goes on a later sweep. An entry written
+/// again between being picked and being moved is lost from disk while
+/// still indexed; its next request downloads it again.
+fn sweep(dir: &Path, index: &Mutex<Index>, target: u64, unviewed_before: Stamp) {
+    let evicted = lock(index).evict(target, unviewed_before);
+    let trash = dir.join(TRASH_DIR);
+    if !evicted.is_empty() {
+        if let Err(err) = std::fs::create_dir_all(&trash) {
+            tracing::debug!(error = %err, "could not create the cache trash");
+        }
+    }
     for (key, entry) in evicted {
+        let mut nonce = [0u8; 8];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
+        let moved = trash.join(format!("{key}-{}", hex::encode(nonce)));
         let path = dir.join(&key);
-        if let Err(err) = std::fs::remove_dir_all(&path) {
-            if path.exists() {
+        match std::fs::rename(&path, &moved) {
+            Ok(()) => {}
+            // Already gone counts as evicted.
+            Err(_) if !path.exists() => {}
+            Err(err) => {
                 tracing::debug!(error = %err, "could not evict a cached image; kept for a later sweep");
                 lock(index).restore(&key, entry);
             }
         }
     }
+    empty_trash(&trash);
+}
+
+/// Deletes everything in the trash; what cannot be deleted now is tried
+/// again on the next sweep or start.
+fn empty_trash(trash: &Path) {
+    let Ok(entries) = std::fs::read_dir(trash) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if let Err(err) = std::fs::remove_dir_all(entry.path()) {
+            tracing::debug!(error = %err, "could not empty the cache trash; retried later");
+        }
+    }
+}
+
+/// Free space the disk holding a cache keeps: 5% of the disk, at most
+/// 2 GiB.
+///
+/// # Arguments
+///
+/// * `total` - The disk's size in bytes.
+pub(crate) fn free_floor(total: u64) -> u64 {
+    (total / 20).min(MAX_FREE_FLOOR_BYTES)
+}
+
+/// True when the disk holding `dir` has less free space than
+/// [`free_floor`]. A disk whose space cannot be read is not low.
+///
+/// # Arguments
+///
+/// * `disk` - Reads the disk's space.
+/// * `dir` - The cache directory.
+fn below_floor(disk: DiskSpace, dir: &Path) -> bool {
+    disk(dir).is_some_and(|space| space.available < free_floor(space.total))
 }
 
 /// A fresh token key from the thread-local CSPRNG (ChaCha seeded from the OS).
@@ -1566,8 +1763,24 @@ mod tests {
         }
     }
 
+    /// A disk with a terabyte free, so the host's own free space never
+    /// decides a test.
+    fn roomy(_: &Path) -> Option<bookclerk_sandbox::FilesystemSpace> {
+        Some(bookclerk_sandbox::FilesystemSpace {
+            available: 1 << 40,
+            total: 1 << 40,
+        })
+    }
+
+    /// Opens a service on `dir` that sees a [`roomy`] disk.
+    fn open_roomy(dir: PathBuf, limits: Limits) -> CoverService {
+        let mut service = CoverService::open(dir, limits).expect("open");
+        service.disk = roomy;
+        service
+    }
+
     fn service(dir: &Path) -> Arc<CoverService> {
-        Arc::new(CoverService::open(dir.join("covers"), CACHE_BUDGET_BYTES).expect("open"))
+        Arc::new(open_roomy(dir.join("covers"), Limits::default()))
     }
 
     fn token_for(service: &CoverService, url: &str) -> String {
@@ -1962,8 +2175,13 @@ mod tests {
         };
         // Room for two entries and a half: writing a fourth evicts down to
         // 90%, so the two served longest ago go.
-        let service =
-            Arc::new(CoverService::open(dir.clone(), one * 2 + one / 2 + one / 10).expect("open"));
+        let service = Arc::new(open_roomy(
+            dir.clone(),
+            Limits {
+                budget: one * 2 + one / 2 + one / 10,
+                ..Limits::default()
+            },
+        ));
         let backend = Arc::new(Fake::default());
         let urls: Vec<String> = (0..4)
             .map(|n| format!("https://img.example/ok-{n}.png"))
@@ -1973,6 +2191,9 @@ mod tests {
                 .image(&backend, &token_for(&service, url), CoverSize::Thumb)
                 .await
                 .expect("cover");
+            // The third write already passes the budget; let its sweep end
+            // so the fourth write's sweep is not skipped as overlapping.
+            swept(&service).await;
             let mut index = lock(&service.index);
             let mut entry = index.get(&cache_key(url)).expect("indexed").clone();
             entry.served = Stamp::from_time(
@@ -2003,7 +2224,7 @@ mod tests {
             .any(|_| true));
         // The journal remembers it after a restart.
         drop(service);
-        let reopened = CoverService::open(dir, CACHE_BUDGET_BYTES).expect("reopen");
+        let reopened = open_roomy(dir, Limits::default());
         let index = lock(&reopened.index);
         assert_eq!(index.total(), one * 2);
         assert_eq!(
@@ -2450,6 +2671,195 @@ mod tests {
         assert_eq!(Refresh::WhenStale.cache_control(), CHANGEABLE);
     }
 
+    /// Waits for a running sweep to finish.
+    async fn swept(service: &CoverService) {
+        for _ in 0..500 {
+            if !service.sweeping.load(Ordering::Acquire) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the sweep did not finish");
+    }
+
+    #[test]
+    fn the_free_floor_is_five_percent_up_to_two_gibibytes() {
+        assert_eq!(free_floor(0), 0);
+        assert_eq!(free_floor(20 << 30), 1 << 30);
+        assert_eq!(free_floor(40 << 30), 2 << 30);
+        assert_eq!(free_floor(4 << 40), 2 << 30);
+        let low: DiskSpace = |_| {
+            Some(bookclerk_sandbox::FilesystemSpace {
+                available: 1,
+                total: 1 << 30,
+            })
+        };
+        let plenty: DiskSpace = |_| {
+            Some(bookclerk_sandbox::FilesystemSpace {
+                available: 1 << 30,
+                total: 1 << 30,
+            })
+        };
+        let unknown: DiskSpace = |_| None;
+        assert!(below_floor(low, Path::new(".")));
+        assert!(!below_floor(plenty, Path::new(".")));
+        assert!(!below_floor(unknown, Path::new(".")));
+    }
+
+    #[test]
+    fn limits_come_from_the_cluster_and_the_node_override() {
+        let cluster = bookclerk_library::control_plane::CacheSettingsV1 {
+            budget_bytes: 64 << 20,
+            unviewed_days: 2,
+        };
+        let mut node = bookclerk_library::control_plane::NodeRuntimeSettingsV1::new();
+        let limits = Limits::from_settings(&cluster, &node);
+        assert_eq!(limits.budget, 64 << 20);
+        assert_eq!(limits.unviewed, Duration::from_secs(2 * 24 * 3600));
+        node.cache_budget_bytes = Some(32 << 20);
+        assert_eq!(Limits::from_settings(&cluster, &node).budget, 32 << 20);
+        assert_eq!(Limits::default().budget, 1 << 30);
+    }
+
+    #[tokio::test]
+    async fn maintenance_evicts_images_unviewed_past_the_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = service(temp.path());
+        let dir = service.dir.clone().expect("dir");
+        let backend = Arc::new(Fake::default());
+        let old = "https://img.example/ok-old.png".to_owned();
+        let recent = "https://img.example/ok-recent.png".to_owned();
+        for url in [&old, &recent] {
+            service
+                .image(&backend, &token_for(&service, url), CoverSize::Thumb)
+                .await
+                .expect("cover");
+        }
+        {
+            let mut index = lock(&service.index);
+            let mut entry = index.get(&cache_key(&old)).expect("indexed").clone();
+            entry.served = Stamp::now().before(Duration::from_secs(91 * 24 * 3600));
+            index.put(&cache_key(&old), entry);
+        }
+        // Nothing has swept yet, so the first maintenance is due at once.
+        service.maintain(Limits::default()).await;
+        swept(&service).await;
+        assert!(!dir.join(cache_key(&old)).exists());
+        assert!(dir.join(cache_key(&recent)).exists());
+        assert!(lock(&service.index).get(&cache_key(&old)).is_none());
+        assert!(!dir.join(TRASH_DIR).read_dir().expect("trash").any(|_| true));
+        // Within the interval and under budget, maintenance does not sweep.
+        let before = *lock(&service.last_sweep);
+        service.maintain(Limits::default()).await;
+        assert_eq!(*lock(&service.last_sweep), before);
+        // A changed limit sweeps at once.
+        let shrunk = Limits {
+            budget: 1,
+            ..Limits::default()
+        };
+        service.maintain(shrunk).await;
+        swept(&service).await;
+        assert_eq!(lock(&service.index).total(), 0);
+        assert_eq!(*lock(&service.limits), shrunk);
+    }
+
+    #[tokio::test]
+    async fn a_disk_filled_by_something_else_shrinks_the_cache_at_the_next_heartbeat() {
+        static FULL: AtomicBool = AtomicBool::new(false);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut service =
+            CoverService::open(temp.path().join("covers"), Limits::default()).expect("open");
+        service.disk = |_| {
+            Some(bookclerk_sandbox::FilesystemSpace {
+                available: if FULL.load(Ordering::Acquire) {
+                    0
+                } else {
+                    1 << 40
+                },
+                total: 1 << 40,
+            })
+        };
+        let service = Arc::new(service);
+        let backend = Arc::new(Fake::default());
+        let url = "https://img.example/ok-full.png".to_owned();
+        service
+            .image(&backend, &token_for(&service, &url), CoverSize::Thumb)
+            .await
+            .expect("cover");
+        let bytes = lock(&service.index).total();
+        let limits = Limits {
+            budget: bytes + bytes / 2,
+            ..Limits::default()
+        };
+        service.maintain(limits).await;
+        swept(&service).await;
+        assert_eq!(lock(&service.index).total(), bytes, "under budget, kept");
+        assert!(!service.low_disk.load(Ordering::Acquire));
+
+        // Within the sweep interval, unchanged limits, no writes: only the
+        // disk changed.
+        FULL.store(true, Ordering::Release);
+        service.maintain(limits).await;
+        swept(&service).await;
+        assert_eq!(lock(&service.index).total(), 0, "shrunk to half the budget");
+        assert!(service.low_disk.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn a_low_disk_serves_without_caching_and_halves_the_cache() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut service =
+            CoverService::open(temp.path().join("covers"), Limits::default()).expect("open");
+        service.disk = |_| {
+            Some(bookclerk_sandbox::FilesystemSpace {
+                available: 0,
+                total: 1 << 40,
+            })
+        };
+        let service = Arc::new(service);
+        let dir = service.dir.clone().expect("dir");
+        // An entry cached before the disk filled up.
+        let kept = "https://img.example/ok-before.png".to_owned();
+        let set = bookclerk_cover::process(PNG).expect("set");
+        let bytes = write_entry(&dir, &cache_key(&kept), &set).expect("write");
+        lock(&service.index).put(
+            &cache_key(&kept),
+            Entry {
+                fetched: Stamp::now(),
+                fresh_until: Stamp::now(),
+                etag: None,
+                last_modified: None,
+                served: Stamp::now(),
+                bytes,
+            },
+        );
+        *lock(&service.limits) = Limits {
+            budget: bytes + bytes / 2,
+            ..Limits::default()
+        };
+
+        let backend = Arc::new(Fake::default());
+        let url = "https://img.example/ok-low.png".to_owned();
+        let image = service
+            .image(&backend, &token_for(&service, &url), CoverSize::Thumb)
+            .await
+            .expect("served anyway");
+        assert!(!image.is_empty());
+        assert!(!dir.join(cache_key(&url)).exists(), "not kept");
+        assert!(service.low_disk.load(Ordering::Acquire));
+        swept(&service).await;
+        // Half the budget is less than the one entry, so it went too.
+        assert!(!dir.join(cache_key(&kept)).exists());
+        assert_eq!(lock(&service.index).total(), 0);
+        // The next heartbeat keeps sweeping while the disk stays low.
+        let before = *lock(&service.last_sweep);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let limits = *lock(&service.limits);
+        service.maintain(limits).await;
+        swept(&service).await;
+        assert_ne!(*lock(&service.last_sweep), before);
+    }
+
     #[test]
     fn an_entry_that_cannot_be_deleted_stays_indexed() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -2457,8 +2867,9 @@ mod tests {
         let mut index = Index::detached();
         let stuck = cache_key("https://img.example/stuck.png");
         let gone = cache_key("https://img.example/gone.png");
-        // A file where the directory should be cannot be removed as one.
-        std::fs::write(dir.join(&stuck), b"x").expect("file");
+        // With a file where the trash should be, nothing can be moved there.
+        std::fs::create_dir(dir.join(&stuck)).expect("entry");
+        std::fs::write(dir.join(TRASH_DIR), b"x").expect("file");
         let entry = |served: u64| Entry {
             fetched: Stamp::from_time(SystemTime::UNIX_EPOCH),
             fresh_until: Stamp::from_time(SystemTime::UNIX_EPOCH),
@@ -2470,7 +2881,7 @@ mod tests {
         index.put(&stuck, entry(1));
         index.put(&gone, entry(2));
         let index = Mutex::new(index);
-        sweep(dir, &index, 0);
+        sweep(dir, &index, 0, Stamp::from_time(SystemTime::UNIX_EPOCH));
         let index = lock(&index);
         assert!(index.get(&stuck).is_some());
         assert!(

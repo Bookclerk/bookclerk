@@ -17,6 +17,7 @@
 )]
 
 mod atomic_replace;
+mod cache_settings;
 mod cookie_flags;
 mod database;
 mod desktop;
@@ -45,6 +46,11 @@ mod redact;
 mod settings;
 
 pub use atomic_replace::replace_file;
+pub use cache_settings::{
+    parse_cache_setting, CacheSettingError, CacheSettingKey, DEFAULT_CACHE_BUDGET_BYTES,
+    DEFAULT_CACHE_UNVIEWED_DAYS, MAX_CACHE_BUDGET_BYTES, MAX_CACHE_UNVIEWED_DAYS,
+    MIN_CACHE_BUDGET_BYTES,
+};
 pub use cookie_flags::{cookie_secure_suffix, oidc_transaction_cookie_flags, session_cookie_flags};
 pub use database::{
     resolve_d1_api_token, resolve_postgres_url, DatabaseConfig, DatabaseD1Config,

@@ -326,6 +326,36 @@ pub async fn commit_events_settings(
     }
 }
 
+/// Applies `cache.*` settings keys to the cluster's `core.cache` document
+/// under compare-and-swap, creating it from the defaults when absent. Each
+/// node applies the change at its next heartbeat.
+///
+/// # Errors
+///
+/// Returns 400 for an invalid value and 409 when the document kept
+/// changing underneath.
+pub async fn commit_cache_settings(
+    state: &AppState,
+    updates: &[(String, String)],
+) -> Result<(), Response> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let library = state.library_snapshot().await;
+    bookclerk_library::control_plane::update_cache_settings(&library, &operator_actor(), |body| {
+        for (key, value) in updates {
+            body.set(key, value)?;
+        }
+        Ok(())
+    })
+    .await
+    .map(|_| ())
+    .map_err(|err| {
+        tracing::warn!(error = %err, "rejected cache settings update");
+        events_error(err)
+    })
+}
+
 /// Copies a committed events document into the live daemon config.
 async fn publish_events(
     state: &AppState,
@@ -2288,6 +2318,23 @@ pub(crate) struct PutNodeRuntime {
     #[serde(default)]
     #[schema(example = true)]
     schedulable: Option<bool>,
+    /// This node's image cache budget in bytes (16 MiB to 1 TiB),
+    /// overriding the cluster's `cache.budget_bytes`. `null` removes the
+    /// override; leaving the field out keeps it as it is.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<u64>, nullable, example = 536_870_912_u64)]
+    cache_budget_bytes: Option<Option<u64>>,
+}
+
+/// Deserializes a field that was present, so `Option<Option<T>>` tells an
+/// explicit `null` (`Some(None)`) from a missing field (`None`, by
+/// `serde(default)`).
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// `PUT /api/config/nodes/{node_id}/runtime`: edit a node's label, budgets,
@@ -2345,6 +2392,9 @@ pub async fn put_node_runtime(
             }
             if let Some(schedulable) = body.schedulable {
                 runtime.schedulable = schedulable;
+            }
+            if let Some(budget) = body.cache_budget_bytes {
+                runtime.cache_budget_bytes = budget;
             }
         },
     )

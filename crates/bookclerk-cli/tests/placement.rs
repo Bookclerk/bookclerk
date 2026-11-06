@@ -126,6 +126,57 @@ fn deploy_places_an_instance_and_manual_hands_it_back() {
     assert_eq!(budget["runtime"]["schedulable"], false);
     let out_of_range = run_bookclerk(files, &["nodes", "set", "--cpu-budget", "0"], &[]);
     assert!(!out_of_range.status.success(), "budgets are 1-100");
+    assert!(budget["runtime"].get("cache_budget_bytes").is_none());
+    let cache = json(&run_bookclerk(
+        files,
+        &[
+            "--format",
+            "json",
+            "nodes",
+            "set",
+            "--cache-budget",
+            "33554432",
+        ],
+        &[],
+    ));
+    assert_eq!(cache["runtime"]["cache_budget_bytes"], 33_554_432);
+    let tiny = run_bookclerk(files, &["nodes", "set", "--cache-budget", "1024"], &[]);
+    assert!(!tiny.status.success(), "cache budgets are 16 MiB to 1 TiB");
+    let cleared = json(&run_bookclerk(
+        files,
+        &["--format", "json", "nodes", "set", "--cluster-cache-budget"],
+        &[],
+    ));
+    assert!(cleared["runtime"].get("cache_budget_bytes").is_none());
+    let unviewed = json(&run_bookclerk(
+        files,
+        &["--format", "json", "config", "get", "cache.unviewed_days"],
+        &[],
+    ));
+    assert_eq!(unviewed["value"], "90");
+    assert!(unviewed["revision"].is_null(), "defaults until written");
+    let set = json(&run_bookclerk(
+        files,
+        &[
+            "--format",
+            "json",
+            "config",
+            "set",
+            "cache.budget_bytes",
+            "536870912",
+        ],
+        &[],
+    ));
+    assert_eq!(set["value"], "536870912");
+    let read_back = json(&run_bookclerk(
+        files,
+        &["--format", "json", "config", "get", "cache.budget_bytes"],
+        &[],
+    ));
+    assert_eq!(read_back["value"], "536870912");
+    assert_eq!(read_back["revision"], set["revision"]);
+    let refused = run_bookclerk(files, &["config", "set", "cache.unviewed_days", "0"], &[]);
+    assert!(!refused.status.success(), "unviewed_days is 1-3650");
     let bad = run_bookclerk(files, &["nodes", "label", "--add", "NAS"], &[]);
     assert!(!bad.status.success(), "labels are lowercase");
     let reserved = run_bookclerk(files, &["nodes", "label", "--add", "node=x"], &[]);

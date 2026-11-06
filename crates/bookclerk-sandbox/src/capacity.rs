@@ -149,6 +149,16 @@ pub fn cgroup_sample_is_low_resource(sample: &CgroupSample) -> bool {
     }
 }
 
+/// Space on the filesystem holding a path, in bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilesystemSpace {
+    /// Free bytes available to unprivileged callers (quotas count on
+    /// Windows).
+    pub available: u64,
+    /// Size of the filesystem.
+    pub total: u64,
+}
+
 /// Free bytes available to unprivileged callers.
 ///
 /// `statvfs` `f_bavail` on Linux and macOS; `GetDiskFreeSpaceExW` (free bytes
@@ -156,13 +166,24 @@ pub fn cgroup_sample_is_low_resource(sample: &CgroupSample) -> bool {
 /// when the path cannot be stated or on other platforms.
 #[must_use]
 pub fn filesystem_free_bytes(path: &Path) -> Option<u64> {
+    filesystem_space(path).map(|space| space.available)
+}
+
+/// Free and total bytes of the filesystem holding `path`.
+///
+/// `statvfs` (`f_bavail` and `f_blocks` times `f_frsize`) on Linux and
+/// macOS; `GetDiskFreeSpaceExW` on Windows, where the total is what the
+/// caller may use. Returns [`None`] when the path cannot be stated or on
+/// other platforms.
+#[must_use]
+pub fn filesystem_space(path: &Path) -> Option<FilesystemSpace> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        filesystem_free_bytes_unix(path)
+        filesystem_space_unix(path)
     }
     #[cfg(windows)]
     {
-        windows_host::filesystem_free_bytes(path)
+        windows_host::filesystem_space(path)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
@@ -173,12 +194,12 @@ pub fn filesystem_free_bytes(path: &Path) -> Option<u64> {
 
 /// `statvfs` on Linux and macOS.
 ///
-/// `f_frsize` is `c_ulong`. `f_bavail` is `fsblkcnt_t`: `u64` on Linux and
-/// `u32` on macOS. [`u64::from`] accepts both. The Linux identity conversion
-/// is an allowed no-op.
+/// `f_frsize` is `c_ulong`. `f_bavail` and `f_blocks` are `fsblkcnt_t`:
+/// `u64` on Linux and `u32` on macOS. [`u64::from`] accepts both. The Linux
+/// identity conversion is an allowed no-op.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[allow(unsafe_code, clippy::useless_conversion)]
-fn filesystem_free_bytes_unix(path: &Path) -> Option<u64> {
+fn filesystem_space_unix(path: &Path) -> Option<FilesystemSpace> {
     use std::os::unix::ffi::OsStrExt;
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut stat = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
@@ -188,8 +209,10 @@ fn filesystem_free_bytes_unix(path: &Path) -> Option<u64> {
     }
     let stat = unsafe { stat.assume_init() };
     let block = u64::from(stat.f_frsize);
-    let avail = u64::from(stat.f_bavail);
-    Some(avail.saturating_mul(block))
+    Some(FilesystemSpace {
+        available: u64::from(stat.f_bavail).saturating_mul(block),
+        total: u64::from(stat.f_blocks).saturating_mul(block),
+    })
 }
 
 /// Parses `cpu.max`. The token `max` leaves both fields empty.
@@ -546,7 +569,7 @@ mod windows_host {
     use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     use windows::Win32::System::Threading::GetSystemTimes;
 
-    use super::{windows_system_times, CpuTimes, SystemMemory};
+    use super::{windows_system_times, CpuTimes, FilesystemSpace, SystemMemory};
 
     /// `ullTotalPhys` / `ullAvailPhys` from `GlobalMemoryStatusEx`.
     pub(super) fn system_memory() -> SystemMemory {
@@ -581,17 +604,25 @@ mod windows_host {
         ))
     }
 
-    /// `GetDiskFreeSpaceExW` free bytes available to this caller.
-    pub(super) fn filesystem_free_bytes(path: &Path) -> Option<u64> {
+    /// `GetDiskFreeSpaceExW` free and total bytes available to this caller.
+    pub(super) fn filesystem_space(path: &Path) -> Option<FilesystemSpace> {
         let wide: Vec<u16> = path
             .as_os_str()
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
         let mut available: u64 = 0;
-        unsafe { GetDiskFreeSpaceExW(PCWSTR(wide.as_ptr()), Some(&mut available), None, None) }
-            .ok()?;
-        Some(available)
+        let mut total: u64 = 0;
+        unsafe {
+            GetDiskFreeSpaceExW(
+                PCWSTR(wide.as_ptr()),
+                Some(&mut available),
+                Some(&mut total),
+                None,
+            )
+        }
+        .ok()?;
+        Some(FilesystemSpace { available, total })
     }
 }
 
@@ -664,6 +695,24 @@ pub fn cpu_used_millicores(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    fn filesystem_space_reports_free_within_total() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let space = filesystem_space(dir.path()).expect("space");
+        assert!(space.total > 0);
+        assert!(space.available <= space.total);
+        // Free space moves while other processes write, so two reads need
+        // not match; both must stay within the same disk.
+        let free = filesystem_free_bytes(dir.path()).expect("free");
+        assert!(free <= space.total);
+        assert_eq!(
+            filesystem_space(dir.path()).expect("again").total,
+            space.total
+        );
+        assert_eq!(filesystem_space(&dir.path().join("missing")), None);
+    }
 
     #[test]
     fn fake_cgroup_files_parse_and_unlimited_stays_empty() {

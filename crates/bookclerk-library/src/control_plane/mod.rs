@@ -9,6 +9,7 @@
 
 mod batch;
 mod branch_catalog;
+mod cache;
 mod clerks;
 mod cluster_links;
 mod cron_fires;
@@ -51,6 +52,12 @@ pub use branch_catalog::{
     BranchTitleCounts, CatalogAccept, CatalogBegin, CatalogSessionOpened, BRANCH_TITLE_DETACHED,
     BRANCH_TITLE_SHARED, DETACHED_LEFT, DETACHED_STOPPED_SHARING, DETACHED_WITHDRAWN,
     FULL_CATALOG_PASS_EVERY,
+};
+pub use cache::{
+    is_cache_setting_key, load_cache_settings, update_cache_settings, CacheSettingsV1,
+    CACHE_NAMESPACE, CACHE_SCHEMA_VERSION, CACHE_SETTING_KEYS, DEFAULT_CACHE_BUDGET_BYTES,
+    DEFAULT_CACHE_UNVIEWED_DAYS, MAX_CACHE_BUDGET_BYTES, MAX_CACHE_UNVIEWED_DAYS,
+    MIN_CACHE_BUDGET_BYTES,
 };
 pub use clerks::{library_contents, owner_nodes_visible_to, remove_owner_node, LibraryContents};
 pub use cluster_links::{
@@ -314,6 +321,16 @@ pub struct NodeRuntimeSettingsV1 {
     #[serde(default = "default_schedulable")]
     #[schema(example = true)]
     pub schedulable: bool,
+    /// Disk space, in bytes, this node's image caches may use together,
+    /// overriding the cluster's `core.cache` budget (16 MiB to 1 TiB).
+    /// Absent means the cluster budget applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        minimum = 16_777_216_u64,
+        maximum = 1_099_511_627_776_u64,
+        example = 536_870_912_u64
+    )]
+    pub cache_budget_bytes: Option<u64>,
 }
 
 /// Default CPU budget: leave a fifth of the cores to the rest of the node.
@@ -346,11 +363,12 @@ impl NodeRuntimeSettingsV1 {
             cpu_budget_percent: DEFAULT_CPU_BUDGET_PERCENT,
             memory_budget_percent: DEFAULT_MEMORY_BUDGET_PERCENT,
             schedulable: true,
+            cache_budget_bytes: None,
         }
     }
 
-    /// Rejects control characters, labels longer than 64 bytes, and budgets
-    /// outside 1..=100.
+    /// Rejects control characters, labels longer than 64 bytes, budgets
+    /// outside 1..=100, and a cache budget outside 16 MiB..=1 TiB.
     ///
     /// # Errors
     ///
@@ -373,6 +391,9 @@ impl NodeRuntimeSettingsV1 {
             if !(1..=100).contains(&percent) {
                 return Err(invalid_events(&format!("{name} must be between 1 and 100")));
             }
+        }
+        if let Some(bytes) = self.cache_budget_bytes {
+            cache::validate_budget("cache_budget_bytes", bytes)?;
         }
         Ok(())
     }

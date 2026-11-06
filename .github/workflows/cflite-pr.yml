@@ -22,6 +22,7 @@ on:
       - "crates/bookclerk-resolve/**"
       - "crates/bookclerk-node-proto/**"
       - "crates/bookclerk-cover/**"
+      - "crates/bookclerk-config/**"
       - "crates/bookclerk-source/**"
       - "crates/bookclerk-plugins/optional/source-libro/**"
       - ".clusterfuzzlite/**"

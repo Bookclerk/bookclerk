@@ -451,6 +451,7 @@ name = "bookclerk-fuzz"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
+ "bookclerk-config",
  "bookclerk-cover",
  "bookclerk-db-exec",
  "bookclerk-mp4",
