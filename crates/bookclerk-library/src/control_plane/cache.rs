@@ -25,20 +25,11 @@ pub const CACHE_NAMESPACE: &str = "core.cache";
 /// Schema version of [`CacheSettingsV1`].
 pub const CACHE_SCHEMA_VERSION: i64 = 1;
 
-/// Default per-node cache budget: 1 GiB.
-pub const DEFAULT_CACHE_BUDGET_BYTES: u64 = 1 << 30;
-
-/// Smallest accepted cache budget: 16 MiB, room for a few hundred covers.
-pub const MIN_CACHE_BUDGET_BYTES: u64 = 16 << 20;
-
-/// Largest accepted cache budget: 1 TiB.
-pub const MAX_CACHE_BUDGET_BYTES: u64 = 1 << 40;
-
-/// Default days an entry may go unviewed before it is evicted.
-pub const DEFAULT_CACHE_UNVIEWED_DAYS: u32 = 90;
-
-/// Largest accepted `unviewed_days`, about ten years.
-pub const MAX_CACHE_UNVIEWED_DAYS: u32 = 3650;
+use bookclerk_config::parse_cache_setting;
+pub use bookclerk_config::{
+    CacheSettingKey, DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_CACHE_UNVIEWED_DAYS,
+    MAX_CACHE_BUDGET_BYTES, MAX_CACHE_UNVIEWED_DAYS, MIN_CACHE_BUDGET_BYTES,
+};
 
 /// Settings keys the cache document owns, in display order.
 pub const CACHE_SETTING_KEYS: &[&str] = &["cache.budget_bytes", "cache.unviewed_days"];
@@ -50,7 +41,7 @@ pub const CACHE_SETTING_KEYS: &[&str] = &["cache.budget_bytes", "cache.unviewed_
 /// * `key` - A dotted settings key such as `cache.budget_bytes`.
 #[must_use]
 pub fn is_cache_setting_key(key: &str) -> bool {
-    CACHE_SETTING_KEYS.contains(&key)
+    CacheSettingKey::parse(key).is_some()
 }
 
 /// Typed `core.cache` document, schema version 1.
@@ -98,9 +89,18 @@ impl CacheSettingsV1 {
     ///
     /// Returns [`LibraryError::Invalid`] when a field is out of range.
     pub fn validate(&self) -> Result<()> {
-        validate_budget("cache.budget_bytes", self.budget_bytes)?;
-        if !(1..=MAX_CACHE_UNVIEWED_DAYS).contains(&self.unviewed_days) {
-            return Err(invalid("cache.unviewed_days must be 1..=3650"));
+        for key in CacheSettingKey::ALL {
+            let value = match key {
+                CacheSettingKey::BudgetBytes => self.budget_bytes,
+                CacheSettingKey::UnviewedDays => u64::from(self.unviewed_days),
+            };
+            let (min, max) = key.range();
+            if !(min..=max).contains(&value) {
+                return Err(invalid(&format!(
+                    "{} must be between {min} and {max}",
+                    key.as_str()
+                )));
+            }
         }
         Ok(())
     }
@@ -116,10 +116,9 @@ impl CacheSettingsV1 {
     /// The value, or `None` for a key this document does not own.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<String> {
-        match key {
-            "cache.budget_bytes" => Some(self.budget_bytes.to_string()),
-            "cache.unviewed_days" => Some(self.unviewed_days.to_string()),
-            _ => None,
+        match CacheSettingKey::parse(key)? {
+            CacheSettingKey::BudgetBytes => Some(self.budget_bytes.to_string()),
+            CacheSettingKey::UnviewedDays => Some(self.unviewed_days.to_string()),
         }
     }
 
@@ -135,19 +134,14 @@ impl CacheSettingsV1 {
     /// Returns [`LibraryError::Invalid`] for an unknown key, a value that is
     /// not a whole number, or one outside the field's range.
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
-        let value = value.trim();
+        let (key, number) =
+            parse_cache_setting(key, value).map_err(|err| invalid(&err.to_string()))?;
         match key {
-            "cache.budget_bytes" => {
-                self.budget_bytes = value
-                    .parse()
-                    .map_err(|_| invalid("cache.budget_bytes must be a whole number of bytes"))?;
+            CacheSettingKey::BudgetBytes => self.budget_bytes = number,
+            CacheSettingKey::UnviewedDays => {
+                self.unviewed_days = u32::try_from(number)
+                    .map_err(|_| invalid("cache.unviewed_days is out of range"))?;
             }
-            "cache.unviewed_days" => {
-                self.unviewed_days = value
-                    .parse()
-                    .map_err(|_| invalid("cache.unviewed_days must be a whole number of days"))?;
-            }
-            other => return Err(invalid(&format!("unknown cache setting: {other}"))),
         }
         self.validate()
     }
@@ -175,7 +169,8 @@ impl CacheSettingsV1 {
 ///
 /// Returns [`LibraryError::Invalid`] when `bytes` is out of range.
 pub(super) fn validate_budget(name: &str, bytes: u64) -> Result<()> {
-    if (MIN_CACHE_BUDGET_BYTES..=MAX_CACHE_BUDGET_BYTES).contains(&bytes) {
+    let (min, max) = CacheSettingKey::BudgetBytes.range();
+    if (min..=max).contains(&bytes) {
         Ok(())
     } else {
         Err(invalid(&format!(

@@ -23,6 +23,7 @@ bookclerk-plugin-sdk = { path = "../crates/bookclerk-plugin-sdk" }
 bookclerk-resolve = { path = "../crates/bookclerk-resolve" }
 bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
+bookclerk-config = { path = "../crates/bookclerk-config" }
 # Independent re-signing oracle for cover_token.
 base64 = "0.23"
 hmac = "0.13"
@@ -166,6 +167,13 @@ bench = false
 [[bin]]
 name = "cover_wire"
 path = "fuzz_targets/cover_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cache_settings"
+path = "fuzz_targets/cache_settings.rs"
 test = false
 doc = false
 bench = false
