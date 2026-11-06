@@ -32,6 +32,40 @@ export class CoverFailure extends Error {
         this.code = "invalid_params";
     }
 }
+/** Longest validator or response header value passed on, in bytes (the ABI's `maxCoverHeaderBytes`). */
+export const MAX_HEADER_BYTES = 1024;
+/**
+ * Whether `value` may be sent as a header value: at most `MAX_HEADER_BYTES`
+ * bytes of visible ASCII, spaces and tabs.
+ *
+ * @param value - The candidate value.
+ * @returns `true` when it is safe to send or pass on.
+ */
+export function headerValueOk(value) {
+    return value.length <= MAX_HEADER_BYTES && /^[\t\x20-\x7e]*$/.test(value);
+}
+/**
+ * Reads one condition from the params.
+ *
+ * @param raw - One `CoverCondition` as received.
+ * @returns The condition, without empty values.
+ * @throws {CoverFailure} When a value is not a string, is too long, or holds
+ *   bytes a header may not carry.
+ */
+function checkCondition(raw) {
+    const c = (raw ?? {});
+    const out = {};
+    for (const key of ["ifNoneMatch", "ifModifiedSince"]) {
+        const value = c[key];
+        if (value === undefined || value === null || value === "")
+            continue;
+        if (typeof value !== "string" || !headerValueOk(value)) {
+            throw new CoverFailure(`${key} must be a header value of at most ${MAX_HEADER_BYTES} bytes`);
+        }
+        out[key] = value;
+    }
+    return out;
+}
 /**
  * Checks the host's params. The host has checked them already; this keeps a
  * malformed call from reaching the network.
@@ -57,7 +91,11 @@ export function checkParams(params) {
         maxBytes > MAX_BYTES) {
         throw new CoverFailure(`maxBytes must be a whole number from 1 to ${MAX_BYTES}`);
     }
-    return { urls, maxBytes };
+    const rawConditions = p.conditions ?? [];
+    if (!Array.isArray(rawConditions) || rawConditions.length > urls.length) {
+        throw new CoverFailure("conditions must hold at most one entry per url");
+    }
+    return { urls, maxBytes, conditions: rawConditions.map(checkCondition) };
 }
 /**
  * Whether `url` is one the fetcher will request: absolute `https`, the
@@ -174,6 +212,30 @@ function reason(err) {
 }
 /** Most redirects followed for one URL. */
 export const MAX_REDIRECTS = 5;
+/** Response headers passed on to the host, by `CoverImage` field. */
+const PASSED_HEADERS = [
+    ["etag", "etag"],
+    ["lastModified", "last-modified"],
+    ["cacheControl", "cache-control"],
+    ["expires", "expires"],
+    ["date", "date"],
+    ["age", "age"],
+];
+/**
+ * Copies the response headers the host uses for freshness and revalidation
+ * into `image`, skipping any too long or holding bytes a header may not
+ * carry. The host parses them again; this only bounds what crosses the RPC.
+ *
+ * @param headers - Response headers.
+ * @param image - The answer to fill.
+ */
+export function passHeaders(headers, image) {
+    for (const [field, name] of PASSED_HEADERS) {
+        const value = headers.get(name);
+        if (value !== null && value !== "" && headerValueOk(value))
+            image[field] = value;
+    }
+}
 /** Statuses that redirect to their `Location`. */
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 /**
@@ -184,24 +246,35 @@ const REDIRECTS = new Set([301, 302, 303, 307, 308]);
  * @param index - Its position in the request.
  * @param maxBytes - Largest body accepted.
  * @param sink - The host's destination.
+ * @param condition - Validators to send, so an unchanged image answers `304`.
  * @returns What happened; a failure is an answer, never a throw.
  */
-export async function fetchOne(options, url, index, maxBytes, sink) {
-    const failed = (error) => ({ url, stored: false, error });
+export async function fetchOne(options, url, index, maxBytes, sink, condition = {}) {
+    const failed = (error) => ({
+        url,
+        stored: false,
+        notModified: false,
+        error,
+    });
     const target = checkUrl(url);
     if (target === undefined)
         return failed("not an https URL on a public hostname");
     let response;
     const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     let current = target;
+    const headers = {
+        accept: "image/*",
+        "user-agent": `Bookclerk-Covers/${options.version} (+https://bookclerk.app)`,
+    };
+    if (condition.ifNoneMatch !== undefined)
+        headers["if-none-match"] = condition.ifNoneMatch;
+    if (condition.ifModifiedSince !== undefined)
+        headers["if-modified-since"] = condition.ifModifiedSince;
     for (let hop = 0;; hop += 1) {
         try {
             response = await options.fetch(current, {
                 method: "GET",
-                headers: {
-                    accept: "image/*",
-                    "user-agent": `Bookclerk-Covers/${options.version} (+https://bookclerk.app)`,
-                },
+                headers,
                 // Each hop must pass `checkUrl` too, so redirects are followed here.
                 redirect: "manual",
                 signal,
@@ -228,6 +301,12 @@ export async function fetchOne(options, url, index, maxBytes, sink) {
         if (next === undefined)
             return failed("redirect to a URL that is not https on a public hostname");
         current = next;
+    }
+    if (response.status === 304) {
+        await drop(response);
+        const unchanged = { url, stored: false, notModified: true };
+        passHeaders(response.headers, unchanged);
+        return unchanged;
     }
     if (!response.ok) {
         await drop(response);
@@ -257,9 +336,10 @@ export async function fetchOne(options, url, index, maxBytes, sink) {
     catch (err) {
         return failed(state.exceeded ? `body exceeds ${maxBytes} bytes` : `store failed: ${reason(err)}`);
     }
-    const image = { url, stored: true };
+    const image = { url, stored: true, notModified: false };
     if (contentType !== null)
         image.contentType = contentType;
+    passHeaders(response.headers, image);
     return image;
 }
 /**
@@ -273,12 +353,12 @@ export async function fetchOne(options, url, index, maxBytes, sink) {
  * @throws {CoverFailure} When the params are malformed.
  */
 export async function fetchCovers(options, params, sink) {
-    const { urls, maxBytes } = checkParams(params);
+    const { urls, maxBytes, conditions } = checkParams(params);
     const out = new Array(urls.length);
     let next = 0;
     const worker = async () => {
         for (let i = next++; i < urls.length; i = next++) {
-            out[i] = await fetchOne(options, urls[i], i, maxBytes, sink);
+            out[i] = await fetchOne(options, urls[i], i, maxBytes, sink, conditions[i]);
         }
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, urls.length) }, worker));

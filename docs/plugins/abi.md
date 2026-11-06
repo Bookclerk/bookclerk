@@ -831,10 +831,24 @@ The typed methods on `CoverFetcher` and `CoverEntrypoint` are:
 | Method | Notes |
 | --- | --- |
 | `health` | Liveness and readiness |
-| `fetchCovers` | `({ urls, maxBytes }, sink)` → `CoverImage[]`. Fetch each URL and put its body into `sink` under the key `String(i)`, where `i` is the URL's index. Answer one `CoverImage` per URL, in request order: `{ url, stored, contentType?, error? }` |
+| `fetchCovers` | `({ urls, maxBytes, conditions }, sink)` → `CoverImage[]`. Fetch each URL and put its body into `sink` under the key `String(i)`, where `i` is the URL's index. Answer one `CoverImage` per URL, in request order: `{ url, stored, notModified, contentType?, error?, etag?, lastModified?, cacheControl?, expires?, date?, age? }` |
 
 - `urls` holds 1 to `MAX_COVER_URLS` (32) absolute `https` URLs, and
   `maxBytes` is at most `MAX_COVER_BYTES` (10 MiB).
+- `conditions` holds the validators the host already has, by index, and
+  may be shorter than `urls`. Send `conditions[i].ifNoneMatch` as
+  `If-None-Match` and `conditions[i].ifModifiedSince` as
+  `If-Modified-Since` when they are set. Each value is at most
+  `MAX_COVER_HEADER_BYTES` (1024) bytes.
+- When the server answers `304 Not Modified`, put nothing into the sink
+  and answer `stored: false, notModified: true`: the host's copy is still
+  current.
+- Copy the server's `ETag`, `Last-Modified`, `Cache-Control`, `Expires`,
+  `Date` and `Age` into the answer verbatim, for a `200` or a `304`. Leave
+  out a value longer than `MAX_COVER_HEADER_BYTES`; the host refuses an
+  answer that carries one, or one that is both `stored` and
+  `notModified`. The values are advisory: the host parses them again with
+  its own limits.
 - `sink` is a host-served `Destination` that accepts only `put`, only for
   the keys `0` to `urls.length - 1`, each once. A body over `maxBytes`
   fails that `put` with `payload_too_large`; every other method is
@@ -856,11 +870,11 @@ export class Covers extends CoverEntrypoint<Env> {
     for (const [i, url] of params.urls.entries()) {
       const res = await fetch(url);
       if (!res.ok || res.body === null) {
-        out.push({ url, stored: false, error: `HTTP ${res.status}` });
+        out.push({ url, stored: false, notModified: false, error: `HTTP ${res.status}` });
         continue;
       }
       await sink.put(String(i), res.body);
-      out.push({ url, stored: true });
+      out.push({ url, stored: true, notModified: false });
     }
     return out;
   }

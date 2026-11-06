@@ -74,12 +74,58 @@ export class CoverFailure extends Error {
   }
 }
 
+/** Longest validator or response header value passed on, in bytes (the ABI's `maxCoverHeaderBytes`). */
+export const MAX_HEADER_BYTES = 1024;
+
+/** Validators the host holds for one URL, sent as conditional request headers. */
+export interface Condition {
+  /** `If-None-Match` value, when the host stored an `ETag`. */
+  ifNoneMatch?: string;
+  /** `If-Modified-Since` value, when the host stored a `Last-Modified`. */
+  ifModifiedSince?: string;
+}
+
 /** A checked `fetchCovers` request. */
 export interface CoverRequest {
   /** URLs to fetch, in request order. */
   urls: string[];
   /** Largest body accepted for one URL, in bytes. */
   maxBytes: number;
+  /** Validators per URL, by index; shorter than `urls` when the host holds none for the rest. */
+  conditions: Condition[];
+}
+
+/**
+ * Whether `value` may be sent as a header value: at most `MAX_HEADER_BYTES`
+ * bytes of visible ASCII, spaces and tabs.
+ *
+ * @param value - The candidate value.
+ * @returns `true` when it is safe to send or pass on.
+ */
+export function headerValueOk(value: string): boolean {
+  return value.length <= MAX_HEADER_BYTES && /^[\t\x20-\x7e]*$/.test(value);
+}
+
+/**
+ * Reads one condition from the params.
+ *
+ * @param raw - One `CoverCondition` as received.
+ * @returns The condition, without empty values.
+ * @throws {CoverFailure} When a value is not a string, is too long, or holds
+ *   bytes a header may not carry.
+ */
+function checkCondition(raw: unknown): Condition {
+  const c = (raw ?? {}) as { ifNoneMatch?: unknown; ifModifiedSince?: unknown };
+  const out: Condition = {};
+  for (const key of ["ifNoneMatch", "ifModifiedSince"] as const) {
+    const value = c[key];
+    if (value === undefined || value === null || value === "") continue;
+    if (typeof value !== "string" || !headerValueOk(value)) {
+      throw new CoverFailure(`${key} must be a header value of at most ${MAX_HEADER_BYTES} bytes`);
+    }
+    out[key] = value;
+  }
+  return out;
 }
 
 /**
@@ -92,7 +138,7 @@ export interface CoverRequest {
  *   `maxBytes` is not a whole number from 1 to `MAX_BYTES`.
  */
 export function checkParams(params: unknown): CoverRequest {
-  const p = (params ?? {}) as { urls?: unknown; maxBytes?: unknown };
+  const p = (params ?? {}) as { urls?: unknown; maxBytes?: unknown; conditions?: unknown };
   const urls = p.urls;
   if (!Array.isArray(urls) || urls.length === 0 || urls.length > MAX_URLS) {
     throw new CoverFailure(`urls must hold 1 to ${MAX_URLS} entries`);
@@ -109,7 +155,11 @@ export function checkParams(params: unknown): CoverRequest {
   ) {
     throw new CoverFailure(`maxBytes must be a whole number from 1 to ${MAX_BYTES}`);
   }
-  return { urls, maxBytes };
+  const rawConditions = p.conditions ?? [];
+  if (!Array.isArray(rawConditions) || rawConditions.length > urls.length) {
+    throw new CoverFailure("conditions must hold at most one entry per url");
+  }
+  return { urls, maxBytes, conditions: rawConditions.map(checkCondition) };
 }
 
 /**
@@ -240,6 +290,31 @@ function reason(err: unknown): string {
 /** Most redirects followed for one URL. */
 export const MAX_REDIRECTS = 5;
 
+/** Response headers passed on to the host, by `CoverImage` field. */
+const PASSED_HEADERS = [
+  ["etag", "etag"],
+  ["lastModified", "last-modified"],
+  ["cacheControl", "cache-control"],
+  ["expires", "expires"],
+  ["date", "date"],
+  ["age", "age"],
+] as const;
+
+/**
+ * Copies the response headers the host uses for freshness and revalidation
+ * into `image`, skipping any too long or holding bytes a header may not
+ * carry. The host parses them again; this only bounds what crosses the RPC.
+ *
+ * @param headers - Response headers.
+ * @param image - The answer to fill.
+ */
+export function passHeaders(headers: Headers, image: CoverImage): void {
+  for (const [field, name] of PASSED_HEADERS) {
+    const value = headers.get(name);
+    if (value !== null && value !== "" && headerValueOk(value)) image[field] = value;
+  }
+}
+
 /** Statuses that redirect to their `Location`. */
 const REDIRECTS: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 
@@ -251,6 +326,7 @@ const REDIRECTS: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
  * @param index - Its position in the request.
  * @param maxBytes - Largest body accepted.
  * @param sink - The host's destination.
+ * @param condition - Validators to send, so an unchanged image answers `304`.
  * @returns What happened; a failure is an answer, never a throw.
  */
 export async function fetchOne(
@@ -259,21 +335,31 @@ export async function fetchOne(
   index: number,
   maxBytes: number,
   sink: CoverSink,
+  condition: Condition = {},
 ): Promise<CoverImage> {
-  const failed = (error: string): CoverImage => ({ url, stored: false, error });
+  const failed = (error: string): CoverImage => ({
+    url,
+    stored: false,
+    notModified: false,
+    error,
+  });
   const target = checkUrl(url);
   if (target === undefined) return failed("not an https URL on a public hostname");
   let response: Response;
   const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   let current = target;
+  const headers: Record<string, string> = {
+    accept: "image/*",
+    "user-agent": `Bookclerk-Covers/${options.version} (+https://bookclerk.app)`,
+  };
+  if (condition.ifNoneMatch !== undefined) headers["if-none-match"] = condition.ifNoneMatch;
+  if (condition.ifModifiedSince !== undefined)
+    headers["if-modified-since"] = condition.ifModifiedSince;
   for (let hop = 0; ; hop += 1) {
     try {
       response = await options.fetch(current, {
         method: "GET",
-        headers: {
-          accept: "image/*",
-          "user-agent": `Bookclerk-Covers/${options.version} (+https://bookclerk.app)`,
-        },
+        headers,
         // Each hop must pass `checkUrl` too, so redirects are followed here.
         redirect: "manual",
         signal,
@@ -295,6 +381,12 @@ export async function fetchOne(
     if (next === undefined)
       return failed("redirect to a URL that is not https on a public hostname");
     current = next;
+  }
+  if (response.status === 304) {
+    await drop(response);
+    const unchanged: CoverImage = { url, stored: false, notModified: true };
+    passHeaders(response.headers, unchanged);
+    return unchanged;
   }
   if (!response.ok) {
     await drop(response);
@@ -322,8 +414,9 @@ export async function fetchOne(
       state.exceeded ? `body exceeds ${maxBytes} bytes` : `store failed: ${reason(err)}`,
     );
   }
-  const image: CoverImage = { url, stored: true };
+  const image: CoverImage = { url, stored: true, notModified: false };
   if (contentType !== null) image.contentType = contentType;
+  passHeaders(response.headers, image);
   return image;
 }
 
@@ -342,12 +435,12 @@ export async function fetchCovers(
   params: unknown,
   sink: CoverSink,
 ): Promise<CoverImage[]> {
-  const { urls, maxBytes } = checkParams(params);
+  const { urls, maxBytes, conditions } = checkParams(params);
   const out: CoverImage[] = new Array<CoverImage>(urls.length);
   let next = 0;
   const worker = async (): Promise<void> => {
     for (let i = next++; i < urls.length; i = next++) {
-      out[i] = await fetchOne(options, urls[i] as string, i, maxBytes, sink);
+      out[i] = await fetchOne(options, urls[i] as string, i, maxBytes, sink, conditions[i]);
     }
   };
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, urls.length) }, worker));

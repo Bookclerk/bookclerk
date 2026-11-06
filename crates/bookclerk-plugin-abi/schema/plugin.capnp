@@ -59,6 +59,10 @@ const maxKvValueBytes :UInt32 = 1048576;
 const maxCoverUrls :UInt32 = 32;
 # Largest image body `CoverFetcher.fetchCovers` may return for one URL.
 const maxCoverBytes :UInt32 = 10485760;
+# Longest cache header value, in bytes, `CoverFetcher.fetchCovers` carries in
+# either direction (a condition the host sends, a header the server sent).
+# The host ignores a longer header the fetcher returns.
+const maxCoverHeaderBytes :UInt32 = 1024;
 # Longest `KvNamespace` key in UTF-8 bytes.
 const maxKvKeyBytes :UInt32 = 512;
 # Largest `KvNamespace` metadata JSON text in bytes.
@@ -2555,6 +2559,21 @@ struct CoverFetchParams {
   # `maxCoverBytes`. The sink refuses a larger body, which fails that URL
   # only.
   maxBytes @1 :UInt32;
+  # Conditional request headers per URL, in the same order as `urls`, from
+  # the host's cached copy. Empty, or shorter than `urls`, means the
+  # remaining URLs are fetched unconditionally.
+  conditions @2 :List(CoverCondition);
+}
+
+# Validators the host already holds for one URL, sent as conditional request
+# headers so an unchanged image costs a `304` instead of its body.
+struct CoverCondition {
+  # `If-None-Match` value: the `ETag` the host stored, verbatim; empty for
+  # none.
+  ifNoneMatch @0 :Text $optional;
+  # `If-Modified-Since` value: the `Last-Modified` the host stored,
+  # verbatim; empty for none.
+  ifModifiedSince @1 :Text $optional;
 }
 
 # What happened to one requested URL.
@@ -2567,6 +2586,22 @@ struct CoverImage {
   contentType @2 :Text $optional;
   # Why nothing was stored (HTTP status, size cap, timeout, refused host).
   error @3 :Text $optional;
+  # The server answered `304 Not Modified` to the URL's conditions: nothing
+  # was put into the sink and the host's copy is still current.
+  notModified @4 :Bool;
+  # `ETag` the server sent, verbatim. Advisory: the host parses and caps it.
+  etag @5 :Text $optional;
+  # `Last-Modified` the server sent, verbatim.
+  lastModified @6 :Text $optional;
+  # `Cache-Control` the server sent, verbatim (several lines joined with
+  # `, `).
+  cacheControl @7 :Text $optional;
+  # `Expires` the server sent, verbatim.
+  expires @8 :Text $optional;
+  # `Date` the server sent, verbatim.
+  date @9 :Text $optional;
+  # `Age` the server (or a cache in front of it) sent, verbatim.
+  age @10 :Text $optional;
 }
 
 # Success payload of `CoverFetcher.fetchCovers`.

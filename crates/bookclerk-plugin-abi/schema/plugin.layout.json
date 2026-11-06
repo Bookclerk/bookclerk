@@ -2642,11 +2642,39 @@
         }
       ]
     },
+    "CoverCondition": {
+      "name": "CoverCondition",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ifNoneMatch",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "ifModifiedSince",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
     "CoverFetchParams": {
       "name": "CoverFetchParams",
       "file": "plugin.capnp",
       "dataWords": 1,
-      "pointerCount": 1,
+      "pointerCount": 2,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -2670,6 +2698,19 @@
             "kind": "uint32"
           },
           "offset": 0
+        },
+        {
+          "name": "conditions",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "CoverCondition"
+            }
+          },
+          "offset": 1
         }
       ]
     },
@@ -2756,7 +2797,7 @@
       "name": "CoverImage",
       "file": "plugin.capnp",
       "dataWords": 1,
-      "pointerCount": 3,
+      "pointerCount": 9,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -2795,6 +2836,69 @@
             "kind": "text"
           },
           "offset": 2
+        },
+        {
+          "name": "notModified",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 1
+        },
+        {
+          "name": "etag",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        },
+        {
+          "name": "lastModified",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 4
+        },
+        {
+          "name": "cacheControl",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 5
+        },
+        {
+          "name": "expires",
+          "codeOrder": 8,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 6
+        },
+        {
+          "name": "date",
+          "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 7
+        },
+        {
+          "name": "age",
+          "codeOrder": 10,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 8
         }
       ]
     },

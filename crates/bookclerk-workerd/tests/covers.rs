@@ -173,6 +173,7 @@ async fn workerd_cover_fetcher_streams_bodies_into_the_host_sink() {
                     CoverFetchParams {
                         urls: urls.clone(),
                         max_bytes: 64,
+                        conditions: Vec::new(),
                     },
                     Box::new(MemSink {
                         max: 64,

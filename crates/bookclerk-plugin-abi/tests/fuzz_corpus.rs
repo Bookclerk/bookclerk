@@ -137,7 +137,7 @@ const METADATA_CHAPTERS_SELECTOR: u8 = 94;
 /// See [`SCAN_SUMMARY_SELECTOR`].
 const COVER_FETCH_PARAMS_SELECTOR: u8 = 96;
 /// See [`SCAN_SUMMARY_SELECTOR`].
-const COVER_IMAGES_SELECTOR: u8 = 98;
+const COVER_IMAGES_SELECTOR: u8 = 99;
 
 /// A scan summary with every structured book record filled.
 fn structured_scan_summary() -> bookclerk_plugin_abi::ScanSummary {
@@ -312,7 +312,7 @@ fn structured_metadata_chapters() -> bookclerk_plugin_abi::MetadataChapters {
     }
 }
 
-/// A cover request for two URLs.
+/// A cover request for two URLs, the first conditional on a cached copy.
 fn structured_cover_fetch_params() -> bookclerk_plugin_abi::CoverFetchParams {
     bookclerk_plugin_abi::CoverFetchParams {
         urls: vec![
@@ -320,10 +320,14 @@ fn structured_cover_fetch_params() -> bookclerk_plugin_abi::CoverFetchParams {
             "https://m.media-amazon.com/images/I/51x.jpg".into(),
         ],
         max_bytes: 10_485_760,
+        conditions: vec![bookclerk_plugin_abi::CoverCondition {
+            if_none_match: Some("\"5f2b\"".into()),
+            if_modified_since: Some("Wed, 21 Oct 2026 07:28:00 GMT".into()),
+        }],
     }
 }
 
-/// One stored and one failed cover answer.
+/// One stored, one failed and one unchanged cover answer.
 fn structured_cover_images() -> bookclerk_plugin_abi::CoverImages {
     use bookclerk_plugin_abi::{CoverImage, CoverImages};
     CoverImages {
@@ -332,13 +336,24 @@ fn structured_cover_images() -> bookclerk_plugin_abi::CoverImages {
                 url: "https://covers.openlibrary.org/b/id/8231856-L.jpg".into(),
                 stored: true,
                 content_type: Some("image/jpeg".into()),
-                error: None,
+                etag: Some("\"5f2c\"".into()),
+                cache_control: Some("public, max-age=86400".into()),
+                date: Some("Thu, 05 Nov 2026 22:00:00 GMT".into()),
+                ..CoverImage::default()
             },
             CoverImage {
                 url: "https://m.media-amazon.com/images/I/51x.jpg".into(),
-                stored: false,
-                content_type: None,
                 error: Some("HTTP 404".into()),
+                ..CoverImage::default()
+            },
+            CoverImage {
+                url: "https://www.gravatar.com/avatar/00?d=404&s=128".into(),
+                not_modified: true,
+                etag: Some("W/\"a1\"".into()),
+                last_modified: Some("Wed, 21 Oct 2026 07:28:00 GMT".into()),
+                expires: Some("Thu, 05 Nov 2026 22:05:00 GMT".into()),
+                age: Some("12".into()),
+                ..CoverImage::default()
             },
         ],
     }

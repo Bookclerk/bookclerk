@@ -3963,17 +3963,44 @@ _metadata_chapters_reply_codec = _Codec(1, 1, _write_metadata_chapters_reply, _r
 def _write_cover_fetch_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text_list(0, v["urls"])
     s.set_u32(0, v["maxBytes"])
+    items = s.init_struct_list(1, len(v["conditions"]), 0, 2)
+    for item, elem in zip(items, v["conditions"], strict=True):
+        _cover_condition_codec.write(item, elem, caps)
 
 
 def _read_cover_fetch_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "urls": s.get_text_list(0),
         "maxBytes": s.get_u32(0),
+        "conditions": [_cover_condition_codec.read(item, caps) for item in s.get_struct_list(1, 0, 2)],
     }
 
 
-_cover_fetch_params_codec = _Codec(1, 1, _write_cover_fetch_params, _read_cover_fetch_params)
-"""Wire codec for ``CoverFetchParams`` (1 data words, 1 pointers)."""
+_cover_fetch_params_codec = _Codec(1, 2, _write_cover_fetch_params, _read_cover_fetch_params)
+"""Wire codec for ``CoverFetchParams`` (1 data words, 2 pointers)."""
+
+
+def _write_cover_condition(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("ifNoneMatch") is not None:
+        s.set_text(0, v["ifNoneMatch"])
+    if v.get("ifModifiedSince") is not None:
+        s.set_text(1, v["ifModifiedSince"])
+
+
+def _read_cover_condition(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+    }
+    if_none_match = s.get_text(0)
+    if not (if_none_match == ""):
+        out["ifNoneMatch"] = if_none_match
+    if_modified_since = s.get_text(1)
+    if not (if_modified_since == ""):
+        out["ifModifiedSince"] = if_modified_since
+    return out
+
+
+_cover_condition_codec = _Codec(0, 2, _write_cover_condition, _read_cover_condition)
+"""Wire codec for ``CoverCondition`` (0 data words, 2 pointers)."""
 
 
 def _write_cover_image(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -3983,12 +4010,26 @@ def _write_cover_image(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         s.set_text(1, v["contentType"])
     if v.get("error") is not None:
         s.set_text(2, v["error"])
+    s.set_bool(1, v["notModified"])
+    if v.get("etag") is not None:
+        s.set_text(3, v["etag"])
+    if v.get("lastModified") is not None:
+        s.set_text(4, v["lastModified"])
+    if v.get("cacheControl") is not None:
+        s.set_text(5, v["cacheControl"])
+    if v.get("expires") is not None:
+        s.set_text(6, v["expires"])
+    if v.get("date") is not None:
+        s.set_text(7, v["date"])
+    if v.get("age") is not None:
+        s.set_text(8, v["age"])
 
 
 def _read_cover_image(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
         "url": s.get_text(0),
         "stored": s.get_bool(0),
+        "notModified": s.get_bool(1),
     }
     content_type = s.get_text(1)
     if not (content_type == ""):
@@ -3996,22 +4037,40 @@ def _read_cover_image(s: _StructReader, caps: _CapTable) -> Any:
     error = s.get_text(2)
     if not (error == ""):
         out["error"] = error
+    etag = s.get_text(3)
+    if not (etag == ""):
+        out["etag"] = etag
+    last_modified = s.get_text(4)
+    if not (last_modified == ""):
+        out["lastModified"] = last_modified
+    cache_control = s.get_text(5)
+    if not (cache_control == ""):
+        out["cacheControl"] = cache_control
+    expires = s.get_text(6)
+    if not (expires == ""):
+        out["expires"] = expires
+    date = s.get_text(7)
+    if not (date == ""):
+        out["date"] = date
+    age = s.get_text(8)
+    if not (age == ""):
+        out["age"] = age
     return out
 
 
-_cover_image_codec = _Codec(1, 3, _write_cover_image, _read_cover_image)
-"""Wire codec for ``CoverImage`` (1 data words, 3 pointers)."""
+_cover_image_codec = _Codec(1, 9, _write_cover_image, _read_cover_image)
+"""Wire codec for ``CoverImage`` (1 data words, 9 pointers)."""
 
 
 def _write_cover_images(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["images"]), 1, 3)
+    items = s.init_struct_list(0, len(v["images"]), 1, 9)
     for item, elem in zip(items, v["images"], strict=True):
         _cover_image_codec.write(item, elem, caps)
 
 
 def _read_cover_images(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "images": [_cover_image_codec.read(item, caps) for item in s.get_struct_list(0, 1, 3)],
+        "images": [_cover_image_codec.read(item, caps) for item in s.get_struct_list(0, 1, 9)],
     }
 
 
@@ -6394,7 +6453,7 @@ _cover_fetcher_health_results_codec = _Codec(0, 1, _write_cover_fetcher_health_r
 
 
 def _write_cover_fetcher_fetch_covers_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    _cover_fetch_params_codec.write(s.init_struct(0, 1, 1), v["params"], caps)
+    _cover_fetch_params_codec.write(s.init_struct(0, 1, 2), v["params"], caps)
     if v.get("sink") is not None:
         if v["sink"] is not None:
             s.set_cap(1, caps.export_cap(v["sink"]))
@@ -6402,7 +6461,7 @@ def _write_cover_fetcher_fetch_covers_params(s: _CapnpStruct, v: Any, caps: _Cap
 
 def _read_cover_fetcher_fetch_covers_params(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
-        "params": _cover_fetch_params_codec.read(s.get_struct(0, 1, 1), caps),
+        "params": _cover_fetch_params_codec.read(s.get_struct(0, 1, 2), caps),
     }
     sink = caps.import_cap(s.get_cap_index(1))
     if not (sink is None):

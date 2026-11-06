@@ -4430,10 +4430,29 @@ class CoverFetchParams(TypedDict):
             The host has already checked each one against its URL policy.
         maxBytes: Largest body, in bytes, the host accepts for one image; at most
             `maxCoverBytes`. The sink refuses a larger body, which fails that URL only.
+        conditions: Conditional request headers per URL, in the same order as `urls`,
+            from the host's cached copy. Empty, or shorter than `urls`, means the
+            remaining URLs are fetched unconditionally.
     """
 
     urls: list[str]
     maxBytes: int
+    conditions: list[CoverCondition]
+
+
+class CoverCondition(TypedDict):
+    """Validators the host already holds for one URL, sent as conditional request
+    headers so an unchanged image costs a `304` instead of its body.
+
+    Attributes:
+        ifNoneMatch: `If-None-Match` value: the `ETag` the host stored, verbatim; empty
+            for none. Omitted when absent (wire zero value).
+        ifModifiedSince: `If-Modified-Since` value: the `Last-Modified` the host stored,
+            verbatim; empty for none. Omitted when absent (wire zero value).
+    """
+
+    ifNoneMatch: NotRequired[str]
+    ifModifiedSince: NotRequired[str]
 
 
 class CoverImage(TypedDict):
@@ -4446,12 +4465,32 @@ class CoverImage(TypedDict):
             bytes. Omitted when absent (wire zero value).
         error: Why nothing was stored (HTTP status, size cap, timeout, refused host).
             Omitted when absent (wire zero value).
+        notModified: The server answered `304 Not Modified` to the URL's conditions:
+            nothing was put into the sink and the host's copy is still current.
+        etag: `ETag` the server sent, verbatim. Advisory: the host parses and caps it.
+            Omitted when absent (wire zero value).
+        lastModified: `Last-Modified` the server sent, verbatim. Omitted when absent
+            (wire zero value).
+        cacheControl: `Cache-Control` the server sent, verbatim (several lines joined
+            with `, `). Omitted when absent (wire zero value).
+        expires: `Expires` the server sent, verbatim. Omitted when absent (wire zero
+            value).
+        date: `Date` the server sent, verbatim. Omitted when absent (wire zero value).
+        age: `Age` the server (or a cache in front of it) sent, verbatim. Omitted when
+            absent (wire zero value).
     """
 
     url: str
     stored: bool
     contentType: NotRequired[str]
     error: NotRequired[str]
+    notModified: bool
+    etag: NotRequired[str]
+    lastModified: NotRequired[str]
+    cacheControl: NotRequired[str]
+    expires: NotRequired[str]
+    date: NotRequired[str]
+    age: NotRequired[str]
 
 
 class CoverImages(TypedDict):
@@ -5907,6 +5946,7 @@ __all__ = [
     "MetadataChaptersReplyErr",
     "MetadataChaptersReply",
     "CoverFetchParams",
+    "CoverCondition",
     "CoverImage",
     "CoverImages",
     "CoverImagesReplyOk",
