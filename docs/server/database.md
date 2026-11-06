@@ -802,6 +802,6 @@ let plain = unseal_secret(&record)?;
 - [Configuration](configuration.md#bootstrap-files): the other bootstrap
   files.
 - [ADR: SQL database contract](../adr/sql-database-contract.md) and the
-  [SQL-v1 contract](../sql-contract/v1.md): the SQL every adapter accepts.
+  [SQL-v1 contract](../plugins/sql-contract/v1.md): the SQL every adapter accepts.
 - [Libraries and branches](cluster-hosts.md): sharing one database between
   clerks.

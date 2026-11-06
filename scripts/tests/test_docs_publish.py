@@ -46,6 +46,11 @@ def _sha(kind: str, payload: Any) -> str:
     return hashlib.sha1(f"{kind}:{json.dumps(payload, sort_keys=True)}".encode()).hexdigest()
 
 
+
+def generated(*keys: str) -> str:
+    """A ``generated.json`` listing ``keys`` as one reference's pages."""
+    return json.dumps({"version": 1, "references": [{"folder": "api", "kind": "test", "title": "Test", "source": "x", "landing": False, "pages": list(keys)}], "sources": {}}) + "\n"
+
 class FakeGitHub:
     """Just enough of the GitHub REST API for docs-publish.py.
 
@@ -376,7 +381,7 @@ class PublishTest(unittest.TestCase):
 
     def test_generated_pages_keep_their_date_until_they_change(self) -> None:
         built = json.dumps({"version": 1, "pages": {"README": "2026-10-20"}}, indent=1) + "\n"
-        tree = {"README.md": "# Docs\n", "api/README.md": "# API\n", "api/rust/a.md": "A\n", dp.LAST_UPDATED_FILE: built}
+        tree = {"README.md": "# Docs\n", "api/README.md": "# API\n", "api/rust/a.md": "A\n", dp.LAST_UPDATED_FILE: built, dp.GENERATED_FILE: generated("api/README", "api/rust/a")}
         dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_A, published="2026-10-27T09:00:00Z")
         self.assertEqual(self.dates(), {"README": "2026-10-20", "api/README": "2026-10-27T09:00:00Z", "api/rust/a": "2026-10-27T09:00:00Z"})
 
@@ -389,6 +394,7 @@ class PublishTest(unittest.TestCase):
         # One generated page changes, another is added: only those move.
         tree["api/rust/a.md"] = "A, changed\n"
         tree["api/rust/b.md"] = "B\n"
+        tree[dp.GENERATED_FILE] = generated("api/README", "api/rust/a", "api/rust/b")
         dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_C, published="2026-10-29T08:30:05Z")
         self.assertEqual(
             self.dates(),
@@ -402,10 +408,22 @@ class PublishTest(unittest.TestCase):
 
     def test_a_release_beside_main_dates_its_generated_pages_too(self) -> None:
         built = json.dumps({"version": 1, "pages": {}}, indent=1) + "\n"
-        dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built}), SRC, SHA_A, published="2026-10-27T09:00:00Z")
-        files = self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built})
+        dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built, dp.GENERATED_FILE: generated("api/x")}), SRC, SHA_A, published="2026-10-27T09:00:00Z")
+        files = self.write({"api/x.md": "X\n", dp.LAST_UPDATED_FILE: built, dp.GENERATED_FILE: generated("api/x")})
         dp.publish_release(self.repo, "main", files, SRC, SHA_B, "v1.0.0", published="2026-11-01T09:00:00Z")
         self.assertEqual(self.dates("tags/v1.0.0"), {"api/x": "2026-10-27T09:00:00Z"})
+
+    def test_pages_the_manifest_does_not_list_are_not_dated(self) -> None:
+        built = json.dumps({"version": 1, "pages": {}}, indent=1) + "\n"
+        tree = {"api/x.md": "X\n", "hand.md": "H\n", dp.LAST_UPDATED_FILE: built, dp.GENERATED_FILE: generated("api/x")}
+        dp.publish_main(self.repo, "main", self.write(tree), SRC, SHA_A, published="2026-10-27T09:00:00Z")
+        self.assertEqual(self.dates(), {"api/x": "2026-10-27T09:00:00Z"})
+        # A tree without the manifest dates nothing; a broken one is refused.
+        dp.publish_main(self.repo, "main", self.write({"api/y.md": "Y\n", dp.LAST_UPDATED_FILE: built}), SRC, SHA_B, published="2026-10-28T09:00:00Z")
+        self.assertEqual(self.dates(), {})
+        for bad in ("{", "[]", '"x"', json.dumps({"version": 2, "references": []}), json.dumps({"version": 1, "references": [{"pages": "x"}]})):
+            with self.assertRaises(dp.PublishError):
+                dp.publish_main(self.repo, "main", self.write({dp.LAST_UPDATED_FILE: built, dp.GENERATED_FILE: bad}), SRC, SHA_C, published="2026-10-29T09:00:00Z")
 
     def test_a_tree_without_dates_is_published_without_them(self) -> None:
         dp.publish_main(self.repo, "main", self.write({"api/x.md": "X\n"}), SRC, SHA_A, published="2026-10-27T09:00:00Z")

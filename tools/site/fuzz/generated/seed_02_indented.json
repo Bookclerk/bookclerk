@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "references": [
+    {
+      "folder": "contributing/ui",
+      "kind": "typescript",
+      "title": "Web UI library",
+      "source": "ui/src/lib",
+      "landing": true,
+      "pages": ["contributing/ui/api", "contributing/ui/theme"]
+    }
+  ],
+  "sources": {}
+}

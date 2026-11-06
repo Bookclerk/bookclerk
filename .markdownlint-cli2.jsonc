@@ -36,7 +36,6 @@
     "**/tests/fixtures/**",
     // Generated: regenerate, never hand-edit.
     "docs/server/cli-reference.md",
-    "docs/api/**",
     // Website page templates: Mustache sections ({{#demo}}) sit between
     // Markdown blocks, so block-spacing rules misread them.
     "tools/site/src/*.md",

@@ -14,6 +14,40 @@ Write for GitHub first. Use only Markdown that GitHub renders, and the
 site will render it to match. Never use syntax that only the site
 understands.
 
+## Files and folders
+
+The site serves the tree as it is in `docs/`, so the file layout is the
+URL layout:
+
+- A page with child pages is a folder, and the folder's `README.md` is
+  the page itself: `docs/plugins/README.md` is `/docs/plugins`, and
+  `docs/plugins/manifest.md` is `/docs/plugins/manifest`. Every shelf
+  (`guide/`, `server/`, `plugins/`, `internals/`, `contributing/`, `adr/`)
+  has one, and so does every folder inside a shelf.
+- No page is named `index.md`, and no folder is named `index`. The site
+  serves `<page>/index.md` as the page's own Markdown, so the name is
+  taken; the docs build fails on either.
+- A page never sits beside a folder of its own name
+  (`sdk.md` next to `sdk/`): make it the folder's `README.md`.
+- Generated references live in the shelf their readers use, under the
+  folders [Docs publishing](automation.md#the-tree) lists: the plugin SDKs
+  under `plugins/sdk/<language>/`, the web API under `server/api/`, the
+  Rust crates under `internals/crates/` and the web UI library under
+  `contributing/ui/`. A hand-written guide is the landing page of its SDK
+  (`docs/plugins/sdk/python/README.md`), and the build appends the
+  generated module list and package root under its **Reference** heading.
+  Do not create a page the build writes; it fails when one is in the way.
+- Link to a generated page by the path it will have in the built tree,
+  such as `sdk/python/workerd.md` from `docs/plugins/README.md`; on
+  GitHub the link is dead until the page is built, which is expected. The
+  build checks every relative link in the tree.
+- A new page is listed in [`docs/README.md`](../README.md), in its shelf's
+  `README.md` and in the site navigation (`NAV` in `tools/site/render.ts`).
+  The sidebar nests pages the way the folders go: a page listed after a
+  folder's `README.md` and inside that folder sits beneath it, and the
+  breadcrumb names every folder above a page. List a folder's `README.md`
+  before the pages in it.
+
 ## Know who is reading
 
 Each shelf of the docs has its own reader:

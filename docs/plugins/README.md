@@ -29,8 +29,11 @@ through `bookclerk-workerd`. There is no in-process fallback.
   events, KV, queues and every capability's methods.
 - [Plugin registry](registry.md): crate naming, release assets and the
   planned registry.
-- [SQL contract v1](../sql-contract/v1.md): what a database adapter must
+- [SQL contract](sql-contract/README.md): what a database adapter must
   accept.
+- [Plugin SDKs](sdk/README.md): the [TypeScript](sdk/typescript/README.md),
+  [Python](sdk/python/README.md) and [Rust](sdk/rust/README.md) guides,
+  each followed by the reference generated from its code.
 
 Operators install, approve and place plugins as described in
 [Managing plugins](../server/plugins.md). How the host confines every guest
@@ -68,30 +71,18 @@ Proto to authors.
 - JSON is allowed only for plugin-specific extensible config
   (`schemaVersion` plus `mediaType`/`schemaId`, and a bounded payload).
 
-### SDKs
+### SDKs and runtimes
 
-| Language | Package | Notes |
-| --- | --- | --- |
-| TypeScript | [`@bookclerk/plugin-sdk`](../../packages/plugin-sdk) | `/workerd` exports `BookclerkEntrypoint` + `*Entrypoint` bases; `bookclerk-plugin types` generates `Env` from `plugin.toml` |
-| Python | [`bookclerk-plugin-sdk`](../../packages/plugin-sdk-python) | `from bookclerk_plugin_sdk.workerd import BookclerkEntrypoint, CliEntrypoint, …`; module-level `Default` + named classes |
-| Rust | [`bookclerk-plugin-sdk`](../../crates/bookclerk-plugin-sdk) | `PluginWorker` + `serve`; workerd guests pair `BookclerkEntrypoint` JS glue with Wasm dispatch |
-
-Guest binaries depend on **`bookclerk-plugin-sdk`** (plus, for first-party
-plugins, their private store crate). TypeScript workerd guests depend on
-**`@bookclerk/plugin-sdk`**.
+Each language has its own guide and generated reference under
+[Plugin SDKs](sdk/README.md): [TypeScript](sdk/typescript/README.md)
+(`@bookclerk/plugin-sdk`), [Python](sdk/python/README.md)
+(`bookclerk-plugin-sdk`) and [Rust](sdk/rust/README.md)
+(`bookclerk-plugin-sdk`). That page also explains the two runtimes
+`plugin.toml` can name, `workerd` and `native`.
 
 > [!IMPORTANT]
 > Third-party authors should depend on the SDK only, not on
 > `bookclerk-plugin-host`, `bookclerk-library` or `bookclerk-source`.
-
-### Runtimes
-
-`plugin.toml` names one of two runtimes:
-
-| `runtime` | How it runs |
-| --- | --- |
-| `native` | An OS binary speaking the same Workers RPC ABI. The host starts two sibling jails, `bookclerk-workerd` (control plane) and the native backend, joined by inherited duplex links |
-| `workerd` | Author `modules/` loaded by first-party [`bookclerk-workerd`](../../crates/bookclerk-workerd): **one jail and one isolate per plugin** (a local embed, not Cloudflare cloud execution) |
 
 ## How the ABI works
 

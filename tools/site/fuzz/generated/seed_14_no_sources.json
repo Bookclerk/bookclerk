@@ -1,0 +1,1 @@
+{"version":1,"references":[{"folder":"server/api","kind":"web-api","title":"Web API","source":"crates/bookclerkd/openapi.json","landing":false,"pages":["server/api/README"]}]}

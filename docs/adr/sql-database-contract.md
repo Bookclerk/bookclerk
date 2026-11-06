@@ -108,7 +108,7 @@ SQLite-shaped helpers such as `INSERT OR IGNORE`, `json_extract`,
 unspecified `ORDER BY` to explicit `NULLS FIRST`/`LAST` and `/` `%` divisors
 to `NULLIF(x, 0)` unless the divisor is already structurally
 `NULLIF(<expression>, 0)`. The normative grammar, types, helpers, result semantics, and
-version policy live in [`docs/sql-contract/v1.md`](../sql-contract/v1.md);
+version policy live in [`docs/plugins/sql-contract/v1.md`](../plugins/sql-contract/v1.md);
 machine-readable vectors are under
 `crates/bookclerk-db-exec/testdata/sql_v1/`. Adapter admission is “passes
 Bookclerk SQL v1 conformance,” not affinity with SQLite/PostgreSQL identity.

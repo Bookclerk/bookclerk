@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 
 import { isApiOperationsPage, routeTree, statusClass } from "./api-reference.ts";
+import { webApiOf } from "./generated.ts";
+import type { GeneratedManifest } from "./generated.ts";
 import {
   apiNavNested,
   apiRouteGroups,
@@ -21,6 +23,24 @@ import {
 
 /** GitHub prefix for repository links. */
 const BLOB = "https://github.com/Bookclerk/bookclerk/blob/main/";
+
+/** The Web API reference's folder and fixed pages, as generated.json places them. */
+const API = webApiOf("server/api");
+
+/** A generated.json listing the Web API reference alone. */
+const MANIFEST: GeneratedManifest = {
+  references: [
+    {
+      folder: "server/api",
+      kind: "web-api",
+      title: "Web API",
+      source: "crates/bookclerkd/openapi.json",
+      landing: false,
+      pages: ["server/api/README", "server/api/jobs", "server/api/health", "server/api/schemas"],
+    },
+  ],
+  sources: {},
+};
 
 /** A Web API page as scripts/openapi_markdown.py writes it. */
 const PAGE = `# Jobs
@@ -64,16 +84,16 @@ Cancels a job.
 `;
 
 test("only operation pages of the Web API get the layout", () => {
-  assert.ok(isApiOperationsPage("api/web/jobs"));
-  assert.ok(!isApiOperationsPage("api/web/README"));
-  assert.ok(!isApiOperationsPage("api/web/schemas"));
-  assert.ok(!isApiOperationsPage("server/operations"));
+  assert.ok(isApiOperationsPage("server/api/jobs", API));
+  assert.ok(!isApiOperationsPage("server/api/README", API));
+  assert.ok(!isApiOperationsPage("server/api/schemas", API));
+  assert.ok(!isApiOperationsPage("server/operations", API));
   const plain = renderDoc(PAGE, "server/operations", { blobBase: BLOB });
   assert.ok(!plain.html.includes("api-op"));
 });
 
 test("each operation is a section with a method badge and an examples column", () => {
-  const out = renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB });
+  const out = renderDoc(PAGE, "server/api/jobs", { blobBase: BLOB, api: API });
   assert.match(out.html, /^<h1 id="jobs">Jobs<\/h1>\n<div class="api-ref">/);
   assert.equal(out.html.split('<section class="api-op"').length, 3);
   assert.equal(out.html.split("</section>").length, 3);
@@ -96,7 +116,7 @@ test("each operation is a section with a method badge and an examples column", (
 });
 
 test("status codes in a Responses table are marked by class", () => {
-  const out = renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB });
+  const out = renderDoc(PAGE, "server/api/jobs", { blobBase: BLOB, api: API });
   assert.ok(out.html.includes('<td><span class="api-status api-status-2xx">200</span></td>'));
   assert.ok(out.html.includes('<td><span class="api-status api-status-4xx">401</span></td>'));
   assert.ok(
@@ -108,7 +128,7 @@ test("status codes in a Responses table are marked by class", () => {
 });
 
 test("the page's headings are its operations, with their methods", () => {
-  const out = renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB });
+  const out = renderDoc(PAGE, "server/api/jobs", { blobBase: BLOB, api: API });
   assert.deepEqual(out.headings, [
     { level: 2, id: "get-apijobs", text: "/api/jobs", method: "GET" },
     { level: 2, id: "post-apijobsidcancel", text: "/api/jobs/{id}/cancel", method: "POST" },
@@ -122,19 +142,19 @@ test("the page's headings are its operations, with their methods", () => {
 });
 
 test("the sidebar lists the page under Web API, and its routes go to the rail", () => {
-  const out = renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB });
-  const nested = apiNavNested("api/web/jobs", out.title, "/docs/");
-  assert.equal(nested?.under, "api/web/README");
+  const out = renderDoc(PAGE, "server/api/jobs", { blobBase: BLOB, api: API });
+  const nested = apiNavNested("server/api/jobs", out.title, "/docs/", API);
+  assert.equal(nested?.under, "server/api/README");
   const nav = navHtml(
-    [{ title: "API reference", pages: [{ key: "api/web/README", title: "Web API" }] }],
-    "api/web/jobs",
+    [{ title: "Run a server", pages: [{ key: "server/api/README", title: "Web API" }] }],
+    "server/api/jobs",
     "/docs/",
     nested,
   );
   assert.ok(nav.startsWith('<details class="nav-group" open>'), "the group opens");
   assert.ok(
     nav.includes(
-      '<a href="/docs/api/web">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a>',
+      '<a href="/docs/server/api">Web API</a><ul class="nav-sub"><li><a href="/docs/server/api/jobs" aria-current="page">Jobs</a>',
     ),
   );
   assert.ok(!nav.includes("#get-apijobs"), "no routes in the sidebar");
@@ -143,57 +163,57 @@ test("the sidebar lists the page under Web API, and its routes go to the rail", 
       '<a class="toc-op" href="#get-apijobs"><span class="api-method api-method-get">GET</span> <code>/<wbr></code></a>',
     ),
   );
-  assert.equal(apiNavNested("server/operations", "Running", "/docs/"), null);
+  assert.equal(apiNavNested("server/operations", "Running", "/docs/", API), null);
 });
 
 test("the breadcrumb of an operations page runs through Web API", () => {
   const nav = [
     {
-      title: "API reference",
+      title: "Run a server",
       pages: [
-        { key: "api/README", title: "Generated API reference" },
-        { key: "api/web/README", title: "Web API" },
+        { key: "server/README", title: "Run a server" },
+        { key: "server/api/README", title: "Web API" },
       ],
     },
   ];
-  const parent = navParent(nav, "api/web/jobs");
-  assert.deepEqual(parent, { key: "api/web/README", title: "Web API" });
+  const parent = navParent(nav, "server/api/jobs", MANIFEST);
+  assert.deepEqual(parent, { key: "server/api/README", title: "Web API" });
   assert.equal(
-    crumbsHtml(crumbTrail(nav, "api/web/jobs", "Jobs"), "/docs/"),
-    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs">Docs</a></li><li><a href="/docs/api">API reference</a></li>' +
-      '<li><a href="/docs/api/web">Web API</a></li><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a></li></ol></nav>',
+    crumbsHtml(crumbTrail(nav, "server/api/jobs", "Jobs", MANIFEST), "/docs/"),
+    '<nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/docs">Docs</a></li><li><a href="/docs/server">Run a server</a></li>' +
+      '<li><a href="/docs/server/api">Web API</a></li><li><a href="/docs/server/api/jobs" aria-current="page">Jobs</a></li></ol></nav>',
   );
   // The structured data lists the same four crumbs.
   const graph = JSON.stringify(
     docJsonLd(
       "https://x",
       "/docs/",
-      { key: "api/web/jobs", title: "Jobs", description: "" },
-      crumbTrail(nav, "api/web/jobs", "Jobs"),
+      { key: "server/api/jobs", title: "Jobs", description: "" },
+      crumbTrail(nav, "server/api/jobs", "Jobs", MANIFEST),
     ),
   );
   assert.ok(
     graph.includes(
-      '{"@type":"ListItem","position":2,"name":"API reference","item":"https://x/docs/api"}',
+      '{"@type":"ListItem","position":2,"name":"Run a server","item":"https://x/docs/server"}',
     ),
   );
   assert.ok(
     graph.includes(
-      '{"@type":"ListItem","position":3,"name":"Web API","item":"https://x/docs/api/web"}',
+      '{"@type":"ListItem","position":3,"name":"Web API","item":"https://x/docs/server/api"}',
     ),
   );
   assert.ok(
     graph.includes(
-      '{"@type":"ListItem","position":4,"name":"Jobs","item":"https://x/docs/api/web/jobs"}',
+      '{"@type":"ListItem","position":4,"name":"Jobs","item":"https://x/docs/server/api/jobs"}',
     ),
   );
-  assert.equal(navParent(nav, "api/web/README"), null);
-  assert.deepEqual(navParent(nav, "api/web/schemas"), parent);
-  assert.equal(navParent(nav, "guide/getting-started"), null);
+  assert.equal(navParent(nav, "server/api/README", MANIFEST), null);
+  assert.deepEqual(navParent(nav, "server/api/schemas", MANIFEST), parent);
+  assert.equal(navParent(nav, "guide/getting-started", MANIFEST), null);
 });
 
 test("the title and its meta line stay ahead of the layout", () => {
-  const out = renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB });
+  const out = renderDoc(PAGE, "server/api/jobs", { blobBase: BLOB, api: API });
   assert.ok(
     out.html.startsWith('<h1 id="jobs">Jobs</h1>\n<div class="api-ref">'),
     out.html.slice(0, 80),
@@ -201,18 +221,18 @@ test("the title and its meta line stay ahead of the layout", () => {
 });
 
 test("the schemas page sits under Web API in the sidebar too", () => {
-  const nested = apiNavNested("api/web/schemas", "Schemas", "/docs/");
+  const nested = apiNavNested("server/api/schemas", "Schemas", "/docs/", API);
   assert.equal(
     nested?.html,
-    '<ul class="nav-sub"><li><a href="/docs/api/web/schemas" aria-current="page">Schemas</a></li></ul>',
+    '<ul class="nav-sub"><li><a href="/docs/server/api/schemas" aria-current="page">Schemas</a></li></ul>',
   );
 });
 
 test("only operation subsections leave the page's headings", () => {
   const out = renderDoc(
     "# Jobs\n\n## Paging\n\n### Cursors\n\n## `GET /api/jobs`\n\n### Responses\n",
-    "api/web/jobs",
-    { blobBase: BLOB },
+    "server/api/jobs",
+    { blobBase: BLOB, api: API },
   );
   assert.deepEqual(
     out.headings.map((h) => h.id),
@@ -242,7 +262,7 @@ test("odd operation pages still render balanced", () => {
       { length: 1 + Math.floor(rand() * 12) },
       () => parts[Math.floor(rand() * parts.length)] ?? "",
     ).join("\n");
-    const html = renderDoc(source, "api/web/x", { blobBase: BLOB }).html;
+    const html = renderDoc(source, "server/api/x", { blobBase: BLOB, api: API }).html;
     assert.equal(html.split("<section").length, html.split("</section>").length, source);
     assert.equal(html.split("<div").length, html.split("</div>").length, source);
   }
@@ -288,7 +308,7 @@ See [\`GET /api/jobs\`](jobs.md#get-apijobs) and [Schemas](schemas.md).
 `;
 
 test("the index puts its Quick start beside the introduction", () => {
-  const out = renderDoc(INDEX, "api/web/README", { blobBase: BLOB });
+  const out = renderDoc(INDEX, "server/api/README", { blobBase: BLOB, api: API });
   assert.ok(
     out.html.startsWith(
       '<h1 id="bookclerk-daemon-api">Bookclerk daemon API</h1>\n<div class="api-ref api-index">\n<div class="api-intro">\n<div class="api-intro-main">\n<p>',
@@ -303,86 +323,86 @@ test("the index puts its Quick start beside the introduction", () => {
 });
 
 test("each route group on the index is a card whose routes carry method badges", () => {
-  const out = renderDoc(INDEX, "api/web/README", { blobBase: BLOB });
+  const out = renderDoc(INDEX, "server/api/README", { blobBase: BLOB, api: API });
   assert.equal(out.html.split('<section class="api-group"').length, 3);
   assert.ok(
     out.html.includes(
-      '<section class="api-group" aria-labelledby="jobs">\n<div class="heading-wrapper level-h3"><h3 id="jobs"><a href="/docs/api/web/jobs">Jobs</a></h3>',
+      '<section class="api-group" aria-labelledby="jobs">\n<div class="heading-wrapper level-h3"><h3 id="jobs"><a href="/docs/server/api/jobs">Jobs</a></h3>',
     ),
   );
   assert.ok(
     out.html.includes(
-      '<a href="/docs/api/web/jobs#post-apijobsidcancel"><span class="api-method api-method-post">POST</span> <code>/<wbr>api/<wbr>jobs/<wbr>{id}/<wbr>cancel</code></a> (deprecated)',
+      '<a href="/docs/server/api/jobs#post-apijobsidcancel"><span class="api-method api-method-post">POST</span> <code>/<wbr>api/<wbr>jobs/<wbr>{id}/<wbr>cancel</code></a> (deprecated)',
     ),
   );
   // A route link outside the groups stays as it is.
   assert.ok(
     out.html.includes(
-      'See <a href="/docs/api/web/jobs#get-apijobs"><code>GET /api/jobs</code></a>',
+      'See <a href="/docs/server/api/jobs#get-apijobs"><code>GET /api/jobs</code></a>',
     ),
   );
   assert.ok(out.html.indexOf("</section>") < out.html.indexOf('<h3 id="health">'));
 });
 
 test("the index's sidebar lists every route group with its routes", () => {
-  const out = renderDoc(INDEX, "api/web/README", { blobBase: BLOB });
+  const out = renderDoc(INDEX, "server/api/README", { blobBase: BLOB, api: API });
   assert.deepEqual(out.routes, [
     {
       title: "Jobs",
-      href: "/docs/api/web/jobs",
+      href: "/docs/server/api/jobs",
       routes: [
-        { method: "GET", path: "/api/jobs", href: "/docs/api/web/jobs#get-apijobs" },
+        { method: "GET", path: "/api/jobs", href: "/docs/server/api/jobs#get-apijobs" },
         {
           method: "POST",
           path: "/api/jobs/{id}/cancel",
-          href: "/docs/api/web/jobs#post-apijobsidcancel",
+          href: "/docs/server/api/jobs#post-apijobsidcancel",
         },
       ],
     },
     {
       title: "Health",
-      href: "/docs/api/web/health",
-      routes: [{ method: "GET", path: "/health", href: "/docs/api/web/health#get-health" }],
+      href: "/docs/server/api/health",
+      routes: [{ method: "GET", path: "/health", href: "/docs/server/api/health#get-health" }],
     },
   ]);
-  const nested = apiNavNested("api/web/README", out.title, "/docs/", out.routes);
-  assert.equal(nested?.under, "api/web/README");
+  const nested = apiNavNested("server/api/README", out.title, "/docs/", API, out.routes);
+  assert.equal(nested?.under, "server/api/README");
   const nav = navHtml(
-    [{ title: "API reference", pages: [{ key: "api/web/README", title: "Web API" }] }],
-    "api/web/README",
+    [{ title: "Run a server", pages: [{ key: "server/api/README", title: "Web API" }] }],
+    "server/api/README",
     "/docs/",
     nested,
   );
   // On the index every group is collapsed, and the schemas page follows them.
   assert.ok(
     nav.includes(
-      '<a href="/docs/api/web" aria-current="page">Web API</a><ul class="nav-sub"><li><a href="/docs/api/web/jobs">Jobs</a></li>' +
-        '<li><a href="/docs/api/web/health">Health</a></li><li><a href="/docs/api/web/schemas">Schemas</a></li></ul>',
+      '<a href="/docs/server/api" aria-current="page">Web API</a><ul class="nav-sub"><li><a href="/docs/server/api/jobs">Jobs</a></li>' +
+        '<li><a href="/docs/server/api/health">Health</a></li><li><a href="/docs/server/api/schemas">Schemas</a></li></ul>',
     ),
   );
   assert.ok(!nav.includes("nav-ops"));
-  assert.equal(apiNavNested("api/web/README", out.title, "/docs/", []), null);
+  assert.equal(apiNavNested("server/api/README", out.title, "/docs/", API, []), null);
   // On a group's page that group is marked; its routes are in the rail.
-  const onJobs = apiNavNested("api/web/jobs", "Jobs", "/docs/", out.routes)?.html ?? "";
+  const onJobs = apiNavNested("server/api/jobs", "Jobs", "/docs/", API, out.routes)?.html ?? "";
   assert.ok(
     onJobs.startsWith(
-      '<ul class="nav-sub"><li><a href="/docs/api/web/jobs" aria-current="page">Jobs</a></li>',
+      '<ul class="nav-sub"><li><a href="/docs/server/api/jobs" aria-current="page">Jobs</a></li>',
     ),
   );
   assert.ok(
     onJobs.endsWith(
-      '<li><a href="/docs/api/web/health">Health</a></li><li><a href="/docs/api/web/schemas">Schemas</a></li></ul>',
+      '<li><a href="/docs/server/api/health">Health</a></li><li><a href="/docs/server/api/schemas">Schemas</a></li></ul>',
     ),
   );
-  assert.deepEqual(apiRouteGroups(INDEX, { blobBase: BLOB }), out.routes);
-  assert.deepEqual(renderDoc(PAGE, "api/web/jobs", { blobBase: BLOB }).routes, []);
+  assert.deepEqual(apiRouteGroups(INDEX, { blobBase: BLOB, api: API }), out.routes);
+  assert.deepEqual(renderDoc(PAGE, "server/api/jobs", { blobBase: BLOB, api: API }).routes, []);
 });
 
 test("an index without a Quick start or groups keeps its text in order", () => {
   const out = renderDoc(
     "# API\n\nIntro.\n\n## Routes\n\n### Plain\n\n- [`GET /x`](x.md)\n",
-    "api/web/README",
-    { blobBase: BLOB },
+    "server/api/README",
+    { blobBase: BLOB, api: API },
   );
   assert.ok(
     out.html.startsWith('<h1 id="api">API</h1>\n<div class="api-ref api-index">\n<p>Intro.</p>'),
@@ -407,7 +427,7 @@ test("section headings link to themselves, after the heading so its name stays i
   );
   assert.ok(
     out.html.includes(
-      '<a class="heading-anchor" href="#install-it" aria-label="Link to section: Install it"><svg aria-hidden="true"',
+      '<a class="heading-anchor" href="#install-it" aria-label="Link to section: Install it"></a></div>',
     ),
   );
   assert.ok(
@@ -512,7 +532,7 @@ Status \`404\`: No such book. No body.
 
 Status \`404\`: Again.
 `;
-  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  const out = renderDoc(page, "server/api/books", { blobBase: BLOB, api: API });
   const id = "get-apibooksid";
   assert.match(
     out.html,
@@ -542,8 +562,8 @@ Status \`404\`: Again.
       'Schema:\n\n```json\n{ "type": "object" }\n```',
       "Schema:\n\nA `text/plain` body: a string.",
     ),
-    "api/web/books",
-    { blobBase: BLOB },
+    "server/api/books",
+    { blobBase: BLOB, api: API },
   );
   assert.ok(
     text.html.includes(
@@ -593,7 +613,7 @@ After the samples.
 
 Status \`200\`: The book.
 `;
-  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  const out = renderDoc(page, "server/api/books", { blobBase: BLOB, api: API });
   const id = "get-apibooksid";
   assert.match(
     out.html,
@@ -651,7 +671,7 @@ Status \`200\`: Fine.
 $ curl 'http://127.0.0.1:8787/api/books'
 \`\`\`
 `;
-  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  const out = renderDoc(page, "server/api/books", { blobBase: BLOB, api: API });
   const responses = out.html.slice(
     out.html.indexOf('<div class="api-responses">'),
     out.html.indexOf('<div class="api-requests">'),
@@ -703,7 +723,7 @@ $ curl 'the same language again'
 no language
 \`\`\`
 `;
-  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  const out = renderDoc(page, "server/api/books", { blobBase: BLOB, api: API });
   assert.equal(out.html.split('<div class="api-request"').length, 2);
   assert.ok(out.html.includes('id="delete-apibooks-request-console"'));
   assert.equal(out.html.split('<div class="api-requests">').length, 4);
@@ -724,7 +744,7 @@ test("a status line in a list or quote opens no panel", () => {
 
 Status \`500\`: On its own.
 `;
-  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  const out = renderDoc(page, "server/api/books", { blobBase: BLOB, api: API });
   assert.equal(out.html.split('<div class="api-response"').length, 2);
   assert.ok(out.html.includes('id="get-apibooks-response-500"'));
   assert.ok(out.html.includes("<li>Status <code>200</code>: In a list.</li>"));
@@ -742,23 +762,23 @@ Some note.
 
 Status \`abc\`: not a status.
 `;
-  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  const out = renderDoc(page, "server/api/books", { blobBase: BLOB, api: API });
   assert.ok(out.html.includes('<div class="api-responses">'));
   assert.ok(!out.html.includes('<div class="api-response"'));
   assert.ok(out.html.includes("<p>Status <code>abc</code>: not a status.</p>"));
 });
 
 test("an operations page offers the filter its operations by method and path", () => {
-  const page = searchPage(PAGE, "api/web/jobs", "Web API", "Jobs", "/docs/v/main/");
+  const page = searchPage(PAGE, "server/api/jobs", "Web API", "Jobs", "/docs/v/main/", API);
   assert.deepEqual(page, {
     section: "Web API",
     title: "Jobs",
-    url: "/docs/v/main/api/web/jobs",
+    url: "/docs/v/main/server/api/jobs",
     headings: [
-      { text: "GET /api/jobs", url: "/docs/v/main/api/web/jobs#get-apijobs" },
+      { text: "GET /api/jobs", url: "/docs/v/main/server/api/jobs#get-apijobs" },
       {
         text: "POST /api/jobs/{id}/cancel",
-        url: "/docs/v/main/api/web/jobs#post-apijobsidcancel",
+        url: "/docs/v/main/server/api/jobs#post-apijobsidcancel",
       },
     ],
   });
@@ -781,7 +801,7 @@ test("property lists become property rows with a folded nested object", () => {
   - \`pages\` *integer or null* — at least 1
   - \`status\` *[\`Status\`](schemas.md#status)*
 `;
-  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  const out = renderDoc(page, "server/api/books", { blobBase: BLOB, api: API });
   assert.ok(
     out.html.includes(
       '<ul class="api-props">\n<li class="api-prop"><span class="api-prop-head"><code class="api-prop-name">id</code><span class="api-prop-in">path</span><span class="api-prop-type">integer</span><span class="api-prop-required">required</span></span><span class="api-prop-desc">Book id.</span></li>',
@@ -801,7 +821,7 @@ test("property lists become property rows with a folded nested object", () => {
   );
   assert.ok(
     out.html.includes(
-      '<span class="api-prop-type"><a href="/docs/api/web/schemas#status"><code>Status</code></a></span>',
+      '<span class="api-prop-type"><a href="/docs/server/api/schemas#status"><code>Status</code></a></span>',
     ),
     "a linked type keeps its link",
   );
@@ -823,10 +843,10 @@ test("response lists become status rows; every body's fields start closed", () =
   - \`error\` *string*, **required** — The slug.
 - \`default\` — Anything else.
 `;
-  const out = renderDoc(page, "api/web/books", { blobBase: BLOB });
+  const out = renderDoc(page, "server/api/books", { blobBase: BLOB, api: API });
   assert.ok(
     out.html.includes(
-      '<li class="api-prop api-response-item">\n<details class="api-prop-nested"><summary><span class="api-prop-head"><span class="api-status api-status-2xx">200</span></span><span class="api-prop-desc">The book. Body: <a href="/docs/api/web/schemas#book"><code>Book</code></a> (<code>application/json</code>)</span><span class="api-prop-count">1 field</span></summary>\n<ul class="api-props">',
+      '<li class="api-prop api-response-item">\n<details class="api-prop-nested"><summary><span class="api-prop-head"><span class="api-status api-status-2xx">200</span></span><span class="api-prop-desc">The book. Body: <a href="/docs/server/api/schemas#book"><code>Book</code></a> (<code>application/json</code>)</span><span class="api-prop-count">1 field</span></summary>\n<ul class="api-props">',
     ),
     "the first response's fields start closed too, behind the whole row",
   );
@@ -837,7 +857,7 @@ test("response lists become status rows; every body's fields start closed", () =
   );
   assert.ok(
     out.html.includes(
-      '<li class="api-prop api-response-item">\n<details class="api-prop-nested"><summary><span class="api-prop-head"><span class="api-status api-status-4xx">401</span></span><span class="api-prop-desc">Not signed in. Body: <a href="/docs/api/web/schemas#errorjson"><code>ErrorJson</code></a> (<code>application/json</code>)</span><span class="api-prop-count">1 field</span></summary>',
+      '<li class="api-prop api-response-item">\n<details class="api-prop-nested"><summary><span class="api-prop-head"><span class="api-status api-status-4xx">401</span></span><span class="api-prop-desc">Not signed in. Body: <a href="/docs/server/api/schemas#errorjson"><code>ErrorJson</code></a> (<code>application/json</code>)</span><span class="api-prop-count">1 field</span></summary>',
     ),
     "a later response's fields start closed",
   );
@@ -858,7 +878,7 @@ Notes:
 - \`three\` *type* — but the next is not
 - plain
 `;
-  const out = renderDoc(page, "api/web/schemas", { blobBase: BLOB });
+  const out = renderDoc(page, "server/api/schemas", { blobBase: BLOB, api: API });
   assert.equal(out.html.split('<ul class="api-props">').length, 2, "the schemas page gets rows");
   assert.ok(
     out.html.includes("<ul>\n<li>one</li>\n<li><code>two</code> <em>not</em> a property</li>"),
@@ -869,7 +889,9 @@ Notes:
 
 test("only the generator's forms become property rows", () => {
   const isRow = (source: string): boolean =>
-    renderDoc(`- ${source}\n`, "api/web/x", { blobBase: BLOB }).html.includes('class="api-prop');
+    renderDoc(`- ${source}\n`, "server/api/x", { blobBase: BLOB, api: API }).html.includes(
+      'class="api-prop',
+    );
   for (const bad of [
     "`a`",
     "`a` integer",

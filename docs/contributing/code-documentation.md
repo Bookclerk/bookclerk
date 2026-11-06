@@ -5,8 +5,13 @@ language follows, the quality bar, the per-language formats, and the
 checks CI runs.
 
 Bookclerk uses **Google-style** inline API documentation, so each language
-can generate a browsable reference under [`docs/api/`](../api/README.md).
-Regenerate it with:
+can generate a browsable reference. The published docs carry it as
+Markdown beside the hand-written pages: the plugin SDKs under
+[`plugins/sdk/`](../plugins/sdk/README.md), the Web API under `server/api/`,
+the other crates under `internals/crates/` and the UI library under
+[`contributing/ui/`](ui/README.md) (see
+[docs publishing](automation.md#docs-publishing)). Generate the HTML
+locally with:
 
 ```sh
 ./scripts/generate-api-docs.sh
@@ -16,7 +21,7 @@ CI runs the same script, and the docs must build cleanly.
 
 - Product docs stay in this `docs/` tree.
 - API reference HTML is generated into
-  `docs/api/{rust,typescript,python,ui}/`. It is gitignored, and CI
+  `target/api-docs/{rust,typescript,python,ui}/`, outside `docs/`; CI
   doesn't keep it, so regenerate it locally.
 
 ## Why
@@ -270,7 +275,7 @@ important environment variables (see the
 ```sh
 #!/usr/bin/env bash
 #
-# Generate language API references into docs/api/.
+# Generate language API references as HTML into target/api-docs/.
 #
 # Usage:
 #   ./scripts/generate-api-docs.sh [--check] [--all]
@@ -285,5 +290,6 @@ set -euo pipefail
 ## Next steps
 
 - [Writing docs](writing-docs.md): how to write the product docs pages.
-- [API reference](../api/README.md): the generated reference.
+- [Plugin SDKs](../plugins/sdk/README.md): the generated references, after
+  each SDK's guide.
 - [Continuous integration](ci.md): where these checks run.

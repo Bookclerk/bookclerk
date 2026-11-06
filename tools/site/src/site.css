@@ -1602,6 +1602,13 @@ code.inline {
   border-radius: 0 6px 6px 0;
   font-weight: 600;
 }
+/* The module whose folder holds the current page (a crate above its module). */
+.docs-nav .nav-sub a[aria-current="location"],
+.docs-menus .menu-nav .nav-sub a[aria-current="location"] {
+  box-shadow: inset 2px 0 0 var(--teal);
+  border-radius: 0 6px 6px 0;
+  font-weight: 600;
+}
 .docs-home {
   font-weight: 600;
   margin-top: 6px;
@@ -1827,6 +1834,23 @@ code.inline {
   transition:
     opacity 0.15s,
     color 0.15s;
+}
+/* The chain-link icon (src/link-icon.svg), drawn in the link's colour. One
+   stylesheet rule instead of an inline SVG per heading keeps long generated
+   pages small. */
+.heading-anchor::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  -webkit-mask: url("/link-icon.svg") center / contain no-repeat;
+  mask: url("/link-icon.svg") center / contain no-repeat;
+}
+@media (forced-colors: active) {
+  .heading-anchor::before {
+    background-color: LinkText;
+    forced-color-adjust: none;
+  }
 }
 /* Text for screen readers only, such as docs.js's copy status. */
 .visually-hidden {

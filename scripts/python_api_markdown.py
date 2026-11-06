@@ -1,6 +1,6 @@
 """Render a Python package's public API as Markdown, one page per module.
 
-``docs-markdown.py`` uses this for ``api/python/``. Modules are read with
+``docs-markdown.py`` uses this for the Python SDK reference. Modules are read with
 :mod:`ast`, never imported, so nothing in the package runs during the build.
 
 A module's public names are its ``__all__`` when it has one, otherwise every
@@ -18,6 +18,7 @@ Google-style docstring sections (``Args:``, ``Returns:``, ``Raises:``,
 from __future__ import annotations
 
 import ast
+import posixpath
 import re
 import textwrap
 from collections.abc import Iterable, Iterator, Mapping
@@ -83,6 +84,9 @@ class ModulePage:
     Attributes:
         module: Dotted module name.
         tree: The parsed module.
+        file: The page's path in the reference's folder: ``README.md`` for
+            the package, ``a/b.md`` for a module and ``a/b/README.md`` for a
+            subpackage, so the tree is shaped like the package.
         members: Names documented here, in export order.
         links: Names exported here but documented on another page:
             name here -> (dotted module of that page, name there).
@@ -90,17 +94,41 @@ class ModulePage:
 
     module: str
     tree: ast.Module
+    file: str
     members: list[Member] = field(default_factory=list)
     links: dict[str, tuple[str, str]] = field(default_factory=dict)
 
-    @property
-    def file(self) -> str:
-        """The page's path under ``api/python``.
 
-        Returns:
-            ``<module>.md``.
-        """
-        return f"{self.module}.md"
+def page_file(module: str, is_package: bool) -> str:
+    """Name the page of a module after its place in the package.
+
+    Args:
+        module: Dotted module name, the package first.
+        is_package: Whether the module is a package (``__init__.py``).
+
+    Returns:
+        ``README.md`` for the package itself, ``a/b/README.md`` for a
+        subpackage, ``a/b.md`` for a module.
+    """
+    inner = module.split(".")[1:]
+    if is_package:
+        return "/".join([*inner, "README.md"])
+    return "/".join(inner) + ".md"
+
+
+def href(from_file: str, to_file: str, anchor: str = "") -> str:
+    """Link one page from another.
+
+    Args:
+        from_file: The page the link appears on.
+        to_file: The page linked.
+        anchor: A heading anchor on it, or ``""``.
+
+    Returns:
+        The relative link, an anchor alone on the same page.
+    """
+    rel = "" if from_file == to_file else posixpath.relpath(to_file, posixpath.dirname(from_file) or ".")
+    return f"{rel}#{anchor}" if anchor else rel
 
 
 def _source_file(src: Path, module: str) -> Path | None:
@@ -363,6 +391,7 @@ class Package:
         self.public = list(modules)
         self._trees: dict[str, tuple[ast.Module, bool]] = {}
         self.pages = [self._page(m) for m in self.public]
+        self.files = {page.module: page.file for page in self.pages}
         self.where: dict[str, tuple[str, str]] = {}
         for page in self.pages:
             for heading, qual in _page_anchors(page):
@@ -439,8 +468,8 @@ class Package:
         parsed = self._tree(module)
         if parsed is None:
             raise FileNotFoundError(module)
-        tree, _ = parsed
-        page = ModulePage(module, tree)
+        tree, is_package = parsed
+        page = ModulePage(module, tree, page_file(module, is_package))
         for name in self._exported(module):
             found = self._lookup(module, name)
             if found is None:
@@ -490,7 +519,7 @@ class Package:
         """Render every page.
 
         Returns:
-            Page file under ``api/python`` -> Markdown.
+            Page file in the reference's folder -> Markdown.
         """
         return {page.file: self._render(page) for page in self.pages}
 
@@ -514,14 +543,14 @@ class Package:
         for qual in candidates:
             if qual in self.where:
                 file, anchor = self.where[qual]
-                return (f"{file}" if file != page.file else "") + (f"#{anchor}" if anchor else "")
-            if qual in self.public:
-                return f"{qual}.md"
+                return href(page.file, file, anchor)
+            if qual in self.files:
+                return href(page.file, self.files[qual]) or "#"
         tail = target.split(".")[-1]
         matches = {v for k, v in self.where.items() if k.split(".")[-1] == tail}
         if len(matches) == 1:
             file, anchor = matches.pop()
-            return (file if file != page.file else "") + (f"#{anchor}" if anchor else "")
+            return href(page.file, file, anchor)
         return None
 
     def _render(self, page: ModulePage) -> str:
@@ -553,7 +582,7 @@ class Package:
             lines += ["## Re-exports", ""]
             for name, (target, original) in page.links.items():
                 shown = f"`{name}`" if name == original else f"`{name}` (`{original}`)"
-                lines.append(f"- [{shown}]({target}.md#{slug(original)}) from `{target}`")
+                lines.append(f"- [{shown}]({href(page.file, self.files[target], slug(original))}) from `{target}`")
             lines.append("")
         if classes:
             lines += ["## Classes", ""]

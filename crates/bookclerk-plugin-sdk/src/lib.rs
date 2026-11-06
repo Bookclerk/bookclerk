@@ -1,12 +1,11 @@
 //! Guest-only Bookclerk plugin SDK.
 //!
-//! # Audience
-//!
-//! Third-party **Rust plugin authors**. Depend on this crate (path/git today;
-//! crates.io later) — not the host `bookclerk-plugin-host` crate, which pulls
-//! library/config and other Bookclerk internals.
-//!
-//! # What to use
+//! For third-party Rust plugin authors of native and workerd plugins
+//! (`api_version = 3`). Depend on this crate from a standalone plugin
+//! workspace, not on the host `bookclerk-plugin-host` crate. The Rust SDK
+//! guide (`docs/plugins/sdk/rust/README.md`, published with this reference)
+//! covers the author model, the socket proxy and the author CLI; the entry
+//! points are:
 //!
 //! | Need | Entry point |
 //! | --- | --- |
@@ -20,36 +19,10 @@
 //! | Database guest session / atomic execution | feature `db` → [`database_adapter`] |
 //! | Author CLI (`check` / `fmt` / `sync-embed` / `package` / `smoke`) | separate crate `bookclerk-plugin-tools` (`cargo plugin`) |
 //!
-//! ```toml
-//! # In a standalone plugin repo / workspace:
-//! [dependencies]
-//! bookclerk-plugin-sdk = { git = "https://github.com/Bookclerk/bookclerk", package = "bookclerk-plugin-sdk" }
-//! # Database guests also need:
-//! # bookclerk-plugin-sdk = { …, features = ["db"] }
-//! ```
-//!
-//! Authoring helpers (`check` / `fmt` / `sync-embed` / `package` / `smoke`)
-//! live in the separate `bookclerk-plugin-tools` crate so guests never link
-//! `bookclerk-workerd`:
-//!
-//! ```bash
-//! cargo plugin -- check .   # alias for `cargo run -p bookclerk-plugin-tools --bin bookclerk-plugin --`
-//! cargo plugin -- smoke .
-//! ```
-//!
-//! # API documentation
-//!
-//! Generated rustdoc for this crate is part of the workspace API reference
-//! (`./scripts/generate-api-docs.sh` → `docs/api/rust/`). Style guide:
-//! `docs/contributing/code-documentation.md`. Product narrative: `docs/plugins/README.md`,
-//! `docs/plugins/registry.md`.
-//!
-//! # Re-exports
-//!
 //! Crate-root `pub use` items are the stable import surface for guests
-//! (describe-metadata DTOs, [`PluginError`], fetch path helpers, tunnel types). Prefer
-//! `use bookclerk_plugin_sdk::…` over reaching into submodules unless you need
-//! module-level docs.
+//! (describe-metadata DTOs, [`PluginError`], fetch path helpers, tunnel
+//! types). Prefer `use bookclerk_plugin_sdk::…` over reaching into
+//! submodules unless you need module-level docs.
 
 // Pre-existing sites, grandfathered until fixed: https://github.com/Bookclerk/bookclerk/issues/284
 #![allow(

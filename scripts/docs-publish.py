@@ -67,9 +67,9 @@ TAG_MAX_LEN = 100
 TRAILER_RE = re.compile(r"^Source-Commit: ([0-9a-f]{40})$", re.MULTILINE)
 
 # The page dates `docs-markdown.py` writes at the root of the tree, and the
-# generated pages this script dates in it (`<key>.md` under GENERATED_PREFIX).
+# file beside it that lists the generated pages this script dates.
 LAST_UPDATED_FILE = "last-updated.json"
-GENERATED_PREFIX = "api/"
+GENERATED_FILE = "generated.json"
 # A page's date: an instant in UTC to the second, which the site shows in
 # the reader's own time zone, or a calendar date alone (files published
 # before instants were written, and generated pages dated then).
@@ -613,13 +613,45 @@ def previous_dates(data: bytes | None) -> dict[str, str]:
     return {key: value for key, value in document["pages"].items() if isinstance(key, str) and is_date(value)}
 
 
+def generated_keys(files: list[LocalFile]) -> set[str]:
+    """Read the keys of the generated pages from the tree's ``generated.json``.
+
+    Args:
+        files: The built tree.
+
+    Returns:
+        The keys (paths without ``.md``), or none when the tree has no such
+        file (built by an older ``docs-markdown.py``).
+
+    Raises:
+        PublishError: The file is not the document ``docs-markdown.py`` writes.
+    """
+    manifest = next((f for f in files if f.path == GENERATED_FILE), None)
+    if manifest is None:
+        return set()
+    try:
+        document = json.loads(manifest.data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as err:
+        raise PublishError(f"{GENERATED_FILE}: {err}") from err
+    references = document.get("references") if isinstance(document, dict) else None
+    if not isinstance(document, dict) or document.get("version") != 1 or not isinstance(references, list):
+        raise PublishError(f"{GENERATED_FILE}: not a version 1 document")
+    keys: set[str] = set()
+    for reference in references:
+        pages = reference.get("pages") if isinstance(reference, dict) else None
+        if not isinstance(pages, list) or not all(isinstance(p, str) for p in pages):
+            raise PublishError(f"{GENERATED_FILE}: a reference lists no pages")
+        keys.update(pages)
+    return keys
+
+
 def date_generated_pages(
     files: list[LocalFile], remote: dict[str, tuple[str, str]], previous: dict[str, str], published: str
 ) -> list[LocalFile]:
     """Add the generated pages to the built tree's ``last-updated.json``.
 
-    A generated page (``api/<key>.md``) whose blob equals the one in the docs
-    repository keeps its previous date; a new or changed page, or one with no
+    A generated page (listed in ``generated.json``) whose blob equals the one
+    in the docs repository keeps its previous date; a new or changed page, or one with no
     previous date, gets ``published``. The build's dates for hand-written pages
     are kept as they are. A tree without ``last-updated.json`` (built without
     the git history) is returned unchanged.
@@ -649,10 +681,11 @@ def date_generated_pages(
     if not is_dates_document(document):
         raise PublishError(f"{LAST_UPDATED_FILE}: not a version 1 document")
     pages: dict[str, str] = dict(document["pages"])
+    generated = generated_keys(files)
     for f in files:
-        if not (f.path.startswith(GENERATED_PREFIX) and f.path.endswith(".md")):
-            continue
         key = f.path.removesuffix(".md")
+        if not f.path.endswith(".md") or key not in generated:
+            continue
         kept = previous.get(key)
         unchanged = remote.get(f.path) == ("100644", f.sha)
         pages[key] = kept if unchanged and kept is not None else published

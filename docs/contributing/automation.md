@@ -512,29 +512,59 @@ in step with this one, as Markdown that the website and agents read.
 
 ### The tree
 
-The tree is `docs/` as it is, plus `api/`. Only markdownlint's directive
-comments (`<!-- markdownlint-disable-line … -->`,
+The tree is `docs/` as it is, with the generated references written into
+the shelves their readers use. Only markdownlint's directive comments
+(`<!-- markdownlint-disable-line … -->`,
 `<!-- markdownlint-disable-next-line … -->`, `<!-- markdownlint-disable … -->`
 and the rest) are left out of its pages' prose, since they matter to the
-`lint` check alone; code spans and fenced code keep them. The `api/` index lists the
-plugin SDKs first (TypeScript, Python, Rust), then the web API, then the
-Rust crates and the web UI library.
+`lint` check alone; code spans and fenced code keep them.
+
+Each reference has a folder, and `generated.json` at the root of the tree
+lists them: the folder, its kind, its title, what it is generated from,
+whether its landing page is hand-written, and every page it wrote. The
+site reads the manifest rather than guessing from paths, so a reference
+can move without a change to the Worker.
+
+| Folder | Reference | Generated from | Landing page |
+| --- | --- | --- | --- |
+| `plugins/sdk/typescript/` | TypeScript plugin SDK | `packages/plugin-sdk` | hand-written guide |
+| `plugins/sdk/python/` | Python plugin SDK | `packages/plugin-sdk-python` | hand-written guide |
+| `plugins/sdk/rust/` | Rust plugin SDK | `crates/bookclerk-plugin-sdk` | hand-written guide |
+| `server/api/` | Web API | `crates/bookclerkd/openapi.json` | generated index |
+| `internals/crates/` | Rust crates | every workspace library | generated index |
+| `contributing/ui/` | Web UI library | `ui/src/lib` | hand-written guide |
+
+A reference with a hand-written landing page keeps that page's guide and
+appends the generated part under its **Reference** heading: the list of
+module pages, then the package or crate root. The module pages sit beside
+it (`plugins/sdk/python/workerd.md`, `plugins/sdk/rust/net.md`); a module
+with children is a folder with its own `README.md`. The build fails when
+the landing page is missing, or when a generated page would land on a
+hand-written one.
 
 - **TypeScript**: TypeDoc's Markdown theme for `@bookclerk/plugin-sdk` and
   `ui/src/lib` (`typedoc-plugin-markdown`, a dev dependency of both). One
-  page per module, without source links or breadcrumbs.
+  page per module, without source links or breadcrumbs. The SDK's root
+  module is named `plugin-sdk` (`@module` in `src/index.ts`) rather than
+  TypeDoc's default `index`; the build folds it into the landing page and
+  writes the other modules (`abi`, `workerd`, `sparse-workerd`, …) as
+  sibling pages, so no single page carries the whole SDK.
 - **Python**: `scripts/python_api_markdown.py` reads the SDK with `ast` (it
   imports nothing), and renders each public module's `__all__`, with
-  Google-style sections as lists and cross-references as links.
+  Google-style sections as lists and cross-references as links. Packages
+  are folders, modules are pages.
 - **Rust**: `scripts/rustdoc_markdown.py` renders rustdoc JSON for every
   workspace library from a pinned nightly, one page per public module.
   Items re-exported from private modules are documented where they are
   re-exported. Signatures are rebuilt from the JSON, doc headings sit under
   their item, and intra-doc links come from rustdoc's own link table.
-  `api/rust/README.md` groups the crates (plugin interface, plugins, host
-  internals, development).
+  `bookclerk-plugin-sdk` lands in the Rust SDK guide's folder; every other
+  crate is `internals/crates/<crate>/README.md` with its modules beside
+  it, and `internals/crates/README.md` groups them (plugin interface,
+  plugins, host internals, development).
 - **Web API**: `scripts/openapi_markdown.py` renders `bookclerkd`'s
-  committed OpenAPI document (`crates/bookclerkd/openapi.json`). It writes
+  committed OpenAPI document (`crates/bookclerkd/openapi.json`) into
+  `server/api/`. It writes
   an index with a quick-start request, the credentials and every route, one page per route group (with each
   route's access rule, parameters, body, responses, an example request
   as a `curl` command, a PowerShell `Invoke-RestMethod` call, Python
@@ -595,8 +625,12 @@ Rust crates and the web UI library.
     introduction and shows each route group as a card of badged routes.
   - The Markdown itself stays plain, so the pages read the same on GitHub.
 
-Every relative link to a file in the tree must resolve, and links in `api/`
-must stay inside the tree, or the build fails.
+Every relative link to a file in the tree must resolve, and links in a
+generated page must stay inside the tree, or the build fails. The build
+also refuses a page named `index.md` or in a folder named `index` (the
+site serves a folder's `README.md` at the folder's URL and `<page>/index.md`
+is the page's Markdown copy), and a page beside a folder of the same name
+(make it that folder's `README.md`).
 
 The Rust reference puts a module's docs at a different depth than its
 source file, so a doc comment in a library crate must not link a file
@@ -619,10 +653,11 @@ shows it as "Last updated", in the reader's own time zone.
 - The workflow checks out the full history and passes
   `--require-history`, so a shallow checkout fails the build. A local build
   from a shallow clone leaves the file out, with a warning.
-- The build dates only `docs/`. `docs-publish.py` adds the generated `api/`
-  pages, since only it can compare them with the docs repository. A page
-  whose content is unchanged there keeps its previous date, and a new or
-  changed one gets the publish time.
+- The build dates only hand-written pages. `docs-publish.py` adds the
+  pages `generated.json` lists, since only it can compare them with the
+  docs repository. A page whose content is unchanged there keeps its
+  previous date, and a new or changed one gets the publish time. A
+  generated page shows that date and names its source.
 - Files and entries published before instants were written hold a date
   alone (`YYYY-MM-DD`, UTC). The site and the next publish still read them,
   and the site shows such a date as it is.

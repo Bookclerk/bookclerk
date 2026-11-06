@@ -16,12 +16,17 @@
 // repository cannot be read, the reader gets a 503 page in the site's look
 // that links to the same doc on GitHub. Beside each HTML page the Worker
 // reads the version's last-updated.json (parsed by last-updated.ts) for the
-// page's "Last updated" date; when that file cannot be read the page simply
-// has no date.
+// page's "Last updated" date, and its generated.json (parsed by
+// generated.ts), which says which pages the docs build generated, from
+// what, and which reference each belongs to; when either file cannot be
+// read the page simply has no date, or is shown as hand-written.
+//
+// Markdown copies: every page's Markdown is `index.md` under the page's own
+// URL (`/docs/plugins/manifest/index.md`, `/docs/index.md` for the home).
 //
 // Sitemap: /sitemap.xml is a sitemap index with one sitemap per section:
 // /sitemap-site.xml for the pages outside /docs/ and the docs home, and one per top docs
-// folder (/sitemap-guide.xml, /sitemap-api.xml). Together they list every
+// folder (/sitemap-guide.xml, /sitemap-plugins.xml). Together they list every
 // page of the default docs version, from that version's last-updated.json
 // (which names each page, the generated API reference included), with each
 // page's date as `<lastmod>`. They are cached at the edge like the version's
@@ -49,7 +54,15 @@
 // Accept-Encoding headers (and conditional headers it passes on), and
 // fetches only from its own assets and the docs repository.
 
-import { API_INDEX, API_SCHEMAS } from "./api-reference.ts";
+import {
+  GENERATED_FILE,
+  landingKey,
+  MAX_GENERATED_BYTES,
+  parseGenerated,
+  referenceModules,
+  webApiPages,
+} from "./generated.ts";
+import type { GeneratedManifest } from "./generated.ts";
 import {
   datedPages,
   LAST_UPDATED_FILE,
@@ -334,11 +347,15 @@ export type DocsTarget =
  *
  * `/docs/v/<ref>` selects a version from `versions`; the default version
  * (the first) is served without the prefix, so its prefixed URLs redirect.
- * A path may name a directory (`api` → `api/README`); the slash form
- * (`api/`) is looked up too, and the caller redirects it to the page's
- * slash-free URL. `.html` paths left from the static site redirect to the page. Other dots are part of the
- * name (`api/python/bookclerk_plugin_sdk.workerd`); the docs publish only
- * Markdown, so a path like `x.svg` is looked up as `x.svg.md` and not found.
+ * A path may name a page or a folder (`plugins` → `plugins` or
+ * `plugins/README`); the slash form (`plugins/`) is looked up too, and the
+ * caller redirects it to the page's slash-free URL. A page's Markdown copy
+ * is `index.md` under its URL (`plugins/manifest/index.md`, `index.md` for
+ * the home), so the older `<page>.md` and `<dir>/README.md` spellings
+ * redirect there. `.html` paths left from the static site redirect to the
+ * page. Other dots are part of the name (`plugins/sdk/python/workerd.types`);
+ * the docs publish only Markdown, so a path like `x.svg` is looked up as
+ * `x.svg.md` and not found.
  *
  * @param pathname - The request path, starting with `/docs`.
  * @param versions - Every docs version, the default first.
@@ -366,8 +383,22 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
   if (!DOC_REST_RE.test(rest)) return { kind: "missing" };
   if (rest === SEARCH_INDEX) return { kind: "search", version };
   const last = rest.slice(rest.lastIndexOf("/") + 1);
-  if (last.endsWith(".md"))
-    return { kind: "markdown", version, keys: [rest.slice(0, -".md".length)] };
+  if (last === "index.md") {
+    const page = rest.slice(0, -"index.md".length).replace(/\/$/, "");
+    const keys: [string, ...string[]] = page === "" ? ["README"] : [page, `${page}/README`];
+    return { kind: "markdown", version, keys };
+  }
+  if (last.endsWith(".md")) {
+    // The copy of `x.md` or `x/README.md` is now `x/index.md`; the home's,
+    // once `README.md`, is `index.md`.
+    const page =
+      last === "README.md"
+        ? rest.slice(0, -"README.md".length)
+        : `${rest.slice(0, -".md".length)}/`;
+    const location = `${version.base}${page}index.md`;
+    const next = docsTarget(location, versions);
+    return next.kind === "redirect" ? next : { kind: "redirect", location };
+  }
   if (last.endsWith(".html")) {
     const page =
       last === "index.html" ? rest.slice(0, -"index.html".length) : rest.slice(0, -".html".length);
@@ -377,11 +408,11 @@ export function docsTarget(pathname: string, versions: readonly DocsVersion[]): 
     return next.kind === "redirect" ? next : { kind: "redirect", location };
   }
   if (rest === "" || rest.endsWith("/")) {
-    const keys: [string, ...string[]] = [`${rest}README`, `${rest}index`];
+    const keys: [string, ...string[]] = [`${rest}README`];
     if (rest !== "") keys.push(rest.slice(0, -1));
     return { kind: "page", version, keys };
   }
-  return { kind: "page", version, keys: [rest, `${rest}/README`, `${rest}/index`] };
+  return { kind: "page", version, keys: [rest, `${rest}/README`] };
 }
 
 /**
@@ -411,12 +442,13 @@ export async function fetchDoc(
  * is shown with a shorter sidebar.
  *
  * @param ref - The docs version's git ref.
+ * @param index - The index's key, from the version's generated.json.
  * @param fetcher - `fetch`, or a stand-in in tests.
  * @returns The index, or whether it is missing or could not be read.
  */
-async function fetchApiIndex(ref: string, fetcher: DocsFetch): Promise<DatesFile> {
+async function fetchApiIndex(ref: string, index: string, fetcher: DocsFetch): Promise<DatesFile> {
   try {
-    const text = await fetchDoc(ref, API_INDEX, fetcher);
+    const text = await fetchDoc(ref, index, fetcher);
     return text === null ? { kind: "missing" } : { kind: "file", text };
   } catch (err) {
     console.error(
@@ -451,6 +483,40 @@ async function fetchLastUpdated(ref: string, fetcher: DocsFetch): Promise<DatesF
     return text === null ? { kind: "missing" } : { kind: "file", text };
   } catch (err) {
     console.error(`docs dates unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    return { kind: "failed" };
+  }
+}
+
+/** What reading a docs version's generated.json gave. */
+type GeneratedFile =
+  /** The manifest, or null when the file is not one (a page is then shown as hand-written). */
+  | { kind: "file"; manifest: GeneratedManifest | null }
+  /** The version has no such file (published before it existed). */
+  | { kind: "missing" }
+  /** The read failed for now; a page rendered without it is not cached at the edge. */
+  | { kind: "failed" };
+
+/**
+ * Reads a docs version's generated.json, which says which pages the docs
+ * build generated and which reference each belongs to.
+ *
+ * Like the date, the manifest is a nicety: any failure is logged and the
+ * page is rendered as hand-written, without its source line and its
+ * sidebar list.
+ *
+ * @param ref - The docs version's git ref.
+ * @param fetcher - `fetch`, or a stand-in in tests.
+ * @returns The manifest, or whether the file is missing or could not be read.
+ */
+async function fetchGenerated(ref: string, fetcher: DocsFetch): Promise<GeneratedFile> {
+  try {
+    const text = await fetchDocsFile(ref, GENERATED_FILE, fetcher, MAX_GENERATED_BYTES);
+    if (text === null) return { kind: "missing" };
+    const manifest = parseGenerated(text);
+    if (manifest === null) console.error(`${ref}/${GENERATED_FILE} is not a generated.json`);
+    return { kind: "file", manifest };
+  } catch (err) {
+    console.error(`docs manifest unavailable: ${err instanceof Error ? err.message : String(err)}`);
     return { kind: "failed" };
   }
 }
@@ -658,13 +724,23 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
   }
 
   const { version } = target;
-  // Fetched beside the page and only for HTML, which shows the date.
+  // Fetched beside the page and only for HTML, which shows the date, the
+  // source line and the sidebar lists.
   const dates = wantsMarkdown ? null : fetchLastUpdated(version.ref, deps.fetch);
-  // A Web API page's sidebar lists the route groups its index names.
+  const generated = wantsMarkdown ? null : fetchGenerated(version.ref, deps.fetch);
+  // A Web API page's sidebar lists the route groups its index names, so the
+  // index is fetched as soon as the manifest places the page under the web
+  // API, beside the page itself rather than after it.
   const apiIndex =
-    wantsMarkdown || !target.keys.some((k) => k.startsWith("api/web/") && k !== API_INDEX)
+    generated === null
       ? null
-      : fetchApiIndex(version.ref, deps.fetch);
+      : generated.then((file) => {
+          const api = webApiPages(file.kind === "file" ? file.manifest : null);
+          const under = (k: string): boolean => k !== api?.index && k.startsWith(`${api?.folder}/`);
+          return api !== null && target.keys.some(under)
+            ? fetchApiIndex(version.ref, api.index, deps.fetch)
+            : null;
+        });
   let key: string | null = null;
   let source: string | null = null;
   // The last key asked for, so the unavailable page links on GitHub to the
@@ -723,14 +799,23 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
 
   const datesFile = dates === null ? null : await dates;
   const updated = datesFile?.kind === "file" ? pageDate(datesFile.text, key) : null;
-  // A page whose date could not be read is shown, but kept out of the edge
-  // cache so the date comes back once the docs repository answers again.
-  const index = apiIndex === null || key === API_INDEX ? null : await apiIndex;
-  const cacheable = datesFile?.kind !== "failed" && index?.kind !== "failed";
+  const generatedFile = generated === null ? null : await generated;
+  const manifest = generatedFile?.kind === "file" ? generatedFile.manifest : null;
+  const api = webApiPages(manifest);
+  const index =
+    api !== null && key !== api.index && key.startsWith(`${api.folder}/`)
+      ? await (apiIndex ?? Promise.resolve(null))
+      : null;
+  // A page whose date, manifest or index could not be read is shown, but
+  // kept out of the edge cache so they come back once the docs repository
+  // answers again.
+  const cacheable =
+    datesFile?.kind !== "failed" && generatedFile?.kind !== "failed" && index?.kind !== "failed";
   const rendered = renderDocPage(deps.shell, source, key, {
     ref: version.ref,
     base: version.base,
     updated,
+    generated: manifest,
     apiIndex: index?.kind === "file" ? index.text : null,
   });
   const cacheControl = cacheable
@@ -761,7 +846,9 @@ const SEARCH_FETCHES = 6;
 /**
  * Serves a docs version's search index: every sidebar page with its
  * headings, the Web API's route groups with their routes (read from its
- * index), and the schemas page, as JSON for the sidebar filter in docs.js.
+ * index) and the schemas page, and the module pages of each reference the
+ * sidebar lists beneath its guide, as JSON for the sidebar filter in
+ * docs.js.
  *
  * Built from the docs repository at request time, like the pages, and
  * cached at the edge by version and deploy. A doc that cannot be read is
@@ -789,9 +876,21 @@ async function serveSearchIndex(
   const listed = deps.shell.nav.flatMap((group) =>
     group.pages.map((page) => ({ ...page, section: group.title })),
   );
-  if (listed.some((page) => page.key === API_INDEX))
-    listed.push({ key: API_SCHEMAS, title: "Schemas", section: "Web API" });
-  let failed = false;
+  const generated = await fetchGenerated(version.ref, deps.fetch);
+  const manifest = generated.kind === "file" ? generated.manifest : null;
+  const api = webApiPages(manifest);
+  if (api !== null && listed.some((page) => page.key === api.index))
+    listed.push({ key: api.schemas, title: "Schemas", section: "Web API" });
+  // The modules the sidebar lists beneath each reference's landing page
+  // (an SDK's modules, the crates); the web API's route groups come from
+  // its index below.
+  for (const reference of manifest?.references ?? []) {
+    const landing = listed.find((page) => page.key === landingKey(reference));
+    if (landing === undefined || reference.kind === "web-api") continue;
+    for (const module of referenceModules(reference))
+      listed.push({ key: module.key, title: module.title, section: landing.title });
+  }
+  let failed = generated.kind === "failed";
   const pages: SearchPage[][] = Array.from({ length: listed.length }, () => []);
   let next = 0;
   const work = async (): Promise<void> => {
@@ -807,9 +906,11 @@ async function serveSearchIndex(
       try {
         const source = await fetchDoc(version.ref, page.key, deps.fetch);
         if (source === null) continue;
-        const found = searchPage(source, page.key, page.section, page.title, version.base);
+        const found = searchPage(source, page.key, page.section, page.title, version.base, api);
         pages[i] =
-          page.key === API_INDEX ? [found, ...apiSearchPages(source, version.base)] : [found];
+          api !== null && page.key === api.index
+            ? [found, ...apiSearchPages(source, version.base, api)]
+            : [found];
       } catch (err) {
         console.error(
           `search index: ${page.key}: ${err instanceof Error ? err.message : String(err)}`,
@@ -852,7 +953,7 @@ const DOCS_SECTION = "docs";
 
 /**
  * Names the sitemap section a doc belongs to: its top folder (`guide`,
- * `server`, `api`), so Search Console reports indexing per shelf. Docs at
+ * `server`, `plugins`), so Search Console reports indexing per shelf. Docs at
  * the top of a version (the docs home) join the site's pages.
  *
  * @param key - The doc's key.
@@ -870,7 +971,7 @@ export function sitemapSection(key: string): string {
  *
  * `/sitemap.xml` is a sitemap index naming one sitemap per section:
  * `/sitemap-site.xml` for the pages outside /docs/ and the docs home, then one per top docs
- * folder of the default version (`/sitemap-guide.xml`, `/sitemap-api.xml`),
+ * folder of the default version (`/sitemap-guide.xml`, `/sitemap-plugins.xml`),
  * each with the newest date of its pages. The sections list every page that
  * version's last-updated.json dates and the docs route serves at its URL,
  * with its date.
@@ -1027,7 +1128,10 @@ async function serveSitemapPage(
     const hit = await deps.cache.match(cacheKey);
     if (hit) return request.method === "HEAD" ? new Response(null, hit) : hit;
   }
-  const { file, docs } = await listDocs(version, deps);
+  const [{ file, docs }, generated] = await Promise.all([
+    listDocs(version, deps),
+    fetchGenerated(version.ref, deps.fetch),
+  ]);
   const titles = new Map(
     deps.shell.nav.flatMap((g) => g.pages.map((p) => [p.key, p.title] as const)),
   );
@@ -1045,8 +1149,12 @@ async function serveSitemapPage(
     for (const [key, title] of titles)
       links.push({ key, path: docUrl(key, version.base), title, updated: null });
   }
-  const page = renderSitemapPage(deps.shell, links);
-  const cacheable = docs.length > 0 || file.kind === "missing";
+  const page = renderSitemapPage(
+    deps.shell,
+    links,
+    generated.kind === "file" ? generated.manifest : null,
+  );
+  const cacheable = (docs.length > 0 || file.kind === "missing") && generated.kind !== "failed";
   const cacheControl = cacheable
     ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`
     : `public, max-age=${MISSING_TTL}, s-maxage=0`;

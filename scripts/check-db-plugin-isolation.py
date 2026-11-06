@@ -341,7 +341,7 @@ def check_library_bootstrap_isolation(path: Path) -> list[str]:
             hits.append(
                 f"{rel}:{line}: bootstrap-only engine metadata `{m.group(0)}` "
                 "must not drive host schema/plan/domain code "
-                "(see docs/sql-contract/v1.md; SeaORM bootstrap stays in plugin-host)"
+                "(see docs/plugins/sql-contract/v1.md; SeaORM bootstrap stays in plugin-host)"
             )
     for rx in FORBIDDEN_LIBRARY_PLACEHOLDER_REWRITE:
         for m in rx.finditer(scanned):
@@ -548,7 +548,7 @@ def main() -> int:
             "Guests must execute host-authored plans only; host selects schema versions. "
             "Host SQL stays canonical; adapters own physical lowering. "
             "Diagnostic engine identity must not admit or generate SQL. "
-            "See docs/adr/sql-database-contract.md and docs/sql-contract/v1.md",
+            "See docs/adr/sql-database-contract.md and docs/plugins/sql-contract/v1.md",
             file=sys.stderr,
         )
         return 1

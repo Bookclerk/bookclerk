@@ -1,5 +1,6 @@
 // The Web API reference's layout: the pages scripts/openapi_markdown.py
-// writes under api/web/ are plain Markdown that reads well on GitHub, and
+// writes (under the folder generated.json names, server/api/) are plain
+// Markdown that reads well on GitHub, and
 // the site lays each operation out the way OpenAPI viewers such as Scalar
 // do: a method badge beside the path, the description, parameters and
 // responses in one column, and the example request and response in a
@@ -9,6 +10,8 @@
 // markdown-it tokens before they are rendered.
 
 import type { Token } from "markdown-it";
+
+import type { WebApiPages } from "./generated.ts";
 
 /** HTTP methods an operation heading can start with. */
 export const HTTP_METHODS = [
@@ -46,17 +49,16 @@ export type MakeToken = (type: string, tag: string, nesting: -1 | 0 | 1) => Toke
  * Whether a doc is a page of the Web API reference that lists operations.
  *
  * @param key - The doc's key.
- * @returns True for `api/web/<group>`, false for its index and schema page.
+ * @param api - The reference's folder and fixed pages, or null when the
+ *   docs version has no web API reference.
+ * @returns True for a route group page (`<folder>/<group>`), false for the
+ *   index and the schema page and for every other doc.
  */
-export function isApiOperationsPage(key: string): boolean {
-  return key.startsWith("api/web/") && key !== API_INDEX && key !== API_SCHEMAS;
+export function isApiOperationsPage(key: string, api: WebApiPages | null): boolean {
+  return (
+    api !== null && key.startsWith(`${api.folder}/`) && key !== api.index && key !== api.schemas
+  );
 }
-
-/** Key of the Web API reference's index, which {@link layoutIndex} lays out. */
-export const API_INDEX = "api/web/README";
-
-/** Key of the Web API reference's schema page. */
-export const API_SCHEMAS = "api/web/schemas";
 
 /** The heading of the index section that sits beside its introduction. */
 const QUICK_START = "Quick start";
