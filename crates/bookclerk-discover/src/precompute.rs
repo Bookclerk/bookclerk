@@ -41,6 +41,13 @@ use crate::shelves::{shelf_is_disabled, DiscoverFeed};
 /// Longest one storefront call may take before its store moves on.
 pub const STORE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long one store may keep starting new calls in a fetch.
+///
+/// A store that is slow on every call stops asking once this has passed
+/// and saves what it has, so it delays the subject's ranking by at most
+/// this plus one [`STORE_CALL_TIMEOUT`].
+pub const STORE_FETCH_DEADLINE: Duration = Duration::from_secs(20);
+
 /// How long a cached storefront answer is reused (the daily refresh).
 pub const STORE_CALL_MAX_AGE: chrono::Duration = chrono::Duration::hours(24);
 
@@ -194,7 +201,8 @@ pub struct FetchReport {
 ///
 /// Every deployed storefront is asked, whether or not the subject has an
 /// account there. Stores run concurrently; within a store each seed's call
-/// has [`STORE_CALL_TIMEOUT`], and the store's share of
+/// has [`STORE_CALL_TIMEOUT`], each store stops starting calls after
+/// [`STORE_FETCH_DEADLINE`], and the store's share of
 /// `opts.storefront_max_remote_calls` bounds how many calls it makes. A
 /// store's rows replace its previous rows only when it finishes, so a store
 /// that fails keeps what it returned last time.
@@ -364,8 +372,9 @@ async fn fetch_one_store(
         );
     }
     calls += 1;
+    let started = std::time::Instant::now();
     for seed in seeds {
-        if calls >= budget {
+        if calls >= budget || started.elapsed() >= STORE_FETCH_DEADLINE {
             break;
         }
         let s = &seed.seed;

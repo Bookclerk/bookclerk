@@ -64,7 +64,8 @@ operator, a household user, or a portal identity) has a **subject key**
    `storefront_max_remote_calls` is split across the stores, so all stores
    together never make more calls than it allows (deals count as one call,
    and a store whose share is zero is not asked).
-   Stores run concurrently, each call has a 10 s timeout, and each store's
+   Stores run concurrently, each call has a 10 s timeout, a store stops
+   starting new calls 20 s into a fetch and saves what it has, and each store's
    rows are saved as that store finishes, so one slow store never discards
    the others. A store whose calls all fail or come back empty keeps its
    previous rows, since a plugin adapter can report a guest failure as an
