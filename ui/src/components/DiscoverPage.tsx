@@ -238,15 +238,21 @@ export function DiscoverPage({
   // A live re-read that fails is retried after FEED_POLL_SLOW_MS whatever
   // the feed shows, so ready shelves never stay stale until the next change.
   const feedReads = useRef(new LatestRead());
+  // Only a read that started after the newest failed one clears the retry,
+  // so an older read answering late cannot cancel it.
   const [liveRetry, setLiveRetry] = useState(0);
+  const lastFailedLiveRead = useRef(0);
   const readLiveFeed = () => {
     const ticket = feedReads.current.begin();
     return fetchDiscoverFeed()
       .then((next) => {
         if (feedReads.current.accept(ticket)) setFeed(next);
-        setLiveRetry(0);
+        if (ticket > lastFailedLiveRead.current) setLiveRetry(0);
       })
-      .catch(() => setLiveRetry((n) => n + 1));
+      .catch(() => {
+        lastFailedLiveRead.current = Math.max(lastFailedLiveRead.current, ticket);
+        setLiveRetry((n) => n + 1);
+      });
   };
   const liveState = useLiveRefresh(["discover"], readLiveFeed, { pollMs: 0 });
   useEffect(() => {
