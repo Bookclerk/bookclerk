@@ -607,11 +607,12 @@ impl CoverService {
     ) -> Option<Vec<u8>> {
         let bytes = read_cached(dir, key, size).await?;
         let now = Stamp::now();
-        // An entry the index lost track of (a sweep racing a write) is
-        // served as fresh; it is indexed again when next written.
+        // An entry on disk the index has no record of (a sweep racing a
+        // write) is stale: nothing says how long it stays fresh, and a
+        // revalidation writes and indexes it again.
         let stale = lock(&self.index)
             .get(key)
-            .is_some_and(|entry| entry.is_stale(now));
+            .is_none_or(|entry| entry.is_stale(now));
         let index = Arc::clone(&self.index);
         let served = key.to_owned();
         tokio::task::spawn_blocking(move || lock(&index).served(&served, now));
@@ -717,14 +718,28 @@ impl CoverService {
         .await;
     }
 
-    /// Deletes the entry for `key` from the index and the disk.
+    /// Deletes the entry for `key` from the index and the disk. When its
+    /// files cannot be deleted (a file held open on Windows), it is indexed
+    /// again as stale, so it still counts toward the budget and the next
+    /// request for a changeable image tries again.
     async fn forget(&self, dir: &Path, key: &str) {
         let index = Arc::clone(&self.index);
         let path = dir.join(key);
         let key = key.to_owned();
         let _ = tokio::task::spawn_blocking(move || {
-            lock(&index).remove(&key);
-            let _ = std::fs::remove_dir_all(path);
+            let removed = lock(&index).remove(&key);
+            if let Err(err) = std::fs::remove_dir_all(&path) {
+                if let (true, Some(entry)) = (path.exists(), removed) {
+                    tracing::debug!(error = %err, "could not delete a cached image; kept as stale");
+                    lock(&index).restore(
+                        &key,
+                        Entry {
+                            fresh_until: entry.fetched.min(Stamp::now()),
+                            ..entry
+                        },
+                    );
+                }
+            }
         })
         .await;
     }
@@ -2399,6 +2414,60 @@ mod tests {
             "already absent counts as deleted"
         );
         assert_eq!(index.total(), 10);
+    }
+
+    #[tokio::test]
+    async fn an_undeletable_or_unindexed_image_is_stale() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = service(temp.path());
+        let dir = service.dir.clone().expect("dir");
+        let url = "https://img.example/ok-locked.png".to_owned();
+        let key = cache_key(&url);
+        service
+            .image_detached(
+                Arc::new(Fake::default()),
+                url.clone(),
+                CoverSize::Thumb,
+                Refresh::WhenStale,
+            )
+            .await
+            .expect("kept");
+
+        // Forgetting an entry whose files can't be deleted keeps it
+        // indexed, stale. A file where the directory should be can't be
+        // removed as one.
+        let elsewhere = temp.path().join("aside");
+        std::fs::rename(dir.join(&key), &elsewhere).expect("aside");
+        std::fs::write(dir.join(&key), b"x").expect("file");
+        service.forget(&dir, &key).await;
+        let entry = lock(&service.index).get(&key).cloned().expect("restored");
+        assert!(entry.is_stale(Stamp::now()));
+        std::fs::remove_file(dir.join(&key)).expect("unblock");
+        std::fs::rename(&elsewhere, dir.join(&key)).expect("back");
+
+        // An entry on disk the index has no record of is revalidated with
+        // a plain fetch, which indexes it again.
+        lock(&service.index).remove(&key);
+        let backend = Arc::new(Fake::default());
+        service
+            .image_detached(
+                Arc::clone(&backend),
+                url,
+                CoverSize::Thumb,
+                Refresh::WhenStale,
+            )
+            .await
+            .expect("served");
+        settle(&service).await;
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert!(
+            lock(&backend.conditions).is_empty(),
+            "nothing to revalidate with"
+        );
+        assert!(!lock(&service.index)
+            .get(&key)
+            .expect("indexed again")
+            .is_stale(Stamp::now()));
     }
 
     #[test]
