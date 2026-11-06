@@ -22,7 +22,9 @@
 //!   product id and a storefront URL, and never a scheme-relative cover;
 //! - a details body's audiobook, related titles and sale flag follow the same
 //!   rows and `purchase_info.for_sale` (missing means for sale), and a price
-//!   appears only when `purchase_info.price` does, always in USD;
+//!   appears only when `purchase_info.price` does, always in USD and, for
+//!   the API's `digits.dd` form, exactly that many cents (row-level price
+//!   fields are ignored);
 //! - parsing the same body twice gives the same records.
 
 use bookclerk_plugin_source_libro::{parse_catalog_details, parse_catalog_search_page};
@@ -77,6 +79,28 @@ fn check_hits(hits: &[CatalogHit], rows: &[(String, String)]) {
     }
 }
 
+/// Cents of a price written exactly as one to twelve digits, a dot and two
+/// digits; `None` for any other form.
+fn plain_cents(text: &str) -> Option<i64> {
+    let bytes = text.as_bytes();
+    let dot = bytes.len().checked_sub(3)?;
+    let well_formed = (1..=12).contains(&dot)
+        && bytes[dot] == b'.'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(i, b)| i == dot || b.is_ascii_digit());
+    if !well_formed {
+        return None;
+    }
+    bytes
+        .iter()
+        .filter(|b| b.is_ascii_digit())
+        .try_fold(0i64, |acc, b| {
+            acc.checked_mul(10)?.checked_add(i64::from(b - b'0'))
+        })
+}
+
 /// What the parser must do with one envelope.
 enum Shape<T> {
     /// The envelope is documented; the parser must accept it with these facts.
@@ -123,6 +147,9 @@ struct DetailsFacts {
     for_sale: bool,
     /// Whether `purchase_info.price` is present.
     has_price: bool,
+    /// Cents of a `purchase_info.price` written as `digits.dd`, the form the
+    /// app API sends, read here digit by digit.
+    plain_cents: Option<i64>,
 }
 
 /// The facts a details body must yield.
@@ -137,6 +164,7 @@ fn details_shape(value: &Value) -> Shape<DetailsFacts> {
                 related: Vec::new(),
                 for_sale: true,
                 has_price: false,
+                plain_cents: None,
             })
         }
         Some(Value::Object(data)) => data,
@@ -155,6 +183,10 @@ fn details_shape(value: &Value) -> Shape<DetailsFacts> {
             .and_then(Value::as_bool)
             .unwrap_or(true),
         has_price: purchase.and_then(|p| p.get("price")).is_some(),
+        plain_cents: purchase
+            .and_then(|p| p.get("price"))
+            .and_then(Value::as_str)
+            .and_then(plain_cents),
     })
 }
 
@@ -244,6 +276,9 @@ fn details_case(body: &[u8], canonical: bool) {
                 if hit.price_cents.is_some() {
                     assert!(facts.has_price, "a price without purchase_info.price");
                     assert_eq!(hit.currency.as_deref(), Some("USD"), "price not in USD");
+                }
+                if let Some(cents) = facts.plain_cents.filter(|c| *c > 0) {
+                    assert_eq!(hit.price_cents, Some(cents), "list price differs");
                 }
             }
             check_hits(&details.related, &facts.related);

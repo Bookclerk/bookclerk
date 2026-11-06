@@ -391,13 +391,11 @@ pub fn parse_details(body: &[u8]) -> bookclerk_source::Result<LibroDetails> {
         .and_then(parse_libro_book)
         .map(|mut h| {
             h.origin = String::from("libro details");
-            if let Some(price) = purchase.and_then(|p| p.get("price")) {
-                let (cents, _, _) = price_fields_from_value(&serde_json::json!({ "price": price }));
-                if let Some(cents) = cents.filter(|c| *c > 0) {
-                    h.price_cents = Some(cents);
-                    h.currency = Some(String::from("USD"));
-                    h.price_label = Some(format_money_label(cents, "USD"));
-                }
+            let price = purchase.and_then(|p| p.get("price")).and_then(usd_cents);
+            if let Some(cents) = price.filter(|c| *c > 0) {
+                h.price_cents = Some(cents);
+                h.currency = Some(String::from("USD"));
+                h.price_label = Some(format_money_label(cents, "USD"));
             }
             h
         });
@@ -671,7 +669,6 @@ fn parse_libro_book(v: &Value) -> Option<CatalogHit> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .or_else(|| Some(format!("{STOREFRONT_ORIGIN}/audiobooks/{product_id}")));
-    let (price_cents, currency, price_label) = price_fields_from_value(v);
     let is_abridged = parse_abridged_flag(v.get("abridged"));
     Some(CatalogHit {
         product_id,
@@ -691,9 +688,6 @@ fn parse_libro_book(v: &Value) -> Option<CatalogHit> {
         published_at,
         categories,
         language,
-        price_cents,
-        currency,
-        price_label,
         is_abridged,
         ..Default::default()
     })
@@ -851,29 +845,30 @@ fn parse_iso8601_duration_minutes(raw: &str) -> Option<i64> {
     (total_secs > 0).then_some(total_secs / 60)
 }
 
-/// List price in cents plus currency/label from an `offers` object or a `price` field.
-fn price_fields_from_value(v: &Value) -> (Option<i64>, Option<String>, Option<String>) {
-    let offers = v.get("offers");
-    let low = offers
-        .and_then(|o| o.get("lowPrice"))
-        .and_then(|p| {
-            p.as_f64()
-                .or_else(|| p.as_str().and_then(|s| s.parse().ok()))
-        })
-        .or_else(|| {
-            v.get("price").and_then(|p| {
-                p.as_f64()
-                    .or_else(|| p.as_str().and_then(|s| s.parse().ok()))
-            })
-        });
-    let currency = offers
-        .and_then(|o| o.get("priceCurrency"))
-        .and_then(Value::as_str)
-        .or_else(|| v.get("currency").and_then(Value::as_str))
-        .map(str::to_string);
-    let cents = low.map(|n| (n * 100.0).round() as i64);
-    let label = cents.map(|c| format_money_label(c, currency.as_deref().unwrap_or("USD")));
-    (cents, currency, label)
+/// US cents for a list price the app API sends as a decimal string such as
+/// `"33.59"` (or as a JSON number); `None` for anything else, including
+/// negative amounts, more than two decimals and values that overflow.
+fn usd_cents(price: &Value) -> Option<i64> {
+    let text = match price {
+        Value::String(s) => s.trim().to_string(),
+        Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    let (whole, frac) = text.split_once('.').unwrap_or((text.as_str(), ""));
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if whole.is_empty() || !digits(whole) || frac.len() > 2 || !digits(frac) {
+        return None;
+    }
+    let frac_cents: i64 = match frac.len() {
+        0 => 0,
+        1 => frac.parse::<i64>().ok()?.checked_mul(10)?,
+        _ => frac.parse().ok()?,
+    };
+    whole
+        .parse::<i64>()
+        .ok()?
+        .checked_mul(100)?
+        .checked_add(frac_cents)
 }
 
 /// ISBN-10/13, or an ISBN-leading storefront slug (`9781…-ashes-of-man`).
@@ -973,6 +968,39 @@ fn urlencode_minimal(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn usd_cents_reads_only_plain_decimal_prices() {
+        assert_eq!(usd_cents(&json!("33.59")), Some(3359));
+        assert_eq!(usd_cents(&json!(" 9.5 ")), Some(950));
+        assert_eq!(usd_cents(&json!("12")), Some(1200));
+        assert_eq!(usd_cents(&json!(14.99)), Some(1499));
+        assert_eq!(usd_cents(&json!(0)), Some(0));
+        for bad in [
+            json!("-1.00"),
+            json!("1.234"),
+            json!(".99"),
+            json!("1e3"),
+            json!("$9.99"),
+            json!("99999999999999999999"),
+            json!(1e300),
+            json!(true),
+            json!(null),
+        ] {
+            assert_eq!(usd_cents(&bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn row_prices_are_ignored_outside_purchase_info() {
+        let body = json!({"data": {
+            "audiobook": {"isbn": "1", "title": "T", "price": "5.00", "offers": {"lowPrice": 3}},
+            "related_audiobooks": [{"isbn": "2", "title": "U", "price": "4.00"}]
+        }});
+        let details = parse_details(body.to_string().as_bytes()).unwrap();
+        assert_eq!(details.audiobook.unwrap().price_cents, None);
+        assert_eq!(details.related[0].price_cents, None);
+    }
 
     #[test]
     fn catalog_calls_follow_the_library_path_version() {
