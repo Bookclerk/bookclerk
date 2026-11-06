@@ -8114,7 +8114,7 @@ mode = "deny"
         for bad in [
             patch(vec![("cache.budget_bytes", "12")]),
             patch(vec![
-                ("cache.unviewed_days", "30"),
+                ("cache.unviewed_days", "31"),
                 ("events.concurrency", "2"),
             ]),
         ] {

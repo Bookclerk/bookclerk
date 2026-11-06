@@ -393,6 +393,31 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{edited}");
         assert_eq!(edited["runtime"]["cpu_budget_percent"], 50);
         assert_eq!(edited["runtime"]["schedulable"], false);
+        // A cache budget override is set, kept when the field is left out,
+        // refused out of range, and removed by `null`.
+        let runtime = format!("/api/config/nodes/{mine}/runtime");
+        let (status, cached) = send(
+            &owner,
+            "PUT",
+            &runtime,
+            json!({ "cache_budget_bytes": 33_554_432_u64 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{cached}");
+        assert_eq!(cached["runtime"]["cache_budget_bytes"], 33_554_432_u64);
+        let (_, kept) = send(&owner, "PUT", &runtime, json!({ "label": "den" })).await;
+        assert_eq!(kept["runtime"]["cache_budget_bytes"], 33_554_432_u64);
+        let (status, _) = send(&owner, "PUT", &runtime, json!({ "cache_budget_bytes": 1 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, cleared) = send(
+            &owner,
+            "PUT",
+            &runtime,
+            json!({ "cache_budget_bytes": null }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{cleared}");
+        assert!(cleared["runtime"].get("cache_budget_bytes").is_none());
         // ...but not another node's, and an unknown node reads the same.
         for node in [theirs.as_str(), "no-such-node"] {
             let (status, refused) = send(

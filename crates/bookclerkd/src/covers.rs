@@ -365,6 +365,10 @@ pub(crate) struct CoverService {
     index: Arc<Mutex<Index>>,
     /// Whether an eviction sweep is running.
     sweeping: Arc<AtomicBool>,
+    /// Whether a sweep was asked for while one was running; the next
+    /// [`CoverService::maintain`] runs it, so a limit change made during a
+    /// sweep is not lost.
+    sweep_pending: Arc<AtomicBool>,
     /// Whether the last check found the disk below [`free_floor`]; new
     /// images are then served without being kept.
     low_disk: Arc<AtomicBool>,
@@ -431,6 +435,7 @@ impl CoverService {
             key,
             index: Arc::new(Mutex::new(index)),
             sweeping: Arc::new(AtomicBool::new(false)),
+            sweep_pending: Arc::new(AtomicBool::new(false)),
             low_disk: Arc::new(AtomicBool::new(false)),
             limits: Mutex::new(limits),
             last_sweep: Mutex::new(None),
@@ -993,6 +998,16 @@ impl CoverService {
         Ok(set)
     }
 
+    /// The retention limits in force on this node.
+    ///
+    /// # Returns
+    ///
+    /// The limits the last [`CoverService::maintain`] applied, or the ones
+    /// the service was opened with.
+    pub(crate) fn limits(&self) -> Limits {
+        *lock(&self.limits)
+    }
+
     /// Starts an eviction sweep when the cache is over budget.
     fn maybe_sweep(&self, dir: &Path) {
         let budget = lock(&self.limits).budget;
@@ -1027,7 +1042,8 @@ impl CoverService {
                 .unwrap_or(false)
         };
         let due = lock(&self.last_sweep).is_none_or(|at| at.elapsed() >= SWEEP_INTERVAL);
-        if changed || due || low_now || self.low_disk.load(Ordering::Acquire) {
+        let pending = self.sweep_pending.swap(false, Ordering::AcqRel);
+        if changed || due || pending || low_now || self.low_disk.load(Ordering::Acquire) {
             self.sweep_now(dir);
         } else {
             self.maybe_sweep(dir);
@@ -1040,6 +1056,7 @@ impl CoverService {
     /// when the disk is below [`free_floor`].
     fn sweep_now(&self, dir: &Path) {
         if self.sweeping.swap(true, Ordering::AcqRel) {
+            self.sweep_pending.store(true, Ordering::Release);
             return;
         }
         *lock(&self.last_sweep) = Some(Instant::now());
@@ -1746,8 +1763,24 @@ mod tests {
         }
     }
 
+    /// A disk with a terabyte free, so the host's own free space never
+    /// decides a test.
+    fn roomy(_: &Path) -> Option<bookclerk_sandbox::FilesystemSpace> {
+        Some(bookclerk_sandbox::FilesystemSpace {
+            available: 1 << 40,
+            total: 1 << 40,
+        })
+    }
+
+    /// Opens a service on `dir` that sees a [`roomy`] disk.
+    fn open_roomy(dir: PathBuf, limits: Limits) -> CoverService {
+        let mut service = CoverService::open(dir, limits).expect("open");
+        service.disk = roomy;
+        service
+    }
+
     fn service(dir: &Path) -> Arc<CoverService> {
-        Arc::new(CoverService::open(dir.join("covers"), Limits::default()).expect("open"))
+        Arc::new(open_roomy(dir.join("covers"), Limits::default()))
     }
 
     fn token_for(service: &CoverService, url: &str) -> String {
@@ -2142,16 +2175,13 @@ mod tests {
         };
         // Room for two entries and a half: writing a fourth evicts down to
         // 90%, so the two served longest ago go.
-        let service = Arc::new(
-            CoverService::open(
-                dir.clone(),
-                Limits {
-                    budget: one * 2 + one / 2 + one / 10,
-                    ..Limits::default()
-                },
-            )
-            .expect("open"),
-        );
+        let service = Arc::new(open_roomy(
+            dir.clone(),
+            Limits {
+                budget: one * 2 + one / 2 + one / 10,
+                ..Limits::default()
+            },
+        ));
         let backend = Arc::new(Fake::default());
         let urls: Vec<String> = (0..4)
             .map(|n| format!("https://img.example/ok-{n}.png"))
@@ -2194,7 +2224,7 @@ mod tests {
             .any(|_| true));
         // The journal remembers it after a restart.
         drop(service);
-        let reopened = CoverService::open(dir, Limits::default()).expect("reopen");
+        let reopened = open_roomy(dir, Limits::default());
         let index = lock(&reopened.index);
         assert_eq!(index.total(), one * 2);
         assert_eq!(

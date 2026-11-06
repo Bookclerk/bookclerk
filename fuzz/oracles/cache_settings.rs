@@ -11,10 +11,7 @@
 //! more ASCII digits whose number lies in the key's documented range, and
 //! returns that number.
 
-use bookclerk_config::{
-    parse_cache_setting, CacheSettingError, CacheSettingKey, MAX_CACHE_BUDGET_BYTES,
-    MAX_CACHE_UNVIEWED_DAYS, MIN_CACHE_BUDGET_BYTES,
-};
+use bookclerk_config::{parse_cache_setting, CacheSettingError, CacheSettingKey};
 
 /// Largest input worth checking.
 pub const MAX_INPUT_BYTES: usize = 128;
@@ -50,25 +47,17 @@ pub fn check(data: &[u8]) {
         (
             CacheSettingKey::BudgetBytes,
             "cache.budget_bytes",
-            MIN_CACHE_BUDGET_BYTES,
-            MAX_CACHE_BUDGET_BYTES,
+            16 * 1024 * 1024,
+            1024 * 1024 * 1024 * 1024_u64,
         )
     } else {
         (
             CacheSettingKey::UnviewedDays,
             "cache.unviewed_days",
             1,
-            u64::from(MAX_CACHE_UNVIEWED_DAYS),
+            3650,
         )
     };
-    assert_eq!(
-        min,
-        if selector % 2 == 0 {
-            16 * 1024 * 1024
-        } else {
-            1
-        }
-    );
     let got = parse_cache_setting(name, value);
     match expected(value) {
         Reading::NotANumber => assert!(

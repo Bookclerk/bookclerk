@@ -33026,6 +33026,16 @@
             ],
             "description": "False drains the node.",
             "example": true
+          },
+          "cache_budget_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "This node's image cache budget in bytes (16 MiB to 1 TiB),\noverriding the cluster's `cache.budget_bytes`. `null` removes the\noverride; leaving the field out keeps it as it is.",
+            "example": 536870912,
+            "minimum": 0
           }
         }
       },

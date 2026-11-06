@@ -70,7 +70,12 @@ async fn beat(
         .map_err(anyhow::Error::from);
     match cache_limits(&library, &node_id).await {
         Ok(limits) => state.covers.maintain(limits).await,
-        Err(err) => warn!(error = %err, "cache limits unavailable; keeping the previous ones"),
+        Err(err) => {
+            warn!(error = %err, "cache limits unavailable; keeping the previous ones");
+            // The disk check and the hourly sweep still run.
+            let retained = state.covers.limits();
+            state.covers.maintain(retained).await;
+        }
     }
     (sampler, status)
 }
