@@ -3779,7 +3779,8 @@ impl CoverFetcherClient {
 }
 
 /// Fails unless `params` is a request the ABI allows: 1 to `MAX_COVER_URLS`
-/// URLs and a byte cap of 1 to `MAX_COVER_BYTES`.
+/// URLs, a byte cap of 1 to `MAX_COVER_BYTES`, and at most one condition per
+/// URL with values of at most `MAX_COVER_HEADER_BYTES`.
 ///
 /// # Errors
 ///
@@ -3799,14 +3800,35 @@ fn check_cover_request(params: &CoverFetchParams) -> Result<()> {
             params.max_bytes
         )));
     }
+    if params.conditions.len() > urls {
+        return Err(PluginError::invalid_params(format!(
+            "fetchCovers takes at most one condition per url, not {} for {urls}",
+            params.conditions.len()
+        )));
+    }
+    let cap = crate::MAX_COVER_HEADER_BYTES as usize;
+    let too_long = params.conditions.iter().any(|condition| {
+        [&condition.if_none_match, &condition.if_modified_since]
+            .into_iter()
+            .flatten()
+            .any(|value| value.len() > cap)
+    });
+    if too_long {
+        return Err(PluginError::invalid_params(format!(
+            "fetchCovers condition values must be at most {cap} bytes"
+        )));
+    }
     Ok(())
 }
 
-/// Fails unless `images` answers `urls` one for one, in order.
+/// Fails unless `images` answers `urls` one for one, in order, no answer
+/// is both `stored` and `notModified`, and every passed-on header value is
+/// at most `MAX_COVER_HEADER_BYTES`.
 ///
 /// # Errors
 ///
-/// `internal` when the counts or any URL differ.
+/// `internal` when the counts or any URL differ, or an answer breaks the
+/// other rules.
 fn check_cover_reply(urls: &[String], images: &[CoverImage]) -> Result<()> {
     if images.len() != urls.len() {
         return Err(PluginError::internal(format!(
@@ -3822,6 +3844,32 @@ fn check_cover_reply(urls: &[String], images: &[CoverImage]) -> Result<()> {
     {
         return Err(PluginError::internal(format!(
             "fetchCovers reply {index} names a different url"
+        )));
+    }
+    if let Some(index) = images
+        .iter()
+        .position(|image| image.stored && image.not_modified)
+    {
+        return Err(PluginError::internal(format!(
+            "fetchCovers reply {index} is both stored and not modified"
+        )));
+    }
+    let cap = crate::MAX_COVER_HEADER_BYTES as usize;
+    if let Some(index) = images.iter().position(|image| {
+        [
+            &image.etag,
+            &image.last_modified,
+            &image.cache_control,
+            &image.expires,
+            &image.date,
+            &image.age,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| value.len() > cap)
+    }) {
+        return Err(PluginError::internal(format!(
+            "fetchCovers reply {index} carries a header value over {cap} bytes"
         )));
     }
     Ok(())
@@ -6095,7 +6143,7 @@ mod tests {
                     url: url.clone(),
                     stored: true,
                     content_type: Some("image/jpeg".into()),
-                    error: None,
+                    ..CoverImage::default()
                 });
             }
             Ok(images)
@@ -6138,6 +6186,7 @@ mod tests {
                         CoverFetchParams {
                             urls: urls.clone(),
                             max_bytes: 1024,
+                            conditions: Vec::new(),
                         },
                         Box::new(DestClone(Arc::clone(&sink))),
                     )
@@ -6180,6 +6229,32 @@ mod tests {
         }
         struct Bare;
         impl CoverFetcher for Bare {}
+        /// Answers the right URLs, but the first answer breaks a reply rule
+        /// chosen by the URL count: stored and not modified for one URL, an
+        /// over-long header for two.
+        struct Contradictory;
+        #[async_trait::async_trait(?Send)]
+        impl CoverFetcher for Contradictory {
+            async fn fetch_covers(
+                &self,
+                params: CoverFetchParams,
+                _sink: Box<dyn Destination>,
+            ) -> Result<Vec<CoverImage>> {
+                let bad_header = params.urls.len() == 2;
+                Ok(params
+                    .urls
+                    .iter()
+                    .map(|url| CoverImage {
+                        url: url.clone(),
+                        stored: !bad_header,
+                        not_modified: true,
+                        age: bad_header
+                            .then(|| "9".repeat(crate::MAX_COVER_HEADER_BYTES as usize + 1)),
+                        ..CoverImage::default()
+                    })
+                    .collect())
+            }
+        }
 
         let client = |inner: Arc<dyn CoverFetcher>| {
             CoverFetcherClient::new(
@@ -6200,6 +6275,7 @@ mod tests {
                 .map(|i| format!("https://img.example/{i}.jpg"))
                 .collect(),
             max_bytes: 1024,
+            conditions: Vec::new(),
         };
 
         let wrong = client(Arc::new(Wrong));
@@ -6214,6 +6290,17 @@ mod tests {
             .await
             .expect_err("answer names another url");
         assert!(renamed.message.contains("different url"));
+        let contradictory = client(Arc::new(Contradictory));
+        let both = contradictory
+            .fetch_covers(params(1), sink())
+            .await
+            .expect_err("stored and not modified");
+        assert!(both.message.contains("both stored and not modified"));
+        let long = contradictory
+            .fetch_covers(params(2), sink())
+            .await
+            .expect_err("over-long header");
+        assert!(long.message.contains("header value over"));
 
         for bad in [
             params(0),
@@ -6224,6 +6311,17 @@ mod tests {
             },
             CoverFetchParams {
                 max_bytes: crate::MAX_COVER_BYTES + 1,
+                ..params(1)
+            },
+            CoverFetchParams {
+                conditions: vec![crate::CoverCondition::default(); 2],
+                ..params(1)
+            },
+            CoverFetchParams {
+                conditions: vec![crate::CoverCondition {
+                    if_none_match: Some("x".repeat(crate::MAX_COVER_HEADER_BYTES as usize + 1)),
+                    if_modified_since: None,
+                }],
                 ..params(1)
             },
         ] {

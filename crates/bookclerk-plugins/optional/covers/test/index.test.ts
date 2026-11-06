@@ -97,18 +97,18 @@ test("health answers without a request", async () => {
 test("fetchCovers goes through global fetch", async () => {
   seen.length = 0;
   const images = await covers.fetchCovers(
-    { urls: ["https://a.example/1.jpg"], maxBytes: 16 },
+    { urls: ["https://a.example/1.jpg"], maxBytes: 16, conditions: [] },
     sink as never,
   );
   assert.deepEqual(images, [
-    { url: "https://a.example/1.jpg", stored: true, contentType: "image/jpeg" },
+    { url: "https://a.example/1.jpg", stored: true, notModified: false, contentType: "image/jpeg" },
   ]);
   assert.deepEqual(seen, ["https://a.example/1.jpg"]);
 });
 
 test("a malformed request becomes invalid_params", async () => {
   await assert.rejects(
-    covers.fetchCovers({ urls: [], maxBytes: 1 }, sink as never),
+    covers.fetchCovers({ urls: [], maxBytes: 1, conditions: [] }, sink as never),
     (err: unknown) => {
       assert.ok(err instanceof PluginError);
       assert.equal(err.code, "invalid_params");

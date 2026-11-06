@@ -2504,6 +2504,28 @@ pub struct CoverFetchParams {
     /// only.
     #[serde(default)]
     pub max_bytes: u32,
+    /// Conditional request headers per URL, in the same order as `urls`, from
+    /// the host's cached copy. Empty, or shorter than `urls`, means the
+    /// remaining URLs are fetched unconditionally.
+    #[serde(default)]
+    pub conditions: Vec<CoverCondition>,
+}
+
+/// Validators the host already holds for one URL, sent as conditional request
+/// headers so an unchanged image costs a `304` instead of its body.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverCondition {
+    /// `If-None-Match` value: the `ETag` the host stored, verbatim; empty for
+    /// none.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_none_match: Option<String>,
+    /// `If-Modified-Since` value: the `Last-Modified` the host stored,
+    /// verbatim; empty for none.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_modified_since: Option<String>,
 }
 
 /// What happened to one requested URL.
@@ -2524,6 +2546,35 @@ pub struct CoverImage {
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The server answered `304 Not Modified` to the URL's conditions: nothing
+    /// was put into the sink and the host's copy is still current.
+    #[serde(default)]
+    pub not_modified: bool,
+    /// `ETag` the server sent, verbatim. Advisory: the host parses and caps it.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    /// `Last-Modified` the server sent, verbatim.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_modified: Option<String>,
+    /// `Cache-Control` the server sent, verbatim (several lines joined with
+    /// `, `).
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<String>,
+    /// `Expires` the server sent, verbatim.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<String>,
+    /// `Date` the server sent, verbatim.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    /// `Age` the server (or a cache in front of it) sent, verbatim.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age: Option<String>,
 }
 
 /// Success payload of `CoverFetcher.fetchCovers`.
@@ -6213,6 +6264,12 @@ pub fn write_cover_fetch_params(
         }
     }
     b.set_max_bytes(v.max_bytes);
+    {
+        let mut items = b.reborrow().init_conditions(list_len(v.conditions.len())?);
+        for (i, item) in v.conditions.iter().enumerate() {
+            write_cover_condition(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
     Ok(())
 }
 
@@ -6227,6 +6284,43 @@ pub fn read_cover_fetch_params(
     Ok(CoverFetchParams {
         urls: read_text_list(r.get_urls()?)?,
         max_bytes: r.get_max_bytes(),
+        conditions: r
+            .get_conditions()?
+            .iter()
+            .map(|item| read_cover_condition(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+    })
+}
+
+/// Encode a [`CoverCondition`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_cover_condition(
+    mut b: plugin_capnp::cover_condition::Builder<'_>,
+    v: &CoverCondition,
+) -> capnp::Result<()> {
+    if let Some(value) = &v.if_none_match {
+        b.set_if_none_match(value);
+    }
+    if let Some(value) = &v.if_modified_since {
+        b.set_if_modified_since(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`CoverCondition`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_cover_condition(
+    r: plugin_capnp::cover_condition::Reader<'_>,
+) -> capnp::Result<CoverCondition> {
+    Ok(CoverCondition {
+        if_none_match: opt_text(r.get_if_none_match()?)?,
+        if_modified_since: opt_text(r.get_if_modified_since()?)?,
     })
 }
 
@@ -6247,6 +6341,25 @@ pub fn write_cover_image(
     if let Some(value) = &v.error {
         b.set_error(value);
     }
+    b.set_not_modified(v.not_modified);
+    if let Some(value) = &v.etag {
+        b.set_etag(value);
+    }
+    if let Some(value) = &v.last_modified {
+        b.set_last_modified(value);
+    }
+    if let Some(value) = &v.cache_control {
+        b.set_cache_control(value);
+    }
+    if let Some(value) = &v.expires {
+        b.set_expires(value);
+    }
+    if let Some(value) = &v.date {
+        b.set_date(value);
+    }
+    if let Some(value) = &v.age {
+        b.set_age(value);
+    }
     Ok(())
 }
 
@@ -6261,6 +6374,13 @@ pub fn read_cover_image(r: plugin_capnp::cover_image::Reader<'_>) -> capnp::Resu
         stored: r.get_stored(),
         content_type: opt_text(r.get_content_type()?)?,
         error: opt_text(r.get_error()?)?,
+        not_modified: r.get_not_modified(),
+        etag: opt_text(r.get_etag()?)?,
+        last_modified: opt_text(r.get_last_modified()?)?,
+        cache_control: opt_text(r.get_cache_control()?)?,
+        expires: opt_text(r.get_expires()?)?,
+        date: opt_text(r.get_date()?)?,
+        age: opt_text(r.get_age()?)?,
     })
 }
 
@@ -6331,7 +6451,7 @@ pub fn read_cover_images_reply(
 
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 100;
+pub const READ_ANY_COUNT: u8 = 101;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -6780,13 +6900,18 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
             )?;
         }
         97 => {
-            let _ = read_cover_image(reader.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)?;
+            let _ = read_cover_condition(
+                reader.get_root::<plugin_capnp::cover_condition::Reader<'_>>()?,
+            )?;
         }
         98 => {
+            let _ = read_cover_image(reader.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)?;
+        }
+        99 => {
             let _ =
                 read_cover_images(reader.get_root::<plugin_capnp::cover_images::Reader<'_>>()?)?;
         }
-        99 => {
+        100 => {
             let _ = read_cover_images_reply(
                 reader.get_root::<plugin_capnp::cover_images_reply::Reader<'_>>()?,
             )?;
@@ -10962,6 +11087,48 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             }
         }
         97 => {
+            let first = read_cover_condition(
+                reader.get_root::<plugin_capnp::cover_condition::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_cover_condition(
+                message.init_root::<plugin_capnp::cover_condition::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_cover_condition(again.get_root::<plugin_capnp::cover_condition::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_cover_condition(
+                    message.init_root::<plugin_capnp::cover_condition::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded CoverCondition value".to_string(),
+                    ));
+                }
+            }
+        }
+        98 => {
             let first =
                 read_cover_image(reader.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -11002,7 +11169,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        98 => {
+        99 => {
             let first =
                 read_cover_images(reader.get_root::<plugin_capnp::cover_images::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -11043,7 +11210,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        99 => {
+        100 => {
             let first = read_cover_images_reply(
                 reader.get_root::<plugin_capnp::cover_images_reply::Reader<'_>>()?,
             )?;

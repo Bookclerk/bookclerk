@@ -10,6 +10,13 @@ on every store's and catalog's own CDN.
   body into the sink the host passes, under the URL's index. It answers
   one entry per URL: stored, or why not (HTTP status, not an image, over
   the cap, refused URL).
+- When the host already holds an image, it sends that image's `ETag` and
+  `Last-Modified`, which the plugin passes on as `If-None-Match` and
+  `If-Modified-Since`. A `304 Not Modified` answer stores nothing and
+  reports `notModified`.
+- Every answer carries the server's `ETag`, `Last-Modified`,
+  `Cache-Control`, `Expires`, `Date` and `Age`, each at most 1024 bytes of
+  plain ASCII. The host decides from them how long to keep the image.
 - `health` answers without a request.
 
 The grant is `domains = ["*"]`: every public hostname, but never an IP

@@ -559,7 +559,13 @@ impl Integration for ExternalIntegration {
                 let sink = super::cover_sink::CoverSink::new(urls.len(), max_bytes);
                 let images = fetcher
                     .fetch_covers(
-                        bookclerk_plugin_sdk::CoverFetchParams { urls, max_bytes },
+                        bookclerk_plugin_sdk::CoverFetchParams {
+                            urls,
+                            max_bytes,
+                            // The cover service does not keep validators
+                            // yet, so every fetch is unconditional.
+                            conditions: Vec::new(),
+                        },
                         sink.destination(),
                     )
                     .await?;

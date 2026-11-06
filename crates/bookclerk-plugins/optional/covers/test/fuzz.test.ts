@@ -1,5 +1,5 @@
 /**
- * Fuzzing for the cover URL policy, as the fuzzing ADR asks of boundaries
+ * Fuzzing for the cover URL policy and header values, as the fuzzing ADR asks of boundaries
  * outside the Rust workspace (docs/adr/untrusted-input-fuzzing.md,
  * decision 6).
  *
@@ -10,13 +10,29 @@
  * WHATWG URL rules rather than from the fetcher's code. `FUZZ_SEED` and
  * `FUZZ_ITERATIONS` pick another run; a failure prints the seed, iteration
  * and input that reproduce it.
+ *
+ * Header values cross the same boundary: the host's validators go out as
+ * request headers, and an upstream server's caching headers come back in
+ * the answer. `fuzz/header/` seeds both directions, checked against an
+ * oracle written from the ABI's limit and RFC 9110's field-value grammar.
  */
 
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
 
-import { MAX_REDIRECTS, checkUrl, fetchOne, type CoverSink, type Fetch } from "../src/fetcher.ts";
+import {
+  CoverFailure,
+  MAX_HEADER_BYTES,
+  MAX_REDIRECTS,
+  checkParams,
+  checkUrl,
+  fetchOne,
+  headerValueOk,
+  passHeaders,
+  type CoverSink,
+  type Fetch,
+} from "../src/fetcher.ts";
 import { VERSION } from "../src/version.ts";
 
 /** PRNG seed for this run. */
@@ -47,6 +63,9 @@ const URLS = corpus("url");
 
 /** Seeds for redirect `Location` values, relative or absolute. */
 const LOCATIONS = corpus("location");
+
+/** Seeds for header values: validators and caching headers, good and bad. */
+const HEADERS = corpus("header");
 
 /** Fragments a mutation splices in: URL syntax, address forms and odd text. */
 const FRAGMENTS: readonly string[] = [
@@ -279,5 +298,118 @@ test("fetchOne requests only policy URLs across mutated redirect chains", async 
     }
     assert.equal(answer.stored, keys.length === 1, where);
     if (answer.stored) assert.ok(requested.length === hops + 1, where);
+  }
+});
+
+/** Fragments a header mutation splices in: separators, controls and non-ASCII. */
+const HEADER_FRAGMENTS: readonly string[] = [
+  '"',
+  "W/",
+  ",",
+  " ",
+  "\t",
+  "\r",
+  "\n",
+  "\r\n",
+  "\u0000",
+  "\u007f",
+  "\u0080",
+  "é",
+  "📚",
+  "=",
+  ";",
+  "max-age=0",
+  "x".repeat(MAX_HEADER_BYTES),
+];
+
+/**
+ * The header oracle: whether a value may cross the RPC, written from the
+ * ABI's `maxCoverHeaderBytes` and the visible-ASCII subset of RFC 9110's
+ * `field-value` (`VCHAR`, space and tab).
+ *
+ * @param value - The candidate value.
+ * @returns Whether it is allowed.
+ */
+function headerOracle(value: string): boolean {
+  if (new TextEncoder().encode(value).length > MAX_HEADER_BYTES) return false;
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (!(code === 0x09 || (code >= 0x20 && code <= 0x7e))) return false;
+  }
+  return true;
+}
+
+/**
+ * Applies one to three random splices or deletions to a header value.
+ *
+ * @param input - Seed text.
+ * @param rand - The PRNG.
+ * @returns The mutated text.
+ */
+function mutateHeader(input: string, rand: () => number): string {
+  let out = input;
+  for (let n = 1 + Math.floor(rand() * 3); n > 0; n--) {
+    const at = Math.floor(rand() * (out.length + 1));
+    out =
+      rand() < 0.6
+        ? out.slice(0, at) + pick(HEADER_FRAGMENTS, rand) + out.slice(at)
+        : out.slice(0, at) + out.slice(at + 1 + Math.floor(rand() * 6));
+  }
+  return out;
+}
+
+/**
+ * Checks both directions for one header value: a condition the host sends
+ * is accepted exactly when the oracle allows it, and a response header is
+ * passed on exactly when the oracle allows the value `Headers` holds.
+ *
+ * @param value - The header value.
+ * @param where - How to reproduce it, for the failure message.
+ */
+function checkHeader(value: string, where: string): void {
+  const label = `${where}: ${JSON.stringify(value.slice(0, 80))} (${value.length})`;
+  assert.equal(headerValueOk(value), headerOracle(value), label);
+  const params = {
+    urls: ["https://a.example/x"],
+    maxBytes: 1,
+    conditions: [{ ifNoneMatch: value }],
+  };
+  if (value === "" || headerOracle(value)) {
+    const got = checkParams(params).conditions[0]?.ifNoneMatch;
+    assert.equal(got, value === "" ? undefined : value, label);
+  } else {
+    assert.throws(() => checkParams(params), CoverFailure, label);
+  }
+  let headers: Headers;
+  try {
+    headers = new Headers({ etag: value, age: value });
+  } catch {
+    return; // `fetch` can never hand the fetcher such a header.
+  }
+  const held = headers.get("etag") ?? "";
+  const image = { url: "u", stored: true, notModified: false };
+  passHeaders(headers, image);
+  const kept = held !== "" && headerOracle(held);
+  assert.deepEqual(
+    image,
+    kept
+      ? { url: "u", stored: true, notModified: false, etag: held, age: held }
+      : {
+          url: "u",
+          stored: true,
+          notModified: false,
+        },
+    label,
+  );
+}
+
+test("header values replay their corpus against the oracle", () => {
+  for (const [i, value] of HEADERS.entries()) checkHeader(value, `header seed ${i}`);
+});
+
+test("header values agree with the oracle when mutated", () => {
+  const rand = prng(SEED ^ 0x5bd1e995);
+  for (let i = 0; i < ITERATIONS; i++) {
+    checkHeader(mutateHeader(pick(HEADERS, rand), rand), `FUZZ_SEED=${SEED} iteration ${i}`);
   }
 });

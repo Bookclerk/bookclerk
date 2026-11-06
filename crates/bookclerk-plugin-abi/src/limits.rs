@@ -25,6 +25,10 @@ pub const MAX_COVER_URLS: u32 = crate::plugin_capnp::MAX_COVER_URLS;
 /// Largest image body one `CoverFetcher.fetchCovers` URL may return.
 pub const MAX_COVER_BYTES: u32 = crate::plugin_capnp::MAX_COVER_BYTES;
 
+/// Longest cache header value one `CoverFetcher.fetchCovers` call carries in
+/// either direction, in bytes.
+pub const MAX_COVER_HEADER_BYTES: u32 = crate::plugin_capnp::MAX_COVER_HEADER_BYTES;
+
 /// Parses a `CoverFetcher.fetchCovers` sink key into the URL index it names.
 ///
 /// The guest puts the body for `urls[i]` under the key `i`. Only the

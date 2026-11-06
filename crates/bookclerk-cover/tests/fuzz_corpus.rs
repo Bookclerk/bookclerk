@@ -195,8 +195,10 @@ fn token_seeds() -> Vec<(&'static str, Vec<u8>)> {
 }
 
 /// The generated `cache_headers` seeds: built lists (mode byte 0) that hit
-/// and miss the current tag, and raw headers (mode byte 1), including one
-/// that names the tag of an empty body, which the raw mode also checks.
+/// and miss the current tag, raw headers (mode byte 1), including one
+/// that names the tag of an empty body, which the raw mode also checks,
+/// built `Cache-Control` lists (mode byte 2) and raw upstream headers
+/// (mode byte 3).
 fn cache_header_seeds() -> Vec<(&'static str, Vec<u8>)> {
     let built = |elements: &[&[u8]]| {
         let mut out = vec![0u8];
@@ -212,6 +214,16 @@ fn cache_header_seeds() -> Vec<(&'static str, Vec<u8>)> {
         out.extend_from_slice(header);
         out
     };
+    let upstream = |fields: &[&[u8]]| {
+        let mut out = vec![3u8];
+        for (i, field) in fields.iter().enumerate() {
+            if i > 0 {
+                out.push(0xff);
+            }
+            out.extend_from_slice(field);
+        }
+        out
+    };
     let empty_tag = bookclerk_cover::http_cache::EntityTag::of(b"").header_value();
     vec![
         ("built_current.bin", built(&[&[2]])),
@@ -224,6 +236,48 @@ fn cache_header_seeds() -> Vec<(&'static str, Vec<u8>)> {
         ),
         ("raw_junk_after_tag.bin", raw(b"\"abc\"x, ,")),
         ("raw_unterminated.bin", raw(b"W/\"abc")),
+        // max-age=16*0x0100 s, s-maxage, an extension, Age 5 min.
+        (
+            "fresh_built_s_maxage.bin",
+            vec![2, 2, 1, 0, 0x81, 0, 0x10, 5, 9, 9, 5],
+        ),
+        // NO-CACHE beside a long, spaced max-age.
+        (
+            "fresh_built_no_cache.bin",
+            vec![2, 0xc5, 0, 0, 0x80, 0xff, 0xff],
+        ),
+        // private, NO-STORE.
+        ("fresh_built_no_store.bin", vec![2, 4, 0, 0, 0x46, 0, 0]),
+        (
+            "fresh_raw_all.bin",
+            upstream(&[
+                b"public, max-age=600, ext=\"a,b\"",
+                b"Wed, 02 Sep 2026 00:00:00 GMT",
+                b"Tue, 01 Sep 2026 00:00:00 GMT",
+                b"30",
+                b" W/\"v1\" ",
+                b"Mon, 31 Aug 2026 00:00:00 GMT",
+            ]),
+        ),
+        (
+            "fresh_raw_bad.bin",
+            upstream(&[
+                b"no-store=\"x",
+                b"0",
+                b"yesterday",
+                b"-1",
+                b"\"a\", \"b\"",
+                b"x",
+            ]),
+        ),
+        (
+            "fresh_raw_obsolete_dates.bin",
+            upstream(&[
+                b"",
+                b"Wednesday, 02-Sep-26 00:00:00 GMT",
+                b"Tue Sep  1 00:00:00 2026",
+            ]),
+        ),
     ]
 }
 
