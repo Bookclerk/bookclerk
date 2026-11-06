@@ -160,12 +160,15 @@ pub fn remote_consent(requested: &PluginGrant, narrowing: &RemoteNarrowing) -> R
         )));
     }
     let mut consent = requested.clone();
-    consent.own_user_agent_hosts = Some(
+    // An owner grant from before the permission (`None`) asks for nothing
+    // the operator could refuse, so it stays legacy and spawn resolves it
+    // against the manifest.
+    consent.own_user_agent_hosts = requested.own_user_agent_hosts.as_ref().map(|_| {
         requested_own
             .difference(&narrowing.deny_own_user_agent_hosts)
             .cloned()
-            .collect(),
-    );
+            .collect()
+    });
     consent.own_user_agent_refused_hosts = narrowing.deny_own_user_agent_hosts.clone();
     // With network access off no request leaves, so an overlap has no
     // effect to protect and the network refusal wins.
@@ -310,18 +313,21 @@ pub fn narrow_remote_grant(requested: &PluginGrant, consent: &PluginGrant) -> Pl
         // consent reviewed before the permission existed approves every
         // requested host). A host the owner withdraws is gone even while
         // the manifest still declares it.
+        // An owner grant from before the permission (`None`) stays legacy,
+        // so spawn keeps what the manifest declares, as it does locally.
         own_user_agent_hosts: if deny {
             Some(BTreeSet::new())
         } else {
-            let asked = requested.approved_own_user_agent_hosts();
-            Some(match &consent.own_user_agent_hosts {
-                Some(approved) => both(approved, &asked),
-                None => asked,
+            requested.own_user_agent_hosts.as_ref().map(|asked| {
+                match &consent.own_user_agent_hosts {
+                    Some(approved) => both(approved, asked),
+                    None => asked.clone(),
+                }
             })
         },
         own_user_agent_reason: requested.own_user_agent_reason.clone(),
         own_user_agent_refused_hosts: consent.own_user_agent_refused_hosts.clone(),
-        declared_own_user_agent_hosts: Some(requested.approved_own_user_agent_hosts()),
+        declared_own_user_agent_hosts: requested.own_user_agent_hosts.clone(),
         bindings: both(&requested.bindings, &consent.bindings),
         compatibility_flags: both(&requested.compatibility_flags, &consent.compatibility_flags),
         cpu_ms: min_workerd_limit(
@@ -855,6 +861,21 @@ mod tests {
         assert_eq!(
             effective.egress_policy().own_user_agent_hosts,
             vec!["api.store.example".to_string()]
+        );
+
+        // An owner grant from before the permission stays legacy end to
+        // end, so spawn keeps the hosts the manifest declares.
+        let mut legacy_owner = agent_request.clone();
+        legacy_owner.own_user_agent_hosts = None;
+        let legacy_consent = remote_consent(&legacy_owner, &RemoteNarrowing::default()).unwrap();
+        assert_eq!(legacy_consent.own_user_agent_hosts, None);
+        let stored = narrow_remote_grant(&legacy_owner, &legacy_consent);
+        assert_eq!(stored.own_user_agent_hosts, None);
+        let mut declared = stored.clone();
+        declared.declared_own_user_agent_hosts = Some(["api.store.example".to_string()].into());
+        assert_eq!(
+            declared.effective_own_user_agent_hosts(),
+            ["api.store.example".to_string()].into()
         );
 
         // Network off clears every destination.

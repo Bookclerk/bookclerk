@@ -596,8 +596,12 @@ def _label_to_ascii(label: str) -> str | None:
                 return None
         return lowered
     try:
-        if any(c in _IDNA_DEVIATIONS for c in label):
-            mapped = unicodedata.normalize("NFC", label.lower())
+        # UTS 46 maps compatibility forms and case first (``ｆａ`` is ``fa``,
+        # ``ẞ`` is ``ß``), then keeps the deviation characters.
+        mapped = unicodedata.normalize("NFC", unicodedata.normalize("NFKC", label).lower())
+        if mapped.isascii():
+            return _label_to_ascii(mapped)
+        if any(c in _IDNA_DEVIATIONS for c in mapped):
             return "xn--" + mapped.encode("punycode").decode("ascii")
         return encodings_idna.ToASCII(label).decode("ascii").lower()
     except UnicodeError:
@@ -625,6 +629,9 @@ def own_user_agent_host_ascii(raw: str) -> str | None:
         return None
     if any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in host):
         return None
+    if not host.isascii():
+        # UTS 46 also maps the full-width and ideographic full stops to `.`.
+        host = unicodedata.normalize("NFKC", host).replace("\u3002", ".")
     labels = [_label_to_ascii(label) for label in host.split(".")]
     if any(label is None for label in labels):
         return None

@@ -1719,3 +1719,9 @@ def test_own_user_agent_hosts_are_put_in_ascii_form() -> None:
     ) == ["*.xn--bcher-kva.example", "api.example.com"]
     # UTS 46 keeps `ß` (IDNA 2003 would map it to `ss`), as Node and the host do.
     assert own_user_agent_hosts_for(["*.Faß.de", "xn--.example"]) == ["*.xn--fa-hia.de"]
+    # Case and compatibility forms map first, as the host's IDNA step does.
+    assert own_user_agent_hosts_for(["*.FAẞ.de", "*.ｆａß.de", "*.ＥＸＡＭＰＬＥ．com"]) == [
+        "*.xn--fa-hia.de",
+        "*.xn--fa-hia.de",
+        "*.example.com",
+    ]
