@@ -37,6 +37,7 @@ import {
   waitPage,
 } from "./pages.ts";
 import { LIVE_PATH, liveRequest, NO_SESSION, siteUrl } from "./live.ts";
+import { timed } from "./timing.ts";
 
 /** Turnstile's server-side check. */
 const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
@@ -526,10 +527,13 @@ async function proxy(
   }
   const cookies = cookiesForContainer(request.headers.get("Cookie"));
   if (cookies) forwarded.headers.set("Cookie", cookies);
-  const upstream = await sessionStub(env, id).fetch(forwarded);
+  const upstream = await timed("session", () => sessionStub(env, id).fetch(forwarded), deps.now);
   const state = upstream.headers.get("X-Demo-State");
   if (upstream.status === 503 && state !== null) {
-    return notRunning(request, state, env);
+    const answer = notRunning(request, state, env);
+    const timing = upstream.headers.get("Server-Timing");
+    if (timing !== null) answer.headers.set("Server-Timing", timing);
+    return answer;
   }
   return forwardResponse(upstream);
 }

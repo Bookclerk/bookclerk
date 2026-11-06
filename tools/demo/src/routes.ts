@@ -251,8 +251,12 @@ const API_ROOTS = new Set([
   "status",
 ]);
 
-/** Longest path the Worker classifies; anything longer is refused. */
-export const MAX_PATH_CHARS = 2048;
+/**
+ * Longest path the Worker classifies; anything longer is refused. A signed
+ * image path for the longest URL bookclerkd signs (2048 bytes) is about
+ * 2,780 characters, so this leaves room for it.
+ */
+export const MAX_PATH_CHARS = 3072;
 
 /**
  * Splits a path template into segments, with `null` for a `{param}` segment.
