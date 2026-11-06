@@ -67,6 +67,7 @@ fn spawn_dispatcher(state: Arc<AppState>) {
             };
             crate::node_queue::upsert_catalog_row(&library, &files_dir).await;
             let node_id = event_node_id(&files_dir);
+            crate::discover_events::upsert_catalog_row(&library, &node_id).await;
             let more = match dispatch_pending(
                 &library,
                 retention_days,
@@ -122,6 +123,7 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
             let node_id = event_node_id(&files_dir);
             let mut claim_ids = loaded_plugin_ids(&state).await;
             claim_ids.extend(crate::node_queue::consumer_id(&files_dir));
+            claim_ids.push(crate::discover_events::DISCOVER_CONSUMER_ID.to_string());
             let groups = claim_groups(
                 &claim_ids,
                 ranks.get(&library, &files_dir, &claim_ids).await,
@@ -781,6 +783,10 @@ async fn run_delivery(
     };
     if bookclerk_library::control_plane::is_node_consumer_id(&delivery.plugin_id) {
         crate::node_queue::run_node_delivery(library, &event, &delivery).await;
+        return;
+    }
+    if crate::discover_events::is_discover_consumer_id(&delivery.plugin_id) {
+        crate::discover_events::run_discover_delivery(state, library, &event, &delivery).await;
         return;
     }
     let integration = {

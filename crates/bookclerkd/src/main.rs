@@ -17,6 +17,7 @@ mod config_authority;
 mod covers;
 mod cron_worker;
 mod csrf;
+mod discover_events;
 mod discover_jobs;
 mod event_worker;
 mod heartbeat;

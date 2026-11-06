@@ -536,13 +536,18 @@ impl EventsManifest {
 /// transaction as the library row once a source plugin's acquire handler
 /// returns; the source never publishes it. `edition_linked`,
 /// `edition_updated` and `holding_added` are written by the library model
-/// resolver in the same batch as the listing they describe. Plugins consume
-/// these types but cannot declare them under `[[events.producers]]`.
-pub const HOST_EVENT_TYPES: [&str; 4] = [
+/// resolver in the same batch as the listing they describe.
+/// `wishlist_changed` is written when a wishlist entry is added or changes
+/// status, and `listening_synced` when a listening sync changed what someone
+/// has started or finished. Plugins consume these types but cannot declare
+/// them under `[[events.producers]]`.
+pub const HOST_EVENT_TYPES: [&str; 6] = [
     "book_acquired",
     "edition_linked",
     "edition_updated",
     "holding_added",
+    "wishlist_changed",
+    "listening_synced",
 ];
 
 /// True when `event_type` is in [`HOST_EVENT_TYPES`].

@@ -6998,3 +6998,58 @@ async fn a_claim_with_a_past_cutoff_leaves_freshly_due_deliveries_to_better_node
     let best = claim_delivery(&store, "best").await;
     assert_eq!(best.plugin_id, "echo");
 }
+
+#[tokio::test]
+async fn wishlist_writes_publish_wishlist_changed() {
+    let store = LibraryStore::from_connection(
+        bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap(),
+    );
+    let alice = store
+        .upsert_portal_identity("audiobookshelf", "u1", Some("alice"))
+        .await
+        .unwrap();
+    let wish = NewTitleRequest {
+        uuid: None,
+        identity_id: Some(alice.id),
+        title: "Hail Mary".into(),
+        authors: Some("Andy Weir".into()),
+        asin: Some("B00HAIL".into()),
+        isbn: None,
+        notes: None,
+        status: RequestStatus::Open,
+        work_key: String::new(),
+        work_id: None,
+        resolved_book_uuid: None,
+        cover_url: None,
+    };
+    let row = store.create_title_request(&wish).await.unwrap();
+    // Wishing for the same title again changes nothing, so publishes nothing.
+    store.create_title_request(&wish).await.unwrap();
+    store
+        .update_title_request_status(&row.uuid, RequestStatus::Cancelled, None)
+        .await
+        .unwrap();
+    let events: Vec<_> = store
+        .list_domain_events_for_queue(crate::CORE_EVENTS_QUEUE, 50)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.event_type == crate::WISHLIST_CHANGED)
+        .collect();
+    assert_eq!(events.len(), 2, "one per write: {events:?}");
+    let statuses: Vec<serde_json::Value> = events
+        .iter()
+        .map(|e| serde_json::from_str::<serde_json::Value>(&e.payload).unwrap())
+        .collect();
+    assert!(statuses
+        .iter()
+        .all(|p| p["requestId"] == row.uuid.as_str() && p["identityId"] == alice.id));
+    let mut seen: Vec<&str> = statuses
+        .iter()
+        .filter_map(|p| p["status"].as_str())
+        .collect();
+    seen.sort_unstable();
+    assert_eq!(seen, vec!["cancelled", "open"]);
+}

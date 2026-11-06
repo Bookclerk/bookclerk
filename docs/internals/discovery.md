@@ -115,6 +115,34 @@ yet, and queues their refresh as a read would. Callers that must wait on
 shelves, such as the hosted demo, poll it. Any signed-in caller can use it,
 since it only reports the caller's own shelves.
 
+### Taste events
+
+Shelves also refresh when someone's taste changes, without waiting for a
+read or the daily fetch. The daemon registers one host consumer,
+`host:discover`, on the [durable event outbox](jobs.md) for three host
+events:
+
+| Event | Published when | Discover queues |
+| --- | --- | --- |
+| `wishlist_changed` | A wishlist entry is added or changes status. | A fetch for the person who wished (their seeds changed), and a ranking for everyone else with shelves (wish counts changed). |
+| `listening_synced` | A listening sync changed what someone has started or finished, counted in quarters of the book. | A fetch for everyone with shelves. |
+| `book_acquired` | The household acquires a book. | A fetch for everyone with shelves. |
+
+Each job it queues may only run 30 seconds later, so the changes of one
+sync or one browsing session fold into a single job per person. The fetches
+are cheap when little changed, because unchanged store calls come from the
+24-hour cache. A person without stored shelves is left to their first read.
+
+A job that is already running may have read the data before the change, so
+when the job the consumer needs is running (or the queue is full), the
+delivery comes back 30 seconds later and queues again, up to 20 times.
+Every node registers the same consumer and the outbox delivers each event
+once in the cluster. A listening sync whose quarters match the previous one
+publishes nothing new, since its event coalesces by a digest of what each
+person has started or finished.
+
+There is no rating event yet, because Bookclerk does not store ratings.
+
 ## Metadata gap-fill (Open Library compliance)
 
 `discover enrich-metadata` (and `discover recommend`) fill **low-volume

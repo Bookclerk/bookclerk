@@ -1993,6 +1993,18 @@ pub enum PublishDomainEventOutcome {
 pub const EVENT_RESOURCE_CLASS_NETWORK: &str = "network";
 /// Queue that carries the domain-event bus (`[events]` producers and consumers).
 pub const CORE_EVENTS_QUEUE: &str = "core.events";
+/// Host event published when a wishlist entry is added or changes status.
+///
+/// Payload: `requestId` (the entry's uuid), `identityId` (the portal identity
+/// that wished for it, or null) and `status` after the write.
+pub const WISHLIST_CHANGED: &str = "wishlist_changed";
+/// Host event published when a listening sync changed what someone has
+/// started or finished.
+///
+/// Payload: `provider` (the integration that synced) and `identityIds` (the
+/// portal identities whose rows the sync wrote; rows not yet tied to an
+/// identity are not listed).
+pub const LISTENING_SYNCED: &str = "listening_synced";
 /// Prefix of the per-node queues (`node.<node_id>`) node subsystems consume.
 pub const NODE_QUEUE_PREFIX: &str = "node.";
 /// Queue message body is UTF-8 JSON text.

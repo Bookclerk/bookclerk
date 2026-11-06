@@ -120,9 +120,9 @@ pub use models::{
     UserIntegrationHint, UserInviteRecord, UserListeningHint, UserPreferences, UserPresenceExtras,
     UserRecord, UserRole, UserSsoPicture, UserStatus, WishlistPurchaseHint, WishlistStoreEdition,
     WorkRecord, CORE_EVENTS_QUEUE, EVENT_DELIVERY_MAX_ATTEMPTS, EVENT_RESOURCE_CLASS_NETWORK,
-    EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, JOB_PAYLOAD_VERSION, MAX_QUEUE_NAME_LEN,
+    EVENT_SUBSCRIBER_HEARTBEAT_TTL_SECS, JOB_PAYLOAD_VERSION, LISTENING_SYNCED, MAX_QUEUE_NAME_LEN,
     MAX_QUEUE_WISHERS, NODE_QUEUE_PREFIX, OPERATOR_PREFS_KEY, QUEUE_CONTENT_TYPE_BYTES,
-    QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT,
+    QUEUE_CONTENT_TYPE_JSON, QUEUE_CONTENT_TYPE_TEXT, WISHLIST_CHANGED,
 };
 pub use operator_token::{
     read_or_create_operator_token, resolve_operator_token, rotate_operator_token,
