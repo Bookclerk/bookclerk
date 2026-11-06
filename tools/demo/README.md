@@ -69,7 +69,8 @@ every content signal to `no` (`use=immediate`).
    - rewrites `Set-Cookie` so the container cannot set the Worker's cookies,
      and adds a banner with the time left and a **Start over** button. Its
      **Demo** label opens a panel that shows the Owner password and how to
-     elevate;
+     elevate, and the banner fills that password into the app's empty
+     **Elevate to Operator** box;
    - marks the app's HTML `Cache-Control: no-transform`, so Cloudflare does
      not add its Web Analytics beacon inside the visitor's copy.
 
