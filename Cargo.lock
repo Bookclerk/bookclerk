@@ -1637,6 +1637,7 @@ dependencies = [
  "chrono",
  "futures",
  "sea-orm",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

@@ -8,8 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bookclerk_demo_seed::{
-    best_match, distinct_records, lookups, search_query, seed, Lookup, SeedReport, Seeded,
-    StoreRecords, SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
+    best_match, committed_records, distinct_records, lookups, merge_records, parse_records,
+    records_json, search_query, seed, Lookup, SeedReport, Seeded, StoreRecords, SAMPLE_BRANCH,
+    SAMPLE_LOGIN, STOREFRONTS,
 };
 use bookclerk_library::control_plane::branch_title_counts;
 use bookclerk_library::entities::nodes;
@@ -343,5 +344,61 @@ async fn writes_the_store_record_when_there_is_one() {
     assert_eq!(
         james.cover_url.as_deref(),
         Some("https://m.media-amazon.com/images/I/james.jpg")
+    );
+}
+
+#[test]
+fn the_committed_records_parse_and_are_real_store_records() {
+    let records = committed_records().unwrap();
+    for (key, hit) in &records {
+        let lookup = lookup(key);
+        assert!(
+            !hit.product_id.starts_with("demo-"),
+            "{key}: a committed record must carry the store's product id"
+        );
+        assert!(
+            best_match(&lookup, std::slice::from_ref(hit)).is_some(),
+            "{key}: the committed record must match its title and author"
+        );
+    }
+}
+
+#[test]
+fn a_records_file_round_trips_and_drops_unknown_titles() {
+    let mut records = StoreRecords::new();
+    records.insert("demo-dune", hit("B0HQ4V4BGY", "Dune", "Frank Herbert"));
+    let json = records_json(&records).unwrap();
+    assert!(json.ends_with('\n'));
+    let back = parse_records(&json).unwrap();
+    assert_eq!(back["demo-dune"].product_id, "B0HQ4V4BGY");
+
+    let with_stray = json.replacen(
+        '{',
+        r#"{"demo-no-such-title": {"product_id": "x", "title": "x", "origin": "search"},"#,
+        1,
+    );
+    let parsed = parse_records(&with_stray).unwrap();
+    assert_eq!(
+        parsed.keys().copied().collect::<Vec<_>>(),
+        vec!["demo-dune"]
+    );
+    assert!(parse_records("[]").is_err());
+}
+
+#[test]
+fn live_records_win_and_committed_ones_fill_the_gaps() {
+    let mut live = StoreRecords::new();
+    live.insert("demo-dune", hit("LIVE-DUNE", "Dune", "Frank Herbert"));
+    let mut committed = StoreRecords::new();
+    committed.insert("demo-dune", hit("OLD-DUNE", "Dune", "Frank Herbert"));
+    committed.insert(
+        "demo-lessons-in-chemistry",
+        hit("9780593395042", "Lessons in Chemistry", "Bonnie Garmus"),
+    );
+    let merged = merge_records(live, committed);
+    assert_eq!(merged["demo-dune"].product_id, "LIVE-DUNE");
+    assert_eq!(
+        merged["demo-lessons-in-chemistry"].product_id,
+        "9780593395042"
     );
 }

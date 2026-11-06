@@ -2,6 +2,11 @@
 //! (see the library docs), then exits. The demo image runs it once before
 //! bookclerkd, with the same environment, so it opens the same library the
 //! same way the CLI does.
+//!
+//! `bookclerk-demo-seed --write-records <path>` instead looks the sample
+//! titles up and writes the records it found to `<path>` (the crate's
+//! `records.json`), seeding nothing. Run it against a scratch
+//! `BOOKCLERK_FILES_DIR` from a network the storefronts answer.
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -10,8 +15,8 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use bookclerk_config::Config;
 use bookclerk_demo_seed::{
-    best_match, distinct_records, lookups, search_query, seed, Lookup, Seeded, StoreRecords,
-    STOREFRONTS,
+    best_match, committed_records, distinct_records, lookups, merge_records, records_json,
+    search_query, seed, Lookup, Seeded, StoreRecords, STOREFRONTS,
 };
 use bookclerk_library::control_plane::{
     default_instance_for_key, ensure_hand_managed, ensure_plugin_deployment,
@@ -56,6 +61,7 @@ async fn main() -> ExitCode {
 /// Returns an error when the library cannot be opened, no storefront is
 /// enrolled, or a write fails.
 async fn run() -> anyhow::Result<()> {
+    let write_records = records_path(std::env::args().skip(1))?;
     let config = Config::load(None, None).context("load config")?;
     let host = bookclerk_plugin_host::open_host_control_plane(&config)
         .await
@@ -79,6 +85,22 @@ async fn run() -> anyhow::Result<()> {
                 front.id
             );
         }
+    }
+    if let Some(path) = write_records {
+        enable_storefronts(&host).await?;
+        let enabled = bookclerk_plugin_host::open_host_control_plane(&config)
+            .await
+            .context("reopen the library")?;
+        let records = store_records(&enabled).await;
+        let missing = lookups().len().saturating_sub(records.len());
+        std::fs::write(&path, records_json(&records)?)
+            .with_context(|| format!("write {}", path.display()))?;
+        eprintln!(
+            "bookclerk-demo-seed: wrote {} record(s) to {}; {missing} title(s) not found",
+            records.len(),
+            path.display()
+        );
+        return Ok(());
     }
     if host
         .store
@@ -105,6 +127,8 @@ async fn run() -> anyhow::Result<()> {
             StoreRecords::new()
         }
     };
+    // A store that refuses the demo's network still gets its real records.
+    let records = merge_records(records, committed_records()?);
     let missing = lookups().len().saturating_sub(records.len());
     if missing > 0 {
         eprintln!(
@@ -127,6 +151,25 @@ async fn run() -> anyhow::Result<()> {
         Seeded::AlreadySeeded => eprintln!("bookclerk-demo-seed: already seeded"),
     }
     Ok(())
+}
+
+/// The `--write-records <path>` argument, if given.
+///
+/// # Errors
+///
+/// Returns an error for any other argument, or a missing path.
+fn records_path(
+    mut args: impl Iterator<Item = String>,
+) -> anyhow::Result<Option<std::path::PathBuf>> {
+    match args.next() {
+        None => Ok(None),
+        Some(flag) if flag == "--write-records" => match (args.next(), args.next()) {
+            (Some(path), None) => Ok(Some(path.into())),
+            (None, _) => bail!("--write-records needs a path"),
+            (Some(_), Some(extra)) => bail!("unexpected argument `{extra}`"),
+        },
+        Some(other) => bail!("unexpected argument `{other}`"),
+    }
 }
 
 /// Looks every sample title up in its storefront's public catalog, through

@@ -285,6 +285,64 @@ const WISHLIST: &[WishTitle] = &[
 /// Storefront records found for the sample titles, by [`Lookup::key`].
 pub type StoreRecords = BTreeMap<&'static str, CatalogHit>;
 
+/// Storefront records for the sample titles as the storefront plugins
+/// returned them, by [`Lookup::key`], committed in `records.json`.
+///
+/// The demo's own lookups run from a datacenter, where some storefronts
+/// (Libro.fm among them) refuse the requests. These records stand in for a
+/// lookup that fails, so every sample title is a real store record. Refresh
+/// them from a network the stores answer with `bookclerk-demo-seed
+/// --write-records crates/bookclerk-demo-seed/records.json`.
+const RECORDS_JSON: &str = include_str!("../records.json");
+
+/// The committed storefront records ([`RECORDS_JSON`]) for the current
+/// sample titles; entries for titles no longer sampled are dropped.
+///
+/// # Errors
+///
+/// Returns an error when `records.json` is not a JSON object of catalog
+/// records.
+pub fn committed_records() -> anyhow::Result<StoreRecords> {
+    parse_records(RECORDS_JSON)
+}
+
+/// Parses a records file: a JSON object from [`Lookup::key`] to a catalog
+/// record, keeping only keys of current sample titles.
+///
+/// # Errors
+///
+/// Returns an error when `json` is not such an object.
+pub fn parse_records(json: &str) -> anyhow::Result<StoreRecords> {
+    let parsed: BTreeMap<String, CatalogHit> =
+        serde_json::from_str(json).context("parse the storefront records")?;
+    Ok(lookups()
+        .into_iter()
+        .filter_map(|lookup| parsed.get(lookup.key).map(|hit| (lookup.key, hit.clone())))
+        .collect())
+}
+
+/// Live lookups over the committed records: a title the live lookup found
+/// keeps that record, one it missed falls back to `committed`, and
+/// [`distinct_records`] still keeps two titles from sharing a product id.
+#[must_use]
+pub fn merge_records(live: StoreRecords, committed: StoreRecords) -> StoreRecords {
+    let mut records = committed;
+    records.extend(live);
+    distinct_records(records)
+}
+
+/// `records` as the pretty-printed JSON `records.json` holds, one key per
+/// title in sorted order, so a refresh diffs cleanly.
+///
+/// # Errors
+///
+/// Returns an error when a record cannot be serialized.
+pub fn records_json(records: &StoreRecords) -> anyhow::Result<String> {
+    let mut json = serde_json::to_string_pretty(records).context("write the records")?;
+    json.push('\n');
+    Ok(json)
+}
+
 /// One title to look up in a storefront's public catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lookup {
