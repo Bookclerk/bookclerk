@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, verify as rsaVerify } from "node:crypto";
 import { afterEach, beforeEach, describe, it } from "vitest";
+import { ASSET_URLS } from "./dashboard/asset-urls.ts";
 import { OAUTH_COOKIE, pkceChallenge } from "./dashboard/auth.ts";
 import {
   type IssueSummary,
@@ -577,6 +578,16 @@ describe("routing", () => {
       assert.equal(res.status, 303, p);
       assert.equal(res.headers.get("location"), `/?next=${encodeURIComponent(p)}`);
     }
+  });
+
+  it("serves its pages through the Worker, linking the hashed styles and script", async () => {
+    const env = makeEnv();
+    const home = await worker.fetch(new Request(`${ORIGIN}/`), env, makeCtx());
+    assert.equal(home.status, 200);
+    assert.equal(home.headers.get("cache-control"), "no-store");
+    const text = await home.text();
+    assert.ok(text.includes(`href="${ASSET_URLS["dashboard.css"]}"`));
+    assert.ok(text.includes(`src="${ASSET_URLS["dashboard.js"]}"`));
   });
 });
 

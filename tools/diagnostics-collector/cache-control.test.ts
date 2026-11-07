@@ -68,6 +68,14 @@ describe("cache classes", () => {
       new Request("https://collector.test/issues/summaries", {
         headers: { "X-Bookclerk-Report-Key": "k".repeat(32) },
       }),
+      new Request("https://collector.test/issues/summary", { method: "POST", body: "{}" }),
+      new Request("https://collector.test/triage", { method: "POST", body: "{}" }),
+      // No AI binding: the triage route's own JSON, which sets no header.
+      new Request("https://collector.test/triage", {
+        method: "POST",
+        headers: { "X-Bookclerk-Report-Key": "k".repeat(32), "Content-Type": "application/json" },
+        body: "{}",
+      }),
       new Request("https://collector.test/nowhere"),
       new Request("https://collector.test/static/assets/missing.css"),
     ];
@@ -78,6 +86,36 @@ describe("cache classes", () => {
       if (res.status >= 300 || res.status === 204)
         assert.equal(value, CACHE_CONTROL.noStore, request.url);
     }
+  });
+
+  it("keeps an internal error out of every cache", async () => {
+    const broken = new Proxy(ENV, {
+      get(target, name, receiver) {
+        if (name === "DASHBOARD_DB") throw new Error("binding failed");
+        return Reflect.get(target, name, receiver);
+      },
+    });
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      const res = await worker.fetch(new Request("https://collector.test/"), broken, CTX);
+      assert.equal(res.status, 500);
+      assert.equal(res.headers.get("Cache-Control"), CACHE_CONTROL.noStore);
+    } finally {
+      console.error = realError;
+    }
+  });
+
+  it("runs the scheduled sync, which does nothing with the dashboard off", async () => {
+    const pending: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil: (p: Promise<unknown>) => void pending.push(p),
+      passThroughOnException: () => {},
+      props: {},
+    } as unknown as ExecutionContext;
+    await worker.scheduled({} as ScheduledController, ENV, ctx);
+    assert.equal(pending.length, 1);
+    await pending[0];
   });
 
   it("gives an answer without a Cache-Control no-store and leaves the rest alone", async () => {
