@@ -8771,4 +8771,28 @@ mode = "deny"
             .iter()
             .all(|book| book.account_id == "envelope-b"));
     }
+
+    /// With no local destination on the node, a title's sidecar cover is a
+    /// 404 whether or not the title exists, answered without a library read.
+    #[tokio::test]
+    async fn book_cover_is_not_found_without_a_local_destination() {
+        use axum::body::Body;
+        use axum::http::{header, Request, StatusCode};
+        use tower::ServiceExt;
+
+        let (state, app, _library) = crate::auth::tests::phase2_harness("op-token-cover").await;
+        assert!(state.destinations.read().await.local().is_none());
+        let cookie = crate::auth::operator_session_cookie(&state).await;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/library/books/no-such-title/cover")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
 }
