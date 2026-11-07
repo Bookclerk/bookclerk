@@ -1,6 +1,6 @@
 # Hosted demo image: the production image plus the four storefront plugins
 # and the covers plugin, minus everything that could acquire a book. Built on
-# the production sources and runtime stages of packaging/docker/Dockerfile
+# the production builder and runtime stages of packaging/docker/Dockerfile
 # from the same commit, so every crate and plugin in the demo is the version
 # production ships, in one BuildKit build that never exports the builder:
 #
@@ -16,7 +16,7 @@
 #
 # What differs from production, and why:
 #   - The storefronts (Audible, Libro.fm, Chirp, GraphicAudio) and the
-#     covers plugin are built from the same sources, with their
+#     covers plugin are staged from the production builder, with their
 #     shipped network grants. Covers, store icons and avatars are downloaded
 #     through `covers` and re-encoded by bookclerk-media-worker, so the web
 #     app can load them from its own origin.
@@ -41,23 +41,19 @@
 #     of this commit, never raw SQL. If it fails, bookclerkd still starts,
 #     with an empty library.
 
-# The production Dockerfile's `sources` and `runtime` stages, which the bake
-# file passes in (a plain `docker build` would need images of these names).
-ARG SOURCES=bookclerk-sources:demo
+# The bake file points these at the production Dockerfile's stages.
+ARG BUILDER=bookclerk-builder:demo
 ARG RUNTIME=bookclerk:demo
 
-# Starts from the sources rather than the finished builder, so BuildKit runs
-# it at the same time as the hosts' build: the hosts' release build shares
-# few compiled dependencies with this one anyway (different feature sets),
-# and its long link phase leaves cores idle.
-FROM ${SOURCES} AS storefronts
+FROM ${BUILDER} AS storefronts
 WORKDIR /src
 # The link settings the builder stage got (see docker-bake.hcl).
 ARG RELEASE_LTO=true
 ARG RELEASE_CODEGEN_UNITS=1
-# The storefronts and the seed build in one cargo invocation, so the
-# dependencies they share compile once, with one feature set; stage-plugins
-# then only lays out what was built.
+# Reuses the release build the production image already made. The
+# storefronts and the seed build in one cargo invocation, so the dependencies
+# they share compile once, with one feature set; stage-plugins then only lays
+# out what was built.
 RUN CARGO_PROFILE_RELEASE_LTO="$RELEASE_LTO" \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$RELEASE_CODEGEN_UNITS" \
     cargo build --release \
