@@ -57,6 +57,9 @@ export default defineConfig({
           include: ["*.test.ts"],
           exclude: NODE_TESTS,
           setupFiles: ["test-support/workers-setup.ts"],
+          // Vitest empties CSS imports it does not process; cache-control.test.ts
+          // hashes the dashboard's styles, so it must see them as they are.
+          css: { include: [/\/public\/static\/assets\/[^/]*\.css(?:\?|$)/] },
         },
       },
       {

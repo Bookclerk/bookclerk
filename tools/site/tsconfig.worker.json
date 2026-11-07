@@ -10,6 +10,7 @@
   "include": [
     "entry.ts",
     "worker.ts",
+    "cache-control.ts",
     "render.ts",
     "api-reference.ts",
     "diagram.ts",

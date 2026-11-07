@@ -57,6 +57,7 @@ import {
   parseSummaryDone,
 } from "./dashboard/github.ts";
 import { reportIdOf } from "./dashboard/report-ids.ts";
+import { CACHE_CONTROL } from "./cache-control.ts";
 import {
   dashboardFetch,
   dashboardFiledReportIds,
@@ -312,104 +313,141 @@ Disallow: /
 `;
 
 export default {
+  /**
+   * Answers one request, with a `Cache-Control` from the cache-class table
+   * on every answer (see {@link withCacheClass}).
+   *
+   * @param request - The incoming request.
+   * @param env - Bindings.
+   * @param ctx - The request context.
+   * @returns The response.
+   */
   async fetch(request: Request, env: Env, ctx: Background): Promise<Response> {
-    const url = new URL(request.url);
-    const path = url.pathname.replace(/\/+$/, "") || "/";
-
-    if (path === "/robots.txt" && (request.method === "GET" || request.method === "HEAD")) {
-      return new Response(request.method === "HEAD" ? null : ROBOTS_TXT, {
-        headers: {
-          "Content-Type": "text/plain; charset=utf-8",
-          "Cache-Control": "public, max-age=3600",
-          "X-Content-Type-Options": "nosniff",
-        },
-      });
-    }
-
-    try {
-      const page = await dashboardFetch(request, env, ctx, path, b2Access(env));
-      if (page) return page;
-
-      if (request.method === "GET" && (path === "/" || path === "/health")) {
-        const origin = new URL(request.url).origin;
-        return json({
-          ok: true,
-          service: "bookclerk-diagnostics",
-          url: origin,
-        });
-      }
-
-      // Awaited so a rejection lands in the catch below instead of escaping
-      // as Cloudflare's opaque error 1101.
-      if (request.method === "POST" && path === "/submit") {
-        return await handleSubmit(request, env, ctx);
-      }
-
-      if (request.method === "GET" && path === "/report") {
-        return await handleReport(request, env, url);
-      }
-
-      if (request.method === "POST" && path === "/report/cursor") {
-        if (!requireReportAuth(request, env)) {
-          return json({ error: "unauthorized" }, 401);
-        }
-        return await handleCursorCommit(request, env);
-      }
-
-      if (request.method === "POST" && path === "/issues/notify") {
-        if (!requireReportAuth(request, env)) {
-          return json({ error: "unauthorized" }, 401);
-        }
-        return await handleIssueNotify(request, env);
-      }
-
-      if (request.method === "POST" && path === "/issues/attach") {
-        if (!requireReportAuth(request, env)) {
-          return json({ error: "unauthorized" }, 401);
-        }
-        return await handleTriageAttach(request, env);
-      }
-
-      if (request.method === "GET" && path === "/issues/summaries") {
-        if (!requireReportAuth(request, env)) {
-          return json({ error: "unauthorized" }, 401);
-        }
-        const summaries = await dashboardIssueSummaries(env, Date.now());
-        if (summaries === null) return new Response(null, { status: 204 });
-        return json({ issues: summaries });
-      }
-
-      if (request.method === "POST" && path === "/issues/summary") {
-        if (!requireReportAuth(request, env)) {
-          return json({ error: "unauthorized" }, 401);
-        }
-        return await handleSummaryDone(request, env);
-      }
-
-      if (request.method === "POST" && path === "/triage") {
-        if (!requireReportAuth(request, env)) {
-          return json({ error: "unauthorized" }, 401);
-        }
-        return await handleTriage(request, env);
-      }
-
-      return json({ error: "not found" }, 404);
-    } catch (err) {
-      console.error(`${request.method} ${path} failed: ${errorText(err)}`);
-      if (err instanceof UpstreamError) {
-        // Only callers holding the report key learn which upstream failed;
-        // the messages carry a stage, an HTTP status and a short code only.
-        const detail = requireReportAuth(request, env) ? { detail: err.message } : {};
-        return json({ error: "upstream failed", ...detail }, 502);
-      }
-      return json({ error: "internal error" }, 500);
-    }
+    return withCacheClass(await respond(request, env, ctx));
   },
 
   async scheduled(_controller, env, ctx): Promise<void> {
     ctx.waitUntil(dashboardScheduled(env, Date.now()));
   },
 } satisfies ExportedHandler<Env>;
+
+/**
+ * Answers one request, before {@link withCacheClass}.
+ *
+ * @param request - The incoming request.
+ * @param env - Bindings.
+ * @param ctx - The request context.
+ * @returns The response.
+ */
+async function respond(request: Request, env: Env, ctx: Background): Promise<Response> {
+  const url = new URL(request.url);
+  const path = url.pathname.replace(/\/+$/, "") || "/";
+
+  if (path === "/robots.txt" && (request.method === "GET" || request.method === "HEAD")) {
+    return new Response(request.method === "HEAD" ? null : ROBOTS_TXT, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": CACHE_CONTROL.hour,
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+
+  try {
+    const page = await dashboardFetch(request, env, ctx, path, b2Access(env));
+    if (page) return page;
+
+    if (request.method === "GET" && (path === "/" || path === "/health")) {
+      const origin = new URL(request.url).origin;
+      return json({
+        ok: true,
+        service: "bookclerk-diagnostics",
+        url: origin,
+      });
+    }
+
+    // Awaited so a rejection lands in the catch below instead of escaping
+    // as Cloudflare's opaque error 1101.
+    if (request.method === "POST" && path === "/submit") {
+      return await handleSubmit(request, env, ctx);
+    }
+
+    if (request.method === "GET" && path === "/report") {
+      return await handleReport(request, env, url);
+    }
+
+    if (request.method === "POST" && path === "/report/cursor") {
+      if (!requireReportAuth(request, env)) {
+        return json({ error: "unauthorized" }, 401);
+      }
+      return await handleCursorCommit(request, env);
+    }
+
+    if (request.method === "POST" && path === "/issues/notify") {
+      if (!requireReportAuth(request, env)) {
+        return json({ error: "unauthorized" }, 401);
+      }
+      return await handleIssueNotify(request, env);
+    }
+
+    if (request.method === "POST" && path === "/issues/attach") {
+      if (!requireReportAuth(request, env)) {
+        return json({ error: "unauthorized" }, 401);
+      }
+      return await handleTriageAttach(request, env);
+    }
+
+    if (request.method === "GET" && path === "/issues/summaries") {
+      if (!requireReportAuth(request, env)) {
+        return json({ error: "unauthorized" }, 401);
+      }
+      const summaries = await dashboardIssueSummaries(env, Date.now());
+      if (summaries === null) return new Response(null, { status: 204 });
+      return json({ issues: summaries });
+    }
+
+    if (request.method === "POST" && path === "/issues/summary") {
+      if (!requireReportAuth(request, env)) {
+        return json({ error: "unauthorized" }, 401);
+      }
+      return await handleSummaryDone(request, env);
+    }
+
+    if (request.method === "POST" && path === "/triage") {
+      if (!requireReportAuth(request, env)) {
+        return json({ error: "unauthorized" }, 401);
+      }
+      return await handleTriage(request, env);
+    }
+
+    return json({ error: "not found" }, 404);
+  } catch (err) {
+    console.error(`${request.method} ${path} failed: ${errorText(err)}`);
+    if (err instanceof UpstreamError) {
+      // Only callers holding the report key learn which upstream failed;
+      // the messages carry a stage, an HTTP status and a short code only.
+      const detail = requireReportAuth(request, env) ? { detail: err.message } : {};
+      return json({ error: "upstream failed", ...detail }, 502);
+    }
+    return json({ error: "internal error" }, 500);
+  }
+}
+
+/**
+ * Gives an answer without a `Cache-Control` the {@link CACHE_CONTROL}
+ * `noStore` class, as bookclerkd's middleware does: the 204s, the live-update
+ * errors and anything a route adds later are never kept. A WebSocket
+ * upgrade (101) is left alone.
+ *
+ * @param response - The route's answer.
+ * @returns The same answer, or a copy with `Cache-Control: no-store`.
+ */
+export function withCacheClass(response: Response): Response {
+  if (response.status === 101 || response.headers.has("Cache-Control")) return response;
+  const out = new Response(response.body, response);
+  out.headers.set("Cache-Control", CACHE_CONTROL.noStore);
+  return out;
+}
 
 /**
  * The B2 helpers the dashboard reads stored reports with.
@@ -1274,7 +1312,7 @@ function json(obj: unknown, status: number = 200): Response {
     status,
     headers: {
       "Content-Type": "application/json",
-      "Cache-Control": "no-store",
+      "Cache-Control": CACHE_CONTROL.noStore,
     },
   });
 }

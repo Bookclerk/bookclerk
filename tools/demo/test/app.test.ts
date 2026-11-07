@@ -13,6 +13,7 @@ import {
   withBanner,
   withNoTransform,
 } from "../src/app.ts";
+import { CACHE_CONTROL, cacheClassOf } from "../src/cache-control.ts";
 import type { Env, SessionApi } from "../src/env.ts";
 import { finish, recordStartup } from "../src/limits.ts";
 import type { LiveStatus } from "../src/live.ts";
@@ -841,5 +842,67 @@ describe("startup estimate", () => {
       html,
       /<script src="\/_demo\/live\.js" defer><\/script><script src="\/_demo\/wait\.js" defer><\/script>/,
     );
+  });
+});
+
+describe("cache classes", () => {
+  /** The Worker's sources besides the table, by path. */
+  const SOURCES: Readonly<Record<string, string>> = import.meta.glob<string>(
+    ["../src/*.ts", "!../src/cache-control.ts"],
+    { query: "?raw", import: "default", eager: true },
+  );
+
+  it("gives every answer the Worker makes itself a class from the table", async () => {
+    const env = makeEnv();
+    const deps = makeDeps();
+    const answers: [string, Response][] = [
+      ["robots.txt", await handle(new Request(`${ORIGIN}/robots.txt`), env, deps)],
+      ["health", await handle(new Request(`${ORIGIN}/_demo/health`), env, deps)],
+      [
+        "launch page",
+        await handle(new Request(`${ORIGIN}/`, { headers: { Accept: "text/html" } }), env, deps),
+      ],
+      ["unconfigured start", (await startSession(makeEnv({ TURNSTILE_SECRET: "" }), deps)).res],
+    ];
+    const { res: started, cookie } = await startSession(env, deps);
+    answers.push(["start", started]);
+    const browser = { Cookie: cookie, Accept: "text/html" };
+    answers.push([
+      "waiting page",
+      await handle(new Request(`${ORIGIN}/library`, { headers: browser }), env, deps),
+    ]);
+    const end = new Request(`${ORIGIN}/_demo/end`, {
+      method: "POST",
+      headers: { Cookie: cookie, Origin: ORIGIN },
+    });
+    answers.push(["start over", await handle(end, env, deps)]);
+    answers.push([
+      "ended page",
+      await handle(new Request(`${ORIGIN}/library`, { headers: browser }), env, deps),
+    ]);
+    for (const [what, res] of answers) {
+      const value = res.headers.get("Cache-Control");
+      const expected = what === "robots.txt" ? "hour" : "noStore";
+      assert.equal(cacheClassOf(value), expected, `${what} (${res.status}): ${value}`);
+    }
+  });
+
+  it("names each class and nothing else", () => {
+    for (const [name, value] of Object.entries(CACHE_CONTROL)) {
+      assert.equal(cacheClassOf(value), name);
+    }
+    assert.equal(cacheClassOf(null), null);
+    assert.equal(cacheClassOf("private, max-age=60"), null);
+  });
+
+  it("the Worker spells no Cache-Control value outside the table", () => {
+    assert.ok(Object.keys(SOURCES).length > 5);
+    for (const [path, source] of Object.entries(SOURCES)) {
+      assert.doesNotMatch(
+        source,
+        /["'`](?:public,|private\b|no-store|no-cache|must-revalidate)/,
+        path,
+      );
+    }
   });
 });

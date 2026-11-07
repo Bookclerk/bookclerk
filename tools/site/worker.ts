@@ -84,6 +84,7 @@ import {
 import type { DocsShell, DocsVersion, SearchPage, SitemapPageLink } from "./render.ts";
 import { MAX_SITEMAP_URLS, sitemapIndexXml, sitemapXml } from "./sitemap.ts";
 import { catalogCards, catalogSample } from "./catalog.ts";
+import { CACHE_CONTROL, shared } from "./cache-control.ts";
 import type { SitemapEntry } from "./sitemap.ts";
 
 /** The static assets binding, or a stand-in in tests. */
@@ -637,11 +638,13 @@ function varyAdd(headers: Headers, name: string): string {
  *
  * @param url - The request URL.
  * @param location - The path to go to.
- * @returns A permanent redirect that keeps the query string.
+ * @returns A permanent redirect that keeps the query string, which browsers
+ *   and the edge keep for a day.
  */
 function redirect(url: URL, location: string): Response {
   return withHeaders(new Response(null, { status: 301 }), {
     Location: `${url.origin}${location}${url.search}`,
+    "Cache-Control": shared(TAG_TTL, TAG_TTL),
   });
 }
 
@@ -661,7 +664,7 @@ function toDocsHome(url: URL, base: string, markdown: boolean): Response {
   const location = markdown ? docMarkdownUrl("README", base) : docUrl("README", base);
   return withHeaders(new Response(null, { status: 302 }), {
     Location: `${url.origin}${location}`,
-    "Cache-Control": "no-store",
+    "Cache-Control": CACHE_CONTROL.noStore,
   });
 }
 
@@ -672,7 +675,7 @@ function toDocsHome(url: URL, base: string, markdown: boolean): Response {
  * @param method - The request method.
  * @param markdown - Whether to answer in Markdown.
  * @param assets - The static assets.
- * @returns The page with status 404.
+ * @returns The page with status 404, which no cache keeps.
  */
 async function notFound(
   url: URL,
@@ -689,7 +692,12 @@ async function notFound(
   const type = markdown ? MARKDOWN_CONTENT_TYPE : "text/html; charset=utf-8";
   return withHeaders(
     body,
-    { "Content-Type": type, Vary: "Accept", "X-Robots-Tag": "noindex" },
+    {
+      "Content-Type": type,
+      "Cache-Control": CACHE_CONTROL.noStore,
+      Vary: "Accept",
+      "X-Robots-Tag": "noindex",
+    },
     404,
   );
 }
@@ -776,7 +784,7 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
       {
         "Content-Type": type,
         "Retry-After": "60",
-        "Cache-Control": "no-store",
+        "Cache-Control": CACHE_CONTROL.noStore,
         Vary: "Accept",
         "X-Robots-Tag": "noindex",
       },
@@ -819,8 +827,8 @@ async function serveDocs(request: Request, url: URL, deps: DocsDeps): Promise<Re
     apiIndex: index?.kind === "file" ? index.text : null,
   });
   const cacheControl = cacheable
-    ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`
-    : `public, max-age=${MISSING_TTL}, s-maxage=0`;
+    ? shared(BROWSER_TTL, ttlFor(version.ref))
+    : shared(MISSING_TTL, 0);
   const common: Record<string, string> = { "Cache-Control": cacheControl, Vary: "Accept" };
   // Only the default version is for search engines; older releases and main
   // (once a release exists) are reachable but not indexed.
@@ -927,8 +935,8 @@ async function serveSearchIndex(
   const response = withHeaders(new Response(JSON.stringify({ pages: pages.flat() })), {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": failed
-      ? `public, max-age=${MISSING_TTL}, s-maxage=${MISSING_TTL}`
-      : `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`,
+      ? shared(MISSING_TTL, MISSING_TTL)
+      : shared(BROWSER_TTL, ttlFor(version.ref)),
     "X-Robots-Tag": "noindex",
   });
   if (deps.cache) deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
@@ -1010,7 +1018,7 @@ async function serveSitemap(request: Request, url: URL, deps: DocsDeps): Promise
   }
 
   let response: Response;
-  const cached = `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`;
+  const cached = shared(BROWSER_TTL, ttlFor(version.ref));
   if (docs === 0) {
     // A tag published without the file never gets one, so its fallback
     // keeps like its pages; a failed or empty read is retried in a minute.
@@ -1018,7 +1026,7 @@ async function serveSitemap(request: Request, url: URL, deps: DocsDeps): Promise
       if (file.kind === "missing") return notFound(url, request.method, false, deps.assets);
       return withHeaders(
         new Response(null),
-        { "Retry-After": "60", "Cache-Control": "no-store" },
+        { "Retry-After": "60", "Cache-Control": CACHE_CONTROL.noStore },
         503,
       );
     }
@@ -1156,8 +1164,8 @@ async function serveSitemapPage(
   );
   const cacheable = (docs.length > 0 || file.kind === "missing") && generated.kind !== "failed";
   const cacheControl = cacheable
-    ? `public, max-age=${BROWSER_TTL}, s-maxage=${ttlFor(version.ref)}`
-    : `public, max-age=${MISSING_TTL}, s-maxage=0`;
+    ? shared(BROWSER_TTL, ttlFor(version.ref))
+    : shared(MISSING_TTL, 0);
   const response = markdown
     ? withHeaders(new Response(page.markdown), {
         "Cache-Control": cacheControl,
@@ -1198,7 +1206,7 @@ async function fallbackSitemap(
   if (!built.ok) return built;
   return withHeaders(built, {
     "Content-Type": XML_CONTENT_TYPE,
-    "Cache-Control": `public, max-age=${MISSING_TTL}, s-maxage=${ttl}`,
+    "Cache-Control": shared(MISSING_TTL, ttl),
   });
 }
 
@@ -1365,7 +1373,7 @@ export function withCatalogSample(response: Response, random?: () => number): Re
     .transform(response);
   const out = new Response(rewritten.body, rewritten);
   for (const name of ["ETag", "Last-Modified", "Content-Length"]) out.headers.delete(name);
-  out.headers.set("Cache-Control", "no-cache");
+  out.headers.set("Cache-Control", CACHE_CONTROL.revalidate);
   return out;
 }
 

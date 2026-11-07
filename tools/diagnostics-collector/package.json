@@ -8,6 +8,7 @@
   },
   "scripts": {
     "deploy": "wrangler deploy",
+    "hash-assets": "node scripts/hash-assets.ts",
     "dev": "wrangler dev",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json",
     "lint": "oxlint --deny-warnings",

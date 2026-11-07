@@ -11,6 +11,7 @@
  */
 
 import type { Background } from "../env.ts";
+import { ASSET_URLS } from "./asset-urls.ts";
 import { logAccess } from "./db.ts";
 import {
   authorizeUrl,
@@ -335,7 +336,7 @@ export async function finishSignIn(
 export function sameSiteHop(title: string, target: string, lead: string): SafeHtml {
   return html`<!doctype html><html lang="en"><head><meta charset="utf-8">
       <meta http-equiv="refresh" content="0;url=${target}"><title>${title}</title>
-      <link rel="stylesheet" href="/static/dashboard.css"></head>
+      <link rel="stylesheet" href="${ASSET_URLS["dashboard.css"]}"></head>
       <body class="center"><p>${lead} <a href="${target}">Open the dashboard</a>.</p></body></html>`;
 }
 

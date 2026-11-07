@@ -1,7 +1,7 @@
 /**
  * Server-drawn SVG charts. Everything is computed from numbers and fixed
  * class names; labels pass through `html`, so report text cannot inject
- * markup. Colors come from CSS classes in public/static/dashboard.css (the
+ * markup. Colors come from CSS classes in public/static/assets/dashboard.*.css (the
  * page CSP allows no inline styles), so both themes apply.
  */
 

@@ -16,7 +16,7 @@ license ships beside the files (`OFL-*.txt`) and is published with them.
 
 The files are the latin and latin-ext subsets Google Fonts serves for
 `css2?family=IBM+Plex+Mono:wght@400;500&family=Literata:opsz,wght@7..72,500;7..72,700&family=Source+Sans+3:wght@400;600;700`,
-downloaded unchanged; `site.css` and `../dashboard.css` repeat their `unicode-range`s. The
+downloaded unchanged; `site.css` and `../assets/dashboard.*.css` repeat their `unicode-range`s. The
 upstream version is part of each file name because `_headers` lets browsers
 cache the font files for a year: a new version must get a new name.
 
