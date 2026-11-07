@@ -180,7 +180,8 @@ PLAN_JOB_TEST_PREFIX = "scripts/tests/"
 # mutation testing reports, settings and starting commit only run in mutation.yml,
 # mutation-workers.yml and mutation-python.yml; the merge-queue re-enqueue
 # check only runs in merge-queue-requeue.yml; the ClusterFuzzLite artifact
-# lookup only runs inside the cflite-*.yml fuzzing jobs).
+# lookup only runs inside the cflite-*.yml fuzzing jobs; the demo deploy's
+# registry and health readers only run in demo-deploy.yml).
 PLAN_JOB_SCRIPT_FILES = frozenset(
     {
         "scripts/cla_check.py",
@@ -197,6 +198,7 @@ PLAN_JOB_SCRIPT_FILES = frozenset(
         "scripts/codeql_reuse.py",
         "scripts/merge_queue_requeue.py",
         "scripts/cflite_artifacts.py",
+        "scripts/demo_image.py",
         ".cargo/mutants.toml",
         "scripts/stryker_report.py",
         "scripts/stryker.config.json",

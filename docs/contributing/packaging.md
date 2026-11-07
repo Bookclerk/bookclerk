@@ -161,7 +161,13 @@ repository's owner. A fork publishes to its own namespace with its own
 
 The `bookclerk-dev` image carries inline cache metadata, so the Dev
 Container's `build.cacheFrom` reuses its layers. The demo image builds on
-the production builder and runtime.
+the production builder and runtime. The hosted demo's deploy pulls the
+published demo image without signing in, so the package must be public.
+When the image for the deployed commit exists and its attestation
+verifies, the deploy uses it instead of building it again. Otherwise a
+push or manual deploy builds the image itself, and a deploy started by a
+publish that pushed no demo image stops (see
+[The demo deploy](automation.md#the-demo-deploy)).
 
 Each architecture builds on a native runner and is checked before it is
 pushed, then the architectures are joined into one index:
