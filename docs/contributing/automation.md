@@ -812,16 +812,33 @@ wrangler's output and writes it to the run summary, with a warning past
 
 ### The demo deploy
 
-The demo deploy builds the production builder and image from the deployed
-commit. Then `wrangler deploy` builds `packaging/demo/Dockerfile` on top of
-them and pushes it to Cloudflare's container registry.
+The demo image is the same one `images-publish.yml` publishes as
+`ghcr.io/<owner>/bookclerk-demo`, so the deploy reuses it rather than
+building it twice:
 
-It runs when the demo changes on `main`, when a release is published,
-nightly, and on demand.
+1. When the published image for the deployed commit
+   (`bookclerk-demo:sha-<12 hex>`) exists, the deploy checks its build
+   provenance with `gh attestation verify`. The attestation must name
+   `images-publish.yml` in this repository, the deployed commit, and a
+   GitHub-hosted runner.
+2. A verified image is deployed by digest: `wrangler deploy` builds a
+   one-line Dockerfile on it and pushes that to Cloudflare's container
+   registry, which can't pull from GHCR itself. This takes a few minutes.
+3. Without one (a push that changes the demo, a fork that publishes no
+   images), or when verification fails, the deploy builds the production
+   builder and image from the deployed commit, and `wrangler deploy` builds
+   `packaging/demo/Dockerfile` on top of them. This takes about half an hour.
 
-- A nightly or release run first asks the live demo's `/_demo/health`
-  which commit it runs. It stops before building when it is the same one
+It runs when the demo changes on `main`, when a release is published, after
+every `Publish images` run on `main` (the nightly publish, which is how crate
+and plugin changes reach the demo), and on demand.
+
+- A run after a publish or a release first asks the live demo's
+  `/_demo/health` which commit it runs. It stops when it is the same one
   and an earlier run for that commit finished successfully.
+- A run after a publish deploys the commit that publish built. It stops
+  when the live demo already runs a newer commit, so the demo never goes
+  back, and when the publish pushed no demo image.
 - The Worker reports its version before migrations and smoke checks, so a
   half-finished deploy is retried.
 - A repository without the two Cloudflare secrets gets a notice instead of
