@@ -868,8 +868,24 @@ describe("cache classes", () => {
     answers.push(["start", started]);
     const browser = { Cookie: cookie, Accept: "text/html" };
     answers.push([
-      "waiting page",
+      "waiting page redirect",
       await handle(new Request(`${ORIGIN}/library`, { headers: browser }), env, deps),
+    ]);
+    answers.push([
+      "waiting page",
+      await handle(new Request(`${ORIGIN}/_demo/wait`, { headers: browser }), env, deps),
+    ]);
+    answers.push([
+      "session",
+      await handle(
+        new Request(`${ORIGIN}/_demo/session`, { headers: { Cookie: cookie } }),
+        env,
+        deps,
+      ),
+    ]);
+    answers.push([
+      "unknown Worker path",
+      await handle(new Request(`${ORIGIN}/_demo/nowhere`, { headers: browser }), env, deps),
     ]);
     const end = new Request(`${ORIGIN}/_demo/end`, {
       method: "POST",
@@ -884,6 +900,8 @@ describe("cache classes", () => {
       const value = res.headers.get("Cache-Control");
       const expected = what === "robots.txt" ? "hour" : "noStore";
       assert.equal(cacheClassOf(value), expected, `${what} (${res.status}): ${value}`);
+      // The literal policy too, so a change to the table itself fails here.
+      assert.equal(value, expected === "hour" ? "public, max-age=3600" : "no-store", what);
     }
   });
 
@@ -895,14 +913,26 @@ describe("cache classes", () => {
     assert.equal(cacheClassOf("private, max-age=60"), null);
   });
 
-  it("the Worker spells no Cache-Control value outside the table", () => {
+  it("the Worker sets Cache-Control only from the table", () => {
     assert.ok(Object.keys(SOURCES).length > 5);
+    let assignments = 0;
     for (const [path, source] of Object.entries(SOURCES)) {
+      // Every assignment, in any casing, takes a table value, or bookclerkd's
+      // own header with no-transform added.
+      for (const [line, value] of source.matchAll(/["']cache-control["']\s*[:,]\s*([^\n]+)/gi)) {
+        assignments += 1;
+        assert.match(
+          value ?? "",
+          /^(?:CACHE_CONTROL\.\w+|withNoTransform\(headers\.get\()/,
+          `${path}: ${line}`,
+        );
+      }
       assert.doesNotMatch(
         source,
-        /["'`](?:public,|private\b|no-store|no-cache|must-revalidate)/,
+        /["'][^"'\n]*\b(?:no-store|no-cache|must-revalidate|s-maxage|immutable)\b/i,
         path,
       );
     }
+    assert.ok(assignments >= 5);
   });
 });
