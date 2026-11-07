@@ -90,6 +90,7 @@ impl HeartbeatSource for FixedSampler {
             cpu_used_millicores: Some(100),
             memory_available_bytes: Some(4 << 30),
             files_dir_free_bytes: Some(1 << 40),
+            cache: None,
         }
     }
 }

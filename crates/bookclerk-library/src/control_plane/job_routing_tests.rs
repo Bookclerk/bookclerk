@@ -672,3 +672,33 @@ async fn postgres_lowered_limit_counts_high_slots() {
     let (a, b) = postgres_stores().await;
     lowered_limit_counts_high_slots(a, b).await;
 }
+
+#[tokio::test]
+async fn a_job_pinned_to_a_node_is_claimed_by_that_node_only() {
+    let (_dir, a, b) = sqlite_stores().await;
+    let pinned = enqueue(
+        &a,
+        JobKind::CacheSweep,
+        JobPayload {
+            node_id: Some("node-a".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    // The unrouted claim never takes it, and another node skips it.
+    assert!(b
+        .claim_next_job(JobResourceClass::Network, "worker-b", 60, "op-b")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(claim_routed_job(&b, &request("node-b", "worker-b", 60, 4))
+        .await
+        .unwrap()
+        .is_none());
+    let claim = claim_routed_job(&a, &request("node-a", "worker-a", 60, 4))
+        .await
+        .unwrap()
+        .expect("the pinned node claims it");
+    assert_eq!(claim.job.id, pinned);
+    assert_eq!(claim.job.kind, JobKind::CacheSweep);
+}

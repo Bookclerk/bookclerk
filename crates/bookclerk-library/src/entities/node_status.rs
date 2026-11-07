@@ -45,6 +45,12 @@ pub struct Model {
     pub availability_ppm: i64,
     /// Unix milliseconds the current unbroken online stretch began.
     pub online_since_ms: i64,
+    /// Bytes the node's image caches hold; empty from a node that keeps none.
+    pub cache_bytes: Option<i64>,
+    /// Bytes the node's image caches may hold.
+    pub cache_budget_bytes: Option<i64>,
+    /// Unix milliseconds the node's last cache sweep finished.
+    pub cache_swept_ms: Option<i64>,
 }
 
 /// Declared SeaORM relations (none).

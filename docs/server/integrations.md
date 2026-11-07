@@ -314,11 +314,30 @@ in the files directory. Three limits keep it from filling the disk:
   shrinks to half its budget. Until the disk has room again, new images
   are served but not kept.
 
-Each node checks these limits with its heartbeat (every 15 seconds), and
-sweeps the cache when they change, when the disk is low, and at least
-hourly. A swept image is first moved into `cache/covers/.trash/`, then
-deleted, so a request never reads half an image; anything left there is
-deleted on the next sweep or start.
+Each node checks these limits with its heartbeat (every 15 seconds). When
+they changed, a new image took the cache over its budget or found the disk
+low, or an hour has passed since the last sweep, the node queues a
+`cache_sweep` job that only it can run; a sweep already queued counts, and
+one already running is followed by another. The job sweeps the cache,
+then deletes the download scratch folders under `cache/acquire`,
+`cache/acquire-pdf` and `cache/convert` that no running job owns and in
+which nothing has changed for an hour. It shows in the job list like any
+other job. If the queue is full, or the job has waited five minutes behind
+busy workers, the node sweeps the cache without it.
+
+A swept image is first moved into `cache/covers/.trash/`, then deleted, so
+a request never reads half an image; anything left there is deleted on the
+next sweep or start.
+
+`bookclerk nodes` shows what each node's cache holds, its budget and when
+it was last swept:
+
+```text
+node-7f3a9c (this node) live target=- labels=-
+  owner node, owner -
+  cpu 8.0 cores (budget 6.4, reserved 1.6, busy 0.4) | memory …
+  cache 700M of 1.0G, swept 12 min ago
+```
 
 The budget and the age are cluster settings in the `core.cache` document
 (see [Configuration](configuration.md#image-cache)), and a node can

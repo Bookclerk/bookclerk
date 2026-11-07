@@ -2026,7 +2026,7 @@ fn plan_mark_unreadable_pending_jobs(now: &str) -> SqlStmt {
          WHERE state = 'pending' AND ( \
             json_valid(payload) = 0 \
             OR IFNULL(json_extract(payload, '$.v') || '', '') != '1' \
-            OR kind NOT IN ('scan', 'acquire', 'listen_sync', 'integration_scan') \
+            OR kind NOT IN ('scan', 'acquire', 'listen_sync', 'integration_scan', 'cache_sweep') \
             OR resource_class NOT IN ('network', 'media', 'transcription', 'indexing') \
          )",
         vec![j_str(now), j_str(now)],
@@ -2136,6 +2136,7 @@ fn plan_claim_next_job(
                        AND json_valid(payload) = 1 \
                        AND IFNULL(json_extract(payload, '$.v') || '', '') = '1' \
                        AND json_extract(payload, '$.requires') IS NULL \
+                       AND json_extract(payload, '$.node_id') IS NULL \
                        AND kind IN ('scan', 'acquire', 'listen_sync', 'integration_scan') \
                        AND resource_class IN ('network', 'media', 'transcription', 'indexing') \
                      ORDER BY priority DESC, created_at ASC LIMIT 1\
@@ -4004,6 +4005,34 @@ mod tests {
             })
             .unwrap();
         assert_eq!(claimed, "good");
+    }
+
+    #[test]
+    fn unrouted_claim_leaves_a_pinned_cache_sweep_pending() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn);
+        seed_pending_job(
+            &conn,
+            "sweep",
+            "cache_sweep",
+            r#"{"v":1,"node_id":"node-a"}"#,
+            100,
+        );
+        seed_pending_job(&conn, "free", "scan", r#"{"v":1}"#, 0);
+        let result = run_plan(
+            &conn,
+            &plan_claim_next_job("network", "worker-1", 60, "2024-06-01T00:00:00Z"),
+        );
+        assert_eq!(result.status, atomic_status::OK);
+        let claimed: String = conn
+            .query_row("SELECT id FROM jobs WHERE state = 'running'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(claimed, "free");
+        let (state, kind, error, _) = claim_row(&conn, "sweep");
+        assert_eq!((state.as_str(), kind.as_str()), ("pending", "cache_sweep"));
+        assert_eq!(error, None);
     }
 
     #[test]

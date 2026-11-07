@@ -26,6 +26,10 @@ const CLAIM_REPLAY_BUDGET: Duration = Duration::from_secs(2);
 /// Delay between bounded claim-replay attempts.
 const CLAIM_REPLAY_DELAY: Duration = Duration::from_millis(200);
 
+/// How long an unregistered scratch directory must have been unchanged
+/// before the periodic sweep deletes it.
+pub(crate) const SCRATCH_GRACE: Duration = Duration::from_secs(60 * 60);
+
 /// Reclaim leases, reconcile orphan acquire rows, sweep scratch dirs, start workers.
 pub async fn start_job_runtime(state: Arc<AppState>) {
     if let Err(err) = reconcile_on_startup(&state).await {
@@ -45,7 +49,8 @@ pub async fn reconcile_on_startup(state: &AppState) -> anyhow::Result<()> {
     let orphans = library.reconcile_orphaned_acquire_rows().await?;
     let cfg = state.config.read().await.clone();
     let cache = cfg.download_cache_dir();
-    let swept = sweep_orphan_temp_dirs(&library, &cache).await?;
+    // Nothing runs yet, so every unregistered directory is an orphan.
+    let swept = sweep_orphan_temp_dirs(&library, &cache, Duration::ZERO).await?;
     let stale_before = (chrono::Utc::now()
         - chrono::Duration::seconds(i64::try_from(cfg.jobs.lease_seconds).unwrap_or(60)))
     .to_rfc3339();
@@ -60,13 +65,37 @@ pub async fn reconcile_on_startup(state: &AppState) -> anyhow::Result<()> {
 }
 
 /// Delete `{cache}/acquire*` directories that are not registered to an active job.
+///
+/// At startup nothing runs yet, so `min_age` is zero. The periodic
+/// `cache_sweep` job passes [`SCRATCH_GRACE`] instead: a job may create its
+/// directory a moment before registering it, and `bookclerk library
+/// convert` works without a job at all, so a directory in which anything
+/// changed within `min_age` is left alone.
+///
+/// # Arguments
+///
+/// * `library` - Holds the registered directories and their jobs.
+/// * `cache_dir` - The download cache root.
+/// * `min_age` - How long a directory must have been unchanged to go.
+///
+/// # Returns
+///
+/// How many directories were deleted.
+///
+/// # Errors
+///
+/// Returns the library error when the registered directories or their jobs
+/// cannot be read; nothing is deleted then.
 pub async fn sweep_orphan_temp_dirs(
     library: &LibraryStore,
     cache_dir: &Path,
+    min_age: Duration,
 ) -> anyhow::Result<u32> {
     let mut active_keep = HashSet::new();
     for row in library.list_all_job_temp_paths().await? {
-        if let Ok(Some(job)) = library.get_job(&row.job_id).await {
+        // A failed lookup aborts the sweep: a directory is never deleted
+        // because its job could not be read.
+        if let Some(job) = library.get_job(&row.job_id).await? {
             if job.state.is_active() {
                 // Same representation as [`sweep_dir`]: prefer canonicalize so a
                 // lexical DB path and a symlink-resolved DirEntry still match.
@@ -77,7 +106,7 @@ pub async fn sweep_orphan_temp_dirs(
     }
     let mut swept = 0u32;
     for name in ["acquire", "acquire-pdf", "convert"] {
-        swept += sweep_dir(&cache_dir.join(name), &active_keep).await;
+        swept += sweep_dir(&cache_dir.join(name), &active_keep, min_age).await;
     }
     Ok(swept)
 }
@@ -103,8 +132,58 @@ fn require_under_sweep_root(root: &Path, path: &Path) -> Option<PathBuf> {
     Some(path_norm)
 }
 
-/// Deletes unregistered child directories under `root`.
-async fn sweep_dir(root: &Path, keep: &HashSet<PathBuf>) -> u32 {
+/// Whether anything in the tree at `path` changed within `min_age`.
+///
+/// A directory's own time moves only when entries are added or removed, so
+/// a file growing inside it (an encoder appending to its output) would not
+/// show there; the whole tree is read instead. Symbolic links are not
+/// followed.
+///
+/// # Arguments
+///
+/// * `path` - The directory to check.
+/// * `min_age` - The window that counts as recent.
+///
+/// # Returns
+///
+/// `true` when an entry changed within `min_age` or a time could not be
+/// read, which is treated as new so nothing is deleted on doubt.
+fn changed_within(path: &Path, min_age: Duration) -> bool {
+    let recent = |meta: &std::fs::Metadata| {
+        meta.modified()
+            .map(|modified| modified.elapsed().unwrap_or_default() < min_age)
+            .unwrap_or(true)
+    };
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if recent(&meta) => return true,
+            Ok(_) => {}
+            Err(_) => return true,
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return true;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return true;
+            };
+            let Ok(meta) = entry.metadata() else {
+                return true;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else if recent(&meta) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Deletes unregistered child directories under `root` in which nothing
+/// changed for at least `min_age`.
+async fn sweep_dir(root: &Path, keep: &HashSet<PathBuf>, min_age: Duration) -> u32 {
     let mut n = 0u32;
     let Ok(root_canon) = tokio::fs::canonicalize(root).await else {
         return 0;
@@ -126,6 +205,16 @@ async fn sweep_dir(root: &Path, keep: &HashSet<PathBuf>) -> u32 {
         };
         if path == root_canon || keep.contains(&path) {
             continue;
+        }
+        if !min_age.is_zero() {
+            let tree = entry.path();
+            let young = tokio::task::spawn_blocking(move || changed_within(&tree, min_age))
+                .await
+                // A failed check is treated as new: never delete on doubt.
+                .unwrap_or(true);
+            if young {
+                continue;
+            }
         }
         match tokio::fs::remove_dir_all(&entry.path()).await {
             Ok(()) => n += 1,
@@ -600,11 +689,56 @@ mod tests {
             .await
             .unwrap();
 
-        let swept = sweep_orphan_temp_dirs(&store, &cache).await.unwrap();
-        assert_eq!(swept, 2);
+        // The periodic sweep leaves a directory changed within the grace
+        // period alone: its job may not have registered it yet.
+        let young = sweep_orphan_temp_dirs(&store, &cache, SCRATCH_GRACE)
+            .await
+            .unwrap();
+        assert_eq!(young, 0);
+        assert!(orphan.exists());
+        // Once nothing in it has changed for the grace period, it goes.
+        let window = Duration::from_millis(300);
+        std::thread::sleep(window * 2);
+        let stale = sweep_orphan_temp_dirs(&store, &cache, window)
+            .await
+            .unwrap();
+        assert_eq!(stale, 2);
         assert!(!orphan.exists());
         assert!(!convert_orphan.exists());
         assert!(kept.exists());
+        // Startup sweeps without the grace, and still keeps a live job's.
+        let fresh = cache.join("acquire").join("fresh-orphan");
+        tokio::fs::create_dir_all(&fresh).await.unwrap();
+        let swept = sweep_orphan_temp_dirs(&store, &cache, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(swept, 1);
+        assert!(!fresh.exists());
+        assert!(kept.exists());
+    }
+
+    /// A file growing deep in a scratch tree keeps the tree young even
+    /// though no directory time moves.
+    #[test]
+    fn a_growing_file_keeps_its_scratch_tree_young() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("encode");
+        std::fs::create_dir_all(tree.join("work")).unwrap();
+        let output = tree.join("work").join("out.mp3");
+        std::fs::write(&output, b"a").unwrap();
+        let window = Duration::from_millis(300);
+        std::thread::sleep(window * 2);
+        assert!(!changed_within(&tree, window));
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&output)
+            .unwrap();
+        file.write_all(b"b").unwrap();
+        file.sync_all().unwrap();
+        assert!(changed_within(&tree, window));
+        assert!(changed_within(&dir.path().join("missing"), window));
     }
 
     /// Keep-set paths come from the DB as lexical strings; DirEntry walks are
@@ -655,7 +789,9 @@ mod tests {
             .await
             .unwrap();
 
-        let swept = sweep_orphan_temp_dirs(&store, &cache_link).await.unwrap();
+        let swept = sweep_orphan_temp_dirs(&store, &cache_link, Duration::ZERO)
+            .await
+            .unwrap();
         assert_eq!(swept, 0);
         assert!(kept_real.exists());
         assert!(lexical_kept.exists());

@@ -1375,6 +1375,10 @@ pub enum JobKind {
     /// Rank one Discover subject's stored candidates into shelves
     /// (`discover_feed`); no network.
     DiscoverFeed,
+    /// Sweep one node's image caches and its orphaned job scratch
+    /// (`cache_sweep`); only the node named by [`JobPayload::node_id`]
+    /// claims it.
+    CacheSweep,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,
 }
@@ -1392,6 +1396,7 @@ impl JobKind {
             Self::PluginScheduled => "plugin_scheduled",
             Self::DiscoverCandidates => "discover_candidates",
             Self::DiscoverFeed => "discover_feed",
+            Self::CacheSweep => "cache_sweep",
             Self::Invalid => "invalid",
         }
     }
@@ -1408,6 +1413,7 @@ impl JobKind {
             "plugin_scheduled" => Some(Self::PluginScheduled),
             "discover_candidates" => Some(Self::DiscoverCandidates),
             "discover_feed" => Some(Self::DiscoverFeed),
+            "cache_sweep" => Some(Self::CacheSweep),
             "invalid" => Some(Self::Invalid),
             _ => None,
         }
@@ -1482,6 +1488,12 @@ impl JobKind {
             Self::DiscoverFeed => format!(
                 "discover_feed:subject={}",
                 payload.subject.as_deref().unwrap_or("-")
+            ),
+            // One queued or running sweep per node: a heartbeat that finds
+            // another sweep due folds into it.
+            Self::CacheSweep => format!(
+                "cache_sweep:node={}",
+                payload.node_id.as_deref().unwrap_or("-")
             ),
             Self::Invalid => "invalid".into(),
         }
@@ -1705,6 +1717,16 @@ pub struct JobPayload {
     /// Discover subject key (`operator`, `user:<id>`, `portal:<id>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
+    /// The one node that may claim this job, for work on that node's own
+    /// disk ([`JobKind::CacheSweep`]).
+    ///
+    /// `None` lets any node that meets [`Self::requires`] claim it. The
+    /// routed claim (`control_plane::claim_routed_job`) skips a job pinned
+    /// to another node, the unrouted [`crate::LibraryStore::claim_next_job`]
+    /// never claims a pinned job, and the requirements sweep fails one whose
+    /// node has stopped heartbeating (`control_plane::sweep_job_requirements`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
 }
 
 /// Dedup key of a [`JobKind::PluginScheduled`] fire: one active fire per
@@ -1741,6 +1763,7 @@ impl Default for JobPayload {
             cron: None,
             scheduled_time_ms: None,
             subject: None,
+            node_id: None,
         }
     }
 }
@@ -2676,5 +2699,39 @@ mod wake_grant_tests {
             2,
             r#"{"source":"audible"}"#
         ));
+    }
+}
+
+#[cfg(test)]
+mod cache_sweep_tests {
+    use super::*;
+
+    #[test]
+    fn a_cache_sweep_round_trips_and_dedups_per_node() {
+        assert_eq!(JobKind::parse("cache_sweep"), Some(JobKind::CacheSweep));
+        assert_eq!(JobKind::CacheSweep.as_str(), "cache_sweep");
+        let pinned = |node: &str| JobPayload {
+            node_id: Some(node.into()),
+            ..JobPayload::default()
+        };
+        assert_eq!(
+            JobKind::CacheSweep.dedup_key(&pinned("node-a")),
+            "cache_sweep:node=node-a"
+        );
+        assert_ne!(
+            JobKind::CacheSweep.dedup_key(&pinned("node-a")),
+            JobKind::CacheSweep.dedup_key(&pinned("node-b"))
+        );
+        assert_eq!(
+            JobKind::CacheSweep.dedup_key(&JobPayload::default()),
+            "cache_sweep:node=-"
+        );
+        // The pin is kept through storage and left out when absent.
+        let json = serde_json::to_string(&pinned("node-a")).unwrap();
+        assert!(json.contains("\"node_id\":\"node-a\""), "{json}");
+        let back: JobPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.node_id.as_deref(), Some("node-a"));
+        let plain = serde_json::to_string(&JobPayload::default()).unwrap();
+        assert!(!plain.contains("node_id"), "{plain}");
     }
 }

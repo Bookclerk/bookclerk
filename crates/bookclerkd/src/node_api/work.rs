@@ -151,6 +151,8 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 cpu_used_millicores: cpu_used_millicores.map(|v| v.max(0)),
                 memory_available_bytes: memory_available_bytes.map(|v| v.max(0)),
                 files_dir_free_bytes: files_dir_free_bytes.map(|v| v.max(0)),
+                // A Host keeps no image cache of its own.
+                cache: None,
             };
             record_node_heartbeat(library, &host.node_id, &heartbeat)
                 .await

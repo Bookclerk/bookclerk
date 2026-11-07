@@ -94,6 +94,19 @@ impl GuestReservation {
     }
 }
 
+/// What a node's image caches hold, as its daemon reports them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CacheUsage {
+    /// Bytes the caches hold now.
+    pub bytes: i64,
+    /// Bytes they may hold: the cluster's `cache.budget_bytes` or the
+    /// node's override.
+    pub budget_bytes: i64,
+    /// When the last eviction sweep finished, in Unix milliseconds; `None`
+    /// before the first since the daemon started.
+    pub swept_ms: Option<i64>,
+}
+
 /// One heartbeat's measurements, before budget and accounting are applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeHeartbeat {
@@ -113,6 +126,8 @@ pub struct NodeHeartbeat {
     pub memory_available_bytes: Option<i64>,
     /// Free bytes on the files directory's filesystem.
     pub files_dir_free_bytes: Option<i64>,
+    /// The image caches' use; `None` from a node that keeps none (a Host).
+    pub cache: Option<CacheUsage>,
 }
 
 /// A node's latest heartbeat with budget, accounting, and availability.
@@ -171,6 +186,16 @@ pub struct NodeStatus {
     /// Unix milliseconds the current online stretch began.
     #[schema(example = 1_793_167_200_000_i64)]
     pub online_since_ms: i64,
+    /// Bytes the node's image caches hold; `None` from a node that keeps
+    /// none.
+    #[schema(example = 734_003_200_i64)]
+    pub cache_bytes: Option<i64>,
+    /// Bytes the node's image caches may hold.
+    #[schema(example = 1_073_741_824_i64)]
+    pub cache_budget_bytes: Option<i64>,
+    /// When the node's last cache sweep finished, in Unix milliseconds.
+    #[schema(example = 1_793_212_800_000_i64)]
+    pub cache_swept_ms: Option<i64>,
 }
 
 impl NodeStatus {
@@ -306,6 +331,7 @@ impl NodeSampler {
             memory_available_bytes,
             files_dir_free_bytes: bookclerk_sandbox::filesystem_free_bytes(&self.files_dir)
                 .and_then(fit),
+            cache: None,
         }
     }
 }
@@ -401,6 +427,9 @@ pub async fn record_node_heartbeat(
         running_guests,
         availability_ppm,
         online_since_ms,
+        cache_bytes: heartbeat.cache.map(|cache| cache.bytes),
+        cache_budget_bytes: heartbeat.cache.map(|cache| cache.budget_bytes),
+        cache_swept_ms: heartbeat.cache.and_then(|cache| cache.swept_ms),
     };
     upsert_node_status(store, &status).await?;
     Ok(status)
@@ -428,6 +457,9 @@ pub(crate) async fn upsert_node_status(store: &LibraryStore, status: &NodeStatus
         running_guests: Set(status.running_guests),
         availability_ppm: Set(status.availability_ppm),
         online_since_ms: Set(status.online_since_ms),
+        cache_bytes: Set(status.cache_bytes),
+        cache_budget_bytes: Set(status.cache_budget_bytes),
+        cache_swept_ms: Set(status.cache_swept_ms),
     };
     node_status::Entity::insert(model)
         .on_conflict(
@@ -451,6 +483,9 @@ pub(crate) async fn upsert_node_status(store: &LibraryStore, status: &NodeStatus
                     node_status::Column::RunningGuests,
                     node_status::Column::AvailabilityPpm,
                     node_status::Column::OnlineSinceMs,
+                    node_status::Column::CacheBytes,
+                    node_status::Column::CacheBudgetBytes,
+                    node_status::Column::CacheSweptMs,
                 ])
                 .to_owned(),
         )
@@ -484,6 +519,9 @@ fn status_from_model(row: node_status::Model) -> NodeStatus {
         running_guests: row.running_guests,
         availability_ppm: row.availability_ppm,
         online_since_ms: row.online_since_ms,
+        cache_bytes: row.cache_bytes,
+        cache_budget_bytes: row.cache_budget_bytes,
+        cache_swept_ms: row.cache_swept_ms,
     }
 }
 
@@ -662,6 +700,9 @@ mod tests {
             running_guests: 2,
             availability_ppm: 900_000,
             online_since_ms: 0,
+            cache_bytes: None,
+            cache_budget_bytes: None,
+            cache_swept_ms: None,
         };
         // Measured use (2.5 cores) is above the reservations (1.6).
         assert_eq!(status.cpu_headroom_millicores(), 700);
