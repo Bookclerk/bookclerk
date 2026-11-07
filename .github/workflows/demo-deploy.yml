@@ -180,10 +180,13 @@ jobs:
           image=""
           if [ "$deploy" = true ]; then
             repo="ghcr.io/${OWNER,,}/bookclerk-demo"
-            # Exactly sha256:<64 hex>, or empty when there is no such image
-            # (or, in a fork, no public package). Any other registry failure
-            # is retried once; an after-publish run then fails rather than
-            # skip a deploy it was started for, and other runs build here.
+            # Exactly sha256:<64 hex>, or empty when the tag does not exist.
+            # A package that can't be read anonymously (a fork that publishes
+            # none, or a private one) also means no image for a push or
+            # manual run, which then builds here. Any other registry failure
+            # is retried once. An after-publish run follows a publish of this
+            # repository's package, so it fails on anything but a missing
+            # tag rather than skip the deploy it was started for.
             digest=""
             missing=false
             for attempt in 1 2; do
@@ -191,7 +194,16 @@ jobs:
                 digest=$(python3 scripts/demo_image.py digest <<<"$manifest" || true)
                 break
               fi
-              if grep -qiE 'not found|manifest unknown|unauthorized|denied' "$RUNNER_TEMP/inspect.err"; then
+              if grep -qiE 'not found|manifest unknown' "$RUNNER_TEMP/inspect.err"; then
+                missing=true
+                break
+              fi
+              if grep -qiE 'failed to authorize|unauthorized|denied|403 forbidden' "$RUNNER_TEMP/inspect.err"; then
+                cat "$RUNNER_TEMP/inspect.err" >&2
+                if [ "$EVENT" = workflow_run ]; then
+                  echo "::error::$repo can't be read without signing in; the package must be public (docs/contributing/packaging.md)"
+                  exit 1
+                fi
                 missing=true
                 break
               fi
