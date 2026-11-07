@@ -35,7 +35,9 @@ RUN npm ci --no-audit --no-fund
 COPY ui/ ./
 RUN npm run build
 
-FROM rust:1-trixie@sha256:931c2c0531a8b143e044f0f3914dfe802f15bb3d1955f0b657e9359327ac2ffc AS builder
+# The toolchain and sources, before anything is compiled. The hosted demo
+# builds its storefronts from here, alongside the builder.
+FROM rust:1-trixie@sha256:931c2c0531a8b143e044f0f3914dfe802f15bb3d1955f0b657e9359327ac2ffc AS sources
 RUN apt-get update \
     && apt-get install -y --no-install-recommends capnproto \
     && rm -rf /var/lib/apt/lists/*
@@ -44,6 +46,8 @@ COPY . .
 # Built in the ui stage, so package-platform finds a current ui/dist and does
 # not need Node here.
 COPY --from=ui /src/ui/dist ui/dist
+
+FROM sources AS builder
 # The release profile's link-time optimization. The defaults are
 # Cargo.toml's (fat LTO, one codegen unit), what every shipped image uses.
 # Only the hosted demo's build (packaging/demo/docker-bake.hcl) passes
