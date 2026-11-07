@@ -170,6 +170,9 @@ export function DiscoverPage({
   role?: AuthRole;
 }) {
   const [feed, setFeed] = useState<DiscoverFeed>({ shelves: [] });
+  // False until the first feed read answers, so the page shows placeholders
+  // rather than "No recommendations yet" while it loads.
+  const [feedLoaded, setFeedLoaded] = useState(false);
   const [wishlist, setWishlist] = useState<TitleRequest[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -226,7 +229,10 @@ export function DiscoverPage({
     // so a read that answers late never replaces a newer one's shelves.
     const ticket = feedReads.current.begin();
     const [f, w] = await Promise.all([fetchDiscoverFeed(), fetchWishlist()]);
-    if (feedReads.current.accept(ticket)) setFeed(f);
+    if (feedReads.current.accept(ticket)) {
+      setFeed(f);
+      setFeedLoaded(true);
+    }
     setWishlist(w);
     setVisibleShelvesCount(SHELVES_INITIAL);
     return { feed: f, wishlist: w };
@@ -246,7 +252,10 @@ export function DiscoverPage({
     const ticket = feedReads.current.begin();
     return fetchDiscoverFeed()
       .then((next) => {
-        if (feedReads.current.accept(ticket)) setFeed(next);
+        if (feedReads.current.accept(ticket)) {
+          setFeed(next);
+          setFeedLoaded(true);
+        }
         if (ticket > lastFailedLiveRead.current) setLiveRetry(0);
       })
       .catch(() => {
@@ -284,7 +293,10 @@ export function DiscoverPage({
         const ticket = feedReads.current.begin();
         void fetchDiscoverFeed()
           .then((next) => {
-            if (feedReads.current.accept(ticket)) setFeed(next);
+            if (feedReads.current.accept(ticket)) {
+              setFeed(next);
+              setFeedLoaded(true);
+            }
             // A newer read was applied first; run the effect again so
             // polling continues from what it showed.
             else setPollRetry((n) => n + 1);
@@ -1151,10 +1163,10 @@ export function DiscoverPage({
                 </p>
               </div>
 
-              {feed.shelves.length === 0 && feed.state === "preparing" ? (
+              {feed.shelves.length === 0 && (!feedLoaded || feed.state === "preparing") ? (
                 <div aria-busy="true" className="space-y-3">
                   <p className="text-sm text-ink/60" role="status">
-                    Preparing your shelves…
+                    {feedLoaded ? "Preparing your shelves…" : "Loading your shelves…"}
                   </p>
                   {[0, 1, 2].map((row) => (
                     <div key={row} className="flex gap-3 overflow-hidden" aria-hidden="true">

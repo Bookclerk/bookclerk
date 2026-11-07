@@ -179,14 +179,11 @@ pub async fn expand_candidates(
     {
         match search_catalog_by_series_asin(&http, &region, series_asin).await {
             Ok(products) => {
-                let series_label = seed
-                    .series
-                    .clone()
-                    .unwrap_or_else(|| series_asin.to_string());
-                for mut p in products {
-                    if p.series.is_none() {
-                        p.series = Some(series_label.clone());
-                    }
+                // A title the listing returns without a series keeps none:
+                // the listing also returns loose matches (other editions,
+                // unrelated titles), and stamping the seed's series on them
+                // files them under a series they are not in.
+                for p in products {
                     push(
                         &mut by_asin,
                         p,
@@ -233,9 +230,11 @@ pub async fn expand_candidates(
         {
             match search_catalog_products(&http, &region, "", None, Some(series)).await {
                 Ok(products) => {
-                    for mut p in products {
-                        if p.series.is_none() {
-                            p.series = Some(series.to_string());
+                    // The keyword search also returns loose matches, so keep
+                    // only titles whose own series is the one searched for.
+                    for p in products {
+                        if !same_series(p.series.as_deref(), series) {
+                            continue;
                         }
                         push(
                             &mut by_asin,
@@ -465,6 +464,51 @@ fn product_to_hit(p: CatalogProduct, origin: String) -> CatalogHit {
     }
 }
 
+/// Words of a series name, lowercased, without punctuation or a leading
+/// "the" / "a" / "an".
+fn series_words(name: &str) -> Vec<String> {
+    let mut words: Vec<String> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    if words
+        .first()
+        .is_some_and(|w| matches!(w.as_str(), "the" | "a" | "an"))
+    {
+        words.remove(0);
+    }
+    words
+}
+
+/// Whether a catalog title's series is the series a keyword search asked for.
+///
+/// The names match when one's words appear, in order and adjacent, inside
+/// the other's ("Dune" and "The Dune Sequence"). A title with no series
+/// never matches.
+///
+/// # Arguments
+///
+/// * `product_series` - Series the catalog lists for the title, if any.
+/// * `searched` - Series name the search asked for.
+///
+/// # Returns
+///
+/// `true` when the title belongs to the searched series.
+fn same_series(product_series: Option<&str>, searched: &str) -> bool {
+    let Some(product_series) = product_series else {
+        return false;
+    };
+    let a = series_words(product_series);
+    let b = series_words(searched);
+    let (short, long) = if a.len() <= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    !short.is_empty() && long.windows(short.len()).any(|w| w == short.as_slice())
+}
+
 /// First author/narrator token split on comma, semicolon, or ampersand.
 fn primary_person(people: Option<&str>) -> Option<&str> {
     people?
@@ -635,6 +679,25 @@ fn format_money_label(cents: i64, currency: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Loose keyword matches from another (or no) series are not stamped
+    /// into the searched series.
+    #[test]
+    fn series_search_keeps_only_the_searched_series() {
+        assert!(same_series(Some("The Dune Sequence"), "Dune"));
+        assert!(same_series(Some("Dune"), "The Dune Sequence"));
+        assert!(same_series(
+            Some("the midnight world"),
+            "The Midnight World"
+        ));
+        assert!(!same_series(None, "The Dune Sequence"));
+        assert!(!same_series(
+            Some("The Midnight Library"),
+            "The Midnight World"
+        ));
+        assert!(!same_series(Some("Dunesday"), "Dune"));
+        assert!(!same_series(Some("The"), "The"));
+    }
+
     use super::*;
     use serde_json::json;
 

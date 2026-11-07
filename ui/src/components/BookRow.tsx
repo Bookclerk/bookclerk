@@ -46,11 +46,11 @@ export function BookRow({
         onClick={() => onOpen?.(book)}
         aria-label={`Open details for ${book.title}`}
       >
-        {/* The local sidecar (acquired titles) first, then the storefront's
-            cover through the daemon, then the Bookclerk mark. */}
+        {/* The local sidecar (only stored titles have one) first, then the
+            storefront's cover through the daemon, then the Bookclerk mark. */}
         <CoverThumb
           path={book.cover_path}
-          sources={[coverUrl(book.uuid)]}
+          sources={book.storage_key ? [coverUrl(book.uuid)] : []}
           className="h-full w-full rounded-none bg-transparent shadow-none"
         />
       </button>

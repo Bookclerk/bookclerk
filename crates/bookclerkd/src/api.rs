@@ -5224,6 +5224,14 @@ async fn get_book_cover(
     State(state): State<Arc<AppState>>,
     AxumPath(uuid): AxumPath<String>,
 ) -> Result<Response, StatusCode> {
+    // Without a local destination there is no sidecar to serve, so answer
+    // before reading the library.
+    let local = state
+        .destinations
+        .read()
+        .await
+        .local()
+        .ok_or(StatusCode::NOT_FOUND)?;
     let library = state.library_snapshot().await;
     let book = library
         .get_book_by_uuid(&uuid)
@@ -5231,12 +5239,6 @@ async fn get_book_cover(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     let storage_key = book.storage_key.as_deref().ok_or(StatusCode::NOT_FOUND)?;
-    let local = state
-        .destinations
-        .read()
-        .await
-        .local()
-        .ok_or(StatusCode::NOT_FOUND)?;
     let cover_key = sidecar_key(storage_key, "jpg");
     let bytes = local
         .get(&cover_key)
@@ -8768,5 +8770,29 @@ mode = "deny"
             .books
             .iter()
             .all(|book| book.account_id == "envelope-b"));
+    }
+
+    /// With no local destination on the node, a title's sidecar cover is a
+    /// 404 whether or not the title exists, answered without a library read.
+    #[tokio::test]
+    async fn book_cover_is_not_found_without_a_local_destination() {
+        use axum::body::Body;
+        use axum::http::{header, Request, StatusCode};
+        use tower::ServiceExt;
+
+        let (state, app, _library) = crate::auth::tests::phase2_harness("op-token-cover").await;
+        assert!(state.destinations.read().await.local().is_none());
+        let cookie = crate::auth::operator_session_cookie(&state).await;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/library/books/no-such-title/cover")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 }

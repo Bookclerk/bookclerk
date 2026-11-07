@@ -17,7 +17,8 @@ const statusStyles: Record<AcquireStatus, string> = {
 };
 
 function coverCandidates(book: BookRecord): string[] {
-  const out: string[] = [coverUrl(book.uuid)];
+  // Only a stored title has a local sidecar; asking for one otherwise is a 404.
+  const out: string[] = book.storage_key ? [coverUrl(book.uuid)] : [];
   // The storefront's cover only through the daemon, never from its own site.
   const remote = coverSrc(book.cover_path, "full");
   if (remote) out.push(remote);

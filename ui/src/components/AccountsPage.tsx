@@ -31,7 +31,9 @@ export function AccountsPage({
   nav: AppNavProps;
   role?: AuthRole;
 }) {
-  const [sources, setSources] = useState<PortalSource[]>([]);
+  // Null until the first sources read answers, so the page shows a loading
+  // line rather than "No storefront plugin is deployed" while it loads.
+  const [sources, setSources] = useState<PortalSource[] | null>(null);
   const [connections, setConnections] = useState<PortalConnection[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -64,6 +66,7 @@ export function AccountsPage({
         }
       }
     } catch (err) {
+      setSources((prev) => prev ?? []);
       setError(err instanceof Error ? err.message : "Failed to load accounts");
     } finally {
       setBusy(false);
@@ -170,7 +173,11 @@ export function AccountsPage({
 
           <section className="space-y-3">
             <h2 className="text-lg font-semibold text-ink">Bookstore sources</h2>
-            {sources.length === 0 ? (
+            {sources === null ? (
+              <p className="text-sm text-ink/50" role="status" aria-busy="true">
+                Loading sources…
+              </p>
+            ) : sources.length === 0 ? (
               <p className="text-sm text-ink/50">No storefront plugin is deployed on this node.</p>
             ) : (
               <ul className="divide-y divide-ink/10 bg-card">
