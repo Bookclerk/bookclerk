@@ -33,15 +33,20 @@ const SWEEP_PRIORITY: i64 = 100;
 
 /// How long a queued sweep may wait for a worker before the heartbeat
 /// sweeps the image cache without it.
-const QUEUED_SWEEP_PATIENCE: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
+const QUEUED_SWEEP_PATIENCE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// Whether a sweep queued at `queued_at` has waited past
-/// [`QUEUED_SWEEP_PATIENCE`] by `now`.
-fn waited_too_long(
-    queued_at: chrono::DateTime<chrono::Utc>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> bool {
-    now.signed_duration_since(queued_at) >= QUEUED_SWEEP_PATIENCE
+/// Sweeps the image cache without the job when a queued sweep has waited
+/// past [`QUEUED_SWEEP_PATIENCE`] behind busy workers; the heartbeat calls it
+/// on every beat, whether or not a new sweep came due.
+///
+/// # Arguments
+///
+/// * `state` - The daemon.
+pub(crate) fn sweep_if_overdue(state: &AppState) {
+    if state.covers.queued_longer_than(QUEUED_SWEEP_PATIENCE) {
+        warn!("cache sweep still queued; sweeping the image cache without it");
+        state.covers.sweep_in_background();
+    }
 }
 
 /// Admits a `cache_sweep` job pinned to `node_id`.
@@ -91,25 +96,20 @@ pub(crate) async fn enqueue_cache_sweep(
 /// * `node_id` - This node.
 pub(crate) async fn queue_cache_sweep(state: &AppState, node_id: &str) {
     match enqueue_cache_sweep(state, node_id).await {
-        Ok(AdmitJob::Created(_)) => {}
+        Ok(AdmitJob::Created(_)) => state.covers.note_queued(),
         Ok(AdmitJob::Duplicate(id)) => {
             // A queued sweep reads the limits when it starts, so it covers
             // this request. One already running read them before `maintain`
             // installed the new ones: ask again on the next heartbeat.
             let library = state.library_snapshot().await;
-            let queued_at = match library.get_job(&id).await {
-                Ok(Some(job)) if job.state == JobState::Pending => Some(job.created_at),
-                _ => None,
-            };
-            match queued_at {
-                None => state.covers.request_sweep(),
-                // Every worker is busy with long store work: the image cache
-                // is swept without the job rather than wait behind it.
-                Some(at) if waited_too_long(at, chrono::Utc::now()) => {
-                    warn!(job_id = %id, "cache sweep still queued; sweeping the image cache without it");
-                    state.covers.sweep_in_background();
-                }
-                Some(_) => {}
+            let queued = matches!(
+                library.get_job(&id).await,
+                Ok(Some(job)) if job.state == JobState::Pending
+            );
+            if queued {
+                state.covers.note_queued();
+            } else {
+                state.covers.request_sweep();
             }
         }
         Ok(AdmitJob::QueueFull) => {
@@ -240,9 +240,20 @@ mod tests {
         let AdmitJob::Created(id) = enqueue_cache_sweep(&state, "node-a").await.unwrap() else {
             panic!("expected a new job");
         };
-        // Folded into a queued job, the request is that job's.
+        // Folded into a queued job, the request is that job's, and the
+        // wait is tracked so a later beat can sweep without the job.
         queue_cache_sweep(&state, "node-a").await;
         assert!(!state.covers.maintain(limits).await);
+        assert!(state.covers.queued_longer_than(std::time::Duration::ZERO));
+        // Not yet overdue: the beat leaves it to the job.
+        sweep_if_overdue(&state);
+        assert!(state.covers.queued_longer_than(std::time::Duration::ZERO));
+        assert!(!state.covers.queued_longer_than(QUEUED_SWEEP_PATIENCE));
+        state.covers.sweep().await.unwrap();
+        assert!(
+            !state.covers.queued_longer_than(std::time::Duration::ZERO),
+            "a sweep that starts clears the wait"
+        );
 
         let job = library.get_job(&id).await.unwrap().unwrap();
         library
@@ -253,12 +264,5 @@ mod tests {
         // Folded into a running one, it comes back on the next beat.
         queue_cache_sweep(&state, "node-a").await;
         assert!(state.covers.maintain(limits).await);
-    }
-
-    #[test]
-    fn a_sweep_queued_too_long_is_overdue() {
-        let at = chrono::Utc::now();
-        assert!(!waited_too_long(at, at + chrono::TimeDelta::minutes(4)));
-        assert!(waited_too_long(at, at + QUEUED_SWEEP_PATIENCE));
     }
 }

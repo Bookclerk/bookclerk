@@ -398,6 +398,10 @@ pub(crate) struct CoverService {
     last_sweep: Mutex<Option<Instant>>,
     /// When the last sweep finished, for the node's heartbeat.
     swept_at: Arc<Mutex<Option<SystemTime>>>,
+    /// Since when a queued `cache_sweep` job has been waiting for a worker,
+    /// cleared when any sweep starts; the heartbeat sweeps without the job
+    /// once it has waited too long.
+    queued_since: Mutex<Option<Instant>>,
     /// Reads the free and total space of the disk holding a directory:
     /// [`bookclerk_sandbox::filesystem_space`] outside tests.
     disk: DiskSpace,
@@ -462,6 +466,7 @@ impl CoverService {
             limits: Mutex::new(limits),
             last_sweep: Mutex::new(None),
             swept_at: Arc::new(Mutex::new(None)),
+            queued_since: Mutex::new(None),
             disk: bookclerk_sandbox::filesystem_space,
             flights: Mutex::default(),
             failures: Mutex::default(),
@@ -1092,6 +1097,21 @@ impl CoverService {
         changed || due || pending || total > limits.budget || (low_now && total > limits.budget / 2)
     }
 
+    /// Notes that a sweep waits in the job queue, unless one already does.
+    pub(crate) fn note_queued(&self) {
+        lock(&self.queued_since).get_or_insert_with(Instant::now);
+    }
+
+    /// Whether a queued sweep has waited at least `patience` without any
+    /// sweep starting.
+    ///
+    /// # Arguments
+    ///
+    /// * `patience` - How long a queued sweep may wait.
+    pub(crate) fn queued_longer_than(&self, patience: Duration) -> bool {
+        lock(&self.queued_since).is_some_and(|at| at.elapsed() >= patience)
+    }
+
     /// Asks for a sweep at the next [`CoverService::maintain`], for a
     /// request that the running sweep, started under older limits, does
     /// not cover.
@@ -1134,6 +1154,7 @@ impl CoverService {
             return None;
         }
         *lock(&self.last_sweep) = Some(Instant::now());
+        *lock(&self.queued_since) = None;
         let limits = *lock(&self.limits);
         let sweeping = Arc::clone(&self.sweeping);
         let low_disk = Arc::clone(&self.low_disk);

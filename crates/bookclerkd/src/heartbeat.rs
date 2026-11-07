@@ -89,6 +89,7 @@ async fn beat(
             state.covers.sweep_in_background();
         }
     }
+    crate::cache_jobs::sweep_if_overdue(state);
     (sampler, status)
 }
 
