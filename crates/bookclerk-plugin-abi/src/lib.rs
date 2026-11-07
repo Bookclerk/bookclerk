@@ -155,7 +155,7 @@ pub use db_execute::{
     SQLITE_MAX_PATTERN_BYTES, SQLITE_MAX_SCHEMA_COLUMNS, SQL_CONTRACT_VERSION,
 };
 pub use db_value::{db_type_from_declared, normalize_db_value_for_column, DbType, DbValue};
-pub use error::{PluginError, PluginErrorCode, Result};
+pub use error::{LimitExceeded, PluginError, PluginErrorCode, Result};
 pub use generated::*;
 pub use guest_sql::{
     authorize_guest_sql_policy, guest_statement_kind, is_reserved_binding_name,
@@ -218,8 +218,9 @@ pub use host_roles::{AdapterTransaction, HostAdapterDatabaseSession};
 pub use host_rpc::HostAdapterDatabaseSessionClient;
 
 pub use db_rpc::{
-    canonical_execute_request_hash, decode_db_value_bytes, decode_execute_request_bytes,
-    decode_execute_result_reply_bytes, encoded_db_value_bytes, encoded_execute_reply_bytes,
+    canonical_execute_request_hash, decode_db_capabilities_reply_bytes, decode_db_value_bytes,
+    decode_execute_request_bytes, decode_execute_result_reply_bytes,
+    encoded_db_capabilities_reply_bytes, encoded_db_value_bytes, encoded_execute_reply_bytes,
     encoded_execute_request_bytes, encoded_execute_result_reply_bytes,
     encoded_statement_result_bytes,
 };

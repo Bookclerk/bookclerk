@@ -1303,6 +1303,23 @@ export interface GuestDatabaseCloseResults {
 }
 
 /**
+ * Params envelope of `GuestDatabase.limits`.
+ *
+ * @internal
+ */
+export interface GuestDatabaseLimitsParams {
+}
+
+/**
+ * Results envelope of `GuestDatabase.limits`.
+ *
+ * @internal
+ */
+export interface GuestDatabaseLimitsResults {
+  result: T.DbCapabilitiesReply;
+}
+
+/**
  * Params envelope of `PluginWorker.describe`.
  *
  * @internal
@@ -1398,23 +1415,25 @@ export const ScalarLimitsCodec: StructCodec<T.ScalarLimits> = {
 };
 
 /**
- * Wire codec for `PluginError` (0 data words, 2 pointers).
+ * Wire codec for `PluginError` (0 data words, 3 pointers).
  *
  * @internal
  */
 export const PluginErrorCodec: StructCodec<T.PluginError> = {
   dataWords: 0,
-  pointerCount: 2,
+  pointerCount: 3,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.code ?? "");
     s.setText(1, v.message ?? "");
+    s.setText(2, v.details ?? "");
   },
   read(s, caps) {
     void caps;
     return {
       code: s.getText(0),
       message: s.getText(1),
+      details: s.getText(2),
     };
   },
 };
@@ -1772,7 +1791,7 @@ export const OidcClientsReplyCodec: StructCodec<T.OidcClientsReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -1785,7 +1804,7 @@ export const OidcClientsReplyCodec: StructCodec<T.OidcClientsReply> = {
       case 0:
         return { kind: "ok", value: OidcClientsOkCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("OidcClientsReply", disc);
     }
@@ -2010,7 +2029,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2023,7 +2042,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
       case 0:
         return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 12), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("EntrypointsReply", disc);
     }
@@ -2514,7 +2533,7 @@ export const EventBatchReplyCodec: StructCodec<T.EventBatchReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2527,7 +2546,7 @@ export const EventBatchReplyCodec: StructCodec<T.EventBatchReply> = {
       case 0:
         return { kind: "ok", value: s.getStructList(0, 1, 1).map((item) => EventResultCodec.read(item, caps)) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("EventBatchReply", disc);
     }
@@ -2624,7 +2643,7 @@ export const HeadReplyCodec: StructCodec<T.HeadReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2637,7 +2656,7 @@ export const HeadReplyCodec: StructCodec<T.HeadReply> = {
       case 0:
         return { kind: "ok", value: HeadOkCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("HeadReply", disc);
     }
@@ -2663,7 +2682,7 @@ export const ListReplyCodec: StructCodec<T.ListReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2676,7 +2695,7 @@ export const ListReplyCodec: StructCodec<T.ListReply> = {
       case 0:
         return { kind: "ok", value: ListPageCodec.read(s.getStruct(0, 0, 2), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("ListReply", disc);
     }
@@ -2730,7 +2749,7 @@ export const GetReplyCodec: StructCodec<T.GetReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2743,7 +2762,7 @@ export const GetReplyCodec: StructCodec<T.GetReply> = {
       case 0:
         return { kind: "ok", value: GetOkCodec.read(s.getStruct(0, 0, 2), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("GetReply", disc);
     }
@@ -2769,7 +2788,7 @@ export const PutReplyCodec: StructCodec<T.PutReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2782,7 +2801,7 @@ export const PutReplyCodec: StructCodec<T.PutReply> = {
       case 0:
         return { kind: "ok", value: PutResultCodec.read(s.getStruct(0, 1, 3), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("PutReply", disc);
     }
@@ -2808,7 +2827,7 @@ export const CopyReplyCodec: StructCodec<T.CopyReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2821,7 +2840,7 @@ export const CopyReplyCodec: StructCodec<T.CopyReply> = {
       case 0:
         return { kind: "ok", value: CopyResultCodec.read(s.getStruct(0, 1, 0), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CopyReply", disc);
     }
@@ -2844,7 +2863,7 @@ export const EmptyReplyCodec: StructCodec<T.EmptyReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2857,7 +2876,7 @@ export const EmptyReplyCodec: StructCodec<T.EmptyReply> = {
       case 0:
         return { kind: "ok" };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("EmptyReply", disc);
     }
@@ -2905,7 +2924,7 @@ export const PullReplyCodec: StructCodec<T.PullReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2918,7 +2937,7 @@ export const PullReplyCodec: StructCodec<T.PullReply> = {
       case 0:
         return { kind: "ok", value: PullOkCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("PullReply", disc);
     }
@@ -2972,7 +2991,7 @@ export const OpenReplyCodec: StructCodec<T.OpenReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2985,7 +3004,7 @@ export const OpenReplyCodec: StructCodec<T.OpenReply> = {
       case 0:
         return { kind: "ok", value: OpenOkCodec.read(s.getStruct(0, 0, 2), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("OpenReply", disc);
     }
@@ -3011,7 +3030,7 @@ export const DescribeReplyCodec: StructCodec<T.DescribeReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3024,7 +3043,7 @@ export const DescribeReplyCodec: StructCodec<T.DescribeReply> = {
       case 0:
         return { kind: "ok", value: PluginDescribeCodec.read(s.getStruct(0, 2, 10), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("DescribeReply", disc);
     }
@@ -3050,7 +3069,7 @@ export const HandleReplyCodec: StructCodec<T.HandleReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3063,7 +3082,7 @@ export const HandleReplyCodec: StructCodec<T.HandleReply> = {
       case 0:
         return { kind: "ok", value: JobOutcomeCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("HandleReply", disc);
     }
@@ -3111,7 +3130,7 @@ export const HealthReplyCodec: StructCodec<T.HealthReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3124,7 +3143,7 @@ export const HealthReplyCodec: StructCodec<T.HealthReply> = {
       case 0:
         return { kind: "ok", value: HealthOkCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("HealthReply", disc);
     }
@@ -3150,7 +3169,7 @@ export const AdapterSessionReplyCodec: StructCodec<T.AdapterSessionReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3163,7 +3182,7 @@ export const AdapterSessionReplyCodec: StructCodec<T.AdapterSessionReply> = {
       case 0:
         return { kind: "ok", value: caps.importCap(s.getCapIndex(0)) as T.AdapterDatabaseSession };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("AdapterSessionReply", disc);
     }
@@ -3189,7 +3208,7 @@ export const GuestDatabaseReplyCodec: StructCodec<T.GuestDatabaseReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3202,7 +3221,7 @@ export const GuestDatabaseReplyCodec: StructCodec<T.GuestDatabaseReply> = {
       case 0:
         return { kind: "ok", value: caps.importCap(s.getCapIndex(0)) as T.GuestDatabase };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("GuestDatabaseReply", disc);
     }
@@ -3647,7 +3666,7 @@ export const CliSchemaReplyCodec: StructCodec<T.CliSchemaReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3660,7 +3679,7 @@ export const CliSchemaReplyCodec: StructCodec<T.CliSchemaReply> = {
       case 0:
         return { kind: "ok", value: CliSchemaCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CliSchemaReply", disc);
     }
@@ -3686,7 +3705,7 @@ export const CliInvokeReplyCodec: StructCodec<T.CliInvokeReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3699,7 +3718,7 @@ export const CliInvokeReplyCodec: StructCodec<T.CliInvokeReply> = {
       case 0:
         return { kind: "ok", value: CliInvokeResultCodec.read(s.getStruct(0, 1, 3), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CliInvokeReply", disc);
     }
@@ -3784,7 +3803,7 @@ export const DiagnoseReplyCodec: StructCodec<T.DiagnoseReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3797,7 +3816,7 @@ export const DiagnoseReplyCodec: StructCodec<T.DiagnoseReply> = {
       case 0:
         return { kind: "ok", value: DiagnoseResultCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("DiagnoseReply", disc);
     }
@@ -4014,7 +4033,7 @@ export const LoginReplyCodec: StructCodec<T.LoginReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -4027,7 +4046,7 @@ export const LoginReplyCodec: StructCodec<T.LoginReply> = {
       case 0:
         return { kind: "ok", value: LoginResultCodec.read(s.getStruct(0, 0, 2), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("LoginReply", disc);
     }
@@ -4053,7 +4072,7 @@ export const LoginStartReplyCodec: StructCodec<T.LoginStartReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -4066,7 +4085,7 @@ export const LoginStartReplyCodec: StructCodec<T.LoginStartReply> = {
       case 0:
         return { kind: "ok", value: LoginStartResultCodec.read(s.getStruct(0, 0, 2), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("LoginStartReply", disc);
     }
@@ -4387,7 +4406,7 @@ export const ScanReplyCodec: StructCodec<T.ScanReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -4400,7 +4419,7 @@ export const ScanReplyCodec: StructCodec<T.ScanReply> = {
       case 0:
         return { kind: "ok", value: ScanSummaryCodec.read(s.getStruct(0, 2, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("ScanReply", disc);
     }
@@ -4632,7 +4651,7 @@ export const FetchTitleReplyCodec: StructCodec<T.FetchTitleReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -4645,7 +4664,7 @@ export const FetchTitleReplyCodec: StructCodec<T.FetchTitleReply> = {
       case 0:
         return { kind: "ok", value: PlainFetchCodec.read(s.getStruct(0, 0, 5), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("FetchTitleReply", disc);
     }
@@ -4695,7 +4714,7 @@ export const SourceAccountsReplyCodec: StructCodec<T.SourceAccountsReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -4708,7 +4727,7 @@ export const SourceAccountsReplyCodec: StructCodec<T.SourceAccountsReply> = {
       case 0:
         return { kind: "ok", value: SourceAccountsCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("SourceAccountsReply", disc);
     }
@@ -5167,7 +5186,7 @@ export const CatalogHitsReplyCodec: StructCodec<T.CatalogHitsReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5180,7 +5199,7 @@ export const CatalogHitsReplyCodec: StructCodec<T.CatalogHitsReply> = {
       case 0:
         return { kind: "ok", value: CatalogHitsCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CatalogHitsReply", disc);
     }
@@ -5228,7 +5247,7 @@ export const CatalogDetailReplyCodec: StructCodec<T.CatalogDetailReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5241,7 +5260,7 @@ export const CatalogDetailReplyCodec: StructCodec<T.CatalogDetailReply> = {
       case 0:
         return { kind: "ok", value: CatalogDetailCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CatalogDetailReply", disc);
     }
@@ -5373,7 +5392,7 @@ export const PurchaseHintReplyCodec: StructCodec<T.PurchaseHintReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5386,7 +5405,7 @@ export const PurchaseHintReplyCodec: StructCodec<T.PurchaseHintReply> = {
       case 0:
         return { kind: "ok", value: PurchaseHintResultCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("PurchaseHintReply", disc);
     }
@@ -5491,7 +5510,7 @@ export const ExternalUserReplyCodec: StructCodec<T.ExternalUserReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5504,7 +5523,7 @@ export const ExternalUserReplyCodec: StructCodec<T.ExternalUserReply> = {
       case 0:
         return { kind: "ok", value: ExternalUserCodec.read(s.getStruct(0, 0, 4), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("ExternalUserReply", disc);
     }
@@ -5554,7 +5573,7 @@ export const EventPollReplyCodec: StructCodec<T.EventPollReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5567,7 +5586,7 @@ export const EventPollReplyCodec: StructCodec<T.EventPollReply> = {
       case 0:
         return { kind: "ok", value: EventPollResultCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("EventPollReply", disc);
     }
@@ -5705,7 +5724,7 @@ export const SyncListeningReplyCodec: StructCodec<T.SyncListeningReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5718,7 +5737,7 @@ export const SyncListeningReplyCodec: StructCodec<T.SyncListeningReply> = {
       case 0:
         return { kind: "ok", value: SyncListeningResultCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("SyncListeningReply", disc);
     }
@@ -5798,7 +5817,7 @@ export const PublishReplyCodec: StructCodec<T.PublishReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5811,7 +5830,7 @@ export const PublishReplyCodec: StructCodec<T.PublishReply> = {
       case 0:
         return { kind: "ok", value: PublishOkCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("PublishReply", disc);
     }
@@ -6003,7 +6022,7 @@ export const QueueBatchReplyCodec: StructCodec<T.QueueBatchReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -6016,7 +6035,7 @@ export const QueueBatchReplyCodec: StructCodec<T.QueueBatchReply> = {
       case 0:
         return { kind: "ok", value: QueueBatchOkCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("QueueBatchReply", disc);
     }
@@ -6086,7 +6105,7 @@ export const QueueSendReplyCodec: StructCodec<T.QueueSendReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -6099,7 +6118,7 @@ export const QueueSendReplyCodec: StructCodec<T.QueueSendReply> = {
       case 0:
         return { kind: "ok", value: QueueSendOkCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("QueueSendReply", disc);
     }
@@ -6175,7 +6194,7 @@ export const KvGetReplyCodec: StructCodec<T.KvGetReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -6188,7 +6207,7 @@ export const KvGetReplyCodec: StructCodec<T.KvGetReply> = {
       case 0:
         return { kind: "ok", value: KvGetOkCodec.read(s.getStruct(0, 2, 2), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("KvGetReply", disc);
     }
@@ -6254,7 +6273,7 @@ export const KvPutReplyCodec: StructCodec<T.KvPutReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -6267,7 +6286,7 @@ export const KvPutReplyCodec: StructCodec<T.KvPutReply> = {
       case 0:
         return { kind: "ok", value: KvPutOkCodec.read(s.getStruct(0, 1, 0), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("KvPutReply", disc);
     }
@@ -6293,7 +6312,7 @@ export const KvDeleteReplyCodec: StructCodec<T.KvDeleteReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -6306,7 +6325,7 @@ export const KvDeleteReplyCodec: StructCodec<T.KvDeleteReply> = {
       case 0:
         return { kind: "ok", value: KvDeleteOkCodec.read(s.getStruct(0, 1, 0), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("KvDeleteReply", disc);
     }
@@ -6408,7 +6427,7 @@ export const KvListReplyCodec: StructCodec<T.KvListReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -6421,7 +6440,7 @@ export const KvListReplyCodec: StructCodec<T.KvListReply> = {
       case 0:
         return { kind: "ok", value: KvListOkCodec.read(s.getStruct(0, 1, 2), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("KvListReply", disc);
     }
@@ -6747,7 +6766,7 @@ export const MetadataRecordsReplyCodec: StructCodec<T.MetadataRecordsReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -6760,7 +6779,7 @@ export const MetadataRecordsReplyCodec: StructCodec<T.MetadataRecordsReply> = {
       case 0:
         return { kind: "ok", value: MetadataRecordsCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("MetadataRecordsReply", disc);
     }
@@ -6868,7 +6887,7 @@ export const MetadataChaptersReplyCodec: StructCodec<T.MetadataChaptersReply> = 
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -6881,7 +6900,7 @@ export const MetadataChaptersReplyCodec: StructCodec<T.MetadataChaptersReply> = 
       case 0:
         return { kind: "ok", value: MetadataChaptersCodec.read(s.getStruct(0, 4, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("MetadataChaptersReply", disc);
     }
@@ -7073,7 +7092,7 @@ export const CoverImagesReplyCodec: StructCodec<T.CoverImagesReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -7086,7 +7105,7 @@ export const CoverImagesReplyCodec: StructCodec<T.CoverImagesReply> = {
       case 0:
         return { kind: "ok", value: CoverImagesCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CoverImagesReply", disc);
     }
@@ -7920,7 +7939,7 @@ export const ExecuteResultReplyCodec: StructCodec<T.ExecuteResultReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -7933,7 +7952,7 @@ export const ExecuteResultReplyCodec: StructCodec<T.ExecuteResultReply> = {
       case 0:
         return { kind: "ok", value: ExecuteReplyCodec.read(s.getStruct(0, 0, 3), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("ExecuteResultReply", disc);
     }
@@ -8021,7 +8040,7 @@ export const DbBootstrapReplyCodec: StructCodec<T.DbBootstrapReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -8034,7 +8053,7 @@ export const DbBootstrapReplyCodec: StructCodec<T.DbBootstrapReply> = {
       case 0:
         return { kind: "ok", value: DbBootstrapCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("DbBootstrapReply", disc);
     }
@@ -8080,7 +8099,7 @@ export const DbCapabilitiesReplyCodec: StructCodec<T.DbCapabilitiesReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -8093,7 +8112,7 @@ export const DbCapabilitiesReplyCodec: StructCodec<T.DbCapabilitiesReply> = {
       case 0:
         return { kind: "ok", value: DbCapabilitiesCodec.read(s.getStruct(0, 7, 0), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("DbCapabilitiesReply", disc);
     }
@@ -8145,7 +8164,7 @@ export const IdentityExportReplyCodec: StructCodec<T.IdentityExportReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -8158,7 +8177,7 @@ export const IdentityExportReplyCodec: StructCodec<T.IdentityExportReply> = {
       case 0:
         return { kind: "ok", value: s.getStructList(0, 1, 1).map((item) => IdentityHighWaterCodec.read(item, caps)) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("IdentityExportReply", disc);
     }
@@ -8182,7 +8201,7 @@ export const UserRelationsReplyCodec: StructCodec<T.UserRelationsReply> = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -8195,7 +8214,7 @@ export const UserRelationsReplyCodec: StructCodec<T.UserRelationsReply> = {
       case 0:
         return { kind: "ok", value: s.getTextList(0) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("UserRelationsReply", disc);
     }
@@ -8308,7 +8327,7 @@ export const PluginMigrationsReplyCodec: StructCodec<T.PluginMigrationsReply> = 
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -8321,7 +8340,7 @@ export const PluginMigrationsReplyCodec: StructCodec<T.PluginMigrationsReply> = 
       case 0:
         return { kind: "ok", value: PluginMigrationsOkCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("PluginMigrationsReply", disc);
     }
@@ -11086,6 +11105,46 @@ export const GuestDatabaseCloseResultsCodec: StructCodec<GuestDatabaseCloseResul
   read(s, caps) {
     return {
       result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `GuestDatabase.limits` params envelope (0 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const GuestDatabaseLimitsParamsCodec: StructCodec<GuestDatabaseLimitsParams> = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  },
+};
+
+/**
+ * Wire codec for the `GuestDatabase.limits` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const GuestDatabaseLimitsResultsCodec: StructCodec<GuestDatabaseLimitsResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      DbCapabilitiesReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: DbCapabilitiesReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

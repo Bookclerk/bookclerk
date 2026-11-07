@@ -5710,6 +5710,35 @@
         }
       ]
     },
+    "GuestDatabase.limits$Params": {
+      "name": "GuestDatabase.limits$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "GuestDatabase.limits$Results": {
+      "name": "GuestDatabase.limits$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "DbCapabilitiesReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "GuestDatabaseReply": {
       "name": "GuestDatabaseReply",
       "file": "plugin.capnp",
@@ -9137,7 +9166,7 @@
       "name": "PluginError",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 2,
+      "pointerCount": 3,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -9158,6 +9187,15 @@
             "kind": "text"
           },
           "offset": 1
+        },
+        {
+          "name": "details",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
         }
       ]
     },
@@ -12199,7 +12237,8 @@
         "deadlineExceeded",
         "invalidCursor",
         "cancelled",
-        "conflict"
+        "conflict",
+        "limitExceeded"
       ]
     },
     "PortalAuthMode": {
@@ -12604,6 +12643,12 @@
           "ordinal": 1,
           "params": "GuestDatabase.close$Params",
           "results": "GuestDatabase.close$Results"
+        },
+        {
+          "name": "limits",
+          "ordinal": 2,
+          "params": "GuestDatabase.limits$Params",
+          "results": "GuestDatabase.limits$Results"
         }
       ]
     },
@@ -12913,6 +12958,11 @@
       "name": "maxCoverBytes",
       "file": "plugin.capnp",
       "value": 10485760
+    },
+    "maxCoverHeaderBytes": {
+      "name": "maxCoverHeaderBytes",
+      "file": "plugin.capnp",
+      "value": 1024
     },
     "maxCoverUrls": {
       "name": "maxCoverUrls",

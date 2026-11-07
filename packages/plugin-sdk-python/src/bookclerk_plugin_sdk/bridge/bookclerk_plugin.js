@@ -27,7 +27,7 @@ var MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES = 262144;
 var FEATURE_SCALAR_LIMITS = "rpc.scalarLimits";
 var FEATURE_STREAMS = "rpc.streams";
 var FEATURE_STORAGE_COPY = "storage.copy";
-var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict"];
+var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded"];
 var CLI_ARG_KINDS = ["string", "bool", "int", "path"];
 var WORK_KINDS = ["book", "podcastShow", "podcastEpisode", "drama"];
 var EXPRESSION_KINDS = ["narration", "text", "translation", "dramatisation", "podcastAudio"];
@@ -646,829 +646,63 @@ var StructReader = class _StructReader {
   }
 };
 
-// dist/db-value.js
-var KINDS = /* @__PURE__ */ new Set(["null", "boolean", "int64", "float64", "text", "bytes"]);
-var TYPES = new Set(DB_TYPES);
-function requirePortableText(text) {
-  if (text.includes("\0")) {
-    throw new Error("BookclerkSQL TEXT cannot contain U+0000 (use BYTES/BLOB for binary)");
-  }
-  return text;
-}
-var I64_MIN = -0x8000000000000000n;
-var I64_MAX = 0x7fffffffffffffffn;
-var DB_TYPE_FROM_ORD = DB_TYPES;
-var DB_TYPE_ORD = Object.fromEntries(DB_TYPES.map((ty, ord2) => [ty, ord2]));
-function parseDbValue(raw) {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("DbValue must be an object");
-  }
-  const obj = raw;
-  if (typeof obj.kind !== "string" || !KINDS.has(obj.kind)) {
-    throw new Error(`unknown DbValue union member: ${String(obj.kind)}`);
-  }
-  switch (obj.kind) {
-    case "null":
-      if (typeof obj.value !== "string" || !TYPES.has(obj.value)) {
-        throw new Error("typed null requires a DbType");
-      }
-      return { kind: "null", value: obj.value };
-    case "boolean":
-      if (typeof obj.value !== "boolean") {
-        throw new Error("boolean DbValue requires a boolean");
-      }
-      return { kind: "boolean", value: obj.value };
-    case "int64":
-      return { kind: "int64", value: parseInt64(obj.value) };
-    case "float64":
-      if (typeof obj.value !== "number" || !Number.isFinite(obj.value)) {
-        throw new Error("float64 value is not finite");
-      }
-      return { kind: "float64", value: obj.value };
-    case "text":
-      if (typeof obj.value !== "string") {
-        throw new Error("text DbValue requires a string");
-      }
-      requirePortableText(obj.value);
-      return { kind: "text", value: obj.value };
-    case "bytes":
-      return { kind: "bytes", value: parseBytes(obj.value) };
-    default:
-      throw new Error(`unknown DbValue union member: ${obj.kind}`);
-  }
-}
-function encodeDbValue(value) {
-  const msg = new CapnpMessage();
-  const root = msg.initRoot(2, 1);
-  writeDbValue(root, value);
-  return msg.finish();
-}
-function decodeDbValue(bytes) {
-  const reader = new CapnpReader(bytes);
-  return readDbValue(reader.root(2, 1));
-}
-function writeDbValue(root, value) {
-  switch (value.kind) {
-    case "null":
-      root.setUint16(0, DB_TYPE_ORD[value.value]);
-      root.setUint16(1, 0);
-      return;
-    case "boolean":
-      root.setBool(0, value.value);
-      root.setUint16(1, 1);
-      return;
-    case "int64":
-      if (value.value < I64_MIN || value.value > I64_MAX) {
-        throw new Error("int64 DbValue is out of range");
-      }
-      root.setInt64(1, value.value);
-      root.setUint16(1, 2);
-      return;
-    case "float64":
-      if (!Number.isFinite(value.value)) {
-        throw new Error("float64 value is not finite");
-      }
-      root.setFloat64(1, value.value);
-      root.setUint16(1, 3);
-      return;
-    case "text":
-      requirePortableText(value.value);
-      root.setUint16(1, 4);
-      root.setText(0, value.value);
-      return;
-    case "bytes":
-      root.setUint16(1, 5);
-      root.setData(0, value.value);
-      return;
-    default: {
-      const _exhaustive = value;
-      throw new Error(`unknown DbValue union member: ${JSON.stringify(_exhaustive)}`);
-    }
-  }
-}
-function readDbValue(root) {
-  const disc = root.getUint16(1);
-  switch (disc) {
-    case 0: {
-      const ty = DB_TYPE_FROM_ORD[root.getUint16(0)];
-      if (ty === void 0) {
-        throw new Error("unknown DbType");
-      }
-      return { kind: "null", value: ty };
-    }
-    case 1:
-      return { kind: "boolean", value: root.getBool(0) };
-    case 2:
-      return { kind: "int64", value: root.getInt64(1) };
-    case 3: {
-      const n = root.getFloat64(1);
-      if (!Number.isFinite(n)) {
-        throw new Error("float64 value is not finite");
-      }
-      return { kind: "float64", value: n };
-    }
-    case 4:
-      return { kind: "text", value: requirePortableText(root.getText(0)) };
-    case 5:
-      return { kind: "bytes", value: root.getData(0) };
-    default:
-      throw new Error(`unknown DbValue union member: ${disc}`);
-  }
-}
-function parseInt64(raw) {
-  let n;
-  if (typeof raw === "bigint") {
-    n = raw;
-  } else if (typeof raw === "number") {
-    if (!Number.isInteger(raw) || !Number.isFinite(raw)) {
-      throw new Error("int64 DbValue requires an integer");
-    }
-    n = BigInt(raw);
-  } else if (typeof raw === "string") {
-    if (!/^-?\d+$/.test(raw)) {
-      throw new Error("int64 DbValue requires an integer");
-    }
-    n = BigInt(raw);
-  } else {
-    throw new Error("int64 DbValue requires an integer");
-  }
-  if (n < I64_MIN || n > I64_MAX) {
-    throw new Error("int64 DbValue is out of range");
-  }
-  return n;
-}
-function parseBytes(raw) {
-  if (raw instanceof Uint8Array) {
-    return raw;
-  }
-  if (typeof raw !== "string") {
-    throw new Error("bytes DbValue requires bytes");
-  }
-  if (!raw.startsWith("b64:")) {
-    throw new Error("bytes DbValue requires bytes");
-  }
-  return decodeBase64(raw.slice(4));
-}
-function decodeBase64(b64) {
-  const bin = globalThis.atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) {
-    out[i] = bin.charCodeAt(i);
-  }
-  return out;
-}
-
-// dist/guest-sql.js
-function identStart(c) {
-  const code = c.charCodeAt(0);
-  return code >= 65 && code <= 90 || code >= 97 && code <= 122 || c === "_";
-}
-function identCont(c) {
-  return identStart(c) || c >= "0" && c <= "9";
-}
-function skipWsComments(sql, start) {
-  let i = start;
-  while (i < sql.length) {
-    while (i < sql.length && /\s/.test(sql[i])) {
-      i += 1;
-    }
-    if (sql[i] === "-" && sql[i + 1] === "-") {
-      i += 2;
-      while (i < sql.length && sql[i] !== "\n") {
-        i += 1;
-      }
-      continue;
-    }
-    if (sql[i] === "/" && sql[i + 1] === "*") {
-      i += 2;
-      while (i + 1 < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) {
-        i += 1;
-      }
-      i = Math.min(i + 2, sql.length);
-      continue;
-    }
-    break;
-  }
-  return i;
-}
-function keywordAt(sql, i, kw) {
-  if (i + kw.length > sql.length) {
-    return false;
-  }
-  if (sql.slice(i, i + kw.length).toLowerCase() !== kw.toLowerCase()) {
-    return false;
-  }
-  const beforeOk = i === 0 || !identCont(sql[i - 1]);
-  const after = sql[i + kw.length] ?? " ";
-  return beforeOk && !identCont(after);
-}
-function skipIdentOrQuoted(sql, i) {
-  const c = sql[i];
-  if (c === void 0) {
-    return null;
-  }
-  if (c === '"' || c === "`" || c === "[") {
-    const end = c === "[" ? "]" : c;
-    let j = i + 1;
-    while (j < sql.length) {
-      if (sql[j] === end) {
-        if (end !== "]" && sql[j + 1] === end) {
-          j += 2;
-          continue;
-        }
-        return j + 1;
-      }
-      j += 1;
-    }
-    return null;
-  }
-  if (identStart(c)) {
-    let j = i + 1;
-    while (j < sql.length && identCont(sql[j])) {
-      j += 1;
-    }
-    return j;
-  }
-  return null;
-}
-function skipBalancedParens(sql, start) {
-  if (sql[start] !== "(") {
-    return null;
-  }
-  let depth = 0;
-  let end = null;
-  forEachUnquoted(sql.slice(start), (slice, idx) => {
-    if (end !== null) {
-      return 1;
-    }
-    const c = slice[idx];
-    if (c === "(") {
-      depth += 1;
-    } else if (c === ")") {
-      depth -= 1;
-      if (depth === 0) {
-        end = start + idx + 1;
-      }
-    }
-    return 1;
-  });
-  return end;
-}
-function sqlAfterLeadingCtes(sql) {
-  let i = skipWsComments(sql, 0);
-  if (!keywordAt(sql, i, "WITH")) {
-    return sql;
-  }
-  i += 4;
-  i = skipWsComments(sql, i);
-  if (keywordAt(sql, i, "RECURSIVE")) {
-    i += 9;
-    i = skipWsComments(sql, i);
-  }
-  for (; ; ) {
-    const next = skipIdentOrQuoted(sql, i);
-    if (next === null) {
-      return sql;
-    }
-    i = skipWsComments(sql, next);
-    if (sql[i] === "(") {
-      const after = skipBalancedParens(sql, i);
-      if (after === null) {
-        return sql;
-      }
-      i = skipWsComments(sql, after);
-    }
-    if (!keywordAt(sql, i, "AS")) {
-      return sql;
-    }
-    i = skipWsComments(sql, i + 2);
-    if (keywordAt(sql, i, "NOT")) {
-      const afterNot = skipWsComments(sql, i + 3);
-      if (keywordAt(sql, afterNot, "MATERIALIZED")) {
-        i = skipWsComments(sql, afterNot + 12);
-      }
-    } else if (keywordAt(sql, i, "MATERIALIZED")) {
-      i = skipWsComments(sql, i + 12);
-    }
-    if (sql[i] !== "(") {
-      return sql;
-    }
-    const afterBody = skipBalancedParens(sql, i);
-    if (afterBody === null) {
-      return sql;
-    }
-    i = skipWsComments(sql, afterBody);
-    if (sql[i] === ",") {
-      i = skipWsComments(sql, i + 1);
-      continue;
-    }
-    return sql.slice(i);
-  }
-}
-function forEachUnquoted(sql, step) {
-  let i = 0;
-  let inS = false;
-  let inD = false;
-  let inLine = false;
-  let inBlock = false;
-  while (i < sql.length) {
-    const c = sql[i];
-    if (inLine) {
-      if (c === "\n") {
-        inLine = false;
-      }
-      i += 1;
-      continue;
-    }
-    if (inBlock) {
-      if (c === "*" && sql[i + 1] === "/") {
-        inBlock = false;
-        i += 2;
-        continue;
-      }
-      i += 1;
-      continue;
-    }
-    if (inS) {
-      if (c === "'") {
-        if (sql[i + 1] === "'") {
-          i += 2;
-          continue;
-        }
-        inS = false;
-      }
-      i += 1;
-      continue;
-    }
-    if (inD) {
-      if (c === '"') {
-        if (sql[i + 1] === '"') {
-          i += 2;
-          continue;
-        }
-        inD = false;
-      }
-      i += 1;
-      continue;
-    }
-    if (c === "-" && sql[i + 1] === "-") {
-      inLine = true;
-      i += 2;
-      continue;
-    }
-    if (c === "/" && sql[i + 1] === "*") {
-      inBlock = true;
-      i += 2;
-      continue;
-    }
-    if (c === "'") {
-      inS = true;
-      i += 1;
-      continue;
-    }
-    if (c === '"') {
-      inD = true;
-      i += 1;
-      continue;
-    }
-    const n = Math.max(1, step(sql, i));
-    i += n;
-  }
-}
-function forEachTopLevelKeyword(sql, onKeyword) {
-  let depth = 0;
-  forEachUnquoted(sql, (slice, idx) => {
-    const c = slice[idx];
-    if (c === "(") {
-      depth += 1;
-      return 1;
-    }
-    if (c === ")") {
-      depth = Math.max(0, depth - 1);
-      return 1;
-    }
-    if (depth === 0 && identStart(c)) {
-      let j = idx + 1;
-      while (j < slice.length && identCont(slice[j])) {
-        j += 1;
-      }
-      onKeyword(idx, slice.slice(idx, j));
-      return j - idx;
-    }
-    return 1;
-  });
-}
-function hasTopLevelKeyword(sql, keyword) {
-  const want = keyword.toUpperCase();
-  let found = false;
-  forEachTopLevelKeyword(sql, (_, kw) => {
-    if (kw.toUpperCase() === want) {
-      found = true;
-    }
-  });
-  return found;
-}
-function firstTopLevelKeyword(sql) {
-  let first;
-  forEachTopLevelKeyword(sql, (_, kw) => {
-    if (first === void 0) {
-      first = kw.toUpperCase();
-    }
-  });
-  return first;
-}
-function guestStatementKind(sql) {
-  const main = sqlAfterLeadingCtes(sql);
-  if (hasTopLevelKeyword(main, "RETURNING")) {
-    return "returning";
-  }
-  const verb = firstTopLevelKeyword(main);
-  if (verb === "SELECT" || verb === "VALUES") {
-    return "select";
-  }
-  return "execute";
-}
-function splitExecQueries(query) {
-  return query.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).map((line) => stripTrailingSemicolons(line).trim()).filter((line) => line.length > 0);
-}
-function stripTrailingSemicolons(line) {
-  let end = line.length;
-  while (end > 0 && line[end - 1] === ";") {
-    end -= 1;
-  }
-  return line.slice(0, end);
-}
-
-// dist/db-execute.js
-var KIND_FROM = DB_STATEMENT_KINDS;
-var KIND_ORD = Object.fromEntries(DB_STATEMENT_KINDS.map((kind, ord2) => [kind, ord2]));
-var SELECT_FROM = DB_RESULT_SELECTIONS;
-var SELECT_ORD = Object.fromEntries(DB_RESULT_SELECTIONS.map((sel, ord2) => [sel, ord2]));
-var COL_TYPE_FROM = DB_TYPES;
-var COL_TYPE_ORD = Object.fromEntries(DB_TYPES.map((ty, ord2) => [ty, ord2]));
-function encodeExecuteRequest(request) {
-  if (request.statements.length === 0) {
-    throw new Error("execute statements must be non-empty");
-  }
-  const msg = new CapnpMessage();
-  const root = msg.initRoot(4, 3);
-  root.setText(0, request.operationId);
-  root.setText(1, request.requestHash);
-  root.setUint64(3, BigInt(request.deadlineUnixMs));
-  const stmts = root.initStructList(2, request.statements.length, 1, 2);
-  for (let i = 0; i < request.statements.length; i++) {
-    writeStatement(stmts[i], request.statements[i]);
-  }
-  return msg.finish();
-}
-function decodeExecuteRequest(bytes) {
-  const reader = new CapnpReader(bytes);
-  const root = reader.root(4, 3);
-  const stmtStructs = root.getStructList(2, 1, 2);
-  if (stmtStructs.length === 0) {
-    throw new Error("execute statements must be non-empty");
-  }
-  return {
-    operationId: root.getText(0),
-    requestHash: root.getText(1),
-    statements: stmtStructs.map(readStatement),
-    deadlineUnixMs: Number(root.getUint64(3))
-  };
-}
-function encodeExecuteResultReply(outcome) {
-  const msg = new CapnpMessage();
-  const root = msg.initRoot(1, 1);
-  if ("ok" in outcome) {
-    root.setUint16(0, 0);
-    writeExecuteReply(root.initStruct(0, 0, 3), outcome.ok);
-  } else {
-    root.setUint16(0, 1);
-    const err = root.initStruct(0, 0, 2);
-    err.setText(0, outcome.err.code);
-    err.setText(1, outcome.err.message);
-  }
-  return msg.finish();
-}
-function decodeExecuteResultReply(bytes) {
-  const root = new CapnpReader(bytes).root(1, 1);
-  const disc = root.getUint16(0);
-  if (disc === 0) {
-    return readExecuteReply(root.getStruct(0, 0, 3));
-  }
-  if (disc === 1) {
-    const err = root.getStruct(0, 0, 2);
-    const code = err.getText(0);
-    const message = err.getText(1);
-    const known = /* @__PURE__ */ new Set([
-      "invalid_params",
-      "unauthorized",
-      "forbidden",
-      "not_found",
-      "unavailable",
-      "unsupported",
-      "internal",
-      "payload_too_large",
-      "deadline_exceeded",
-      "invalid_cursor",
-      "cancelled",
-      "conflict"
-    ]);
-    throw Object.assign(new Error(message), {
-      name: "PluginError",
-      code: known.has(code) ? code : "unknown",
-      wireCode: code
-    });
-  }
-  throw new Error("unknown ExecuteResultReply union member");
-}
-function statementResultToD1Result(stmt, timing) {
-  const changes = stmt.rowsAffected;
-  const durationMs = timing.dbExecutionUs / 1e3;
-  const results = stmt.columns.length > 0 ? stmt.rows.map((row) => {
-    const obj = {};
-    for (let i = 0; i < stmt.columns.length; i++) {
-      obj[stmt.columns[i].name] = row.values[i];
-    }
-    return obj;
-  }) : null;
-  return {
-    success: true,
-    results,
-    meta: {
-      duration: durationMs,
-      changes,
-      last_row_id: 0,
-      changed_db: changes > 0,
-      rows_read: stmt.rows.length,
-      rows_written: changes
-    }
-  };
-}
-function executeReplyToD1Results(reply) {
-  return reply.statements.map((stmt) => statementResultToD1Result(stmt, reply.timing));
-}
-function rowMapFromStatement(result) {
-  if (result.rows.length === 0) {
-    return null;
-  }
-  const row = {};
-  for (let i = 0; i < result.columns.length; i++) {
-    row[result.columns[i].name] = result.rows[0].values[i];
-  }
-  return row;
-}
-function columnValueFromRow(row, colName) {
-  if (colName in row) {
-    return row[colName];
-  }
-  const lower = colName.toLowerCase();
-  for (const [name, value] of Object.entries(row)) {
-    if (name.toLowerCase() === lower) {
-      return value;
-    }
-  }
-  throw new Error(`column ${colName} not found in first() result`);
-}
-function writeExecuteReply(root, reply) {
-  root.setText(0, reply.operationId);
-  const stmts = root.initStructList(1, reply.statements.length, 1, 2);
-  for (let i = 0; i < reply.statements.length; i++) {
-    writeStatementResult(stmts[i], reply.statements[i]);
-  }
-  const timing = root.initStruct(2, 2, 1);
-  timing.setUint64(0, BigInt(reply.timing.attemptElapsedUs));
-  timing.setUint64(1, BigInt(reply.timing.dbExecutionUs));
-  timing.setText(0, reply.timing.dbTimingSource);
-}
-function readExecuteReply(root) {
-  return {
-    operationId: root.getText(0),
-    statements: root.getStructList(1, 1, 2).map(readStatementResult),
-    timing: (() => {
-      const t = root.getStruct(2, 2, 1);
-      return {
-        attemptElapsedUs: Number(t.getUint64(0)),
-        dbExecutionUs: Number(t.getUint64(1)),
-        dbTimingSource: t.getText(0)
-      };
-    })()
-  };
-}
-function writeStatementResult(s, stmt) {
-  s.setUint64(0, BigInt(stmt.rowsAffected));
-  const rows = s.initStructList(0, stmt.rows.length, 0, 1);
-  for (let i = 0; i < stmt.rows.length; i++) {
-    const cells = rows[i].initStructList(0, stmt.rows[i].values.length, 2, 1);
-    for (let j = 0; j < stmt.rows[i].values.length; j++) {
-      writeDbValue(cells[j], stmt.rows[i].values[j]);
-    }
-  }
-  const cols = s.initStructList(1, stmt.columns.length, 1, 1);
-  for (let i = 0; i < stmt.columns.length; i++) {
-    cols[i].setText(0, stmt.columns[i].name);
-    cols[i].setUint16(0, COL_TYPE_ORD[stmt.columns[i].dbType]);
-  }
-}
-function readStatementResult(s) {
-  const columns = s.getStructList(1, 1, 1).map((c) => {
-    const ty = COL_TYPE_FROM[c.getUint16(0)];
-    if (ty === void 0) {
-      throw new Error("unknown DbType");
-    }
-    return { name: c.getText(0), dbType: ty };
-  });
-  const rows = s.getStructList(0, 0, 1).map((row) => ({
-    values: row.getStructList(0, 2, 1).map(readDbValue)
-  }));
-  return {
-    rows,
-    columns,
-    rowsAffected: Number(s.getUint64(0))
-  };
-}
-function createDatabaseBinding(transport, options = {}) {
-  const runExecute = async (batch, retry) => {
-    if (!Array.isArray(batch) || batch.length === 0) {
-      throw new Error("execute statements must be non-empty");
-    }
-    const request = await executeRequestFromBatch(batch, options, retry);
-    const encoded = encodeExecuteRequest(request);
-    const cap = options.maxRequestBytes ?? 0;
-    if (cap > 0 && encoded.byteLength > cap) {
-      throw new Error(`atomic request is ${encoded.byteLength} bytes; guest maxRequestBytes is ${cap}`);
-    }
-    return transport.execute(request);
-  };
-  const binding = {
-    prepare(sql) {
-      return makePrepared(binding, sql, [], options.maxResultRows ?? 0, defaultIntent(options));
-    },
-    batch(statements, opts) {
-      const typed = statements.map((s) => s._asTyped());
-      return runExecute(typed, opts?.retry).then(executeReplyToD1Results);
-    },
-    exec(query, opts) {
-      const queries = splitExecQueries(query);
-      if (queries.length === 0) {
-        return Promise.reject(new Error("exec query is empty"));
-      }
-      const prepared = queries.map((sql) => binding.prepare(sql));
-      return binding.batch(prepared, opts).then((results) => ({
-        count: results.length,
-        duration: results.reduce((sum, r) => sum + r.meta.duration, 0)
-      }));
-    },
-    execute(batch, opts) {
-      return runExecute(batch, opts?.retry);
-    }
-  };
-  return binding;
-}
-function defaultIntent(options) {
-  return {
-    resultSelection: "rows",
-    maxRows: options.maxResultRows ?? 0
-  };
-}
-function makePrepared(binding, sql, parameters, defaultAllRows, intent) {
-  const stmt = {
-    _intent: intent,
-    bind(...values) {
-      return makePrepared(binding, sql, values, defaultAllRows, intent);
-    },
-    asRun() {
-      return makePrepared(binding, sql, parameters, defaultAllRows, {
-        resultSelection: "affectedRows",
-        maxRows: 0
-      });
-    },
-    asFirst() {
-      return makePrepared(binding, sql, parameters, defaultAllRows, {
-        resultSelection: "rows",
-        maxRows: 1
-      });
-    },
-    asAll() {
-      return makePrepared(binding, sql, parameters, defaultAllRows, {
-        resultSelection: "rows",
-        maxRows: defaultAllRows
-      });
-    },
-    run(options) {
-      return binding.execute([this.asAll()._asTyped()], options).then((reply) => statementResultToD1Result(reply.statements[0], reply.timing));
-    },
-    first(colName, options) {
-      return binding.execute([this.asFirst()._asTyped()], options).then((reply) => {
-        const result = reply.statements[0];
-        if (!result) {
-          return null;
-        }
-        const row = rowMapFromStatement(result);
-        if (row === null) {
-          return null;
-        }
-        if (colName !== void 0) {
-          return columnValueFromRow(row, colName);
-        }
-        return row;
-      });
-    },
-    raw(options) {
-      return binding.execute([this.asAll()._asTyped()], options).then((reply) => {
-        const result = reply.statements[0];
-        if (!result) {
-          return [];
-        }
-        return result.rows.map((row) => row.values);
-      });
-    },
-    all(options) {
-      return binding.execute([this.asAll()._asTyped()], options).then((reply) => statementResultToD1Result(reply.statements[0], reply.timing));
-    },
-    _asTyped() {
-      const used = intent ?? defaultIntent({ maxResultRows: defaultAllRows });
-      return {
-        sql,
-        parameters,
-        kind: used.resultSelection === "affectedRows" || used.resultSelection === "discard" ? "execute" : guestStatementKind(sql),
-        maxRows: used.maxRows,
-        resultSelection: used.resultSelection
-      };
-    }
-  };
-  return stmt;
-}
-async function executeRequestFromBatch(batch, options, retry) {
-  const token = retry ?? options.retry;
-  return {
-    operationId: token?.operationId ?? options.operationId ?? newOperationId(),
-    requestHash: token?.requestHash ?? options.requestHash ?? "",
-    statements: batch,
-    deadlineUnixMs: options.deadlineUnixMs ?? 0
-  };
-}
-async function canonicalExecuteRequestHash(request) {
-  const canonical = {
-    ...request,
-    operationId: "",
-    requestHash: "",
-    deadlineUnixMs: 0
-  };
-  const bytes = new Uint8Array(encodeExecuteRequest(canonical));
-  if (globalThis.crypto?.subtle) {
-    const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
-    return hexBytes(new Uint8Array(digest));
-  }
-  const { createHash } = await import("node:crypto");
-  return createHash("sha256").update(bytes).digest("hex");
-}
-function hexBytes(bytes) {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-function newOperationId() {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  return `op-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-function writeStatement(s, stmt) {
-  s.setText(0, stmt.sql);
-  s.setUint16(0, KIND_ORD[stmt.kind]);
-  s.setUint16(1, SELECT_ORD[stmt.resultSelection]);
-  s.setUint32(1, stmt.maxRows);
-  const params = s.initStructList(1, stmt.parameters.length, 2, 1);
-  for (let i = 0; i < stmt.parameters.length; i++) {
-    writeDbValue(params[i], stmt.parameters[i]);
-  }
-}
-function readStatement(s) {
-  const kind = KIND_FROM[s.getUint16(0)];
-  const selectionRaw = s.getUint16(1);
-  const selection = SELECT_FROM[selectionRaw] ?? "rows";
-  if (kind === void 0) {
-    throw new Error("unknown DbStatementKind");
-  }
-  return {
-    sql: s.getText(0),
-    parameters: s.getStructList(1, 2, 1).map(readDbValue),
-    kind,
-    maxRows: s.getUint32(1),
-    resultSelection: selection
-  };
-}
-
 // dist/errors.js
 var KNOWN_ERROR_CODES = new Set(PLUGIN_ERROR_CODES);
+var MAX_DETAILS_BYTES = MAX_SCALAR_BYTES;
+var LIMIT_MESSAGE_PREFIX = "limit exceeded: ";
+function limitExceededMessage(limit) {
+  return `${LIMIT_MESSAGE_PREFIX}${limit.limit} is ${limit.cap}; used ${limit.used}`;
+}
+function parseLimitExceeded(message) {
+  const start = message.indexOf(LIMIT_MESSAGE_PREFIX);
+  if (start < 0)
+    return void 0;
+  const match = /^([A-Za-z0-9_]+) is (\d+); used (\d+)/.exec(message.slice(start + LIMIT_MESSAGE_PREFIX.length));
+  if (!match)
+    return void 0;
+  const cap = Number(match[2]);
+  const used = Number(match[3]);
+  if (!Number.isSafeInteger(cap) || !Number.isSafeInteger(used))
+    return void 0;
+  return { limit: match[1] ?? "", cap, used };
+}
+function limitFromDetails(details) {
+  const { limit, cap, used } = details;
+  if (typeof limit !== "string" || typeof cap !== "number" || typeof used !== "number") {
+    return void 0;
+  }
+  return { limit, cap, used };
+}
+function parseDetails(text) {
+  if (text === "" || text.length > MAX_DETAILS_BYTES)
+    return void 0;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return Object.freeze({ ...parsed });
+    }
+  } catch {
+  }
+  return void 0;
+}
 var PluginError = class _PluginError extends Error {
   /** Known `PluginErrorCode` wire string, or `unknown`. */
   code;
   /** Raw wire code, including codes this SDK does not know. */
   wireCode;
-  constructor(code, message) {
+  /** Structured detail object from the wire (`details` JSON), when the error carries one. */
+  details;
+  /**
+   * @param code - Wire error code.
+   * @param message - Operator-facing error text.
+   * @param details - Detail object, or its JSON text as carried on the wire.
+   */
+  constructor(code, message, details) {
     super(message);
     this.name = "PluginError";
     this.wireCode = code;
     this.code = KNOWN_ERROR_CODES.has(code) ? code : "unknown";
+    this.details = typeof details === "string" ? parseDetails(details) : details === void 0 ? void 0 : Object.freeze({ ...details });
   }
   /**
    * Construct a {@link PluginError} from a Cap'n Proto / JSON wire code.
@@ -1478,10 +712,40 @@ var PluginError = class _PluginError extends Error {
    *
    * @param code - Wire error code (known or unknown).
    * @param message - Operator-facing error text.
+   * @param details - `details` JSON text from the wire (empty when none).
    * @returns Typed plugin error.
    */
-  static fromWire(code, message) {
-    return new _PluginError(code, message);
+  static fromWire(code, message, details = "") {
+    return new _PluginError(code, message, details);
+  }
+  /**
+   * Builds a `limit_exceeded` error whose message and `details` both carry
+   * the exceeded cap.
+   *
+   * @param limit - Exceeded cap.
+   * @returns Typed plugin error.
+   */
+  static limitExceeded(limit) {
+    return new _PluginError("limit_exceeded", limitExceededMessage(limit), { ...limit });
+  }
+  /**
+   * The exceeded cap when this is a `limit_exceeded` error.
+   *
+   * @returns The cap from `details` first, then from the canonical message;
+   * `undefined` for every other code.
+   */
+  get limit() {
+    if (this.wireCode !== "limit_exceeded")
+      return void 0;
+    return (this.details && limitFromDetails(this.details)) ?? parseLimitExceeded(this.message);
+  }
+  /**
+   * `details` as the JSON text the wire carries.
+   *
+   * @returns JSON object text, or an empty string when the error has none.
+   */
+  get detailsText() {
+    return this.details === void 0 ? "" : JSON.stringify(this.details);
   }
 };
 
@@ -1514,17 +778,19 @@ function unknownUnion(struct, member) {
 var EMPTY_BYTES = new Uint8Array(0);
 var PluginErrorCodec = {
   dataWords: 0,
-  pointerCount: 2,
+  pointerCount: 3,
   write(s, v, caps) {
     void caps;
     s.setText(0, v.code ?? "");
     s.setText(1, v.message ?? "");
+    s.setText(2, v.details ?? "");
   },
   read(s, caps) {
     void caps;
     return {
       code: s.getText(0),
-      message: s.getText(1)
+      message: s.getText(1),
+      details: s.getText(2)
     };
   }
 };
@@ -1696,7 +962,7 @@ var OidcClientsReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -1709,7 +975,7 @@ var OidcClientsReplyCodec = {
       case 0:
         return { kind: "ok", value: OidcClientsOkCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("OidcClientsReply", disc);
     }
@@ -2122,7 +1388,7 @@ var EventBatchReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2135,7 +1401,7 @@ var EventBatchReplyCodec = {
       case 0:
         return { kind: "ok", value: s.getStructList(0, 1, 1).map((item) => EventResultCodec.read(item, caps)) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("EventBatchReply", disc);
     }
@@ -2214,7 +1480,7 @@ var HeadReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2227,7 +1493,7 @@ var HeadReplyCodec = {
       case 0:
         return { kind: "ok", value: HeadOkCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("HeadReply", disc);
     }
@@ -2247,7 +1513,7 @@ var ListReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2260,7 +1526,7 @@ var ListReplyCodec = {
       case 0:
         return { kind: "ok", value: ListPageCodec.read(s.getStruct(0, 0, 2), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("ListReply", disc);
     }
@@ -2280,7 +1546,7 @@ var PutReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2293,7 +1559,7 @@ var PutReplyCodec = {
       case 0:
         return { kind: "ok", value: PutResultCodec.read(s.getStruct(0, 1, 3), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("PutReply", disc);
     }
@@ -2313,7 +1579,7 @@ var CopyReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2326,7 +1592,7 @@ var CopyReplyCodec = {
       case 0:
         return { kind: "ok", value: CopyResultCodec.read(s.getStruct(0, 1, 0), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CopyReply", disc);
     }
@@ -2343,7 +1609,7 @@ var EmptyReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2356,7 +1622,7 @@ var EmptyReplyCodec = {
       case 0:
         return { kind: "ok" };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("EmptyReply", disc);
     }
@@ -2376,7 +1642,7 @@ var HandleReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2389,7 +1655,7 @@ var HandleReplyCodec = {
       case 0:
         return { kind: "ok", value: JobOutcomeCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("HandleReply", disc);
     }
@@ -2425,7 +1691,7 @@ var HealthReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2438,7 +1704,7 @@ var HealthReplyCodec = {
       case 0:
         return { kind: "ok", value: HealthOkCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("HealthReply", disc);
     }
@@ -2458,7 +1724,7 @@ var AdapterSessionReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2471,7 +1737,7 @@ var AdapterSessionReplyCodec = {
       case 0:
         return { kind: "ok", value: caps.importCap(s.getCapIndex(0)) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("AdapterSessionReply", disc);
     }
@@ -2642,7 +1908,7 @@ var CliSchemaReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2655,7 +1921,7 @@ var CliSchemaReplyCodec = {
       case 0:
         return { kind: "ok", value: CliSchemaCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CliSchemaReply", disc);
     }
@@ -2675,7 +1941,7 @@ var CliInvokeReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2688,7 +1954,7 @@ var CliInvokeReplyCodec = {
       case 0:
         return { kind: "ok", value: CliInvokeResultCodec.read(s.getStruct(0, 1, 3), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CliInvokeReply", disc);
     }
@@ -2722,7 +1988,7 @@ var DiagnoseReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2735,7 +2001,7 @@ var DiagnoseReplyCodec = {
       case 0:
         return { kind: "ok", value: DiagnoseResultCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("DiagnoseReply", disc);
     }
@@ -2916,7 +2182,7 @@ var LoginReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2929,7 +2195,7 @@ var LoginReplyCodec = {
       case 0:
         return { kind: "ok", value: LoginResultCodec.read(s.getStruct(0, 0, 2), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("LoginReply", disc);
     }
@@ -2949,7 +2215,7 @@ var LoginStartReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -2962,7 +2228,7 @@ var LoginStartReplyCodec = {
       case 0:
         return { kind: "ok", value: LoginStartResultCodec.read(s.getStruct(0, 0, 2), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("LoginStartReply", disc);
     }
@@ -3235,7 +2501,7 @@ var ScanReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3248,7 +2514,7 @@ var ScanReplyCodec = {
       case 0:
         return { kind: "ok", value: ScanSummaryCodec.read(s.getStruct(0, 2, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("ScanReply", disc);
     }
@@ -3444,7 +2710,7 @@ var FetchTitleReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3457,7 +2723,7 @@ var FetchTitleReplyCodec = {
       case 0:
         return { kind: "ok", value: PlainFetchCodec.read(s.getStruct(0, 0, 5), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("FetchTitleReply", disc);
     }
@@ -3495,7 +2761,7 @@ var SourceAccountsReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3508,7 +2774,7 @@ var SourceAccountsReplyCodec = {
       case 0:
         return { kind: "ok", value: SourceAccountsCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("SourceAccountsReply", disc);
     }
@@ -3912,7 +3178,7 @@ var CatalogHitsReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3925,7 +3191,7 @@ var CatalogHitsReplyCodec = {
       case 0:
         return { kind: "ok", value: CatalogHitsCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CatalogHitsReply", disc);
     }
@@ -3961,7 +3227,7 @@ var CatalogDetailReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -3974,7 +3240,7 @@ var CatalogDetailReplyCodec = {
       case 0:
         return { kind: "ok", value: CatalogDetailCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CatalogDetailReply", disc);
     }
@@ -4088,7 +3354,7 @@ var PurchaseHintReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -4101,7 +3367,7 @@ var PurchaseHintReplyCodec = {
       case 0:
         return { kind: "ok", value: PurchaseHintResultCodec.read(s.getStruct(0, 1, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("PurchaseHintReply", disc);
     }
@@ -4182,7 +3448,7 @@ var ExternalUserReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -4195,7 +3461,7 @@ var ExternalUserReplyCodec = {
       case 0:
         return { kind: "ok", value: ExternalUserCodec.read(s.getStruct(0, 0, 4), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("ExternalUserReply", disc);
     }
@@ -4233,7 +3499,7 @@ var EventPollReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -4246,7 +3512,7 @@ var EventPollReplyCodec = {
       case 0:
         return { kind: "ok", value: EventPollResultCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("EventPollReply", disc);
     }
@@ -4366,7 +3632,7 @@ var SyncListeningReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -4379,7 +3645,7 @@ var SyncListeningReplyCodec = {
       case 0:
         return { kind: "ok", value: SyncListeningResultCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("SyncListeningReply", disc);
     }
@@ -4507,7 +3773,7 @@ var QueueBatchReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -4520,7 +3786,7 @@ var QueueBatchReplyCodec = {
       case 0:
         return { kind: "ok", value: QueueBatchOkCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("QueueBatchReply", disc);
     }
@@ -4804,7 +4070,7 @@ var MetadataRecordsReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -4817,7 +4083,7 @@ var MetadataRecordsReplyCodec = {
       case 0:
         return { kind: "ok", value: MetadataRecordsCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("MetadataRecordsReply", disc);
     }
@@ -4907,7 +4173,7 @@ var MetadataChaptersReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -4920,7 +4186,7 @@ var MetadataChaptersReplyCodec = {
       case 0:
         return { kind: "ok", value: MetadataChaptersCodec.read(s.getStruct(0, 4, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("MetadataChaptersReply", disc);
     }
@@ -5081,7 +4347,7 @@ var CoverImagesReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5094,7 +4360,7 @@ var CoverImagesReplyCodec = {
       case 0:
         return { kind: "ok", value: CoverImagesCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("CoverImagesReply", disc);
     }
@@ -5722,7 +4988,7 @@ var ExecuteResultReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5735,7 +5001,7 @@ var ExecuteResultReplyCodec = {
       case 0:
         return { kind: "ok", value: ExecuteReplyCodec.read(s.getStruct(0, 0, 3), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("ExecuteResultReply", disc);
     }
@@ -5811,7 +5077,7 @@ var DbBootstrapReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5824,7 +5090,7 @@ var DbBootstrapReplyCodec = {
       case 0:
         return { kind: "ok", value: DbBootstrapCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("DbBootstrapReply", disc);
     }
@@ -5858,7 +5124,7 @@ var DbCapabilitiesReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5871,7 +5137,7 @@ var DbCapabilitiesReplyCodec = {
       case 0:
         return { kind: "ok", value: DbCapabilitiesCodec.read(s.getStruct(0, 7, 0), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("DbCapabilitiesReply", disc);
     }
@@ -5911,7 +5177,7 @@ var IdentityExportReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5924,7 +5190,7 @@ var IdentityExportReplyCodec = {
       case 0:
         return { kind: "ok", value: s.getStructList(0, 1, 1).map((item) => IdentityHighWaterCodec.read(item, caps)) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("IdentityExportReply", disc);
     }
@@ -5942,7 +5208,7 @@ var UserRelationsReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -5955,7 +5221,7 @@ var UserRelationsReplyCodec = {
       case 0:
         return { kind: "ok", value: s.getTextList(0) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("UserRelationsReply", disc);
     }
@@ -6044,7 +5310,7 @@ var PluginMigrationsReplyCodec = {
       case "err":
         s.setUint16(0, 1);
         if (v.value != null) {
-          PluginErrorCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
         }
         break;
       default:
@@ -6057,7 +5323,7 @@ var PluginMigrationsReplyCodec = {
       case 0:
         return { kind: "ok", value: PluginMigrationsOkCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
-        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 2), caps) };
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("PluginMigrationsReply", disc);
     }
@@ -7594,6 +6860,815 @@ var PluginWorkerDatabaseMigrationsResultsCodec = {
   }
 };
 
+// dist/db-value.js
+var KINDS = /* @__PURE__ */ new Set(["null", "boolean", "int64", "float64", "text", "bytes"]);
+var TYPES = new Set(DB_TYPES);
+function requirePortableText(text) {
+  if (text.includes("\0")) {
+    throw new Error("BookclerkSQL TEXT cannot contain U+0000 (use BYTES/BLOB for binary)");
+  }
+  return text;
+}
+var I64_MIN = -0x8000000000000000n;
+var I64_MAX = 0x7fffffffffffffffn;
+var DB_TYPE_FROM_ORD = DB_TYPES;
+var DB_TYPE_ORD = Object.fromEntries(DB_TYPES.map((ty, ord2) => [ty, ord2]));
+function parseDbValue(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("DbValue must be an object");
+  }
+  const obj = raw;
+  if (typeof obj.kind !== "string" || !KINDS.has(obj.kind)) {
+    throw new Error(`unknown DbValue union member: ${String(obj.kind)}`);
+  }
+  switch (obj.kind) {
+    case "null":
+      if (typeof obj.value !== "string" || !TYPES.has(obj.value)) {
+        throw new Error("typed null requires a DbType");
+      }
+      return { kind: "null", value: obj.value };
+    case "boolean":
+      if (typeof obj.value !== "boolean") {
+        throw new Error("boolean DbValue requires a boolean");
+      }
+      return { kind: "boolean", value: obj.value };
+    case "int64":
+      return { kind: "int64", value: parseInt64(obj.value) };
+    case "float64":
+      if (typeof obj.value !== "number" || !Number.isFinite(obj.value)) {
+        throw new Error("float64 value is not finite");
+      }
+      return { kind: "float64", value: obj.value };
+    case "text":
+      if (typeof obj.value !== "string") {
+        throw new Error("text DbValue requires a string");
+      }
+      requirePortableText(obj.value);
+      return { kind: "text", value: obj.value };
+    case "bytes":
+      return { kind: "bytes", value: parseBytes(obj.value) };
+    default:
+      throw new Error(`unknown DbValue union member: ${obj.kind}`);
+  }
+}
+function encodeDbValue(value) {
+  const msg = new CapnpMessage();
+  const root = msg.initRoot(2, 1);
+  writeDbValue(root, value);
+  return msg.finish();
+}
+function decodeDbValue(bytes) {
+  const reader = new CapnpReader(bytes);
+  return readDbValue(reader.root(2, 1));
+}
+function writeDbValue(root, value) {
+  switch (value.kind) {
+    case "null":
+      root.setUint16(0, DB_TYPE_ORD[value.value]);
+      root.setUint16(1, 0);
+      return;
+    case "boolean":
+      root.setBool(0, value.value);
+      root.setUint16(1, 1);
+      return;
+    case "int64":
+      if (value.value < I64_MIN || value.value > I64_MAX) {
+        throw new Error("int64 DbValue is out of range");
+      }
+      root.setInt64(1, value.value);
+      root.setUint16(1, 2);
+      return;
+    case "float64":
+      if (!Number.isFinite(value.value)) {
+        throw new Error("float64 value is not finite");
+      }
+      root.setFloat64(1, value.value);
+      root.setUint16(1, 3);
+      return;
+    case "text":
+      requirePortableText(value.value);
+      root.setUint16(1, 4);
+      root.setText(0, value.value);
+      return;
+    case "bytes":
+      root.setUint16(1, 5);
+      root.setData(0, value.value);
+      return;
+    default: {
+      const _exhaustive = value;
+      throw new Error(`unknown DbValue union member: ${JSON.stringify(_exhaustive)}`);
+    }
+  }
+}
+function readDbValue(root) {
+  const disc = root.getUint16(1);
+  switch (disc) {
+    case 0: {
+      const ty = DB_TYPE_FROM_ORD[root.getUint16(0)];
+      if (ty === void 0) {
+        throw new Error("unknown DbType");
+      }
+      return { kind: "null", value: ty };
+    }
+    case 1:
+      return { kind: "boolean", value: root.getBool(0) };
+    case 2:
+      return { kind: "int64", value: root.getInt64(1) };
+    case 3: {
+      const n = root.getFloat64(1);
+      if (!Number.isFinite(n)) {
+        throw new Error("float64 value is not finite");
+      }
+      return { kind: "float64", value: n };
+    }
+    case 4:
+      return { kind: "text", value: requirePortableText(root.getText(0)) };
+    case 5:
+      return { kind: "bytes", value: root.getData(0) };
+    default:
+      throw new Error(`unknown DbValue union member: ${disc}`);
+  }
+}
+function parseInt64(raw) {
+  let n;
+  if (typeof raw === "bigint") {
+    n = raw;
+  } else if (typeof raw === "number") {
+    if (!Number.isInteger(raw) || !Number.isFinite(raw)) {
+      throw new Error("int64 DbValue requires an integer");
+    }
+    n = BigInt(raw);
+  } else if (typeof raw === "string") {
+    if (!/^-?\d+$/.test(raw)) {
+      throw new Error("int64 DbValue requires an integer");
+    }
+    n = BigInt(raw);
+  } else {
+    throw new Error("int64 DbValue requires an integer");
+  }
+  if (n < I64_MIN || n > I64_MAX) {
+    throw new Error("int64 DbValue is out of range");
+  }
+  return n;
+}
+function parseBytes(raw) {
+  if (raw instanceof Uint8Array) {
+    return raw;
+  }
+  if (typeof raw !== "string") {
+    throw new Error("bytes DbValue requires bytes");
+  }
+  if (!raw.startsWith("b64:")) {
+    throw new Error("bytes DbValue requires bytes");
+  }
+  return decodeBase64(raw.slice(4));
+}
+function decodeBase64(b64) {
+  const bin = globalThis.atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    out[i] = bin.charCodeAt(i);
+  }
+  return out;
+}
+
+// dist/guest-sql.js
+function identStart(c) {
+  const code = c.charCodeAt(0);
+  return code >= 65 && code <= 90 || code >= 97 && code <= 122 || c === "_";
+}
+function identCont(c) {
+  return identStart(c) || c >= "0" && c <= "9";
+}
+function skipWsComments(sql, start) {
+  let i = start;
+  while (i < sql.length) {
+    while (i < sql.length && /\s/.test(sql[i])) {
+      i += 1;
+    }
+    if (sql[i] === "-" && sql[i + 1] === "-") {
+      i += 2;
+      while (i < sql.length && sql[i] !== "\n") {
+        i += 1;
+      }
+      continue;
+    }
+    if (sql[i] === "/" && sql[i + 1] === "*") {
+      i += 2;
+      while (i + 1 < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) {
+        i += 1;
+      }
+      i = Math.min(i + 2, sql.length);
+      continue;
+    }
+    break;
+  }
+  return i;
+}
+function keywordAt(sql, i, kw) {
+  if (i + kw.length > sql.length) {
+    return false;
+  }
+  if (sql.slice(i, i + kw.length).toLowerCase() !== kw.toLowerCase()) {
+    return false;
+  }
+  const beforeOk = i === 0 || !identCont(sql[i - 1]);
+  const after = sql[i + kw.length] ?? " ";
+  return beforeOk && !identCont(after);
+}
+function skipIdentOrQuoted(sql, i) {
+  const c = sql[i];
+  if (c === void 0) {
+    return null;
+  }
+  if (c === '"' || c === "`" || c === "[") {
+    const end = c === "[" ? "]" : c;
+    let j = i + 1;
+    while (j < sql.length) {
+      if (sql[j] === end) {
+        if (end !== "]" && sql[j + 1] === end) {
+          j += 2;
+          continue;
+        }
+        return j + 1;
+      }
+      j += 1;
+    }
+    return null;
+  }
+  if (identStart(c)) {
+    let j = i + 1;
+    while (j < sql.length && identCont(sql[j])) {
+      j += 1;
+    }
+    return j;
+  }
+  return null;
+}
+function skipBalancedParens(sql, start) {
+  if (sql[start] !== "(") {
+    return null;
+  }
+  let depth = 0;
+  let end = null;
+  forEachUnquoted(sql.slice(start), (slice, idx) => {
+    if (end !== null) {
+      return 1;
+    }
+    const c = slice[idx];
+    if (c === "(") {
+      depth += 1;
+    } else if (c === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        end = start + idx + 1;
+      }
+    }
+    return 1;
+  });
+  return end;
+}
+function sqlAfterLeadingCtes(sql) {
+  let i = skipWsComments(sql, 0);
+  if (!keywordAt(sql, i, "WITH")) {
+    return sql;
+  }
+  i += 4;
+  i = skipWsComments(sql, i);
+  if (keywordAt(sql, i, "RECURSIVE")) {
+    i += 9;
+    i = skipWsComments(sql, i);
+  }
+  for (; ; ) {
+    const next = skipIdentOrQuoted(sql, i);
+    if (next === null) {
+      return sql;
+    }
+    i = skipWsComments(sql, next);
+    if (sql[i] === "(") {
+      const after = skipBalancedParens(sql, i);
+      if (after === null) {
+        return sql;
+      }
+      i = skipWsComments(sql, after);
+    }
+    if (!keywordAt(sql, i, "AS")) {
+      return sql;
+    }
+    i = skipWsComments(sql, i + 2);
+    if (keywordAt(sql, i, "NOT")) {
+      const afterNot = skipWsComments(sql, i + 3);
+      if (keywordAt(sql, afterNot, "MATERIALIZED")) {
+        i = skipWsComments(sql, afterNot + 12);
+      }
+    } else if (keywordAt(sql, i, "MATERIALIZED")) {
+      i = skipWsComments(sql, i + 12);
+    }
+    if (sql[i] !== "(") {
+      return sql;
+    }
+    const afterBody = skipBalancedParens(sql, i);
+    if (afterBody === null) {
+      return sql;
+    }
+    i = skipWsComments(sql, afterBody);
+    if (sql[i] === ",") {
+      i = skipWsComments(sql, i + 1);
+      continue;
+    }
+    return sql.slice(i);
+  }
+}
+function forEachUnquoted(sql, step) {
+  let i = 0;
+  let inS = false;
+  let inD = false;
+  let inLine = false;
+  let inBlock = false;
+  while (i < sql.length) {
+    const c = sql[i];
+    if (inLine) {
+      if (c === "\n") {
+        inLine = false;
+      }
+      i += 1;
+      continue;
+    }
+    if (inBlock) {
+      if (c === "*" && sql[i + 1] === "/") {
+        inBlock = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    if (inS) {
+      if (c === "'") {
+        if (sql[i + 1] === "'") {
+          i += 2;
+          continue;
+        }
+        inS = false;
+      }
+      i += 1;
+      continue;
+    }
+    if (inD) {
+      if (c === '"') {
+        if (sql[i + 1] === '"') {
+          i += 2;
+          continue;
+        }
+        inD = false;
+      }
+      i += 1;
+      continue;
+    }
+    if (c === "-" && sql[i + 1] === "-") {
+      inLine = true;
+      i += 2;
+      continue;
+    }
+    if (c === "/" && sql[i + 1] === "*") {
+      inBlock = true;
+      i += 2;
+      continue;
+    }
+    if (c === "'") {
+      inS = true;
+      i += 1;
+      continue;
+    }
+    if (c === '"') {
+      inD = true;
+      i += 1;
+      continue;
+    }
+    const n = Math.max(1, step(sql, i));
+    i += n;
+  }
+}
+function forEachTopLevelKeyword(sql, onKeyword) {
+  let depth = 0;
+  forEachUnquoted(sql, (slice, idx) => {
+    const c = slice[idx];
+    if (c === "(") {
+      depth += 1;
+      return 1;
+    }
+    if (c === ")") {
+      depth = Math.max(0, depth - 1);
+      return 1;
+    }
+    if (depth === 0 && identStart(c)) {
+      let j = idx + 1;
+      while (j < slice.length && identCont(slice[j])) {
+        j += 1;
+      }
+      onKeyword(idx, slice.slice(idx, j));
+      return j - idx;
+    }
+    return 1;
+  });
+}
+function hasTopLevelKeyword(sql, keyword) {
+  const want = keyword.toUpperCase();
+  let found = false;
+  forEachTopLevelKeyword(sql, (_, kw) => {
+    if (kw.toUpperCase() === want) {
+      found = true;
+    }
+  });
+  return found;
+}
+function firstTopLevelKeyword(sql) {
+  let first;
+  forEachTopLevelKeyword(sql, (_, kw) => {
+    if (first === void 0) {
+      first = kw.toUpperCase();
+    }
+  });
+  return first;
+}
+function guestStatementKind(sql) {
+  const main = sqlAfterLeadingCtes(sql);
+  if (hasTopLevelKeyword(main, "RETURNING")) {
+    return "returning";
+  }
+  const verb = firstTopLevelKeyword(main);
+  if (verb === "SELECT" || verb === "VALUES") {
+    return "select";
+  }
+  return "execute";
+}
+function splitExecQueries(query) {
+  return query.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).map((line) => stripTrailingSemicolons(line).trim()).filter((line) => line.length > 0);
+}
+function stripTrailingSemicolons(line) {
+  let end = line.length;
+  while (end > 0 && line[end - 1] === ";") {
+    end -= 1;
+  }
+  return line.slice(0, end);
+}
+
+// dist/db-execute.js
+var KIND_FROM = DB_STATEMENT_KINDS;
+var KIND_ORD = Object.fromEntries(DB_STATEMENT_KINDS.map((kind, ord2) => [kind, ord2]));
+var SELECT_FROM = DB_RESULT_SELECTIONS;
+var SELECT_ORD = Object.fromEntries(DB_RESULT_SELECTIONS.map((sel, ord2) => [sel, ord2]));
+var COL_TYPE_FROM = DB_TYPES;
+var COL_TYPE_ORD = Object.fromEntries(DB_TYPES.map((ty, ord2) => [ty, ord2]));
+function encodeExecuteRequest(request) {
+  if (request.statements.length === 0) {
+    throw new Error("execute statements must be non-empty");
+  }
+  const msg = new CapnpMessage();
+  const root = msg.initRoot(4, 3);
+  root.setText(0, request.operationId);
+  root.setText(1, request.requestHash);
+  root.setUint64(3, BigInt(request.deadlineUnixMs));
+  const stmts = root.initStructList(2, request.statements.length, 1, 2);
+  for (let i = 0; i < request.statements.length; i++) {
+    writeStatement(stmts[i], request.statements[i]);
+  }
+  return msg.finish();
+}
+function decodeExecuteRequest(bytes) {
+  const reader = new CapnpReader(bytes);
+  const root = reader.root(4, 3);
+  const stmtStructs = root.getStructList(2, 1, 2);
+  if (stmtStructs.length === 0) {
+    throw new Error("execute statements must be non-empty");
+  }
+  return {
+    operationId: root.getText(0),
+    requestHash: root.getText(1),
+    statements: stmtStructs.map(readStatement),
+    deadlineUnixMs: Number(root.getUint64(3))
+  };
+}
+function encodeExecuteResultReply(outcome) {
+  const msg = new CapnpMessage();
+  const root = msg.initRoot(1, 1);
+  if ("ok" in outcome) {
+    root.setUint16(0, 0);
+    writeExecuteReply(root.initStruct(0, 0, 3), outcome.ok);
+  } else {
+    root.setUint16(0, 1);
+    const err = root.initStruct(0, 0, 3);
+    err.setText(0, outcome.err.code);
+    err.setText(1, outcome.err.message);
+    err.setText(2, outcome.err.details ?? "");
+  }
+  return msg.finish();
+}
+function decodeExecuteResultReply(bytes) {
+  const root = new CapnpReader(bytes).root(1, 1);
+  const disc = root.getUint16(0);
+  if (disc === 0) {
+    return readExecuteReply(root.getStruct(0, 0, 3));
+  }
+  if (disc === 1) {
+    const err = root.getStruct(0, 0, 3);
+    throw PluginError.fromWire(err.getText(0), err.getText(1), err.getText(2));
+  }
+  throw new Error("unknown ExecuteResultReply union member");
+}
+function decodeDbCapabilitiesReply(bytes) {
+  const reply = decodeMessage(DbCapabilitiesReplyCodec, bytes);
+  if (reply.kind === "ok") {
+    return reply.value;
+  }
+  throw PluginError.fromWire(reply.value.code, reply.value.message, reply.value.details);
+}
+function statementResultToD1Result(stmt, timing) {
+  const changes = stmt.rowsAffected;
+  const durationMs = timing.dbExecutionUs / 1e3;
+  const results = stmt.columns.length > 0 ? stmt.rows.map((row) => {
+    const obj = {};
+    for (let i = 0; i < stmt.columns.length; i++) {
+      obj[stmt.columns[i].name] = row.values[i];
+    }
+    return obj;
+  }) : null;
+  return {
+    success: true,
+    results,
+    meta: {
+      duration: durationMs,
+      changes,
+      last_row_id: 0,
+      changed_db: changes > 0,
+      rows_read: stmt.rows.length,
+      rows_written: changes
+    }
+  };
+}
+function executeReplyToD1Results(reply) {
+  return reply.statements.map((stmt) => statementResultToD1Result(stmt, reply.timing));
+}
+function rowMapFromStatement(result) {
+  if (result.rows.length === 0) {
+    return null;
+  }
+  const row = {};
+  for (let i = 0; i < result.columns.length; i++) {
+    row[result.columns[i].name] = result.rows[0].values[i];
+  }
+  return row;
+}
+function columnValueFromRow(row, colName) {
+  if (colName in row) {
+    return row[colName];
+  }
+  const lower = colName.toLowerCase();
+  for (const [name, value] of Object.entries(row)) {
+    if (name.toLowerCase() === lower) {
+      return value;
+    }
+  }
+  throw new Error(`column ${colName} not found in first() result`);
+}
+function writeExecuteReply(root, reply) {
+  root.setText(0, reply.operationId);
+  const stmts = root.initStructList(1, reply.statements.length, 1, 2);
+  for (let i = 0; i < reply.statements.length; i++) {
+    writeStatementResult(stmts[i], reply.statements[i]);
+  }
+  const timing = root.initStruct(2, 2, 1);
+  timing.setUint64(0, BigInt(reply.timing.attemptElapsedUs));
+  timing.setUint64(1, BigInt(reply.timing.dbExecutionUs));
+  timing.setText(0, reply.timing.dbTimingSource);
+}
+function readExecuteReply(root) {
+  return {
+    operationId: root.getText(0),
+    statements: root.getStructList(1, 1, 2).map(readStatementResult),
+    timing: (() => {
+      const t = root.getStruct(2, 2, 1);
+      return {
+        attemptElapsedUs: Number(t.getUint64(0)),
+        dbExecutionUs: Number(t.getUint64(1)),
+        dbTimingSource: t.getText(0)
+      };
+    })()
+  };
+}
+function writeStatementResult(s, stmt) {
+  s.setUint64(0, BigInt(stmt.rowsAffected));
+  const rows = s.initStructList(0, stmt.rows.length, 0, 1);
+  for (let i = 0; i < stmt.rows.length; i++) {
+    const cells = rows[i].initStructList(0, stmt.rows[i].values.length, 2, 1);
+    for (let j = 0; j < stmt.rows[i].values.length; j++) {
+      writeDbValue(cells[j], stmt.rows[i].values[j]);
+    }
+  }
+  const cols = s.initStructList(1, stmt.columns.length, 1, 1);
+  for (let i = 0; i < stmt.columns.length; i++) {
+    cols[i].setText(0, stmt.columns[i].name);
+    cols[i].setUint16(0, COL_TYPE_ORD[stmt.columns[i].dbType]);
+  }
+}
+function readStatementResult(s) {
+  const columns = s.getStructList(1, 1, 1).map((c) => {
+    const ty = COL_TYPE_FROM[c.getUint16(0)];
+    if (ty === void 0) {
+      throw new Error("unknown DbType");
+    }
+    return { name: c.getText(0), dbType: ty };
+  });
+  const rows = s.getStructList(0, 0, 1).map((row) => ({
+    values: row.getStructList(0, 2, 1).map(readDbValue)
+  }));
+  return {
+    rows,
+    columns,
+    rowsAffected: Number(s.getUint64(0))
+  };
+}
+function createDatabaseBinding(transport, options = {}) {
+  const runExecute = async (batch, retry) => {
+    if (!Array.isArray(batch) || batch.length === 0) {
+      throw new Error("execute statements must be non-empty");
+    }
+    const request = await executeRequestFromBatch(batch, options, retry);
+    const encoded = encodeExecuteRequest(request);
+    const cap = options.maxRequestBytes ?? 0;
+    if (cap > 0 && encoded.byteLength > cap) {
+      throw PluginError.limitExceeded({
+        limit: "maxRequestBytes",
+        cap,
+        used: encoded.byteLength
+      });
+    }
+    return transport.execute(request);
+  };
+  const binding = {
+    prepare(sql) {
+      return makePrepared(binding, sql, [], options.maxResultRows ?? 0, defaultIntent(options));
+    },
+    batch(statements, opts) {
+      const typed = statements.map((s) => s._asTyped());
+      return runExecute(typed, opts?.retry).then(executeReplyToD1Results);
+    },
+    exec(query, opts) {
+      const queries = splitExecQueries(query);
+      if (queries.length === 0) {
+        return Promise.reject(new Error("exec query is empty"));
+      }
+      const prepared = queries.map((sql) => binding.prepare(sql));
+      return binding.batch(prepared, opts).then((results) => ({
+        count: results.length,
+        duration: results.reduce((sum, r) => sum + r.meta.duration, 0)
+      }));
+    },
+    execute(batch, opts) {
+      return runExecute(batch, opts?.retry);
+    },
+    limits() {
+      if (transport.limits === void 0) {
+        return Promise.reject(PluginError.fromWire("unsupported", "GuestDatabase.limits is not available on this host"));
+      }
+      return transport.limits();
+    }
+  };
+  return binding;
+}
+function defaultIntent(options) {
+  return {
+    resultSelection: "rows",
+    maxRows: options.maxResultRows ?? 0
+  };
+}
+function makePrepared(binding, sql, parameters, defaultAllRows, intent) {
+  const stmt = {
+    _intent: intent,
+    bind(...values) {
+      return makePrepared(binding, sql, values, defaultAllRows, intent);
+    },
+    asRun() {
+      return makePrepared(binding, sql, parameters, defaultAllRows, {
+        resultSelection: "affectedRows",
+        maxRows: 0
+      });
+    },
+    asFirst() {
+      return makePrepared(binding, sql, parameters, defaultAllRows, {
+        resultSelection: "rows",
+        maxRows: 1
+      });
+    },
+    asAll() {
+      return makePrepared(binding, sql, parameters, defaultAllRows, {
+        resultSelection: "rows",
+        maxRows: defaultAllRows
+      });
+    },
+    run(options) {
+      return binding.execute([this.asAll()._asTyped()], options).then((reply) => statementResultToD1Result(reply.statements[0], reply.timing));
+    },
+    first(colName, options) {
+      return binding.execute([this.asFirst()._asTyped()], options).then((reply) => {
+        const result = reply.statements[0];
+        if (!result) {
+          return null;
+        }
+        const row = rowMapFromStatement(result);
+        if (row === null) {
+          return null;
+        }
+        if (colName !== void 0) {
+          return columnValueFromRow(row, colName);
+        }
+        return row;
+      });
+    },
+    raw(options) {
+      return binding.execute([this.asAll()._asTyped()], options).then((reply) => {
+        const result = reply.statements[0];
+        if (!result) {
+          return [];
+        }
+        return result.rows.map((row) => row.values);
+      });
+    },
+    all(options) {
+      return binding.execute([this.asAll()._asTyped()], options).then((reply) => statementResultToD1Result(reply.statements[0], reply.timing));
+    },
+    _asTyped() {
+      const used = intent ?? defaultIntent({ maxResultRows: defaultAllRows });
+      return {
+        sql,
+        parameters,
+        kind: used.resultSelection === "affectedRows" || used.resultSelection === "discard" ? "execute" : guestStatementKind(sql),
+        maxRows: used.maxRows,
+        resultSelection: used.resultSelection
+      };
+    }
+  };
+  return stmt;
+}
+async function executeRequestFromBatch(batch, options, retry) {
+  const token = retry ?? options.retry;
+  return {
+    operationId: token?.operationId ?? options.operationId ?? newOperationId(),
+    requestHash: token?.requestHash ?? options.requestHash ?? "",
+    statements: batch,
+    deadlineUnixMs: options.deadlineUnixMs ?? 0
+  };
+}
+async function canonicalExecuteRequestHash(request) {
+  const canonical = {
+    ...request,
+    operationId: "",
+    requestHash: "",
+    deadlineUnixMs: 0
+  };
+  const bytes = new Uint8Array(encodeExecuteRequest(canonical));
+  if (globalThis.crypto?.subtle) {
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+    return hexBytes(new Uint8Array(digest));
+  }
+  const { createHash } = await import("node:crypto");
+  return createHash("sha256").update(bytes).digest("hex");
+}
+function hexBytes(bytes) {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+function newOperationId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `op-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+function writeStatement(s, stmt) {
+  s.setText(0, stmt.sql);
+  s.setUint16(0, KIND_ORD[stmt.kind]);
+  s.setUint16(1, SELECT_ORD[stmt.resultSelection]);
+  s.setUint32(1, stmt.maxRows);
+  const params = s.initStructList(1, stmt.parameters.length, 2, 1);
+  for (let i = 0; i < stmt.parameters.length; i++) {
+    writeDbValue(params[i], stmt.parameters[i]);
+  }
+}
+function readStatement(s) {
+  const kind = KIND_FROM[s.getUint16(0)];
+  const selectionRaw = s.getUint16(1);
+  const selection = SELECT_FROM[selectionRaw] ?? "rows";
+  if (kind === void 0) {
+    throw new Error("unknown DbStatementKind");
+  }
+  return {
+    sql: s.getText(0),
+    parameters: s.getStructList(1, 2, 1).map(readDbValue),
+    kind,
+    maxRows: s.getUint32(1),
+    resultSelection: selection
+  };
+}
+
 // dist/invoke.js
 var InvokeError = class extends PluginError {
   /** HTTP status the bridge answers with. */
@@ -8031,7 +8106,8 @@ function wireError(err) {
   const e = err;
   const code = e && typeof e === "object" ? typeof e.wireCode === "string" ? e.wireCode : typeof e.code === "string" ? e.code : "internal" : "internal";
   const message = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
-  return { code, message };
+  const details = err instanceof PluginError ? err.detailsText : "";
+  return { code, message, details };
 }
 function resolveStub(entry, host) {
   if (entry.stub === "author") {
@@ -8407,7 +8483,8 @@ function invocationEnv(rawEnv, context) {
         } else if (entry.transport) {
           const transport = entry.transport;
           merged[entry.name] = createDatabaseBinding({
-            execute: (request) => transport.execute(request)
+            execute: (request) => transport.execute(request),
+            limits: () => transport.limits()
           });
         }
       }
@@ -9994,13 +10071,41 @@ var GrantedDatabase = class extends RpcTarget {
       headers: { ...this.#auth, "content-type": "application/octet-stream" },
       body: bytes
     });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw PluginError.fromWire(resp.status === 401 ? "unauthorized" : resp.status === 413 ? "payload_too_large" : "unavailable", `database grant: ${resp.status} ${text}`.trim());
-    }
-    return new Uint8Array(await resp.arrayBuffer());
+    return grantedDatabaseBody(resp);
+  }
+  /**
+   * Negotiated limits of the granted session (`GET /db/limits`).
+   *
+   * @returns The adapter's `DbCapabilities` for this binding.
+   */
+  async limits() {
+    return decodeDbCapabilitiesReply(await this.limitsBytes());
+  }
+  /**
+   * Same answer as Cap'n Proto bytes (Python authors decode locally).
+   *
+   * @returns Unpacked `DbCapabilitiesReply` message.
+   */
+  async limitsBytes() {
+    const resp = await this.#granted.fetch("http://granted/db/limits", {
+      method: "GET",
+      headers: { ...this.#auth }
+    });
+    return grantedDatabaseBody(resp);
   }
 };
+async function grantedDatabaseBody(resp) {
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    const message = `database grant: ${resp.status} ${text}`.trim();
+    if (resp.status === 413) {
+      const limit = parseLimitExceeded(text);
+      throw limit === void 0 ? PluginError.fromWire("limit_exceeded", message) : new PluginError("limit_exceeded", message, { ...limit });
+    }
+    throw PluginError.fromWire(resp.status === 401 ? "unauthorized" : "unavailable", message);
+  }
+  return new Uint8Array(await resp.arrayBuffer());
+}
 var CancelWatch = class extends RpcTarget {
   #promise;
   constructor(granted, auth, stop) {

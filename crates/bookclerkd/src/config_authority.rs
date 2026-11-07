@@ -2644,6 +2644,7 @@ pub(crate) fn library_status(err: &bookclerk_library::LibraryError) -> StatusCod
         LibraryError::Invalid(_) | LibraryError::InvalidEmail => StatusCode::BAD_REQUEST,
         LibraryError::NotFound(_) => StatusCode::NOT_FOUND,
         LibraryError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        LibraryError::LimitExceeded(_) => StatusCode::UNPROCESSABLE_ENTITY,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -2651,6 +2652,30 @@ pub(crate) fn library_status(err: &bookclerk_library::LibraryError) -> StatusCod
 /// Maps a library configuration error onto an HTTP status.
 pub(crate) fn events_error(err: bookclerk_library::LibraryError) -> Response {
     (library_status(&err), Json(ErrorMessage::new(err))).into_response()
+}
+
+#[cfg(test)]
+mod library_status_tests {
+    #![allow(clippy::missing_docs_in_private_items)]
+
+    use super::library_status;
+    use axum::http::StatusCode;
+    use bookclerk_library::LibraryError;
+
+    /// A negotiated cap the client can narrow its request under is a client
+    /// condition, not an outage the SPA should retry.
+    #[test]
+    fn limit_exceeded_is_unprocessable_not_unavailable() {
+        let limit = bookclerk_plugin_abi::LimitExceeded::new("maxResultBytes", 262_144, 300_000);
+        assert_eq!(
+            library_status(&LibraryError::LimitExceeded(limit)),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            library_status(&LibraryError::Unavailable("busy".into())),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
 }
 
 /// In-memory daemon state for control-plane publication tests.

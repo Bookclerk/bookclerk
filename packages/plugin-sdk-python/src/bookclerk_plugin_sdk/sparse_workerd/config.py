@@ -181,6 +181,7 @@ def is_legacy_sdk_embed(name: str) -> bool:
         "bookclerk_plugin_sdk/db_value.py",
         "bookclerk_plugin_sdk/_abi.py",
         "bookclerk_plugin_sdk/guest_sql.py",
+        "bookclerk_plugin_sdk/limits.py",
         "bookclerk_plugin_sdk/__init__.py",
     }
 
@@ -526,6 +527,7 @@ def materialize_config(
         py_siblings = (
             ("bookclerk_plugin_sdk/_abi.py", "_abi.py", "sdk-product-abi.py"),
             ("bookclerk_plugin_sdk/guest_sql.py", "guest_sql.py", "sdk-guest-sql.py"),
+            ("bookclerk_plugin_sdk/limits.py", "limits.py", "sdk-limits.py"),
             ("bookclerk_plugin_sdk/db_value.py", "db_value.py", "sdk-db-value.py"),
         )
         for mod_name, src_name, embed_file in py_siblings:

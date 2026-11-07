@@ -502,7 +502,7 @@ function decodeReply(reply, resultsCodec, caps) {
   const result = decodeReply(reply, W.ContentSourceLoginResultsCodec);
   assert.deepEqual(result, {
     kind: "err",
-    value: { code: "unsupported", message: "login not implemented" },
+    value: { code: "unsupported", message: "login not implemented", details: "" },
   });
 }
 
@@ -578,7 +578,10 @@ function decodeReply(reply, resultsCodec, caps) {
     }),
     W.DestinationAbortStageResultsCodec,
   );
-  assert.deepEqual(abort, { kind: "err", value: { code: "not_found", message: "no such stage" } });
+  assert.deepEqual(abort, {
+    kind: "err",
+    value: { code: "not_found", message: "no such stage", details: "" },
+  });
 }
 
 // --- EventConsumer: one author call per batch -----------------------------
@@ -894,7 +897,7 @@ const jobParams = (commandType) => ({
   );
   assert.deepEqual(unsupported, {
     kind: "err",
-    value: { code: "unsupported", message: "bootstrap not implemented" },
+    value: { code: "unsupported", message: "bootstrap not implemented", details: "" },
   });
 
   const noTarget = await invoke(

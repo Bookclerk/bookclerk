@@ -3653,6 +3653,7 @@ pub async fn set_password(
             | LibraryError::Forbidden(_)
             | LibraryError::Invalid(_)
             | LibraryError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            LibraryError::LimitExceeded(_) => StatusCode::UNPROCESSABLE_ENTITY,
         })?;
     let revoked = library
         .delete_portal_sessions_for_user(target_id)

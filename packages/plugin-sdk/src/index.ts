@@ -67,11 +67,15 @@ export {
 } from "./plugin.js";
 export { decodeDbValue, encodeDbValue, parseDbValue } from "./db-value.js";
 export type { DbType, DbValue } from "./db-value.js";
+export { limitExceededMessage, parseLimitExceeded } from "./errors.js";
+export type { LimitExceeded } from "./errors.js";
 export {
   canonicalExecuteRequestHash,
   createDatabaseBinding,
+  decodeDbCapabilitiesReply,
   decodeExecuteResultReply,
   decodeExecuteRequest,
+  encodeDbCapabilitiesReply,
   encodeExecuteResultReply,
   encodeExecuteRequest,
   executeReplyToD1Results,

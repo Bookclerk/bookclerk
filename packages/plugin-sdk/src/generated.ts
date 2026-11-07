@@ -77,6 +77,11 @@ export interface PluginError {
   code: string;
   /** Human-readable detail; never contains secrets. */
   message: string;
+  /**
+   * Structured extras as one JSON object (`limitExceeded` carries `limit`,
+   * `cap` and `used`; engine failures carry `engineCode`). Empty when none.
+   */
+  details: string;
 }
 
 /** Full metadata of one stored object. */
@@ -3385,6 +3390,13 @@ export interface GuestDatabase {
    * @returns {@link EmptyReply}
    */
   close(): Promise<EmptyReply>;
+  /**
+   * Negotiated limits of this session, so guests size requests and reads
+   * before sending instead of discovering caps from errors.
+   *
+   * @returns {@link DbCapabilitiesReply}
+   */
+  limits(): Promise<DbCapabilitiesReply>;
 }
 
 /**

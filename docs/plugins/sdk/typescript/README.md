@@ -109,6 +109,10 @@ The host grants bindings per invocation on `this.env`: `CONFIG` (`[vars]`
 plus operator settings), `SECRETS` (`[secrets]`), `EVENTS`
 (`[[events.producers]]`), `WORK_FS` (`[work_fs]`), and one
 `DatabaseBinding` per `[[databases]]` entry under its `binding` name.
+A binding's `limits()` returns the `DbCapabilities` its session negotiated
+(`maxRequestBytes`, `maxStatements`, `maxResultBytes`, `maxResultRows`,
+…); a request or result over one of them rejects with a `PluginError`
+whose `code` is `limit_exceeded` and whose `limit` names the cap.
 Generate the `Env` type from `plugin.toml`:
 
 ```bash
