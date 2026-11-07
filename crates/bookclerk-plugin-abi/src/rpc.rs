@@ -7092,6 +7092,8 @@ mod tests {
 
 #[cfg(test)]
 mod error_details_tests {
+    #![allow(clippy::missing_panics_doc)]
+
     use super::{read_error, read_error_details, write_error};
     use crate::plugin_capnp::plugin_error;
     use crate::{LimitExceeded, PluginError, PluginErrorCode};
