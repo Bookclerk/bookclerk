@@ -179,14 +179,11 @@ pub async fn expand_candidates(
     {
         match search_catalog_by_series_asin(&http, &region, series_asin).await {
             Ok(products) => {
-                let series_label = seed
-                    .series
-                    .clone()
-                    .unwrap_or_else(|| series_asin.to_string());
-                for mut p in products {
-                    if p.series.is_none() {
-                        p.series = Some(series_label.clone());
-                    }
+                // A title the listing returns without a series keeps none:
+                // the listing also returns loose matches (other editions,
+                // unrelated titles), and stamping the seed's series on them
+                // files them under a series they are not in.
+                for p in products {
                     push(
                         &mut by_asin,
                         p,

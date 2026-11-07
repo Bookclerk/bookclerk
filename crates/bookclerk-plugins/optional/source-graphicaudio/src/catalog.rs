@@ -374,7 +374,13 @@ fn extract_series_page_url(html: &str, store_base: &str) -> Option<String> {
 }
 
 /// Series page `<h1 class="page-title">` text after HTML-entity decode.
+///
+/// A search results page carries a heading too ("Search results for:
+/// 'query'"), which is not a series name, so it gives `None`.
 fn extract_series_name_from_page(html: &str) -> Option<String> {
+    if html.contains("catalogsearch-result-index") {
+        return None;
+    }
     let document = parse_html_fragment(html);
     let Ok(sel) = scraper::Selector::parse("h1.page-title span, h1.page-title") else {
         return None;
@@ -383,7 +389,7 @@ fn extract_series_name_from_page(html: &str) -> Option<String> {
         .select(&sel)
         .next()
         .map(|el| decode(el.text().collect::<String>().trim()))
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && !s.to_lowercase().starts_with("search results for"))
 }
 
 /// Magento `data-product-id` on the element or a descendant.
@@ -525,6 +531,24 @@ fn urlencoding_minimal(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A search results page's heading is not taken as a series name; a
+    /// series page's heading is.
+    #[test]
+    fn search_result_headings_are_not_series_names() {
+        let search = r#"<html><body class="page-products catalogsearch-result-index">
+            <h1 class="page-title"><span>Search results for: 'The Midnight World'</span></h1>
+            </body></html>"#;
+        assert_eq!(super::extract_series_name_from_page(search), None);
+        let plain = r#"<h1 class="page-title"><span>Search results for: 'Dune'</span></h1>"#;
+        assert_eq!(super::extract_series_name_from_page(plain), None);
+        let series = r#"<html><body class="catalog-category-view">
+            <h1 class="page-title"><span>The Stormlight Archive</span></h1></body></html>"#;
+        assert_eq!(
+            super::extract_series_name_from_page(series).as_deref(),
+            Some("The Stormlight Archive")
+        );
+    }
+
     use super::*;
 
     #[test]
