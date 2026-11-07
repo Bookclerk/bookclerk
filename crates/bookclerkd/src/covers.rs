@@ -1092,6 +1092,13 @@ impl CoverService {
         changed || due || pending || total > limits.budget || (low_now && total > limits.budget / 2)
     }
 
+    /// Asks for a sweep at the next [`CoverService::maintain`], for a
+    /// request that the running sweep, started under older limits, does
+    /// not cover.
+    pub(crate) fn request_sweep(&self) {
+        self.sweep_pending.store(true, Ordering::Release);
+    }
+
     /// Runs an eviction sweep to the end, unless one is running: entries
     /// unviewed for longer than the limit go, then the least recently
     /// served until the cache is at 90% of its budget when over it, or at

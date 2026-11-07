@@ -5,7 +5,9 @@
 //! ([`crate::covers::CoverService::maintain`]) and, when it is, admits a
 //! `cache_sweep` job pinned to this node ([`JobPayload::node_id`]). The
 //! dedup key (`cache_sweep:node=<id>`) folds a sweep that comes due while
-//! another is still queued or running into that one. The job runs the
+//! another is still queued into that one; one that comes due while a sweep
+//! runs is asked for again on the next heartbeat, so it uses the limits in
+//! force by then. The job runs the
 //! eviction sweep, then deletes job scratch directories under the download
 //! cache that no active job has registered and that have been unchanged for
 //! [`SCRATCH_GRACE`]; at startup the same cleanup runs without the grace.
@@ -15,7 +17,7 @@
 //! background instead, so retention never depends on the queue.
 
 use anyhow::Context;
-use bookclerk_library::{EnqueueJobSpec, JobKind, JobPayload, JobTrigger};
+use bookclerk_library::{EnqueueJobSpec, JobKind, JobPayload, JobState, JobTrigger};
 use tracing::warn;
 
 use crate::api::AppState;
@@ -74,7 +76,20 @@ pub(crate) async fn enqueue_cache_sweep(
 /// * `node_id` - This node.
 pub(crate) async fn queue_cache_sweep(state: &AppState, node_id: &str) {
     match enqueue_cache_sweep(state, node_id).await {
-        Ok(AdmitJob::Created(_) | AdmitJob::Duplicate(_)) => {}
+        Ok(AdmitJob::Created(_)) => {}
+        Ok(AdmitJob::Duplicate(id)) => {
+            // A queued sweep reads the limits when it starts, so it covers
+            // this request. One already running read them before `maintain`
+            // installed the new ones: ask again on the next heartbeat.
+            let library = state.library_snapshot().await;
+            let still_queued = matches!(
+                library.get_job(&id).await,
+                Ok(Some(job)) if job.state == JobState::Pending
+            );
+            if !still_queued {
+                state.covers.request_sweep();
+            }
+        }
         Ok(AdmitJob::QueueFull) => {
             warn!("job queue is full; sweeping the image cache without a job");
             state.covers.sweep_in_background();
@@ -137,8 +152,6 @@ pub(crate) async fn run_cache_sweep(
 
 #[cfg(test)]
 mod tests {
-    use bookclerk_library::JobState;
-
     use super::*;
 
     #[tokio::test]
@@ -183,5 +196,40 @@ mod tests {
         assert!(run_cache_sweep(&state, &JobPayload::default(), None)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_sweep_due_while_one_runs_is_asked_for_again() {
+        let files = tempfile::tempdir().unwrap();
+        let (mut state, library) = crate::node_api::tests::test_state_with(&files, "").await;
+        let covers = crate::covers::CoverService::open(
+            files.path().join("covers-cache"),
+            crate::covers::Limits::default(),
+        )
+        .unwrap();
+        std::sync::Arc::get_mut(&mut state)
+            .expect("the state is not shared yet")
+            .covers = std::sync::Arc::new(covers);
+        let limits = state.covers.limits();
+        // A first sweep leaves nothing due.
+        state.covers.sweep().await.unwrap();
+        assert!(!state.covers.maintain(limits).await);
+
+        let AdmitJob::Created(id) = enqueue_cache_sweep(&state, "node-a").await.unwrap() else {
+            panic!("expected a new job");
+        };
+        // Folded into a queued job, the request is that job's.
+        queue_cache_sweep(&state, "node-a").await;
+        assert!(!state.covers.maintain(limits).await);
+
+        let job = library.get_job(&id).await.unwrap().unwrap();
+        library
+            .claim_job_by_id(&id, job.lease_generation, "node-a", 60)
+            .await
+            .unwrap()
+            .expect("claimed");
+        // Folded into a running one, it comes back on the next beat.
+        queue_cache_sweep(&state, "node-a").await;
+        assert!(state.covers.maintain(limits).await);
     }
 }

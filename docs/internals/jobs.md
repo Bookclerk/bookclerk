@@ -211,12 +211,14 @@ and only that node's routed claim takes the job (the unrouted claim never
 does). Each daemon admits one for itself from its heartbeat when a sweep is
 due (see [Cache retention](../server/integrations.md#cache-retention)), at
 priority 100 so a backlog of store work does not hold it back. The dedup key
-folds a sweep that comes due while another is queued or running into that
-one. The job evicts from the node's image caches, then deletes scratch
+folds a sweep that comes due while another is queued into that one; one
+that comes due while a sweep runs is asked for again on the next heartbeat,
+so it runs under the limits in force by then. The job evicts from the node's image caches, then deletes scratch
 directories under `{cache}/acquire`, `{cache}/acquire-pdf` and
-`{cache}/convert` that no active job has registered and that have been
-unchanged for an hour (a job may create its directory just before
-registering it). When the queue is full or the admission fails, the
+`{cache}/convert` that no active job has registered and in which nothing
+has changed for an hour (a job may create its directory just before
+registering it, and `bookclerk library convert` runs without a job, so a
+file still being written keeps its directory). When the queue is full or the admission fails, the
 heartbeat sweeps the image caches in the background instead.
 
 Reserved classes (no worker in this release): `media`, `transcription`,
@@ -327,7 +329,8 @@ clusters scan` ([Clusters and host nodes](../server/cluster-hosts.md)).
 - Scratch dirs under `{cache}/acquire` and `{cache}/acquire-pdf` are reserved
   against `jobs.temp_quota_bytes` (default 2 GiB) and unregistered only after
   that path is deleted (or already gone). Startup sweeps unregistered orphans,
-  and each node's `cache_sweep` job sweeps those unchanged for an hour.
+  and each node's `cache_sweep` job sweeps those in which nothing has changed
+  for an hour.
   Fetch, remux/transcode, and companion-PDF downloads (PDF-only and sidecars
   discovered during audio acquire) are bounded by the remaining quota: sources
   can call `FetchOptions::enforce_cache_budget`, the pipeline watchdog cancels

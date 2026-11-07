@@ -317,9 +317,10 @@ in the files directory. Three limits keep it from filling the disk:
 Each node checks these limits with its heartbeat (every 15 seconds). When
 they changed, a new image took the cache over its budget or found the disk
 low, or an hour has passed since the last sweep, the node queues a
-`cache_sweep` job that only it can run; a sweep already queued or running
-counts. The job sweeps the cache and also deletes download scratch that
-no running job owns. It shows in the job list like any other job. If the
+`cache_sweep` job that only it can run; a sweep already queued counts, and
+one already running is followed by another. The job sweeps the cache and
+also deletes download scratch that no running job owns and in which
+nothing has changed for an hour. It shows in the job list like any other job. If the
 queue is full, the node sweeps the cache without a job.
 
 A swept image is first moved into `cache/covers/.trash/`, then deleted, so

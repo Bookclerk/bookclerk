@@ -68,8 +68,9 @@ pub async fn reconcile_on_startup(state: &AppState) -> anyhow::Result<()> {
 ///
 /// At startup nothing runs yet, so `min_age` is zero. The periodic
 /// `cache_sweep` job passes [`SCRATCH_GRACE`] instead: a job may create its
-/// directory a moment before registering it, so a directory changed more
-/// recently than `min_age` is left alone.
+/// directory a moment before registering it, and `bookclerk library
+/// convert` works without a job at all, so a directory in which anything
+/// changed within `min_age` is left alone.
 ///
 /// # Arguments
 ///
@@ -128,8 +129,57 @@ fn require_under_sweep_root(root: &Path, path: &Path) -> Option<PathBuf> {
     Some(path_norm)
 }
 
-/// Deletes unregistered child directories under `root` unchanged for at
-/// least `min_age`.
+/// Whether anything in the tree at `path` changed within `min_age`.
+///
+/// A directory's own time moves only when entries are added or removed, so
+/// a file growing inside it (an encoder appending to its output) would not
+/// show there; the whole tree is read instead. Symbolic links are not
+/// followed.
+///
+/// # Arguments
+///
+/// * `path` - The directory to check.
+/// * `min_age` - The window that counts as recent.
+///
+/// # Returns
+///
+/// `true` when an entry changed within `min_age` or a time could not be
+/// read, which is treated as new so nothing is deleted on doubt.
+fn changed_within(path: &Path, min_age: Duration) -> bool {
+    let recent = |meta: &std::fs::Metadata| {
+        meta.modified()
+            .map(|modified| modified.elapsed().unwrap_or_default() < min_age)
+            .unwrap_or(true)
+    };
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if recent(&meta) => return true,
+            Ok(_) => {}
+            Err(_) => return true,
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return true;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return true;
+            };
+            let Ok(meta) = entry.metadata() else {
+                return true;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else if recent(&meta) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Deletes unregistered child directories under `root` in which nothing
+/// changed for at least `min_age`.
 async fn sweep_dir(root: &Path, keep: &HashSet<PathBuf>, min_age: Duration) -> u32 {
     let mut n = 0u32;
     let Ok(root_canon) = tokio::fs::canonicalize(root).await else {
@@ -154,12 +204,10 @@ async fn sweep_dir(root: &Path, keep: &HashSet<PathBuf>, min_age: Duration) -> u
             continue;
         }
         if !min_age.is_zero() {
-            let young = entry
-                .metadata()
+            let tree = entry.path();
+            let young = tokio::task::spawn_blocking(move || changed_within(&tree, min_age))
                 .await
-                .and_then(|meta| meta.modified())
-                .map(|modified| modified.elapsed().unwrap_or_default() < min_age)
-                // An unreadable time is treated as new: never delete on doubt.
+                // A failed check is treated as new: never delete on doubt.
                 .unwrap_or(true);
             if young {
                 continue;
@@ -652,6 +700,30 @@ mod tests {
         assert!(!orphan.exists());
         assert!(!convert_orphan.exists());
         assert!(kept.exists());
+    }
+
+    /// A file growing deep in a scratch tree keeps the tree young even
+    /// though no directory time moves.
+    #[test]
+    fn a_growing_file_keeps_its_scratch_tree_young() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("encode");
+        std::fs::create_dir_all(tree.join("work")).unwrap();
+        let output = tree.join("work").join("out.mp3");
+        std::fs::write(&output, b"a").unwrap();
+        let window = Duration::from_millis(300);
+        std::thread::sleep(window * 2);
+        assert!(!changed_within(&tree, window));
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&output)
+            .unwrap();
+        file.write_all(b"b").unwrap();
+        file.sync_all().unwrap();
+        assert!(changed_within(&tree, window));
+        assert!(changed_within(&dir.path().join("missing"), window));
     }
 
     /// Keep-set paths come from the DB as lexical strings; DirEntry walks are
