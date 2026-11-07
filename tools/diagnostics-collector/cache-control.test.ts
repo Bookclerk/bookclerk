@@ -144,15 +144,22 @@ describe("cache classes", () => {
     ]);
   });
 
-  it("the Worker spells no Cache-Control value outside the table", () => {
+  it("the Worker sets Cache-Control only from the table", () => {
     assert.ok(Object.keys(SOURCES).length > 10);
+    let assignments = 0;
     for (const [path, source] of Object.entries(SOURCES)) {
+      // Every assignment, in any casing, takes a table value.
+      for (const [line, value] of source.matchAll(/["']cache-control["']\s*[:,]\s*([^\n]+)/gi)) {
+        assignments += 1;
+        assert.match(value ?? "", /^CACHE_CONTROL\.\w+/, `${path}: ${line}`);
+      }
       assert.doesNotMatch(
         source,
-        /["'`](?:public,|private\b|no-store|no-cache|must-revalidate)/,
+        /["'][^"'\n]*\b(?:no-store|no-cache|must-revalidate|s-maxage|immutable)\b/i,
         path,
       );
     }
+    assert.ok(assignments >= 4);
   });
 });
 

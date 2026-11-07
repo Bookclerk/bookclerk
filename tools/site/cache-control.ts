@@ -33,8 +33,8 @@ export type FixedCacheClass = keyof typeof CACHE_CONTROL;
  */
 export type CacheClass = FixedCacheClass | "shared";
 
-/** The `shared` class's value, with its two lifetimes in seconds. */
-const SHARED_RE = /^public, max-age=(\d+), s-maxage=(\d+)$/;
+/** The `shared` class's value, with its two lifetimes in seconds (no leading zeros). */
+const SHARED_RE = /^public, max-age=(0|[1-9]\d*), s-maxage=(0|[1-9]\d*)$/;
 
 /**
  * `Cache-Control` of the `shared` class: browsers keep the answer for
@@ -66,5 +66,9 @@ export function cacheClassOf(value: string | null): CacheClass | null {
   for (const [name, fixed] of Object.entries(CACHE_CONTROL)) {
     if (value === fixed) return name as FixedCacheClass;
   }
-  return SHARED_RE.test(value) ? "shared" : null;
+  const shared = SHARED_RE.exec(value);
+  if (shared === null) return null;
+  // The same lifetimes shared() accepts.
+  const lifetimes = [shared[1], shared[2]].map(Number);
+  return lifetimes.every(Number.isSafeInteger) ? "shared" : null;
 }
