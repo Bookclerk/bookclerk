@@ -483,8 +483,10 @@ fn series_words(name: &str) -> Vec<String> {
 
 /// Whether a catalog title's series is the series a keyword search asked for.
 ///
-/// The names match when one's words appear, in order and adjacent, inside
-/// the other's ("Dune" and "The Dune Sequence"). A title with no series
+/// The names match when their words are equal once a leading article and
+/// trailing generic words ("series", "saga", "sequence" and the like, see
+/// [`SERIES_SUFFIXES`]) are dropped, so "Dune" matches "The Dune Sequence"
+/// but "Midnight" does not match "Midnight World". A title with no series
 /// never matches.
 ///
 /// # Arguments
@@ -499,14 +501,37 @@ fn same_series(product_series: Option<&str>, searched: &str) -> bool {
     let Some(product_series) = product_series else {
         return false;
     };
-    let a = series_words(product_series);
-    let b = series_words(searched);
-    let (short, long) = if a.len() <= b.len() {
-        (&a, &b)
-    } else {
-        (&b, &a)
-    };
-    !short.is_empty() && long.windows(short.len()).any(|w| w == short.as_slice())
+    let a = series_core(product_series);
+    !a.is_empty() && a == series_core(searched)
+}
+
+/// Generic trailing words a storefront appends to a series name, which do
+/// not tell two series apart ("The Dune Sequence" is the "Dune" series).
+const SERIES_SUFFIXES: &[&str] = &[
+    "series",
+    "saga",
+    "sequence",
+    "chronicles",
+    "cycle",
+    "trilogy",
+    "duology",
+    "quartet",
+    "books",
+    "novels",
+    "collection",
+];
+
+/// A series name's distinguishing words: [`series_words`] without trailing
+/// [`SERIES_SUFFIXES`].
+fn series_core(name: &str) -> Vec<String> {
+    let mut words = series_words(name);
+    while words
+        .last()
+        .is_some_and(|w| SERIES_SUFFIXES.contains(&w.as_str()))
+    {
+        words.pop();
+    }
+    words
 }
 
 /// First author/narrator token split on comma, semicolon, or ampersand.
@@ -694,6 +719,10 @@ mod tests {
             Some("The Midnight Library"),
             "The Midnight World"
         ));
+        assert!(same_series(Some("Dune Chronicles"), "Dune"));
+        assert!(!same_series(Some("Midnight World"), "Midnight"));
+        assert!(!same_series(Some("Midnight"), "The Midnight World"));
+        assert!(!same_series(Some("Series"), "Saga"));
         assert!(!same_series(Some("Dunesday"), "Dune"));
         assert!(!same_series(Some("The"), "The"));
     }

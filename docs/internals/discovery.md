@@ -252,8 +252,10 @@ Candidates are **unowned** storefront hits (plus open wishlist items), scored by
    hours listened.
    A candidate counts toward a series only when its storefront lists it in
    that series. Audible's series keyword search also returns loose matches,
-   so the Audible plugin keeps only results whose own series matches the
-   searched name.
+   so the Audible plugin keeps only results whose own series has the same
+   name. Names are compared without a leading article or trailing generic
+   words such as "Series" or "Sequence", so "The Dune Sequence" matches
+   "Dune" but "Midnight World" does not match "Midnight".
 3. Overlap with liked authors
 4. Embedding similarity to finished / highly rated / recently listened works
 5. Wishlist boost (`wish_count × 40` on the shared queue / Discover merge)

@@ -66,7 +66,8 @@ export function AccountsPage({
         }
       }
     } catch (err) {
-      setSources((prev) => prev ?? []);
+      // A failed first read leaves `sources` null: the error says what went
+      // wrong, and "No storefront plugin" stays for a list that came back empty.
       setError(err instanceof Error ? err.message : "Failed to load accounts");
     } finally {
       setBusy(false);
@@ -174,9 +175,11 @@ export function AccountsPage({
           <section className="space-y-3">
             <h2 className="text-lg font-semibold text-ink">Bookstore sources</h2>
             {sources === null ? (
-              <p className="text-sm text-ink/50" role="status" aria-busy="true">
-                Loading sources…
-              </p>
+              error ? null : (
+                <p className="text-sm text-ink/50" role="status" aria-busy="true">
+                  Loading sources…
+                </p>
+              )
             ) : sources.length === 0 ? (
               <p className="text-sm text-ink/50">No storefront plugin is deployed on this node.</p>
             ) : (
