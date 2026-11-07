@@ -5224,6 +5224,14 @@ async fn get_book_cover(
     State(state): State<Arc<AppState>>,
     AxumPath(uuid): AxumPath<String>,
 ) -> Result<Response, StatusCode> {
+    // Without a local destination there is no sidecar to serve, so answer
+    // before reading the library.
+    let local = state
+        .destinations
+        .read()
+        .await
+        .local()
+        .ok_or(StatusCode::NOT_FOUND)?;
     let library = state.library_snapshot().await;
     let book = library
         .get_book_by_uuid(&uuid)
@@ -5231,12 +5239,6 @@ async fn get_book_cover(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     let storage_key = book.storage_key.as_deref().ok_or(StatusCode::NOT_FOUND)?;
-    let local = state
-        .destinations
-        .read()
-        .await
-        .local()
-        .ok_or(StatusCode::NOT_FOUND)?;
     let cover_key = sidecar_key(storage_key, "jpg");
     let bytes = local
         .get(&cover_key)

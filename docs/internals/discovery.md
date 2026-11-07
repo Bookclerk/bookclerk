@@ -250,6 +250,10 @@ Candidates are **unowned** storefront hits (plus open wishlist items), scored by
    percent complete only a secondary bonus — so 50% of a 30‑hour book outweighs
    50% of a 3‑hour book. Finished titles still get a completion bump on top of
    hours listened.
+   A candidate counts toward a series only when its storefront lists it in
+   that series. Audible's series keyword search also returns loose matches,
+   so the Audible plugin keeps only results whose own series matches the
+   searched name.
 3. Overlap with liked authors
 4. Embedding similarity to finished / highly rated / recently listened works
 5. Wishlist boost (`wish_count × 40` on the shared queue / Discover merge)
