@@ -1061,8 +1061,7 @@ export interface QueueRetryOptions {
 
 /** Recorded per-message outcome of a `queue()` handler (bridge projection of `QueueResult`). */
 export type QueueOutcome =
-  | { kind: "ack" }
-  | { kind: "retry"; delaySeconds: number; reason: string };
+  { kind: "ack" } | { kind: "retry"; delaySeconds: number; reason: string };
 
 /**
  * One delivered queue message (`QueueMessage` struct), Workers `Message`-shaped.

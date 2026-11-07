@@ -65,7 +65,10 @@ fn check_limit_parsers(err: &PluginError) {
             Some(&limit),
             "a parsed limit must round-trip through its canonical message"
         );
-        assert_eq!(LimitExceeded::from_details(&limit.details()).as_ref(), Some(&limit));
+        assert_eq!(
+            LimitExceeded::from_details(&limit.details()).as_ref(),
+            Some(&limit)
+        );
     }
     check_limit_message(&err.message);
 }
