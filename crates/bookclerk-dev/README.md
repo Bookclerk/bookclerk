@@ -61,6 +61,6 @@ cargo dev --optional --examples
 | --- | --- |
 | `cargo package-plugins` | **Optional** guest archives → `target/dist/plugins/` |
 | `cargo package-hosts` | Hosts + helpers → `target/dist/` |
-| `cargo package-platform` | Hosts + helpers + sqlite + local → `target/dist/` |
+| `cargo package-platform` | Hosts + helpers + sqlite + local → `target/dist/` (`--extra-package <crate>` also compiles a package in the same build, unbundled) |
 
 Implementation: [`src/plugins.rs`](src/plugins.rs) (directory discovery), [`src/package.rs`](src/package.rs).

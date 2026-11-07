@@ -97,7 +97,18 @@ every content signal to `no` (`use=immediate`).
 
 `packaging/demo/Dockerfile` starts from the production builder and image
 built from the same commit, so every crate and plugin is the version that
-commit ships. It adds the Audible, Libro.fm, Chirp, GraphicAudio and
+commit ships. `packaging/demo/docker-bake.hcl` builds all three in one
+BuildKit build, from the repository root:
+
+```bash
+docker buildx bake -f packaging/demo/docker-bake.hcl --load demo
+```
+
+That build never exports the builder, and it links the demo's binaries with
+thin LTO instead of the fat LTO shipped images use, which takes minutes
+rather than most of the build. The storefronts and the seed compile in the
+same `cargo build` as the hosts, so their shared dependencies compile once. The image adds the Audible, Libro.fm, Chirp,
+GraphicAudio and
 `covers` plugins, and removes the `local` output plugin, so the host has
 nowhere to acquire to even if a request got through. `covers` downloads
 covers, store icons and avatars, and `bookclerk-media-worker` re-encodes
@@ -130,7 +141,7 @@ each published release, after each image publish from `main` (nightly), and
 on demand. When `images-publish.yml` already pushed the demo image for the
 commit (`ghcr.io/<owner>/bookclerk-demo:sha-<12 hex>`), the deploy verifies
 its build provenance and deploys it in a few minutes; otherwise it builds
-the image itself, which takes about half an hour. A run after a publish or a
+the image itself, which takes about 15 minutes. A run after a publish or a
 release stops early when the live demo already runs that commit (and an
 earlier run for it succeeded) or a newer one. It needs the repository
 secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the token's

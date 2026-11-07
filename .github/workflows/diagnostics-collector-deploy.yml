@@ -135,9 +135,9 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: tools/diagnostics-collector
-          # Matches package-lock.json; 4.45+ creates the TRIAGE_BUDGET KV
-          # namespace on first deploy.
-          wranglerVersion: "4.151.0"
+          # No wranglerVersion: the action then uses the wrangler that `npm
+          # ci` installed from package-lock.json, the one the tests ran
+          # (4.45+ creates the TRIAGE_BUDGET KV namespace on first deploy).
           command: deploy${{ steps.route.outputs.site && format(' --var SITE_URL:{0}', steps.route.outputs.site) || '' }}
           secrets: |
             B2_KEY_ID

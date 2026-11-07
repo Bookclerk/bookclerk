@@ -137,6 +137,10 @@ cargo package-hosts        # hosts + jail + media-worker + bookclerk-workerd + w
 cargo package-platform     # hosts + helpers + pinned workerd + sqlite + local → target/dist/
 ```
 
+`cargo package-platform --extra-package <crate>` (repeatable) compiles more
+packages in the same `cargo build` and leaves them in `target/release/`,
+outside the bundle. The demo image uses it for its storefronts and seed.
+
 Archive names follow the [Plugin registry](../plugins/registry.md):
 
 ```text
@@ -161,7 +165,15 @@ repository's owner. A fork publishes to its own namespace with its own
 
 The `bookclerk-dev` image carries inline cache metadata, so the Dev
 Container's `build.cacheFrom` reuses its layers. The demo image builds on
-the production builder and runtime. The hosted demo's deploy pulls the
+the production builder and runtime, all three in one build from
+[`packaging/demo/docker-bake.hcl`](../../packaging/demo/docker-bake.hcl).
+That build links with thin LTO and parallel codegen units. It also
+compiles the storefronts and the demo seed in the builder's one
+`cargo build` (`cargo package-platform --extra-package`), so the
+dependencies they share with the hosts compile once. Shipped images keep
+`Cargo.toml`'s fat LTO and build only the platform:
+`packaging/docker/Dockerfile` takes these settings as build arguments
+whose defaults are the shipped ones. The hosted demo's deploy pulls the
 published demo image without signing in, so the package must be public.
 When the image for the deployed commit exists and its attestation
 verifies, the deploy uses it instead of building it again. Otherwise a
