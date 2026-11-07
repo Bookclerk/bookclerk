@@ -835,10 +835,13 @@ and plugin changes reach the demo), and on demand.
 
 - A run after a publish or a release first asks the live demo's
   `/_demo/health` which commit it runs. It stops when it is the same one
-  and an earlier run for that commit finished successfully.
+  and an earlier run deployed that commit and passed its smoke check. Each
+  run is named `Deploy demo <commit>` after the commit it deploys, since a
+  run started by a publish has `main`'s newest commit as its own.
 - A run after a publish deploys the commit that publish built. It stops
   when the live demo already runs a newer commit, so the demo never goes
-  back, and when the publish pushed no demo image.
+  back, and when the publish pushed no demo image. It fails when the
+  registry can't be read, rather than skipping the deploy.
 - The Worker reports its version before migrations and smoke checks, so a
   half-finished deploy is retried.
 - A repository without the two Cloudflare secrets gets a notice instead of

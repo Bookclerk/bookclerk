@@ -40,6 +40,9 @@
 # https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#permissions-for-the-github_token
 
 name: demo-deploy
+# Names the deployed commit, which after a publish is not the run's head_sha
+# (main's newest commit); the gate finds earlier deploys of a commit by it.
+run-name: Deploy demo ${{ github.event.workflow_run.head_sha || github.sha }}
 
 on:
   push:
@@ -151,11 +154,21 @@ jobs:
             # The Worker reports the new version as soon as it is uploaded,
             # before migrations, secrets and smoke checks run, so the health
             # check alone cannot tell a finished deploy from one that failed
-            # half way. Skip only when an earlier run of this workflow for
-            # the same commit also succeeded end to end.
-            done=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/demo-deploy.yml/runs?head_sha=$SHA&status=success&per_page=1" \
-              --jq '.total_count' 2>/dev/null || echo 0)
-            if [ "$live" = "$SHA" ] && [ "${done:-0}" -gt 0 ]; then
+            # half way. Skip only when an earlier run deployed this commit
+            # and passed its smoke check. Runs are matched by the commit they
+            # deployed: the run name, or the head_sha of a run not started by
+            # a publish (runs from before the run name existed).
+            done=0
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/demo-deploy.yml/runs?status=success&per_page=100" \
+              --jq ".workflow_runs[] | select(.display_title == \"Deploy demo $SHA\" or (.head_sha == \"$SHA\" and .event != \"workflow_run\")) | .id" \
+              2>/dev/null || true)
+            for run in $runs; do
+              checked=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs" \
+                --jq '[.jobs[].steps[]? | select(.name == "Check the demo answers" and .conclusion == "success")] | length' \
+                2>/dev/null || echo 0)
+              if [ "${checked:-0}" -gt 0 ]; then done=1; break; fi
+            done
+            if [ "$live" = "$SHA" ] && [ "$done" -gt 0 ]; then
               echo "::notice::$url already runs $SHA; nothing to deploy"
               deploy=false
             elif [ "$EVENT" = workflow_run ] && [ -n "$live" ] && [ "$live" != "$SHA" ] \
@@ -167,11 +180,30 @@ jobs:
           image=""
           if [ "$deploy" = true ]; then
             repo="ghcr.io/${OWNER,,}/bookclerk-demo"
-            # Exactly sha256:<64 hex>, or empty when there is no such image or
-            # the registry's answer is anything else.
+            # Exactly sha256:<64 hex>, or empty when there is no such image
+            # (or, in a fork, no public package). Any other registry failure
+            # is retried once; an after-publish run then fails rather than
+            # skip a deploy it was started for, and other runs build here.
             digest=""
-            if manifest=$(docker buildx imagetools inspect "$repo:sha-${SHA:0:12}" --format '{{json .Manifest}}' 2>/dev/null); then
-              digest=$(python3 scripts/demo_image.py digest <<<"$manifest" || true)
+            missing=false
+            for attempt in 1 2; do
+              if manifest=$(docker buildx imagetools inspect "$repo:sha-${SHA:0:12}" --format '{{json .Manifest}}' 2>"$RUNNER_TEMP/inspect.err"); then
+                digest=$(python3 scripts/demo_image.py digest <<<"$manifest" || true)
+                break
+              fi
+              if grep -qiE 'not found|manifest unknown|unauthorized|denied' "$RUNNER_TEMP/inspect.err"; then
+                missing=true
+                break
+              fi
+              cat "$RUNNER_TEMP/inspect.err" >&2
+              if [ "$attempt" -eq 1 ]; then sleep 15; fi
+            done
+            if [ -z "$digest" ] && [ "$missing" = false ]; then
+              if [ "$EVENT" = workflow_run ]; then
+                echo "::error::Could not read $repo:sha-${SHA:0:12} from the registry"
+                exit 1
+              fi
+              echo "::warning::Could not read $repo:sha-${SHA:0:12} from the registry; building the image here instead"
             fi
             if [ -n "$digest" ]; then
               if gh attestation verify "oci://$repo@$digest" \
