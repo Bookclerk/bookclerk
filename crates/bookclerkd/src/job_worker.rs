@@ -84,7 +84,8 @@ pub async fn reconcile_on_startup(state: &AppState) -> anyhow::Result<()> {
 ///
 /// # Errors
 ///
-/// Returns the library error when the registered directories cannot be read.
+/// Returns the library error when the registered directories or their jobs
+/// cannot be read; nothing is deleted then.
 pub async fn sweep_orphan_temp_dirs(
     library: &LibraryStore,
     cache_dir: &Path,
@@ -92,7 +93,9 @@ pub async fn sweep_orphan_temp_dirs(
 ) -> anyhow::Result<u32> {
     let mut active_keep = HashSet::new();
     for row in library.list_all_job_temp_paths().await? {
-        if let Ok(Some(job)) = library.get_job(&row.job_id).await {
+        // A failed lookup aborts the sweep: a directory is never deleted
+        // because its job could not be read.
+        if let Some(job) = library.get_job(&row.job_id).await? {
             if job.state.is_active() {
                 // Same representation as [`sweep_dir`]: prefer canonicalize so a
                 // lexical DB path and a symlink-resolved DirEntry still match.
@@ -693,12 +696,24 @@ mod tests {
             .unwrap();
         assert_eq!(young, 0);
         assert!(orphan.exists());
+        // Once nothing in it has changed for the grace period, it goes.
+        let window = Duration::from_millis(300);
+        std::thread::sleep(window * 2);
+        let stale = sweep_orphan_temp_dirs(&store, &cache, window)
+            .await
+            .unwrap();
+        assert_eq!(stale, 2);
+        assert!(!orphan.exists());
+        assert!(!convert_orphan.exists());
+        assert!(kept.exists());
+        // Startup sweeps without the grace, and still keeps a live job's.
+        let fresh = cache.join("acquire").join("fresh-orphan");
+        tokio::fs::create_dir_all(&fresh).await.unwrap();
         let swept = sweep_orphan_temp_dirs(&store, &cache, Duration::ZERO)
             .await
             .unwrap();
-        assert_eq!(swept, 2);
-        assert!(!orphan.exists());
-        assert!(!convert_orphan.exists());
+        assert_eq!(swept, 1);
+        assert!(!fresh.exists());
         assert!(kept.exists());
     }
 

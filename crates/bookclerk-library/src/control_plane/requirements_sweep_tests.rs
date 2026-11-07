@@ -774,3 +774,66 @@ async fn pinned_job_of_a_silent_node_fails_after_grace() {
         .as_deref()
         .is_some_and(|reason| reason.contains("node-a")));
 }
+
+/// A job pinned to a live node still has its requirements reconciled: an
+/// output deployed after admission is added to it as to any other job.
+#[tokio::test]
+async fn a_live_pinned_job_still_has_its_requirements_reconciled() {
+    let (_dir, store, _other) = sqlite_stores().await;
+    let first = create_plugin_instance(&store, &operator(), LOCAL_KEY, "")
+        .await
+        .unwrap();
+    set_desired(&store, &first.id, "node-a", DesiredState::Present).await;
+    let payload = JobPayload {
+        title: Some("pinned".into()),
+        node_id: Some("node-a".into()),
+        ..Default::default()
+    };
+    let requires = resolve_job_requirements(&store, JobKind::Acquire, &payload, &bound())
+        .await
+        .unwrap();
+    let EnqueueOutcome::Created { id } = store
+        .enqueue_job(EnqueueJobSpec {
+            kind: JobKind::Acquire,
+            payload: JobPayload {
+                requires,
+                ..payload
+            },
+            priority: 0,
+            max_attempts: 3,
+            max_pending: 16,
+            run_after: None,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected a new job");
+    };
+    let heartbeat = NodeHeartbeat {
+        incarnation: "test".into(),
+        started_at: Utc::now().to_rfc3339(),
+        interval: NODE_HEARTBEAT_INTERVAL,
+        cpu_millicores: 1000,
+        memory_bytes: None,
+        cpu_used_millicores: None,
+        memory_available_bytes: None,
+        files_dir_free_bytes: None,
+        cache: None,
+    };
+    record_node_heartbeat(&store, "node-a", &heartbeat)
+        .await
+        .unwrap();
+
+    let second = create_plugin_instance(&store, &operator(), LOCAL_KEY, "second")
+        .await
+        .unwrap();
+    set_desired(&store, &second.id, "node-a", DesiredState::Present).await;
+    let report = sweep(&store, Utc::now()).await;
+    assert_eq!(report.rewritten, 1, "{report:?}");
+    let after = store.get_job(&id).await.unwrap().unwrap();
+    assert_eq!(after.state, JobState::Pending);
+    assert_eq!(
+        after.payload.requires,
+        sorted(vec![first.id.to_string(), second.id.to_string()])
+    );
+}

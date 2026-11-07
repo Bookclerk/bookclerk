@@ -133,13 +133,18 @@ pub async fn sweep_job_requirements(
         for job in jobs {
             if let Some(node_id) = job.payload.node_id.as_deref() {
                 report.examined += 1;
-                sweep_pinned(store, &job, node_id, now_ms, grace_ms, &mut report).await?;
+                if sweep_pinned(store, &job, node_id, now_ms, grace_ms, &mut report).await? {
+                    continue;
+                }
+                // A live pin still has its requirements reconciled below.
+                if !sweepable(&job) {
+                    continue;
+                }
+            } else if !sweepable(&job) {
                 continue;
+            } else {
+                report.examined += 1;
             }
-            if !sweepable(&job) {
-                continue;
-            }
-            report.examined += 1;
             sweep_one(
                 store,
                 &job,
@@ -315,6 +320,12 @@ async fn sweep_one(
 /// * `now_ms` - The sweep's clock, in Unix milliseconds.
 /// * `grace_ms` - How long the node may be silent.
 ///
+/// # Returns
+///
+/// `true` when the job was settled here (failed, or lost to a concurrent
+/// writer), `false` when its node is live and the job goes on to the
+/// requirements check.
+///
 /// # Errors
 ///
 /// Returns an error when the read or the write fails.
@@ -325,13 +336,13 @@ async fn sweep_pinned(
     now_ms: i64,
     grace_ms: i64,
     report: &mut RequirementsSweepReport,
-) -> Result<()> {
+) -> Result<bool> {
     let silent = match load_node_status(store, node_id).await? {
         Some(status) => now_ms.saturating_sub(status.heartbeat_ms) >= grace_ms,
         None => true,
     };
     if !silent {
-        return Ok(());
+        return Ok(false);
     }
     let reason = format!(
         "node {node_id} has not sent a heartbeat for over {} minutes",
@@ -350,7 +361,7 @@ async fn sweep_pinned(
     } else {
         report.lost += 1;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// CAS-writes `payload` onto `job`, counting a lost race.

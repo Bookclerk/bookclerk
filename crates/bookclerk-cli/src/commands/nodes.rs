@@ -306,14 +306,8 @@ pub async fn run(
                         node.kind.as_str(),
                         owners.get(&node.node_id).map_or("-", String::as_str)
                     );
-                    match status {
-                        Some(status) => {
-                            println!("  {}", status_line(status));
-                            if let Some(cache) = cache_line(status, now_ms) {
-                                println!("  {cache}");
-                            }
-                        }
-                        None => println!("  no daemon heartbeat yet"),
+                    for line in heartbeat_lines(status, now_ms) {
+                        println!("  {line}");
                     }
                 }
             })
@@ -618,6 +612,22 @@ fn status_line(status: &NodeStatus) -> String {
     )
 }
 
+/// The lines a node's latest heartbeat adds under it in `bookclerk nodes`:
+/// its capacity and use, then its image cache when it keeps one.
+///
+/// # Arguments
+///
+/// * `status` - The node's latest heartbeat, if it ever sent one.
+/// * `now_ms` - The current time in Unix milliseconds.
+fn heartbeat_lines(status: Option<&NodeStatus>, now_ms: i64) -> Vec<String> {
+    let Some(status) = status else {
+        return vec!["no daemon heartbeat yet".to_string()];
+    };
+    let mut lines = vec![status_line(status)];
+    lines.extend(cache_line(status, now_ms));
+    lines
+}
+
 /// The image caches' line of a node: what they hold of their budget and
 /// when they were last swept, or `None` for a node that reports no cache
 /// (a Host).
@@ -652,7 +662,7 @@ fn cache_line(status: &NodeStatus, now_ms: i64) -> Option<String> {
 mod tests {
     use bookclerk_library::{LibraryStore, UserRole};
 
-    use super::{cache_line, invite_spki_pin, parse_ttl, resolve_user};
+    use super::{cache_line, heartbeat_lines, invite_spki_pin, parse_ttl, resolve_user};
 
     #[test]
     fn the_cache_line_shows_use_budget_and_last_sweep() {
@@ -691,6 +701,15 @@ mod tests {
             cache_line(&status, 1_000 + 12 * 60_000).as_deref(),
             Some("cache 300M of 1.0G, swept 12 min ago")
         );
+
+        // The node list prints it under the node's status line.
+        let lines = heartbeat_lines(Some(&status), 1_000 + 12 * 60_000);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("cpu 1.0 cores"), "{lines:?}");
+        assert_eq!(lines[1], "cache 300M of 1.0G, swept 12 min ago");
+        status.cache_bytes = None;
+        assert_eq!(heartbeat_lines(Some(&status), 0).len(), 1);
+        assert_eq!(heartbeat_lines(None, 0), ["no daemon heartbeat yet"]);
     }
 
     #[test]

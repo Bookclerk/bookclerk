@@ -75,13 +75,20 @@ async fn beat(
             state.covers.limits()
         }
     };
-    if state.covers.maintain(limits).await {
-        crate::cache_jobs::queue_cache_sweep(state, &node_id).await;
-    }
+    let due = state.covers.maintain(limits).await;
     heartbeat.cache = Some(state.covers.usage());
     let status = record_node_heartbeat(&library, &node_id, &heartbeat)
         .await
         .map_err(anyhow::Error::from);
+    if due {
+        if status.is_ok() {
+            // Queued only once this beat is on record, so the requirements
+            // sweep never sees the job before it sees its node alive.
+            crate::cache_jobs::queue_cache_sweep(state, &node_id).await;
+        } else {
+            state.covers.sweep_in_background();
+        }
+    }
     (sampler, status)
 }
 

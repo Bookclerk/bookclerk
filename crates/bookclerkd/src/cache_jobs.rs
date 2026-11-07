@@ -13,8 +13,10 @@
 //! [`SCRATCH_GRACE`]; at startup the same cleanup runs without the grace.
 //!
 //! When the job cannot be queued (the queue is full, or the database
-//! refuses the write), the heartbeat sweeps the image cache in the
-//! background instead, so retention never depends on the queue.
+//! refuses the write), or a queued one has waited more than
+//! [`QUEUED_SWEEP_PATIENCE`] for a busy worker, the heartbeat sweeps the
+//! image cache in the background instead, so retention never depends on
+//! the queue.
 
 use anyhow::Context;
 use bookclerk_library::{EnqueueJobSpec, JobKind, JobPayload, JobState, JobTrigger};
@@ -28,6 +30,19 @@ use crate::jobs::{admit, job_cancelled, queue_limits, AdmitJob};
 /// Claim priority of a sweep, above the default 0, so a long backlog of
 /// store work does not hold back eviction on a filling disk.
 const SWEEP_PRIORITY: i64 = 100;
+
+/// How long a queued sweep may wait for a worker before the heartbeat
+/// sweeps the image cache without it.
+const QUEUED_SWEEP_PATIENCE: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
+
+/// Whether a sweep queued at `queued_at` has waited past
+/// [`QUEUED_SWEEP_PATIENCE`] by `now`.
+fn waited_too_long(
+    queued_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    now.signed_duration_since(queued_at) >= QUEUED_SWEEP_PATIENCE
+}
 
 /// Admits a `cache_sweep` job pinned to `node_id`.
 ///
@@ -82,12 +97,19 @@ pub(crate) async fn queue_cache_sweep(state: &AppState, node_id: &str) {
             // this request. One already running read them before `maintain`
             // installed the new ones: ask again on the next heartbeat.
             let library = state.library_snapshot().await;
-            let still_queued = matches!(
-                library.get_job(&id).await,
-                Ok(Some(job)) if job.state == JobState::Pending
-            );
-            if !still_queued {
-                state.covers.request_sweep();
+            let queued_at = match library.get_job(&id).await {
+                Ok(Some(job)) if job.state == JobState::Pending => Some(job.created_at),
+                _ => None,
+            };
+            match queued_at {
+                None => state.covers.request_sweep(),
+                // Every worker is busy with long store work: the image cache
+                // is swept without the job rather than wait behind it.
+                Some(at) if waited_too_long(at, chrono::Utc::now()) => {
+                    warn!(job_id = %id, "cache sweep still queued; sweeping the image cache without it");
+                    state.covers.sweep_in_background();
+                }
+                Some(_) => {}
             }
         }
         Ok(AdmitJob::QueueFull) => {
@@ -231,5 +253,12 @@ mod tests {
         // Folded into a running one, it comes back on the next beat.
         queue_cache_sweep(&state, "node-a").await;
         assert!(state.covers.maintain(limits).await);
+    }
+
+    #[test]
+    fn a_sweep_queued_too_long_is_overdue() {
+        let at = chrono::Utc::now();
+        assert!(!waited_too_long(at, at + chrono::TimeDelta::minutes(4)));
+        assert!(waited_too_long(at, at + QUEUED_SWEEP_PATIENCE));
     }
 }
