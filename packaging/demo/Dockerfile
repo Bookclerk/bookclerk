@@ -9,7 +9,8 @@
 # (from the repository root; the result is tagged bookclerk-demo:local).
 # images-publish.yml and demo-deploy.yml both build it this way. The bake
 # file builds the demo's binaries with thin LTO and parallel codegen units
-# rather than the fat LTO shipped images use, which links far faster.
+# rather than the fat LTO shipped images use, which links far faster, and
+# compiles the storefronts and seed in the builder's one `cargo build`.
 #
 # The build context is this directory; the workflow writes version.txt (the
 # commit) into it.
@@ -47,22 +48,11 @@ ARG RUNTIME=bookclerk:demo
 
 FROM ${BUILDER} AS storefronts
 WORKDIR /src
-# The link settings the builder stage got (see docker-bake.hcl).
-ARG RELEASE_LTO=true
-ARG RELEASE_CODEGEN_UNITS=1
-# Reuses the release build the production image already made. The
-# storefronts and the seed build in one cargo invocation, so the dependencies
-# they share compile once, with one feature set; stage-plugins then only lays
-# out what was built.
-RUN CARGO_PROFILE_RELEASE_LTO="$RELEASE_LTO" \
-    CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$RELEASE_CODEGEN_UNITS" \
-    cargo build --release \
-      -p bookclerk-plugin-source-audible \
-      -p bookclerk-plugin-source-libro \
-      -p bookclerk-plugin-source-chirp \
-      -p bookclerk-plugin-source-graphicaudio \
-      -p bookclerk-demo-seed \
-    && cargo stage-plugins --release --skip-build --plugin audible --plugin libro --plugin chirp --plugin graphicaudio --plugin covers \
+# The builder stage already compiled the storefronts and the seed in the same
+# `cargo build` as the hosts (EXTRA_PACKAGES in docker-bake.hcl), so the
+# dependencies they share compiled once, with one feature set. This stage
+# only lays out what was built.
+RUN cargo stage-plugins --release --skip-build --plugin audible --plugin libro --plugin chirp --plugin graphicaudio --plugin covers \
     && mkdir -p /out \
     && cp -a target/plugin-artifacts/. /out/ \
     && test "$(find /out -mindepth 2 -maxdepth 2 -name plugin.toml | wc -l)" -eq 5 \
