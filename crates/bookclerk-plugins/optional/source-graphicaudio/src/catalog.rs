@@ -376,9 +376,12 @@ fn extract_series_page_url(html: &str, store_base: &str) -> Option<String> {
 /// Series page `<h1 class="page-title">` text after HTML-entity decode.
 ///
 /// A search results page carries a heading too ("Search results for:
-/// 'query'"), which is not a series name, so it gives `None`.
+/// 'query'"), and a product page's heading is a book title; neither is a
+/// series name, so both give `None`. Magento marks the page kind with a
+/// `<body>` class (`catalogsearch-result-index`, `catalog-product-view`);
+/// a page without one is judged by its heading.
 fn extract_series_name_from_page(html: &str) -> Option<String> {
-    if html.contains("catalogsearch-result-index") {
+    if !is_listing_page(html) {
         return None;
     }
     let document = parse_html_fragment(html);
@@ -389,7 +392,25 @@ fn extract_series_name_from_page(html: &str) -> Option<String> {
         .select(&sel)
         .next()
         .map(|el| decode(el.text().collect::<String>().trim()))
-        .filter(|s| !s.is_empty() && !s.to_lowercase().starts_with("search results for"))
+        .filter(|s| {
+            let words = s.split_whitespace().collect::<Vec<_>>().join(" ");
+            !words.is_empty() && !words.to_lowercase().starts_with("search results for")
+        })
+}
+
+/// Whether a page may name a series: false when its `<body>` class marks it
+/// as a search results page or a product page.
+fn is_listing_page(html: &str) -> bool {
+    let document = scraper::Html::parse_document(html);
+    let Ok(body) = scraper::Selector::parse("body") else {
+        return true;
+    };
+    document.select(&body).next().is_none_or(|el| {
+        let classes = el.value().attr("class").unwrap_or_default();
+        !classes
+            .split_whitespace()
+            .any(|c| c == "catalogsearch-result-index" || c == "catalog-product-view")
+    })
 }
 
 /// Magento `data-product-id` on the element or a descendant.
@@ -535,13 +556,21 @@ mod tests {
     /// series page's heading is.
     #[test]
     fn search_result_headings_are_not_series_names() {
+        // The body class alone rejects the page, whatever its heading says.
         let search = r#"<html><body class="page-products catalogsearch-result-index">
-            <h1 class="page-title"><span>Search results for: 'The Midnight World'</span></h1>
+            <h1 class="page-title"><span>Search</span></h1>
             </body></html>"#;
         assert_eq!(super::extract_series_name_from_page(search), None);
+        let product = r#"<html><body class="catalog-product-view">
+            <h1 class="page-title"><span>Red Rising 1 of 2</span></h1></body></html>"#;
+        assert_eq!(super::extract_series_name_from_page(product), None);
         let plain = r#"<h1 class="page-title"><span>Search results for: 'Dune'</span></h1>"#;
         assert_eq!(super::extract_series_name_from_page(plain), None);
-        let series = r#"<html><body class="catalog-category-view">
+        let spaced = "<h1 class=\"page-title\"><span>Search\n   results  for: 'Dune'</span></h1>";
+        assert_eq!(super::extract_series_name_from_page(spaced), None);
+        // A page that only mentions the search class in a script keeps its heading.
+        let series = r#"<html><head><script>var c = "catalogsearch-result-index";</script></head>
+            <body class="catalog-category-view">
             <h1 class="page-title"><span>The Stormlight Archive</span></h1></body></html>"#;
         assert_eq!(
             super::extract_series_name_from_page(series).as_deref(),

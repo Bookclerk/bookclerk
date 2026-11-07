@@ -173,6 +173,9 @@ export function DiscoverPage({
   // False until the first feed read answers, so the page shows placeholders
   // rather than "No recommendations yet" while it loads.
   const [feedLoaded, setFeedLoaded] = useState(false);
+  // True when the last full refresh could not read the feed, so the page
+  // stops showing loading placeholders beside the error.
+  const [feedFailed, setFeedFailed] = useState(false);
   const [wishlist, setWishlist] = useState<TitleRequest[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -227,15 +230,24 @@ export function DiscoverPage({
   async function refreshFeed() {
     // Every feed read (this refresh, a poll, a live update) takes a ticket,
     // so a read that answers late never replaces a newer one's shelves.
+    // The feed and the wishlist are applied independently, so a failed
+    // wishlist read never hides shelves that did load; the first failure is
+    // still thrown for the caller to report.
     const ticket = feedReads.current.begin();
-    const [f, w] = await Promise.all([fetchDiscoverFeed(), fetchWishlist()]);
-    if (feedReads.current.accept(ticket)) {
-      setFeed(f);
-      setFeedLoaded(true);
+    const [f, w] = await Promise.allSettled([fetchDiscoverFeed(), fetchWishlist()]);
+    if (f.status === "fulfilled") {
+      if (feedReads.current.accept(ticket)) {
+        setFeed(f.value);
+        setFeedLoaded(true);
+      }
+      setFeedFailed(false);
+      setVisibleShelvesCount(SHELVES_INITIAL);
+    } else {
+      setFeedFailed(true);
     }
-    setWishlist(w);
-    setVisibleShelvesCount(SHELVES_INITIAL);
-    return { feed: f, wishlist: w };
+    if (w.status === "fulfilled") setWishlist(w.value);
+    if (f.status === "rejected") throw f.reason;
+    if (w.status === "rejected") throw w.reason;
   }
 
   // A ranking job that writes someone's shelves moves the live socket's
@@ -1163,7 +1175,8 @@ export function DiscoverPage({
                 </p>
               </div>
 
-              {feed.shelves.length === 0 && (!feedLoaded || feed.state === "preparing") ? (
+              {feed.shelves.length === 0 &&
+              ((!feedLoaded && !feedFailed) || feed.state === "preparing") ? (
                 <div aria-busy="true" className="space-y-3">
                   <p className="text-sm text-ink/60" role="status">
                     {feedLoaded ? "Preparing your shelves…" : "Loading your shelves…"}
