@@ -89,7 +89,8 @@ only that. The others check:
   `bookclerk-plugin-manifest`.
 - **`abi_decode`**: the traversal budget is derived from the input size.
   Structured seeds cover the book records, the metadata replies and the
-  cover request and reply (`structured_*.bin`).
+  cover request and reply (`structured_*.bin`), plus the typed
+  `limit_exceeded` envelopes (`limit_error_reply.bin`, `caps_reply_*.bin`).
 - **`cover_sink_key`**: a key names a slot exactly when it is the
   canonical decimal spelling of an index below the URL count, read digit
   by digit without `str::parse`, so no two keys name one slot. The shared

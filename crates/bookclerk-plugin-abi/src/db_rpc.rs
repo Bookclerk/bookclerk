@@ -603,6 +603,30 @@ pub fn encoded_execute_result_reply_bytes(outcome: Result<ExecuteReply>) -> Resu
     write_message_bytes(&message)
 }
 
+/// Encodes a standalone Cap'n `DbCapabilitiesReply` (`ok` or `err`).
+///
+/// Carries a `GuestDatabase.limits` answer over the workerd granted HTTP
+/// channel (`GET /db/limits`).
+///
+/// # Errors
+///
+/// Returns [`PluginError::internal`] when the message cannot be serialized.
+pub fn encoded_db_capabilities_reply_bytes(outcome: Result<DbCapabilities>) -> Result<Vec<u8>> {
+    let mut message = capnp::message::Builder::new_default();
+    write_db_capabilities_reply(message.init_root(), outcome);
+    write_message_bytes(&message)
+}
+
+/// Decodes a standalone Cap'n `DbCapabilitiesReply` message.
+///
+/// # Errors
+///
+/// Returns the guest [`PluginError`] on `err`, or a decode failure on `ok`.
+pub fn decode_db_capabilities_reply_bytes(bytes: &[u8]) -> Result<DbCapabilities> {
+    let reader = read_unpacked_message(bytes)?;
+    read_db_capabilities_reply(reader.get_root().map_err(from_capnp)?)
+}
+
 /// Reads one unpacked single-segment Cap'n message.
 ///
 /// Rejects multi-segment streams (matching the TypeScript SDK) and caps

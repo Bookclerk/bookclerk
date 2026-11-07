@@ -32,6 +32,7 @@ import {
 } from "./abi.js";
 import {
   createDatabaseBinding,
+  decodeDbCapabilitiesReply,
   decodeExecuteResultReply,
   encodeExecuteRequest,
   type AtomicTransport,
@@ -71,6 +72,7 @@ import type {
   CliInvokeResult,
   CliSchema,
   DbBootstrap,
+  DbCapabilities,
   DomainEvent,
   ExpandCandidatesParams,
   ExtensibleConfig,
@@ -571,6 +573,19 @@ export interface GrantedDatabaseTransport extends AtomicTransport {
    * @returns Unpacked `ExecuteResultReply` message.
    */
   executeBytes(bytes: Uint8Array): Promise<Uint8Array>;
+  /**
+   * Negotiated limits of the granted session (`GuestDatabase.limits`).
+   *
+   * @returns The adapter's `DbCapabilities` for this binding.
+   */
+  limits(): Promise<DbCapabilities>;
+  /**
+   * Same answer as {@link GrantedDatabaseTransport.limits}, as Cap'n Proto
+   * bytes (`DbCapabilitiesReply`) for Python authors.
+   *
+   * @returns Unpacked `DbCapabilitiesReply` message.
+   */
+  limitsBytes(): Promise<Uint8Array>;
 }
 
 /**
@@ -692,6 +707,7 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
           const transport = entry.transport;
           merged[entry.name] = createDatabaseBinding({
             execute: (request) => transport.execute(request),
+            limits: () => transport.limits(),
           });
         }
       }
@@ -2962,19 +2978,50 @@ class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
       headers: { ...this.#auth, "content-type": "application/octet-stream" },
       body: bytes,
     });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw PluginError.fromWire(
-        resp.status === 401
-          ? "unauthorized"
-          : resp.status === 413
-            ? "payload_too_large"
-            : "unavailable",
-        `database grant: ${resp.status} ${text}`.trim(),
-      );
-    }
-    return new Uint8Array(await resp.arrayBuffer());
+    return grantedDatabaseBody(resp);
   }
+
+  /**
+   * Negotiated limits of the granted session (`GET /db/limits`).
+   *
+   * @returns The adapter's `DbCapabilities` for this binding.
+   */
+  async limits(): Promise<DbCapabilities> {
+    return decodeDbCapabilitiesReply(await this.limitsBytes());
+  }
+
+  /**
+   * Same answer as Cap'n Proto bytes (Python authors decode locally).
+   *
+   * @returns Unpacked `DbCapabilitiesReply` message.
+   */
+  async limitsBytes(): Promise<Uint8Array> {
+    const resp = await this.#granted.fetch("http://granted/db/limits", {
+      method: "GET",
+      headers: { ...this.#auth },
+    });
+    return grantedDatabaseBody(resp);
+  }
+}
+
+/**
+ * Reads a granted `/db/*` response body, mapping a non-2xx status onto the
+ * `PluginError` the channel implies: `401` is `unauthorized`, `413` is
+ * `limit_exceeded` (the request was over the grant's `maxRequestBytes`),
+ * anything else is `unavailable`.
+ *
+ * @param resp - Granted channel response.
+ * @returns Response body bytes.
+ */
+async function grantedDatabaseBody(resp: Response): Promise<Uint8Array> {
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw PluginError.fromWire(
+      resp.status === 401 ? "unauthorized" : resp.status === 413 ? "limit_exceeded" : "unavailable",
+      `database grant: ${resp.status} ${text}`.trim(),
+    );
+  }
+  return new Uint8Array(await resp.arrayBuffer());
 }
 
 /**

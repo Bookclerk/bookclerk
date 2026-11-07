@@ -14,7 +14,12 @@ const {
   canonicalExecuteRequestHash,
   encodeExecuteResultReply,
   decodeExecuteResultReply,
+  encodeDbCapabilitiesReply,
+  decodeDbCapabilitiesReply,
 } = await import(join(dist, "db-execute.js"));
+const { PluginError, parseLimitExceeded, limitExceededMessage } = await import(
+  join(dist, "errors.js")
+);
 const { guestStatementKind } = await import(join(dist, "guest-sql.js"));
 
 function hex(bytes) {
@@ -425,6 +430,118 @@ try {
   assert.equal(err.wireCode, "unavailable");
   assert.equal(err.message, "retry me");
 }
+
+// Typed limit errors: `details` rides the wire and `limit` reads it back.
+const limit = { limit: "maxResultBytes", cap: 262144, used: 300000 };
+assert.equal(limitExceededMessage(limit), "limit exceeded: maxResultBytes is 262144; used 300000");
+assert.deepEqual(
+  parseLimitExceeded("statement 2: limit exceeded: maxCellBytes is 1024; used 4096 (column `b`)"),
+  {
+    limit: "maxCellBytes",
+    cap: 1024,
+    used: 4096,
+  },
+);
+assert.equal(parseLimitExceeded("maxResultBytes is advertised as 262144"), undefined);
+const limitErr = PluginError.limitExceeded(limit);
+assert.equal(limitErr.code, "limit_exceeded");
+assert.deepEqual(limitErr.limit, limit);
+const limitReply = encodeExecuteResultReply({
+  err: { code: limitErr.wireCode, message: limitErr.message, details: limitErr.detailsText },
+});
+try {
+  decodeExecuteResultReply(limitReply);
+  assert.fail("expected PluginError");
+} catch (err) {
+  assert.ok(err instanceof PluginError);
+  assert.equal(err.code, "limit_exceeded");
+  assert.deepEqual(err.details, limit);
+  assert.deepEqual(err.limit, limit);
+}
+// A pre-`details` reply (two pointers) still decodes, with no details.
+assert.equal(
+  (() => {
+    try {
+      decodeExecuteResultReply(atomicErr);
+    } catch (err) {
+      return err.details;
+    }
+  })(),
+  undefined,
+);
+// Malformed details are dropped, never fatal.
+assert.equal(PluginError.fromWire("internal", "x", "[1,2]").details, undefined);
+assert.equal(PluginError.fromWire("internal", "x", "{not json").details, undefined);
+assert.deepEqual(PluginError.fromWire("internal", "x", '{"engineCode":"23505"}').details, {
+  engineCode: "23505",
+});
+
+// `GuestDatabase.limits` reply codec.
+const caps = {
+  sqlContractVersion: 1,
+  atomicBatch: true,
+  returning: true,
+  affectedRows: true,
+  schemaMigrations: true,
+  cancellation: true,
+  timing: true,
+  maxBinds: 100,
+  maxStatements: 100,
+  maxResultRows: 1000,
+  maxPayloadBytes: 100000,
+  maxResultBytes: 262144,
+  maxCellBytes: 65536,
+  maxRequestBytes: 262144,
+  maxAtomicResultBytes: 262144,
+  pluginDatabases: true,
+  maxFunctionArgs: 32,
+  maxSchemaColumns: 100,
+  maxPatternBytes: 16,
+  maxLoweredStatementBytes: 100000,
+  consistentBackupRead: true,
+  atomicUnitRestore: true,
+};
+assert.deepEqual(decodeDbCapabilitiesReply(encodeDbCapabilitiesReply({ ok: caps })), caps);
+try {
+  decodeDbCapabilitiesReply(
+    encodeDbCapabilitiesReply({
+      err: { code: "unsupported", message: "GuestDatabase.limits", details: "" },
+    }),
+  );
+  assert.fail("expected PluginError");
+} catch (err) {
+  assert.equal(err.code, "unsupported");
+}
+
+// Bindings expose `limits()` and fail closed on hosts without it.
+const limitsBinding = createDatabaseBinding({
+  async execute() {
+    throw new Error("unused");
+  },
+  async limits() {
+    return caps;
+  },
+});
+assert.deepEqual(await limitsBinding.limits(), caps);
+const noLimitsBinding = createDatabaseBinding({
+  async execute() {
+    throw new Error("unused");
+  },
+});
+await assert.rejects(noLimitsBinding.limits(), (err) => err.code === "unsupported");
+const tinyBinding = createDatabaseBinding(
+  {
+    async execute() {
+      throw new Error("must not send");
+    },
+  },
+  { maxRequestBytes: 16 },
+);
+await assert.rejects(
+  tinyBinding.prepare("SELECT title FROM books").all(),
+  (err) =>
+    err.code === "limit_exceeded" && err.limit.limit === "maxRequestBytes" && err.limit.cap === 16,
+);
 
 assert.throws(() => decodeDbValue(new Uint8Array([0, 0])), /truncated/);
 const multi = new Uint8Array(24);

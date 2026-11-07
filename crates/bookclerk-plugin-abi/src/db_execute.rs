@@ -779,19 +779,26 @@ impl DbCapabilities {
         if let Some(schema) = crate::sql_types::parse_create_table_schema(sql) {
             let n = u32::try_from(schema.columns.len()).unwrap_or(u32::MAX);
             if self.max_schema_columns > 0 && n > self.max_schema_columns {
-                return Err(crate::PluginError::invalid_params(format!(
-                    "CREATE TABLE has {n} columns; guest maxSchemaColumns is {}",
-                    self.max_schema_columns
-                )));
+                return Err(crate::PluginError::limit_exceeded(
+                    crate::LimitExceeded::new(
+                        "maxSchemaColumns",
+                        u64::from(self.max_schema_columns),
+                        u64::from(n),
+                    ),
+                ));
             }
         }
         let pre = lowered_statement_preflight(sql, parameters.len(), proof)?;
         if self.max_lowered_statement_bytes > 0 {
             let cap = self.max_lowered_statement_bytes as usize;
             if pre > cap {
-                return Err(crate::PluginError::invalid_params(format!(
-                    "lowered SQL preflight is {pre} bytes; advertised maxLoweredStatementBytes is {cap}"
-                )));
+                return Err(crate::PluginError::limit_exceeded(
+                    crate::LimitExceeded::new(
+                        "maxLoweredStatementBytes",
+                        u64::from(self.max_lowered_statement_bytes),
+                        u64::try_from(pre).unwrap_or(u64::MAX),
+                    ),
+                ));
             }
         }
         Ok(())

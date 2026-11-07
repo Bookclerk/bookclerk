@@ -3652,6 +3652,7 @@ pub async fn set_password(
             | LibraryError::Conflict(_)
             | LibraryError::Forbidden(_)
             | LibraryError::Invalid(_)
+            | LibraryError::LimitExceeded(_)
             | LibraryError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         })?;
     let revoked = library

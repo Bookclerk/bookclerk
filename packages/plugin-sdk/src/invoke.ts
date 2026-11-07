@@ -927,7 +927,8 @@ function wireError(err: unknown): WirePluginError {
           : "internal"
       : "internal";
   const message = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
-  return { code, message };
+  const details = err instanceof PluginError ? err.detailsText : "";
+  return { code, message, details };
 }
 
 function resolveStub(entry: AnySpec, host: InvokeHost): Stub {

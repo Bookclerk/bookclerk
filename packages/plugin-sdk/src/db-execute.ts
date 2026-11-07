@@ -14,6 +14,9 @@ import {
   type DbStatementKind,
 } from "./abi.js";
 import { CapnpMessage, CapnpReader, type CapnpStruct, type StructReader } from "./db-capnp.js";
+import { PluginError } from "./errors.js";
+import type { DbCapabilities } from "./generated.js";
+import { DbCapabilitiesReplyCodec, decodeMessage, encodeMessage } from "./generated-wire.js";
 import { readDbValue, writeDbValue, type DbType, type DbValue } from "./db-value.js";
 import { guestStatementKind, splitExecQueries } from "./guest-sql.js";
 
@@ -131,6 +134,14 @@ export interface AtomicTransport {
    * @returns Structured `ExecuteReply`.
    */
   execute(request: ExecuteRequest): Promise<ExecuteReply>;
+  /**
+   * Negotiated limits of the session (`DbCapabilities`). Transports that
+   * predate `GuestDatabase.limits` leave it out; the binding then throws
+   * `unsupported`.
+   *
+   * @returns The adapter's capability advertisement for this session.
+   */
+  limits?(): Promise<DbCapabilities>;
 }
 
 /**
@@ -287,6 +298,15 @@ export interface DatabaseBinding {
    * @param options Optional retry token.
    */
   execute(batch: TypedDbStatement[], options?: { retry?: RetryToken }): Promise<ExecuteReply>;
+  /**
+   * The negotiated limits of this binding's session (`DbCapabilities`):
+   * `maxRequestBytes`, `maxStatements`, `maxResultBytes`, `maxResultRows`
+   * and the rest. Use them to size a batch or a read before sending.
+   *
+   * @throws `PluginError` with code `unsupported` on a host that predates
+   * `GuestDatabase.limits`.
+   */
+  limits(): Promise<DbCapabilities>;
 }
 
 /**
@@ -354,7 +374,7 @@ export function encodeExecuteReply(reply: ExecuteReply): Uint8Array {
  * @returns Unpacked Cap'n stream bytes.
  */
 export function encodeExecuteResultReply(
-  outcome: { ok: ExecuteReply } | { err: { code: string; message: string } },
+  outcome: { ok: ExecuteReply } | { err: { code: string; message: string; details?: string } },
 ): Uint8Array {
   const msg = new CapnpMessage();
   const root = msg.initRoot(1, 1);
@@ -363,9 +383,10 @@ export function encodeExecuteResultReply(
     writeExecuteReply(root.initStruct(0, 0, 3), outcome.ok);
   } else {
     root.setUint16(0, 1);
-    const err = root.initStruct(0, 0, 2);
+    const err = root.initStruct(0, 0, 3);
     err.setText(0, outcome.err.code);
     err.setText(1, outcome.err.message);
+    err.setText(2, outcome.err.details ?? "");
   }
   return msg.finish();
 }
@@ -384,30 +405,50 @@ export function decodeExecuteResultReply(bytes: Uint8Array): ExecuteReply {
     return readExecuteReply(root.getStruct(0, 0, 3));
   }
   if (disc === 1) {
-    const err = root.getStruct(0, 0, 2);
-    const code = err.getText(0);
-    const message = err.getText(1);
-    const known = new Set([
-      "invalid_params",
-      "unauthorized",
-      "forbidden",
-      "not_found",
-      "unavailable",
-      "unsupported",
-      "internal",
-      "payload_too_large",
-      "deadline_exceeded",
-      "invalid_cursor",
-      "cancelled",
-      "conflict",
-    ]);
-    throw Object.assign(new Error(message), {
-      name: "PluginError",
-      code: known.has(code) ? code : "unknown",
-      wireCode: code,
-    });
+    const err = root.getStruct(0, 0, 3);
+    throw PluginError.fromWire(err.getText(0), err.getText(1), err.getText(2));
   }
   throw new Error("unknown ExecuteResultReply union member");
+}
+
+/**
+ * Encodes a standalone `DbCapabilitiesReply` (`ok` or `err`), the answer of
+ * `GuestDatabase.limits` on the granted channel (`GET /db/limits`).
+ *
+ * @param outcome Capability advertisement or a wire `PluginError`.
+ * @returns Unpacked Cap'n stream bytes.
+ */
+export function encodeDbCapabilitiesReply(
+  outcome: { ok: DbCapabilities } | { err: { code: string; message: string; details?: string } },
+): Uint8Array {
+  return encodeMessage(
+    DbCapabilitiesReplyCodec,
+    "ok" in outcome
+      ? { kind: "ok", value: outcome.ok }
+      : {
+          kind: "err",
+          value: {
+            code: outcome.err.code,
+            message: outcome.err.message,
+            details: outcome.err.details ?? "",
+          },
+        },
+  );
+}
+
+/**
+ * Decodes a standalone `DbCapabilitiesReply`. `err` is thrown as `PluginError`.
+ *
+ * @param bytes Unpacked Cap'n stream.
+ * @returns The session's `DbCapabilities`.
+ * @throws When the union is `err` or the buffer is invalid.
+ */
+export function decodeDbCapabilitiesReply(bytes: Uint8Array): DbCapabilities {
+  const reply = decodeMessage(DbCapabilitiesReplyCodec, bytes);
+  if (reply.kind === "ok") {
+    return reply.value;
+  }
+  throw PluginError.fromWire(reply.value.code, reply.value.message, reply.value.details);
 }
 
 /**
@@ -561,9 +602,11 @@ export function createDatabaseBinding(
     const encoded = encodeExecuteRequest(request);
     const cap = options.maxRequestBytes ?? 0;
     if (cap > 0 && encoded.byteLength > cap) {
-      throw new Error(
-        `atomic request is ${encoded.byteLength} bytes; guest maxRequestBytes is ${cap}`,
-      );
+      throw PluginError.limitExceeded({
+        limit: "maxRequestBytes",
+        cap,
+        used: encoded.byteLength,
+      });
     }
     return transport.execute(request);
   };
@@ -589,6 +632,14 @@ export function createDatabaseBinding(
     },
     execute(batch, opts) {
       return runExecute(batch, opts?.retry);
+    },
+    limits() {
+      if (transport.limits === undefined) {
+        return Promise.reject(
+          PluginError.fromWire("unsupported", "GuestDatabase.limits is not available on this host"),
+        );
+      }
+      return transport.limits();
     },
   };
   return binding;

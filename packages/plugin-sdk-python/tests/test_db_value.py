@@ -428,6 +428,79 @@ class DbValueGoldens(unittest.TestCase):
             decode_execute_result_reply(encode_execute_result_reply(("unavailable", "retry me")))
         self.assertEqual(ctx.exception.code, "unavailable")
         self.assertEqual(ctx.exception.wire_code, "unavailable")
+        self.assertIsNone(ctx.exception.details)
+
+    def test_limit_errors_carry_details_on_the_wire(self) -> None:
+        from bookclerk_plugin_sdk.db_value import (
+            decode_db_capabilities_reply,
+            encode_db_capabilities_reply,
+        )
+        from bookclerk_plugin_sdk.limits import (
+            LimitExceeded,
+            limit_exceeded_message,
+            parse_limit_exceeded,
+        )
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        limit = LimitExceeded("maxResultBytes", 262_144, 300_000)
+        self.assertEqual(
+            limit_exceeded_message(limit),
+            "limit exceeded: maxResultBytes is 262144; used 300000",
+        )
+        self.assertEqual(
+            parse_limit_exceeded("stmt 2: limit exceeded: maxCellBytes is 1024; used 4096 (col)"),
+            LimitExceeded("maxCellBytes", 1024, 4096),
+        )
+        self.assertIsNone(parse_limit_exceeded("maxResultBytes is advertised as 262144"))
+
+        err = PluginError.limit_exceeded(limit)
+        self.assertEqual(err.code, "limit_exceeded")
+        self.assertEqual(err.limit, limit)
+        with self.assertRaises(PluginError) as ctx:
+            decode_execute_result_reply(
+                encode_execute_result_reply((err.wire_code, str(err), err.details_text))
+            )
+        self.assertEqual(ctx.exception.code, "limit_exceeded")
+        self.assertEqual(
+            ctx.exception.details, {"limit": "maxResultBytes", "cap": 262144, "used": 300000}
+        )
+        self.assertEqual(ctx.exception.limit, limit)
+        # Malformed details are dropped, never fatal.
+        self.assertIsNone(PluginError.from_wire("internal", "x", "[1]").details)
+        self.assertIsNone(PluginError.from_wire("internal", "x", "{nope").details)
+        # A limit code whose details are missing still parses the message.
+        self.assertEqual(PluginError.from_wire("limit_exceeded", str(err)).limit, limit)
+
+        caps = {
+            "sqlContractVersion": 1,
+            "atomicBatch": True,
+            "returning": True,
+            "affectedRows": True,
+            "schemaMigrations": True,
+            "cancellation": True,
+            "timing": True,
+            "maxBinds": 100,
+            "maxStatements": 100,
+            "maxResultRows": 1000,
+            "maxPayloadBytes": 100_000,
+            "maxResultBytes": 262_144,
+            "maxCellBytes": 65_536,
+            "maxRequestBytes": 262_144,
+            "maxAtomicResultBytes": 262_144,
+            "pluginDatabases": True,
+            "maxFunctionArgs": 32,
+            "maxSchemaColumns": 100,
+            "maxPatternBytes": 16,
+            "maxLoweredStatementBytes": 100_000,
+            "consistentBackupRead": True,
+            "atomicUnitRestore": True,
+        }
+        self.assertEqual(decode_db_capabilities_reply(encode_db_capabilities_reply(caps)), caps)
+        with self.assertRaises(PluginError) as ctx:
+            decode_db_capabilities_reply(
+                encode_db_capabilities_reply(("unsupported", "GuestDatabase.limits"))
+            )
+        self.assertEqual(ctx.exception.code, "unsupported")
 
     def test_guest_statement_kind_matches_host(self) -> None:
         from bookclerk_plugin_sdk.guest_sql import guest_statement_kind

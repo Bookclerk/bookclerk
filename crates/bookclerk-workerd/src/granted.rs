@@ -19,13 +19,15 @@ use anyhow::{bail, Context as _, Result};
 use bookclerk_plugin_abi::decode_execute_request_bytes;
 use bookclerk_plugin_abi::{
     authorize_guest_sql_policy, canonical_execute_request_hash, encoded_execute_request_bytes,
-    guest_statement_kind, validate_guest_execute_request, GuestSqlPolicy, PluginError,
+    guest_statement_kind, validate_guest_execute_request, GuestSqlPolicy, LimitExceeded,
+    PluginError,
 };
 use bookclerk_plugin_abi::{
-    encoded_execute_result_reply_bytes, Cancellation, Destination, EventPublisher, GuestDatabase,
-    KvDeleteOk, KvGetOk, KvListOk, KvListOptions, KvNamespace, KvPutOk, KvPutOptions,
-    ObjectMetadata, PluginEvent, ProgressSink, PublishOk, QueueProducer, QueueSendMessage,
-    QueueSendOk, Source, WriteOptions, MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE, MAX_SCALAR_BYTES,
+    encoded_db_capabilities_reply_bytes, encoded_execute_result_reply_bytes, Cancellation,
+    Destination, EventPublisher, GuestDatabase, KvDeleteOk, KvGetOk, KvListOk, KvListOptions,
+    KvNamespace, KvPutOk, KvPutOptions, ObjectMetadata, PluginEvent, ProgressSink, PublishOk,
+    QueueProducer, QueueSendMessage, QueueSendOk, Source, WriteOptions, MAX_EVENT_PAYLOAD_BYTES,
+    MAX_LIST_PAGE, MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -263,6 +265,12 @@ enum GrantedCmd {
         invocation: String,
         resp: oneshot::Sender<Result<u32, String>>,
     },
+    /// `GET /db/limits`: the granted session's negotiated `DbCapabilities`
+    /// as an encoded `DbCapabilitiesReply`.
+    Limits {
+        invocation: String,
+        resp: oneshot::Sender<Result<Vec<u8>, String>>,
+    },
     /// `env.<KV>.get` / `put` / `delete` / `list` through the grant.
     Kv {
         invocation: String,
@@ -395,6 +403,9 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                 }
                 GrantedCmd::AtomicBudget { invocation, resp } => {
                     let _ = resp.send(dispatch_atomic_budget(&table, invocation));
+                }
+                GrantedCmd::Limits { invocation, resp } => {
+                    let _ = resp.send(dispatch_limits(&table, invocation).await);
                 }
                 GrantedCmd::Publish {
                     invocation,
@@ -721,13 +732,39 @@ fn dispatch_atomic_budget(table: &GrantedTable, invocation: String) -> Result<u3
     Ok(slot.max_request_bytes)
 }
 
+/// Answers `GET /db/limits` with the granted session's `DbCapabilities`.
+///
+/// Authorization failures (unknown grant, no database) are the same strings
+/// `dispatch_execute` uses; a session that cannot answer `limits` encodes its
+/// `PluginError` in the reply so the guest sees the typed code.
+async fn dispatch_limits(table: &GrantedTable, invocation: String) -> Result<Vec<u8>, String> {
+    let db = {
+        let mut table = table.borrow_mut();
+        let slot = table
+            .get_mut(&invocation)
+            .ok_or_else(|| "unknown or revoked grant".to_string())?;
+        if slot.expires <= std::time::Instant::now() {
+            table.remove(&invocation);
+            return Err("grant expired".into());
+        }
+        if !slot.allow_database {
+            return Err("database not permitted on this grant".into());
+        }
+        slot.database
+            .clone()
+            .ok_or_else(|| "database not granted".to_string())?
+    };
+    let outcome = db.limits().await;
+    encoded_db_capabilities_reply_bytes(outcome).map_err(|err| err.to_string())
+}
+
 /// Authorizes a guest typed batch on the granted HTTP path.
 ///
 /// # Errors
 ///
-/// Returns [`PluginError::invalid_params`] or [`PluginError::payload_too_large`]
-/// when the SQL is outside the guest grammar or the encoded request exceeds
-/// `max_bytes`.
+/// Returns [`PluginError::invalid_params`] when the SQL is outside the guest
+/// grammar and [`PluginError::limit_exceeded`] (`maxRequestBytes`) when the
+/// encoded request exceeds `max_bytes`.
 fn authorize_granted_request(
     req: &mut bookclerk_plugin_abi::ExecuteRequest,
     max_bytes: u32,
@@ -751,8 +788,10 @@ fn authorize_granted_request(
     if max_bytes > 0 {
         let n = encoded_execute_request_bytes(req)?.len();
         if n > max_bytes as usize {
-            return Err(PluginError::payload_too_large(format!(
-                "atomic request is {n} bytes; guest maxRequestBytes is {max_bytes}"
+            return Err(PluginError::limit_exceeded(LimitExceeded::new(
+                "maxRequestBytes",
+                u64::from(max_bytes),
+                u64::try_from(n).unwrap_or(u64::MAX),
             )));
         }
     }
@@ -1099,6 +1138,31 @@ where
         return Ok(());
     }
 
+    if method == "GET" && path_only == "/db/limits" {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        cmds.send(GrantedCmd::Limits {
+            invocation,
+            resp: resp_tx,
+        })
+        .await
+        .context("granted dispatch closed")?;
+        let payload = match resp_rx.await.context("granted limits dropped")? {
+            Ok(payload) => payload,
+            Err(_) => {
+                write_status(&mut writer, 401, "unauthorized").await?;
+                return Ok(());
+            }
+        };
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            payload.len()
+        );
+        writer.write_all(resp.as_bytes()).await?;
+        writer.write_all(&payload).await?;
+        writer.flush().await?;
+        return Ok(());
+    }
+
     if method == "POST" && path_only == "/db/execute" {
         let (budget_tx, budget_rx) = oneshot::channel();
         cmds.send(GrantedCmd::AtomicBudget {
@@ -1341,7 +1405,7 @@ fn plugin_error_status(err: &PluginError) -> u16 {
         C::Forbidden => 403,
         C::NotFound => 404,
         C::Conflict => 409,
-        C::PayloadTooLarge => 413,
+        C::PayloadTooLarge | C::LimitExceeded => 413,
         C::Unsupported => 501,
         C::Unavailable | C::DeadlineExceeded | C::Cancelled => 503,
         C::Internal | C::Unknown => 500,
@@ -2006,6 +2070,114 @@ mod tests {
             self.called.set(true);
             Err(PluginError::internal("execute must not run"))
         }
+
+        async fn limits(
+            &self,
+        ) -> bookclerk_plugin_abi::Result<bookclerk_plugin_abi::DbCapabilities> {
+            let mut caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
+            caps.max_request_bytes = 4096;
+            Ok(caps)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn limits_route_answers_with_the_session_capabilities() {
+        use bookclerk_plugin_abi::decode_db_capabilities_reply_bytes;
+        let (table, session) = grant_flag_session();
+        let payload = dispatch_limits(&table, "g-db".into())
+            .await
+            .expect("limits reply");
+        let caps = decode_db_capabilities_reply_bytes(&payload).expect("ok member");
+        assert_eq!(caps.max_request_bytes, 4096);
+        assert_eq!(
+            caps.max_result_bytes,
+            bookclerk_plugin_abi::DbCapabilities::advertised_sqlite().max_result_bytes
+        );
+        assert!(!session.called.get(), "limits never runs execute");
+
+        let unknown = dispatch_limits(&table, "nope".into())
+            .await
+            .expect_err("unknown grant");
+        assert!(unknown.contains("unknown or revoked"), "{unknown}");
+
+        let no_db: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        no_db
+            .borrow_mut()
+            .insert("g-nodb".into(), cancel_slot(None));
+        let refused = dispatch_limits(&no_db, "g-nodb".into())
+            .await
+            .expect_err("no database on the grant");
+        assert!(
+            refused.contains("not permitted") || refused.contains("not granted"),
+            "{refused}"
+        );
+    }
+
+    #[tokio::test]
+    async fn limits_route_serves_the_reply_bytes_over_http() {
+        let (cmds_tx, mut cmds_rx) = mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(cmd) = cmds_rx.recv().await {
+                if let GrantedCmd::Limits { invocation, resp } = cmd {
+                    assert_eq!(invocation, "grant-1");
+                    let _ = resp.send(Ok(vec![7, 8, 9]));
+                }
+            }
+        });
+        let (client, server) = tokio::io::duplex(4096);
+        let serve = tokio::spawn(async move { handle_conn(server, "bridge", cmds_tx).await });
+        let (mut reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(b"GET /db/limits HTTP/1.1\r\nAuthorization: Bearer grant-1\r\n\r\n")
+            .await
+            .expect("write request");
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), reader.read_to_end(&mut out))
+            .await
+            .expect("http response")
+            .expect("read response");
+        drop(writer);
+        serve.await.expect("serve task").expect("handled");
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+        assert!(
+            text.contains("content-type: application/octet-stream\r\n"),
+            "{text}"
+        );
+        assert!(out.ends_with(&[7, 8, 9]), "{text}");
+    }
+
+    #[test]
+    fn limit_exceeded_is_a_413_on_the_granted_channel() {
+        let err = PluginError::limit_exceeded(LimitExceeded::new("maxRequestBytes", 16, 32));
+        assert_eq!(plugin_error_status(&err), 413);
+        assert_eq!(
+            plugin_error_status(&PluginError::payload_too_large("x")),
+            413
+        );
+        assert_eq!(plugin_error_status(&PluginError::invalid_params("x")), 400);
+    }
+
+    #[test]
+    fn over_cap_request_is_a_typed_limit_error() {
+        let mut req = bookclerk_plugin_abi::decode_execute_request_bytes(&guest_sql_bytes(
+            "SELECT title FROM books",
+            vec![],
+            bookclerk_plugin_abi::DbPlanStatementKind::Select,
+            bookclerk_plugin_abi::DbResultSelection::Rows,
+            10,
+        ))
+        .expect("decode");
+        let err = authorize_granted_request(&mut req, 16, &GuestSqlPolicy::allow_tables(["books"]))
+            .expect_err("16 bytes cannot hold the request");
+        assert_eq!(
+            err.code,
+            bookclerk_plugin_abi::PluginErrorCode::LimitExceeded
+        );
+        let limit = err.limit().expect("typed limit");
+        assert_eq!(limit.limit, "maxRequestBytes");
+        assert_eq!(limit.cap, 16);
+        assert!(limit.used > 16);
     }
 
     fn guest_sql_bytes(

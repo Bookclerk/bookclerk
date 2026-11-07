@@ -127,6 +127,23 @@ pub(super) fn write_extensible_config(
 pub(super) fn write_error(mut b: plugin_error::Builder<'_>, err: &PluginError) {
     b.set_code(err.wire_str());
     b.set_message(&err.message);
+    if let Some(details) = &err.details {
+        b.set_details(serde_json::Value::Object(details.clone()).to_string());
+    }
+}
+
+/// Parses the `details` text of a wire `PluginError`: one JSON object, else
+/// `None` (a guest may send anything; malformed details are dropped, never
+/// fatal).
+#[must_use]
+pub(super) fn read_error_details(text: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    if text.is_empty() || text.len() > crate::MAX_SCALAR_BYTES as usize {
+        return None;
+    }
+    match serde_json::from_str::<serde_json::Value>(text).ok()? {
+        serde_json::Value::Object(map) => Some(map),
+        _ => None,
+    }
 }
 
 fn read_write_options(o: write_options::Reader<'_>) -> WriteOptions {
@@ -198,7 +215,13 @@ fn fill_put_result(mut out: crate::plugin_capnp::put_result::Builder<'_>, put: &
 pub(super) fn read_error(r: plugin_error::Reader<'_>) -> PluginError {
     let code = r.get_code().ok().map(text_of).unwrap_or_default();
     let message = r.get_message().ok().map(text_of).unwrap_or_default();
-    PluginError::from_wire(&code, message)
+    let mut err = PluginError::from_wire(&code, message);
+    err.details = r
+        .get_details()
+        .ok()
+        .map(text_of)
+        .and_then(|text| read_error_details(&text));
+    err
 }
 
 fn fill_metadata(mut b: object_metadata::Builder<'_>, meta: &ObjectMetadata) {
@@ -3009,6 +3032,18 @@ impl guest_database_capnp::Server for GuestDatabaseServer {
         }
         Ok(())
     }
+
+    async fn limits(
+        self: Rc<Self>,
+        _params: guest_database_capnp::LimitsParams,
+        mut results: guest_database_capnp::LimitsResults,
+    ) -> capnp::Result<()> {
+        crate::db_rpc::write_db_capabilities_reply(
+            results.get().init_result(),
+            self.inner.limits().await,
+        );
+        Ok(())
+    }
 }
 
 struct JobRunnerServer {
@@ -4682,6 +4717,18 @@ impl GuestDatabase for GuestDatabaseClient {
         let req = self.client.close_request();
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_empty(
+            reply
+                .get()
+                .map_err(from_capnp)?
+                .get_result()
+                .map_err(from_capnp)?,
+        )
+    }
+
+    async fn limits(&self) -> Result<crate::DbCapabilities> {
+        let req = self.client.limits_request();
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        crate::db_rpc::read_db_capabilities_reply(
             reply
                 .get()
                 .map_err(from_capnp)?
@@ -7040,5 +7087,60 @@ mod tests {
                 );
             })
             .await;
+    }
+}
+
+#[cfg(test)]
+mod error_details_tests {
+    use super::{read_error, read_error_details, write_error};
+    use crate::plugin_capnp::plugin_error;
+    use crate::{LimitExceeded, PluginError, PluginErrorCode};
+
+    #[test]
+    fn details_round_trip_through_the_wire_struct() {
+        let limit = LimitExceeded::new("maxRequestBytes", 4096, 5000);
+        let err = PluginError::limit_exceeded(limit.clone());
+        let mut message = capnp::message::Builder::new_default();
+        write_error(message.init_root::<plugin_error::Builder<'_>>(), &err);
+        let reader = message
+            .get_root_as_reader::<plugin_error::Reader<'_>>()
+            .expect("root");
+        assert_eq!(
+            reader
+                .get_details()
+                .expect("details")
+                .to_str()
+                .expect("utf8"),
+            r#"{"cap":4096,"limit":"maxRequestBytes","used":5000}"#
+        );
+        let back = read_error(reader);
+        assert_eq!(back.code, PluginErrorCode::LimitExceeded);
+        assert_eq!(back.message, err.message);
+        assert_eq!(back.details, err.details);
+        assert_eq!(back.limit(), Some(limit));
+
+        let plain = PluginError::not_found("nothing here");
+        let mut message = capnp::message::Builder::new_default();
+        write_error(message.init_root::<plugin_error::Builder<'_>>(), &plain);
+        let reader = message
+            .get_root_as_reader::<plugin_error::Reader<'_>>()
+            .expect("root");
+        assert_eq!(reader.get_details().expect("details").len(), 0);
+        assert_eq!(read_error(reader).details, None);
+    }
+
+    #[test]
+    fn malformed_details_are_dropped_not_fatal() {
+        assert_eq!(read_error_details(""), None);
+        assert_eq!(read_error_details("[1,2]"), None);
+        assert_eq!(read_error_details("not json"), None);
+        assert_eq!(read_error_details("42"), None);
+        let too_long = format!(
+            "{{\"k\":\"{}\"}}",
+            "x".repeat(crate::MAX_SCALAR_BYTES as usize)
+        );
+        assert_eq!(read_error_details(&too_long), None);
+        let map = read_error_details(r#"{"engineCode":"23505"}"#).expect("object");
+        assert_eq!(map["engineCode"], "23505");
     }
 }

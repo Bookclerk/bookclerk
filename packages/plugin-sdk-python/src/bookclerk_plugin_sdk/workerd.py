@@ -28,8 +28,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
+from .limits import (
+    LimitExceeded,
+    limit_exceeded_details,
+    limit_exceeded_message,
+    limit_from_details,
+    parse_limit_exceeded,
+)
+
 if TYPE_CHECKING:
     from bookclerk_plugin_sdk import abi
+    from bookclerk_plugin_sdk.abi import DbCapabilities
     from bookclerk_plugin_sdk.db_value import DatabaseBinding, ExecuteReply, ExecuteRequest
 
 try:
@@ -227,26 +236,90 @@ def _await_maybe(value: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
-class PluginError(RuntimeError):
-    """SDK-thrown failure. Unknown wire codes stay on ``wire_code``."""
+_MAX_DETAILS_BYTES = 262_144
+"""Longest ``details`` text the SDK parses (the ABI scalar ceiling)."""
 
-    def __init__(self, code: str, message: str):
+
+def _parse_details(text: str) -> dict[str, Any] | None:
+    """Parse the wire ``details`` JSON object text; anything else is dropped."""
+    if not text or len(text) > _MAX_DETAILS_BYTES:
+        return None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+class PluginError(RuntimeError):
+    """SDK-thrown failure. Unknown wire codes stay on ``wire_code``.
+
+    Attributes:
+        code: Known ``PluginErrorCode`` wire string, or ``unknown``.
+        wire_code: Raw wire code, including codes this SDK does not know.
+        details: Structured detail object from the wire (``details`` JSON),
+            or ``None`` when the error carries none.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        details: dict[str, Any] | str | None = None,
+    ):
         super().__init__(message)
         self.wire_code = code
         self.code = code if code in PLUGIN_ERROR_CODES else "unknown"
+        self.details: dict[str, Any] | None = (
+            _parse_details(details) if isinstance(details, str) else details
+        )
 
     @classmethod
-    def from_wire(cls, code: str, message: str) -> PluginError:
+    def from_wire(cls, code: str, message: str, details: str = "") -> PluginError:
         """Build a ``PluginError`` from a wire ``code`` string.
 
         Args:
             code: Snake_case wire code (unknown codes are kept on ``wire_code``).
             message: Operator-facing error text.
+            details: ``details`` JSON object text from the wire (empty when none).
 
         Returns:
             A ``PluginError`` whose ``code`` is a known variant or ``unknown``.
         """
-        return cls(code, message)
+        return cls(code, message, details)
+
+    @classmethod
+    def limit_exceeded(cls, limit: LimitExceeded) -> PluginError:
+        """Build a ``limit_exceeded`` error carrying ``limit`` in message and details.
+
+        Args:
+            limit: Exceeded cap.
+
+        Returns:
+            A ``PluginError`` with code ``limit_exceeded``.
+        """
+        return cls("limit_exceeded", limit_exceeded_message(limit), limit_exceeded_details(limit))
+
+    @property
+    def limit(self) -> LimitExceeded | None:
+        """The exceeded cap when this is a ``limit_exceeded`` error.
+
+        Returns:
+            The cap from ``details`` first, then from the canonical message;
+            ``None`` for every other code.
+        """
+        if self.wire_code != "limit_exceeded":
+            return None
+        return limit_from_details(self.details) or parse_limit_exceeded(str(self))
+
+    @property
+    def details_text(self) -> str:
+        """``details`` as the JSON text the wire carries.
+
+        Returns:
+            JSON object text, or an empty string when the error has none.
+        """
+        return "" if self.details is None else json.dumps(self.details, separators=(",", ":"))
 
 
 def _unsupported(method: str) -> PluginError:
@@ -1706,6 +1779,17 @@ class GuestDatabase:
         """Close the grant."""
         return None
 
+    async def limits(self) -> DbCapabilities:
+        """Negotiated limits of this session (``DbCapabilities``).
+
+        Returns:
+            The adapter's capability advertisement for this session.
+
+        Raises:
+            PluginError: ``unsupported`` on a host that predates the method.
+        """
+        raise _unsupported("limits")
+
 
 class AdapterDatabaseSession:
     """Host ↔ database adapter session (``capabilities`` + typed ``execute``).
@@ -1787,23 +1871,69 @@ class _GrantedGuestDatabase(GuestDatabase):
         if self._signal is not None:
             kwargs["signal"] = self._signal
         resp = await self._granted.fetch("http://granted/db/execute", **kwargs)
-        status = getattr(resp, "status", None)
-        if status is not None and int(status) >= 400:
-            text = await resp.text() if hasattr(resp, "text") else str(resp)
-            raise PluginError.from_wire("unavailable", f"database grant: {status} {text}")
-        if hasattr(resp, "arrayBuffer"):
-            raw = await resp.arrayBuffer()
-            data = bytes(raw) if not isinstance(raw, (bytes, bytearray)) else bytes(raw)
-        elif hasattr(resp, "body"):
-            data = bytes(await resp.body)
-        else:
-            raise PluginError.from_wire("internal", "granted execute response missing body")
+        data = await _granted_database_body(resp, "execute")
         try:
             return decode_execute_result_reply(data)
         except PluginError:
             raise
         except Exception as err:
             raise PluginError.from_wire("internal", str(err)) from err
+
+    async def limits(self) -> DbCapabilities:
+        """Negotiated limits of the granted session (``GET /db/limits``).
+
+        Returns:
+            The adapter's ``DbCapabilities`` for this binding.
+        """
+        from bookclerk_plugin_sdk.db_value import decode_db_capabilities_reply
+
+        kwargs: dict[str, Any] = {"method": "GET", "headers": {**self._auth}}
+        if self._signal is not None:
+            kwargs["signal"] = self._signal
+        resp = await self._granted.fetch("http://granted/db/limits", **kwargs)
+        data = await _granted_database_body(resp, "limits")
+        try:
+            return decode_db_capabilities_reply(data)
+        except PluginError:
+            raise
+        except Exception as err:
+            raise PluginError.from_wire("internal", str(err)) from err
+
+
+async def _granted_database_body(resp: Any, method: str) -> bytes:
+    """Read a granted ``/db/*`` response body.
+
+    A non-2xx status maps onto the ``PluginError`` the channel implies:
+    ``401`` is ``unauthorized``, ``413`` is ``limit_exceeded`` (the request was
+    over the grant's ``maxRequestBytes``) and anything else ``unavailable``.
+
+    Args:
+        resp: Granted-channel response.
+        method: ``GuestDatabase`` method name for the error text.
+
+    Returns:
+        Response body bytes.
+
+    Raises:
+        PluginError: When the status is an error or the body is missing.
+    """
+    status = getattr(resp, "status", None)
+    if status is not None and int(status) >= 400:
+        text = await resp.text() if hasattr(resp, "text") else str(resp)
+        code = (
+            "unauthorized"
+            if int(status) == 401
+            else "limit_exceeded"
+            if int(status) == 413
+            else "unavailable"
+        )
+        raise PluginError.from_wire(code, f"database grant: {status} {text}".strip())
+    if hasattr(resp, "arrayBuffer"):
+        raw = await resp.arrayBuffer()
+        return bytes(raw)
+    if hasattr(resp, "body"):
+        return bytes(await resp.body)
+    raise PluginError.from_wire("internal", f"granted {method} response missing body")
 
 
 def granted_databases(
@@ -1839,7 +1969,10 @@ def granted_databases(
             async def bound_execute(request: ExecuteRequest) -> ExecuteReply:
                 return await g.execute(request)
 
-            return create_database_binding(bound_execute)
+            async def bound_limits() -> DbCapabilities:
+                return await g.limits()
+
+            return create_database_binding(bound_execute, limits=bound_limits)
 
         databases[name] = _bind(binding_guest)
     return databases
@@ -1875,12 +2008,32 @@ class _TransportGuestDatabase(GuestDatabase):
         except Exception as err:
             raise PluginError.from_wire("internal", str(err)) from err
 
+    async def limits(self) -> DbCapabilities:
+        """Negotiated limits through the transport's ``limitsBytes``.
+
+        Returns:
+            The adapter's ``DbCapabilities`` for this binding.
+        """
+        from bookclerk_plugin_sdk.db_value import decode_db_capabilities_reply
+
+        raw = await self._transport.limitsBytes()
+        data = _bytes(raw)
+        if not data:
+            raise PluginError.from_wire("internal", "granted limits reply missing body")
+        try:
+            return decode_db_capabilities_reply(data)
+        except PluginError:
+            raise
+        except Exception as err:
+            raise PluginError.from_wire("internal", str(err)) from err
+
 
 def transport_database(transport: Any) -> DatabaseBinding:
     """Wrap an adapter ``GrantedDatabaseTransport`` stub as a :class:`DatabaseBinding`.
 
     Args:
-        transport: Stub exposing ``executeBytes(bytes) -> bytes``.
+        transport: Stub exposing ``executeBytes(bytes) -> bytes`` and
+            ``limitsBytes() -> bytes``.
 
     Returns:
         D1-shaped binding whose terminal methods route through the transport.
@@ -1892,4 +2045,7 @@ def transport_database(transport: Any) -> DatabaseBinding:
     async def bound_execute(request: ExecuteRequest) -> ExecuteReply:
         return await guest.execute(request)
 
-    return create_database_binding(bound_execute)
+    async def bound_limits() -> DbCapabilities:
+        return await guest.limits()
+
+    return create_database_binding(bound_execute, limits=bound_limits)

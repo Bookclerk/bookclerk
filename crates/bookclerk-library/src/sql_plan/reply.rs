@@ -2,7 +2,7 @@
 
 use bookclerk_plugin_abi::{
     encoded_execute_reply_bytes, encoded_statement_result_bytes, DbCapabilities, DbResultSelection,
-    DbValue, ExecuteReply, ExecuteRequest,
+    DbValue, ExecuteReply, ExecuteRequest, LimitExceeded,
 };
 
 use crate::error::{LibraryError, Result};
@@ -100,8 +100,10 @@ fn validate_statement_result(
             if let Some(cap) = effective_row_cap(stmt_max_rows, caps.max_result_rows) {
                 let n_rows = u32::try_from(stmt.rows.len()).unwrap_or(u32::MAX);
                 if n_rows > cap {
-                    return Err(LibraryError::Unavailable(format!(
-                        "execute reply statement {index} returned {n_rows} rows; limit is {cap}"
+                    return Err(LibraryError::LimitExceeded(LimitExceeded::new(
+                        "maxResultRows",
+                        u64::from(cap),
+                        u64::from(n_rows),
                     )));
                 }
             }
@@ -114,9 +116,10 @@ fn validate_statement_result(
             for cell in &row.values {
                 let n = db_value_cell_len(cell);
                 if n > cap {
-                    return Err(LibraryError::Unavailable(format!(
-                        "execute reply statement {index} cell exceeds guest maxCellBytes {}",
-                        caps.max_cell_bytes
+                    return Err(LibraryError::LimitExceeded(LimitExceeded::new(
+                        "maxCellBytes",
+                        u64::from(caps.max_cell_bytes),
+                        u64::try_from(n).unwrap_or(u64::MAX),
                     )));
                 }
             }
@@ -129,9 +132,10 @@ fn validate_statement_result(
             .len();
         let cap = usize::try_from(caps.max_result_bytes).unwrap_or(usize::MAX);
         if bytes > cap {
-            return Err(LibraryError::Unavailable(format!(
-                "execute reply statement {index} encoded result is {bytes} bytes; guest maxResultBytes is {}",
-                caps.max_result_bytes
+            return Err(LibraryError::LimitExceeded(LimitExceeded::new(
+                "maxResultBytes",
+                u64::from(caps.max_result_bytes),
+                u64::try_from(bytes).unwrap_or(u64::MAX),
             )));
         }
     }
@@ -256,8 +260,12 @@ mod tests {
         let req = rows_request(1);
         let reply = rows_reply("op-1", 3);
         let err = validate_execute_reply(&req, &reply, &tiny_caps()).unwrap_err();
-        assert!(matches!(err, LibraryError::Unavailable(_)), "{err}");
-        assert!(err.to_string().contains("rows"), "{err}");
+        assert_eq!(
+            err.limit(),
+            Some(LimitExceeded::new("maxResultRows", 1, 3)),
+            "{err}"
+        );
+        assert!(matches!(err, LibraryError::LimitExceeded(_)), "{err}");
     }
 
     #[test]
@@ -267,9 +275,9 @@ mod tests {
         let req = rows_request(1);
         let reply = rows_reply("op-1", 2);
         let err = validate_execute_reply(&req, &reply, &caps).unwrap_err();
-        assert!(matches!(err, LibraryError::Unavailable(_)), "{err}");
-        assert!(
-            err.to_string().contains("rows"),
+        assert_eq!(
+            err.limit(),
+            Some(LimitExceeded::new("maxResultRows", 1, 2)),
             "stmt maxRows=1 must bind below adapter max_result_rows=10: {err}"
         );
     }
@@ -300,7 +308,12 @@ mod tests {
         let mut reply = rows_reply("op-1", 1);
         reply.statements[0].rows[0].values[0] = DbValue::Text("x".repeat(32));
         let err = validate_execute_reply(&req, &reply, &tiny_caps()).unwrap_err();
-        assert!(matches!(err, LibraryError::Unavailable(_)), "{err}");
+        assert!(matches!(err, LibraryError::LimitExceeded(_)), "{err}");
+        assert_eq!(
+            err.limit().map(|l| l.limit),
+            Some("maxCellBytes".into()),
+            "{err}"
+        );
         assert!(err.to_string().contains("maxCellBytes"), "{err}");
     }
 
@@ -313,8 +326,12 @@ mod tests {
         caps.max_cell_bytes = 0;
         caps.max_result_bytes = 32;
         let err = validate_execute_reply(&req, &reply, &caps).unwrap_err();
-        assert!(matches!(err, LibraryError::Unavailable(_)), "{err}");
-        assert!(err.to_string().contains("maxResultBytes"), "{err}");
+        assert!(matches!(err, LibraryError::LimitExceeded(_)), "{err}");
+        assert_eq!(
+            err.limit().map(|l| (l.limit, l.cap)),
+            Some(("maxResultBytes".into(), 32)),
+            "{err}"
+        );
     }
 
     #[test]

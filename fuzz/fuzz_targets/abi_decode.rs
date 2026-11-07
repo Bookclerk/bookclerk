@@ -10,13 +10,13 @@
 #![no_main]
 
 use bookclerk_plugin_abi::{
-    decode_db_value_bytes, decode_execute_request_bytes, decode_execute_result_reply_bytes,
-    read_any_message, READ_ANY_COUNT,
+    decode_db_capabilities_reply_bytes, decode_db_value_bytes, decode_execute_request_bytes,
+    decode_execute_result_reply_bytes, read_any_message, READ_ANY_COUNT,
 };
 use libfuzzer_sys::fuzz_target;
 
 /// Hand-written decoders ahead of the generated table.
-const HAND_WRITTEN: u8 = 3;
+const HAND_WRITTEN: u8 = 4;
 
 /// Largest message worth decoding; the wire caps replies far below this.
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -37,6 +37,9 @@ fuzz_target!(|data: &[u8]| {
         }
         2 => {
             let _ = decode_db_value_bytes(bytes);
+        }
+        3 => {
+            let _ = decode_db_capabilities_reply_bytes(bytes);
         }
         generated => {
             let _ = read_any_message(generated - HAND_WRITTEN, bytes);

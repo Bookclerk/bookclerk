@@ -53,7 +53,7 @@ fn fuzz_corpus_sql_parse_does_not_panic() {
 /// decoder, the rest is the message.
 #[test]
 fn fuzz_corpus_abi_decode_does_not_panic() {
-    const HAND_WRITTEN: u8 = 3;
+    const HAND_WRITTEN: u8 = 4;
     for path in corpus_files("abi_decode") {
         let data = std::fs::read(&path).expect("read");
         let Some((&selector, bytes)) = data.split_first() else {
@@ -68,6 +68,9 @@ fn fuzz_corpus_abi_decode_does_not_panic() {
             }
             2 => {
                 let _ = bookclerk_plugin_abi::decode_db_value_bytes(bytes);
+            }
+            3 => {
+                let _ = bookclerk_plugin_abi::decode_db_capabilities_reply_bytes(bytes);
             }
             generated => {
                 let _ = bookclerk_plugin_abi::read_any_message(generated - HAND_WRITTEN, bytes);
@@ -520,8 +523,8 @@ fn structured_book_record_seeds_are_current() {
     ] {
         bookclerk_plugin_abi::roundtrip_any_message(selector, bytes)
             .unwrap_or_else(|_| panic!("{name} does not round-trip at selector {selector}"));
-        // `abi_decode` puts three hand-written decoders ahead of the table.
-        for (target, prefix) in [("abi_decode", selector + 3), ("abi_roundtrip", selector)] {
+        // `abi_decode` puts four hand-written decoders ahead of the table.
+        for (target, prefix) in [("abi_decode", selector + 4), ("abi_roundtrip", selector)] {
             let path = corpus.join(target).join(name);
             let mut seed = vec![prefix];
             seed.extend_from_slice(bytes);
@@ -552,4 +555,61 @@ fn fuzz_corpus_cover_sink_key_holds_invariants() {
         checked += 1;
     }
     assert!(checked > 0, "no cover_sink_key seed");
+}
+
+/// Seeds for the hand-written envelope decoders that carry a typed
+/// `limit_exceeded` error: an `ExecuteResultReply` whose `err` has
+/// `details`, and a `DbCapabilitiesReply` in both members. Refresh with
+/// `UPDATE_FUZZ_SEEDS=1`.
+#[test]
+fn limit_error_envelope_seeds_are_current() {
+    use bookclerk_plugin_abi::{
+        decode_db_capabilities_reply_bytes, decode_execute_result_reply_bytes,
+        encoded_db_capabilities_reply_bytes, encoded_execute_result_reply_bytes, DbCapabilities,
+        LimitExceeded, PluginError, PluginErrorCode,
+    };
+
+    let limit = LimitExceeded::new("maxResultBytes", 262_144, 300_000);
+    let reply_err =
+        encoded_execute_result_reply_bytes(Err(PluginError::limit_exceeded(limit.clone())))
+            .expect("encode reply err");
+    let decoded = decode_execute_result_reply_bytes(&reply_err).expect_err("err member");
+    assert_eq!(decoded.code, PluginErrorCode::LimitExceeded);
+    assert_eq!(decoded.limit(), Some(limit.clone()));
+
+    let caps_ok = encoded_db_capabilities_reply_bytes(Ok(DbCapabilities::advertised_sqlite()))
+        .expect("encode caps ok");
+    assert_eq!(
+        decode_db_capabilities_reply_bytes(&caps_ok).expect("ok member"),
+        DbCapabilities::advertised_sqlite()
+    );
+    let caps_err =
+        encoded_db_capabilities_reply_bytes(Err(PluginError::limit_exceeded(limit.clone())))
+            .expect("encode caps err");
+    assert_eq!(
+        decode_db_capabilities_reply_bytes(&caps_err)
+            .expect_err("err member")
+            .limit(),
+        Some(limit)
+    );
+
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/abi_decode");
+    for (name, selector, bytes) in [
+        ("limit_error_reply.bin", 1u8, &reply_err),
+        ("caps_reply_ok.bin", 3u8, &caps_ok),
+        ("caps_reply_limit_error.bin", 3u8, &caps_err),
+    ] {
+        let path = corpus.join(name);
+        let mut seed = vec![selector];
+        seed.extend_from_slice(bytes);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
 }

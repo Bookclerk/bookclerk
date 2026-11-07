@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bookclerk_plugin_abi::{
-    encoded_execute_request_bytes, guest_statement_kind, DbPlanStatementKind, DbResultSelection,
-    DbTiming, DbValue, ExecuteReply, ExecuteRequest, PluginError, Result, StatementResult,
-    TypedDbStatement,
+    encoded_execute_request_bytes, guest_statement_kind, DbCapabilities, DbPlanStatementKind,
+    DbResultSelection, DbTiming, DbValue, ExecuteReply, ExecuteRequest, LimitExceeded, PluginError,
+    Result, StatementResult, TypedDbStatement,
 };
 use bookclerk_plugin_abi::{Bindings, GuestDatabase};
 
@@ -119,6 +119,19 @@ impl DatabaseBinding {
             .map(|db| Self::from_session(Arc::from(db)))
     }
 
+    /// The negotiated limits of the granted session (`DbCapabilities`).
+    ///
+    /// Use it to size a batch or a read before sending: `max_request_bytes`,
+    /// `max_statements`, `max_result_bytes`, `max_result_rows` and the rest.
+    ///
+    /// # Errors
+    ///
+    /// Returns `unsupported` when the host session predates
+    /// `GuestDatabase.limits`.
+    pub async fn limits(&self) -> Result<DbCapabilities> {
+        self.session.limits().await
+    }
+
     /// Prepare one canonical-SQL statement (`?` placeholders).
     #[must_use]
     pub fn prepare(&self, sql: impl Into<String>) -> PreparedStatement {
@@ -205,9 +218,10 @@ impl DatabaseBinding {
         let encoded = encoded_execute_request_bytes(&request)?;
         let cap = self.options.max_request_bytes;
         if cap > 0 && encoded.len() > cap as usize {
-            return Err(PluginError::payload_too_large(format!(
-                "atomic request is {} bytes; guest maxRequestBytes is {cap}",
-                encoded.len()
+            return Err(PluginError::limit_exceeded(LimitExceeded::new(
+                "maxRequestBytes",
+                u64::from(cap),
+                u64::try_from(encoded.len()).unwrap_or(u64::MAX),
             )));
         }
         self.session.execute(request).await

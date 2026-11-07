@@ -160,6 +160,7 @@ unknown, expired, or revoked tokens.
 | `POST /progress` | `allow_progress` | `JobController.progress.report` |
 | `GET /cancel` | `cancel` present | Long poll: `200 {"cancelled":true}` once the host cancellation fires, `204` after the poll window so the isolate re-arms; the adapter turns it into `job.signal` |
 | `POST /db/execute` | `allow_database` | Typed SQL on the granted `GuestDatabase` (Cap'n bytes) |
+| `GET /db/limits` | `allow_database` | `GuestDatabase.limits`: the session's `DbCapabilities` as a Cap'n `DbCapabilitiesReply` |
 | `POST /events/publish` | `events` present | `env.EVENTS.publish` |
 
 ## Isolate embed
