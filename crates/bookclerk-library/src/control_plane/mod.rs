@@ -7,7 +7,7 @@
 //!
 //! See `docs/adr/control-plane.md`.
 
-mod batch;
+pub(crate) mod batch;
 mod branch_catalog;
 mod cache;
 mod clerks;
