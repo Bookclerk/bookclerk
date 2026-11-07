@@ -407,6 +407,9 @@ const SDK_PRODUCT_ABI_PY: &str =
 /// Injected as `bookclerk_plugin_sdk/guest_sql.py` (imported by `db_value.py`).
 const SDK_GUEST_SQL_PY: &str =
     include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/guest_sql.py");
+/// Injected as `bookclerk_plugin_sdk/limits.py` (imported by `workerd.py` and `db_value.py`).
+const SDK_LIMITS_PY: &str =
+    include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/limits.py");
 /// First-party adapter isolate: owns GRANTED / BRIDGE_TOKEN (author `PLUGIN`).
 const ADAPTER_JS: &str = r#"import { wrapPluginFromBinding } from "@bookclerk/plugin-sdk/workerd";
 export default wrapPluginFromBinding();
@@ -437,6 +440,8 @@ pub const SDK_PY_DB_VALUE_MODULE: &str = "bookclerk_plugin_sdk/db_value.py";
 pub const SDK_PY_PRODUCT_ABI_MODULE: &str = "bookclerk_plugin_sdk/_abi.py";
 /// Python module path for guest-side SQL statement classification helpers.
 pub const SDK_PY_GUEST_SQL_MODULE: &str = "bookclerk_plugin_sdk/guest_sql.py";
+/// Python module path for the typed `limit_exceeded` helpers.
+pub const SDK_PY_LIMITS_MODULE: &str = "bookclerk_plugin_sdk/limits.py";
 /// Python module path that initializes the sparse workerd guest SDK.
 pub const SDK_PY_INIT_MODULE: &str = "bookclerk_plugin_sdk/__init__.py";
 
@@ -1339,11 +1344,13 @@ pub fn materialize(
         write_file_under(&bookclerk_dir, "sdk-db-value.py", SDK_DB_VALUE_PY)?;
         write_file_under(&bookclerk_dir, "sdk-product-abi.py", SDK_PRODUCT_ABI_PY)?;
         write_file_under(&bookclerk_dir, "sdk-guest-sql.py", SDK_GUEST_SQL_PY)?;
+        write_file_under(&bookclerk_dir, "sdk-limits.py", SDK_LIMITS_PY)?;
         write_file_under(&bookclerk_dir, "sdk-init.py", SDK_PY_INIT)?;
         for (module_name, embed_file) in [
             (SDK_PY_INIT_MODULE, "sdk-init.py"),
             (SDK_PY_PRODUCT_ABI_MODULE, "sdk-product-abi.py"),
             (SDK_PY_GUEST_SQL_MODULE, "sdk-guest-sql.py"),
+            (SDK_PY_LIMITS_MODULE, "sdk-limits.py"),
             (SDK_PY_DB_VALUE_MODULE, "sdk-db-value.py"),
             (SDK_PY_WORKERD_MODULE, "sdk-workerd.py"),
         ] {
@@ -1669,6 +1676,7 @@ fn is_legacy_sdk_embed(name: &str) -> bool {
             | "bookclerk_plugin_sdk/db_value.py"
             | "bookclerk_plugin_sdk/_abi.py"
             | "bookclerk_plugin_sdk/guest_sql.py"
+            | "bookclerk_plugin_sdk/limits.py"
             | "bookclerk_plugin_sdk/__init__.py"
     )
 }
@@ -2076,8 +2084,11 @@ mode = "deny"
         let capnp = read_under(&generated.state_dir, &generated.config_path);
         assert!(capnp.contains(SDK_PY_DB_VALUE_MODULE));
         assert!(capnp.contains("sdk-db-value.py"));
+        assert!(capnp.contains(SDK_PY_LIMITS_MODULE));
+        assert!(capnp.contains("sdk-limits.py"));
         let state_dir = &generated.state_dir;
         assert!(state_dir.join(".bookclerk/sdk-db-value.py").is_file());
+        assert!(state_dir.join(".bookclerk/sdk-limits.py").is_file());
     }
 
     #[test]

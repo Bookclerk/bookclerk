@@ -18,6 +18,7 @@ paths = [
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/db_value.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_abi.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/guest_sql.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/limits.py",
 ]
 # Injected into every workerd isolate: check the workerd-runtime guests,
 # not the whole installation.
