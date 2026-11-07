@@ -50,11 +50,6 @@ COPY --from=ui /src/ui/dist ui/dist
 # thin LTO and parallel codegen units, which links in a fraction of the time.
 ARG RELEASE_LTO=true
 ARG RELEASE_CODEGEN_UNITS=1
-# Space-separated Cargo packages compiled in the same `cargo build` as the
-# platform and left in target/release/ (not in the image). Empty for every
-# shipped image; the hosted demo passes its storefronts and seed so the
-# dependencies they share with the hosts compile once.
-ARG EXTRA_PACKAGES=""
 # Release hosts + helpers + pinned workerd + sqlite/local, stamped and laid
 # out exactly as the release archive. The bundle-local ledger is dropped: the
 # host stamps its own ledger in BOOKCLERK_FILES_DIR when it installs the
@@ -62,7 +57,6 @@ ARG EXTRA_PACKAGES=""
 RUN CARGO_PROFILE_RELEASE_LTO="$RELEASE_LTO" \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$RELEASE_CODEGEN_UNITS" \
     cargo package-platform --out /dist \
-      $(for pkg in $EXTRA_PACKAGES; do printf -- '--extra-package %s ' "$pkg"; done) \
     && bundle=$(find /dist -mindepth 1 -maxdepth 1 -type d -name 'bookclerk-*') \
     && test -n "$bundle" \
     && mv "$bundle" /opt/bookclerk \

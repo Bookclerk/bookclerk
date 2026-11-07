@@ -231,10 +231,6 @@ pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
 /// * `root` - Cargo workspace root directory.
 /// * `out_dir` - Filesystem path (`out_dir`).
 /// * `version` - String `version` for this call.
-/// * `extra_packages` - More Cargo packages compiled in the same `cargo build`
-///   as the platform but left out of the bundle (they stay in
-///   `target/release/`). The hosted demo passes its storefronts and seed so
-///   the dependencies they share with the hosts compile once.
 ///
 /// # Returns
 ///
@@ -247,24 +243,16 @@ pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
 /// # Panics
 ///
 /// Panics when an internal invariant does not hold.
-pub fn package_platform(
-    root: &Path,
-    out_dir: &Path,
-    version: &str,
-    extra_packages: &[String],
-) -> Result<()> {
+pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     ensure_ui_dist(root)?;
-    let pkgs = plugins::with_extra_packages(
-        plugins::packages_for(
-            root,
-            BuildSelection {
-                platform: true,
-                ..Default::default()
-            },
-        )?,
-        extra_packages,
-    );
-    plugins::build_packages(root, true, &pkgs)?;
+    plugins::build_selection(
+        root,
+        true,
+        BuildSelection {
+            platform: true,
+            ..Default::default()
+        },
+    )?;
     let staged = root.join("target").join("plugin-artifacts-pack-platform");
     plugins::stage_platform_for_pack(root, &staged, true, true)?;
 

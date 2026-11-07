@@ -106,8 +106,7 @@ docker buildx bake -f packaging/demo/docker-bake.hcl --load demo
 
 That build never exports the builder, and it links the demo's binaries with
 thin LTO instead of the fat LTO shipped images use, which takes minutes
-rather than most of the build. The storefronts and the seed compile in the
-same `cargo build` as the hosts, so their shared dependencies compile once. The image adds the Audible, Libro.fm, Chirp,
+rather than most of the build. The image adds the Audible, Libro.fm, Chirp,
 GraphicAudio and
 `covers` plugins, and removes the `local` output plugin, so the host has
 nowhere to acquire to even if a request got through. `covers` downloads
