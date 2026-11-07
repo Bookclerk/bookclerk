@@ -539,6 +539,62 @@ mod tests {
         }
     }
 
+    /// A session that answers `limits` with the sqlite advertisement.
+    struct LimitsSession;
+
+    #[async_trait::async_trait(?Send)]
+    impl GuestDatabase for LimitsSession {
+        async fn execute(&self, _request: ExecuteRequest) -> Result<ExecuteReply> {
+            Err(PluginError::unsupported("execute"))
+        }
+
+        async fn limits(&self) -> Result<DbCapabilities> {
+            Ok(DbCapabilities::advertised_sqlite())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn limits_come_from_the_session_or_are_unsupported() {
+        let binding = DatabaseBinding::from_session(Arc::new(LimitsSession));
+        let caps = binding.limits().await.expect("limits");
+        assert_eq!(caps, DbCapabilities::advertised_sqlite());
+
+        // A session that predates `GuestDatabase.limits` keeps the default.
+        let legacy = DatabaseBinding::from_session(Arc::new(RecordingSession {
+            last: Mutex::new(None),
+        }));
+        let err = legacy.limits().await.expect_err("default is unsupported");
+        assert_eq!(err.code, PluginErrorCode::Unsupported);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn over_cap_request_is_a_typed_limit_error_before_execute() {
+        let session = Arc::new(RecordingSession {
+            last: Mutex::new(None),
+        });
+        let binding = DatabaseBinding::from_session_with(
+            session.clone(),
+            DatabaseBindingOptions {
+                max_request_bytes: 16,
+                ..DatabaseBindingOptions::default()
+            },
+        );
+        let err = binding
+            .prepare("SELECT n FROM t")
+            .all(None)
+            .await
+            .expect_err("request is over 16 bytes");
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+        let limit = err.limit().expect("typed limit");
+        assert_eq!(limit.limit, "maxRequestBytes");
+        assert_eq!(limit.cap, 16);
+        assert!(limit.used > 16, "{limit:?}");
+        assert!(
+            session.last.lock().expect("lock").is_none(),
+            "an over-cap request never reaches the session"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn d1_result_projection_and_first_column() {
         let session = Arc::new(RecordingSession {

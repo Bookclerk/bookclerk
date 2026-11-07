@@ -5169,6 +5169,13 @@ mod tests {
         async fn execute(&self, _request: ExecuteRequest) -> Result<crate::ExecuteReply> {
             Err(PluginError::unsupported("execute"))
         }
+
+        async fn limits(&self) -> Result<crate::DbCapabilities> {
+            Ok(crate::DbCapabilities {
+                max_request_bytes: 4096,
+                ..crate::DbCapabilities::advertised_sqlite()
+            })
+        }
     }
 
     /// Job runner that receives the `DB` binding taken from `open` bindings.
@@ -5182,6 +5189,14 @@ mod tests {
             let Some(named) = self.db.lock().expect("db").take() else {
                 return Err(PluginError::internal("named database binding missing"));
             };
+            // `limits` crosses the vat as a typed `DbCapabilitiesReply`.
+            let caps = named.limits().await?;
+            if caps.max_request_bytes != 4096 {
+                return Err(PluginError::internal(format!(
+                    "limits did not round-trip: {}",
+                    caps.max_request_bytes
+                )));
+            }
             named.close().await?;
             Ok(JobOutcome::Completed {
                 message: "named-database-injected".into(),

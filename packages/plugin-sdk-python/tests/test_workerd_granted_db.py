@@ -156,6 +156,11 @@ class _MockTransport:
     def __init__(self) -> None:
         self.requests: list[bytes] = []
 
+    async def limitsBytes(self):  # noqa: N802  (Workers RPC method name)
+        from bookclerk_plugin_sdk.db_value import encode_db_capabilities_reply
+
+        return encode_db_capabilities_reply(_CAPS)
+
     async def executeBytes(self, body):  # noqa: N802  (Workers RPC method name)
         from bookclerk_plugin_sdk.db_value import (
             decode_execute_request,
@@ -192,6 +197,23 @@ class WorkerdTransportDbTests(unittest.IsolatedAsyncioTestCase):
         row = await env.DB.prepare("SELECT 7").first()
         self.assertEqual(row["n"]["value"], 7)
         self.assertEqual(len(transport.requests), 1, "one Cap'n request crossed the stub")
+
+    async def test_transport_limits_decode_the_capabilities_reply(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError, _invocation_env
+
+        transport = _MockTransport()
+        env = _invocation_env({}, {"databases": [{"name": "DB", "transport": transport}]})
+        caps = await env.DB.limits()
+        self.assertEqual(caps["maxRequestBytes"], _CAPS["maxRequestBytes"])
+
+        class _Empty:
+            async def limitsBytes(self):  # noqa: N802
+                return b""
+
+        env = _invocation_env({}, {"databases": [{"name": "DB", "transport": _Empty()}]})
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.limits()
+        self.assertEqual(ctx.exception.code, "internal")
 
     async def test_ready_binding_wins_over_transport(self) -> None:
         from bookclerk_plugin_sdk.workerd import _invocation_env
