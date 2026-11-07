@@ -6,12 +6,12 @@
  * @module
  */
 
-import { PLUGIN_ERROR_CODES } from "./abi.js";
+import { MAX_SCALAR_BYTES, PLUGIN_ERROR_CODES } from "./abi.js";
 
 const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set<string>(PLUGIN_ERROR_CODES);
 
 /** Longest `details` text the SDK parses (the ABI scalar ceiling). */
-const MAX_DETAILS_BYTES = 262_144;
+const MAX_DETAILS_BYTES: number = MAX_SCALAR_BYTES;
 
 /**
  * A negotiated SQL-v1 cap that a request or its result exceeded

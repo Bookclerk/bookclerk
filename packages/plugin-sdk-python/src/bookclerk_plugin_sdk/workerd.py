@@ -236,13 +236,12 @@ def _await_maybe(value: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
-_MAX_DETAILS_BYTES = 262_144
-"""Longest ``details`` text the SDK parses (the ABI scalar ceiling)."""
-
-
 def _parse_details(text: str) -> dict[str, Any] | None:
-    """Parse the wire ``details`` JSON object text; anything else is dropped."""
-    if not text or len(text) > _MAX_DETAILS_BYTES:
+    """Parse the wire ``details`` JSON object text; anything else is dropped.
+
+    Text past ``MAX_SCALAR_BYTES`` (the ABI scalar ceiling) is dropped too.
+    """
+    if not text or len(text) > MAX_SCALAR_BYTES:
         return None
     try:
         parsed = json.loads(text)
@@ -1905,7 +1904,8 @@ async def _granted_database_body(resp: Any, method: str) -> bytes:
 
     A non-2xx status maps onto the ``PluginError`` the channel implies:
     ``401`` is ``unauthorized``, ``413`` is ``limit_exceeded`` (the request was
-    over the grant's ``maxRequestBytes``) and anything else ``unavailable``.
+    over the grant's ``maxRequestBytes``; the body is the canonical limit
+    message, parsed back into ``details``) and anything else ``unavailable``.
 
     Args:
         resp: Granted-channel response.
@@ -1920,14 +1920,14 @@ async def _granted_database_body(resp: Any, method: str) -> bytes:
     status = getattr(resp, "status", None)
     if status is not None and int(status) >= 400:
         text = await resp.text() if hasattr(resp, "text") else str(resp)
-        code = (
-            "unauthorized"
-            if int(status) == 401
-            else "limit_exceeded"
-            if int(status) == 413
-            else "unavailable"
-        )
-        raise PluginError.from_wire(code, f"database grant: {status} {text}".strip())
+        message = f"database grant: {status} {text}".strip()
+        if int(status) == 413:
+            limit = parse_limit_exceeded(text)
+            if limit is None:
+                raise PluginError.from_wire("limit_exceeded", message)
+            raise PluginError("limit_exceeded", message, limit_exceeded_details(limit))
+        code = "unauthorized" if int(status) == 401 else "unavailable"
+        raise PluginError.from_wire(code, message)
     if hasattr(resp, "arrayBuffer"):
         raw = await resp.arrayBuffer()
         return bytes(raw)

@@ -2901,6 +2901,9 @@ fn map_reply_validation_err(err: bookclerk_library::LibraryError) -> crate::Plug
         bookclerk_library::LibraryError::Unavailable(message) => {
             crate::PluginError::Unavailable(message)
         }
+        bookclerk_library::LibraryError::LimitExceeded(limit) => {
+            crate::PluginError::from_abi(Some("limit_exceeded"), limit.to_message())
+        }
         other => crate::PluginError::from_abi(Some("invalid_params"), other.to_string()),
     }
 }
@@ -3159,7 +3162,15 @@ mod tests {
             back.code,
             bookclerk_plugin_abi::PluginErrorCode::LimitExceeded
         );
-        assert_eq!(back.limit(), Some(limit));
+        assert_eq!(back.limit(), Some(limit.clone()));
+        // The proxy RPC path keeps the typed code through the host error.
+        let proxied = map_reply_validation_err(bookclerk_library::LibraryError::LimitExceeded(
+            limit.clone(),
+        ));
+        assert!(matches!(
+            map_plugin_err(proxied),
+            bookclerk_library::LibraryError::LimitExceeded(ref l) if *l == limit
+        ));
         // A limit code with an unparseable message falls back to the plain mapping.
         let vague = crate::PluginError::Abi {
             code: "limit_exceeded".into(),

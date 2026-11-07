@@ -43,6 +43,8 @@ class _MockFetcher:
 
         class _Resp:
             async def text(self):
+                if status == 413:
+                    return "limit exceeded: maxRequestBytes is 16; used 32"
                 return "nope"
 
             async def arrayBuffer(self):
@@ -88,6 +90,7 @@ class WorkerdGrantedDbTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("body", kwargs)
 
     async def test_granted_status_codes_map_to_typed_errors(self) -> None:
+        from bookclerk_plugin_sdk.limits import LimitExceeded
         from bookclerk_plugin_sdk.workerd import PluginError
 
         for status, code in ((401, "unauthorized"), (413, "limit_exceeded"), (503, "unavailable")):
@@ -95,6 +98,16 @@ class WorkerdGrantedDbTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(PluginError) as ctx:
                 await databases["DB"].limits()
             self.assertEqual(ctx.exception.code, code, status)
+            if status == 413:
+                # The 413 body is the canonical limit message: parsed into
+                # `details`, so `err.limit` names the cap.
+                self.assertEqual(
+                    ctx.exception.limit,
+                    LimitExceeded(limit="maxRequestBytes", cap=16, used=32),
+                )
+                self.assertIn("database grant: 413", str(ctx.exception))
+            else:
+                self.assertIsNone(ctx.exception.limit)
 
     async def test_binding_without_limits_transport_is_unsupported(self) -> None:
         from bookclerk_plugin_sdk.db_value import create_database_binding

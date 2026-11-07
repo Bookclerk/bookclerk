@@ -429,6 +429,21 @@ class DbValueGoldens(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "unavailable")
         self.assertEqual(ctx.exception.wire_code, "unavailable")
         self.assertIsNone(ctx.exception.details)
+        # A reply from a pre-`details` encoder (a two-pointer `PluginError`)
+        # still decodes, with no details.
+        from bookclerk_plugin_sdk._capnp import _CapnpMessage
+
+        msg = _CapnpMessage()
+        root = msg.init_root(1, 1)
+        root.set_u16(0, 1)
+        err = root.init_struct(0, 0, 2)
+        err.set_text(0, "unavailable")
+        err.set_text(1, "old encoder")
+        with self.assertRaises(PluginError) as ctx:
+            decode_execute_result_reply(msg.finish())
+        self.assertEqual(ctx.exception.code, "unavailable")
+        self.assertEqual(str(ctx.exception), "old encoder")
+        self.assertIsNone(ctx.exception.details)
 
     def test_limit_errors_carry_details_on_the_wire(self) -> None:
         from bookclerk_plugin_sdk.db_value import (

@@ -55,7 +55,7 @@ import type {
   QueueSendBatchEntry,
   QueueSendOptions,
 } from "./env.js";
-import { PluginError } from "./errors.js";
+import { PluginError, parseLimitExceeded } from "./errors.js";
 import {
   dispatchInvoke,
   InvokeError,
@@ -1061,7 +1061,8 @@ export interface QueueRetryOptions {
 
 /** Recorded per-message outcome of a `queue()` handler (bridge projection of `QueueResult`). */
 export type QueueOutcome =
-  { kind: "ack" } | { kind: "retry"; delaySeconds: number; reason: string };
+  | { kind: "ack" }
+  | { kind: "retry"; delaySeconds: number; reason: string };
 
 /**
  * One delivered queue message (`QueueMessage` struct), Workers `Message`-shaped.
@@ -3007,7 +3008,8 @@ class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
 /**
  * Reads a granted `/db/*` response body, mapping a non-2xx status onto the
  * `PluginError` the channel implies: `401` is `unauthorized`, `413` is
- * `limit_exceeded` (the request was over the grant's `maxRequestBytes`),
+ * `limit_exceeded` (the request was over the grant's `maxRequestBytes`; the
+ * body is the canonical limit message, parsed back into `details`),
  * anything else is `unavailable`.
  *
  * @param resp - Granted channel response.
@@ -3016,10 +3018,14 @@ class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
 async function grantedDatabaseBody(resp: Response): Promise<Uint8Array> {
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
-    throw PluginError.fromWire(
-      resp.status === 401 ? "unauthorized" : resp.status === 413 ? "limit_exceeded" : "unavailable",
-      `database grant: ${resp.status} ${text}`.trim(),
-    );
+    const message = `database grant: ${resp.status} ${text}`.trim();
+    if (resp.status === 413) {
+      const limit = parseLimitExceeded(text);
+      throw limit === undefined
+        ? PluginError.fromWire("limit_exceeded", message)
+        : new PluginError("limit_exceeded", message, { ...limit });
+    }
+    throw PluginError.fromWire(resp.status === 401 ? "unauthorized" : "unavailable", message);
   }
   return new Uint8Array(await resp.arrayBuffer());
 }

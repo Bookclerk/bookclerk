@@ -274,10 +274,18 @@ pub fn body_framing(headers: &[(String, String)]) -> Result<BodyFraming, Framing
 /// A malformed one is left for [`body_framing`] to reject.
 #[must_use]
 pub fn declared_content_length_over_cap(headers: &[(String, String)], cap: u32) -> bool {
-    matches!(
-        body_framing(headers),
-        Ok(BodyFraming::Length(len)) if len > usize::try_from(cap).unwrap_or(usize::MAX)
-    )
+    declared_content_length_past_cap(headers, cap).is_some()
+}
+
+/// The declared `Content-Length` when it is past `cap`, in bytes.
+#[must_use]
+pub fn declared_content_length_past_cap(headers: &[(String, String)], cap: u32) -> Option<usize> {
+    match body_framing(headers) {
+        Ok(BodyFraming::Length(len)) if len > usize::try_from(cap).unwrap_or(usize::MAX) => {
+            Some(len)
+        }
+        _ => None,
+    }
 }
 
 /// Why a chunked body was rejected.
@@ -563,6 +571,8 @@ pub enum BodyError {
     TooLarge {
         /// The cap the body ran past, in bytes.
         cap: usize,
+        /// The declared or received size that ran past it, in bytes.
+        used: usize,
     },
     /// The stream ended before the declared `Content-Length` or the
     /// terminating chunk.
@@ -574,7 +584,7 @@ impl fmt::Display for BodyError {
         match self {
             Self::Framing(err) => err.fmt(f),
             Self::Chunked(err) => err.fmt(f),
-            Self::TooLarge { cap } => write!(f, "body exceeds {cap} bytes"),
+            Self::TooLarge { cap, used } => write!(f, "body is {used} bytes; exceeds {cap}"),
             Self::Truncated => f.write_str("body ended before its declared end"),
         }
     }
@@ -755,7 +765,7 @@ impl BodyReader {
     /// Fails when `bytes` passes the route cap.
     fn check_cap(&self, bytes: usize) -> Result<(), BodyError> {
         match self.cap {
-            Some(cap) if bytes > cap => Err(BodyError::TooLarge { cap }),
+            Some(cap) if bytes > cap => Err(BodyError::TooLarge { cap, used: bytes }),
             _ => Ok(()),
         }
     }
@@ -785,7 +795,7 @@ mod tests {
             .with_cap(4);
         assert_eq!(
             r.push(b"", &mut Vec::new()),
-            Err(BodyError::TooLarge { cap: 4 })
+            Err(BodyError::TooLarge { cap: 4, used: 5 })
         );
         // Until EOF: everything, done at finish, capped.
         let mut r = BodyReader::new(&h(&[])).unwrap().with_cap(6);
@@ -798,7 +808,7 @@ mod tests {
         let mut r = BodyReader::new(&h(&[])).unwrap().with_cap(6);
         assert_eq!(
             r.push(b"abcdefg", &mut Vec::new()),
-            Err(BodyError::TooLarge { cap: 6 })
+            Err(BodyError::TooLarge { cap: 6, used: 7 })
         );
         // Chunked: decoded across splits, truncated at EOF, capped on output.
         let mut r = BodyReader::new(&h(&[("Transfer-Encoding", "chunked")])).unwrap();
@@ -815,7 +825,7 @@ mod tests {
         let mut out = b"kept".to_vec();
         assert_eq!(
             r.push(b"5\r\nhello\r\n", &mut out),
-            Err(BodyError::TooLarge { cap: 3 })
+            Err(BodyError::TooLarge { cap: 3, used: 5 })
         );
         assert_eq!(out, b"kept", "nothing past the cap is yielded");
         let mut r = BodyReader::new(&h(&[("Transfer-Encoding", "chunked")])).unwrap();

@@ -2371,6 +2371,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plugin_error_from_d1_maps_cap_failures_to_limit_exceeded() {
+        let limit = bookclerk_plugin_abi::LimitExceeded::new("maxResultBytes", 262_144, 300_000);
+        let err = DbErr::Custom(format!(
+            "D1 ambiguous response: D1 statement 0: {}",
+            limit.to_message()
+        ));
+        let mapped = crate::atomic::plugin_error_from_d1(err);
+        assert_eq!(
+            mapped.code,
+            bookclerk_plugin_sdk::PluginErrorCode::LimitExceeded,
+            "{mapped}"
+        );
+        assert_eq!(mapped.limit(), Some(limit));
+        assert!(
+            mapped.message.contains("D1 ambiguous response"),
+            "the ambiguous-commit marker stays in the message: {mapped}"
+        );
+    }
+
+    #[tokio::test]
     async fn plugin_error_from_d1_maps_guest_receipt_result_lost_to_unavailable() {
         let err = DbErr::Custom(bookclerk_db_exec::GUEST_RECEIPT_RESULT_LOST.into());
         let mapped = crate::atomic::plugin_error_from_d1(err);

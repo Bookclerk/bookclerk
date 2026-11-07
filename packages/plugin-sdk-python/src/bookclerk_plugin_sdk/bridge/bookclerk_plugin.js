@@ -648,7 +648,7 @@ var StructReader = class _StructReader {
 
 // dist/errors.js
 var KNOWN_ERROR_CODES = new Set(PLUGIN_ERROR_CODES);
-var MAX_DETAILS_BYTES = 262144;
+var MAX_DETAILS_BYTES = MAX_SCALAR_BYTES;
 var LIMIT_MESSAGE_PREFIX = "limit exceeded: ";
 function limitExceededMessage(limit) {
   return `${LIMIT_MESSAGE_PREFIX}${limit.limit} is ${limit.cap}; used ${limit.used}`;
@@ -10097,7 +10097,12 @@ var GrantedDatabase = class extends RpcTarget {
 async function grantedDatabaseBody(resp) {
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
-    throw PluginError.fromWire(resp.status === 401 ? "unauthorized" : resp.status === 413 ? "limit_exceeded" : "unavailable", `database grant: ${resp.status} ${text}`.trim());
+    const message = `database grant: ${resp.status} ${text}`.trim();
+    if (resp.status === 413) {
+      const limit = parseLimitExceeded(text);
+      throw limit === void 0 ? PluginError.fromWire("limit_exceeded", message) : new PluginError("limit_exceeded", message, { ...limit });
+    }
+    throw PluginError.fromWire(resp.status === 401 ? "unauthorized" : "unavailable", message);
   }
   return new Uint8Array(await resp.arrayBuffer());
 }

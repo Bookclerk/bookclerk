@@ -21,6 +21,7 @@ const { PluginError, parseLimitExceeded, limitExceededMessage } = await import(
   join(dist, "errors.js")
 );
 const { guestStatementKind } = await import(join(dist, "guest-sql.js"));
+const { CapnpMessage } = await import(join(dist, "db-capnp.js"));
 
 function hex(bytes) {
   return Buffer.from(bytes).toString("hex");
@@ -458,17 +459,27 @@ try {
   assert.deepEqual(err.details, limit);
   assert.deepEqual(err.limit, limit);
 }
-// A pre-`details` reply (two pointers) still decodes, with no details.
-assert.equal(
-  (() => {
-    try {
-      decodeExecuteResultReply(atomicErr);
-    } catch (err) {
-      return err.details;
-    }
-  })(),
-  undefined,
-);
+// A reply from a pre-`details` encoder (a two-pointer `PluginError`) still
+// decodes, with no details.
+const twoPointerErr = (() => {
+  const msg = new CapnpMessage();
+  const root = msg.initRoot(1, 1);
+  root.setUint16(0, 1);
+  const err = root.initStruct(0, 0, 2);
+  err.setText(0, "unavailable");
+  err.setText(1, "old encoder");
+  return msg.finish();
+})();
+try {
+  decodeExecuteResultReply(twoPointerErr);
+  assert.fail("expected PluginError");
+} catch (err) {
+  assert.ok(err instanceof PluginError);
+  assert.equal(err.code, "unavailable");
+  assert.equal(err.message, "old encoder");
+  assert.equal(err.details, undefined);
+  assert.equal(err.limit, undefined);
+}
 // Malformed details are dropped, never fatal.
 assert.equal(PluginError.fromWire("internal", "x", "[1,2]").details, undefined);
 assert.equal(PluginError.fromWire("internal", "x", "{not json").details, undefined);

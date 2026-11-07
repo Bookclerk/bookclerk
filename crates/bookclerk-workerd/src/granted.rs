@@ -33,9 +33,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::granted_http::{
-    body_framing, declared_content_length_over_cap, parse_request_head, query_param,
-    transfer_encoding_is_chunked, BodyError, BodyReader, FramingError, HeadError, HeadParse,
-    RequestHead, MAX_HEAD_BYTES,
+    body_framing, declared_content_length_over_cap, declared_content_length_past_cap,
+    parse_request_head, query_param, transfer_encoding_is_chunked, BodyError, BodyReader,
+    FramingError, HeadError, HeadParse, RequestHead, MAX_HEAD_BYTES,
 };
 
 /// Largest `/events/publish` request body: a base64 payload at
@@ -269,7 +269,7 @@ enum GrantedCmd {
     /// as an encoded `DbCapabilitiesReply`.
     Limits {
         invocation: String,
-        resp: oneshot::Sender<Result<Vec<u8>, String>>,
+        resp: oneshot::Sender<Result<Vec<u8>, (u16, String)>>,
     },
     /// `env.<KV>.get` / `put` / `delete` / `list` through the grant.
     Kv {
@@ -734,28 +734,32 @@ fn dispatch_atomic_budget(table: &GrantedTable, invocation: String) -> Result<u3
 
 /// Answers `GET /db/limits` with the granted session's `DbCapabilities`.
 ///
-/// Authorization failures (unknown grant, no database) are the same strings
-/// `dispatch_execute` uses; a session that cannot answer `limits` encodes its
-/// `PluginError` in the reply so the guest sees the typed code.
-async fn dispatch_limits(table: &GrantedTable, invocation: String) -> Result<Vec<u8>, String> {
+/// Authorization failures (unknown grant, no database) are `401` with the
+/// same strings `dispatch_execute` uses; a session that cannot answer
+/// `limits` encodes its `PluginError` in the reply so the guest sees the
+/// typed code, and a reply the channel cannot encode is `500`.
+async fn dispatch_limits(
+    table: &GrantedTable,
+    invocation: String,
+) -> Result<Vec<u8>, (u16, String)> {
     let db = {
         let mut table = table.borrow_mut();
         let slot = table
             .get_mut(&invocation)
-            .ok_or_else(|| "unknown or revoked grant".to_string())?;
+            .ok_or_else(|| (401, "unknown or revoked grant".to_string()))?;
         if slot.expires <= std::time::Instant::now() {
             table.remove(&invocation);
-            return Err("grant expired".into());
+            return Err((401, "grant expired".into()));
         }
         if !slot.allow_database {
-            return Err("database not permitted on this grant".into());
+            return Err((401, "database not permitted on this grant".into()));
         }
         slot.database
             .clone()
-            .ok_or_else(|| "database not granted".to_string())?
+            .ok_or_else(|| (401, "database not granted".to_string()))?
     };
     let outcome = db.limits().await;
-    encoded_db_capabilities_reply_bytes(outcome).map_err(|err| err.to_string())
+    encoded_db_capabilities_reply_bytes(outcome).map_err(|err| (500, err.to_string()))
 }
 
 /// Authorizes a guest typed batch on the granted HTTP path.
@@ -1148,8 +1152,8 @@ where
         .context("granted dispatch closed")?;
         let payload = match resp_rx.await.context("granted limits dropped")? {
             Ok(payload) => payload,
-            Err(_) => {
-                write_status(&mut writer, 401, "unauthorized").await?;
+            Err((status, reason)) => {
+                write_status(&mut writer, status, &reason).await?;
                 return Ok(());
             }
         };
@@ -1178,8 +1182,8 @@ where
                 return Ok(());
             }
         };
-        if declared_content_length_over_cap(&headers, cap) {
-            write_status(&mut writer, 413, "payload too large").await?;
+        if let Some(declared) = declared_content_length_past_cap(&headers, cap) {
+            write_status(&mut writer, 413, &request_too_large(cap, declared)).await?;
             return Ok(());
         }
         if transfer_encoding_is_chunked(&headers) {
@@ -1189,6 +1193,10 @@ where
         let rest = match read_content(&mut reader, &headers, prefix, cap).await {
             Ok(body) => body,
             Err(err) => {
+                if let Some(BodyError::TooLarge { used, .. }) = err.downcast_ref::<BodyError>() {
+                    write_status(&mut writer, 413, &request_too_large(cap, *used)).await?;
+                    return Ok(());
+                }
                 let Some((status, reason)) = body_error_response(&err) else {
                     return Err(err);
                 };
@@ -1429,6 +1437,18 @@ async fn write_plugin_error<S: AsyncWrite + Unpin>(
     stream.write_all(&payload).await?;
     stream.flush().await?;
     Ok(())
+}
+
+/// The `413` body for a `/db/execute` request past the grant's
+/// `maxRequestBytes`: the canonical `limit_exceeded` message, so the SDKs
+/// recover the typed record from the status line alone.
+fn request_too_large(cap: u32, used: usize) -> String {
+    LimitExceeded::new(
+        "maxRequestBytes",
+        u64::from(cap),
+        u64::try_from(used).unwrap_or(u64::MAX),
+    )
+    .to_message()
 }
 
 /// The HTTP status a failed body read owes the guest, when the failure is the
@@ -2095,18 +2115,20 @@ mod tests {
         );
         assert!(!session.called.get(), "limits never runs execute");
 
-        let unknown = dispatch_limits(&table, "nope".into())
+        let (status, unknown) = dispatch_limits(&table, "nope".into())
             .await
             .expect_err("unknown grant");
+        assert_eq!(status, 401);
         assert!(unknown.contains("unknown or revoked"), "{unknown}");
 
         let no_db: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
         no_db
             .borrow_mut()
             .insert("g-nodb".into(), cancel_slot(None));
-        let refused = dispatch_limits(&no_db, "g-nodb".into())
+        let (status, refused) = dispatch_limits(&no_db, "g-nodb".into())
             .await
             .expect_err("no database on the grant");
+        assert_eq!(status, 401);
         assert!(
             refused.contains("not permitted") || refused.contains("not granted"),
             "{refused}"
@@ -2382,6 +2404,12 @@ mod tests {
             .unwrap();
         let head = String::from_utf8_lossy(&buf[..n]);
         assert!(head.contains("413"), "{head}");
+        let body = head.rsplit("\r\n\r\n").next().unwrap_or_default();
+        assert_eq!(
+            LimitExceeded::from_message(body),
+            Some(LimitExceeded::new("maxRequestBytes", 16, 32)),
+            "the 413 body carries the typed record: {head}"
+        );
         drop(writer);
         let _ = serve.await;
         assert!(

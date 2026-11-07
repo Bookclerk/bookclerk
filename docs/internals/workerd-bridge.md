@@ -159,8 +159,8 @@ unknown, expired, or revoked tokens.
 | `PUT /put?key=` | `allow_put` | `JobController.output.put` and the `fetchCovers` sink (streamed body; several puts on one grant may stream at once) |
 | `POST /progress` | `allow_progress` | `JobController.progress.report` |
 | `GET /cancel` | `cancel` present | Long poll: `200 {"cancelled":true}` once the host cancellation fires, `204` after the poll window so the isolate re-arms; the adapter turns it into `job.signal` |
-| `POST /db/execute` | `allow_database` | Typed SQL on the granted `GuestDatabase` (Cap'n bytes) |
-| `GET /db/limits` | `allow_database` | `GuestDatabase.limits`: the session's `DbCapabilities` as a Cap'n `DbCapabilitiesReply` |
+| `POST /db/execute` | `allow_database` | Typed SQL on the granted `GuestDatabase` (Cap'n bytes). A request past the grant's `maxRequestBytes` is `413` whose body is the canonical `limit_exceeded` message (`limit exceeded: maxRequestBytes is <cap>; used <n>`), which the SDKs parse back into `err.limit` |
+| `GET /db/limits` | `allow_database` | `GuestDatabase.limits`: the session's `DbCapabilities` as a Cap'n `DbCapabilitiesReply` (`401` when the grant has no database, `500` when the reply cannot be encoded) |
 | `POST /events/publish` | `events` present | `env.EVENTS.publish` |
 
 ## Isolate embed
