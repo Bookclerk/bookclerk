@@ -551,11 +551,14 @@ test("website pages have one slash-free URL; other spellings move there permanen
       const res = await get(`${path}?x=1`, BROWSER);
       assert.equal(res.status, 301, path);
       assert.equal(res.headers.get("Location"), `https://bookclerk.app${page}?x=1`, path);
+      // Browsers and the edge keep the move for a day.
+      assert.equal(res.headers.get("Cache-Control"), "public, max-age=86400, s-maxage=86400", path);
     }
   }
   const index = await get("/index.html", BROWSER);
   assert.equal(index.status, 301);
   assert.equal(index.headers.get("Location"), "https://bookclerk.app/");
+  assert.equal(index.headers.get("Cache-Control"), "public, max-age=86400, s-maxage=86400");
 });
 
 test("a docs link that leads nowhere goes to the docs home page", async () => {
@@ -1779,10 +1782,23 @@ test("src/_headers sets only cache classes from the table", () => {
   for (const value of values) assert.equal(cacheClassOf(value ?? null), "immutable", value ?? "");
 });
 
-test("the Worker spells no Cache-Control value outside the cache-class table", () => {
+test("the Worker sets Cache-Control only from the cache-class table", () => {
+  // Every assignment, in any casing, takes a table value, shared() or a local
+  // built from shared() alone.
+  const assigned = [...WORKER_SOURCE.matchAll(/["']cache-control["']\s*[:,]\s*([^\n]+)/gi)];
+  assert.ok(assigned.length > 10);
+  for (const [line, value] of assigned) {
+    assert.match(value ?? "", /^(?:CACHE_CONTROL\.\w+|shared\(|cacheControl,|cached,)/, line);
+  }
+  const locals = [...WORKER_SOURCE.matchAll(/const (?:cacheControl|cached) =([^;]+);/g)];
+  assert.ok(locals.length > 0);
+  for (const [line, value] of locals) {
+    assert.doesNotMatch(value ?? "", /["'`]/, line);
+    assert.match(value ?? "", /shared\(/, line);
+  }
   assert.doesNotMatch(
     WORKER_SOURCE,
-    /["'`](?:public,|private\b|no-store|no-cache|must-revalidate)/,
+    /["'][^"'\n]*\b(?:no-store|no-cache|must-revalidate|s-maxage|immutable)\b/i,
   );
 });
 
@@ -1794,4 +1810,7 @@ test("cacheClassOf names each class and nothing else; shared refuses a bad lifet
   assert.equal(cacheClassOf("private, max-age=60"), null);
   assert.throws(() => shared(-1, 0), RangeError);
   assert.throws(() => shared(1.5, 0), RangeError);
+  // A lifetime shared() would refuse is in no class.
+  assert.equal(cacheClassOf("public, max-age=9007199254740992, s-maxage=60"), null);
+  assert.equal(cacheClassOf("public, max-age=060, s-maxage=60"), null);
 });

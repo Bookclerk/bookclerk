@@ -21,11 +21,21 @@ const DIR = fileURLToPath(new URL("../public/static/assets/", import.meta.url));
 /** dashboard/asset-urls.ts in this checkout. */
 const MODULE = fileURLToPath(new URL("../dashboard/asset-urls.ts", import.meta.url));
 
-const names: Partial<Record<HashedAsset, string>> = {};
+// Check the whole folder first, so a mistake renames nothing and leaves the
+// pages' links as they were.
+const current: Partial<Record<HashedAsset, string>> = {};
 for (const name of readdirSync(DIR)) {
   const file = assetOf(name);
   if (file === null) throw new Error(`${name} in ${DIR} is not one of ${HASHED_ASSETS.join(", ")}`);
-  if (names[file] !== undefined) throw new Error(`${DIR} holds two copies of ${file}`);
+  if (current[file] !== undefined) throw new Error(`${DIR} holds two copies of ${file}`);
+  current[file] = name;
+}
+const missing = HASHED_ASSETS.filter((file) => current[file] === undefined);
+if (missing.length > 0) throw new Error(`${DIR} has no ${missing.join(", ")}`);
+
+const names = {} as Record<HashedAsset, string>;
+for (const file of HASHED_ASSETS) {
+  const name = current[file] ?? "";
   const hashed = hashedName(file, await contentHash(new Uint8Array(readFileSync(join(DIR, name)))));
   if (hashed !== name) {
     renameSync(join(DIR, name), join(DIR, hashed));
@@ -33,6 +43,4 @@ for (const name of readdirSync(DIR)) {
   }
   names[file] = hashed;
 }
-const missing = HASHED_ASSETS.filter((file) => names[file] === undefined);
-if (missing.length > 0) throw new Error(`${DIR} has no ${missing.join(", ")}`);
-writeFileSync(MODULE, assetUrlsModule(names as Record<HashedAsset, string>));
+writeFileSync(MODULE, assetUrlsModule(names));

@@ -932,11 +932,12 @@ async function serveSearchIndex(
   // A partial index is kept only briefly, so the missing headings come back
   // once the docs repository answers again without every request in the
   // meantime repeating the whole fan-out.
+  const cacheControl = failed
+    ? shared(MISSING_TTL, MISSING_TTL)
+    : shared(BROWSER_TTL, ttlFor(version.ref));
   const response = withHeaders(new Response(JSON.stringify({ pages: pages.flat() })), {
     "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": failed
-      ? shared(MISSING_TTL, MISSING_TTL)
-      : shared(BROWSER_TTL, ttlFor(version.ref)),
+    "Cache-Control": cacheControl,
     "X-Robots-Tag": "noindex",
   });
   if (deps.cache) deps.waitUntil(deps.cache.put(cacheKey, response.clone()));
