@@ -101,8 +101,28 @@ tests with `npm test`. It runs Vitest (`vitest.config.ts`): the tests run
 inside the Workers runtime through `@cloudflare/vitest-plugin`, on the
 Worker's compatibility date and against real D1 databases with
 `migrations/` applied, except the summary fuzz test, whose Python oracle
-needs Node. `npm run coverage` adds a V8 coverage report. `public/static/dashboard.js` is the browser script the dashboard
+needs Node. `npm run coverage` adds a V8 coverage report. `public/static/assets/dashboard.*.js` is the browser script the dashboard
 serves, not Worker code, and stays JavaScript.
+
+### Caching
+
+Every answer carries a `Cache-Control` from the table in `cache-control.ts`,
+and `cache-control.test.ts` checks each route and `public/_headers` against
+it:
+
+| Answer | `Cache-Control` |
+| --- | --- |
+| JSON, dashboard pages, redirects and errors | `no-store` (the Worker adds it to any answer without one) |
+| `robots.txt` | `public, max-age=3600` |
+| `/static/fonts/*` and `/static/assets/*` | `public, max-age=31536000, immutable` |
+| `/static/mark.svg` | the platform default, checked before each use |
+
+The dashboard's styles and script live in `public/static/assets/` under a
+name that carries the first 12 hex digits of their SHA-256, so a change is a
+new URL and browsers may keep each one for a year. There is no build step,
+so after editing either file run `npm run hash-assets`: it renames the file
+after its new contents and rewrites `dashboard/asset-urls.ts`, which the
+pages link through. The tests fail while a name and its contents disagree.
 
 ## Bookclerk client
 

@@ -32,5 +32,5 @@
     "useUnknownInCatchVariables": true,
     "skipLibCheck": true
   },
-  "include": ["*.ts", "dashboard/*.ts", "test-support/*.ts"]
+  "include": ["*.ts", "dashboard/*.ts", "scripts/*.ts", "test-support/*.ts"]
 }

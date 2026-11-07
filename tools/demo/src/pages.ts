@@ -5,6 +5,8 @@
 // Turnstile and the Cloudflare Web Analytics beacon, the website's only
 // outside requests too.
 
+import { CACHE_CONTROL } from "./cache-control.ts";
+
 /**
  * Where the Cloudflare Web Analytics beacon Cloudflare adds to these pages
  * loads from (`script-src`) and reports to (`connect-src`), as on the
@@ -213,7 +215,7 @@ export function htmlResponse(
     status,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
+      "Cache-Control": CACHE_CONTROL.noStore,
       "Content-Security-Policy": PAGE_CSP,
       ...SECURITY_HEADERS,
       ...extra,

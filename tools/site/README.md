@@ -368,6 +368,19 @@ versions.
   and a hash of the shell, so a deploy (a new release, sidebar, template or Worker)
   starts fresh; browsers keep any docs page for five minutes, since each
   carries the version picker.
+- Cache classes: every `Cache-Control` the Worker sends or `src/_headers`
+  sets is one of the classes in `cache-control.ts`, and `worker.test.ts`
+  sends a request down each route to check it:
+
+  | Answer | `Cache-Control` |
+  | --- | --- |
+  | `/assets/*` and `/fonts/*` | `public, max-age=31536000, immutable` |
+  | The homepage | `no-cache` (its catalog sample differs per response) |
+  | Docs pages, search index and sitemaps | `public, max-age=<browser>, s-maxage=<edge>` (above) |
+  | Redirects to a page's one URL | `public, max-age=86400, s-maxage=86400` |
+  | 404s and 503s the Worker makes, redirects to the docs home | `no-store` |
+  | Other pages from `dist/` | the platform default, checked before each use |
+
 - The sidebar, the fallback `sitemap.xml` and `llms.txt` come from the
   `docs/` the site is built with (the newest release tag's, else `main`'s), so a new doc
   appears there on the next deploy. Every version shares that sidebar; a

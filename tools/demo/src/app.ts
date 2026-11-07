@@ -5,6 +5,7 @@
 // the launch page for a browser without a session, and otherwise the route
 // check (routes.ts) before the request reaches the visitor's own container.
 
+import { CACHE_CONTROL } from "./cache-control.ts";
 import { classify } from "./routes.ts";
 import {
   admit,
@@ -233,7 +234,7 @@ async function launch(env: Env, deps: Deps, message?: string): Promise<string> {
 function json(body: unknown, status: number, extra: Record<string, string> = {}): Response {
   return Response.json(body, {
     status,
-    headers: { "Cache-Control": "no-store", ...SECURITY_HEADERS, ...extra },
+    headers: { "Cache-Control": CACHE_CONTROL.noStore, ...SECURITY_HEADERS, ...extra },
   });
 }
 
@@ -245,7 +246,7 @@ function json(body: unknown, status: number, extra: Record<string, string> = {})
  * @returns 303 See Other.
  */
 function redirect(location: string, cookies: string[] = []): Response {
-  const headers = new Headers({ Location: location, "Cache-Control": "no-store" });
+  const headers = new Headers({ Location: location, "Cache-Control": CACHE_CONTROL.noStore });
   for (const c of cookies) headers.append("Set-Cookie", c);
   return new Response(null, { status: 303, headers });
 }
@@ -622,7 +623,7 @@ export async function handle(
     return new Response(request.method === "HEAD" ? null : ROBOTS_TXT, {
       headers: {
         "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "public, max-age=3600",
+        "Cache-Control": CACHE_CONTROL.hour,
         ...SECURITY_HEADERS,
       },
     });

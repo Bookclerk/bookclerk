@@ -71,8 +71,13 @@ every content signal to `no` (`use=immediate`).
      **Demo** label opens a panel that shows the Owner password and how to
      elevate, and the banner fills that password into the app's empty
      **Elevate to Operator** box;
-   - marks the app's HTML `Cache-Control: no-transform`, so Cloudflare does
-     not add its Web Analytics beacon inside the visitor's copy.
+   - keeps bookclerkd's `Cache-Control` on everything it forwards, and adds
+     `no-transform` to the app's HTML, so Cloudflare does not add its Web
+     Analytics beacon inside the visitor's copy. The Worker's own pages,
+     JSON and redirects are `no-store` and `robots.txt` keeps an hour
+     (`src/cache-control.ts`, checked by `test/app.test.ts`); the files
+     under `public/_demo/` keep the platform default, checked before each
+     use.
 
    The waiting page and the banner follow the session over a WebSocket
    (`/_demo/live`, `src/live.ts`, `public/_demo/live.js`): the Durable Object

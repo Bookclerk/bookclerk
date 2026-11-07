@@ -24,6 +24,7 @@ import {
   withCatalogSample,
 } from "./worker.ts";
 import { catalogGroups, catalogRecords } from "./catalog.ts";
+import { CACHE_CONTROL, cacheClassOf, shared } from "./cache-control.ts";
 import type { DocsFetch, Env, PageCache } from "./worker.ts";
 import { docPageTitle, docUrl, TITLE_MAX } from "./render.ts";
 import type { DocsShell, SearchPage } from "./render.ts";
@@ -32,6 +33,7 @@ import { MAX_LAST_UPDATED_BYTES } from "./last-updated.ts";
 // runtime, which has no view of the repository.
 import HEADERS_FILE from "./src/_headers?raw";
 import WRANGLER_TOML from "./wrangler.toml?raw";
+import WORKER_SOURCE from "./worker.ts?raw";
 
 /**
  * The repository's docs/, served as every version of the docs repository:
@@ -176,7 +178,8 @@ async function docsFetch(url: string, init: RequestInit): Promise<Response> {
 
 /**
  * Serves dist/ roughly as Workers static assets do with
- * `html_handling = "auto-trailing-slash"` and `not_found_handling = "404-page"`.
+ * `html_handling = "auto-trailing-slash"` and `not_found_handling = "404-page"`,
+ * with the platform's default `Cache-Control`.
  *
  * @param input - The asset request.
  * @returns The asset, or 404.html with status 404.
@@ -190,13 +193,19 @@ async function assetsFetch(input: Request | URL | string): Promise<Response> {
       const ext = /\.[^./]*$/.exec(candidate)?.[0] ?? "";
       return new Response(body, {
         status: 200,
-        headers: { "Content-Type": TYPES[ext] ?? "application/octet-stream" },
+        headers: {
+          "Content-Type": TYPES[ext] ?? "application/octet-stream",
+          "Cache-Control": CACHE_CONTROL.assetDefault,
+        },
       });
     }
   }
   return new Response(distFile("404.html") ?? null, {
     status: 404,
-    headers: { "Content-Type": "text/html; charset=utf-8" },
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": CACHE_CONTROL.assetDefault,
+    },
   });
 }
 
@@ -1718,4 +1727,71 @@ test("a Web API page is shown, and not cached, when its index cannot be read", a
       '<ul class="nav-sub"><li><a href="/docs/server/api/jobs" aria-current="page">Jobs</a>',
     ),
   );
+});
+
+test("every answer carries a Cache-Control from the cache-class table", async () => {
+  const down: DocsFetch = async () => new Response("oops", { status: 502 });
+  /** One request per route and outcome: path, Accept, method and docs fetcher. */
+  const requests: [string, string, string, DocsFetch][] = [
+    ["/", BROWSER, "GET", docsFetch],
+    ["/download", BROWSER, "GET", docsFetch],
+    ["/download", "text/markdown", "GET", docsFetch],
+    ["/download/", BROWSER, "GET", docsFetch],
+    ["/index.md", "*/*", "GET", docsFetch],
+    ["/404.md", "*/*", "GET", docsFetch],
+    ["/nowhere", "text/markdown", "GET", docsFetch],
+    ["/sitemap.xml", "*/*", "GET", docsFetch],
+    ["/sitemap-docs.xml", "*/*", "GET", docsFetch],
+    ["/sitemap-nowhere.xml", "*/*", "GET", docsFetch],
+    ["/sitemap", BROWSER, "GET", docsFetch],
+    ["/sitemap/", BROWSER, "GET", docsFetch],
+    ["/sitemap.md", "*/*", "GET", docsFetch],
+    ["/docs", BROWSER, "GET", docsFetch],
+    ["/docs/server/configuration", BROWSER, "GET", docsFetch],
+    ["/docs/server/configuration", "text/markdown", "HEAD", docsFetch],
+    ["/docs/nowhere", BROWSER, "GET", docsFetch],
+    ["/docs/search-index.json", "*/*", "GET", docsFetch],
+    ["/docs/server/configuration", BROWSER, "GET", down],
+    ["/sitemap.xml", "*/*", "GET", down],
+  ];
+  for (const [path, accept, method, fetcher] of requests) {
+    const res = await handle(
+      new Request(`https://bookclerk.app${path}`, { method, headers: { Accept: accept } }),
+      env,
+      { shell, fetch: fetcher },
+    );
+    const value = res.headers.get("Cache-Control");
+    assert.notEqual(cacheClassOf(value), null, `${method} ${path} (${res.status}): ${value}`);
+    // An error the Worker makes is never kept; the platform's own 404 page
+    // keeps its default, which revalidates before each use.
+    if (res.status >= 400) {
+      assert.ok(
+        value === CACHE_CONTROL.noStore || value === CACHE_CONTROL.assetDefault,
+        `${path} ${res.status}: ${value}`,
+      );
+    }
+  }
+});
+
+test("src/_headers sets only cache classes from the table", () => {
+  const values = [...HEADERS_FILE.matchAll(/^\s*Cache-Control:\s*(.+?)\s*$/gm)].map((m) => m[1]);
+  assert.ok(values.length > 0);
+  for (const value of values) assert.equal(cacheClassOf(value ?? null), "immutable", value ?? "");
+});
+
+test("the Worker spells no Cache-Control value outside the cache-class table", () => {
+  assert.doesNotMatch(
+    WORKER_SOURCE,
+    /["'`](?:public,|private\b|no-store|no-cache|must-revalidate)/,
+  );
+});
+
+test("cacheClassOf names each class and nothing else; shared refuses a bad lifetime", () => {
+  for (const [name, value] of Object.entries(CACHE_CONTROL))
+    assert.equal(cacheClassOf(value), name);
+  assert.equal(cacheClassOf(shared(300, 86400)), "shared");
+  assert.equal(cacheClassOf(null), null);
+  assert.equal(cacheClassOf("private, max-age=60"), null);
+  assert.throws(() => shared(-1, 0), RangeError);
+  assert.throws(() => shared(1.5, 0), RangeError);
 });

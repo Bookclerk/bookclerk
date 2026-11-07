@@ -8,6 +8,8 @@
  * attribute other than through the same escape.
  */
 
+import { CACHE_CONTROL } from "../cache-control.ts";
+
 /** HTML that has already been escaped or built from trusted markup. */
 export class SafeHtml {
   /** The markup. */
@@ -96,7 +98,7 @@ export const DASHBOARD_CSP =
 /** Headers every dashboard response carries. */
 export const SECURITY_HEADERS = {
   "Content-Security-Policy": DASHBOARD_CSP,
-  "Cache-Control": "no-store",
+  "Cache-Control": CACHE_CONTROL.noStore,
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",

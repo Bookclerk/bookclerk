@@ -3,6 +3,7 @@
  * every value is interpolated through `html`, which escapes it.
  */
 
+import { ASSET_URLS } from "./asset-urls.ts";
 import { histogram, meter, sparkline, stackedBars } from "./charts.ts";
 import {
   DETAIL_LINKS as DETAIL_LINKS_SHOWN,
@@ -200,8 +201,8 @@ export function layout(p: {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>${p.title} · Bookclerk Diagnostics</title>
-<link rel="stylesheet" href="/static/dashboard.css"><link rel="icon" href="/static/mark.svg" type="image/svg+xml">
-<script src="/static/dashboard.js" defer></script></head>
+<link rel="stylesheet" href="${ASSET_URLS["dashboard.css"]}"><link rel="icon" href="/static/mark.svg" type="image/svg+xml">
+<script src="${ASSET_URLS["dashboard.js"]}" defer></script></head>
 <body${p.bodyClass ? html` class="${p.bodyClass}"` : ""}>${header}<main>${p.body}</main></body></html>`;
 }
 
