@@ -23,7 +23,7 @@ inputs:
 runs:
   using: composite
   steps:
-    # The demo is three builds (production builder, runtime, demo layer) and
+    # The demo is the production builder and runtime plus the demo layer and
     # needs more than the runner's free space, as in demo-deploy.yml; these
     # preinstalled toolchains are never used here.
     - name: Free disk space
@@ -53,11 +53,15 @@ runs:
               -f .devcontainer/Dockerfile -t local/image .
             ;;
           bookclerk-demo)
-            # Same two steps demo-deploy runs, then the demo layer on top.
-            docker build -f packaging/docker/Dockerfile --target builder -t bookclerk-builder:demo .
-            docker build -f packaging/docker/Dockerfile -t bookclerk:demo .
+            # The same build demo-deploy runs: the production builder and
+            # runtime stages and the demo layer in one bake, which never
+            # exports the builder (packaging/demo/docker-bake.hcl).
             printf '%s\n' "$SHA" > packaging/demo/version.txt
-            docker build "${labels[@]}" -f packaging/demo/Dockerfile -t local/image packaging/demo
+            docker buildx bake -f packaging/demo/docker-bake.hcl --load \
+              --set "demo.tags=local/image" \
+              --set "demo.labels.org.opencontainers.image.source=$SOURCE" \
+              --set "demo.labels.org.opencontainers.image.revision=$SHA" \
+              demo
             ;;
           *)
             echo "::error::unknown image $IMAGE"

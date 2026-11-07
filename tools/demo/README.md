@@ -97,7 +97,17 @@ every content signal to `no` (`use=immediate`).
 
 `packaging/demo/Dockerfile` starts from the production builder and image
 built from the same commit, so every crate and plugin is the version that
-commit ships. It adds the Audible, Libro.fm, Chirp, GraphicAudio and
+commit ships. `packaging/demo/docker-bake.hcl` builds all three in one
+BuildKit build, from the repository root:
+
+```bash
+docker buildx bake -f packaging/demo/docker-bake.hcl --load demo
+```
+
+That build never exports the builder, and it links the demo's binaries with
+thin LTO instead of the fat LTO shipped images use, which takes minutes
+rather than most of the build. The image adds the Audible, Libro.fm, Chirp,
+GraphicAudio and
 `covers` plugins, and removes the `local` output plugin, so the host has
 nowhere to acquire to even if a request got through. `covers` downloads
 covers, store icons and avatars, and `bookclerk-media-worker` re-encodes
@@ -125,16 +135,14 @@ IP addresses are stored only as a keyed hash that changes every day.
 
 ## Deploying
 
-`.github/workflows/demo-deploy.yml` deploys after each image publish from
-`main`, which runs after every merge, so the demo follows `main`. It also
-deploys on each published release and on demand. `images-publish.yml`
-builds the demo image when a merge changes what it is made of
-(`ghcr.io/<owner>/bookclerk-demo:sha-<12 hex>`). The deploy verifies the
-build provenance of the newest image with the commit's inputs and deploys
-it in a few minutes. Without one, or when a manual run asks for it, it
-builds the image itself, which takes about half an hour. A run after a
-publish or a release stops early when the live demo already runs a newer
-commit, or a commit with the same demo whose deploy succeeded. It needs the repository
+`.github/workflows/demo-deploy.yml` deploys on demo changes to `main`, on
+each published release, after each image publish from `main` (nightly), and
+on demand. When `images-publish.yml` already pushed the demo image for the
+commit (`ghcr.io/<owner>/bookclerk-demo:sha-<12 hex>`), the deploy verifies
+its build provenance and deploys it in a few minutes; otherwise it builds
+the image itself, which takes about 15 minutes. A run after a publish or a
+release stops early when the live demo already runs that commit (and an
+earlier run for it succeeded) or a newer one. It needs the repository
 secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the token's
 permissions are listed in
 [`docs/contributing/automation.md`](../../docs/contributing/automation.md#cloudflare-worker-deploys). The workflow makes

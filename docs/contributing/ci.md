@@ -251,7 +251,7 @@ Some rows need more detail:
 - **"Nothing here"** paths are covered elsewhere. The ClusterFuzzLite
   workflows and the [Docker image](#other-workflows) workflow select
   themselves by path, and the demo image is built by the
-  [image publish](packaging.md#when-it-runs) after the merge.
+  [demo deploy](automation.md#cloudflare-worker-deploys).
 - **Dev Container paths** also select the
   [Dev Container image](#other-workflows) workflow by path.
 

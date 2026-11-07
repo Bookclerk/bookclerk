@@ -188,7 +188,6 @@ jobs:
           "$PY" scripts/tests/test_release_baseline.py
           "$PY" scripts/tests/test_image_release_tags.py
           "$PY" scripts/tests/test_demo_image.py
-          "$PY" scripts/tests/test_image_inputs.py
           "$PY" scripts/tests/test_cla_check.py
           "$PY" scripts/tests/test_coverage_gate.py
           "$PY" scripts/tests/test_contract_coverage.py

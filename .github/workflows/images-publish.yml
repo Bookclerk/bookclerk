@@ -16,17 +16,11 @@
 # this workflow's OIDC identity and stored beside the image:
 #   gh attestation verify oci://ghcr.io/<owner>/bookclerk:edge --owner <owner>
 #
-# When it runs: after every push to main, which builds only the images whose
-# inputs changed since the last commit that has one (scripts/image_inputs.py
-# says what each image is made of; a push that changes none of them, such as
-# a docs change, builds nothing and takes a minute). The demo deploy follows
-# each of these runs (demo-deploy.yml). Nightly when main has moved since
-# the last publish, rebuilding every image whose `sha-` tag is missing: that
-# picks up the base images' package updates, and repairs a push whose build
-# failed or whose run a newer push replaced while it waited. When a release
-# is published (retagging the commit's existing images when present), and by
-# hand (like nightly; from main, a run on any other branch is a dry run). A
-# pull request that
+# When it runs: nightly when main has moved since the last publish (an image
+# whose `sha-` tag already exists is not rebuilt), when a release is
+# published (retagging the commit's existing images when present), when the
+# Dev Container's inputs change on main, and by hand (from main; a run on any
+# other branch is a dry run). A pull request that
 # touches this workflow builds and checks every image in the dry-run job,
 # which holds only `contents: read`; the build steps both jobs share live in
 # .github/actions/image-build.
@@ -36,13 +30,18 @@
 name: Publish images
 
 on:
-  # Every push: the plan job decides what, if anything, to build.
   push:
     branches: [main]
+    paths:
+      - ".devcontainer/**"
+      - "scripts/dev-env/**"
+      - "scripts/tests/requirements.txt"
+      - ".tool-versions"
   pull_request:
     paths:
       - ".github/workflows/images-publish.yml"
       - ".github/actions/image-build/**"
+      - "packaging/demo/**"
       - "scripts/image_release_tags.py"
   release:
     types: [published]
@@ -74,13 +73,9 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       retag: ${{ steps.plan.outputs.retag }}
     steps:
-      # Full history (trees only) for scripts/image_inputs.py, which walks
-      # back to the last commit that changed an image's inputs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
-          filter: blob:none
 
       - name: Decide images and tags
         id: plan
@@ -99,7 +94,7 @@ jobs:
           push=true
           case "$EVENT" in
             pull_request) push=false; images="bookclerk bookclerk-dev bookclerk-demo"; tags="$sha_tag" ;;
-            push) images="bookclerk bookclerk-dev bookclerk-demo"; tags="$sha_tag edge" ;;
+            push) images="bookclerk-dev"; tags="$sha_tag edge" ;;
             release)
               images="bookclerk bookclerk-dev bookclerk-demo"
               # The tag is text the release's author chose: the sans-IO
@@ -124,28 +119,6 @@ jobs:
             printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin >/dev/null
           fi
           for image in $images; do
-            if [[ "$push" == true && "$EVENT" == push ]]; then
-              # Skipped when this commit or an earlier one with the same
-              # inputs already has the image: it would be the same image.
-              case "$image" in
-                bookclerk-dev) kind=dev ;;
-                *) kind=app ;;
-              esac
-              candidates=$(python3 scripts/image_inputs.py candidates "$kind" "$SHA")
-              published=""
-              while read -r commit; do
-                if docker buildx imagetools inspect "$registry/$image:sha-${commit:0:12}" >/dev/null 2>&1; then
-                  published="$commit"
-                  break
-                fi
-              done <<<"$candidates"
-              if [[ -n "$published" ]]; then
-                echo "$image: unchanged since ${published:0:12}, which has one; skipped"
-              else
-                build+=("$image")
-              fi
-              continue
-            fi
             if [[ "$push" == true ]] && docker buildx imagetools inspect "$registry/$image:$sha_tag" >/dev/null 2>&1; then
               # Already published from this commit: a release only adds its
               # version tags; anything else has nothing to do.
