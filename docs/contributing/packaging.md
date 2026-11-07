@@ -163,10 +163,10 @@ The `bookclerk-dev` image carries inline cache metadata, so the Dev
 Container's `build.cacheFrom` reuses its layers. The demo image builds on
 the production builder and runtime. The hosted demo's deploy pulls the
 published demo image without signing in, so the package must be public.
-When the image for the deployed commit exists and its attestation
+When an image for the deployed commit's inputs exists and its attestation
 verifies, the deploy uses it instead of building it again. Otherwise a
-push or manual deploy builds the image itself, and a deploy started by a
-publish that pushed no demo image stops (see
+manual deploy builds the image itself, and a deploy started by a publish
+that left no demo image stops (see
 [The demo deploy](automation.md#the-demo-deploy)).
 
 Each architecture builds on a native runner and is checked before it is
@@ -189,11 +189,30 @@ pushed, then the architectures are joined into one index:
 
 The workflow runs:
 
-- nightly when `main` has moved (an image whose `sha-` tag exists is not
-  rebuilt);
+- after every push to `main`;
+- nightly;
 - on a published release;
-- on `main` pushes that change the Dev Container's inputs;
 - by hand (a run on any branch but `main` is a dry run).
+
+After a push, it builds only the images whose inputs changed.
+[`scripts/image_inputs.py`](../../scripts/image_inputs.py) lists what each
+image is made of:
+
+- `bookclerk` and `bookclerk-demo`: the whole repository except paths no
+  build reads, such as `docs/`, `.github/`, the Workers under `tools/` and
+  root Markdown files.
+- `bookclerk-dev`: the Dev Container's inputs.
+
+An image is skipped when the commit, or an earlier commit with the same
+inputs, already has a `sha-` tag, so a docs-only merge builds nothing. The
+nightly run, a release and a run by hand build every image whose `sha-` tag
+is missing. The nightly rebuild picks up package updates in the base
+images. It also repairs a push whose build failed, or whose run a newer push
+replaced while it waited.
+
+> [!NOTE]
+> A skipped image gets no `sha-` tag for that commit, and `edge` stays on
+> the earlier build, which has the same contents.
 
 A pull request that changes the workflow,
 [`.github/actions/image-build`](../../.github/actions/image-build/action.yml)

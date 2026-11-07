@@ -125,14 +125,16 @@ IP addresses are stored only as a keyed hash that changes every day.
 
 ## Deploying
 
-`.github/workflows/demo-deploy.yml` deploys on demo changes to `main`, on
-each published release, after each image publish from `main` (nightly), and
-on demand. When `images-publish.yml` already pushed the demo image for the
-commit (`ghcr.io/<owner>/bookclerk-demo:sha-<12 hex>`), the deploy verifies
-its build provenance and deploys it in a few minutes; otherwise it builds
-the image itself, which takes about half an hour. A run after a publish or a
-release stops early when the live demo already runs that commit (and an
-earlier run for it succeeded) or a newer one. It needs the repository
+`.github/workflows/demo-deploy.yml` deploys after each image publish from
+`main`, which runs after every merge, so the demo follows `main`. It also
+deploys on each published release and on demand. `images-publish.yml`
+builds the demo image when a merge changes what it is made of
+(`ghcr.io/<owner>/bookclerk-demo:sha-<12 hex>`). The deploy verifies the
+build provenance of the newest image with the commit's inputs and deploys
+it in a few minutes. Without one, or when a manual run asks for it, it
+builds the image itself, which takes about half an hour. A run after a
+publish or a release stops early when the live demo already runs a newer
+commit, or a commit with the same demo whose deploy succeeded. It needs the repository
 secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; the token's
 permissions are listed in
 [`docs/contributing/automation.md`](../../docs/contributing/automation.md#cloudflare-worker-deploys). The workflow makes
