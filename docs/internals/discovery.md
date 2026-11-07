@@ -84,10 +84,13 @@ operator, a household user, or a portal identity) has a **subject key**
    Both steps stay inside the database plugin's 256 KiB result limit
    (`maxResultBytes` in the [SQL contract](../plugins/sql-contract/v1.md)).
    The ranking reads candidates in pages and halves a page when its result
-   would be too large. A stored feed is one cell, so it is kept under
-   192 KiB: if it is larger, every shelf is cut to its best items (down to
-   four), then long descriptions are shortened, then the last shelves are
-   dropped.
+   would be too large. A stored feed is one cell, and the plugin counts a
+   row as JSON, where each quote or backslash in the feed takes two bytes.
+   So the feed is kept under 192 KiB in that escaped form: if it is larger,
+   every shelf is cut to its best items (down to four), then long
+   descriptions are shortened, then the last shelves are dropped. Writing a
+   feed replaces the old row without reading it, so an old feed that is too
+   large to read cannot block its replacement.
 
 > [!NOTE]
 > A candidate fetch asks the storefronts deployed on the node that claims

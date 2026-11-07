@@ -476,6 +476,9 @@ impl LibraryStore {
 
     /// Stores (or replaces) one subject's ranked feed.
     ///
+    /// One upsert writes the row without reading the old one first, so a
+    /// stored feed too large to read back cannot block its replacement.
+    ///
     /// # Arguments
     ///
     /// * `subject` - Whose feed it is.
@@ -493,33 +496,28 @@ impl LibraryStore {
         scope: SeedScope,
         candidates_fetched_at: Option<DateTime<Utc>>,
     ) -> Result<()> {
-        let subject_key = subject.key();
-        let fetched = candidates_fetched_at.map(|t| t.to_rfc3339());
-        let existing = discover_feeds::Entity::find()
-            .filter(discover_feeds::Column::SubjectKey.eq(subject_key.as_str()))
-            .one(&self.db)
+        let row = discover_feeds::ActiveModel {
+            id: NotSet,
+            subject_key: Set(subject.key()),
+            feed_json: Set(feed_json.to_string()),
+            seed_scope: Set(scope.as_str().to_string()),
+            candidates_fetched_at: Set(candidates_fetched_at.map(|t| t.to_rfc3339())),
+            computed_at: Set(now_str()),
+        };
+        discover_feeds::Entity::insert(row)
+            .on_conflict(
+                OnConflict::column(discover_feeds::Column::SubjectKey)
+                    .update_columns([
+                        discover_feeds::Column::FeedJson,
+                        discover_feeds::Column::SeedScope,
+                        discover_feeds::Column::CandidatesFetchedAt,
+                        discover_feeds::Column::ComputedAt,
+                    ])
+                    .to_owned(),
+            )
+            .exec_without_returning(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
-        if let Some(existing) = existing {
-            let mut am: discover_feeds::ActiveModel = existing.into();
-            am.feed_json = Set(feed_json.to_string());
-            am.seed_scope = Set(scope.as_str().to_string());
-            am.candidates_fetched_at = Set(fetched);
-            am.computed_at = Set(now_str());
-            am.update(&self.db).await.map_err(LibraryError::Orm)?;
-        } else {
-            discover_feeds::ActiveModel {
-                id: NotSet,
-                subject_key: Set(subject_key),
-                feed_json: Set(feed_json.to_string()),
-                seed_scope: Set(scope.as_str().to_string()),
-                candidates_fetched_at: Set(fetched),
-                computed_at: Set(now_str()),
-            }
-            .insert(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        }
         Ok(())
     }
 
@@ -777,6 +775,27 @@ mod tests {
             .unwrap();
         let listed = store.list_discover_candidates(&alice).await.unwrap();
         assert_eq!(listed.len(), count);
+    }
+
+    /// A stored feed too large to read back is still replaced, since the
+    /// write does not load the old row.
+    #[tokio::test]
+    async fn an_unreadable_feed_is_replaced() {
+        let store = store().await;
+        let alice = DiscoverSubject::User(1);
+        let quoted = "\"".repeat(150_000);
+        store
+            .put_discover_feed(&alice, &quoted, SeedScope::Own, None)
+            .await
+            .unwrap();
+        let err = store.get_discover_feed(&alice).await.unwrap_err();
+        assert!(super::super::books_page::is_result_too_large(&err), "{err}");
+        store
+            .put_discover_feed(&alice, "{}", SeedScope::Own, None)
+            .await
+            .unwrap();
+        let feed = store.get_discover_feed(&alice).await.unwrap().unwrap();
+        assert_eq!(feed.feed_json, "{}");
     }
 
     #[tokio::test]

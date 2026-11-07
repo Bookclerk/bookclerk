@@ -54,12 +54,13 @@ pub const STORE_CALL_MAX_AGE: chrono::Duration = chrono::Duration::hours(24);
 /// Most open wishlist titles used as seeds, after the subject's books.
 const WISHLIST_SEED_LIMIT: usize = 4;
 
-/// Most bytes a stored feed's JSON may take.
+/// Most bytes a stored feed's JSON may take once escaped as a JSON string.
 ///
 /// The feed is one `discover_feeds` cell. The first-party database plugins
-/// refuse a cell or query result over 256 KiB (`maxResultBytes`), and the
-/// row read back carries a few more columns, so the feed keeps 64 KiB of
-/// headroom under that.
+/// refuse a cell or query result over 256 KiB (`maxResultBytes`) and count
+/// a row as JSON, so the budget applies to the escaped feed. The row read
+/// back carries a few more columns, so the feed keeps 64 KiB of headroom
+/// under that.
 pub const STORED_FEED_MAX_BYTES: usize = 192 * 1024;
 
 /// One subject's taste: whose seeds Discover uses and what they read.

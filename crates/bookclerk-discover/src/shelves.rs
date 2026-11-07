@@ -568,11 +568,15 @@ const FIT_MIN_ITEMS: usize = 4;
 /// every shelf to [`FIT_MIN_ITEMS`] and the feed is still too large.
 const FIT_DESCRIPTION_CHARS: usize = 300;
 
-/// Encodes `feed` as JSON no longer than `budget` bytes, shrinking it first.
+/// Encodes `feed` as JSON that stays within `budget` bytes once stored,
+/// shrinking it first.
 ///
 /// A stored feed is one database cell, and the database plugins refuse a
 /// cell or result over their `maxResultBytes` (256 KiB for the first-party
-/// adapters). Each round cuts every shelf to three quarters of the longest
+/// adapters). They count a row as JSON, where the feed is itself a JSON
+/// string, so every quote and backslash in it takes two bytes and a control
+/// character six. The budget is checked against that escaped form, which
+/// is never shorter than the feed itself. Each round cuts every shelf to three quarters of the longest
 /// shelf, down to [`FIT_MIN_ITEMS`]. Then descriptions are shortened to
 /// [`FIT_DESCRIPTION_CHARS`]. Then shelves are dropped from the end. The
 /// top of each shelf is kept, since shelves are sorted best first.
@@ -580,11 +584,12 @@ const FIT_DESCRIPTION_CHARS: usize = 300;
 /// # Arguments
 ///
 /// * `feed` - Feed to encode; trimmed in place when it is too large.
-/// * `budget` - Most bytes the encoded feed may take.
+/// * `budget` - Most bytes the encoded feed may take as an escaped JSON
+///   string.
 ///
 /// # Returns
 ///
-/// The encoded feed. An empty feed is returned even when `budget` is
+/// The encoded feed (unescaped). An empty feed is returned even when `budget` is
 /// smaller than it.
 ///
 /// # Errors
@@ -597,7 +602,7 @@ pub fn encode_feed_within(
     let mut descriptions_cut = false;
     loop {
         let json = serde_json::to_string(feed)?;
-        if json.len() <= budget {
+        if serde_json::to_string(&json)?.len() <= budget {
             return Ok(json);
         }
         let longest = feed
@@ -706,6 +711,85 @@ mod tests {
         let json = encode_feed_within(&mut feed, 1).unwrap();
         assert!(feed.shelves.is_empty());
         assert_eq!(json, serde_json::to_string(&feed).unwrap());
+    }
+
+    /// Builds a shelf of `n` items titled `<id>-<index>`, best first.
+    fn shelf(id: &str, n: usize, description: &str) -> DiscoverShelf {
+        DiscoverShelf {
+            id: id.into(),
+            title: id.into(),
+            subtitle: None,
+            items: (0..n)
+                .map(|i| Recommendation {
+                    description: Some(description.into()),
+                    ..rec(&format!("{id}-{i}"), 0.0, &[])
+                })
+                .collect(),
+        }
+    }
+
+    /// Trimming keeps every shelf's leading items, shortens descriptions on
+    /// every shelf, and drops shelves from the end, never the front.
+    #[test]
+    fn several_shelves_are_trimmed_from_the_end() {
+        let long = "d".repeat(2_000);
+        let mut feed = DiscoverFeed {
+            shelves: vec![
+                shelf("a", 12, &long),
+                shelf("b", 12, &long),
+                shelf("c", 12, &long),
+            ],
+            shelf_kinds: Vec::new(),
+            state: None,
+            computed_at: None,
+        };
+        let json = encode_feed_within(&mut feed, 6_000).unwrap();
+        assert!(json.len() <= 6_000, "{} bytes", json.len());
+        let ids: Vec<&str> = feed.shelves.iter().map(|s| s.id.as_str()).collect();
+        assert!(!ids.is_empty() && ids.len() < 3, "{ids:?}");
+        assert_eq!(ids, ["a", "b", "c"][..ids.len()]);
+        for s in &feed.shelves {
+            assert_eq!(s.items.len(), FIT_MIN_ITEMS);
+            assert_eq!(s.items[0].title, format!("{}-0", s.id));
+            let text = s.items[0].description.as_deref().unwrap();
+            assert_eq!(text.chars().count(), FIT_DESCRIPTION_CHARS + 1);
+        }
+
+        let mut roomy = DiscoverFeed {
+            shelves: vec![
+                shelf("a", 12, "x"),
+                shelf("b", 12, "x"),
+                shelf("c", 12, "x"),
+            ],
+            shelf_kinds: Vec::new(),
+            state: None,
+            computed_at: None,
+        };
+        let whole = serde_json::to_string(&roomy).unwrap().len();
+        encode_feed_within(&mut roomy, whole * 2 / 3).unwrap();
+        assert_eq!(roomy.shelves.len(), 3);
+        for s in &roomy.shelves {
+            assert!(s.items.len() < 12 && s.items.len() >= FIT_MIN_ITEMS);
+            assert_eq!(s.items[0].title, format!("{}-0", s.id));
+        }
+    }
+
+    /// The budget counts the feed as the database stores it, a JSON string,
+    /// so quotes and backslashes count twice.
+    #[test]
+    fn the_budget_counts_escaped_bytes() {
+        let mut feed = DiscoverFeed {
+            shelves: vec![shelf("a", 8, &"\\\"\\".repeat(200))],
+            shelf_kinds: Vec::new(),
+            state: None,
+            computed_at: None,
+        };
+        let budget = 16_000;
+        let json = encode_feed_within(&mut feed, budget).unwrap();
+        assert!(!feed.shelves.is_empty());
+        let stored = serde_json::to_string(&json).unwrap();
+        assert!(stored.len() <= budget, "{} bytes stored", stored.len());
+        assert!(stored.len() > json.len() * 3 / 2);
     }
 
     #[test]
