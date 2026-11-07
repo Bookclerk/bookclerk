@@ -260,6 +260,22 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     three dot-separated ASCII numbers of one to nine digits without
     leading zeros.
 
+### Demo deploy (Python)
+
+- **Registry and health readers** (`manifest_digest` and `live_version` in
+  `scripts/demo_image.py`). `demo-deploy.yml` reads the registry's
+  manifest for the published demo image and the live demo's
+  `/_demo/health` answer. The digest becomes the image the public demo
+  runs (after its attestation is verified), and the live commit decides
+  whether a deploy happens at all.
+  - Test and corpus: `scripts/tests/test_demo_image.py`,
+    `scripts/tests/demo_image_corpus/` (manifests under `digest/`, health
+    answers under `live/`).
+  - Oracle: a digest only when the answer is a JSON object whose `digest`
+    is a string of `sha256:` and 64 lowercase hex digits; a live commit
+    only when `configured` is exactly `true` and `version` is 40 lowercase
+    hex digits, each checked character by character.
+
 ### Tool versions bump (Python)
 
 - **Releases listing and digest readers** (`select_release` and
