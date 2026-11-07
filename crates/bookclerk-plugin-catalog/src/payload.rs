@@ -6,14 +6,142 @@
 //!
 //! The digest proves: these installed bytes match the artifact recorded for this
 //! provenance-qualified package. It does **not** prove publisher identity.
+//!
+//! Hosts recompute it on every plugin discovery, which a busy daemon does
+//! many times a minute. Every call walks the tree and checks each entry
+//! (symlinks, special files, traversal, added or removed files) again, but
+//! on Unix a file whose inode, size, modification time and change time are
+//! all unchanged reuses its content digest instead of being read again (see
+//! [`FileStat`]).
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime};
 
 use sha2::{Digest, Sha256};
 
 use crate::error::{CatalogError, Result};
 use crate::extract::sha256_file;
+
+/// How recent a file's last write or status change may be and still have its
+/// digest cached.
+///
+/// A write within the same timestamp tick as the stat could leave both
+/// timestamps unchanged, so a file touched this recently is hashed every time
+/// until it has been still for this long (git's "racily clean" rule).
+const RACY_WINDOW: Duration = Duration::from_secs(2);
+
+/// Most file digests kept; the cache is cleared when it would grow past this.
+const FILE_DIGEST_CACHE_CAP: usize = 4096;
+
+/// What a cached file digest is valid for: the file's identity and every
+/// timestamp a content change moves.
+///
+/// Rewriting a file moves its `ctime` even when `utimes` puts the `mtime`
+/// back, and replacing it by rename changes the inode, so any change to the
+/// bytes changes this key. Only Unix exposes `ctime`; elsewhere every file is
+/// hashed each time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStat {
+    /// Device the file lives on.
+    dev: u64,
+    /// Inode number on that device.
+    ino: u64,
+    /// Length in bytes.
+    size: u64,
+    /// Last content modification, nanoseconds since the Unix epoch.
+    mtime_ns: i128,
+    /// Last status change (content, mode, owner, links), nanoseconds since the Unix epoch.
+    ctime_ns: i128,
+}
+
+impl FileStat {
+    /// The cache key of `meta`, or `None` when this platform cannot supply one.
+    #[cfg(unix)]
+    fn of(meta: &fs::Metadata) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let ns = |secs: i64, nanos: i64| i128::from(secs) * 1_000_000_000 + i128::from(nanos);
+        Some(Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            size: meta.size(),
+            mtime_ns: ns(meta.mtime(), meta.mtime_nsec()),
+            ctime_ns: ns(meta.ctime(), meta.ctime_nsec()),
+        })
+    }
+
+    /// The cache key of `meta`, or `None` when this platform cannot supply one.
+    #[cfg(not(unix))]
+    fn of(_meta: &fs::Metadata) -> Option<Self> {
+        None
+    }
+
+    /// True when the file was written or changed within `window` of `now`.
+    fn is_racy(&self, now: SystemTime, window: Duration) -> bool {
+        let Ok(since_epoch) = now.duration_since(SystemTime::UNIX_EPOCH) else {
+            return true;
+        };
+        let now_ns = i128::try_from(since_epoch.as_nanos()).unwrap_or(i128::MAX);
+        let window_ns = i128::try_from(window.as_nanos()).unwrap_or(i128::MAX);
+        self.mtime_ns.max(self.ctime_ns) > now_ns.saturating_sub(window_ns)
+    }
+}
+
+/// Content digests of payload files, keyed by path and valid for one [`FileStat`].
+fn file_digest_cache() -> &'static Mutex<HashMap<PathBuf, (FileStat, String)>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (FileStat, String)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// SHA-256 of the payload file at `path`, read only when its [`FileStat`]
+/// changed since the last read.
+///
+/// The digest is cached only when the file's stat is identical before and
+/// after the read and the file has not changed within [`RACY_WINDOW`], so a
+/// write during or just before the read is never remembered.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read or stat'ed.
+fn payload_file_sha256(path: &Path, meta: &fs::Metadata) -> Result<String> {
+    payload_file_sha256_within(path, meta, RACY_WINDOW)
+}
+
+/// [`payload_file_sha256`] with the racy window as an argument.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read or stat'ed.
+fn payload_file_sha256_within(path: &Path, meta: &fs::Metadata, racy: Duration) -> Result<String> {
+    let Some(before) = FileStat::of(meta) else {
+        return sha256_file(path);
+    };
+    {
+        let cache = file_digest_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((stat, digest)) = cache.get(path) {
+            if *stat == before {
+                return Ok(digest.clone());
+            }
+        }
+    }
+    let now = SystemTime::now();
+    let digest = sha256_file(path)?;
+    let after = FileStat::of(&fs::symlink_metadata(path)?);
+    if after.as_ref() == Some(&before) && !before.is_racy(now, racy) {
+        let mut cache = file_digest_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if cache.len() >= FILE_DIGEST_CACHE_CAP {
+            cache.clear();
+        }
+        cache.insert(path.to_path_buf(), (before, digest.clone()));
+    }
+    Ok(digest)
+}
 
 /// Directory / file names excluded from the immutable payload (host-owned
 /// receipts only). Packaged `data/` and `tmp/` are hashed: mutable plugin
@@ -106,7 +234,7 @@ fn collect_payload_records(root: &Path, dir: &Path, out: &mut Vec<String>) -> Re
             }
             collect_payload_records(root, &path, out)?;
         } else if meta.is_file() {
-            let digest = sha256_file(&path)?;
+            let digest = payload_file_sha256(&path, &meta)?;
             out.push(format!("f\t{rel_str}\t{digest}"));
         } else {
             return Err(CatalogError::message(format!(
@@ -193,6 +321,88 @@ mod tests {
         assert_ne!(before, payload_root_sha256(root).unwrap());
         write_file(&root.join("tmp/scratch"), b"x").unwrap();
         assert_ne!(before, payload_root_sha256(root).unwrap());
+    }
+
+    /// Digest of `path` through the cache with no racy window, and whether
+    /// the cache now holds it.
+    fn cached_digest(path: &Path) -> (String, bool) {
+        let meta = fs::symlink_metadata(path).unwrap();
+        let digest = payload_file_sha256_within(path, &meta, Duration::ZERO).unwrap();
+        let held = file_digest_cache()
+            .lock()
+            .unwrap()
+            .get(path)
+            .is_some_and(|(_, cached)| *cached == digest);
+        (digest, held)
+    }
+
+    /// Lets the next write land on a later timestamp tick.
+    fn next_tick() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cached_digest_follows_a_same_size_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("guest");
+        write_file(&file, b"one").unwrap();
+        let (first, held) = cached_digest(&file);
+        assert!(held, "a still file is cached");
+        assert_eq!(cached_digest(&file).0, first);
+
+        next_tick();
+        write_file(&file, b"two").unwrap();
+        let (second, _) = cached_digest(&file);
+        assert_ne!(first, second);
+        assert_eq!(second, sha256_file(&file).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_restored_mtime_does_not_hide_a_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("guest");
+        write_file(&file, b"one").unwrap();
+        let mtime = fs::metadata(&file).unwrap().modified().unwrap();
+        let (first, held) = cached_digest(&file);
+        assert!(held);
+
+        next_tick();
+        write_file(&file, b"two").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), mtime);
+        let (second, _) = cached_digest(&file);
+        assert_ne!(first, second, "ctime moved, so the file is read again");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_replaced_file_is_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("guest");
+        write_file(&file, b"one").unwrap();
+        let (first, _) = cached_digest(&file);
+        let staged = dir.path().join("staged");
+        write_file(&staged, b"two").unwrap();
+        fs::rename(&staged, &file).unwrap();
+        assert_ne!(first, cached_digest(&file).0);
+    }
+
+    #[test]
+    fn a_racy_file_is_hashed_but_not_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("guest");
+        write_file(&file, b"fresh").unwrap();
+        let meta = fs::symlink_metadata(&file).unwrap();
+        let digest = payload_file_sha256_within(&file, &meta, Duration::from_secs(3600)).unwrap();
+        assert_eq!(digest, sha256_file(&file).unwrap());
+        assert!(file_digest_cache().lock().unwrap().get(&file).is_none());
     }
 
     #[test]

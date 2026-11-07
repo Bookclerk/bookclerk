@@ -165,7 +165,13 @@ async fn node_bound_output_keys(
         // A config that was not loaded from disk has no plugin directories.
         return Ok(std::collections::BTreeSet::new());
     }
-    node_bound_output_keys_from(bookclerk_plugin_host::discover_plugins(&config), library).await
+    // Discovery walks and hashes every installed plugin: keep it off the
+    // async workers, as the settings and event paths do.
+    let discovered =
+        tokio::task::spawn_blocking(move || bookclerk_plugin_host::discover_plugins(&config))
+            .await
+            .map_err(|err| anyhow::anyhow!("plugin discovery task failed: {err}"))?;
+    node_bound_output_keys_from(discovered, library).await
 }
 
 /// Node-bound output keys from a discovery result.

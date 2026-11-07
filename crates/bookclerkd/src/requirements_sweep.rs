@@ -35,17 +35,53 @@ use crate::api::AppState;
 /// so the holder keeps its lease.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Quiet time a wakeup waits for before the pass runs.
+///
+/// Deployment changes arrive in bursts (enabling several plugins writes one
+/// deployment each), and every pass rediscovers the installed plugins, so a
+/// burst is swept once after it settles instead of once per change.
+pub const WAKEUP_SETTLE: Duration = Duration::from_millis(500);
+
+/// Longest a burst of wakeups may hold a pass back, so a steady stream of
+/// changes still gets swept.
+pub const WAKEUP_SETTLE_MAX: Duration = Duration::from_secs(3);
+
 /// Starts the sweep loop.
 pub fn spawn_requirements_sweep(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
             run_requirements_sweep(&state).await;
             tokio::select! {
-                () = crate::node_queue::requirements_wakeup() => {}
+                () = crate::node_queue::requirements_wakeup() => {
+                    settle(crate::node_queue::requirements_wakeup, WAKEUP_SETTLE, WAKEUP_SETTLE_MAX).await;
+                }
                 () = tokio::time::sleep(SWEEP_INTERVAL) => {}
             }
         }
     });
+}
+
+/// Waits until `wakeup` has been quiet for `quiet`, or `max` has passed.
+///
+/// Each wakeup inside the quiet time restarts it, so a burst of changes
+/// ends in one pass.
+async fn settle<F, Fut>(mut wakeup: F, quiet: Duration, max: Duration)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let deadline = tokio::time::Instant::now() + max;
+    loop {
+        let until = (tokio::time::Instant::now() + quiet).min(deadline);
+        tokio::select! {
+            () = wakeup() => {
+                if tokio::time::Instant::now() >= deadline {
+                    return;
+                }
+            }
+            () = tokio::time::sleep_until(until) => return,
+        }
+    }
 }
 
 /// One pass: take or renew the lease, then sweep. Returns `None` when
@@ -309,5 +345,63 @@ mod tests {
         let pending = store.get_job(&job).await.unwrap().unwrap();
         assert_eq!(pending.state, JobState::Pending);
         assert_eq!(pending.payload.requires, vec![local.id.to_string()]);
+    }
+
+    /// A burst of wakeups ends in one pass once it has been quiet for the
+    /// settle time.
+    #[tokio::test]
+    async fn a_burst_of_wakeups_settles_once_it_goes_quiet() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let sender = notify.clone();
+        let burst = tokio::spawn(async move {
+            for _ in 0..8 {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                sender.notify_one();
+            }
+        });
+        let started = tokio::time::Instant::now();
+        let waiter = notify.clone();
+        super::settle(
+            move || {
+                let waiter = waiter.clone();
+                async move { waiter.notified().await }
+            },
+            Duration::from_millis(100),
+            Duration::from_secs(5),
+        )
+        .await;
+        let waited = started.elapsed();
+        burst.await.unwrap();
+        // The last wakeup lands near 200 ms; the pass waits a quiet 100 ms after it.
+        assert!(waited >= Duration::from_millis(280), "{waited:?}");
+        assert!(waited < Duration::from_secs(2), "{waited:?}");
+    }
+
+    /// A stream of wakeups that never goes quiet still lets a pass run.
+    #[tokio::test]
+    async fn a_steady_stream_of_wakeups_is_capped() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let sender = notify.clone();
+        let stream = tokio::spawn(async move {
+            for _ in 0..200 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                sender.notify_one();
+            }
+        });
+        let started = tokio::time::Instant::now();
+        let waiter = notify.clone();
+        super::settle(
+            move || {
+                let waiter = waiter.clone();
+                async move { waiter.notified().await }
+            },
+            Duration::from_millis(100),
+            Duration::from_millis(300),
+        )
+        .await;
+        let waited = started.elapsed();
+        stream.abort();
+        assert!(waited >= Duration::from_millis(300), "{waited:?}");
+        assert!(waited < Duration::from_millis(900), "{waited:?}");
     }
 }
