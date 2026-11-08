@@ -8,6 +8,11 @@
 //! `records.json`), keeping the committed record of any title it missed,
 //! and seeds nothing. Run it against a scratch
 //! `BOOKCLERK_FILES_DIR` from a network the storefronts answer.
+//!
+//! `bookclerk-demo-seed --bake-finish` turns a seeded files dir into the
+//! template the demo image ships (`packaging/demo/bake-seed.sh`): it strips
+//! the install's own state from the library and deletes the secret and
+//! runtime files each container makes for itself.
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -16,14 +21,11 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use bookclerk_config::Config;
 use bookclerk_demo_seed::{
-    best_match, committed_records, distinct_records, lookups, merge_records, records_json,
-    records_path, search_query, seed, Lookup, Seeded, StoreRecords, STOREFRONTS,
+    best_match, clear_install_files, committed_records, deploy_on_node, distinct_records, lookups,
+    merge_records, parse_mode, records_json, search_query, seed, Lookup, Mode, Seeded,
+    StoreRecords, EXTRA_PLUGINS, STOREFRONTS,
 };
-use bookclerk_library::control_plane::{
-    default_instance_for_key, ensure_hand_managed, ensure_plugin_deployment,
-    load_deployment_for_node, replace_plugin_deployment, ConfigActor, DeploymentReplace,
-    DesiredState,
-};
+use bookclerk_library::control_plane::strip_install_state;
 use bookclerk_plugin_host::{consent_request, HostControlPlane, PluginGrantStore, SessionServices};
 use bookclerk_source::{CatalogHit, CatalogSearchOpts};
 use chrono::Utc;
@@ -62,8 +64,13 @@ async fn main() -> ExitCode {
 /// Returns an error when the library cannot be opened, no storefront is
 /// enrolled, or a write fails.
 async fn run() -> anyhow::Result<()> {
-    let write_records = records_path(std::env::args().skip(1))?;
+    let mode = parse_mode(std::env::args().skip(1))?;
     let config = Config::load(None, None).context("load config")?;
+    let write_records = match mode {
+        Mode::Seed => None,
+        Mode::WriteRecords(path) => Some(path),
+        Mode::BakeFinish => return bake_finish(&config).await,
+    };
     let host = bookclerk_plugin_host::open_host_control_plane(&config)
         .await
         .context("open the library")?;
@@ -88,7 +95,7 @@ async fn run() -> anyhow::Result<()> {
         }
     }
     if let Some(path) = write_records {
-        enable_storefronts(&host).await?;
+        enable_demo_plugins(&host).await?;
         let enabled = bookclerk_plugin_host::open_host_control_plane(&config)
             .await
             .context("reopen the library")?;
@@ -116,7 +123,7 @@ async fn run() -> anyhow::Result<()> {
     // The storefronts enroll without a grant, so none is deployed yet; the
     // Worker enables them through bookclerkd only after /health. Enable
     // them here the same way, then reopen so their deployments are present.
-    let records = match enable_storefronts(&host).await {
+    let records = match enable_demo_plugins(&host).await {
         Ok(()) => match bookclerk_plugin_host::open_host_control_plane(&config).await {
             Ok(enabled) => store_records(&enabled).await,
             Err(err) => {
@@ -224,71 +231,72 @@ async fn store_records(host: &HostControlPlane) -> StoreRecords {
     )
 }
 
-/// Approves each enrolled storefront's requested grant and deploys its
-/// default instance on this node: what the Worker does through bookclerkd's
-/// operator API once the daemon is up (tools/demo/src/lifecycle.js), and
-/// what `bookclerk plugins approve --yes` and `plugins deploy` do. The grant
-/// is exactly what the plugin's manifest asks for, so the Worker's later
-/// calls find both already in place.
+/// Approves the requested grant of each enrolled storefront and each of
+/// [`EXTRA_PLUGINS`], and deploys its default instance on this node: what
+/// the Worker does through bookclerkd's operator API once the daemon is up
+/// (tools/demo/src/lifecycle.ts), and what `bookclerk plugins approve --yes`
+/// and `plugins deploy` do. The grant is exactly what the plugin's manifest
+/// asks for, so the Worker finds both already in place and changes nothing.
 ///
 /// # Errors
 ///
-/// Returns an error when the grants file or a deployment cannot be written.
-async fn enable_storefronts(host: &HostControlPlane) -> anyhow::Result<()> {
+/// Returns an error when the grants file or a storefront's deployment cannot
+/// be written. An extra plugin that cannot be deployed is logged instead.
+async fn enable_demo_plugins(host: &HostControlPlane) -> anyhow::Result<()> {
     let files_dir = &host.config.paths().files_dir;
-    let actor = ConfigActor::Operator {
-        id: "demo-seed".into(),
-    };
     let mut grants = PluginGrantStore::load(files_dir)?;
     let mut fronts = Vec::new();
-    for front in STOREFRONTS {
-        if let Some(enrolled) = host.enrolled.iter().find(|e| e.plugin.alias() == front.id) {
+    let ids = STOREFRONTS
+        .iter()
+        .map(|front| (front.id, true))
+        .chain(EXTRA_PLUGINS.iter().map(|id| (*id, false)));
+    for (id, required) in ids {
+        if let Some(enrolled) = host.enrolled.iter().find(|e| e.plugin.alias() == id) {
             let plugin = &enrolled.plugin;
             grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
-            fronts.push(plugin.plugin_key().canonical());
+            fronts.push((plugin.plugin_key().canonical(), required));
         }
     }
     grants.save(files_dir)?;
-    for key in fronts {
-        let instance = default_instance_for_key(&host.store, key)
-            .await?
-            .with_context(|| format!("no default instance for {key}"))?;
-        // A scheduler-placed instance is not the seed's to deploy, as for
-        // `plugins deploy`.
-        ensure_hand_managed(&host.store, &instance.id).await?;
-        let present = DesiredState::operator(true);
-        let current = match load_deployment_for_node(&host.store, &instance.id, host.node_id())
-            .await?
-        {
-            Some(current) => current,
-            None => {
-                ensure_plugin_deployment(&host.store, &actor, &instance.id, host.node_id(), present)
-                    .await?
-            }
-        };
-        if current.desired == present {
-            continue;
-        }
-        let operation = format!(
-            "demo-seed-deploy-{}-{}",
-            instance.id,
-            Utc::now().timestamp_micros()
-        );
-        match replace_plugin_deployment(
-            &host.store,
-            &actor,
-            &current.deployment_id,
-            current.revision,
-            present,
-            &operation,
-        )
-        .await?
-        {
-            DeploymentReplace::Applied(_) | DeploymentReplace::Replayed { .. } => {}
-            DeploymentReplace::Conflict { current_revision } => {
-                bail!("deployment of {key} changed concurrently (revision {current_revision})")
-            }
+    for (key, required) in fronts {
+        match deploy_on_node(&host.store, host.node_id(), key).await {
+            Ok(()) => {}
+            Err(err) if required => return Err(err),
+            // An optional plugin (covers) must not cost the storefronts their
+            // live records; the demo runs without it.
+            Err(err) => eprintln!("bookclerk-demo-seed: {key} not deployed: {err:#}"),
         }
     }
+    Ok(())
+}
+
+/// Turns the seeded files dir into the template the demo image ships.
+///
+/// Strips the install's own state from the library
+/// ([`strip_install_state`]: it refuses a library holding any sealed secret
+/// or session), then deletes what every container must make for itself
+/// ([`clear_install_files`]). Run it after bookclerkd has stopped.
+///
+/// # Errors
+///
+/// Returns an error when the library cannot be opened or stripped, a file
+/// cannot be removed, or a SQLite side file that still holds data is found
+/// (it would carry writes the copy cannot see).
+async fn bake_finish(config: &Config) -> anyhow::Result<()> {
+    let paths = config.paths().clone();
+    {
+        let host = bookclerk_plugin_host::open_host_control_plane(config)
+            .await
+            .context("open the library")?;
+        let stripped = strip_install_state(&host.store)
+            .await
+            .context("strip install state")?;
+        eprintln!(
+            "bookclerk-demo-seed: stripped {} cluster identity row(s), {} lease(s), {} heartbeat(s)",
+            stripped.identity_rows, stripped.leases, stripped.node_status
+        );
+    }
+    clear_install_files(&paths.files_dir, &paths.cache_dir)?;
+    eprintln!("bookclerk-demo-seed: the files dir is ready to bake");
     Ok(())
 }

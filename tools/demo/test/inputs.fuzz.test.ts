@@ -364,7 +364,7 @@ describe("demo input boundaries", () => {
     );
   });
 
-  it("plugin instance reader yields only wanted default instances with well-formed ids", () => {
+  it("plugin instance reader yields only wanted default instances with well-formed ids, and which are deployed here", () => {
     const wanted = ["audible", "libro", "chirp", "graphicaudio", "__proto__"];
     fuzz(
       "plugin_instances",
@@ -382,6 +382,9 @@ describe("demo input boundaries", () => {
         '"audible"',
         '"is_default"',
         '"node_id"',
+        '"deployments"',
+        '"desired"',
+        '"present"',
         "\\u0001",
       ],
       (input, label) => {
@@ -397,6 +400,7 @@ describe("demo input boundaries", () => {
           return;
         }
         const expected = new Map<string, string>();
+        const present = new Set<string>();
         for (const i of v.instances as unknown[]) {
           if (!plainObject(i)) continue;
           if (
@@ -408,9 +412,17 @@ describe("demo input boundaries", () => {
           )
             continue;
           expected.set(i.alias, i.plugin_instance_id);
+          let here = false;
+          if (Array.isArray(i.deployments)) {
+            for (const d of i.deployments as unknown[]) {
+              if (plainObject(d) && d.node_id === v.node_id && d.desired === "present") here = true;
+            }
+          }
+          if (here) present.add(i.alias);
         }
         assert.equal(got!.nodeId, v.node_id, label);
         assert.deepEqual(got!.instances, expected, label);
+        assert.deepEqual(got!.present, present, label);
       },
     );
   });

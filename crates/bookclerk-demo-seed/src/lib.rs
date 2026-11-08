@@ -30,7 +30,9 @@
 
 use anyhow::{bail, Context};
 use bookclerk_library::control_plane::{
-    accept_catalog_batch, begin_catalog, CatalogAccept, CatalogBegin,
+    accept_catalog_batch, begin_catalog, default_instance_for_key, ensure_hand_managed,
+    ensure_plugin_deployment, load_deployment_for_node, replace_plugin_deployment, CatalogAccept,
+    CatalogBegin, ConfigActor, DeploymentReplace, DesiredState,
 };
 use bookclerk_library::entities::{node_credentials, nodes};
 use bookclerk_library::CatalogEnrichmentFields;
@@ -40,6 +42,7 @@ use bookclerk_library::{
 use bookclerk_node_proto::{CatalogFile, CatalogMetadata, CatalogTitle};
 use bookclerk_source::CatalogHit;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
@@ -82,6 +85,12 @@ const GRAPHIC_AUDIO: Storefront = Storefront {
 
 /// Every storefront Sam has an account at, in the order the accounts are added.
 pub const STOREFRONTS: [Storefront; 4] = [AUDIBLE, LIBRO, CHIRP, GRAPHIC_AUDIO];
+
+/// Plugins the demo runs besides the storefronts, by manifest id: what the
+/// demo Worker enables as optional (`OPTIONAL_PLUGINS` in
+/// `tools/demo/src/lifecycle.ts`). The seed enables them too, so a baked
+/// image already has them, and one missing from the image is skipped.
+pub const EXTRA_PLUGINS: [&str; 1] = ["covers"];
 
 /// Account id of each of Sam's store accounts. `example.com` is reserved, so
 /// it names no real person.
@@ -955,7 +964,21 @@ fn same_product(full: &CatalogHit, hit: &CatalogHit) -> bool {
     full.product_id == hit.product_id || hit.isbn().is_some_and(|isbn| full.isbn() == Some(isbn))
 }
 
-/// The `--write-records <path>` argument the seed binary was given, if any.
+/// What one run of the seed binary does, from its command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mode {
+    /// No arguments: seed the library.
+    Seed,
+    /// `--write-records <path>`: look the sample titles up and write the
+    /// records found to the path, seeding nothing.
+    WriteRecords(std::path::PathBuf),
+    /// `--bake-finish`: turn the seeded files dir into the template a demo
+    /// image ships (`packaging/demo/bake-seed.sh`), removing every secret
+    /// and runtime file a container must make for itself.
+    BakeFinish,
+}
+
+/// Parses the seed binary's arguments into a [`Mode`].
 ///
 /// # Arguments
 ///
@@ -963,21 +986,154 @@ fn same_product(full: &CatalogHit, hit: &CatalogHit) -> bool {
 ///
 /// # Returns
 ///
-/// Where to write the store records, or `None` to seed the library.
+/// The mode the arguments ask for.
 ///
 /// # Errors
 ///
-/// Returns an error for any other argument, or a missing path.
-pub fn records_path(
-    mut args: impl Iterator<Item = String>,
-) -> anyhow::Result<Option<std::path::PathBuf>> {
-    match args.next() {
-        None => Ok(None),
-        Some(flag) if flag == "--write-records" => match (args.next(), args.next()) {
-            (Some(path), None) => Ok(Some(path.into())),
-            (None, _) => bail!("--write-records needs a path"),
-            (Some(_), Some(extra)) => bail!("unexpected argument `{extra}`"),
+/// Returns an error for any other argument, a missing path, or an extra
+/// argument.
+pub fn parse_mode(mut args: impl Iterator<Item = String>) -> anyhow::Result<Mode> {
+    let mode = match args.next() {
+        None => return Ok(Mode::Seed),
+        Some(flag) if flag == "--write-records" => match args.next() {
+            Some(path) => Mode::WriteRecords(path.into()),
+            None => bail!("--write-records needs a path"),
         },
+        Some(flag) if flag == "--bake-finish" => Mode::BakeFinish,
         Some(other) => bail!("unexpected argument `{other}`"),
+    };
+    match args.next() {
+        None => Ok(mode),
+        Some(extra) => bail!("unexpected argument `{extra}`"),
+    }
+}
+
+/// SQLite side files next to `library.db` that a finished bake must not
+/// carry with data in them.
+const SQLITE_SIDE_FILES: [&str; 3] = ["library.db-journal", "library.db-wal", "library.db-shm"];
+
+/// Deletes the files a seeded files dir holds that every demo container
+/// must make for itself, so the dir can be baked into the image.
+///
+/// Removes `master.key` (the first daemon of each container mints and wraps
+/// its own), the covers cache's URL-signing key (`covers/token.key` under
+/// the cache dir), `logs/`, each plugin's `session-*` dirs under
+/// `plugin-state/`, and empty SQLite side files. Anything already absent
+/// counts as removed.
+///
+/// # Arguments
+///
+/// * `files_dir` - The seeded `$BOOKCLERK_FILES_DIR`.
+/// * `cache_dir` - Its cache dir (`paths.cache_dir`).
+///
+/// # Errors
+///
+/// Returns an error when a file cannot be removed, or when a SQLite side
+/// file still holds data: it would carry writes the copied `library.db`
+/// cannot see, so bookclerkd must stop first.
+pub fn clear_install_files(files_dir: &Path, cache_dir: &Path) -> anyhow::Result<()> {
+    remove_file_if_present(&bookclerk_library::master_key_path(files_dir))?;
+    remove_file_if_present(&cache_dir.join("covers").join("token.key"))?;
+    remove_dir_if_present(&files_dir.join("logs"))?;
+    let state = files_dir.join("plugin-state");
+    if state.is_dir() {
+        for plugin in std::fs::read_dir(&state).context("list plugin-state")? {
+            for entry in std::fs::read_dir(plugin?.path()).context("list a plugin's state")? {
+                let entry = entry?;
+                if entry.file_name().to_string_lossy().starts_with("session-") {
+                    remove_dir_if_present(&entry.path())?;
+                }
+            }
+        }
+    }
+    for side in SQLITE_SIDE_FILES {
+        let path = files_dir.join(side);
+        let holds_data = std::fs::metadata(&path).is_ok_and(|meta| meta.len() > 0);
+        if holds_data {
+            bail!("{side} still holds data; stop bookclerkd before finishing the bake");
+        }
+        remove_file_if_present(&path)?;
+    }
+    Ok(())
+}
+
+/// Removes a file, treating an absent one as removed.
+///
+/// # Errors
+///
+/// Returns any other I/O error.
+fn remove_file_if_present(path: &Path) -> anyhow::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            Err(err).with_context(|| format!("remove {}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Removes a directory tree, treating an absent one as removed.
+///
+/// # Errors
+///
+/// Returns any other I/O error.
+fn remove_dir_if_present(path: &Path) -> anyhow::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            Err(err).with_context(|| format!("remove {}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Deploys a plugin's default instance on `node_id` as the operator, as
+/// `plugins deploy` does; an instance already present is left alone.
+///
+/// # Arguments
+///
+/// * `store` - The library.
+/// * `node_id` - The node the instance should run on (this host's).
+/// * `key` - The plugin's canonical key.
+///
+/// # Errors
+///
+/// Returns an error when the plugin has no default instance, the scheduler
+/// manages it, or a deployment write fails or races another writer.
+pub async fn deploy_on_node(store: &LibraryStore, node_id: &str, key: &str) -> anyhow::Result<()> {
+    let actor = &ConfigActor::Operator {
+        id: "demo-seed".into(),
+    };
+    let instance = default_instance_for_key(store, key)
+        .await?
+        .with_context(|| format!("no default instance for {key}"))?;
+    // A scheduler-placed instance is not the seed's to deploy, as for
+    // `plugins deploy`.
+    ensure_hand_managed(store, &instance.id).await?;
+    let present = DesiredState::operator(true);
+    let current = match load_deployment_for_node(store, &instance.id, node_id).await? {
+        Some(current) => current,
+        None => ensure_plugin_deployment(store, actor, &instance.id, node_id, present).await?,
+    };
+    if current.desired == present {
+        return Ok(());
+    }
+    let operation = format!(
+        "demo-seed-deploy-{}-{}",
+        instance.id,
+        Utc::now().timestamp_micros()
+    );
+    match replace_plugin_deployment(
+        store,
+        actor,
+        &current.deployment_id,
+        current.revision,
+        present,
+        &operation,
+    )
+    .await?
+    {
+        DeploymentReplace::Applied(_) | DeploymentReplace::Replayed { .. } => Ok(()),
+        DeploymentReplace::Conflict { current_revision } => {
+            bail!("deployment of {key} changed concurrently (revision {current_revision})")
+        }
     }
 }

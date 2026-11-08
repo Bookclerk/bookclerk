@@ -228,30 +228,41 @@ export function decodeConnections(
 
 /**
  * Reads this node's id and the default instance of each wanted plugin from
- * `GET /api/config/plugin-instances`.
+ * `GET /api/config/plugin-instances`, and which of those instances are
+ * already deployed on this node.
  *
  * @param text - Response body.
  * @param aliases - Plugin ids (manifest `id`) to look for.
  * @returns The
- *   node id and, per alias found, the id of its default instance (the first
- *   well-formed entry wins); null when the body is not an object with a
+ *   node id; per alias found, the id of its default instance (the first
+ *   well-formed entry wins); and the aliases whose default instance has a
+ *   `deployments` row for this node with `desired` `"present"` (a baked
+ *   demo image ships them so). Null when the body is not an object with a
  *   well-formed `node_id` and an `instances` array.
  */
 export function decodeInstances(
   text: string,
   aliases: string[],
-): { nodeId: string; instances: Map<string, string> } | null {
+): { nodeId: string; instances: Map<string, string>; present: Set<string> } | null {
   const body = parseJson(text);
   if (!isObject(body) || !isId(body.node_id) || !Array.isArray(body.instances)) return null;
   const wanted = new Set(aliases);
   // A Map, not an object: an alias such as "__proto__" stays a plain key.
   const instances: Map<string, string> = new Map();
+  const present: Set<string> = new Set();
+  const nodeId = body.node_id;
   for (const i of body.instances as unknown[]) {
     if (!isObject(i) || i.is_default !== true || !isId(i.plugin_instance_id)) continue;
     if (typeof i.alias !== "string" || !wanted.has(i.alias) || instances.has(i.alias)) continue;
     instances.set(i.alias, i.plugin_instance_id);
+    const deployed =
+      Array.isArray(i.deployments) &&
+      (i.deployments as unknown[]).some(
+        (d) => isObject(d) && d.node_id === nodeId && d.desired === "present",
+      );
+    if (deployed) present.add(i.alias);
   }
-  return { nodeId: body.node_id, instances };
+  return { nodeId, instances, present };
 }
 
 /**

@@ -222,6 +222,7 @@ describe("enableStorefronts", () => {
     assert.deepEqual(
       seen.map((s) => s.key),
       [
+        "GET /api/config/plugin-instances",
         "POST /api/plugins/audible/consent",
         "POST /api/plugins/libro/consent",
         "GET /api/config/plugin-instances",
@@ -230,8 +231,48 @@ describe("enableStorefronts", () => {
       ],
     );
     for (const s of seen) assert.equal(s.init.headers.Authorization, "Bearer op");
-    assert.deepEqual(JSON.parse(seen[0]!.init.body), { approve: true });
-    assert.deepEqual(JSON.parse(seen[3]!.init.body), { desired: "present" });
+    assert.deepEqual(JSON.parse(seen[1]!.init.body), { approve: true });
+    assert.deepEqual(JSON.parse(seen[4]!.init.body), { desired: "present" });
+  });
+
+  it("leaves plugins already deployed on this node alone", async () => {
+    const here = { node_id: "node-1", desired: "present", revision: 2 };
+    const listing = {
+      node_id: "node-1",
+      instances: [
+        {
+          plugin_instance_id: "i-audible",
+          alias: "audible",
+          is_default: true,
+          deployments: [here],
+        },
+        {
+          plugin_instance_id: "i-libro",
+          alias: "libro",
+          is_default: true,
+          // Present on another node, or absent here: still to do.
+          deployments: [
+            { node_id: "node-2", desired: "present" },
+            { node_id: "node-1", desired: "absent" },
+          ],
+        },
+      ],
+    };
+    const { call, seen } = scripted({
+      "GET /api/config/plugin-instances": () => Response.json(listing),
+      "POST /api/plugins/libro/consent": () => Response.json({}),
+      "PUT /api/config/plugin-instances/i-libro/deployments/node-1": () => Response.json({}),
+    });
+    await enableStorefronts(call, "op", ["audible", "libro"]);
+    assert.deepEqual(
+      seen.map((s) => s.key),
+      [
+        "GET /api/config/plugin-instances",
+        "POST /api/plugins/libro/consent",
+        "GET /api/config/plugin-instances",
+        "PUT /api/config/plugin-instances/i-libro/deployments/node-1",
+      ],
+    );
   });
 
   it("fails when a storefront is missing or refused", async () => {
@@ -248,6 +289,14 @@ describe("enableStorefronts", () => {
     );
     await assert.rejects(
       enableStorefronts(scripted({}).call, "op", ["audible"]),
+      /plugin instances answered 404/,
+    );
+    await assert.rejects(
+      enableStorefronts(
+        scripted({ "GET /api/config/plugin-instances": () => Response.json(instances) }).call,
+        "op",
+        ["audible"],
+      ),
       /consent for audible answered 404/,
     );
   });
@@ -286,6 +335,27 @@ describe("enableDemoPlugins", () => {
     const warnings: string[] = [];
     await enableDemoPlugins(scripted(routes(STOREFRONTS)).call, "op", (m) => warnings.push(m));
     assert.deepEqual(warnings, ["demo: covers not enabled: consent for covers answered 404"]);
+  });
+
+  it("only reads the list when a baked image has every plugin deployed", async () => {
+    const baked = () =>
+      Response.json({
+        node_id: "node-1",
+        instances: all.map((id) => ({
+          plugin_instance_id: `i-${id}`,
+          alias: id,
+          is_default: true,
+          deployments: [{ node_id: "node-1", desired: "present", revision: 2 }],
+        })),
+      });
+    const warnings: string[] = [];
+    const { call, seen } = scripted({ "GET /api/config/plugin-instances": baked });
+    await enableDemoPlugins(call, "op", (m) => warnings.push(m));
+    assert.deepEqual(
+      seen.map((s) => s.key),
+      ["GET /api/config/plugin-instances"],
+    );
+    assert.deepEqual(warnings, []);
   });
 
   it("still fails when a storefront can't be enabled", async () => {

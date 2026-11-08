@@ -8,9 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bookclerk_demo_seed::{
-    best_match, committed_records, distinct_records, lookups, merge_records, parse_records,
-    records_json, records_path, search_query, seed, Lookup, SeedReport, Seeded, StoreRecords,
-    SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
+    best_match, clear_install_files, committed_records, deploy_on_node, distinct_records, lookups,
+    merge_records, parse_mode, parse_records, records_json, search_query, seed, Lookup, Mode,
+    SeedReport, Seeded, StoreRecords, SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
 };
 use bookclerk_library::control_plane::branch_title_counts;
 use bookclerk_library::entities::nodes;
@@ -451,24 +451,29 @@ fn prefers_a_released_edition_over_a_pre_order() {
 }
 
 #[test]
-fn reads_the_write_records_argument_and_refuses_anything_else() {
+fn reads_each_mode_and_refuses_anything_else() {
     let args = |list: &[&str]| {
         list.iter()
             .map(|a| a.to_string())
             .collect::<Vec<_>>()
             .into_iter()
     };
-    assert_eq!(records_path(args(&[])).unwrap(), None);
+    assert_eq!(parse_mode(args(&[])).unwrap(), Mode::Seed);
     assert_eq!(
-        records_path(args(&["--write-records", "out.json"])).unwrap(),
-        Some(std::path::PathBuf::from("out.json"))
+        parse_mode(args(&["--write-records", "out.json"])).unwrap(),
+        Mode::WriteRecords(std::path::PathBuf::from("out.json"))
+    );
+    assert_eq!(
+        parse_mode(args(&["--bake-finish"])).unwrap(),
+        Mode::BakeFinish
     );
     for bad in [
         &["--write-records"][..],
         &["--write-records", "out.json", "extra"][..],
+        &["--bake-finish", "extra"][..],
         &["--seed"][..],
     ] {
-        assert!(records_path(args(bad)).is_err(), "{bad:?}");
+        assert!(parse_mode(args(bad)).is_err(), "{bad:?}");
     }
 }
 
@@ -478,4 +483,117 @@ fn now() -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339("2026-11-06T00:00:00Z")
         .unwrap()
         .to_utc()
+}
+
+/// A seeded files dir as bookclerkd leaves it, with every per-install file
+/// in place; returns the files and cache dirs.
+fn baked_dir(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let files = root.join("files");
+    let cache = files.join("cache");
+    for dir in [
+        files.join("logs"),
+        files.join("plugin-state/libro/data"),
+        files.join("plugin-state/libro/session-1/tmp"),
+        files.join("plugin-state/covers/session-2"),
+        cache.join("covers"),
+    ] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(bookclerk_library::master_key_path(&files), b"key").unwrap();
+    std::fs::write(cache.join("covers/token.key"), b"signing").unwrap();
+    std::fs::write(files.join("logs/bookclerkd.log"), b"line").unwrap();
+    std::fs::write(files.join("plugin-state/libro/session-1/tmp/x"), b"x").unwrap();
+    std::fs::write(files.join("library.db"), b"db").unwrap();
+    std::fs::write(files.join("library.db-shm"), b"").unwrap();
+    (files, cache)
+}
+
+#[test]
+fn finishing_a_bake_clears_the_per_install_files() {
+    let root = tempfile::tempdir().unwrap();
+    let (files, cache) = baked_dir(root.path());
+
+    clear_install_files(&files, &cache).unwrap();
+
+    assert!(!bookclerk_library::master_key_path(&files).exists());
+    assert!(!cache.join("covers/token.key").exists());
+    assert!(!files.join("logs").exists());
+    assert!(!files.join("plugin-state/libro/session-1").exists());
+    assert!(!files.join("plugin-state/covers/session-2").exists());
+    assert!(!files.join("library.db-shm").exists());
+    // The library and each plugin's own state stay.
+    assert!(files.join("library.db").exists());
+    assert!(files.join("plugin-state/libro/data").is_dir());
+    // A second pass finds nothing to remove.
+    clear_install_files(&files, &cache).unwrap();
+}
+
+#[test]
+fn finishing_a_bake_refuses_a_side_file_with_data() {
+    let root = tempfile::tempdir().unwrap();
+    let (files, cache) = baked_dir(root.path());
+    std::fs::write(files.join("library.db-wal"), b"pending").unwrap();
+
+    let err = clear_install_files(&files, &cache).unwrap_err();
+    assert!(err.to_string().contains("library.db-wal"), "{err}");
+    assert!(files.join("library.db-wal").exists());
+}
+
+#[test]
+fn finishing_a_bake_reports_a_file_it_cannot_remove() {
+    let root = tempfile::tempdir().unwrap();
+    let files = root.path().join("files");
+    // A directory where master.key belongs cannot be removed as a file.
+    std::fs::create_dir_all(bookclerk_library::master_key_path(&files)).unwrap();
+    let err = clear_install_files(&files, &files.join("cache")).unwrap_err();
+    assert!(err.to_string().contains("remove"), "{err}");
+}
+
+#[tokio::test]
+async fn deploys_a_default_instance_on_the_node_once() {
+    use bookclerk_library::control_plane::{
+        ensure_plugin_deployment, ensure_plugin_instance, load_deployment_for_node, ConfigActor,
+        DesiredState,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let store = fresh(dir.path()).await;
+    let key = "path:file:///opt/bookclerk/storefronts/libro#libro";
+
+    let err = deploy_on_node(&store, "node-a", key).await.unwrap_err();
+    assert!(err.to_string().contains("no default instance"), "{err}");
+
+    let instance = ensure_plugin_instance(&store, &ConfigActor::Bootstrap, key)
+        .await
+        .unwrap();
+    deploy_on_node(&store, "node-a", key).await.unwrap();
+    let first = load_deployment_for_node(&store, &instance.id, "node-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.desired, DesiredState::operator(true));
+    // Already present: nothing changes.
+    deploy_on_node(&store, "node-a", key).await.unwrap();
+    let again = load_deployment_for_node(&store, &instance.id, "node-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.revision, first.revision);
+
+    // A deployment an operator set to absent is turned back on.
+    let operator = ConfigActor::Operator { id: "test".into() };
+    ensure_plugin_deployment(
+        &store,
+        &operator,
+        &instance.id,
+        "node-b",
+        DesiredState::operator(false),
+    )
+    .await
+    .unwrap();
+    deploy_on_node(&store, "node-b", key).await.unwrap();
+    let flipped = load_deployment_for_node(&store, &instance.id, "node-b")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(flipped.desired, DesiredState::operator(true));
 }
