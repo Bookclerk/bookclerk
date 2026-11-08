@@ -64,8 +64,9 @@ ARG RELEASE_CODEGEN_UNITS=1
 RUN set -eu; \
     export CARGO_PROFILE_RELEASE_LTO="$RELEASE_LTO" \
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$RELEASE_CODEGEN_UNITS"; \
-    platform="$(cargo build-app --platform --print | sed 's/^/-p /')"; \
-    test -n "$platform"; \
+    packages="$(cargo build-app --platform --print)"; \
+    test -n "$packages"; \
+    platform="$(printf '%s\n' "$packages" | sed 's/^/-p /')"; \
     cargo build --release $platform -p bookclerk-demo-seed; \
     cargo build --release \
       -p bookclerk-plugin-source-audible \
