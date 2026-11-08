@@ -6,13 +6,42 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use bookclerk_plugin_abi::{
-    DbPlanStatementKind, DbResultSelection, DbValue, ExecuteReply, StatementResult,
+    DbPlanStatementKind, DbResultSelection, DbValue, ExecuteReply, ExecuteRequest, StatementResult,
     TypedDbStatement,
 };
 use sea_orm::DbErr;
 
 /// Maximum UTF-8 bytes stored in `bookclerk_receipts.payload` for guest replay.
 pub const GUEST_TYPED_REPLAY_PAYLOAD_MAX_BYTES: usize = 65536;
+
+/// Payload stored for a read-only guest batch instead of its results.
+///
+/// A batch of `SELECT`s re-runs on replay (nothing is gated), so its rows
+/// are not persisted and its result size is bounded by the result budget
+/// the batch was read under, not by [`GUEST_TYPED_REPLAY_PAYLOAD_MAX_BYTES`].
+/// The host sees this marker on a prior receipt and returns the attempt's
+/// own rows.
+pub const GUEST_READ_ONLY_REPLAY_PAYLOAD: &str = "{\"readOnly\":true}";
+
+/// True when every guest statement inside the receipt wrap of `req` is a
+/// read-only `SELECT`.
+///
+/// `guest_len` is the wrap hint's guest statement count; the guest slice
+/// starts after [`GUEST_RECEIPT_WRAP_PREFIX`]. An empty or malformed slice
+/// is not read-only, so a write batch never skips its replay payload.
+#[must_use]
+pub fn guest_batch_is_read_only(req: &ExecuteRequest, guest_len: usize) -> bool {
+    let end = GUEST_RECEIPT_WRAP_PREFIX.saturating_add(guest_len);
+    if guest_len == 0 || end > req.statements.len() {
+        return false;
+    }
+    req.statements[GUEST_RECEIPT_WRAP_PREFIX..end]
+        .iter()
+        .all(|stmt| match stmt.kind {
+            DbPlanStatementKind::Select => true,
+            DbPlanStatementKind::Execute | DbPlanStatementKind::Returning => false,
+        })
+}
 
 /// Error text when a receipt committed but the caller-visible payload was lost.
 pub const GUEST_RECEIPT_RESULT_LOST: &str =
@@ -142,12 +171,22 @@ pub fn prior_receipt_should_resume_guest(stmt: &StatementResult, guest_hash: &st
     prior_receipt_is_claimed(stmt) && receipt_hash_from(stmt).as_deref() == Some(guest_hash)
 }
 
+/// True when a prior receipt for `guest_hash` recorded a read-only batch
+/// ([`GUEST_READ_ONLY_REPLAY_PAYLOAD`]), whose reads run again on replay.
+#[must_use]
+pub fn prior_receipt_is_read_only_replay(stmt: &StatementResult, guest_hash: &str) -> bool {
+    receipt_hash_from(stmt).as_deref() == Some(guest_hash)
+        && receipt_payload_text(stmt).as_deref() == Some(GUEST_READ_ONLY_REPLAY_PAYLOAD)
+}
+
 /// True when wrap prefix results show a completed prior receipt (skip guest SQL).
 ///
 /// An in-flight [`GUEST_RECEIPT_STATUS_CLAIMED`] row with the same hash must
 /// **not** skip remaining work: D1 commits the stub INSERT before ungated
 /// DDL, so a crash between those HTTP batches has to re-run idempotent DDL
-/// and then finalize. A claimed row with a **different** hash still skips
+/// and then finalize. A read-only receipt with the same hash does not skip
+/// either: it stored no rows, so the reads run again and this attempt's
+/// results are the reply. A prior row with a **different** hash still skips
 /// (unwrap reports conflict).
 #[must_use]
 pub fn should_skip_remaining_guest_work(
@@ -161,7 +200,9 @@ pub fn should_skip_remaining_guest_work(
     let Some(prior) = results.get(1) else {
         return false;
     };
-    prior_receipt_exists(prior) && !prior_receipt_should_resume_guest(prior, guest_hash)
+    prior_receipt_exists(prior)
+        && !prior_receipt_should_resume_guest(prior, guest_hash)
+        && !prior_receipt_is_read_only_replay(prior, guest_hash)
 }
 
 /// Pads skipped guest + stub results so the wrap shape stays intact.
@@ -174,6 +215,9 @@ pub fn pad_skipped_guest_results(results: &mut Vec<StatementResult>, total: usiz
 /// Builds finalize statements to persist a guest reply before COMMIT.
 ///
 /// Returns an empty list when the prior receipt row already carries payload.
+/// When `guest_read_only` is true (see [`guest_batch_is_read_only`]) the
+/// receipt stores [`GUEST_READ_ONLY_REPLAY_PAYLOAD`] instead of the rows, so
+/// a large read is not bounded by the payload cap.
 ///
 /// # Errors
 ///
@@ -183,6 +227,7 @@ pub fn guest_receipt_finalize_stmts(
     partial: &ExecuteReply,
     guest_len: usize,
     guest_hash: &str,
+    guest_read_only: bool,
 ) -> Result<Vec<TypedDbStatement>, DbErr> {
     let expected = GUEST_RECEIPT_WRAP_PREFIX
         .saturating_add(guest_len)
@@ -212,20 +257,36 @@ pub fn guest_receipt_finalize_stmts(
                 // [`prior_receipt_should_resume_guest`] instead.
                 return Ok(Vec::new());
             }
-            let guest_reply = guest_slice_reply(partial, guest_len)?;
-            let payload = encode_guest_replay_payload(&guest_reply)?;
+            let payload = replay_payload(partial, guest_len, guest_read_only)?;
             return Ok(vec![finalize_claimed_payload(
                 &payload,
                 &partial.operation_id,
             )]);
         }
     }
-    let guest_reply = guest_slice_reply(partial, guest_len)?;
-    let payload = encode_guest_replay_payload(&guest_reply)?;
+    let payload = replay_payload(partial, guest_len, guest_read_only)?;
     Ok(vec![finalize_claimed_payload(
         &payload,
         &partial.operation_id,
     )])
+}
+
+/// The payload a finalize stores: the guest rows, or the read-only marker.
+///
+/// # Errors
+///
+/// Returns [`DbErr`] when the guest rows do not encode or exceed
+/// [`GUEST_TYPED_REPLAY_PAYLOAD_MAX_BYTES`].
+fn replay_payload(
+    partial: &ExecuteReply,
+    guest_len: usize,
+    guest_read_only: bool,
+) -> Result<String, DbErr> {
+    if guest_read_only {
+        return Ok(GUEST_READ_ONLY_REPLAY_PAYLOAD.to_string());
+    }
+    let guest_reply = guest_slice_reply(partial, guest_len)?;
+    encode_guest_replay_payload(&guest_reply)
 }
 
 /// Host UPDATE that promotes a claimed stub to a durable `ok` payload.
@@ -427,7 +488,8 @@ mod tests {
     #[test]
     fn finalize_persists_payload_on_first_commit() {
         let partial = wrapped_partial(1, 1);
-        let stmts = guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64)).expect("finalize");
+        let stmts =
+            guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64), false).expect("finalize");
         assert_eq!(stmts.len(), 1);
         assert!(
             stmts[0].sql.contains("SET payload = ?, status = 'ok'"),
@@ -443,11 +505,109 @@ mod tests {
         );
     }
 
+    /// A read-only batch stores the marker, however large its rows are.
+    #[test]
+    fn finalize_stores_the_read_only_marker_instead_of_rows() {
+        let mut partial = wrapped_partial(0, 1);
+        partial.statements[2] = StatementResult::from_rows(
+            vec![DbColumn {
+                name: "body".into(),
+                db_type: DbType::Text,
+            }],
+            vec![DbRow {
+                values: vec![DbValue::Text(
+                    "x".repeat(GUEST_TYPED_REPLAY_PAYLOAD_MAX_BYTES * 2),
+                )],
+            }],
+        )
+        .expect("one text row");
+        let as_write = guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64), false)
+            .unwrap_err()
+            .to_string();
+        assert!(as_write.contains("guest replay payload is"), "{as_write}");
+        let stmts =
+            guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64), true).expect("read-only");
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(
+            stmts[0].parameters[0],
+            DbValue::Text(GUEST_READ_ONLY_REPLAY_PAYLOAD.into())
+        );
+    }
+
+    #[test]
+    fn a_read_only_prior_receipt_reruns_the_reads_on_replay() {
+        let prefix = vec![
+            StatementResult::from_affected(0),
+            prior_receipt_row_with_status(GUEST_RECEIPT_STATUS_OK, GUEST_READ_ONLY_REPLAY_PAYLOAD),
+        ];
+        assert!(
+            !should_skip_remaining_guest_work(&prefix, 4, &"a".repeat(64)),
+            "same hash re-runs the reads"
+        );
+        assert!(
+            should_skip_remaining_guest_work(&prefix, 4, &"b".repeat(64)),
+            "a different hash still skips so unwrap reports the conflict"
+        );
+        let stored = vec![
+            StatementResult::from_affected(0),
+            prior_receipt_row_with_status(
+                GUEST_RECEIPT_STATUS_OK,
+                "{\"operationId\":\"guest-op\"}",
+            ),
+        ];
+        assert!(
+            should_skip_remaining_guest_work(&stored, 4, &"a".repeat(64)),
+            "a stored write reply is replayed, not re-run"
+        );
+    }
+
+    #[test]
+    fn read_only_detection_needs_every_guest_statement_to_select() {
+        fn stmt(kind: DbPlanStatementKind) -> TypedDbStatement {
+            TypedDbStatement {
+                sql: "SELECT 1".into(),
+                parameters: vec![],
+                kind,
+                max_rows: 0,
+                result_selection: DbResultSelection::Rows,
+            }
+        }
+        let wrapped = |guest: Vec<TypedDbStatement>| {
+            let mut statements = vec![
+                stmt(DbPlanStatementKind::Execute),
+                stmt(DbPlanStatementKind::Select),
+            ];
+            statements.extend(guest);
+            statements.push(stmt(DbPlanStatementKind::Execute));
+            ExecuteRequest {
+                operation_id: "guest-op".into(),
+                request_hash: String::new(),
+                statements,
+                deadline_unix_ms: 0,
+            }
+        };
+        let reads = wrapped(vec![
+            stmt(DbPlanStatementKind::Select),
+            stmt(DbPlanStatementKind::Select),
+        ]);
+        assert!(guest_batch_is_read_only(&reads, 2));
+        let mixed = wrapped(vec![
+            stmt(DbPlanStatementKind::Select),
+            stmt(DbPlanStatementKind::Execute),
+        ]);
+        assert!(!guest_batch_is_read_only(&mixed, 2));
+        let returning = wrapped(vec![stmt(DbPlanStatementKind::Returning)]);
+        assert!(!guest_batch_is_read_only(&returning, 1));
+        assert!(!guest_batch_is_read_only(&reads, 0), "no guest statements");
+        assert!(!guest_batch_is_read_only(&reads, 9), "hint past the wrap");
+    }
+
     #[test]
     fn finalize_skips_sql_on_hash_mismatch() {
         let mut partial = wrapped_partial(1, 1);
         partial.statements[1] = prior_receipt_row("{\"operationId\":\"guest-op\"}");
-        let stmts = guest_receipt_finalize_stmts(&partial, 1, &"b".repeat(64)).expect("mismatch");
+        let stmts =
+            guest_receipt_finalize_stmts(&partial, 1, &"b".repeat(64), false).expect("mismatch");
         assert!(stmts.is_empty());
     }
 
@@ -455,7 +615,8 @@ mod tests {
     fn finalize_skips_when_payload_already_present() {
         let mut partial = wrapped_partial(1, 1);
         partial.statements[1] = prior_receipt_row("{\"operationId\":\"guest-op\"}");
-        let stmts = guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64)).expect("finalize");
+        let stmts =
+            guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64), false).expect("finalize");
         assert!(stmts.is_empty());
     }
 
@@ -463,14 +624,15 @@ mod tests {
     fn finalize_rejects_gated_replay_without_payload() {
         let mut partial = wrapped_partial(0, 0);
         partial.statements[1] = prior_receipt_row_with_status(GUEST_RECEIPT_STATUS_OK, "");
-        let err = guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64)).unwrap_err();
+        let err = guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64), false).unwrap_err();
         assert!(err.to_string().contains("original response lost"), "{err}");
     }
 
     #[test]
     fn finalize_persists_claimed_empty_payload() {
         let partial = wrapped_partial(1, 1);
-        let stmts = guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64)).expect("claimed");
+        let stmts =
+            guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64), false).expect("claimed");
         assert_eq!(stmts.len(), 1);
         assert!(
             stmts[0]
@@ -484,7 +646,8 @@ mod tests {
     #[test]
     fn finalize_does_not_persist_gated_claimed_retry() {
         let partial = wrapped_partial(0, 0);
-        let stmts = guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64)).expect("in-flight");
+        let stmts =
+            guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64), false).expect("in-flight");
         assert!(stmts.is_empty());
     }
 
@@ -594,7 +757,7 @@ mod tests {
     fn finalize_rejects_applied_empty_payload_as_result_lost() {
         let mut partial = wrapped_partial(0, 0);
         partial.statements[1] = prior_receipt_row_with_status(GUEST_RECEIPT_STATUS_APPLIED, "");
-        let err = guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64)).unwrap_err();
+        let err = guest_receipt_finalize_stmts(&partial, 1, &"a".repeat(64), false).unwrap_err();
         assert!(err.to_string().contains("original response lost"), "{err}");
     }
 }

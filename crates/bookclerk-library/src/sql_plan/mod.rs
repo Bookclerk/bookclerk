@@ -40,7 +40,7 @@ pub(crate) use exec::{execute_sql_on, execute_typed_on_open, query_sql_on};
 pub(crate) use guest_receipt::{unwrap_guest_typed_reply, wrap_guest_typed_request};
 pub use interpret::{interpret_typed_exec, PlanStmtResult};
 pub use named::{compile_claim_event_delivery, compile_named_request};
-pub use reply::validate_execute_reply;
+pub use reply::{validate_execute_reply, validate_streamed_execute_reply};
 pub use slots::{event_inflight_slot, lock_serialization_slot, JOB_QUEUE_SLOT};
 #[cfg(any(test, feature = "test-support"))]
 pub use vectors_typed::{

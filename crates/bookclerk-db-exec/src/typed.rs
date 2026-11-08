@@ -1174,12 +1174,17 @@ fn db_value_cell_len(v: &DbValue) -> usize {
 /// Returns when a row exceeds the result cap, a cell exceeds `max_cell_bytes`,
 /// the encoded statement exceeds `max_result_bytes`, a SeaORM value is outside
 /// the universal domain, or column names are duplicated.
+///
+/// # Returns
+///
+/// The statement result and its Cap'n-encoded size in bytes, which the
+/// caller charges against the whole-batch budget.
 fn statement_result_from_query_results(
     engine_rows: &[QueryResult],
     kind: DbPlanStatementKind,
     caps: ExecCaps,
     row_cap: u32,
-) -> Result<StatementResult, DbErr> {
+) -> Result<(StatementResult, usize), DbErr> {
     if exceeds_result_row_cap(engine_rows.len(), row_cap) {
         let used = u64::try_from(engine_rows.len()).unwrap_or(u64::MAX);
         return Err(DbErr::Custom(
@@ -1234,8 +1239,8 @@ fn statement_result_from_query_results(
     }
     let mut result = StatementResult::from_rows(db_columns, db_rows).map_err(DbErr::Custom)?;
     result.rows_affected = rows_affected_for_kind(kind, result.rows.len());
-    reject_statement_result_bytes(&result, caps.max_result_bytes)?;
-    Ok(result)
+    let encoded_len = reject_statement_result_bytes(&result, caps.max_result_bytes)?;
+    Ok((result, encoded_len))
 }
 
 /// Records column names/types for a Postgres `SELECT` that returned no rows.
@@ -1345,6 +1350,10 @@ fn reject_duplicate_column_names(columns: &[DbColumn]) -> Result<(), DbErr> {
 
 /// Fails when the Cap'n-encoded [`StatementResult`] exceeds `max_result_bytes`.
 ///
+/// # Returns
+///
+/// The encoded size of `result` in bytes when it is within the cap.
+///
 /// # Errors
 ///
 /// Returns when the encoded result cannot be serialized (including TEXT
@@ -1352,12 +1361,12 @@ fn reject_duplicate_column_names(columns: &[DbColumn]) -> Result<(), DbErr> {
 fn reject_statement_result_bytes(
     result: &StatementResult,
     max_result_bytes: u32,
-) -> Result<(), DbErr> {
+) -> Result<usize, DbErr> {
     let used = encoded_statement_result_bytes(result)
         .map_err(|err| DbErr::Custom(err.to_string()))?
         .len();
     if max_result_bytes == 0 {
-        return Ok(());
+        return Ok(used);
     }
     let cap = usize::try_from(max_result_bytes).unwrap_or(usize::MAX);
     if used > cap {
@@ -1366,7 +1375,129 @@ fn reject_statement_result_bytes(
             LimitExceeded::new("maxResultBytes", u64::from(max_result_bytes), used).to_message(),
         ));
     }
-    Ok(())
+    Ok(used)
+}
+
+/// Running whole-batch result budget of one atomic request.
+///
+/// Every statement result an atomic batch produces is retained until the
+/// reply is encoded, so the whole-reply cap (`max_atomic_result_bytes`) is
+/// enforced while the batch runs, not only after it: each statement is held
+/// to the smaller of `max_result_bytes` and what is left of the whole-batch
+/// budget, and the batch fails as soon as the admitted results would exceed
+/// it. A statement is charged what it adds to the encoded reply, not its
+/// standalone message size (see [`Self::STANDALONE_FRAMING_BYTES`]), so a
+/// batch the negotiated budget admits is not rejected early; the reply's
+/// own framing comes on top, so the caller still checks the whole encoded
+/// reply at the end.
+#[derive(Clone, Copy, Debug)]
+struct BatchByteBudget {
+    /// Negotiated per-statement and whole-reply caps (`0` = unlimited).
+    caps: ExecCaps,
+    /// Bytes the admitted statement results add to the encoded reply.
+    used: usize,
+}
+
+impl BatchByteBudget {
+    /// Bytes a standalone `StatementResult` message carries that its
+    /// embedded copy in an `ExecuteReply` does not: the single-segment
+    /// table and the root pointer, one word each. Pinned against the
+    /// encoder by `a_statement_result_embeds_without_its_standalone_framing`.
+    const STANDALONE_FRAMING_BYTES: usize = 16;
+
+    /// Starts an empty budget under `caps`.
+    fn new(caps: ExecCaps) -> Self {
+        Self { caps, used: 0 }
+    }
+
+    /// Bytes a statement result whose standalone encoding is `encoded_len`
+    /// bytes long adds to the encoded reply.
+    fn embedded_len(encoded_len: usize) -> usize {
+        encoded_len.saturating_sub(Self::STANDALONE_FRAMING_BYTES)
+    }
+
+    /// Whole-batch bytes still available, or `None` when the whole-reply cap
+    /// is unlimited.
+    fn remaining(&self) -> Option<usize> {
+        if self.caps.max_atomic_result_bytes == 0 {
+            return None;
+        }
+        let cap = usize::try_from(self.caps.max_atomic_result_bytes).unwrap_or(usize::MAX);
+        Some(cap.saturating_sub(self.used))
+    }
+
+    /// Caps for the next statement: `max_result_bytes` clamped to the
+    /// remaining whole-batch budget plus the standalone framing the
+    /// per-statement check measures (so an exhausted budget leaves only
+    /// that framing allowance and fails the next result instead of lifting
+    /// its cap).
+    fn statement_caps(&self) -> ExecCaps {
+        let mut caps = self.caps;
+        if let Some(remaining) = self.remaining() {
+            let remaining = u32::try_from(remaining.saturating_add(Self::STANDALONE_FRAMING_BYTES))
+                .unwrap_or(u32::MAX);
+            caps.max_result_bytes = if caps.max_result_bytes == 0 {
+                remaining
+            } else {
+                caps.max_result_bytes.min(remaining)
+            };
+        }
+        caps
+    }
+
+    /// Charges one admitted statement result whose standalone encoding is
+    /// `encoded_len` bytes long.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `maxAtomicResultBytes` limit error when the admitted
+    /// results exceed the whole-batch budget.
+    fn admit(&mut self, encoded_len: usize) -> Result<(), DbErr> {
+        self.used = self.used.saturating_add(Self::embedded_len(encoded_len));
+        if self.caps.max_atomic_result_bytes > 0 {
+            let cap = usize::try_from(self.caps.max_atomic_result_bytes).unwrap_or(usize::MAX);
+            if self.used > cap {
+                return Err(self.whole_batch_error(self.used));
+            }
+        }
+        Ok(())
+    }
+
+    /// Names the whole-batch budget in a `maxResultBytes` error that the
+    /// clamped per-statement cap raised, so the guest learns which limit it
+    /// hit; any other error passes through unchanged.
+    fn rewrite(&self, err: DbErr) -> DbErr {
+        let DbErr::Custom(message) = &err else {
+            return err;
+        };
+        let Some(limit) = LimitExceeded::from_message(message) else {
+            return err;
+        };
+        if limit.limit != "maxResultBytes" {
+            return err;
+        }
+        let stmt_cap = self.statement_caps().max_result_bytes;
+        let whole_budget_binds =
+            self.caps.max_result_bytes == 0 || stmt_cap < self.caps.max_result_bytes;
+        if !whole_budget_binds || u64::from(stmt_cap) != limit.cap {
+            return err;
+        }
+        let used = Self::embedded_len(usize::try_from(limit.used).unwrap_or(usize::MAX))
+            .saturating_add(self.used);
+        self.whole_batch_error(used)
+    }
+
+    /// The `maxAtomicResultBytes` limit error for `used` admitted bytes.
+    fn whole_batch_error(&self, used: usize) -> DbErr {
+        DbErr::Custom(
+            LimitExceeded::new(
+                "maxAtomicResultBytes",
+                u64::from(self.caps.max_atomic_result_bytes),
+                u64::try_from(used).unwrap_or(u64::MAX),
+            )
+            .to_message(),
+        )
+    }
 }
 
 /// Rejects BookclerkSQL TEXT that contains U+0000 (BYTES may contain 0x00).
@@ -1694,9 +1825,10 @@ async fn execute_typed_on_session_proofs(
     if guest_receipt.is_absent() {
         let caps = caps.into();
         session.check(AtomicInterruptPhase::BeforeBegin)?;
-        let budget = ExecBudget::with_cancel(
+        let budget = ExecBudget::with_result_caps(
             session.deadline_unix_ms,
             caps.max_result_rows,
+            caps.max_result_bytes,
             session.cancel.clone(),
         );
         let seen_budget = Arc::clone(&budget);
@@ -1720,6 +1852,8 @@ async fn execute_typed_on_session_proofs(
     }
     let hint = guest_receipt;
     let guest_hash = hint.guest_request_hash.clone();
+    let guest_len = usize::try_from(hint.guest_statement_len).unwrap_or(usize::MAX);
+    let read_only = crate::guest_receipt::guest_batch_is_read_only(req, guest_len);
     execute_typed_on_session_then_proofs(
         engine,
         db,
@@ -1730,8 +1864,9 @@ async fn execute_typed_on_session_proofs(
         move |partial| {
             crate::guest_receipt::guest_receipt_finalize_stmts(
                 &partial,
-                usize::try_from(hint.guest_statement_len).unwrap_or(usize::MAX),
+                guest_len,
                 &hint.guest_request_hash,
+                read_only,
             )
         },
         Some(guest_hash),
@@ -1802,9 +1937,10 @@ where
 {
     let caps = caps.into();
     session.check(AtomicInterruptPhase::BeforeBegin)?;
-    let budget = ExecBudget::with_cancel(
+    let budget = ExecBudget::with_result_caps(
         session.deadline_unix_ms,
         caps.max_result_rows,
+        caps.max_result_bytes,
         session.cancel.clone(),
     );
     let seen_budget = Arc::clone(&budget);
@@ -1888,9 +2024,10 @@ pub async fn execute_typed_on_txn_envelope(
         .require_proofs()
         .map_err(|err| DbErr::Custom(err.to_string()))?;
     session.check(AtomicInterruptPhase::BetweenStatements)?;
-    let budget = ExecBudget::with_cancel(
+    let budget = ExecBudget::with_result_caps(
         session.deadline_unix_ms,
         caps.max_result_rows,
+        caps.max_result_bytes,
         session.cancel.clone(),
     );
     let seen_budget = Arc::clone(&budget);
@@ -1955,9 +2092,10 @@ where
         .require_proofs()
         .map_err(|err| DbErr::Custom(err.to_string()))?;
     session.check(AtomicInterruptPhase::BetweenStatements)?;
-    let budget = ExecBudget::with_cancel(
+    let budget = ExecBudget::with_result_caps(
         session.deadline_unix_ms,
         caps.max_result_rows,
+        caps.max_result_bytes,
         session.cancel.clone(),
     );
     let seen_budget = Arc::clone(&budget);
@@ -2098,8 +2236,10 @@ where
     let proofs = proofs_for_request(&env, &req, stamped, require_stamped)?;
     let mut statements = Vec::with_capacity(req.statements.len());
     let skip_guest_on_prior = !guest_receipt.is_absent();
+    let mut budget = BatchByteBudget::new(caps);
     for (stmt, proof) in req.statements.iter().zip(proofs.iter()) {
         session.check(AtomicInterruptPhase::BetweenStatements)?;
+        let stmt_caps = budget.statement_caps();
         let values: Vec<SeaValue> = stmt.parameters.iter().map(db_value_to_sea).collect();
         let row_cap = effective_row_cap(stmt.max_rows, caps.max_result_rows);
         let canonical = stmt.sql.clone();
@@ -2127,15 +2267,24 @@ where
             }
         };
         let sea_stmt = Statement::from_sql_and_values(backend, &sql, values);
-        let stmt_result = match stmt.result_selection {
+        let (stmt_result, encoded_len) = match stmt.result_selection {
             DbResultSelection::Rows => {
                 if matches!(stmt.kind, DbPlanStatementKind::Execute) {
                     let exec = txn.execute_raw(sea_stmt).await?;
                     let result = StatementResult::from_affected(exec.rows_affected());
-                    reject_statement_result_bytes(&result, caps.max_result_bytes)?;
-                    result
+                    let encoded_len =
+                        reject_statement_result_bytes(&result, stmt_caps.max_result_bytes)
+                            .map_err(|err| budget.rewrite(err))?;
+                    (result, encoded_len)
                 } else {
-                    let engine_rows = collect_capped_query_results(txn, sea_stmt, row_cap).await?;
+                    let engine_rows = collect_capped_query_results(
+                        txn,
+                        sea_stmt,
+                        row_cap,
+                        stmt_caps.max_result_bytes,
+                    )
+                    .await
+                    .map_err(|err| budget.rewrite(err))?;
                     if engine_rows.is_empty()
                         && backend == sea_orm::DatabaseBackend::Postgres
                         && stmt.kind.wrap_select_limit()
@@ -2144,20 +2293,24 @@ where
                             record_postgres_empty_result_columns(db, &sql).await?;
                         }
                     }
-                    statement_result_from_query_results(&engine_rows, stmt.kind, caps, row_cap)?
+                    statement_result_from_query_results(&engine_rows, stmt.kind, stmt_caps, row_cap)
+                        .map_err(|err| budget.rewrite(err))?
                 }
             }
             DbResultSelection::AffectedRows | DbResultSelection::Discard => {
                 let exec = txn.execute_raw(sea_stmt).await?;
-                if matches!(stmt.result_selection, DbResultSelection::Discard) {
+                let result = if matches!(stmt.result_selection, DbResultSelection::Discard) {
                     StatementResult::from_affected(0)
                 } else {
-                    let result = StatementResult::from_affected(exec.rows_affected());
-                    reject_statement_result_bytes(&result, caps.max_result_bytes)?;
-                    result
-                }
+                    StatementResult::from_affected(exec.rows_affected())
+                };
+                let encoded_len =
+                    reject_statement_result_bytes(&result, stmt_caps.max_result_bytes)
+                        .map_err(|err| budget.rewrite(err))?;
+                (result, encoded_len)
             }
         };
+        budget.admit(encoded_len)?;
         apply_binding_companions(
             txn,
             backend,
@@ -2194,6 +2347,7 @@ where
             &partial,
             guest_len,
             &guest_receipt.guest_request_hash,
+            crate::guest_receipt::guest_batch_is_read_only(&req, guest_len),
         )?
         .into_iter()
         .enumerate()
@@ -2326,12 +2480,14 @@ where
     // Guest-typed wrap only: host library plans also SELECT a prior receipt
     // at index 1, and skipping their remaining selectors would break replay.
     let skip_guest_on_prior = then.is_some();
+    let mut budget = BatchByteBudget::new(caps);
     for (idx, stmt) in req.statements.iter().enumerate() {
         if let Err(err) = session.check(AtomicInterruptPhase::BetweenStatements) {
             let _ = txn.rollback().await;
             let _ = take_txn_fault();
             return Err(err);
         }
+        let stmt_caps = budget.statement_caps();
         let values: Vec<SeaValue> = stmt.parameters.iter().map(db_value_to_sea).collect();
         let row_cap = effective_row_cap(stmt.max_rows, caps.max_result_rows);
         let canonical = canonical_sqls
@@ -2373,7 +2529,7 @@ where
             }
         };
         let sea_stmt = Statement::from_sql_and_values(backend, &sql, values);
-        let stmt_result = match stmt.result_selection {
+        let (stmt_result, encoded_len) = match stmt.result_selection {
             DbResultSelection::Rows => {
                 if matches!(stmt.kind, DbPlanStatementKind::Execute) {
                     let exec = match txn.execute_raw(sea_stmt).await {
@@ -2385,23 +2541,30 @@ where
                         }
                     };
                     let result = StatementResult::from_affected(exec.rows_affected());
-                    if let Err(err) = reject_statement_result_bytes(&result, caps.max_result_bytes)
-                    {
-                        let _ = txn.rollback().await;
-                        let _ = take_txn_fault();
-                        return Err(err);
+                    match reject_statement_result_bytes(&result, stmt_caps.max_result_bytes) {
+                        Ok(encoded_len) => (result, encoded_len),
+                        Err(err) => {
+                            let _ = txn.rollback().await;
+                            let _ = take_txn_fault();
+                            return Err(budget.rewrite(err));
+                        }
                     }
-                    result
                 } else {
-                    let engine_rows =
-                        match collect_capped_query_results(&txn, sea_stmt, row_cap).await {
-                            Ok(rows) => rows,
-                            Err(err) => {
-                                let _ = txn.rollback().await;
-                                let _ = take_txn_fault();
-                                return Err(err);
-                            }
-                        };
+                    let engine_rows = match collect_capped_query_results(
+                        &txn,
+                        sea_stmt,
+                        row_cap,
+                        stmt_caps.max_result_bytes,
+                    )
+                    .await
+                    {
+                        Ok(rows) => rows,
+                        Err(err) => {
+                            let _ = txn.rollback().await;
+                            let _ = take_txn_fault();
+                            return Err(budget.rewrite(err));
+                        }
+                    };
                     if engine_rows.is_empty()
                         && backend == sea_orm::DatabaseBackend::Postgres
                         && stmt.kind.wrap_select_limit()
@@ -2415,14 +2578,14 @@ where
                     match statement_result_from_query_results(
                         &engine_rows,
                         stmt.kind,
-                        caps,
+                        stmt_caps,
                         row_cap,
                     ) {
-                        Ok(result) => result,
+                        Ok(admitted) => admitted,
                         Err(err) => {
                             let _ = txn.rollback().await;
                             let _ = take_txn_fault();
-                            return Err(err);
+                            return Err(budget.rewrite(err));
                         }
                     }
                 }
@@ -2436,20 +2599,26 @@ where
                         return Err(err);
                     }
                 };
-                if matches!(stmt.result_selection, DbResultSelection::Discard) {
+                let result = if matches!(stmt.result_selection, DbResultSelection::Discard) {
                     StatementResult::from_affected(0)
                 } else {
-                    let result = StatementResult::from_affected(exec.rows_affected());
-                    if let Err(err) = reject_statement_result_bytes(&result, caps.max_result_bytes)
-                    {
+                    StatementResult::from_affected(exec.rows_affected())
+                };
+                match reject_statement_result_bytes(&result, stmt_caps.max_result_bytes) {
+                    Ok(encoded_len) => (result, encoded_len),
+                    Err(err) => {
                         let _ = txn.rollback().await;
                         let _ = take_txn_fault();
-                        return Err(err);
+                        return Err(budget.rewrite(err));
                     }
-                    result
                 }
             }
         };
+        if let Err(err) = budget.admit(encoded_len) {
+            let _ = txn.rollback().await;
+            let _ = take_txn_fault();
+            return Err(err);
+        }
         if let Err(err) = apply_binding_companions(
             &txn,
             backend,
@@ -2614,6 +2783,190 @@ mod tests {
             sqlite.contains('?'),
             "sqlite catalog page SQL keeps `?`: {sqlite}"
         );
+    }
+
+    #[test]
+    fn batch_budget_clamps_each_statement_to_the_remaining_whole_batch_bytes() {
+        // Standalone sizes carry 16 framing bytes the embedded copy does not.
+        let caps = ExecCaps {
+            max_result_rows: 0,
+            max_result_bytes: 96,
+            max_cell_bytes: 0,
+            max_atomic_result_bytes: 100,
+        };
+        let mut budget = BatchByteBudget::new(caps);
+        assert_eq!(budget.statement_caps().max_result_bytes, 96);
+        budget.admit(66).expect("first statement fits (adds 50)");
+        assert_eq!(
+            budget.statement_caps().max_result_bytes,
+            66,
+            "50 remaining plus the standalone framing"
+        );
+        budget
+            .admit(66)
+            .expect("second statement exactly fills the budget");
+        assert_eq!(
+            budget.statement_caps().max_result_bytes,
+            16,
+            "an exhausted budget leaves only the framing allowance instead of lifting the cap"
+        );
+        let err = budget.admit(17).expect_err("over the whole-batch budget");
+        let limit = LimitExceeded::from_message(&err.to_string()).expect("typed limit");
+        assert_eq!(limit.limit, "maxAtomicResultBytes");
+        assert_eq!((limit.cap, limit.used), (100, 101));
+
+        let unlimited_statement = BatchByteBudget::new(ExecCaps {
+            max_result_bytes: 0,
+            ..caps
+        });
+        assert_eq!(unlimited_statement.statement_caps().max_result_bytes, 116);
+        let mut unlimited_batch = BatchByteBudget::new(ExecCaps {
+            max_atomic_result_bytes: 0,
+            ..caps
+        });
+        assert_eq!(unlimited_batch.statement_caps().max_result_bytes, 96);
+        unlimited_batch
+            .admit(usize::MAX)
+            .expect("no whole-batch cap to exceed");
+    }
+
+    #[test]
+    fn batch_budget_names_the_whole_batch_limit_only_when_it_was_the_binding_cap() {
+        let caps = ExecCaps {
+            max_result_rows: 0,
+            max_result_bytes: 64,
+            max_cell_bytes: 0,
+            max_atomic_result_bytes: 100,
+        };
+        let mut budget = BatchByteBudget::new(caps);
+        let per_statement =
+            DbErr::Custom(LimitExceeded::new("maxResultBytes", 64, 70).to_message());
+        assert_eq!(
+            budget.rewrite(per_statement.clone()).to_string(),
+            per_statement.to_string(),
+            "the negotiated per-statement cap bound this statement"
+        );
+        budget.admit(76).expect("fits (adds 60)");
+        assert_eq!(budget.statement_caps().max_result_bytes, 56);
+        let clamped = DbErr::Custom(LimitExceeded::new("maxResultBytes", 56, 61).to_message());
+        let limit =
+            LimitExceeded::from_message(&budget.rewrite(clamped).to_string()).expect("typed limit");
+        assert_eq!(limit.limit, "maxAtomicResultBytes");
+        assert_eq!(
+            (limit.cap, limit.used),
+            (100, 105),
+            "60 admitted plus the 45 bytes the rejected statement would add"
+        );
+        let other_cap = DbErr::Custom(LimitExceeded::new("maxResultBytes", 64, 70).to_message());
+        assert_eq!(
+            budget.rewrite(other_cap.clone()).to_string(),
+            other_cap.to_string(),
+            "a cap the budget did not set passes through"
+        );
+        let rows = DbErr::Custom(LimitExceeded::new("maxResultRows", 10, 11).to_message());
+        assert_eq!(budget.rewrite(rows.clone()).to_string(), rows.to_string());
+        let plain = DbErr::Custom("boom".into());
+        assert_eq!(budget.rewrite(plain.clone()).to_string(), plain.to_string());
+    }
+
+    /// Standalone encodings of the statement results in `statements`.
+    fn standalone_sizes(statements: &[StatementResult]) -> Vec<usize> {
+        statements
+            .iter()
+            .map(|stmt| encoded_statement_result_bytes(stmt).expect("encodes").len())
+            .collect()
+    }
+
+    /// Encoded size of an `ExecuteReply` carrying `statements`.
+    fn reply_size(statements: &[StatementResult]) -> usize {
+        encoded_execute_reply_bytes(&ExecuteReply {
+            operation_id: "budget".into(),
+            statements: statements.to_vec(),
+            timing: DbTiming::default(),
+        })
+        .expect("encodes")
+        .len()
+    }
+
+    /// A one-row, one-column TEXT result whose cell is `len` bytes long.
+    fn text_result(len: usize) -> StatementResult {
+        StatementResult::from_rows(
+            vec![DbColumn {
+                name: "body".into(),
+                db_type: DbType::Text,
+            }],
+            vec![DbRow {
+                values: vec![DbValue::Text("x".repeat(len))],
+            }],
+        )
+        .expect("one column, one cell")
+    }
+
+    #[test]
+    fn a_statement_result_embeds_without_its_standalone_framing() {
+        let affected = StatementResult::from_affected(7);
+        let one_row = text_result(1000);
+        let two_rows = StatementResult::from_rows(
+            vec![DbColumn {
+                name: "n".into(),
+                db_type: DbType::Int64,
+            }],
+            vec![
+                DbRow {
+                    values: vec![DbValue::Int64(1)],
+                },
+                DbRow {
+                    values: vec![DbValue::Null(DbType::Int64)],
+                },
+            ],
+        )
+        .expect("one column, two rows");
+        let mut statements = vec![affected];
+        for next in [one_row, two_rows, StatementResult::from_affected(0)] {
+            let before = reply_size(&statements);
+            statements.push(next);
+            let after = reply_size(&statements);
+            let standalone = standalone_sizes(&statements)[statements.len() - 1];
+            assert_eq!(
+                after - before,
+                BatchByteBudget::embedded_len(standalone),
+                "statement {} adds its standalone size less the framing",
+                statements.len()
+            );
+        }
+    }
+
+    #[test]
+    fn batch_budget_admits_a_batch_whose_encoded_reply_fits() {
+        // 99 affected-row results and one 257 000-byte text result encode
+        // under a 256 KiB reply; their standalone sizes alone would not.
+        let cap = 256 * 1024;
+        let mut statements: Vec<StatementResult> =
+            (0..99).map(StatementResult::from_affected).collect();
+        statements.push(text_result(257_000));
+        let sizes = standalone_sizes(&statements);
+        assert!(reply_size(&statements) <= cap, "the oracle reply fits");
+        assert!(
+            sizes.iter().sum::<usize>() > cap,
+            "standalone sizes overcount the reply"
+        );
+        let caps = ExecCaps {
+            max_result_rows: 0,
+            max_result_bytes: u32::try_from(cap).expect("fits u32"),
+            max_cell_bytes: 0,
+            max_atomic_result_bytes: u32::try_from(cap).expect("fits u32"),
+        };
+        let mut budget = BatchByteBudget::new(caps);
+        for (stmt, size) in statements.iter().zip(&sizes) {
+            let encoded_len =
+                reject_statement_result_bytes(stmt, budget.statement_caps().max_result_bytes)
+                    .expect("each statement fits its clamped cap");
+            assert_eq!(encoded_len, *size);
+            budget
+                .admit(encoded_len)
+                .expect("the batch fits its budget");
+        }
+        assert!(budget.used <= cap);
     }
 
     #[test]

@@ -28,8 +28,8 @@
 //! - parsing the same body twice gives the same records.
 
 use bookclerk_plugin_source_libro::{parse_catalog_details, parse_catalog_search_page};
-use bookclerk_source::records::IdentifierScheme;
-use bookclerk_source::CatalogHit;
+use bookclerk_storefront::records::IdentifierScheme;
+use bookclerk_storefront::CatalogHit;
 use serde_json::{Map, Value};
 
 /// The ISBN and title a row must yield, or `None` when the row is skipped.

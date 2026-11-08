@@ -5141,6 +5141,175 @@ ExecuteResultReply = Union[
 """Result union of `execute`."""
 
 
+class ExecuteStreamHead(TypedDict):
+    """First frame of a streamed execute reply: what the reply is about.
+
+    Attributes:
+        operationId: Echo of the request `operationId`.
+        statementCount: Number of `statement` frames that follow, one per request
+            statement.
+    """
+
+    operationId: str
+    statementCount: int
+
+
+class ExecuteStreamStatement(TypedDict):
+    """Opens one statement result inside a streamed execute reply. Its rows, if
+    any, follow in `rows` frames until the next `statement`, `end` or `err`.
+
+    Attributes:
+        index: Request statement index, `0`-based and increasing by one per frame.
+        columns: Result column descriptors.
+        rowsAffected: Rows changed by a mutation.
+    """
+
+    index: int
+    columns: list[DbColumn]
+    rowsAffected: int
+
+
+class ExecuteStreamFrameHead(TypedDict):
+    """``ExecuteStreamFrame`` member ``head``.
+
+    First frame.
+
+    Attributes:
+        kind: Always ``"head"``.
+        value: First frame.
+    """
+
+    kind: Literal["head"]
+    value: ExecuteStreamHead
+
+
+class ExecuteStreamFrameStatement(TypedDict):
+    """``ExecuteStreamFrame`` member ``statement``.
+
+    Opens the next statement result.
+
+    Attributes:
+        kind: Always ``"statement"``.
+        value: Opens the next statement result.
+    """
+
+    kind: Literal["statement"]
+    value: ExecuteStreamStatement
+
+
+class ExecuteStreamFrameRows(TypedDict):
+    """``ExecuteStreamFrame`` member ``rows``.
+
+    Rows of the open statement, in order.
+
+    Attributes:
+        kind: Always ``"rows"``.
+        value: Rows of the open statement, in order.
+    """
+
+    kind: Literal["rows"]
+    value: list[DbRow]
+
+
+class ExecuteStreamFrameEnd(TypedDict):
+    """``ExecuteStreamFrame`` member ``end``.
+
+    Last frame: the batch committed; engine timing.
+
+    Attributes:
+        kind: Always ``"end"``.
+        value: Last frame: the batch committed; engine timing.
+    """
+
+    kind: Literal["end"]
+    value: DbTiming
+
+
+class ExecuteStreamFrameErr(TypedDict):
+    """``ExecuteStreamFrame`` member ``err``.
+
+    Last frame: the batch failed; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Last frame: the batch failed; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+ExecuteStreamFrame = Union[
+    ExecuteStreamFrameHead,
+    ExecuteStreamFrameStatement,
+    ExecuteStreamFrameRows,
+    ExecuteStreamFrameEnd,
+    ExecuteStreamFrameErr,
+]
+"""One frame of a streamed execute reply (`executeStreamed`). Frames are
+consecutive unpacked single-segment Cap'n Proto messages, each at most
+`maxScalarBytes` unless it carries one row that alone exceeds it. The
+sequence is `head`, then for each statement `statement` followed by its
+`rows` frames in order, then `end`; `err` ends the sequence early.
+"""
+
+
+class ExecuteStreamReplyInline(TypedDict):
+    """``ExecuteStreamReply`` member ``inline``.
+
+    Success: every frame, concatenated, at most `maxScalarBytes`.
+
+    Attributes:
+        kind: Always ``"inline"``.
+        value: Success: every frame, concatenated, at most `maxScalarBytes`.
+    """
+
+    kind: Literal["inline"]
+    value: bytes
+
+
+class ExecuteStreamReplyStream(TypedDict):
+    """``ExecuteStreamReply`` member ``stream``.
+
+    Success: the frames as a byte stream.
+
+    Attributes:
+        kind: Always ``"stream"``.
+        value: Success: the frames as a byte stream.
+    """
+
+    kind: Literal["stream"]
+    value: ByteSource
+
+
+class ExecuteStreamReplyErr(TypedDict):
+    """``ExecuteStreamReply`` member ``err``.
+
+    Typed failure before any frame; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure before any frame; `code` is a `PluginErrorCode` wire
+            string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+ExecuteStreamReply = Union[
+    ExecuteStreamReplyInline,
+    ExecuteStreamReplyStream,
+    ExecuteStreamReplyErr,
+]
+"""Result union of `executeStreamed`. The frames (`ExecuteStreamFrame`) travel
+inline when they fit one scalar, otherwise as a transferred byte stream in
+`maxStreamWindowBytes` windows. The adapter counts the reply against
+`maxStreamedResultBytes` and `maxStreamedResultRows` before it commits, so
+results still fail closed and are never truncated.
+"""
+
+
 class DbCapabilities(TypedDict):
     """Semantic SQL-contract advertisement. Diagnostic engine identity is not
     part of the capability plane — see `DbBootstrap`.
@@ -5183,6 +5352,13 @@ class DbCapabilities(TypedDict):
             the host reads schema, rows, and identity.
         atomicUnitRestore: Adapter can destructively replace one logical database unit
             so an ordinary restore failure does not leave that unit partially replaced.
+        maxStreamedResultBytes: Maximum encoded bytes of one `ExecuteReply` answered
+            through `executeStreamed` (the sum of its frames' statement results). `0`
+            means the adapter does not stream and callers stay under the inline caps.
+            When set it is at least `maxAtomicResultBytes`.
+        maxStreamedResultRows: Maximum rows one statement may return through
+            `executeStreamed`. `0` means the adapter does not stream. When set it is at
+            least `maxResultRows`.
     """
 
     sqlContractVersion: int
@@ -5207,6 +5383,8 @@ class DbCapabilities(TypedDict):
     maxLoweredStatementBytes: int
     consistentBackupRead: bool
     atomicUnitRestore: bool
+    maxStreamedResultBytes: int
+    maxStreamedResultRows: int
 
 
 class DbBootstrapReplyOk(TypedDict):
@@ -5488,6 +5666,20 @@ class AdapterDatabaseSession(Protocol):
         """
         ...
 
+    async def execute_streamed(self, request: AdapterExecuteRequest) -> ExecuteStreamReply:
+        """`execute` whose reply is framed (`ExecuteStreamFrame`) and counted against
+        `maxStreamedResultBytes` / `maxStreamedResultRows` instead of the inline
+        caps. One transaction, one snapshot; `unsupported` when the adapter
+        advertises no streamed budget.
+
+        Args:
+            request: Proven statements plus isolation and receipt.
+
+        Returns:
+            ``ExecuteStreamReply``
+        """
+        ...
+
 
 class GuestDatabase(Protocol):
     """Host-granted SQL for job plugin authors. SDK `DatabaseBinding` mirrors the
@@ -5521,6 +5713,20 @@ class GuestDatabase(Protocol):
 
         Returns:
             ``DbCapabilitiesReply``
+        """
+        ...
+
+    async def execute_streamed(self, request: ExecuteRequest) -> ExecuteStreamReply:
+        """`execute` whose reply is framed (`ExecuteStreamFrame`) and counted against
+        the session's `maxStreamedResultBytes` / `maxStreamedResultRows`, so a
+        result past the inline caps still arrives whole. `unsupported` when the
+        session advertises no streamed budget.
+
+        Args:
+            request: Statements, binds, and deadline.
+
+        Returns:
+            ``ExecuteStreamReply``
         """
         ...
 
@@ -6008,6 +6214,18 @@ __all__ = [
     "ExecuteResultReplyOk",
     "ExecuteResultReplyErr",
     "ExecuteResultReply",
+    "ExecuteStreamHead",
+    "ExecuteStreamStatement",
+    "ExecuteStreamFrameHead",
+    "ExecuteStreamFrameStatement",
+    "ExecuteStreamFrameRows",
+    "ExecuteStreamFrameEnd",
+    "ExecuteStreamFrameErr",
+    "ExecuteStreamFrame",
+    "ExecuteStreamReplyInline",
+    "ExecuteStreamReplyStream",
+    "ExecuteStreamReplyErr",
+    "ExecuteStreamReply",
     "DbCapabilities",
     "DbBootstrapReplyOk",
     "DbBootstrapReplyErr",

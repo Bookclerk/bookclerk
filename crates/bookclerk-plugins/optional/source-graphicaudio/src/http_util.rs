@@ -30,5 +30,5 @@ pub async fn response_to_path(mut resp: Response, path: &Path) -> Result<()> {
 /// Guess an audio file extension from a URL path (query stripped).
 #[must_use]
 pub fn extension_from_url(url: &str) -> &'static str {
-    bookclerk_source::audio_extension(url, None, None, ".m4a")
+    bookclerk_storefront::audio_extension(url, None, None, ".m4a")
 }

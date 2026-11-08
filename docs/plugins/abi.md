@@ -163,6 +163,13 @@ Native plugins must be rebuilt against this SDK.
   both as `err.limit`. `GuestDatabase.limits` returns the caps of the
   session so a guest can stay under them; on a host that predates the
   method it fails with `unsupported`.
+- A result larger than one inline reply is read as a stream.
+  `GuestDatabase.executeStreamed` (and the adapter-side
+  `AdapterDatabaseSession.executeStreamed`) answer the same atomic batch
+  as `ExecuteStreamFrame`s under `maxStreamedResultBytes` /
+  `maxStreamedResultRows`, which are at least the inline caps; an adapter
+  that advertises `0` for both does not stream and answers `unsupported`.
+  See [streamed results](sql-contract/v1.md#streamed-results).
 - Integrity metadata (etag, sha256) rides on `PutResult` and
   `ReadResult`.
 - Optional facilities *within* the ABI are feature flags (`rpc.streams`,
@@ -967,6 +974,7 @@ Workers RPC, plus a generic atomic-plan executor.
 | `AdapterDatabaseSession.capabilities` | A typed control-plane call after `openSession`. Advertises the SQL contract version, execution semantics, `schemaMigrations`, backup flags and all limits. Host policy requires `schemaMigrations`. Diagnostic engine identity isn't a capability. The host must not invent these from the plugin id |
 | `AdapterDatabaseSession.bootstrap` | The diagnostic engine name only (`engine`). Not part of `DbCapabilities`, and never used to admit a guest or generate SQL. Any string is valid |
 | `AdapterDatabaseSession.execute` | The one typed atomic operation (`AdapterExecuteRequest` → `ExecuteReply`). The request is already-desugared canonical Bookclerk SQL (`?` placeholders) plus 1:1 hash-bound proofs. Adapters lower at execute. Guests don't interpret Bookclerk operation names. `job(job)` does **not** receive the host library on `env`: plugins that need durable SQL declare `[[databases]]` bindings, and receive physically separate units on `env.<BINDING>` |
+| `AdapterDatabaseSession.executeStreamed` | The same atomic batch as `execute`, answered as `ExecuteStreamFrame`s (`ExecuteStreamReply`: `inline` bytes, a `ByteSource`, or `err`) so the result may grow to `maxStreamedResultBytes` / `maxStreamedResultRows`. The batch commits before the first frame. Adapters that do not stream advertise `0` for both caps and answer `unsupported` |
 | `AdapterDatabaseSession.close` | Releases the session and its engine connection |
 
 Some methods are host-private: never visible to plugin authors, and only
@@ -1134,8 +1142,11 @@ See the [SQL contract v1](sql-contract/v1.md).
 - For workerd guests, the launcher mints one database-only grant token per
   binding at `open`, and carries it in the bridge context
   (`databases: { DB: <token> }`). The trusted adapter isolate turns each
-  token into a granted-channel transport over `POST /db/execute` (and
-  `GET /db/limits` for `GuestDatabase.limits`), and installs the resulting
+  token into a granted-channel transport over `POST /db/execute` (with
+  `GET /db/limits` for `limits()`; the launcher also serves
+  `POST /db/execute-streamed`, the streamed read the SDK helpers adopt
+  next, see the [SQL contract](sql-contract/v1.md#streamed-results)), and
+  installs the resulting
   `env.DB` on the author's `env` for every call of that `open` (events,
   storefront, jobs, …). It is a full `DatabaseBinding`: `prepare`, `bind`,
   `run`, `all`, `first`, `raw`, `batch` and `limits()`.

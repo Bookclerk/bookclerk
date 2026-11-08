@@ -33,10 +33,6 @@ pub enum GraphicAudioError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Library database upsert / secret storage failure.
-    #[error(transparent)]
-    Library(#[from] bookclerk_library::LibraryError),
-
     /// Unexpected failure wrapped from `anyhow`.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -80,14 +76,13 @@ impl From<serde_json::Error> for GraphicAudioError {
     }
 }
 
-impl From<GraphicAudioError> for bookclerk_source::SourceError {
+impl From<GraphicAudioError> for bookclerk_storefront::SourceError {
     fn from(err: GraphicAudioError) -> Self {
         match err {
             GraphicAudioError::NoAccounts(m) => Self::NoAccounts(m),
             GraphicAudioError::Auth(m) | GraphicAudioError::AccountNotFound(m) => Self::Auth(m),
             GraphicAudioError::Api(m) | GraphicAudioError::Download(m) => Self::Api(m),
             GraphicAudioError::Io(e) => Self::Io(e),
-            GraphicAudioError::Library(e) => Self::Library(e),
             GraphicAudioError::Other(e) => Self::Other(e),
         }
     }

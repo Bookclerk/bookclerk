@@ -1,27 +1,20 @@
-//! [`ChirpSource`]: [`ContentSource`] implementation for Chirp.
+//! [`ChirpSource`]: catalog lookups against the public Chirp storefront.
+//!
+//! Account login, library scans and title fetches run in the guest RPC
+//! handlers ([`crate::guest`]); the host stores the credentials they return.
 
-use std::sync::Arc;
-
-use async_trait::async_trait;
-use bookclerk_library::SourceScope;
-use bookclerk_source::records::{self, CreditRole};
-use bookclerk_source::{
-    CatalogHit, CatalogSearchField, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions,
-    LoginOptions, PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount,
-    SourceBrand, SourceFetch, SourcePurchaseHint,
+use bookclerk_storefront::records::{self, CreditRole};
+use bookclerk_storefront::{
+    CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts,
+    SourcePurchaseHint,
 };
 
-use crate::auth::ChirpAuthFile;
 use crate::client::{CatalogAudiobook, ChirpClient, DEFAULT_GRAPHQL_URL};
-use crate::db::{delete_auth_from_db, list_auth_from_db, load_auth_from_db, save_auth_to_db};
-use crate::download::fetch_title_materials;
-use crate::error::{ChirpError, Result};
-use crate::sync::{scan_library, ScanOptions as ChirpScanOptions};
 
-/// Describe / config id for this store (`chirp` in `[sources.chirp]`).
+/// Describe / config id for this store (`chirp`).
 pub const ID: &str = "chirp";
 
-/// Chirp storefront adapter implementing [`ContentSource`].
+/// Chirp catalog client used by the guest's discovery entrypoints.
 ///
 /// Construct with [`ChirpSource::new`]; use [`ChirpSource::with_graphql_url`]
 /// for wiremock / staging.
@@ -54,169 +47,17 @@ impl ChirpSource {
         }
     }
 
-    /// Arc-wrapped instance for [`bookclerk_source::SourceRegistry`].
-    #[must_use]
-    pub fn shared() -> Arc<Self> {
-        Arc::new(Self::new())
-    }
-
-    /// Logs in with email/password and seals credentials into `encrypted_secrets`.
+    /// Searches the public catalog.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
-    pub async fn login_account(
-        &self,
-        library: &SourceScope,
-        opts: LoginOptions,
-    ) -> Result<SourceAccount> {
-        let email = opts
-            .email
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| ChirpError::auth("Chirp login requires email"))?;
-        let password = opts
-            .password
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| ChirpError::auth("Chirp login requires password"))?;
-
-        let mut client = ChirpClient::new(&self.graphql_url);
-        let user = client.login(email, password).await?;
-
-        let marketplace = if opts.marketplace.trim().is_empty() {
-            String::from("us")
-        } else {
-            opts.marketplace.trim().to_ascii_lowercase()
-        };
-
-        let auth = ChirpAuthFile {
-            access_token: user.token,
-            web_token: user.web_token,
-            email: user.email,
-            user_id: Some(user.id),
-            marketplace,
-            label: opts.label.clone(),
-        };
-
-        let account_id = auth.account_id().to_string();
-        save_auth_to_db(&auth, library, &account_id)
-            .await
-            .map_err(|e| ChirpError::auth(format!("failed to save Chirp auth: {e}")))?;
-        library
-            .upsert_account(&account_id, &auth.marketplace, auth.label.as_deref(), true)
-            .await
-            .map_err(|e| ChirpError::auth(format!("failed to upsert Chirp account: {e}")))?;
-
-        tracing::info!(
-            email = %auth.email,
-            user_id = ?auth.user_id,
-            "saved Chirp auth to encrypted_secrets"
-        );
-
-        Ok(source_account_from_auth(&auth))
-    }
-
-    /// Delete a Chirp account from the DB.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn delete_account(&self, library: &SourceScope, account_id: &str) -> Result<()> {
-        delete_auth_from_db(library, account_id).await
-    }
-}
-
-#[async_trait]
-impl ContentSource for ChirpSource {
-    fn id(&self) -> &str {
-        ID
-    }
-
-    fn display_name(&self) -> &str {
-        "Chirp"
-    }
-
-    fn portal_auth_mode(&self) -> PortalAuthMode {
-        PortalAuthMode::Password
-    }
-
-    fn portal_brand(&self) -> SourceBrand {
-        SourceBrand {
-            id: "chirp",
-            name: "Chirp",
-            bg: "#0F766E",
-            fg: "#ECFEFF",
-            accent: "#14B8A6",
-            icon_url: "https://www.google.com/s2/favicons?domain=chirpbooks.com&sz=128",
-        }
-    }
-
-    fn sort_key(&self) -> u32 {
-        3
-    }
-
-    async fn login(
-        &self,
-        library: &SourceScope,
-        opts: LoginOptions,
-    ) -> bookclerk_source::Result<SourceAccount> {
-        self.login_account(library, opts).await.map_err(Into::into)
-    }
-
-    async fn list_accounts(
-        &self,
-        library: &SourceScope,
-    ) -> bookclerk_source::Result<Vec<SourceAccount>> {
-        let records = list_auth_from_db(library)
-            .await
-            .map_err(Into::<bookclerk_source::SourceError>::into)?;
-        Ok(records
-            .into_iter()
-            .map(|(_id, auth)| source_account_from_auth(&auth))
-            .collect())
-    }
-
-    async fn scan(
-        &self,
-        library: &SourceScope,
-        opts: ScanOptions,
-    ) -> bookclerk_source::Result<ScanSummary> {
-        scan_library(
-            library,
-            ChirpScanOptions::from(&opts),
-            Some(self.graphql_url.as_str()),
-        )
-        .await
-        .map_err(Into::into)
-    }
-
-    async fn fetch_title(
-        &self,
-        library: &SourceScope,
-        account_id: &str,
-        title_id: &str,
-        opts: &FetchOptions,
-    ) -> bookclerk_source::Result<SourceFetch> {
-        let auth = load_auth_from_db(library, account_id)
-            .await
-            .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?
-            .ok_or_else(|| {
-                bookclerk_source::SourceError::Auth(format!(
-                    "no Chirp credentials for account `{account_id}` in DB"
-                ))
-            })?;
-        let _ = &opts.files_dir;
-        let client = ChirpClient::new(&self.graphql_url).with_token(&auth.access_token);
-        let plain = fetch_title_materials(&client, title_id, &opts.cache_dir).await?;
-        Ok(plain)
-    }
-
-    async fn search_catalog(
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Some lookups fail soft and only yield fewer
+    /// results (or none), so an empty result does not prove the store has none.
+    pub async fn search_catalog(
         &self,
         opts: &CatalogSearchOpts,
-    ) -> bookclerk_source::Result<Vec<CatalogHit>> {
+    ) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
         let q = opts.query.trim();
         if q.is_empty() || opts.limit == 0 {
             return Ok(Vec::new());
@@ -224,14 +65,10 @@ impl ContentSource for ChirpSource {
         let preferred_lang = opts
             .language
             .as_deref()
-            .and_then(bookclerk_source::normalize_language);
+            .and_then(bookclerk_storefront::normalize_language);
         // Slight over-fetch when filtering by language so dropped Spanish
         // (etc.) rows don't starve the page — keep this modest for latency.
-        let fetch_limit = if preferred_lang.is_some() {
-            (opts.limit + 8).clamp(opts.limit, 40)
-        } else {
-            opts.limit
-        };
+        let fetch_limit = language_fetch_limit(opts.limit, preferred_lang.is_some());
         let client = ChirpClient::new(&self.graphql_url);
         if opts.field == Some(CatalogSearchField::Series) {
             if let Ok(Some(catalog)) = client.resolve_series_catalog(q).await {
@@ -270,11 +107,18 @@ impl ContentSource for ChirpSource {
             .collect())
     }
 
-    async fn expand_candidates(
+    /// Finds up to `limit` titles related to `seed` (same author, series, …).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Some lookups fail soft and only yield fewer
+    /// results (or none), so an empty result does not prove the store has none.
+    pub async fn expand_candidates(
         &self,
         seed: &ExpandSeed,
         limit: usize,
-    ) -> bookclerk_source::Result<Vec<CatalogHit>> {
+    ) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -411,10 +255,17 @@ impl ContentSource for ChirpSource {
         Ok(hits)
     }
 
-    async fn purchase_hint(
+    /// Resolves the storefront price and link for a title; `None` when not sold.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Failed lookups are soft, so `Ok(None)` can also
+    /// mean the store could not be reached, not only that the title is not sold.
+    pub async fn purchase_hint(
         &self,
         opts: &PurchaseHintOpts,
-    ) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
+    ) -> bookclerk_storefront::Result<Option<SourcePurchaseHint>> {
         let client = ChirpClient::new(&self.graphql_url);
         let mut hint = if let Some(pid) = opts
             .product_id
@@ -484,7 +335,14 @@ impl ContentSource for ChirpSource {
         Ok(hint)
     }
 
-    async fn list_deals(&self, limit: usize) -> bookclerk_source::Result<Vec<CatalogHit>> {
+    /// Lists up to `limit` titles on the storefront's current deals shelf.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Some lookups fail soft and only yield fewer
+    /// results (or none), so an empty result does not prove the store has none.
+    pub async fn list_deals(&self, limit: usize) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -492,7 +350,10 @@ impl ContentSource for ChirpSource {
         let mut hits = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
-        match client.top_deals(limit.min(40) as u32).await {
+        match client
+            .top_deals(u32::try_from(limit.min(40)).unwrap_or(40))
+            .await
+        {
             Ok(books) => {
                 for book in books {
                     if hits.len() >= limit || !seen.insert(book.id.clone()) {
@@ -642,7 +503,7 @@ fn language_matches(hit_language: Option<&str>, preferred: Option<&str>) -> bool
     let Some(pref) = preferred else {
         return true;
     };
-    match hit_language.and_then(bookclerk_source::normalize_language) {
+    match hit_language.and_then(bookclerk_storefront::normalize_language) {
         None => true,
         Some(code) => code == pref,
     }
@@ -722,14 +583,15 @@ fn parse_money_label_to_cents(raw: &str) -> Option<i64> {
     Some((amount * 100.0).round() as i64)
 }
 
-/// Builds a scan-enabled [`SourceAccount`] from a saved Chirp auth blob.
-fn source_account_from_auth(auth: &ChirpAuthFile) -> SourceAccount {
-    SourceAccount {
-        account_id: auth.account_id().to_string(),
-        source: ID.into(),
-        marketplace: auth.marketplace.clone(),
-        label: auth.label.clone().or_else(|| Some(auth.email.clone())),
-        scan_enabled: true,
+/// Rows to request for a page of `limit` hits.
+///
+/// A language filter drops rows after the fetch, so it asks for up to 8 more
+/// (capped at 40 for latency), but never fewer than `limit` itself.
+fn language_fetch_limit(limit: usize, filtered: bool) -> usize {
+    if filtered {
+        limit.saturating_add(8).min(limit.max(40))
+    } else {
+        limit
     }
 }
 
@@ -737,6 +599,67 @@ fn source_account_from_auth(auth: &ChirpAuthFile) -> SourceAccount {
 mod tests {
     use super::*;
     use crate::client::{CatalogAudiobook, CatalogTag};
+
+    /// Search options for `query` with a page of `limit` results.
+    fn search(query: &str, limit: usize) -> CatalogSearchOpts {
+        CatalogSearchOpts {
+            query: query.into(),
+            region: "us".into(),
+            limit,
+            page: 1,
+            sort: bookclerk_storefront::CatalogSearchSort::Relevance,
+            field: None,
+            language: None,
+        }
+    }
+
+    /// A related-titles seed with no optional fields set.
+    fn seed() -> ExpandSeed {
+        ExpandSeed {
+            source: "chirp".into(),
+            product_id: "1".into(),
+            title: "Title".into(),
+            authors: None,
+            narrators: None,
+            series: None,
+            series_asin: None,
+            asin: None,
+            isbn: None,
+            region: "us".into(),
+        }
+    }
+
+    #[test]
+    fn language_over_fetch_never_drops_below_the_page() {
+        assert_eq!(language_fetch_limit(10, false), 10);
+        assert_eq!(language_fetch_limit(10, true), 18);
+        assert_eq!(language_fetch_limit(35, true), 40);
+        assert_eq!(language_fetch_limit(50, true), 50);
+        assert_eq!(language_fetch_limit(usize::MAX, true), usize::MAX);
+    }
+
+    #[tokio::test]
+    async fn empty_requests_answer_without_calling_the_store() {
+        // These inputs return before any request; the unroutable URL keeps
+        // the test offline if that ever regresses.
+        let source = ChirpSource::with_graphql_url("http://127.0.0.1:9/graphql");
+        assert!(source
+            .search_catalog(&search("  ", 10))
+            .await
+            .expect("blank")
+            .is_empty());
+        assert!(source
+            .search_catalog(&search("dune", 0))
+            .await
+            .expect("zero")
+            .is_empty());
+        assert!(source
+            .expand_candidates(&seed(), 0)
+            .await
+            .expect("expand")
+            .is_empty());
+        assert!(source.list_deals(0).await.expect("deals").is_empty());
+    }
 
     #[test]
     fn catalog_hit_maps_genres_language_abridged() {

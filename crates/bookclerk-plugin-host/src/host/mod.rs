@@ -24,3 +24,5 @@ pub use source::ExternalSource;
 mod rpc_proxy_insert;
 #[cfg(test)]
 mod rpc_proxy_like;
+#[cfg(test)]
+mod rpc_streamed_reads;

@@ -33,10 +33,6 @@ pub enum ChirpError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Library database upsert / secret storage failure.
-    #[error(transparent)]
-    Library(#[from] bookclerk_library::LibraryError),
-
     /// Unexpected failure wrapped from `anyhow`.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -80,14 +76,13 @@ impl From<serde_json::Error> for ChirpError {
     }
 }
 
-impl From<ChirpError> for bookclerk_source::SourceError {
+impl From<ChirpError> for bookclerk_storefront::SourceError {
     fn from(err: ChirpError) -> Self {
         match err {
             ChirpError::NoAccounts(m) => Self::NoAccounts(m),
             ChirpError::Auth(m) | ChirpError::AccountNotFound(m) => Self::Auth(m),
             ChirpError::Api(m) | ChirpError::Download(m) => Self::Api(m),
             ChirpError::Io(e) => Self::Io(e),
-            ChirpError::Library(e) => Self::Library(e),
             ChirpError::Other(e) => Self::Other(e),
         }
     }

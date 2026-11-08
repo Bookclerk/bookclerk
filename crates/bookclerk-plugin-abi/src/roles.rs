@@ -506,6 +506,24 @@ pub trait AdapterDatabaseSession {
         request: crate::host_envelope::AdapterExecuteRequest,
     ) -> Result<crate::ExecuteReply>;
 
+    /// `execute` whose reply is framed and counted against the streamed
+    /// budget (`maxStreamedResultBytes` / `maxStreamedResultRows`) instead
+    /// of the inline caps. One transaction, one snapshot.
+    ///
+    /// # Errors
+    ///
+    /// The default fails with `unsupported`; adapters that advertise a
+    /// streamed budget answer with the framed reply.
+    async fn execute_streamed(
+        &self,
+        request: crate::host_envelope::AdapterExecuteRequest,
+    ) -> Result<crate::db_stream::ExecuteStream> {
+        let _ = request;
+        Err(PluginError::unsupported(
+            "AdapterDatabaseSession.executeStreamed",
+        ))
+    }
+
     /// Close the session.
     async fn close(&self) -> Result<()> {
         Ok(())
@@ -574,6 +592,21 @@ pub trait GuestDatabase {
     /// `unsupported` for sessions that predate the method.
     async fn limits(&self) -> Result<crate::DbCapabilities> {
         Err(PluginError::unsupported("GuestDatabase.limits"))
+    }
+
+    /// `execute` whose reply is framed and counted against the session's
+    /// streamed budget, so a result past the inline caps still arrives whole.
+    ///
+    /// # Errors
+    ///
+    /// The default fails with `unsupported` for sessions that predate the
+    /// method or advertise no streamed budget.
+    async fn execute_streamed(
+        &self,
+        request: crate::ExecuteRequest,
+    ) -> Result<crate::db_stream::ExecuteStream> {
+        let _ = request;
+        Err(PluginError::unsupported("GuestDatabase.executeStreamed"))
     }
 }
 

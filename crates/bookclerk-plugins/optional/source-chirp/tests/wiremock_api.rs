@@ -3,13 +3,12 @@
 // Test code: unwrap/expect and plain casts are fine here.
 #![allow(clippy::unwrap_used)]
 
-use bookclerk_library::configure_master_key;
+use std::collections::BTreeMap;
+
 use bookclerk_plugin_source_chirp::{
-    fetch_title_materials, load_auth_from_db, save_auth_to_db, ChirpAuthFile, ChirpClient,
-    ChirpSource,
+    fetch_title_materials, guest_fetch_title, guest_login, guest_scan, ChirpAuthFile, ChirpClient,
 };
-use bookclerk_source::{ContentSource, LoginOptions, ScanOptions};
-use tempfile::TempDir;
+use bookclerk_storefront::LoginOptions;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -28,22 +27,27 @@ fn test_password() -> String {
     ["sec", "ret"].concat()
 }
 
-fn dek_lock() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+/// Host-injected credential map for one stored Chirp account.
+fn host_credentials(account_id: &str, auth: &ChirpAuthFile) -> BTreeMap<String, serde_json::Value> {
+    let mut map = BTreeMap::new();
+    map.insert(account_id.to_string(), serde_json::to_value(auth).unwrap());
+    map
 }
 
-async fn setup_dek() -> (tokio::sync::MutexGuard<'static, ()>, TempDir) {
-    let guard = dek_lock().lock().await;
-    let dir = tempfile::tempdir().unwrap();
-    std::env::remove_var(bookclerk_library::MASTER_KEY_AUTH_PASSWORD_ENV);
-    configure_master_key(dir.path()).unwrap();
-    (guard, dir)
+/// A stored Chirp account the way the host keeps it.
+fn stored_auth(user_id: &str, email: &str) -> ChirpAuthFile {
+    ChirpAuthFile {
+        access_token: "tok".into(),
+        web_token: None,
+        email: email.into(),
+        user_id: Some(user_id.into()),
+        marketplace: "us".into(),
+        label: None,
+    }
 }
 
 #[tokio::test]
-async fn signin_saves_auth_to_db() {
-    let (_guard, _dek_dir) = setup_dek().await;
+async fn signin_returns_credentials_for_the_host() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/"))
@@ -66,41 +70,33 @@ async fn signin_saves_auth_to_db() {
         .mount(&server)
         .await;
 
-    let store = bookclerk_plugin_database_sqlite::open_store_memory()
-        .await
-        .unwrap();
-    let source = ChirpSource::with_graphql_url(server.uri());
-    let account = source
-        .login(
-            &store.scope("chirp", "chirp"),
-            LoginOptions {
-                marketplace: "us".into(),
-                label: Some("Chirp".into()),
-                email: Some("reader@example.com".into()),
-                password: Some(test_password()),
-                force: true,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+    let (account_id, _marketplace, label, scan_enabled, credentials) = guest_login(
+        &server.uri(),
+        LoginOptions {
+            marketplace: "us".into(),
+            label: Some("Chirp".into()),
+            email: Some("reader@example.com".into()),
+            password: Some(test_password()),
+            force: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 
-    assert_eq!(account.source, "chirp");
     // user_id = "42" is used as account_id by ChirpAuthFile::account_id().
-    assert_eq!(account.account_id, "42");
+    assert_eq!(account_id, "42");
+    assert_eq!(label.as_deref(), Some("Chirp"));
+    assert!(scan_enabled);
 
-    // Verify credentials were persisted to the DB.
-    let auth = load_auth_from_db(&store.scope("chirp", "chirp"), "42")
-        .await
-        .unwrap()
-        .expect("auth must be present in DB");
+    // The guest hands the credential document back for the host to seal.
+    let auth: ChirpAuthFile = serde_json::from_value(credentials).unwrap();
     assert_eq!(auth.access_token, "jwt-access");
     assert_eq!(auth.user_id.as_deref(), Some("42"));
 }
 
 #[tokio::test]
-async fn empty_library_scan_upserts_zero() {
-    let (_guard, _dek_dir) = setup_dek().await;
+async fn empty_library_scan_returns_no_books() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/"))
@@ -117,37 +113,16 @@ async fn empty_library_scan_upserts_zero() {
         .mount(&server)
         .await;
 
-    // Credentials are now stored in the DB (not files).
-    let store = bookclerk_plugin_database_sqlite::open_store_memory()
+    let credentials = host_credentials("9", &stored_auth("9", "a@ex.com"));
+    let (books, accounts, _pages) = guest_scan(&server.uri(), &credentials, &[], 0)
         .await
         .unwrap();
-    save_auth_to_db(
-        &ChirpAuthFile {
-            access_token: "tok".into(),
-            web_token: None,
-            email: "a@ex.com".into(),
-            user_id: Some("9".into()),
-            marketplace: "us".into(),
-            label: None,
-        },
-        &store.scope("chirp", "chirp"),
-        "9",
-    )
-    .await
-    .unwrap();
-
-    let source = ChirpSource::with_graphql_url(server.uri());
-    let summary = source
-        .scan(&store.scope("chirp", "chirp"), ScanOptions::default())
-        .await
-        .unwrap();
-    assert_eq!(summary.books_upserted, 0);
-    assert_eq!(summary.accounts, 1);
+    assert!(books.is_empty());
+    assert_eq!(accounts, 1);
 }
 
 #[tokio::test]
-async fn library_scan_upserts_books() {
-    let (_guard, _dek_dir) = setup_dek().await;
+async fn library_scan_returns_scan_rows() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/"))
@@ -179,34 +154,14 @@ async fn library_scan_upserts_books() {
         .mount(&server)
         .await;
 
-    // Credentials are now stored in the DB (not files).
-    let store = bookclerk_plugin_database_sqlite::open_store_memory()
+    let credentials = host_credentials("9", &stored_auth("9", "a@ex.com"));
+    let (books, accounts, _pages) = guest_scan(&server.uri(), &credentials, &[], 0)
         .await
         .unwrap();
-    save_auth_to_db(
-        &ChirpAuthFile {
-            access_token: "tok".into(),
-            web_token: None,
-            email: "a@ex.com".into(),
-            user_id: Some("9".into()),
-            marketplace: "us".into(),
-            label: None,
-        },
-        &store.scope("chirp", "chirp"),
-        "9",
-    )
-    .await
-    .unwrap();
-
-    let source = ChirpSource::with_graphql_url(server.uri());
-    let summary = source
-        .scan(&store.scope("chirp", "chirp"), ScanOptions::default())
-        .await
-        .unwrap();
-    assert_eq!(summary.books_upserted, 1);
-    let books = store.list_books(None).await.unwrap();
+    assert_eq!(accounts, 1);
+    assert_eq!(books.len(), 1);
     assert_eq!(books[0].product_id, "ab-100");
-    assert_eq!(books[0].source, "chirp");
+    assert_eq!(books[0].account_id, "9");
 }
 
 #[tokio::test]
@@ -253,8 +208,7 @@ async fn fetch_title_downloads_tracks() {
 }
 
 #[tokio::test]
-async fn fetch_via_content_source() {
-    let (_guard, _dek_dir) = setup_dek().await;
+async fn guest_fetch_uses_host_credentials() {
     let server = MockServer::start().await;
     let media_url = format!("{}/x.mp3", server.uri());
     Mock::given(method("POST"))
@@ -283,40 +237,9 @@ async fn fetch_via_content_source() {
         .mount(&server)
         .await;
 
-    // Credentials are now stored in the DB (not files).
-    let store = bookclerk_plugin_database_sqlite::open_store_memory()
-        .await
-        .unwrap();
-    save_auth_to_db(
-        &ChirpAuthFile {
-            access_token: "tok".into(),
-            web_token: None,
-            email: "u@ex.com".into(),
-            user_id: Some("1".into()),
-            marketplace: "us".into(),
-            label: None,
-        },
-        &store.scope("chirp", "chirp"),
-        "1",
-    )
-    .await
-    .unwrap();
-
+    let credentials = serde_json::to_value(stored_auth("1", "u@ex.com")).unwrap();
     let cache = tempfile::tempdir().unwrap();
-    let source = ChirpSource::with_graphql_url(server.uri());
-    let fetch = source
-        .fetch_title(
-            &store.scope("chirp", "chirp"),
-            "1",
-            "ab-2",
-            &bookclerk_source::FetchOptions {
-                download: bookclerk_source::DownloadOptions::default(),
-                cache_dir: cache.path().to_path_buf(),
-                files_dir: cache.path().to_path_buf(),
-                max_cache_bytes: None,
-                cancel: None,
-            },
-        )
+    let fetch = guest_fetch_title(&server.uri(), &credentials, "ab-2", cache.path())
         .await
         .unwrap();
     assert_eq!(fetch.parts.len(), 1);

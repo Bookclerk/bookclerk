@@ -112,6 +112,10 @@ fn receipt_wrap_type_env() -> SqlTypeEnv {
 ///
 /// A matching prior row with empty payload is unavailable, except a `claimed`
 /// row whose guest slice has this-attempt results (SELECT ran before finalize).
+/// A prior row holding the read-only marker
+/// ([`bookclerk_db_exec::GUEST_READ_ONLY_REPLAY_PAYLOAD`]) means the batch
+/// only read, so this attempt's own rows are returned: nothing was gated and
+/// the reads ran again.
 ///
 /// # Errors
 ///
@@ -180,12 +184,18 @@ fn guest_slice_is_gated_noop(reply: &ExecuteReply, guest_len: usize) -> bool {
 }
 
 /// Reconstructs a guest [`ExecuteReply`] from a prior-receipt select row.
+///
+/// Returns `None` for a missing payload and for the read-only marker, whose
+/// batch re-ran its reads in this attempt.
 fn decode_guest_replay_payload(
     prior: &bookclerk_plugin_abi::StatementResult,
 ) -> Result<Option<ExecuteReply>, PluginError> {
     let Some(text) = receipt_payload_text(prior) else {
         return Ok(None);
     };
+    if text == bookclerk_db_exec::GUEST_READ_ONLY_REPLAY_PAYLOAD {
+        return Ok(None);
+    }
     let payload: GuestReplayPayload = serde_json::from_str(&text).map_err(|err| {
         PluginError::internal(format!("guest replay payload is not valid JSON: {err}"))
     })?;
@@ -276,6 +286,95 @@ mod replay_finalize {
         sql_type_env_from_canonical_ddl(
             "CREATE TABLE bookclerk_slots (slot_key TEXT NOT NULL, bump INTEGER NOT NULL)",
         )
+    }
+
+    /// A read-only guest batch larger than the receipt replay payload cap
+    /// commits, and a replay of the same token re-runs the read instead of
+    /// failing on a payload it never stored.
+    #[tokio::test]
+    async fn read_only_guest_batch_is_not_bounded_by_the_replay_payload() {
+        let db = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .expect("mem db");
+        let caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
+        let body = "x".repeat(bookclerk_db_exec::GUEST_TYPED_REPLAY_PAYLOAD_MAX_BYTES + 1);
+        let hash = "c".repeat(64);
+        let read = |hash: &str| ExecuteRequest {
+            operation_id: "guest-read-op".into(),
+            request_hash: hash.into(),
+            statements: vec![
+                TypedDbStatement {
+                    sql: "SELECT ? AS body".into(),
+                    parameters: vec![DbValue::Text(body.clone())],
+                    kind: DbPlanStatementKind::Select,
+                    max_rows: 1,
+                    result_selection: DbResultSelection::Rows,
+                },
+                TypedDbStatement {
+                    sql: "SELECT bump FROM bookclerk_slots WHERE slot_key = 'guest-read'".into(),
+                    parameters: vec![],
+                    kind: DbPlanStatementKind::Select,
+                    max_rows: 1,
+                    result_selection: DbResultSelection::Rows,
+                },
+            ],
+            deadline_unix_ms: 0,
+        };
+        let set_bump = |bump: i64| {
+            use sea_orm::ConnectionTrait;
+            let db = db.clone();
+            async move {
+                db.execute_unprepared("DELETE FROM bookclerk_slots WHERE slot_key = 'guest-read'")
+                    .await
+                    .expect("clear the slot the read observes");
+                db.execute_unprepared(&format!(
+                    "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('guest-read', {bump})"
+                ))
+                .await
+                .expect("store the slot the read observes");
+            }
+        };
+        set_bump(1).await;
+        let run = |req: ExecuteRequest| {
+            let db = db.clone();
+            let caps = caps.clone();
+            async move {
+                let guest_req = req.clone();
+                let wrapped = wrap_guest_typed_request(req, &slots_env()).expect("wrap");
+                let reply = bookclerk_db_exec::execute_typed_envelope(
+                    bookclerk_db_exec::PhysicalEngine::sqlite(),
+                    &db,
+                    &wrapped,
+                    "sqlite_txn",
+                    bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
+                    bookclerk_db_exec::AtomicSession::from_deadline(None)
+                        .with_type_env(crate::migrations::host_sql_type_env()),
+                )
+                .await
+                .map_err(|err| err.to_string())?;
+                unwrap_guest_typed_reply(reply, &guest_req, &caps).map_err(|err| err.to_string())
+            }
+        };
+        let first = run(read(&hash)).await.expect("read-only batch commits");
+        assert_eq!(first.statements.len(), 2);
+        assert_eq!(
+            first.statements[0].rows[0].values[0],
+            DbValue::Text(body.clone())
+        );
+        assert_eq!(first.statements[1].rows[0].values[0], DbValue::Int64(1));
+        set_bump(2).await;
+        let replay = run(read(&hash)).await.expect("replay re-runs the read");
+        assert_eq!(
+            replay.statements[0].rows[0].values[0],
+            DbValue::Text(body.clone())
+        );
+        assert_eq!(
+            replay.statements[1].rows[0].values[0],
+            DbValue::Int64(2),
+            "the replay re-ran the read against the stored row instead of serving cached rows"
+        );
+        let conflict = run(read(&"d".repeat(64))).await.unwrap_err();
+        assert!(conflict.contains("different requestHash"), "{conflict}");
     }
 
     #[tokio::test]

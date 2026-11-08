@@ -68,9 +68,13 @@ operator, a household user, or a portal identity) has a **subject key**
    starting new calls 20 s into a fetch and saves what it has, and each store's
    rows are saved as that store finishes, so one slow store never discards
    the others. A save upserts the store's new rows, then deletes its rows
-   that fetch did not return. It uses single statements, not an interactive
-   transaction, which the external database plugins refuse, so a reader can
-   briefly see a store's new rows beside its old ones. A store whose calls all fail or come back empty keeps its
+   that fetch did not return. It sends them as a few atomic host batches,
+   each as large as the database plugin's `maxStatements` and
+   `maxRequestBytes` allow, not one statement per row and not an interactive
+   transaction, which the external database plugins refuse. The delete
+   rides in the last batch, so a reader can briefly see a store's new rows
+   beside its old ones. Each answer in the storefront call cache is stored
+   with one upsert. A store whose calls all fail or come back empty keeps its
    previous rows, since a plugin adapter can report a guest failure as an
    empty answer. The
    finished fetch is recorded in `discover_fetches`, so a fetch that found
@@ -81,11 +85,14 @@ operator, a household user, or a portal identity) has a **subject key**
    for the person's current seeds (their own, or the household's), and none
    when `discovery.storefront_candidates` is off.
 
-   Both steps stay inside the database plugin's 256 KiB result limit
-   (`maxResultBytes` in the [SQL contract](../plugins/sql-contract/v1.md)).
-   The ranking reads candidates in pages and halves a page when its result
-   would be too large. A stored feed is one cell, and the plugin counts a
-   row as JSON, where each quote or backslash in the feed takes two bytes.
+   Both steps read through the database plugin's streamed result path
+   ([SQL contract](../plugins/sql-contract/v1.md#streamed-results)), so a
+   page of candidates or a stored feed larger than one inline 256 KiB
+   result still arrives whole. Against a database plugin without streamed
+   results, the ranking halves a page of candidates when its result would
+   exceed the inline limit (`maxResultBytes`). A stored feed is one cell,
+   and the plugin counts a row as JSON, where each quote or backslash in
+   the feed takes two bytes.
    So the feed is kept under 192 KiB in that escaped form: if it is larger,
    every shelf is cut to its best items (down to four), then long
    descriptions are shortened, then the last shelves are dropped. Writing a

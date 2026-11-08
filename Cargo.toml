@@ -32,6 +32,7 @@ members = [
     "crates/bookclerk-sandbox",
     "crates/bookclerk-search",
     "crates/bookclerk-source",
+    "crates/bookclerk-storefront",
     "crates/bookclerk-storage",
     "crates/bookclerk-tls",
     "crates/bookclerk-tray",
@@ -101,6 +102,7 @@ bookclerk-media-worker = { path = "crates/bookclerk-media-worker" }
 bookclerk-storage = { path = "crates/bookclerk-storage" }
 bookclerk-library = { path = "crates/bookclerk-library" }
 bookclerk-source = { path = "crates/bookclerk-source" }
+bookclerk-storefront = { path = "crates/bookclerk-storefront" }
 bookclerk-resolve = { path = "crates/bookclerk-resolve" }
 bookclerk-acquire = { path = "crates/bookclerk-acquire" }
 bookclerk-naming = { path = "crates/bookclerk-naming" }

@@ -1,52 +1,28 @@
-//! [`GraphicAudioSource`]: [`ContentSource`] implementation for GraphicAudio.
+//! [`GraphicAudioSource`]: catalog lookups against the public GraphicAudio storefront.
+//!
+//! Account login, library scans and title fetches run in the guest RPC
+//! handlers ([`crate::guest`]); the host stores the credentials they return.
 
-use std::sync::Arc;
-
-use async_trait::async_trait;
-use bookclerk_library::SourceScope;
-use bookclerk_source::{
-    CatalogHit, CatalogSearchOpts, ContentSource, ExpandSeed, FetchOptions, LoginOptions,
-    PortalAuthMode, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount, SourceBrand,
-    SourceFetch, SourcePurchaseHint,
+use bookclerk_storefront::{
+    CatalogHit, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts, SourcePurchaseHint,
 };
 
-use crate::auth::GraphicAudioAuthFile;
 use crate::catalog::{
     catalog_http_client, expand_from_product_id, expand_from_search, MagentoCatalogProduct,
 };
-use crate::client::{GraphicAudioClient, DEFAULT_BASE_URL};
-use crate::db::{delete_auth_from_db, list_auth_from_db, load_auth_from_db, save_auth_to_db};
-use crate::download::{fetch_title_with_mode, product_title_for, TitleFetchRequest};
-use crate::error::{GraphicAudioError, Result};
-use crate::magento::{MagentoClient, DEFAULT_STORE_URL};
-use crate::options::{GraphicAudioAccess, GraphicAudioBitrate, GraphicAudioContainer};
-use crate::sync::{scan_library, ScanOptions as GaScanOptions};
+use crate::magento::DEFAULT_STORE_URL;
 
-/// Describe / config id for this store (`graphicaudio` in `[sources.graphicaudio]`).
+/// Describe / config id for this store (`graphicaudio`).
 pub const ID: &str = "graphicaudio";
 
-/// Alternate config / CLI ids accepted for this storefront (`ga`, `graphic-audio`).
-const ALIASES: &[&str] = &["ga", "graphic-audio"];
-
-/// GraphicAudio storefront adapter implementing [`ContentSource`].
+/// GraphicAudio catalog client used by the guest's discovery entrypoints.
 ///
-/// Access path (`web` / `zip` / `device`) comes from config; see crate-level docs.
+/// The catalog lives on the public Magento storefront, so no account or
+/// access path is involved.
 #[derive(Debug, Clone)]
 pub struct GraphicAudioSource {
-    /// Access App API origin (`…/access`).
-    base_url: String,
-    /// Magento storefront origin (ZIP + Browser Player).
+    /// Magento storefront origin (production default or a wiremock override).
     store_url: String,
-    /// Configured access path (login + default fetch). Env may still override fetch.
-    pub access: GraphicAudioAccess,
-    /// Device encode bitrate (`[sources.graphicaudio] bitrate`).
-    pub bitrate: GraphicAudioBitrate,
-    /// ZIP SKU container preference (`[sources.graphicaudio] container`).
-    pub container: GraphicAudioContainer,
-    /// Optional fetch-mode override (tests / embedding).
-    fetch_mode: Option<GraphicAudioAccess>,
-    /// Magento password for web / ZIP access (the account's stored secret).
-    magento_password: Option<String>,
 }
 
 impl Default for GraphicAudioSource {
@@ -56,325 +32,32 @@ impl Default for GraphicAudioSource {
 }
 
 impl GraphicAudioSource {
-    /// Production GraphicAudio Access API + storefront origins (access=`web`).
+    /// Production GraphicAudio storefront origin.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            base_url: DEFAULT_BASE_URL.to_string(),
             store_url: DEFAULT_STORE_URL.to_string(),
-            access: GraphicAudioAccess::Web,
-            bitrate: GraphicAudioBitrate::Hi,
-            container: GraphicAudioContainer::Auto,
-            fetch_mode: None,
-            magento_password: None,
         }
     }
 
-    /// Override Access API base (wiremock / staging).
-    #[must_use]
-    pub fn with_base_url(base_url: impl Into<String>) -> Self {
-        Self {
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-            store_url: DEFAULT_STORE_URL.to_string(),
-            access: GraphicAudioAccess::Web,
-            bitrate: GraphicAudioBitrate::Hi,
-            container: GraphicAudioContainer::Auto,
-            fetch_mode: None,
-            magento_password: None,
-        }
-    }
-
-    /// Override Magento storefront base (wiremock).
+    /// Override Magento storefront base (wiremock / staging).
     #[must_use]
     pub fn with_store_url(mut self, store_url: impl Into<String>) -> Self {
         self.store_url = store_url.into().trim_end_matches('/').to_string();
         self
     }
 
-    /// Set the configured access path (`[sources.graphicaudio] access`).
-    #[must_use]
-    pub fn with_access(mut self, access: GraphicAudioAccess) -> Self {
-        self.access = access;
-        self
-    }
-
-    /// Sets the Access App encode bitrate preference.
-    #[must_use]
-    pub fn with_bitrate(mut self, bitrate: GraphicAudioBitrate) -> Self {
-        self.bitrate = bitrate;
-        self
-    }
-
-    /// Sets the Magento ZIP container preference (`mp3` / `m4b` / auto).
-    #[must_use]
-    pub fn with_container(mut self, container: GraphicAudioContainer) -> Self {
-        self.container = container;
-        self
-    }
-
-    /// Force a fetch path (bypasses config / env).
-    #[must_use]
-    pub fn with_fetch_mode(mut self, mode: GraphicAudioAccess) -> Self {
-        self.fetch_mode = Some(mode);
-        self
-    }
-
-    /// Magento password for ZIP / Browser Player.
-    #[must_use]
-    pub fn with_magento_password(mut self, password: impl Into<String>) -> Self {
-        self.magento_password = Some(password.into());
-        self
-    }
-
-    /// Arc-wrapped instance for [`bookclerk_source::SourceRegistry`].
-    #[must_use]
-    pub fn shared() -> Arc<Self> {
-        Arc::new(Self::new())
-    }
-
-    /// Login and persist credentials to the DB.
-    ///
-    /// - `access=web|zip`: Magento customer login only (no Access App device slot).
-    /// - `access=device`: Access App `activation/login` (registers a device).
+    /// Searches the public catalog.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
-    pub async fn login_account(
-        &self,
-        library: &SourceScope,
-        opts: LoginOptions,
-    ) -> Result<SourceAccount> {
-        let email = opts
-            .email
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| GraphicAudioError::auth("GraphicAudio login requires email"))?;
-        let password = opts
-            .password
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| GraphicAudioError::auth("GraphicAudio login requires password"))?;
-
-        let marketplace = if opts.marketplace.trim().is_empty() {
-            String::from("us")
-        } else {
-            opts.marketplace.trim().to_ascii_lowercase()
-        };
-
-        // Determine if there's an existing auth in DB to preserve client_id / device token.
-        // Account id for GraphicAudio is the email (see GraphicAudioAuthFile::account_id).
-        let account_id_candidate = email.to_string();
-        let existing = load_auth_from_db(library, &account_id_candidate)
-            .await
-            .unwrap_or(None);
-
-        if let Some(ref existing_auth) = existing {
-            if !opts.force {
-                return Ok(source_account_from_auth(existing_auth));
-            }
-        }
-
-        let (token, client_id) = match self.access {
-            GraphicAudioAccess::Device => {
-                let client_id = existing
-                    .as_ref()
-                    .map(|a| a.client_id.clone())
-                    .unwrap_or_else(|| format!("bookclerk-{}", uuid::Uuid::new_v4()));
-                let mut client = GraphicAudioClient::new(&self.base_url);
-                let token = client.login(email, password, &client_id).await?;
-                (token, client_id)
-            }
-            GraphicAudioAccess::Web | GraphicAudioAccess::Zip => {
-                let store = MagentoClient::new(&self.store_url)?;
-                store.login(email, password).await?;
-                let client_id = existing
-                    .as_ref()
-                    .map(|a| a.client_id.clone())
-                    .unwrap_or_else(|| format!("bookclerk-{}", uuid::Uuid::new_v4()));
-                let token = existing
-                    .as_ref()
-                    .map(|a| a.token.clone())
-                    .unwrap_or_default();
-                (token, client_id)
-            }
-        };
-
-        let auth = GraphicAudioAuthFile {
-            token,
-            client_id,
-            email: email.to_string(),
-            marketplace,
-            label: opts.label.clone(),
-        };
-        let account_id = auth.account_id().to_string();
-        save_auth_to_db(&auth, library, &account_id)
-            .await
-            .map_err(|e| {
-                GraphicAudioError::auth(format!("failed to save GraphicAudio auth: {e}"))
-            })?;
-        library
-            .upsert_account(&account_id, &auth.marketplace, auth.label.as_deref(), true)
-            .await
-            .map_err(|e| {
-                GraphicAudioError::auth(format!("failed to upsert GraphicAudio account: {e}"))
-            })?;
-
-        tracing::info!(
-            email = %auth.email,
-            access = ?self.access,
-            has_device_token = auth.has_device_token(),
-            "saved GraphicAudio auth to encrypted_secrets"
-        );
-
-        Ok(source_account_from_auth(&auth))
-    }
-
-    /// Delete a GraphicAudio account from the DB.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the operation fails.
-    pub async fn delete_account(&self, library: &SourceScope, account_id: &str) -> Result<()> {
-        delete_auth_from_db(library, account_id).await
-    }
-}
-
-#[async_trait]
-impl ContentSource for GraphicAudioSource {
-    fn id(&self) -> &str {
-        ID
-    }
-
-    fn display_name(&self) -> &str {
-        "GraphicAudio"
-    }
-
-    fn aliases(&self) -> &'static [&'static str] {
-        ALIASES
-    }
-
-    fn portal_auth_mode(&self) -> PortalAuthMode {
-        PortalAuthMode::Password
-    }
-
-    fn portal_brand(&self) -> SourceBrand {
-        SourceBrand {
-            id: "graphicaudio",
-            name: "GraphicAudio",
-            bg: "#141414",
-            fg: "#F5F5F5",
-            accent: "#C41E3A",
-            icon_url: "https://www.google.com/s2/favicons?domain=graphicaudio.net&sz=128",
-        }
-    }
-
-    fn sort_key(&self) -> u32 {
-        2
-    }
-
-    async fn login(
-        &self,
-        library: &SourceScope,
-        opts: LoginOptions,
-    ) -> bookclerk_source::Result<SourceAccount> {
-        self.login_account(library, opts).await.map_err(Into::into)
-    }
-
-    async fn list_accounts(
-        &self,
-        library: &SourceScope,
-    ) -> bookclerk_source::Result<Vec<SourceAccount>> {
-        let records = list_auth_from_db(library)
-            .await
-            .map_err(Into::<bookclerk_source::SourceError>::into)?;
-        Ok(records
-            .into_iter()
-            .map(|(_id, auth)| source_account_from_auth(&auth))
-            .collect())
-    }
-
-    async fn scan(
-        &self,
-        library: &SourceScope,
-        opts: ScanOptions,
-    ) -> bookclerk_source::Result<ScanSummary> {
-        let password = self.magento_password.clone();
-        scan_library(
-            library,
-            GaScanOptions::from(&opts),
-            crate::sync::ScanContext {
-                access_base_url: Some(self.base_url.as_str()),
-                store_base_url: Some(self.store_url.as_str()),
-                access: self.access,
-                magento_password: password.as_deref(),
-            },
-        )
-        .await
-        .map_err(Into::into)
-    }
-
-    async fn fetch_title(
-        &self,
-        library: &SourceScope,
-        account_id: &str,
-        title_id: &str,
-        opts: &FetchOptions,
-    ) -> bookclerk_source::Result<SourceFetch> {
-        let auth = load_auth_from_db(library, account_id)
-            .await
-            .map_err(|e| bookclerk_source::SourceError::Auth(e.to_string()))?
-            .ok_or_else(|| {
-                bookclerk_source::SourceError::Auth(format!(
-                    "no GraphicAudio credentials for account `{account_id}` in DB"
-                ))
-            })?;
-        let _ = &opts.files_dir;
-        let client = GraphicAudioClient::new(&self.base_url).with_token(&auth.token);
-        let prefer_hi = self.bitrate.prefers_hi();
-        let mode = self.fetch_mode.unwrap_or(self.access);
-
-        let product_title = if matches!(mode, GraphicAudioAccess::Zip) && auth.has_device_token() {
-            match product_title_for(&client, title_id).await {
-                Ok(t) => t,
-                Err(err) => {
-                    tracing::debug!(error = %err, "could not resolve GraphicAudio product title");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let password = self.magento_password.clone();
-
-        let plain = fetch_title_with_mode(
-            &client,
-            TitleFetchRequest {
-                store_base_url: &self.store_url,
-                email: &auth.email,
-                product_id: title_id,
-                product_title: product_title.as_deref(),
-                cache_dir: &opts.cache_dir,
-                prefer_hi,
-                mode,
-                password: password.as_deref(),
-                zip_container: self.container,
-            },
-        )
-        .await?;
-        Ok(plain)
-    }
-
-    fn config_options(&self) -> &'static [bookclerk_source::SourceConfigOption] {
-        GA_CONFIG_OPTIONS
-    }
-
-    async fn search_catalog(
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Some lookups fail soft and only yield fewer
+    /// results (or none), so an empty result does not prove the store has none.
+    pub async fn search_catalog(
         &self,
         opts: &CatalogSearchOpts,
-    ) -> bookclerk_source::Result<Vec<CatalogHit>> {
+    ) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
         let q = opts.query.trim();
         if q.is_empty() || opts.limit == 0 {
             return Ok(Vec::new());
@@ -400,11 +83,18 @@ impl ContentSource for GraphicAudioSource {
             .collect())
     }
 
-    async fn expand_candidates(
+    /// Finds up to `limit` titles related to `seed` (same author, series, …).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Some lookups fail soft and only yield fewer
+    /// results (or none), so an empty result does not prove the store has none.
+    pub async fn expand_candidates(
         &self,
         seed: &ExpandSeed,
         limit: usize,
-    ) -> bookclerk_source::Result<Vec<CatalogHit>> {
+    ) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -469,10 +159,17 @@ impl ContentSource for GraphicAudioSource {
         Ok(hits)
     }
 
-    async fn purchase_hint(
+    /// Resolves the storefront price and link for a title; `None` when not sold.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Failed lookups are soft, so `Ok(None)` can also
+    /// mean the store could not be reached, not only that the title is not sold.
+    pub async fn purchase_hint(
         &self,
         opts: &PurchaseHintOpts,
-    ) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
+    ) -> bookclerk_storefront::Result<Option<SourcePurchaseHint>> {
         let mut hint = if let Some(pid) = opts
             .product_id
             .as_deref()
@@ -550,8 +247,8 @@ fn ga_catalog_hit(p: &MagentoCatalogProduct, origin: String) -> CatalogHit {
     CatalogHit {
         product_id: p.product_id.clone(),
         title: p.title.clone(),
-        series_entries: bookclerk_source::records::series_entries(p.series.as_deref(), None),
-        expression_kind: bookclerk_source::records::ExpressionKind::Dramatisation,
+        series_entries: bookclerk_storefront::records::series_entries(p.series.as_deref(), None),
+        expression_kind: bookclerk_storefront::records::ExpressionKind::Dramatisation,
         url: p.url.clone(),
         cover_url: p.cover_url.clone(),
         origin,
@@ -722,71 +419,80 @@ fn format_usd(cents: i64) -> String {
     format!("${}.{:02}", cents / 100, (cents % 100).unsigned_abs())
 }
 
-/// Settings knobs for access path, Access App bitrate, and ZIP container preference.
-const GA_CONFIG_OPTIONS: &[bookclerk_source::SourceConfigOption] = &[
-    bookclerk_source::SourceConfigOption {
-        key: "access",
-        label: "Access",
-        values: &[
-            bookclerk_source::ConfigOptionValue {
-                id: "web",
-                label: "Browser Player",
-            },
-            bookclerk_source::ConfigOptionValue {
-                id: "zip",
-                label: "Magento ZIP",
-            },
-            bookclerk_source::ConfigOptionValue {
-                id: "device",
-                label: "Access App",
-            },
-        ],
-    },
-    bookclerk_source::SourceConfigOption {
-        key: "bitrate",
-        label: "Bitrate",
-        values: &[
-            bookclerk_source::ConfigOptionValue {
-                id: "hi",
-                label: "Hi",
-            },
-            bookclerk_source::ConfigOptionValue {
-                id: "lo",
-                label: "Lo",
-            },
-        ],
-    },
-    bookclerk_source::SourceConfigOption {
-        key: "container",
-        label: "Container",
-        values: &[
-            bookclerk_source::ConfigOptionValue {
-                id: "auto",
-                label: "Auto",
-            },
-            bookclerk_source::ConfigOptionValue {
-                id: "m4b",
-                label: "M4B",
-            },
-            bookclerk_source::ConfigOptionValue {
-                id: "mp3",
-                label: "MP3",
-            },
-            bookclerk_source::ConfigOptionValue {
-                id: "flac",
-                label: "FLAC",
-            },
-        ],
-    },
-];
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Builds a scan-enabled [`SourceAccount`] from a saved GraphicAudio auth blob.
-fn source_account_from_auth(auth: &GraphicAudioAuthFile) -> SourceAccount {
-    SourceAccount {
-        account_id: auth.account_id().to_string(),
-        source: ID.into(),
-        marketplace: auth.marketplace.clone(),
-        label: auth.label.clone().or_else(|| Some(auth.email.clone())),
-        scan_enabled: true,
+    /// Search options for `query` with a page of `limit` results.
+    fn search(query: &str, limit: usize) -> CatalogSearchOpts {
+        CatalogSearchOpts {
+            query: query.into(),
+            region: "us".into(),
+            limit,
+            page: 1,
+            sort: bookclerk_storefront::CatalogSearchSort::Relevance,
+            field: None,
+            language: None,
+        }
+    }
+
+    /// A related-titles seed with no optional fields set.
+    fn seed() -> ExpandSeed {
+        ExpandSeed {
+            source: "graphicaudio".into(),
+            product_id: "1".into(),
+            title: "Title".into(),
+            authors: None,
+            narrators: None,
+            series: None,
+            series_asin: None,
+            asin: None,
+            isbn: None,
+            region: "us".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_requests_answer_without_calling_the_store() {
+        // These inputs return before any request; the unroutable URL keeps
+        // the test offline if that ever regresses.
+        let source = GraphicAudioSource::new().with_store_url("http://127.0.0.1:9");
+        assert!(source
+            .search_catalog(&search("  ", 10))
+            .await
+            .expect("blank")
+            .is_empty());
+        assert!(source
+            .search_catalog(&search("dune", 0))
+            .await
+            .expect("zero")
+            .is_empty());
+        assert!(source
+            .expand_candidates(&seed(), 0)
+            .await
+            .expect("expand")
+            .is_empty());
+    }
+
+    #[test]
+    fn catalog_hit_is_a_dramatisation_with_series() {
+        let product = MagentoCatalogProduct {
+            product_id: "42".into(),
+            sku: None,
+            title: "The Spider".into(),
+            url: Some("https://example.test/spider".into()),
+            series: Some("The Spider".into()),
+            cover_url: Some("https://example.test/spider.jpg".into()),
+        };
+        let hit = ga_catalog_hit(&product, "search".into());
+        assert_eq!(hit.product_id, "42");
+        assert_eq!(hit.origin, "search");
+        assert_eq!(hit.url, product.url);
+        assert_eq!(hit.cover_url, product.cover_url);
+        assert!(matches!(
+            hit.expression_kind,
+            bookclerk_storefront::records::ExpressionKind::Dramatisation
+        ));
+        assert_eq!(hit.series_entries.len(), 1);
     }
 }

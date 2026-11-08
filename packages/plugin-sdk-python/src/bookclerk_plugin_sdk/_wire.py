@@ -4699,6 +4699,115 @@ _execute_result_reply_codec = _Codec(1, 1, _write_execute_result_reply, _read_ex
 """Wire codec for ``ExecuteResultReply`` (1 data words, 1 pointers)."""
 
 
+def _write_execute_stream_head(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["operationId"])
+    s.set_u32(0, v["statementCount"])
+
+
+def _read_execute_stream_head(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "operationId": s.get_text(0),
+        "statementCount": s.get_u32(0),
+    }
+
+
+_execute_stream_head_codec = _Codec(1, 1, _write_execute_stream_head, _read_execute_stream_head)
+"""Wire codec for ``ExecuteStreamHead`` (1 data words, 1 pointers)."""
+
+
+def _write_execute_stream_statement(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u32(0, v["index"])
+    items = s.init_struct_list(0, len(v["columns"]), 1, 1)
+    for item, elem in zip(items, v["columns"], strict=True):
+        _db_column_codec.write(item, elem, caps)
+    s.set_u64(1, v["rowsAffected"])
+
+
+def _read_execute_stream_statement(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "index": s.get_u32(0),
+        "columns": [_db_column_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)],
+        "rowsAffected": s.get_u64(1),
+    }
+
+
+_execute_stream_statement_codec = _Codec(2, 1, _write_execute_stream_statement, _read_execute_stream_statement)
+"""Wire codec for ``ExecuteStreamStatement`` (2 data words, 1 pointers)."""
+
+
+def _write_execute_stream_frame(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "head":
+        s.set_u16(0, 0)
+        _execute_stream_head_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
+    elif kind == "statement":
+        s.set_u16(0, 1)
+        _execute_stream_statement_codec.write(s.init_struct(0, 2, 1), v["value"], caps)
+    elif kind == "rows":
+        s.set_u16(0, 2)
+        items = s.init_struct_list(0, len(v["value"]), 0, 1)
+        for item, elem in zip(items, v["value"], strict=True):
+            _db_row_codec.write(item, elem, caps)
+    elif kind == "end":
+        s.set_u16(0, 3)
+        _db_timing_codec.write(s.init_struct(0, 2, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 4)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown ExecuteStreamFrame union member: {kind}")
+
+
+def _read_execute_stream_frame(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "head", "value": _execute_stream_head_codec.read(s.get_struct(0, 1, 1), caps)}
+    elif disc == 1:
+        return {"kind": "statement", "value": _execute_stream_statement_codec.read(s.get_struct(0, 2, 1), caps)}
+    elif disc == 2:
+        return {"kind": "rows", "value": [_db_row_codec.read(item, caps) for item in s.get_struct_list(0, 0, 1)]}
+    elif disc == 3:
+        return {"kind": "end", "value": _db_timing_codec.read(s.get_struct(0, 2, 1), caps)}
+    elif disc == 4:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown ExecuteStreamFrame union member: {disc}")
+
+
+_execute_stream_frame_codec = _Codec(1, 1, _write_execute_stream_frame, _read_execute_stream_frame)
+"""Wire codec for ``ExecuteStreamFrame`` (1 data words, 1 pointers)."""
+
+
+def _write_execute_stream_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "inline":
+        s.set_u16(0, 0)
+        s.set_data(0, v["value"])
+    elif kind == "stream":
+        s.set_u16(0, 1)
+        if v["value"] is not None:
+            s.set_cap(0, caps.export_cap(v["value"]))
+    elif kind == "err":
+        s.set_u16(0, 2)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown ExecuteStreamReply union member: {kind}")
+
+
+def _read_execute_stream_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "inline", "value": s.get_data(0)}
+    elif disc == 1:
+        return {"kind": "stream", "value": caps.import_cap(s.get_cap_index(0))}
+    elif disc == 2:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown ExecuteStreamReply union member: {disc}")
+
+
+_execute_stream_reply_codec = _Codec(1, 1, _write_execute_stream_reply, _read_execute_stream_reply)
+"""Wire codec for ``ExecuteStreamReply`` (1 data words, 1 pointers)."""
+
+
 def _write_db_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u32(0, v["sqlContractVersion"])
     s.set_bool(32, v["atomicBatch"])
@@ -4722,6 +4831,8 @@ def _write_db_capabilities(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u32(13, v["maxLoweredStatementBytes"])
     s.set_bool(39, v["consistentBackupRead"])
     s.set_bool(40, v["atomicUnitRestore"])
+    s.set_u32(14, v["maxStreamedResultBytes"])
+    s.set_u32(15, v["maxStreamedResultRows"])
 
 
 def _read_db_capabilities(s: _StructReader, caps: _CapTable) -> Any:
@@ -4748,11 +4859,13 @@ def _read_db_capabilities(s: _StructReader, caps: _CapTable) -> Any:
         "maxLoweredStatementBytes": s.get_u32(13),
         "consistentBackupRead": s.get_bool(39),
         "atomicUnitRestore": s.get_bool(40),
+        "maxStreamedResultBytes": s.get_u32(14),
+        "maxStreamedResultRows": s.get_u32(15),
     }
 
 
-_db_capabilities_codec = _Codec(7, 0, _write_db_capabilities, _read_db_capabilities)
-"""Wire codec for ``DbCapabilities`` (7 data words, 0 pointers)."""
+_db_capabilities_codec = _Codec(8, 0, _write_db_capabilities, _read_db_capabilities)
+"""Wire codec for ``DbCapabilities`` (8 data words, 0 pointers)."""
 
 
 def _write_db_bootstrap_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -4798,7 +4911,7 @@ def _write_db_capabilities_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> No
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _db_capabilities_codec.write(s.init_struct(0, 7, 0), v["value"], caps)
+        _db_capabilities_codec.write(s.init_struct(0, 8, 0), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -4809,7 +4922,7 @@ def _write_db_capabilities_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> No
 def _read_db_capabilities_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _db_capabilities_codec.read(s.get_struct(0, 7, 0), caps)}
+        return {"kind": "ok", "value": _db_capabilities_codec.read(s.get_struct(0, 8, 0), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown DbCapabilitiesReply union member: {disc}")
@@ -6811,6 +6924,34 @@ _adapter_database_session_assert_restore_constraints_results_codec = _Codec(0, 1
 """Wire codec for ``AdapterDatabaseSessionAssertRestoreConstraintsResults`` (0 data words, 1 pointers)."""
 
 
+def _write_adapter_database_session_execute_streamed_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _adapter_execute_request_codec.write(s.init_struct(0, 2, 4), v["request"], caps)
+
+
+def _read_adapter_database_session_execute_streamed_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _adapter_execute_request_codec.read(s.get_struct(0, 2, 4), caps),
+    }
+
+
+_adapter_database_session_execute_streamed_params_codec = _Codec(0, 1, _write_adapter_database_session_execute_streamed_params, _read_adapter_database_session_execute_streamed_params)
+"""Wire codec for ``AdapterDatabaseSessionExecuteStreamedParams`` (0 data words, 1 pointers)."""
+
+
+def _write_adapter_database_session_execute_streamed_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _execute_stream_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_adapter_database_session_execute_streamed_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _execute_stream_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_adapter_database_session_execute_streamed_results_codec = _Codec(0, 1, _write_adapter_database_session_execute_streamed_results, _read_adapter_database_session_execute_streamed_results)
+"""Wire codec for ``AdapterDatabaseSessionExecuteStreamedResults`` (0 data words, 1 pointers)."""
+
+
 def _write_guest_database_execute_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     _execute_request_codec.write(s.init_struct(0, 1, 3), v["request"], caps)
 
@@ -6889,6 +7030,34 @@ def _read_guest_database_limits_results(s: _StructReader, caps: _CapTable) -> An
 
 _guest_database_limits_results_codec = _Codec(0, 1, _write_guest_database_limits_results, _read_guest_database_limits_results)
 """Wire codec for ``GuestDatabaseLimitsResults`` (0 data words, 1 pointers)."""
+
+
+def _write_guest_database_execute_streamed_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _execute_request_codec.write(s.init_struct(0, 1, 3), v["request"], caps)
+
+
+def _read_guest_database_execute_streamed_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _execute_request_codec.read(s.get_struct(0, 1, 3), caps),
+    }
+
+
+_guest_database_execute_streamed_params_codec = _Codec(0, 1, _write_guest_database_execute_streamed_params, _read_guest_database_execute_streamed_params)
+"""Wire codec for ``GuestDatabaseExecuteStreamedParams`` (0 data words, 1 pointers)."""
+
+
+def _write_guest_database_execute_streamed_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _execute_stream_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_guest_database_execute_streamed_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _execute_stream_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_guest_database_execute_streamed_results_codec = _Codec(0, 1, _write_guest_database_execute_streamed_results, _read_guest_database_execute_streamed_results)
+"""Wire codec for ``GuestDatabaseExecuteStreamedResults`` (0 data words, 1 pointers)."""
 
 
 def _write_plugin_worker_describe_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

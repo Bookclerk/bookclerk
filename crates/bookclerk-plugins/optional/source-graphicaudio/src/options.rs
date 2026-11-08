@@ -1,8 +1,8 @@
-//! GraphicAudio-native `[sources.graphicaudio]` knobs.
+//! GraphicAudio-native plugin settings.
 
 use serde::{Deserialize, Serialize};
 
-/// How GraphicAudio fetches owned audio (`[sources.graphicaudio] access`).
+/// How GraphicAudio fetches owned audio (the `access` plugin setting).
 ///
 /// Default is [`Self::Web`] (Browser Player). ZIP downloads and Access App
 /// device registration are opt-in — do not assume the user purchased a ZIP
@@ -48,7 +48,7 @@ impl GraphicAudioAccess {
     }
 }
 
-/// GraphicAudio device encode preference (`[sources.graphicaudio] bitrate`).
+/// GraphicAudio device encode preference (the `bitrate` plugin setting).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum GraphicAudioBitrate {

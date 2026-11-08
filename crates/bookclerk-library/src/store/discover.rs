@@ -16,7 +16,10 @@ use sea_orm::{
     QueryOrder, QuerySelect,
 };
 
+use bookclerk_plugin_abi::{DbCapabilities, ExecuteRequest, TypedDbStatement};
+
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
+use crate::control_plane::batch;
 use crate::entities::{
     discover_candidates, discover_feeds, discover_fetches, discover_store_calls, portal_identities,
     users,
@@ -32,6 +35,142 @@ use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
 /// sqlite plugin's 256 KiB `maxResultBytes`, so the candidate listing halves
 /// its page when a result is refused for size.
 const DISCOVER_READ_PAGE: u64 = 200;
+
+/// Share of the plugin's `maxRequestBytes` a candidate batch fills, in
+/// eighths. The batch size is summed from each statement's own encoding, so
+/// the margin covers the framing that summing leaves out.
+const CANDIDATE_BATCH_BYTES_EIGHTHS: usize = 7;
+
+/// The two statements that upsert one candidate row.
+///
+/// `UPDATE` first, then `INSERT OR IGNORE`: an existing row is rewritten
+/// and the insert is ignored; a new row is missed by the update and
+/// inserted. Canonical SQL-v1 has no `ON CONFLICT … DO UPDATE`, and the
+/// pair is idempotent in either order across batches.
+fn candidate_upsert(
+    subject_key: &str,
+    source: &str,
+    candidate_key: &str,
+    scope: SeedScope,
+    candidate_json: &str,
+    fetched_at: &str,
+) -> [TypedDbStatement; 2] {
+    [
+        batch::exec(
+            "UPDATE discover_candidates \
+             SET seed_scope = ?, candidate_json = ?, fetched_at = ? \
+             WHERE subject_key = ? AND source = ? AND candidate_key = ?",
+            vec![
+                batch::text(scope.as_str()),
+                batch::text(candidate_json),
+                batch::text(fetched_at),
+                batch::text(subject_key),
+                batch::text(source),
+                batch::text(candidate_key),
+            ],
+        ),
+        batch::exec(
+            "INSERT OR IGNORE INTO discover_candidates \
+             (subject_key, source, candidate_key, seed_scope, candidate_json, fetched_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+            vec![
+                batch::text(subject_key),
+                batch::text(source),
+                batch::text(candidate_key),
+                batch::text(scope.as_str()),
+                batch::text(candidate_json),
+                batch::text(fetched_at),
+            ],
+        ),
+    ]
+}
+
+/// Splits candidate writes into atomic batches the database plugin accepts.
+///
+/// A batch closes before it would pass the plugin's `maxStatements`, or
+/// [`CANDIDATE_BATCH_BYTES_EIGHTHS`] of its `maxRequestBytes`.
+struct CandidateBatches {
+    /// Statements waiting for the next batch.
+    pending: Vec<TypedDbStatement>,
+    /// Summed encoded bytes of `pending` plus an empty request's framing.
+    pending_bytes: usize,
+    /// Encoded bytes of a request with no statements.
+    empty_bytes: usize,
+    /// Most statements one batch may hold.
+    max_statements: usize,
+    /// Most encoded bytes one batch may hold.
+    max_bytes: usize,
+}
+
+impl CandidateBatches {
+    /// Starts an empty batch sized to the plugin's advertised limits.
+    fn new(caps: &DbCapabilities) -> Self {
+        let empty_bytes = encoded_len(&[]).unwrap_or(0);
+        let request_cap = usize::try_from(caps.max_request_bytes).unwrap_or(usize::MAX);
+        Self {
+            pending: Vec::new(),
+            pending_bytes: empty_bytes,
+            empty_bytes,
+            max_statements: usize::try_from(caps.max_statements)
+                .unwrap_or(usize::MAX)
+                .max(1),
+            max_bytes: request_cap / 8 * CANDIDATE_BATCH_BYTES_EIGHTHS,
+        }
+    }
+
+    /// Adds one statement.
+    ///
+    /// # Returns
+    ///
+    /// The batch that had to close to make room, when one did.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the statement alone is larger than one batch
+    /// may carry, or cannot be encoded.
+    fn push(&mut self, stmt: TypedDbStatement) -> Result<Option<Vec<TypedDbStatement>>> {
+        let size = encoded_len(std::slice::from_ref(&stmt))?.saturating_sub(self.empty_bytes);
+        if self.empty_bytes.saturating_add(size) > self.max_bytes {
+            return Err(LibraryError::Other(anyhow::anyhow!(
+                "a discover candidate write is {size} bytes, over the database plugin's request limit"
+            )));
+        }
+        let full = self.pending.len() >= self.max_statements
+            || self.pending_bytes.saturating_add(size) > self.max_bytes;
+        let closed = if full && !self.pending.is_empty() {
+            self.pending_bytes = self.empty_bytes;
+            Some(std::mem::take(&mut self.pending))
+        } else {
+            None
+        };
+        self.pending_bytes = self.pending_bytes.saturating_add(size);
+        self.pending.push(stmt);
+        Ok(closed)
+    }
+
+    /// The last, partly filled batch, when anything is left.
+    fn finish(self) -> Option<Vec<TypedDbStatement>> {
+        (!self.pending.is_empty()).then_some(self.pending)
+    }
+}
+
+/// Encoded bytes of a request carrying `statements`.
+///
+/// # Errors
+///
+/// Returns an error when the statements cannot be encoded (a NUL in the SQL
+/// or a text bind).
+fn encoded_len(statements: &[TypedDbStatement]) -> Result<usize> {
+    let req = ExecuteRequest {
+        operation_id: format!("discover-candidates-{}", uuid::Uuid::nil()),
+        request_hash: String::new(),
+        statements: statements.to_vec(),
+        deadline_unix_ms: 0,
+    };
+    bookclerk_plugin_abi::encoded_execute_request_bytes(&req)
+        .map(|bytes| bytes.len())
+        .map_err(|err| LibraryError::Other(anyhow::anyhow!(err.to_string())))
+}
 
 /// Whose Discover shelves a stored row belongs to.
 ///
@@ -143,11 +282,17 @@ impl LibraryStore {
     ///
     /// Each row is upserted with this call's fetch time, then the store's
     /// rows for the subject that this call did not write are deleted. Other
-    /// stores' rows for the subject are untouched. No interactive
-    /// transaction is used: the external database adapters only take
-    /// single statements and atomic batches, so `begin` is refused there.
-    /// A reader between the two steps can see the store's new rows next to
-    /// its old ones, never fewer than either set.
+    /// stores' rows for the subject are untouched.
+    ///
+    /// The writes go to the database plugin as canonical host batches, each
+    /// one atomic request (one transaction) holding as many rows as the
+    /// plugin's `maxStatements` and `maxRequestBytes` allow, so a few hundred
+    /// candidates cost a handful of round trips instead of one per row. No
+    /// interactive transaction is used: the external database adapters only
+    /// take single statements and atomic batches, so `begin` is refused
+    /// there. The delete rides in the last batch. A reader between two
+    /// batches can see the store's new rows next to its old ones, never
+    /// fewer than either set.
     ///
     /// # Arguments
     ///
@@ -158,8 +303,9 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// Returns the database error. Rows written before it stay; the old rows
-    /// are only deleted once every new row is stored.
+    /// Returns the database error, including when a single row is larger
+    /// than one request may carry. Batches written before it stay; the old
+    /// rows are only deleted once every new row is stored.
     pub async fn replace_discover_candidates(
         &self,
         subject: &DiscoverSubject,
@@ -176,41 +322,41 @@ impl LibraryStore {
             }
             unique.push(row);
         }
+        let mut batches = CandidateBatches::new(self.db_capabilities());
         for (key, json) in unique {
-            let row = discover_candidates::ActiveModel {
-                id: NotSet,
-                subject_key: Set(subject_key.clone()),
-                source: Set(source.to_string()),
-                candidate_key: Set(key.clone()),
-                seed_scope: Set(scope.as_str().to_string()),
-                candidate_json: Set(json.clone()),
-                fetched_at: Set(now.clone()),
-            };
-            discover_candidates::Entity::insert(row)
-                .on_conflict(
-                    OnConflict::columns([
-                        discover_candidates::Column::SubjectKey,
-                        discover_candidates::Column::Source,
-                        discover_candidates::Column::CandidateKey,
-                    ])
-                    .update_columns([
-                        discover_candidates::Column::SeedScope,
-                        discover_candidates::Column::CandidateJson,
-                        discover_candidates::Column::FetchedAt,
-                    ])
-                    .to_owned(),
-                )
-                .exec_without_returning(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
+            for stmt in candidate_upsert(&subject_key, source, key, scope, json, &now) {
+                if let Some(full) = batches.push(stmt)? {
+                    self.run_candidate_batch(full).await?;
+                }
+            }
         }
-        discover_candidates::Entity::delete_many()
-            .filter(discover_candidates::Column::SubjectKey.eq(subject_key.as_str()))
-            .filter(discover_candidates::Column::Source.eq(source))
-            .filter(discover_candidates::Column::FetchedAt.ne(now.as_str()))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let stale = batch::exec(
+            "DELETE FROM discover_candidates \
+             WHERE subject_key = ? AND source = ? AND fetched_at <> ?",
+            vec![
+                batch::text(&subject_key),
+                batch::text(source),
+                batch::text(&now),
+            ],
+        );
+        if let Some(full) = batches.push(stale)? {
+            self.run_candidate_batch(full).await?;
+        }
+        if let Some(last) = batches.finish() {
+            self.run_candidate_batch(last).await?;
+        }
+        Ok(())
+    }
+
+    /// Sends one chunk of candidate writes as one atomic host batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error; nothing in the chunk is kept then.
+    async fn run_candidate_batch(&self, statements: Vec<TypedDbStatement>) -> Result<()> {
+        let operation_id = format!("discover-candidates-{}", uuid::Uuid::new_v4());
+        self.execute_host_batch(batch::request(&operation_id, statements))
+            .await?;
         Ok(())
     }
 
@@ -420,6 +566,9 @@ impl LibraryStore {
 
     /// Stores (or refreshes) one cached storefront answer.
     ///
+    /// One upsert statement keyed on `call_key`, so a refresh costs one
+    /// database round trip instead of a read and a write.
+    ///
     /// # Errors
     ///
     /// Returns the database error.
@@ -429,30 +578,26 @@ impl LibraryStore {
         source: &str,
         response_json: &str,
     ) -> Result<()> {
-        let now = now_str();
-        let existing = discover_store_calls::Entity::find()
-            .filter(discover_store_calls::Column::CallKey.eq(call_key))
-            .one(&self.db)
+        let row = discover_store_calls::ActiveModel {
+            id: NotSet,
+            call_key: Set(call_key.to_string()),
+            source: Set(source.to_string()),
+            response_json: Set(response_json.to_string()),
+            fetched_at: Set(now_str()),
+        };
+        discover_store_calls::Entity::insert(row)
+            .on_conflict(
+                OnConflict::column(discover_store_calls::Column::CallKey)
+                    .update_columns([
+                        discover_store_calls::Column::Source,
+                        discover_store_calls::Column::ResponseJson,
+                        discover_store_calls::Column::FetchedAt,
+                    ])
+                    .to_owned(),
+            )
+            .exec_without_returning(&self.db)
             .await
             .map_err(LibraryError::Orm)?;
-        if let Some(existing) = existing {
-            let mut am: discover_store_calls::ActiveModel = existing.into();
-            am.source = Set(source.to_string());
-            am.response_json = Set(response_json.to_string());
-            am.fetched_at = Set(now);
-            am.update(&self.db).await.map_err(LibraryError::Orm)?;
-        } else {
-            discover_store_calls::ActiveModel {
-                id: NotSet,
-                call_key: Set(call_key.to_string()),
-                source: Set(source.to_string()),
-                response_json: Set(response_json.to_string()),
-                fetched_at: Set(now),
-            }
-            .insert(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        }
         Ok(())
     }
 
@@ -629,6 +774,66 @@ mod tests {
             .collect()
     }
 
+    /// Stands in for the database plugin's atomic batch: applies each host
+    /// batch on the open connection without `BEGIN`, and records how many
+    /// statements every batch carried.
+    struct RecordingBatches {
+        /// The store's own connection.
+        db: sea_orm::DatabaseConnection,
+        /// Statement count of each batch, in the order they arrived.
+        sizes: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::TypedAtomicExec for RecordingBatches {
+        async fn execute_typed(
+            &self,
+            envelope: bookclerk_db_exec::AdapterExecuteRequest,
+        ) -> std::result::Result<
+            bookclerk_plugin_abi::ExecuteReply,
+            bookclerk_plugin_abi::PluginError,
+        > {
+            self.sizes
+                .lock()
+                .unwrap()
+                .push(envelope.request.statements.len());
+            bookclerk_db_exec::execute_typed_on_open_connection(
+                &self.db,
+                &envelope,
+                bookclerk_db_exec::ExecCaps::from(8u32),
+                bookclerk_db_exec::AtomicSession::from_deadline(None),
+                None,
+            )
+            .await
+            .map_err(|err| bookclerk_plugin_abi::PluginError::unavailable(err.to_string()))
+        }
+    }
+
+    /// A store whose host batches go through [`RecordingBatches`], with
+    /// `caps` as the plugin's advertised limits.
+    async fn batch_store(
+        caps: DbCapabilities,
+    ) -> (LibraryStore, std::sync::Arc<std::sync::Mutex<Vec<usize>>>) {
+        let store = store().await.with_db_capabilities(caps);
+        let sizes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let exec = RecordingBatches {
+            db: store.db().clone(),
+            sizes: sizes.clone(),
+        };
+        (store.with_typed_exec(std::sync::Arc::new(exec)), sizes)
+    }
+
+    /// `count` real-sized `(key, json)` rows: about 1.3 KB of JSON each.
+    fn big_rows(prefix: &str, count: usize) -> Vec<(String, String)> {
+        (0..count)
+            .map(|i| {
+                let key = format!("{prefix}{i:04}");
+                let json = format!("{{\"k\":\"{key}\",\"pad\":\"{}\"}}", "x".repeat(1300));
+                (key, json)
+            })
+            .collect()
+    }
+
     #[tokio::test]
     async fn candidates_replace_per_store_and_subject() {
         let store = store().await;
@@ -703,10 +908,11 @@ mod tests {
     }
 
     /// External database adapters refuse interactive transactions, so the
-    /// write must not open one: a refused `begin` leaves it working.
+    /// write must not open one: a refused `begin` leaves it working. The
+    /// writes go to the plugin as atomic batches instead.
     #[tokio::test]
     async fn candidates_replace_without_an_interactive_transaction() {
-        let store = store().await;
+        let (store, sizes) = batch_store(DbCapabilities::advertised_d1()).await;
         let alice = DiscoverSubject::User(1);
         store
             .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["a", "b"]))
@@ -728,6 +934,8 @@ mod tests {
         let unused_injection = crate::consume_begin_injection();
         replaced.unwrap();
         assert!(unused_injection, "the write opened a transaction");
+        // Two small replaces fit one batch each: two upsert pairs plus the delete.
+        assert_eq!(*sizes.lock().unwrap(), vec![5, 5]);
         let mut got: Vec<(String, String, SeedScope)> = store
             .list_discover_candidates(&alice)
             .await
@@ -751,6 +959,96 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// A list longer than one batch is split by the plugin's statement cap,
+    /// and the replace still keeps only the new rows of that store.
+    #[tokio::test]
+    async fn candidates_replace_in_batches_past_the_statement_cap() {
+        let mut caps = DbCapabilities::advertised_d1();
+        caps.max_statements = bookclerk_plugin_abi::HOST_MIN_STATEMENTS;
+        let (store, sizes) = batch_store(caps).await;
+        let alice = DiscoverSubject::User(1);
+        store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["old", "kept"]))
+            .await
+            .unwrap();
+        store
+            .replace_discover_candidates(&alice, "chirp", SeedScope::Own, &rows(&["other"]))
+            .await
+            .unwrap();
+        sizes.lock().unwrap().clear();
+
+        let mut fresh = rows(&["kept"]);
+        fresh.extend((0..60).map(|i| (format!("n{i:02}"), format!("{{\"n\":{i}}}"))));
+        store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Household, &fresh)
+            .await
+            .unwrap();
+
+        // 61 upsert pairs and the delete: 123 statements in batches of at most 40.
+        let sent = sizes.lock().unwrap().clone();
+        assert_eq!(sent.iter().sum::<usize>(), 123);
+        assert!(sent.len() >= 4, "{sent:?}");
+        assert!(sent.iter().all(|n| *n <= 40), "{sent:?}");
+        let listed = store.list_discover_candidates(&alice).await.unwrap();
+        let mut libro: Vec<&str> = listed
+            .iter()
+            .filter(|c| c.source == "libro")
+            .map(|c| c.candidate_key.as_str())
+            .collect();
+        libro.sort_unstable();
+        assert_eq!(libro.len(), 61);
+        assert!(!libro.contains(&"old"));
+        assert!(libro.contains(&"kept"));
+        assert!(listed
+            .iter()
+            .filter(|c| c.source == "libro")
+            .all(|c| c.seed_scope == SeedScope::Household));
+        assert_eq!(
+            listed.iter().filter(|c| c.source == "chirp").count(),
+            1,
+            "another store's rows are untouched"
+        );
+    }
+
+    /// Real-sized candidates are split by the plugin's request-size cap
+    /// before its statement cap, and every row still arrives.
+    #[tokio::test]
+    async fn candidates_replace_in_batches_past_the_request_bytes_cap() {
+        let mut caps = DbCapabilities::advertised_d1();
+        caps.max_request_bytes = 64 * 1024;
+        let (store, sizes) = batch_store(caps).await;
+        let alice = DiscoverSubject::User(1);
+        store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &big_rows("a", 120))
+            .await
+            .unwrap();
+
+        let sent = sizes.lock().unwrap().clone();
+        assert_eq!(sent.iter().sum::<usize>(), 241);
+        // About 2.7 KB per pair against a 56 KiB budget: well under 40 statements a batch.
+        assert!(sent.len() >= 6, "{sent:?}");
+        assert!(sent.iter().all(|n| *n < 48), "{sent:?}");
+        assert_eq!(
+            store.list_discover_candidates(&alice).await.unwrap().len(),
+            120
+        );
+    }
+
+    /// A single candidate larger than one request may carry fails instead
+    /// of being sent.
+    #[tokio::test]
+    async fn an_oversized_candidate_is_refused() {
+        let mut caps = DbCapabilities::advertised_d1();
+        caps.max_request_bytes = 1024;
+        let (store, sizes) = batch_store(caps).await;
+        let alice = DiscoverSubject::User(1);
+        let result = store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &big_rows("a", 3))
+            .await;
+        assert!(result.is_err());
+        assert!(sizes.lock().unwrap().is_empty(), "nothing was sent");
     }
 
     /// A full read page of real-sized candidates is larger than the sqlite
@@ -777,10 +1075,10 @@ mod tests {
         assert_eq!(listed.len(), count);
     }
 
-    /// A stored feed too large to read back is still replaced, since the
-    /// write does not load the old row.
+    /// A stored feed larger than one inline result reads back whole and is
+    /// still replaced, since the write does not load the old row.
     #[tokio::test]
-    async fn an_unreadable_feed_is_replaced() {
+    async fn a_large_feed_reads_back_and_is_replaced() {
         let store = store().await;
         let alice = DiscoverSubject::User(1);
         let quoted = "\"".repeat(150_000);
@@ -788,8 +1086,8 @@ mod tests {
             .put_discover_feed(&alice, &quoted, SeedScope::Own, None)
             .await
             .unwrap();
-        let err = store.get_discover_feed(&alice).await.unwrap_err();
-        assert!(super::super::books_page::is_result_too_large(&err), "{err}");
+        let feed = store.get_discover_feed(&alice).await.unwrap().unwrap();
+        assert_eq!(feed.feed_json, quoted);
         store
             .put_discover_feed(&alice, "{}", SeedScope::Own, None)
             .await

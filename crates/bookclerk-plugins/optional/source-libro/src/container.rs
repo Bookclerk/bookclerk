@@ -1,4 +1,4 @@
-//! Preferred Libro.fm download packaging (`[sources.libro] container`).
+//! Preferred Libro.fm download packaging (the `container` plugin setting).
 
 use serde::{Deserialize, Serialize};
 

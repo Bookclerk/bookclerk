@@ -27,7 +27,7 @@ pub(super) async fn execute_host_batch(
 }
 
 /// Execute-kind statement. Only `rowsAffected` is required.
-pub(super) fn exec(sql: &str, parameters: Vec<DbValue>) -> TypedDbStatement {
+pub(crate) fn exec(sql: &str, parameters: Vec<DbValue>) -> TypedDbStatement {
     TypedDbStatement {
         sql: sql.to_string(),
         parameters,
@@ -49,7 +49,7 @@ pub(super) fn query(sql: &str, parameters: Vec<DbValue>, max_rows: u32) -> Typed
 }
 
 /// Text bind.
-pub(super) fn text(value: &str) -> DbValue {
+pub(crate) fn text(value: &str) -> DbValue {
     DbValue::Text(value.to_string())
 }
 
@@ -106,7 +106,7 @@ pub(super) fn rows(reply: &ExecuteReply, index: usize) -> &[DbRow] {
 }
 
 /// Builds an [`ExecuteRequest`] with an empty hash (the host stamps it).
-pub(super) fn request(operation_id: &str, statements: Vec<TypedDbStatement>) -> ExecuteRequest {
+pub(crate) fn request(operation_id: &str, statements: Vec<TypedDbStatement>) -> ExecuteRequest {
     ExecuteRequest {
         operation_id: operation_id.to_string(),
         request_hash: String::new(),

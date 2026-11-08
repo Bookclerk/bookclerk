@@ -181,7 +181,22 @@ class Session extends AdapterDatabaseSession {
       returning: true,
       affectedRows: true,
       schemaMigrations: false,
+      // Past one scalar: the adapter clamps it before the host sees it.
+      maxStreamedResultBytes: 64 * 1024 * 1024,
+      maxStreamedResultRows: 250_000,
     };
+  }
+  async executeStreamed(request) {
+    calls.streamed = request;
+    switch (request.operationId) {
+      case "frames-small":
+        return new Uint8Array([1, 2, 3, 4]);
+      case "frames-big":
+        return new Uint8Array(262_145);
+      default:
+        // A look-alike that is not a real Uint8Array.
+        return { byteLength: 4, length: 4 };
+    }
   }
   async listUserRelations() {
     return ["books", "authors"];
@@ -873,6 +888,61 @@ const jobParams = (commandType) => ({
   assert.equal(caps.value.sqlContractVersion, 1);
   assert.equal(caps.value.atomicBatch, true);
   assert.equal(caps.value.schemaMigrations, false);
+  assert.equal(
+    caps.value.maxStreamedResultBytes,
+    262_144,
+    "an isolate adapter's streamed budget is clamped to one scalar",
+  );
+  assert.equal(caps.value.maxStreamedResultRows, 250_000, "the row budget is kept");
+
+  // executeStreamed: frames within one scalar travel inline, frames past it
+  // are a typed limit error, and anything but a Uint8Array is an internal
+  // error (never encoded from a look-alike's `length`).
+  const streamedRequest = (operationId) => ({
+    request: {
+      operationId,
+      requestHash: "",
+      statements: [],
+      deadlineUnixMs: 0,
+      isolation: "atomicBatch",
+      receipt: { guestLen: 0, guestHash: "" },
+    },
+  });
+  const inline = decodeReply(
+    await invoke(
+      "AdapterDatabaseSession",
+      "executeStreamed",
+      W.AdapterDatabaseSessionExecuteStreamedParamsCodec,
+      streamedRequest("frames-small"),
+      { target: id },
+    ),
+    W.AdapterDatabaseSessionExecuteStreamedResultsCodec,
+  );
+  assert.equal(inline.kind, "inline");
+  assert.deepEqual(Array.from(inline.value), [1, 2, 3, 4]);
+  assert.equal(calls.streamed.operationId, "frames-small");
+  assert.equal(calls.streamed.isolation, "atomicBatch");
+  const tooBig = decodeReply(
+    await invoke(
+      "AdapterDatabaseSession",
+      "executeStreamed",
+      W.AdapterDatabaseSessionExecuteStreamedParamsCodec,
+      streamedRequest("frames-big"),
+      { target: id },
+    ),
+    W.AdapterDatabaseSessionExecuteStreamedResultsCodec,
+  );
+  assert.equal(tooBig.kind, "err");
+  assert.equal(tooBig.value.code, "limit_exceeded");
+  assert.match(tooBig.value.message, /maxScalarBytes/);
+  const lookAlike = await invoke(
+    "AdapterDatabaseSession",
+    "executeStreamed",
+    W.AdapterDatabaseSessionExecuteStreamedParamsCodec,
+    streamedRequest("frames-fake"),
+    { target: id },
+  );
+  assert.equal(lookAlike.status, 500, "a non-Uint8Array reply is an internal error");
 
   const relations = decodeReply(
     await invoke(

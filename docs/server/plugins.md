@@ -105,6 +105,14 @@ A partial extract never reaches the final path, and a cached digest is
 immutable. Digests no deployment on the node references are swept after
 an hour.
 
+The host recomputes an installed tree's payload-root digest each time it
+discovers plugins. Every pass walks the tree and checks every entry again
+(symlinks, special files, added or removed files). On Unix, a file whose
+inode, size, modification time and change time are unchanged reuses the
+content digest from its last read. A rewrite always moves the change time,
+even when the modification time is put back, and a file written in the last
+2 s is read again each time.
+
 ### Health is an observation
 
 A guest that fails health records an `error` observation, and the version
