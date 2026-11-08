@@ -163,13 +163,19 @@ The `bookclerk-dev` image carries inline cache metadata, so the Dev
 Container's `build.cacheFrom` reuses its layers. The demo image builds on
 the production builder and runtime, all three in one build from
 [`packaging/demo/docker-bake.hcl`](../../packaging/demo/docker-bake.hcl).
-That build links with thin LTO and parallel codegen units. Its last stage
-seeds the demo library at build time (`packaging/demo/bake-seed.sh`): it
-runs the seed and `bookclerkd` with network access to the storefronts'
-public catalogs, then strips every per-container secret, so building the
-demo image needs outbound network. Shipped images keep `Cargo.toml`'s fat
-LTO: `packaging/docker/Dockerfile` takes the settings as build arguments
-that default to it. The hosted demo's deploy pulls the
+That build links with thin LTO and parallel codegen units. Shipped images
+keep `Cargo.toml`'s fat LTO: `packaging/docker/Dockerfile` takes the
+settings as build arguments that default to it. The demo's sample-data
+seed links the host's library crates, so it builds with exactly the
+package set `cargo package-platform` built (`cargo build-app --platform
+--print`), where those crates are already compiled. The storefronts build
+in a separate Cargo invocation, because building them beside the seed
+would change those crates' features and recompile them. The demo image's
+last stage seeds the demo library at build time
+(`packaging/demo/bake-seed.sh`): it runs the seed and `bookclerkd` with
+network access to the storefronts' public catalogs, then strips every
+per-container secret, so building the demo image needs outbound network.
+The hosted demo's deploy pulls the
 published demo image without signing in, so the package must be public.
 When the image for the deployed commit exists and its attestation
 verifies, the deploy uses it instead of building it again. Otherwise a

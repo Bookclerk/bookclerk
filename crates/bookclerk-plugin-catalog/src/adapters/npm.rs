@@ -1,5 +1,6 @@
 //! npm registry adapter — search + packument `bookclerk` field.
 
+use bookclerk_tls::ureq;
 use serde::Deserialize;
 use serde_json::Value;
 

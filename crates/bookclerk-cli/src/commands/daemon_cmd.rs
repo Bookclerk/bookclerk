@@ -2,6 +2,7 @@
 
 use bookclerk_config::Config;
 use bookclerk_library::{resolve_operator_token, rotate_operator_token, ResolveOperatorToken};
+use bookclerk_tls::ureq;
 use clap::Subcommand;
 use serde_json::Value;
 

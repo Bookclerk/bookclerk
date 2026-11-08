@@ -63,6 +63,7 @@ others go deeper.
 - [The guest jail](internals/guest-jail.md): why plugins run as jailed processes, and how each platform confines them
 - [workerd bridge](internals/workerd-bridge.md): the wire between the launcher and a plugin isolate
 - [Node API and the live socket](internals/node-api.md): how hosts of one library talk, and how the web app hears about changes
+- [One TLS backend](internals/tls.md): the one crypto provider every TLS connection uses, and where it is set
 - [Windows AppContainer](internals/windows-appcontainer.md): confinement notes for Windows
 - [Rust crates](internals/crates/README.md): every workspace crate, from its doc comments (generated)
 

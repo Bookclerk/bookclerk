@@ -56,19 +56,30 @@ WORKDIR /src
 # The link settings the builder stage got (see docker-bake.hcl).
 ARG RELEASE_LTO=true
 ARG RELEASE_CODEGEN_UNITS=1
-# Reuses the release build the production image already made. The
-# storefronts and the seed build in one cargo invocation, so the dependencies
-# they share compile once, with one feature set; stage-plugins then only lays
-# out what was built.
-RUN CARGO_PROFILE_RELEASE_LTO="$RELEASE_LTO" \
-    CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$RELEASE_CODEGEN_UNITS" \
+# Reuses the release build the production image already made.
+#
+# The seed links the host's library and plugin-host crates, and Cargo unifies
+# features across the packages of one invocation. Built beside the
+# storefronts, those crates (sqlx, sea-orm, reqwest, rustls...) got a
+# different feature set and recompiled from scratch. So the seed builds in
+# the exact package set `cargo package-platform` built (`build-app --platform
+# --print` lists it), where every dependency is already fresh and only the
+# seed itself compiles. The storefronts, which share none of the library
+# stack, build in their own invocation; stage-plugins then only lays out
+# what was built.
+RUN set -eu; \
+    export CARGO_PROFILE_RELEASE_LTO="$RELEASE_LTO" \
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$RELEASE_CODEGEN_UNITS"; \
+    packages="$(cargo build-app --platform --print)"; \
+    test -n "$packages"; \
+    platform="$(printf '%s\n' "$packages" | sed 's/^/-p /')"; \
+    cargo build --release $platform -p bookclerk-demo-seed; \
     cargo build --release \
       -p bookclerk-plugin-source-audible \
       -p bookclerk-plugin-source-libro \
       -p bookclerk-plugin-source-chirp \
-      -p bookclerk-plugin-source-graphicaudio \
-      -p bookclerk-demo-seed \
-    && cargo stage-plugins --release --skip-build --plugin audible --plugin libro --plugin chirp --plugin graphicaudio --plugin covers \
+      -p bookclerk-plugin-source-graphicaudio; \
+    cargo stage-plugins --release --skip-build --plugin audible --plugin libro --plugin chirp --plugin graphicaudio --plugin covers \
     && mkdir -p /out \
     && cp -a target/plugin-artifacts/. /out/ \
     && test "$(find /out -mindepth 2 -maxdepth 2 -name plugin.toml | wc -l)" -eq 5 \

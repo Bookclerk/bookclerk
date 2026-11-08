@@ -1,15 +1,15 @@
 //! Public Audible catalog helpers for Discover (`search_catalog` / expand / purchase).
 //!
-//! Uses [`bookclerk_enrich`] public catalog HTTP — no account required.
+//! Uses [`bookclerk_audible_catalog`] public catalog HTTP — no account required.
 
-use bookclerk_enrich::{
+use bookclerk_audible_catalog::{
     is_valid_asin, normalize_region, public_http_client, region_tld, search_catalog_asins,
     search_catalog_by_genre_name, search_catalog_by_narrator, search_catalog_by_series_asin,
     search_catalog_keywords, search_catalog_products, search_catalog_products_paged,
     search_catalog_storefront, CatalogProduct,
 };
-use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
-use bookclerk_source::{
+use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
+use bookclerk_storefront::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts,
     SourcePurchaseHint,
 };
@@ -25,15 +25,17 @@ use serde_json::Value;
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub async fn search_catalog(opts: &CatalogSearchOpts) -> bookclerk_source::Result<Vec<CatalogHit>> {
+pub async fn search_catalog(
+    opts: &CatalogSearchOpts,
+) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
     let q = opts.query.trim();
     if q.is_empty() || opts.limit == 0 {
         return Ok(Vec::new());
     }
     let http =
-        public_http_client().map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        public_http_client().map_err(|e| bookclerk_storefront::SourceError::api(e.to_string()))?;
     let region = normalize_region(&opts.region);
-    let fetch_limit = (opts.limit.saturating_mul(2)).clamp(opts.limit, 50);
+    let fetch_limit = catalog_fetch_limit(opts.limit);
     let page = opts.page.max(1);
     let products_sort = opts.sort.audible_products_sort_by();
     let storefront_sort = opts.sort.audible_catalog_search_sort();
@@ -124,7 +126,7 @@ pub async fn search_catalog(opts: &CatalogSearchOpts) -> bookclerk_source::Resul
             .await
         }
     }
-    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+    .map_err(|e| bookclerk_storefront::SourceError::api(e.to_string()))?;
 
     Ok(products
         .into_iter()
@@ -144,7 +146,7 @@ pub async fn search_catalog(opts: &CatalogSearchOpts) -> bookclerk_source::Resul
 pub async fn expand_candidates(
     seed: &ExpandSeed,
     limit: usize,
-) -> bookclerk_source::Result<Vec<CatalogHit>> {
+) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -323,7 +325,7 @@ pub async fn expand_candidates(
 /// Returns an error when the operation fails.
 pub async fn purchase_hint(
     opts: &PurchaseHintOpts,
-) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
+) -> bookclerk_storefront::Result<Option<SourcePurchaseHint>> {
     let region = normalize_region(&opts.region);
     let title = opts
         .title
@@ -503,6 +505,18 @@ fn same_series(product_series: Option<&str>, searched: &str) -> bool {
     };
     let a = series_core(product_series);
     !a.is_empty() && a == series_core(searched)
+}
+
+/// Most results Audible's catalog endpoints return for one page.
+const CATALOG_PAGE_MAX: usize = 50;
+
+/// How many catalog rows to request for a search that wants `limit` hits.
+///
+/// Over-fetches twice the limit so language filtering on the host still
+/// fills the page, capped at Audible's page size. A limit above the cap gets
+/// the cap rather than an inverted range.
+fn catalog_fetch_limit(limit: usize) -> usize {
+    limit.saturating_mul(2).min(CATALOG_PAGE_MAX)
 }
 
 /// Generic trailing words a storefront appends to a series name, which do
@@ -704,6 +718,41 @@ fn format_money_label(cents: i64, currency: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Empty requests answer without any catalog HTTP.
+    #[tokio::test]
+    async fn empty_requests_answer_without_calling_the_store() {
+        let search = super::CatalogSearchOpts {
+            query: "   ".into(),
+            limit: 10,
+            ..super::CatalogSearchOpts::default()
+        };
+        assert!(super::search_catalog(&search).await.unwrap().is_empty());
+        let seed = super::ExpandSeed {
+            source: "audible".into(),
+            product_id: "B0BOOK0001".into(),
+            title: "Seed".into(),
+            authors: Some("Author".into()),
+            narrators: None,
+            series: None,
+            series_asin: None,
+            asin: Some("B0BOOK0001".into()),
+            isbn: None,
+            region: "us".into(),
+        };
+        assert!(super::expand_candidates(&seed, 0).await.unwrap().is_empty());
+    }
+
+    /// Searches over-fetch twice the limit, capped at Audible's page size,
+    /// and a limit above the cap gets the cap instead of panicking.
+    #[test]
+    fn fetch_limit_doubles_up_to_the_page_size() {
+        assert_eq!(super::catalog_fetch_limit(10), 20);
+        assert_eq!(super::catalog_fetch_limit(25), 50);
+        assert_eq!(super::catalog_fetch_limit(30), 50);
+        assert_eq!(super::catalog_fetch_limit(60), 50);
+        assert_eq!(super::catalog_fetch_limit(usize::MAX), 50);
+    }
+
     /// Loose keyword matches from another (or no) series are not stamped
     /// into the searched series.
     #[test]

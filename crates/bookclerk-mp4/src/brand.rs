@@ -1,8 +1,12 @@
 //! Audible brand intro/outro (pre/post-roll) trim helpers.
+//!
+//! These read Audible's `chapter_info` JSON and turn the brand durations into
+//! a [`TrimRange`] for [`crate::remux_progressive`] (the Audible plugin) or a
+//! rebased chapter list (the host's cue and chapter writers).
 
 use serde_json::Value;
 
-use bookclerk_mp4::TrimRange;
+use crate::TrimRange;
 
 /// Brand intro/outro durations from Audible `chapter_info`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -45,17 +49,21 @@ fn json_u64_keys(info: &Value, keys: &[&str]) -> u64 {
 }
 
 /// First matching non-negative integer/float among `keys`; `None` when none parse.
+///
+/// Negative values read as `0`; fractional milliseconds are truncated.
 fn json_u64_opt_keys(info: &Value, keys: &[&str]) -> Option<u64> {
-    for key in keys {
-        if let Some(v) = info.get(*key).and_then(|v| {
-            v.as_u64()
-                .or_else(|| v.as_i64().map(|n| n.max(0) as u64))
-                .or_else(|| v.as_f64().map(|n| n.max(0.0) as u64))
-        }) {
-            return Some(v);
-        }
-    }
-    None
+    keys.iter()
+        .find_map(|key| info.get(*key).and_then(json_non_negative_u64))
+}
+
+/// A JSON number as whole non-negative milliseconds (`NaN` and negatives read as `0`).
+// Float to integer `as` saturates and truncates toward zero, which is exactly
+// "whole milliseconds, clamped at 0"; there is no `try_from` for f64.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn json_non_negative_u64(v: &Value) -> Option<u64> {
+    v.as_u64()
+        .or_else(|| v.as_i64().map(|n| u64::try_from(n).unwrap_or(0)))
+        .or_else(|| v.as_f64().map(|n| n.max(0.0) as u64))
 }
 
 /// Build a media trim window that drops Audible branding audio.
@@ -66,7 +74,8 @@ fn json_u64_opt_keys(info: &Value, keys: &[&str]) -> Option<u64> {
 ///
 /// When `outro_ms > 0` but `runtime_length_ms` is missing, returns `None` so we
 /// do not silently leave branding on the tail while trimming only the intro.
-/// Callers should supply runtime (from chapter_info or a media probe) first.
+/// Callers should supply runtime (from chapter_info or a media probe) first,
+/// and log when they still get `None` for a non-empty brand.
 #[must_use]
 pub fn brand_trim_range(
     brand: BrandDurations,
@@ -76,12 +85,6 @@ pub fn brand_trim_range(
         return None;
     }
     if brand.outro_ms > 0 && runtime_length_ms.is_none() {
-        tracing::warn!(
-            intro_ms = brand.intro_ms,
-            outro_ms = brand.outro_ms,
-            "brand_outro_duration_ms set but runtime_length_ms missing — \
-             skipping brand trim to avoid leaving outro branding in the file"
-        );
         return None;
     }
     let end_ms = runtime_length_ms.map(|runtime| runtime.saturating_sub(brand.outro_ms));

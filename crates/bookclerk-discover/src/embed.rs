@@ -124,6 +124,9 @@ fn hash_embed(text: &str, dims: usize) -> Vec<f32> {
 }
 
 /// ONNX MiniLM embedder (fastembed). Loaded on demand; drop to free RAM.
+///
+/// Only built with the `onnx` feature (the hosts' `onnx-embeddings`).
+#[cfg(feature = "onnx")]
 pub struct OnnxEmbedder {
     /// Loaded ONNX MiniLM session (dropped to free RAM).
     model: fastembed::TextEmbedding,
@@ -133,6 +136,7 @@ pub struct OnnxEmbedder {
     dims: usize,
 }
 
+#[cfg(feature = "onnx")]
 impl OnnxEmbedder {
     /// Download (if needed) and load quantized MiniLM into `cache_dir`.
     ///
@@ -173,6 +177,7 @@ impl OnnxEmbedder {
 /// The ONNX Runtime library `ort` loads: `ORT_DYLIB_PATH` when set, else
 /// the platform's library name (found beside the executable or on the
 /// loader's search path).
+#[cfg(feature = "onnx")]
 fn onnx_runtime_library() -> std::path::PathBuf {
     match std::env::var_os("ORT_DYLIB_PATH") {
         Some(path) if !path.is_empty() => path.into(),
@@ -182,6 +187,7 @@ fn onnx_runtime_library() -> std::path::PathBuf {
     }
 }
 
+#[cfg(feature = "onnx")]
 impl Embedder for OnnxEmbedder {
     fn model_id(&self) -> &str {
         &self.model_id
@@ -500,10 +506,8 @@ fn open_embedder_with(
     if prefer_onnx && !onnx_unavailable.load(Ordering::Acquire) {
         // The model and cache path are owned by the closure's caller and are
         // not reused after a panic, so asserting unwind safety is sound.
-        match panic::catch_unwind(AssertUnwindSafe(|| {
-            OnnxEmbedder::open(models_dir, intra_threads)
-        })) {
-            Ok(Ok(e)) => return Ok(Box::new(e)),
+        match panic::catch_unwind(AssertUnwindSafe(|| open_onnx(models_dir, intra_threads))) {
+            Ok(Ok(e)) => return Ok(e),
             Ok(Err(err)) => {
                 onnx_unavailable.store(true, Ordering::Release);
                 tracing::warn!(
@@ -521,6 +525,48 @@ fn open_embedder_with(
         }
     }
     Ok(Box::new(HashEmbedder::new(384)))
+}
+
+/// Loads the ONNX MiniLM embedder.
+///
+/// # Arguments
+///
+/// * `models_dir` - Directory that holds (or will hold) embedding model files.
+/// * `intra_threads` - ONNX intra-op thread count (clamped to at least 1).
+///
+/// # Returns
+///
+/// The loaded embedder.
+///
+/// # Errors
+///
+/// Returns [`DiscoverError::Embed`] when the runtime library or the model
+/// cannot be loaded.
+#[cfg(feature = "onnx")]
+fn open_onnx(models_dir: &Path, intra_threads: usize) -> Result<Box<dyn Embedder>> {
+    Ok(Box::new(OnnxEmbedder::open(models_dir, intra_threads)?))
+}
+
+/// Stand-in for the ONNX loader in a build without the `onnx` feature.
+///
+/// # Arguments
+///
+/// * `_models_dir` - Unused; the signature matches the ONNX build's loader.
+/// * `_intra_threads` - Unused; the signature matches the ONNX build's loader.
+///
+/// # Returns
+///
+/// Never returns an embedder.
+///
+/// # Errors
+///
+/// Always returns [`DiscoverError::Embed`] naming the missing feature, so
+/// [`open_embedder`] warns once and uses the local-hash embedder.
+#[cfg(not(feature = "onnx"))]
+fn open_onnx(_models_dir: &Path, _intra_threads: usize) -> Result<Box<dyn Embedder>> {
+    Err(DiscoverError::Embed(String::from(
+        "this build has no ONNX embedder (built without the `onnx-embeddings` feature)",
+    )))
 }
 
 /// Text of a caught panic payload, for the fallback warning.
@@ -570,14 +616,26 @@ mod tests {
         assert_eq!(panic_message(owned.as_ref()), "dylib");
     }
 
+    #[cfg(feature = "onnx")]
     #[test]
     fn a_missing_onnx_runtime_is_an_error_not_a_panic() {
         // Only this test sets the variable; no other test loads ONNX.
         std::env::set_var("ORT_DYLIB_PATH", "/nonexistent/libonnxruntime.so");
         let dir = std::env::temp_dir().join("bookclerk-discover-onnx-missing");
-        let opened = panic::catch_unwind(|| OnnxEmbedder::open(&dir, 1));
+        let opened = panic::catch_unwind(|| open_onnx(&dir, 1));
         std::env::remove_var("ORT_DYLIB_PATH");
         assert!(matches!(opened, Ok(Err(DiscoverError::Embed(_)))));
+    }
+
+    #[cfg(not(feature = "onnx"))]
+    #[test]
+    fn a_build_without_onnx_falls_back_to_local_hash_and_remembers_it() {
+        let unavailable = AtomicBool::new(false);
+        let dir = std::env::temp_dir().join("bookclerk-discover-onnx-not-built");
+        let embedder = open_embedder_with(&unavailable, &dir, 1, true).unwrap();
+        assert_eq!(embedder.model_id(), MODEL_LOCAL_HASH_V1);
+        assert!(unavailable.load(Ordering::Acquire));
+        assert!(matches!(open_onnx(&dir, 1), Err(DiscoverError::Embed(_))));
     }
 
     #[test]

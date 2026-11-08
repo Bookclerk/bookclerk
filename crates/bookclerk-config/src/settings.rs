@@ -136,7 +136,9 @@ pub struct DiscoveryConfig {
     ///
     /// Off by default: the shelves rank with the built-in local-hash
     /// embedder. The ONNX path stays for opt-in experiments until
-    /// AI-assisted recommendations are designed.
+    /// AI-assisted recommendations are designed, and needs a host built with
+    /// the `onnx-embeddings` feature; without it, this warns and uses
+    /// local-hash.
     pub embeddings_enabled: bool,
     /// Model id (`all-minilm-l6-v2-q` preferred; runtime may fall back to `local-hash-v1`).
     pub embedding_model: String,

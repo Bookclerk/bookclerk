@@ -1,5 +1,6 @@
 //! crates.io catalog client for Bookclerk plugin discovery.
 
+use bookclerk_tls::ureq;
 use serde::Deserialize;
 
 use crate::registry::{PluginCatalogEntry, PluginCrateName, CRATE_NAME_PREFIX, REGISTRY_KEYWORD};

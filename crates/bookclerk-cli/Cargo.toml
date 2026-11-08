@@ -16,6 +16,9 @@ path = "src/main.rs"
 # Hosts load storefronts only as staged external guests (plugins/ or
 # BOOKCLERK_PLUGIN_DIRS). There is no in-process product plugin path.
 default = []
+# Link the ONNX MiniLM embedder for `discovery.embeddings_enabled`. Without
+# it the setting warns and discovery ranks with local-hash embeddings.
+onnx-embeddings = ["bookclerk-discover/onnx"]
 
 [dependencies]
 anyhow.workspace = true
@@ -48,7 +51,7 @@ serde_json.workspace = true
 toml.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-ureq.workspace = true
+bookclerk-tls.workspace = true
 url.workspace = true
 secrecy.workspace = true
 zeroize.workspace = true

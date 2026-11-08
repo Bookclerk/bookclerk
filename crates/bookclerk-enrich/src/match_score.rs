@@ -396,23 +396,7 @@ pub fn levenshtein_similarity(a: &str, b: &str) -> f64 {
     }
 }
 
-/// True when `s` looks like an Audible ASIN (`^[A-Z0-9]{10}$`, case-insensitive).
-///
-/// Includes all-numeric catalog ids (e.g. `1094100765`); Audnexus accepts these
-/// and older Audible storefront ASINs are often numeric.
-///
-/// # Arguments
-///
-/// * `s` - Input string to validate or normalize.
-///
-/// # Returns
-///
-/// `true` when the predicate holds.
-#[must_use]
-pub fn is_valid_asin(s: &str) -> bool {
-    let s = s.trim();
-    s.len() == 10 && s.chars().all(|c| c.is_ascii_alphanumeric())
-}
+pub use bookclerk_audible_catalog::is_valid_asin;
 
 /// True when a title field holds an Audible ASIN rather than a real title.
 ///

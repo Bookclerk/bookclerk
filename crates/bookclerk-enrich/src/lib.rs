@@ -17,8 +17,20 @@ mod enrich;
 mod error;
 mod match_score;
 mod providers;
-mod public_meta;
 
+/// The public Audible catalog lives in [`bookclerk_audible_catalog`], which the
+/// Audible guest links without this crate's library dependency.
+pub use bookclerk_audible_catalog::{
+    fetch_audible_catalog_rating, fetch_audible_catalog_reviews,
+    fetch_audible_catalog_reviews_page, is_audible_podcast_product, normalize_region,
+    normalize_review_body, public_http_client, region_tld, resolve_genre_category_id,
+    search_catalog_asins, search_catalog_by_genre_name, search_catalog_by_narrator,
+    search_catalog_by_series_asin, search_catalog_by_series_name, search_catalog_keywords,
+    search_catalog_products, search_catalog_products_ex, search_catalog_products_ex2,
+    search_catalog_products_paged, search_catalog_products_rich, search_catalog_storefront,
+    CatalogError, CatalogProduct, CatalogRating, CatalogReview, CatalogReviewsPage,
+    CatalogReviewsSort,
+};
 pub use bookclerk_library::decode_html_entities;
 pub use enrich::{
     apply_enrichment_to_book, confidence_percent_to_fraction, enrich_books_from_audible,
@@ -35,14 +47,4 @@ pub use providers::{
     asin_identifier, chapter_info_from_layout, isbn_identifier, record_identifier, ChaptersAnswer,
     MetadataAnswer, MetadataProviders, NoMetadataProviders, ProvidedChapters, ProvidedRecord,
     ProviderFailure, MAX_CHAPTER_DEPTH,
-};
-pub use public_meta::{
-    fetch_audible_catalog_rating, fetch_audible_catalog_reviews,
-    fetch_audible_catalog_reviews_page, is_audible_podcast_product, normalize_region,
-    normalize_review_body, public_http_client, region_tld, resolve_genre_category_id,
-    search_catalog_asins, search_catalog_by_genre_name, search_catalog_by_narrator,
-    search_catalog_by_series_asin, search_catalog_by_series_name, search_catalog_keywords,
-    search_catalog_products, search_catalog_products_ex, search_catalog_products_ex2,
-    search_catalog_products_paged, search_catalog_products_rich, search_catalog_storefront,
-    CatalogProduct, CatalogRating, CatalogReview, CatalogReviewsPage, CatalogReviewsSort,
 };

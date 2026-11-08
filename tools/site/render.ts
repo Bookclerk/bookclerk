@@ -177,6 +177,7 @@ export const NAV: NavSpec[] = [
       "internals/guest-jail",
       "internals/workerd-bridge",
       "internals/node-api",
+      "internals/tls",
       "internals/windows-appcontainer",
       "internals/crates/README",
     ],

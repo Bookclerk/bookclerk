@@ -1,5 +1,6 @@
 //! PyPI adapter — exact lookup only (no supported search API).
 
+use bookclerk_tls::ureq;
 use serde::Deserialize;
 use serde_json::Value;
 

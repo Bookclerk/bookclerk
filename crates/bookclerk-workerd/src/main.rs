@@ -28,6 +28,7 @@
 
 mod manifest_env;
 
+use bookclerk_tls::ureq;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;

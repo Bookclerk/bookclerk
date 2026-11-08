@@ -367,8 +367,10 @@ link two `links = "sqlite3"` crates in one binary, so Bookclerk:
 - Uses SeaORM's **`proxy`** backend for both local SQLite (a rusqlite
   wrapper) and D1 (HTTP).
 
-`sqlx-postgres` and `runtime-tokio-rustls` are enabled on the `sea-orm`
-workspace dependency. `sqlx-sqlite` is deliberately left out, because
+`sqlx-postgres` and `runtime-tokio` are enabled on the `sea-orm`
+workspace dependency. Postgres TLS comes from sqlx's `tls-rustls-aws-lc-rs`
+feature, which `bookclerk-db-guest` enables (see
+[One TLS backend](../internals/tls.md)). `sqlx-sqlite` is deliberately left out, because
 SeaORM 2.0's driver currently fails to compile against `sea-query` 1.0.x
 (the `Value` payload boxing change).
 
