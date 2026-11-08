@@ -8,9 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bookclerk_demo_seed::{
-    best_match, committed_records, distinct_records, lookups, merge_records, parse_records,
-    records_json, records_path, search_query, seed, Lookup, SeedReport, Seeded, StoreRecords,
-    SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
+    best_match, committed_records, distinct_records, lookups, merge_records, parse_mode,
+    parse_records, records_json, search_query, seed, Lookup, Mode, SeedReport, Seeded,
+    StoreRecords, SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
 };
 use bookclerk_library::control_plane::branch_title_counts;
 use bookclerk_library::entities::nodes;
@@ -451,24 +451,29 @@ fn prefers_a_released_edition_over_a_pre_order() {
 }
 
 #[test]
-fn reads_the_write_records_argument_and_refuses_anything_else() {
+fn reads_each_mode_and_refuses_anything_else() {
     let args = |list: &[&str]| {
         list.iter()
             .map(|a| a.to_string())
             .collect::<Vec<_>>()
             .into_iter()
     };
-    assert_eq!(records_path(args(&[])).unwrap(), None);
+    assert_eq!(parse_mode(args(&[])).unwrap(), Mode::Seed);
     assert_eq!(
-        records_path(args(&["--write-records", "out.json"])).unwrap(),
-        Some(std::path::PathBuf::from("out.json"))
+        parse_mode(args(&["--write-records", "out.json"])).unwrap(),
+        Mode::WriteRecords(std::path::PathBuf::from("out.json"))
+    );
+    assert_eq!(
+        parse_mode(args(&["--bake-finish"])).unwrap(),
+        Mode::BakeFinish
     );
     for bad in [
         &["--write-records"][..],
         &["--write-records", "out.json", "extra"][..],
+        &["--bake-finish", "extra"][..],
         &["--seed"][..],
     ] {
-        assert!(records_path(args(bad)).is_err(), "{bad:?}");
+        assert!(parse_mode(args(bad)).is_err(), "{bad:?}");
     }
 }
 

@@ -83,6 +83,12 @@ const GRAPHIC_AUDIO: Storefront = Storefront {
 /// Every storefront Sam has an account at, in the order the accounts are added.
 pub const STOREFRONTS: [Storefront; 4] = [AUDIBLE, LIBRO, CHIRP, GRAPHIC_AUDIO];
 
+/// Plugins the demo runs besides the storefronts, by manifest id: what the
+/// demo Worker enables as optional (`OPTIONAL_PLUGINS` in
+/// `tools/demo/src/lifecycle.ts`). The seed enables them too, so a baked
+/// image already has them, and one missing from the image is skipped.
+pub const EXTRA_PLUGINS: [&str; 1] = ["covers"];
+
 /// Account id of each of Sam's store accounts. `example.com` is reserved, so
 /// it names no real person.
 const SAMPLE_ACCOUNT: &str = "sam@example.com";
@@ -955,7 +961,21 @@ fn same_product(full: &CatalogHit, hit: &CatalogHit) -> bool {
     full.product_id == hit.product_id || hit.isbn().is_some_and(|isbn| full.isbn() == Some(isbn))
 }
 
-/// The `--write-records <path>` argument the seed binary was given, if any.
+/// What one run of the seed binary does, from its command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mode {
+    /// No arguments: seed the library.
+    Seed,
+    /// `--write-records <path>`: look the sample titles up and write the
+    /// records found to the path, seeding nothing.
+    WriteRecords(std::path::PathBuf),
+    /// `--bake-finish`: turn the seeded files dir into the template a demo
+    /// image ships (`packaging/demo/bake-seed.sh`), removing every secret
+    /// and runtime file a container must make for itself.
+    BakeFinish,
+}
+
+/// Parses the seed binary's arguments into a [`Mode`].
 ///
 /// # Arguments
 ///
@@ -963,21 +983,24 @@ fn same_product(full: &CatalogHit, hit: &CatalogHit) -> bool {
 ///
 /// # Returns
 ///
-/// Where to write the store records, or `None` to seed the library.
+/// The mode the arguments ask for.
 ///
 /// # Errors
 ///
-/// Returns an error for any other argument, or a missing path.
-pub fn records_path(
-    mut args: impl Iterator<Item = String>,
-) -> anyhow::Result<Option<std::path::PathBuf>> {
-    match args.next() {
-        None => Ok(None),
-        Some(flag) if flag == "--write-records" => match (args.next(), args.next()) {
-            (Some(path), None) => Ok(Some(path.into())),
-            (None, _) => bail!("--write-records needs a path"),
-            (Some(_), Some(extra)) => bail!("unexpected argument `{extra}`"),
+/// Returns an error for any other argument, a missing path, or an extra
+/// argument.
+pub fn parse_mode(mut args: impl Iterator<Item = String>) -> anyhow::Result<Mode> {
+    let mode = match args.next() {
+        None => return Ok(Mode::Seed),
+        Some(flag) if flag == "--write-records" => match args.next() {
+            Some(path) => Mode::WriteRecords(path.into()),
+            None => bail!("--write-records needs a path"),
         },
+        Some(flag) if flag == "--bake-finish" => Mode::BakeFinish,
         Some(other) => bail!("unexpected argument `{other}`"),
+    };
+    match args.next() {
+        None => Ok(mode),
+        Some(extra) => bail!("unexpected argument `{extra}`"),
     }
 }

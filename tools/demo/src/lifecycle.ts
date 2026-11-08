@@ -202,16 +202,45 @@ export async function signInVisitor(call: ContainerCall, operatorToken: string):
 }
 
 /**
+ * Reads this node's id, the wanted plugins' default instances and which of
+ * them are already deployed here.
+ *
+ * @param call - Container request function.
+ * @param authorization - The operator's `Authorization` header value.
+ * @param ids - Plugin ids to look for.
+ * @returns What {@link decodeInstances} read.
+ * @throws {Error} When the list cannot be read.
+ */
+async function listInstances(
+  call: ContainerCall,
+  authorization: string,
+  ids: string[],
+): Promise<{ nodeId: string; instances: Map<string, string>; present: Set<string> }> {
+  const list = await call("/api/config/plugin-instances", {
+    headers: { Authorization: authorization },
+  });
+  const found = list.status === 200 ? decodeInstances(await list.text(), ids) : null;
+  if (!found) {
+    await list.body?.cancel();
+    throw new Error(`plugin instances answered ${list.status}`);
+  }
+  return found;
+}
+
+/**
  * Approves each plugin's requested grant as the operator and deploys its
  * default instance on this node, as an operator would in Settings. Visitors
- * cannot do either: the Worker refuses those routes.
+ * cannot do either: the Worker refuses those routes. A plugin whose default
+ * instance is already deployed on this node (a baked image ships them so)
+ * is left alone.
  *
  * @param call - Container request function.
  * @param operatorToken - The session's operator token.
  * @param ids - Plugin ids to enable.
  * @returns
- * @throws {Error} When a grant or deployment is refused, or a storefront has
- *   no default instance (the image is missing it).
+ * @throws {Error} When the instance list cannot be read, a grant or
+ *   deployment is refused, or a storefront has no default instance (the
+ *   image is missing it).
  */
 export async function enableStorefronts(
   call: ContainerCall,
@@ -219,7 +248,10 @@ export async function enableStorefronts(
   ids: string[] = STOREFRONTS,
 ): Promise<void> {
   const json = { Authorization: `Bearer ${operatorToken}`, "Content-Type": "application/json" };
-  for (const id of ids) {
+  const before = await listInstances(call, json.Authorization, ids);
+  const missing = ids.filter((id) => !before.present.has(id));
+  if (missing.length === 0) return;
+  for (const id of missing) {
     const res = await call(`/api/plugins/${encodeURIComponent(id)}/consent`, {
       method: "POST",
       headers: json,
@@ -228,12 +260,8 @@ export async function enableStorefronts(
     await res.body?.cancel();
     if (res.status !== 200) throw new Error(`consent for ${id} answered ${res.status}`);
   }
-  const list = await call("/api/config/plugin-instances", {
-    headers: { Authorization: json.Authorization },
-  });
-  const found = list.status === 200 ? decodeInstances(await list.text(), ids) : null;
-  if (!found) throw new Error(`plugin instances answered ${list.status}`);
-  for (const id of ids) {
+  const found = await listInstances(call, json.Authorization, missing);
+  for (const id of missing) {
     const instance = found.instances.get(id);
     if (!instance) throw new Error(`no default instance for ${id}`);
     const path = `/api/config/plugin-instances/${encodeURIComponent(instance)}/deployments/${encodeURIComponent(found.nodeId)}`;
@@ -251,19 +279,29 @@ export async function enableStorefronts(
  * Enables the storefronts, then each of [`OPTIONAL_PLUGINS`], whose failure
  * is logged instead of ending the session.
  *
+ * One list read comes first: on a baked image every plugin is already
+ * deployed, and nothing else is sent.
+ *
  * @param call - Container request function.
  * @param operatorToken - The session's operator token.
  * @param warn - Where an optional plugin's failure is reported.
  * @returns
- * @throws {Error} When a storefront cannot be enabled.
+ * @throws {Error} When the instance list cannot be read or a storefront
+ *   cannot be enabled.
  */
 export async function enableDemoPlugins(
   call: ContainerCall,
   operatorToken: string,
   warn: (message: string) => void = console.warn,
 ): Promise<void> {
-  await enableStorefronts(call, operatorToken, STOREFRONTS);
+  const listed = await listInstances(call, `Bearer ${operatorToken}`, [
+    ...STOREFRONTS,
+    ...OPTIONAL_PLUGINS,
+  ]);
+  const storefronts = STOREFRONTS.filter((id) => !listed.present.has(id));
+  if (storefronts.length > 0) await enableStorefronts(call, operatorToken, storefronts);
   for (const id of OPTIONAL_PLUGINS) {
+    if (listed.present.has(id)) continue;
     try {
       await enableStorefronts(call, operatorToken, [id]);
     } catch (err) {

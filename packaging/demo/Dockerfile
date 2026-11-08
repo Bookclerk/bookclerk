@@ -32,14 +32,20 @@
 #     worker's own process limits. Shipped builds keep "required".
 #   - bookclerkd listens on all interfaces inside the VM, where only the
 #     Worker reaches it.
-#   - bookclerk-demo-seed runs once before bookclerkd: it adds a second
-#     library user with books, a wishlist and an offline branch
-#     (crates/bookclerk-demo-seed), so the library the visitor lands in is
-#     not empty. It approves and deploys the storefronts (their manifest
-#     grants, as the Worker does later), fetches each title's record from
-#     its store's catalog through them, then writes through the library code
-#     of this commit, never raw SQL. If it fails, bookclerkd still starts,
-#     with an empty library.
+#   - The library is seeded at build time (the `seeded` stage, bake-seed.sh):
+#     bookclerk-demo-seed adds a second library user with books, a wishlist
+#     and an offline branch (crates/bookclerk-demo-seed), approves and
+#     deploys the storefronts and covers (their manifest grants, as the
+#     Worker does), fetches each title's record from its store's catalog
+#     through them, and writes through the library code of this commit,
+#     never raw SQL. bookclerkd then stores Sam's Discover shelves, and
+#     `--bake-finish` strips everything a container must make for itself
+#     (master.key and the cluster secret fingerprint, the covers URL key,
+#     leases, plugin sessions). The build fails if any of it is left.
+#   - boot.sh copies that template into the container's empty files dir and
+#     execs bookclerkd, which mints this container's own key. Without a
+#     template, or when the copy fails, it seeds live as before; if that
+#     fails too, bookclerkd still starts, with an empty library.
 
 # The bake file points these at the production Dockerfile's stages.
 ARG BUILDER=bookclerk-builder:demo
@@ -68,7 +74,7 @@ RUN CARGO_PROFILE_RELEASE_LTO="$RELEASE_LTO" \
     && test "$(find /out -mindepth 2 -maxdepth 2 -name plugin.toml | wc -l)" -eq 5 \
     && install -m 0755 target/release/bookclerk-demo-seed /bookclerk-demo-seed
 
-FROM ${RUNTIME}
+FROM ${RUNTIME} AS demo-base
 USER root
 RUN test -x /opt/bookclerk/bookclerk-media-worker \
     && for manifest in /opt/bookclerk/plugins/*/plugin.toml; do \
@@ -84,6 +90,22 @@ ENV BOOKCLERK_PLUGIN_DIRS=/opt/bookclerk/storefronts \
     BOOKCLERK_MEDIA_ISOLATION=best-effort \
     BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787
 USER bookclerk
-# Seed, then hand the process over to bookclerkd. A seed failure is logged
-# and the demo starts with an empty library rather than not at all.
-ENTRYPOINT ["/bin/sh", "-c", "/opt/bookclerk/bookclerk-demo-seed || echo 'bookclerk-demo-seed failed; starting with an empty library' >&2; exec /opt/bookclerk/bookclerkd"]
+
+# Seeds the template with network access (the storefronts' catalogs) and
+# runs bookclerkd once to store Sam's Discover shelves. Same layout and
+# plugin paths as the final image, so the baked plugin keys match.
+FROM demo-base AS seeded
+USER root
+RUN install -d -o bookclerk -g bookclerk -m 0700 /seed
+COPY --chmod=0755 bake-seed.sh /usr/local/bin/bake-seed
+USER bookclerk
+ENV BOOKCLERK_FILES_DIR=/seed \
+    BOOKCLERK_CONFIG=/seed/config.toml
+RUN /usr/local/bin/bake-seed
+
+FROM demo-base
+COPY --from=seeded --chown=bookclerk:bookclerk /seed /opt/bookclerk/seeded
+COPY --chmod=0755 boot.sh /opt/bookclerk/demo-boot.sh
+# Copy the baked library into the empty files dir (or seed live without
+# one), then hand the process over to bookclerkd.
+ENTRYPOINT ["/opt/bookclerk/demo-boot.sh"]

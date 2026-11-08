@@ -6,21 +6,43 @@ the storefront plugins for 30 minutes. They can sign in to their own store
 accounts, scan their library and search it. Nothing can be acquired or
 downloaded, and their store sign-ins are revoked when the session ends.
 
-The library is not empty when the visitor arrives. Before `bookclerkd`
-starts, the image runs `bookclerk-demo-seed` (`crates/bookclerk-demo-seed`),
-which adds a second library user, Sam, with accounts at Audible, Libro.fm,
-Chirp and GraphicAudio, ten well-known audiobooks bought from them, four
-wishlist items, and a branch, `sams-nas`, that shared four more titles and
-has been offline for three days. The seed first approves and deploys the four
-storefronts, with exactly the grants their manifests request (the Worker does
-the same through the daemon once it is up), then looks each title up in its
-store's public catalog through the storefront plugins (the search Discover
-uses, at most 15 seconds) and writes the record the store returns, so
-product ids, cover art and descriptions match the store. A title it cannot
-find keeps built-in fields under a made-up `demo-…` id. The accounts hold no
-tokens. It writes through the
-library code of the same commit, never raw SQL, and its test runs against a
-fresh database in CI, so a schema change that breaks it fails there.
+The library is not empty when the visitor arrives. The image is built with
+it already seeded (`packaging/demo/bake-seed.sh`, the `seeded` stage of
+`packaging/demo/Dockerfile`): `bookclerk-demo-seed`
+(`crates/bookclerk-demo-seed`) adds a second library user, Sam, with
+accounts at Audible, Libro.fm, Chirp and GraphicAudio, ten well-known
+audiobooks bought from them, four wishlist items, and a branch,
+`sams-nas`, that shared four more titles and has been offline for three
+days. The seed first approves and deploys the four storefronts and the
+covers plugin, with exactly the grants their manifests request, then looks
+each title up in its store's public catalog through the storefront plugins
+(the search Discover uses, at most 15 seconds) and writes the record the
+store returns, so product ids, cover art and descriptions match the store.
+A title it cannot find keeps built-in fields under a made-up `demo-…` id.
+The accounts hold no tokens. It writes through the library code of the same
+commit, never raw SQL, and its test runs against a fresh database in CI, so
+a schema change that breaks it fails there.
+
+The bake then runs `bookclerkd` once, with a throwaway operator token kept
+in its environment, until it has stored Sam's Discover shelves.
+`bookclerk-demo-seed --bake-finish` then strips everything a container must
+make for itself, and the build fails if any of it is left:
+
+- `master.key`, and the fingerprint of it the library keeps;
+- the covers cache's URL-signing key;
+- cluster leases, node heartbeats, plugin sessions and logs.
+
+`--bake-finish` refuses a library that holds any sealed secret, sign-in
+session or claim ticket. The node identity (`node-identity.json`) is baked,
+so every demo container shares the same node and cluster id. Each one is a
+VM that never joins a cluster, the ids carry no secret, and the baked plugin
+deployments are keyed by the node id.
+
+A fresh container's entrypoint (`packaging/demo/boot.sh`) copies that
+template into its empty files dir and execs `bookclerkd`, which mints and
+wraps the container's own `master.key` with the Worker's password. Without a
+template, or when the copy fails, it seeds live as before; if that fails
+too, `bookclerkd` starts with an empty library.
 
 ## How a session works
 
@@ -38,8 +60,11 @@ every content signal to `no` (`use=immediate`).
    container with a fresh operator token and `master.key` password, and the
    demo's own origin as bookclerkd's `public_origin` (so bookclerkd's own
    cross-site checks and store sign-in callbacks use it), waits for
-   `/health`, approves and deploys the four storefronts as the operator
-   (as an operator would in Settings; visitors cannot), makes the visitor
+   `/health`, and approves and deploys the four storefronts and covers as
+   the operator (as an operator would in Settings; visitors cannot). It
+   reads the plugin instance list first and leaves any plugin already
+   deployed on the node alone, so on a baked image that one read is all
+   it sends. It then makes the visitor
    the host's Owner (with the fixed password `VISITOR_PASSWORD` in
    `src/lifecycle.ts`) and redeems the Owner's claim ticket. It then reads
    `GET /api/discover/status` as the visitor every second for up to 25

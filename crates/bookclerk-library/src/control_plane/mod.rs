@@ -37,6 +37,7 @@ mod routing;
 mod schemas;
 mod secret;
 mod semaphore;
+mod template;
 mod trust;
 mod uploads;
 mod versions;
@@ -196,6 +197,7 @@ pub use semaphore::{
     renew_fenced_lease, renew_permits, semaphore_slot_lease_name, PermitAcquire, SemaphorePermit,
     SemaphoreRequest, MAX_SEMAPHORE_LIMIT, SEMAPHORE_LEASE_PREFIX,
 };
+pub use template::{strip_install_state, TemplateStrip};
 pub use trust::{
     accounts_owned_by, book_matches_title, claimant_may_run, handoff_routed_job, job_item_accounts,
     job_trusted, node_may_claim_job, node_trust, plan_acquire, plan_scan, remote_node_may_view_job,

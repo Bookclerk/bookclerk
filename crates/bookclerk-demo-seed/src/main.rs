@@ -8,6 +8,11 @@
 //! `records.json`), keeping the committed record of any title it missed,
 //! and seeds nothing. Run it against a scratch
 //! `BOOKCLERK_FILES_DIR` from a network the storefronts answer.
+//!
+//! `bookclerk-demo-seed --bake-finish` turns a seeded files dir into the
+//! template the demo image ships (`packaging/demo/bake-seed.sh`): it strips
+//! the install's own state from the library and deletes the secret and
+//! runtime files each container makes for itself.
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -16,13 +21,14 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use bookclerk_config::Config;
 use bookclerk_demo_seed::{
-    best_match, committed_records, distinct_records, lookups, merge_records, records_json,
-    records_path, search_query, seed, Lookup, Seeded, StoreRecords, STOREFRONTS,
+    best_match, committed_records, distinct_records, lookups, merge_records, parse_mode,
+    records_json, search_query, seed, Lookup, Mode, Seeded, StoreRecords, EXTRA_PLUGINS,
+    STOREFRONTS,
 };
 use bookclerk_library::control_plane::{
     default_instance_for_key, ensure_hand_managed, ensure_plugin_deployment,
-    load_deployment_for_node, replace_plugin_deployment, ConfigActor, DeploymentReplace,
-    DesiredState,
+    load_deployment_for_node, replace_plugin_deployment, strip_install_state, ConfigActor,
+    DeploymentReplace, DesiredState,
 };
 use bookclerk_plugin_host::{consent_request, HostControlPlane, PluginGrantStore, SessionServices};
 use bookclerk_source::{CatalogHit, CatalogSearchOpts};
@@ -62,8 +68,13 @@ async fn main() -> ExitCode {
 /// Returns an error when the library cannot be opened, no storefront is
 /// enrolled, or a write fails.
 async fn run() -> anyhow::Result<()> {
-    let write_records = records_path(std::env::args().skip(1))?;
+    let mode = parse_mode(std::env::args().skip(1))?;
     let config = Config::load(None, None).context("load config")?;
+    let write_records = match mode {
+        Mode::Seed => None,
+        Mode::WriteRecords(path) => Some(path),
+        Mode::BakeFinish => return bake_finish(&config).await,
+    };
     let host = bookclerk_plugin_host::open_host_control_plane(&config)
         .await
         .context("open the library")?;
@@ -88,7 +99,7 @@ async fn run() -> anyhow::Result<()> {
         }
     }
     if let Some(path) = write_records {
-        enable_storefronts(&host).await?;
+        enable_demo_plugins(&host).await?;
         let enabled = bookclerk_plugin_host::open_host_control_plane(&config)
             .await
             .context("reopen the library")?;
@@ -116,7 +127,7 @@ async fn run() -> anyhow::Result<()> {
     // The storefronts enroll without a grant, so none is deployed yet; the
     // Worker enables them through bookclerkd only after /health. Enable
     // them here the same way, then reopen so their deployments are present.
-    let records = match enable_storefronts(&host).await {
+    let records = match enable_demo_plugins(&host).await {
         Ok(()) => match bookclerk_plugin_host::open_host_control_plane(&config).await {
             Ok(enabled) => store_records(&enabled).await,
             Err(err) => {
@@ -224,25 +235,29 @@ async fn store_records(host: &HostControlPlane) -> StoreRecords {
     )
 }
 
-/// Approves each enrolled storefront's requested grant and deploys its
-/// default instance on this node: what the Worker does through bookclerkd's
-/// operator API once the daemon is up (tools/demo/src/lifecycle.js), and
-/// what `bookclerk plugins approve --yes` and `plugins deploy` do. The grant
-/// is exactly what the plugin's manifest asks for, so the Worker's later
-/// calls find both already in place.
+/// Approves the requested grant of each enrolled storefront and each of
+/// [`EXTRA_PLUGINS`], and deploys its default instance on this node: what
+/// the Worker does through bookclerkd's operator API once the daemon is up
+/// (tools/demo/src/lifecycle.ts), and what `bookclerk plugins approve --yes`
+/// and `plugins deploy` do. The grant is exactly what the plugin's manifest
+/// asks for, so the Worker finds both already in place and changes nothing.
 ///
 /// # Errors
 ///
 /// Returns an error when the grants file or a deployment cannot be written.
-async fn enable_storefronts(host: &HostControlPlane) -> anyhow::Result<()> {
+async fn enable_demo_plugins(host: &HostControlPlane) -> anyhow::Result<()> {
     let files_dir = &host.config.paths().files_dir;
     let actor = ConfigActor::Operator {
         id: "demo-seed".into(),
     };
     let mut grants = PluginGrantStore::load(files_dir)?;
     let mut fronts = Vec::new();
-    for front in STOREFRONTS {
-        if let Some(enrolled) = host.enrolled.iter().find(|e| e.plugin.alias() == front.id) {
+    let ids = STOREFRONTS
+        .iter()
+        .map(|front| front.id)
+        .chain(EXTRA_PLUGINS);
+    for id in ids {
+        if let Some(enrolled) = host.enrolled.iter().find(|e| e.plugin.alias() == id) {
             let plugin = &enrolled.plugin;
             grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
             fronts.push(plugin.plugin_key().canonical());
@@ -291,4 +306,91 @@ async fn enable_storefronts(host: &HostControlPlane) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Turns the seeded files dir into the template the demo image ships.
+///
+/// Strips the install's own state from the library
+/// ([`strip_install_state`]: it refuses a library holding any sealed secret
+/// or session), then deletes what every container must make for itself:
+/// `master.key` (the first daemon of each container mints and wraps its
+/// own), the covers cache's URL-signing key, plugin session dirs and logs.
+/// Run it after bookclerkd has stopped.
+///
+/// # Errors
+///
+/// Returns an error when the library cannot be opened or stripped, a file
+/// cannot be removed, or a SQLite side file that still holds data is found
+/// (it would carry writes the copy cannot see).
+async fn bake_finish(config: &Config) -> anyhow::Result<()> {
+    let paths = config.paths().clone();
+    {
+        let host = bookclerk_plugin_host::open_host_control_plane(config)
+            .await
+            .context("open the library")?;
+        let stripped = strip_install_state(&host.store)
+            .await
+            .context("strip install state")?;
+        eprintln!(
+            "bookclerk-demo-seed: stripped {} secret root(s), {} lease(s), {} heartbeat(s)",
+            stripped.secret_roots, stripped.leases, stripped.node_status
+        );
+    }
+    let files = &paths.files_dir;
+    remove_file_if_present(&bookclerk_library::master_key_path(files))?;
+    remove_file_if_present(&paths.cache_dir.join("covers").join("token.key"))?;
+    remove_dir_if_present(&files.join("logs"))?;
+    let state = files.join("plugin-state");
+    if state.is_dir() {
+        for plugin in std::fs::read_dir(&state)? {
+            for entry in std::fs::read_dir(plugin?.path())? {
+                let entry = entry?;
+                let transient = entry.file_name().to_string_lossy().starts_with("session-");
+                if transient {
+                    std::fs::remove_dir_all(entry.path())?;
+                }
+            }
+        }
+    }
+    for side in ["library.db-journal", "library.db-wal", "library.db-shm"] {
+        let path = files.join(side);
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.len() > 0 => {
+                bail!("{side} still holds data; stop bookclerkd before finishing the bake")
+            }
+            Ok(_) => std::fs::remove_file(&path)?,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err).with_context(|| format!("stat {side}")),
+        }
+    }
+    eprintln!("bookclerk-demo-seed: the files dir is ready to bake");
+    Ok(())
+}
+
+/// Removes a file, treating an absent one as removed.
+///
+/// # Errors
+///
+/// Returns any other I/O error.
+fn remove_file_if_present(path: &std::path::Path) -> anyhow::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            Err(err).with_context(|| format!("remove {}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Removes a directory tree, treating an absent one as removed.
+///
+/// # Errors
+///
+/// Returns any other I/O error.
+fn remove_dir_if_present(path: &std::path::Path) -> anyhow::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            Err(err).with_context(|| format!("remove {}", path.display()))
+        }
+        _ => Ok(()),
+    }
 }
