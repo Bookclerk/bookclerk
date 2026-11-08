@@ -362,7 +362,7 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
                 return b"frames"
 
         class DatabaseAdapter(DatabaseAdapterEntrypoint):
-            async def openSession(self):
+            async def openSession(self) -> Streaming:
                 return Streaming()
 
         adapter = DatabaseAdapter()

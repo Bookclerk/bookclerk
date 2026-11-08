@@ -1794,9 +1794,13 @@ impl RpcDatabaseProxy {
         } else {
             self.session.db_execute_request(stamped, cancel).await
         }?;
-        let caps = streamed.as_ref().unwrap_or(&self.caps);
-        bookclerk_library::validate_execute_reply(&validate_req, &reply, caps)
-            .map_err(map_reply_validation_err)?;
+        match &streamed {
+            Some(caps) => {
+                bookclerk_library::validate_streamed_execute_reply(&validate_req, &reply, caps)
+            }
+            None => bookclerk_library::validate_execute_reply(&validate_req, &reply, &self.caps),
+        }
+        .map_err(map_reply_validation_err)?;
         Ok(reply)
     }
 
@@ -2278,7 +2282,7 @@ impl bookclerk_library::TypedAtomicExec for RpcAtomicBackend {
             .admit_proven_execute(&envelope.request, &envelope.proofs)?;
         let validate_req = envelope.request.clone();
         let cancel = Arc::new(AtomicBool::new(false));
-        let (reply, caps) = match self.caps.streamed() {
+        let reply = match self.caps.streamed() {
             Some(streamed) => {
                 let limits = ExecuteStreamLimits::from_capabilities(&self.caps);
                 let reply = self
@@ -2286,18 +2290,21 @@ impl bookclerk_library::TypedAtomicExec for RpcAtomicBackend {
                     .db_execute_streamed_request(envelope, limits, cancel)
                     .await
                     .map_err(host_err_to_abi)?;
-                (reply, streamed)
+                bookclerk_library::validate_streamed_execute_reply(
+                    &validate_req,
+                    &reply,
+                    &streamed,
+                )
+                .map_err(map_reply_validation_abi)?;
+                return Ok(reply);
             }
-            None => {
-                let reply = self
-                    .session
-                    .db_execute_request(envelope, cancel)
-                    .await
-                    .map_err(host_err_to_abi)?;
-                (reply, self.caps.clone())
-            }
+            None => self
+                .session
+                .db_execute_request(envelope, cancel)
+                .await
+                .map_err(host_err_to_abi)?,
         };
-        bookclerk_library::validate_execute_reply(&validate_req, &reply, &caps)
+        bookclerk_library::validate_execute_reply(&validate_req, &reply, &self.caps)
             .map_err(map_reply_validation_abi)?;
         Ok(reply)
     }

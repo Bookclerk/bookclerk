@@ -302,15 +302,39 @@ mod replay_finalize {
         let read = |hash: &str| ExecuteRequest {
             operation_id: "guest-read-op".into(),
             request_hash: hash.into(),
-            statements: vec![TypedDbStatement {
-                sql: "SELECT ? AS body".into(),
-                parameters: vec![DbValue::Text(body.clone())],
-                kind: DbPlanStatementKind::Select,
-                max_rows: 1,
-                result_selection: DbResultSelection::Rows,
-            }],
+            statements: vec![
+                TypedDbStatement {
+                    sql: "SELECT ? AS body".into(),
+                    parameters: vec![DbValue::Text(body.clone())],
+                    kind: DbPlanStatementKind::Select,
+                    max_rows: 1,
+                    result_selection: DbResultSelection::Rows,
+                },
+                TypedDbStatement {
+                    sql: "SELECT bump FROM bookclerk_slots WHERE slot_key = 'guest-read'".into(),
+                    parameters: vec![],
+                    kind: DbPlanStatementKind::Select,
+                    max_rows: 1,
+                    result_selection: DbResultSelection::Rows,
+                },
+            ],
             deadline_unix_ms: 0,
         };
+        let set_bump = |bump: i64| {
+            use sea_orm::ConnectionTrait;
+            let db = db.clone();
+            async move {
+                db.execute_unprepared("DELETE FROM bookclerk_slots WHERE slot_key = 'guest-read'")
+                    .await
+                    .expect("clear the slot the read observes");
+                db.execute_unprepared(&format!(
+                    "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('guest-read', {bump})"
+                ))
+                .await
+                .expect("store the slot the read observes");
+            }
+        };
+        set_bump(1).await;
         let run = |req: ExecuteRequest| {
             let db = db.clone();
             let caps = caps.clone();
@@ -332,15 +356,22 @@ mod replay_finalize {
             }
         };
         let first = run(read(&hash)).await.expect("read-only batch commits");
-        assert_eq!(first.statements.len(), 1);
+        assert_eq!(first.statements.len(), 2);
         assert_eq!(
             first.statements[0].rows[0].values[0],
             DbValue::Text(body.clone())
         );
+        assert_eq!(first.statements[1].rows[0].values[0], DbValue::Int64(1));
+        set_bump(2).await;
         let replay = run(read(&hash)).await.expect("replay re-runs the read");
         assert_eq!(
             replay.statements[0].rows[0].values[0],
             DbValue::Text(body.clone())
+        );
+        assert_eq!(
+            replay.statements[1].rows[0].values[0],
+            DbValue::Int64(2),
+            "the replay re-ran the read against the stored row instead of serving cached rows"
         );
         let conflict = run(read(&"d".repeat(64))).await.unwrap_err();
         assert!(conflict.contains("different requestHash"), "{conflict}");

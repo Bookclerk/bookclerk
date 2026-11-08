@@ -1123,13 +1123,18 @@ fn oversized_cell_err(column: &str, nbytes: usize) -> DbErr {
     ))
 }
 
-/// Truncates an error body to `max` bytes so logs stay bounded.
+/// Truncates an error body to at most `max` bytes, ending on a UTF-8
+/// character boundary, so logs stay bounded and a multi-byte character
+/// crossing the cut never panics the slice.
 fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
-        s
-    } else {
-        &s[..max]
+        return s;
     }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 #[cfg(test)]
@@ -1137,6 +1142,17 @@ mod tests {
     use super::*;
     use sea_orm::{DatabaseBackend, ProxyDatabaseTrait, Statement};
     use wiremock::matchers::{method, path_regex};
+
+    #[test]
+    fn truncate_stops_at_a_character_boundary() {
+        assert_eq!(truncate("plain", 10), "plain");
+        assert_eq!(truncate("abcdef", 3), "abc");
+        // U+00E9 is two bytes; a cut inside it backs off to the boundary.
+        let text = "ab\u{e9}cd";
+        assert_eq!(truncate(text, 3), "ab");
+        assert_eq!(truncate(text, 4), "ab\u{e9}");
+        assert_eq!(truncate("\u{1F600}", 2), "");
+    }
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn named_plan(
