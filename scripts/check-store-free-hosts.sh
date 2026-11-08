@@ -21,11 +21,59 @@ CIPHERS='^(aes|aes[-_]gcm|cbc|ctr|aes[-_]kw|widevine.*)( \(\*\))?$'
 # webauthn-rs (passkeys in bookclerkd) uses for its RustCrypto primitives and
 # which links AES, CBC and CTR unconditionally. They verify nothing about
 # media and come with no content keys or CDM; the binary already carries the
-# same ciphers inside aws-lc-rs for TLS. The exception holds only while
-# webauthn-rs is crypto-glue's sole user and the host reaches no cipher that
-# crypto-glue does not itself bring. Widevine crates are never allowed.
+# same ciphers inside aws-lc-rs for TLS. Widevine crates are never allowed.
+#
+# The exception is checked edge by edge, not by name, so a second route to a
+# cipher still fails:
+# - webauthn-rs is crypto-glue's only user;
+# - every crate that depends on a cipher (or on a crate carrying one: aes-gcm,
+#   aes-kw, pkcs5) is itself one of those crates, crypto-glue, or pkcs8;
+# - pkcs8 reaches pkcs5 only through its `encryption` / `pkcs5` features, and
+#   only crypto-glue turns those on.
 GLUE='crypto-glue'
 GLUE_USERS='^(webauthn-rs-core|webauthn-attestation-ca)$'
+GLUE_CRATES='aes aes-gcm aes-kw cbc ctr pkcs5'
+GLUE_PARENTS='^(aes|aes-gcm|aes-kw|cbc|ctr|pkcs5|pkcs8|crypto-glue)$'
+
+# Crates that depend directly on package `$2` in host `$1`'s normal graph.
+parents() {
+  cargo tree -p "$1" --edges normal -i "$2" --depth 1 --prefix none --format '{p}' 2>/dev/null |
+    awk '{print $1}' | grep -vx "$2" | sort -u || true
+}
+
+# Packages that turn on pkcs8's pkcs5-bearing features in host `$1`.
+pkcs5_enablers() {
+  cargo tree -p "$1" --edges normal,features -i pkcs5 --prefix depth --format '{p}' 2>/dev/null |
+    awk '
+      match($0, /^[0-9]+/) {
+        d = substr($0, 1, RLENGTH) + 0; node = substr($0, RLENGTH + 1)
+        if (in_feat && d <= feat_depth) in_feat = 0
+        if (in_feat && d == feat_depth + 1) { split(node, w, " "); print w[1] }
+        if (node ~ /^pkcs8 feature "(encryption|pkcs5)"$/) { in_feat = 1; feat_depth = d }
+      }' |
+    grep -vx pkcs8 | sort -u || true
+}
+
+# Prints why host `$1`'s ciphers do not all come from crypto-glue, or
+# nothing when they do.
+glue_exception_violations() {
+  local host="$1" users crate parent enabler
+  users="$(parents "$host" "$GLUE")"
+  while read -r parent; do
+    [[ -z "$parent" ]] && continue
+    grep -Eq "$GLUE_USERS" <<<"$parent" || echo "$GLUE is used by $parent"
+  done <<<"$users"
+  for crate in $GLUE_CRATES; do
+    while read -r parent; do
+      [[ -z "$parent" ]] && continue
+      grep -Eq "$GLUE_PARENTS" <<<"$parent" || echo "$crate is reached from $parent"
+    done <<<"$(parents "$host" "$crate")"
+  done
+  while read -r enabler; do
+    [[ -z "$enabler" ]] && continue
+    [[ "$enabler" == "$GLUE" ]] || echo "pkcs8 encryption (pkcs5) is enabled by $enabler"
+  done <<<"$(pkcs5_enablers "$host")"
+}
 
 status=0
 
@@ -46,17 +94,13 @@ for host in bookclerk-cli bookclerkd; do
 
   ciphers="$(grep -E "$CIPHERS" <<<"$tree" | sed 's/ (\*)$//' | sort -u || true)"
   if [[ -n "$ciphers" ]] && grep -qx "${GLUE//-/_}" <<<"$tree"; then
-    users="$(cargo tree -p "$host" --edges normal -i "$GLUE" --depth 1 --prefix none --format '{p}' |
-      awk '{print $1}' | grep -vx "$GLUE" | sort -u)"
-    strangers="$(grep -Ev "$GLUE_USERS" <<<"$users" || true)"
-    if [[ -n "$strangers" ]]; then
-      echo "FAIL: $host (default) has $GLUE users other than webauthn-rs:" >&2
-      sed 's/^/  /' <<<"$strangers" >&2
+    violations="$(glue_exception_violations "$host")"
+    if [[ -n "$violations" ]]; then
+      echo "FAIL: $host (default) reaches ciphers outside the passkey exception:" >&2
+      sed 's/^/  /' <<<"$violations" >&2
       status=1
     else
-      glue_ciphers="$(cargo tree -p "$GLUE" --edges normal --prefix none --format '{lib}' |
-        grep -E "$CIPHERS" | sed 's/ (\*)$//' | grep -v '^widevine' | sort -u || true)"
-      ciphers="$(comm -23 <(printf '%s\n' "$ciphers") <(printf '%s\n' "$glue_ciphers") | sed '/^$/d')"
+      ciphers="$(grep '^widevine' <<<"$ciphers" || true)"
     fi
   fi
   if [[ -n "$ciphers" ]]; then
