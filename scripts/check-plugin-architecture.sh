@@ -207,6 +207,7 @@ fi
 
 # Native guests must not open ambient TCP (reqwest::Client) in product src.
 hits="$(find crates/bookclerk-plugins/optional crates/bookclerk-enrich/src \
+  crates/bookclerk-audible-catalog/src \
   -name '*.rs' ! -path '*/tests/*' -print0 \
   | xargs -0 grep -n 'reqwest::Client' || true)"
 if [[ -n "$hits" ]]; then

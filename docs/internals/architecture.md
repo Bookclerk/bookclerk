@@ -81,10 +81,10 @@ PostgreSQL 16+, or Cloudflare D1
 | Config / paths / logging | `bookclerk-config` |
 | Source trait + registry (host side) | `bookclerk-source` (re-exports `bookclerk-storefront`) |
 | Storefront guest types | `bookclerk-storefront` (DTOs, ABI conversions, listing helpers; no database, ORM, config or OpenAPI) |
-| Store adapters (plugins) | `bookclerk-plugins/optional/source-{audible,libro,chirp,graphicaudio}` (lib + guest bin; Libro.fm, Chirp and GraphicAudio link only the SDK and `bookclerk-storefront`) |
+| Store adapters (plugins) | `bookclerk-plugins/optional/source-{audible,libro,chirp,graphicaudio}` (lib + guest bin; each links only the SDK, `bookclerk-storefront` and its own store crates, Audible adding `bookclerk-audible-catalog` and `bookclerk-mp4`) |
 | ABS integration (plugin) | `bookclerk-plugins/integration-audiobookshelf` (lib + guest bin) |
 | Clear-media packaging | `bookclerk-media` (remux / fixup / MP3; no DRM) |
-| MP4 container plumbing | `bookclerk-mp4` (shared with store plugins; no cryptography) |
+| MP4 container plumbing | `bookclerk-mp4` (shared with store plugins, plus the Audible brand-trim helpers; no cryptography) |
 | Process confinement | `bookclerk-sandbox` (Landlock+seccomp / Seatbelt / AppContainer) |
 | Guest jail launcher | `bookclerk-jail` (applies a policy, then `exec`s the guest) |
 | Workerd isolate launcher | `bookclerk-workerd` (pinned Cloudflare workerd + bridge/egress) |
@@ -96,7 +96,8 @@ PostgreSQL 16+, or Cloudflare D1
 | Search | `bookclerk-search` |
 | Discovery / recommendations | `bookclerk-discover` (via registered `ContentSource` catalog APIs) |
 | Storage backends | `bookclerk-storage` |
-| Catalog enrichment | `bookclerk-enrich` (shared HTTP helpers; Audible plugin owns Discover catalog) |
+| Public Audible catalog | `bookclerk-audible-catalog` (unauthenticated search, genres, ratings and reviews; linked by the Audible guest and `bookclerk-enrich`) |
+| Catalog enrichment | `bookclerk-enrich` (matches other stores' titles to an ASIN; re-exports `bookclerk-audible-catalog`) |
 | Integrations framework + portal | `bookclerk-integrations` (traits / registry / portal; ABS lives in its plugin) |
 | External plugin host | `bookclerk-plugin-host` |
 | Libation migrate/export | `bookclerk-migrate` |

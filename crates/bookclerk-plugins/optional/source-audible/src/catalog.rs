@@ -1,15 +1,15 @@
 //! Public Audible catalog helpers for Discover (`search_catalog` / expand / purchase).
 //!
-//! Uses [`bookclerk_enrich`] public catalog HTTP — no account required.
+//! Uses [`bookclerk_audible_catalog`] public catalog HTTP — no account required.
 
-use bookclerk_enrich::{
+use bookclerk_audible_catalog::{
     is_valid_asin, normalize_region, public_http_client, region_tld, search_catalog_asins,
     search_catalog_by_genre_name, search_catalog_by_narrator, search_catalog_by_series_asin,
     search_catalog_keywords, search_catalog_products, search_catalog_products_paged,
     search_catalog_storefront, CatalogProduct,
 };
-use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
-use bookclerk_source::{
+use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
+use bookclerk_storefront::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts,
     SourcePurchaseHint,
 };
@@ -25,13 +25,15 @@ use serde_json::Value;
 /// # Errors
 ///
 /// Returns an error when the operation fails.
-pub async fn search_catalog(opts: &CatalogSearchOpts) -> bookclerk_source::Result<Vec<CatalogHit>> {
+pub async fn search_catalog(
+    opts: &CatalogSearchOpts,
+) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
     let q = opts.query.trim();
     if q.is_empty() || opts.limit == 0 {
         return Ok(Vec::new());
     }
     let http =
-        public_http_client().map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        public_http_client().map_err(|e| bookclerk_storefront::SourceError::api(e.to_string()))?;
     let region = normalize_region(&opts.region);
     let fetch_limit = (opts.limit.saturating_mul(2)).clamp(opts.limit, 50);
     let page = opts.page.max(1);
@@ -124,7 +126,7 @@ pub async fn search_catalog(opts: &CatalogSearchOpts) -> bookclerk_source::Resul
             .await
         }
     }
-    .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+    .map_err(|e| bookclerk_storefront::SourceError::api(e.to_string()))?;
 
     Ok(products
         .into_iter()
@@ -144,7 +146,7 @@ pub async fn search_catalog(opts: &CatalogSearchOpts) -> bookclerk_source::Resul
 pub async fn expand_candidates(
     seed: &ExpandSeed,
     limit: usize,
-) -> bookclerk_source::Result<Vec<CatalogHit>> {
+) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -323,7 +325,7 @@ pub async fn expand_candidates(
 /// Returns an error when the operation fails.
 pub async fn purchase_hint(
     opts: &PurchaseHintOpts,
-) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
+) -> bookclerk_storefront::Result<Option<SourcePurchaseHint>> {
     let region = normalize_region(&opts.region);
     let title = opts
         .title

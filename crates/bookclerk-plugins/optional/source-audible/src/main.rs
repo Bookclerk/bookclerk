@@ -12,11 +12,11 @@ use bookclerk_plugin_sdk::{
     RevokeAccountParams, ScalarLimits, ScanParams, ScanSummary, SearchCatalogParams,
     FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
-use bookclerk_source::abi::{
+use bookclerk_plugin_source_audible::catalog;
+use bookclerk_storefront::abi::{
     account_credentials_json, credentials_from_bytes, expand_seed_from_params,
-    DEFAULT_LIST_DEALS_LIMIT,
 };
-use bookclerk_source::{CatalogSearchOpts, ContentSource, PurchaseHintOpts};
+use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
 use serde_json::Value;
 
 /// Audible source guest; OAuth login uses the host-owned callback tunnel.
@@ -66,7 +66,7 @@ fn internal(err: impl std::fmt::Display) -> PluginError {
     PluginError::internal(err.to_string())
 }
 
-fn hits(hits: Vec<bookclerk_source::CatalogHit>) -> Vec<CatalogHit> {
+fn hits(hits: Vec<bookclerk_storefront::CatalogHit>) -> Vec<CatalogHit> {
     hits.into_iter().map(Into::into).collect()
 }
 
@@ -154,9 +154,7 @@ impl ContentSourceRole for AudibleContentSource {
         &self,
         params: SearchCatalogParams,
     ) -> Result<Vec<CatalogHit>, PluginError> {
-        let source = bookclerk_plugin_source_audible::AudibleSource::new();
-        source
-            .search_catalog(&CatalogSearchOpts::from(params))
+        catalog::search_catalog(&CatalogSearchOpts::from(params))
             .await
             .map(hits)
             .map_err(internal)
@@ -167,9 +165,7 @@ impl ContentSourceRole for AudibleContentSource {
         params: ExpandCandidatesParams,
     ) -> Result<Vec<CatalogHit>, PluginError> {
         let (seed, limit) = expand_seed_from_params(params);
-        let source = bookclerk_plugin_source_audible::AudibleSource::new();
-        source
-            .expand_candidates(&seed, limit)
+        catalog::expand_candidates(&seed, limit)
             .await
             .map(hits)
             .map_err(internal)
@@ -179,22 +175,16 @@ impl ContentSourceRole for AudibleContentSource {
         &self,
         params: PurchaseHintParams,
     ) -> Result<Option<PurchaseHint>, PluginError> {
-        let source = bookclerk_plugin_source_audible::AudibleSource::new();
-        source
-            .purchase_hint(&PurchaseHintOpts::from(params))
+        catalog::purchase_hint(&PurchaseHintOpts::from(params))
             .await
             .map(|hint| hint.map(Into::into))
             .map_err(internal)
     }
 
-    async fn list_deals(&self, params: ListDealsParams) -> Result<Vec<CatalogHit>, PluginError> {
-        let limit = params.limit.unwrap_or(DEFAULT_LIST_DEALS_LIMIT);
-        let source = bookclerk_plugin_source_audible::AudibleSource::new();
-        source
-            .list_deals(usize::try_from(limit).unwrap_or(usize::MAX))
-            .await
-            .map(hits)
-            .map_err(internal)
+    /// Audible has no deals feed; answer an empty list rather than
+    /// "unsupported" so Discover treats it like any store without deals.
+    async fn list_deals(&self, _params: ListDealsParams) -> Result<Vec<CatalogHit>, PluginError> {
+        Ok(Vec::new())
     }
 }
 

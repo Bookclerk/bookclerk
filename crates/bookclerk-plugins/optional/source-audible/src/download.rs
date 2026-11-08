@@ -1,19 +1,16 @@
 //! License request + encrypted download via audible-rs (Adrm + Widevine).
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
 use audible_rs::api::client::Client;
 use audible_rs::downloader::{self, Quality};
 use audible_rs::models::content::DownloadLicense;
-use bookclerk_config::AudioQuality;
-use bookclerk_library::SourceScope;
 use serde::{Deserialize, Serialize};
 
 use crate::drm::join_cache_component;
 use crate::error::{AudibleError, Result};
-use crate::options::DownloadOptions;
+use crate::options::{Bitrate, DownloadOptions};
 use crate::widevine::{ensure_widevine_cdm, fetch_widevine_download};
 
 /// Authenticated Audible client bound to one account.
@@ -78,12 +75,6 @@ pub struct LicenseSummary {
 pub struct EncryptedDownload {
     /// Filesystem path for this value.
     pub path: PathBuf,
-    /// DRM type.
-    pub drm_type: Option<String>,
-    /// Content format.
-    pub content_format: Option<String>,
-    /// Content size.
-    pub content_size: Option<u64>,
     /// DRM kind.
     pub drm_kind: DrmKind,
     /// Adrm aaxc content key (hex).
@@ -100,95 +91,6 @@ pub struct EncryptedDownload {
     pub pdf_url: Option<String>,
 }
 
-/// Open an audible-rs [`Client`] for `account` (customer id, or display label).
-///
-/// Credentials are keyed by Audible customer id. A display label is resolved
-/// via the scoped accounts table. Clients are cached process-wide (same idea
-/// as the library unseal cache) so batch acquire does not re-open auth for
-/// every title — no special-casing in the acquire job.
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn open_account_client(scope: &SourceScope, account: &str) -> Result<AccountClient> {
-    if let Some(cached) = client_cache_get(account) {
-        return Ok(cached);
-    }
-    let auth = load_auth_resolving_label(scope, account)
-        .await?
-        .ok_or_else(|| {
-            AudibleError::Auth(format!(
-                "no Audible credentials in encrypted_secrets for `{account}`"
-            ))
-        })?;
-    let marketplace = auth.locale().country_code.to_string();
-    let account_id = auth
-        .customer_id()
-        .map(str::to_string)
-        .unwrap_or_else(|| account.to_string());
-    let client = Client::new(auth).map_err(AudibleError::from)?;
-    let opened = AccountClient {
-        client: Arc::new(client),
-        account_id: account_id.clone(),
-        marketplace,
-    };
-    client_cache_put(account, &opened);
-    if account != account_id {
-        client_cache_put(&account_id, &opened);
-    }
-    Ok(opened)
-}
-
-/// Drop cached clients for `account` (after login / revoke / credential rewrite).
-pub fn invalidate_account_client_cache(account: &str) {
-    if let Ok(mut guard) = account_client_cache().lock() {
-        guard.remove(account);
-    }
-}
-
-/// Load auth by customer id, or by display label via the accounts table.
-async fn load_auth_resolving_label(
-    scope: &SourceScope,
-    account: &str,
-) -> Result<Option<audible_rs::auth::Authenticator>> {
-    if let Some(auth) = crate::db::load_authenticator_from_db(scope, account).await? {
-        return Ok(Some(auth));
-    }
-    let accounts = scope.list_accounts().await?;
-    for acct in accounts {
-        let label_match = acct
-            .label
-            .as_deref()
-            .is_some_and(|l| l.eq_ignore_ascii_case(account));
-        if label_match || acct.account_id.eq_ignore_ascii_case(account) {
-            if let Some(auth) =
-                crate::db::load_authenticator_from_db(scope, &acct.account_id).await?
-            {
-                return Ok(Some(auth));
-            }
-        }
-    }
-    Ok(None)
-}
-
-/// Process-wide cache of Audible HTTP clients keyed by account id.
-fn account_client_cache() -> &'static Mutex<HashMap<String, AccountClient>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, AccountClient>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Returns a cloned cached client for `account`, or `None` if the lock or entry is missing.
-fn client_cache_get(account: &str) -> Option<AccountClient> {
-    account_client_cache().lock().ok()?.get(account).cloned()
-}
-
-/// Stores a client for `account`; silently skips if the cache lock is poisoned.
-fn client_cache_put(account: &str, client: &AccountClient) {
-    if let Ok(mut guard) = account_client_cache().lock() {
-        guard.insert(account.to_string(), client.clone());
-    }
-}
-
 /// Request an Adrm/Mpeg download license for `asin`.
 ///
 /// # Errors
@@ -198,21 +100,12 @@ pub async fn request_content_license(
     client: &Client,
     marketplace: &str,
     asin: &str,
-    quality: AudioQuality,
+    quality: Bitrate,
 ) -> Result<DownloadLicense> {
-    let q = match quality {
-        AudioQuality::High => Quality::High,
-        AudioQuality::Normal => Quality::Normal,
-    };
+    let q = Quality::from(quality);
     downloader::request_license(client, marketplace, asin, q)
         .await
         .map_err(AudibleError::from)
-}
-
-/// Full license API JSON (classic `get-license` without summary mode).
-#[must_use]
-pub fn license_full_json(license: &DownloadLicense) -> String {
-    serde_json::to_string_pretty(&license.raw).unwrap_or_else(|_| "{}".into())
 }
 
 /// Summarize a license without exposing voucher / URL query secrets.
@@ -341,9 +234,6 @@ pub async fn download_licensed_audio(
 
     Ok(EncryptedDownload {
         path,
-        drm_type: license.drm_type.clone(),
-        content_format: license.content_format.clone(),
-        content_size: license.content_size,
         drm_kind,
         key,
         iv,
@@ -354,69 +244,11 @@ pub async fn download_licensed_audio(
     })
 }
 
-/// Parse a license JSON file (API response or classic get-license output).
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub fn parse_license_json(text: &str) -> Result<DownloadLicense> {
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|err| AudibleError::License(format!("invalid license JSON: {err}")))?;
-
-    if let Some(license) = DownloadLicense::from_response(value.clone()) {
-        return Ok(license);
-    }
-
-    // Classic get-license / LicenseInfo wrapper.
-    if let Some(inner) = value.get("content_license") {
-        if let Some(license) = DownloadLicense::from_response(serde_json::json!({
-            "content_license": inner
-        })) {
-            return Ok(license);
-        }
-    }
-    if let Some(inner) = value
-        .get("ContentMetadata")
-        .and_then(|m| m.get("content_license"))
-    {
-        if let Some(license) = DownloadLicense::from_response(serde_json::json!({
-            "content_license": inner
-        })) {
-            return Ok(license);
-        }
-    }
-
-    Err(AudibleError::License(
-        "could not parse license JSON (expected content_license)".into(),
-    ))
-}
-
-/// Fetch license + download audio into `cache_dir` for acquire.
+/// Fetch a license and download the audio for `asin` into `cache_dir`.
 ///
 /// Strategy:
 /// - If `options.widevine`: Widevine first (CDM required unless Mpeg fallback).
 /// - Else try Adrm; on 000307 automatically fall back to Widevine when a CDM is available.
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn fetch_and_download(
-    scope: &SourceScope,
-    files_dir: &Path,
-    account: &str,
-    asin: &str,
-    quality: AudioQuality,
-    cache_dir: &Path,
-) -> Result<(AccountClient, EncryptedDownload, LicenseSummary)> {
-    let options = DownloadOptions {
-        quality,
-        ..DownloadOptions::default()
-    };
-    fetch_and_download_with_options(scope, files_dir, account, asin, &options, cache_dir).await
-}
-
-/// Like [`fetch_and_download_with_options`] but uses a pre-opened `AccountClient`,
-/// avoiding a repeated DB lookup + decryption when the caller maintains a per-job cache.
 ///
 /// # Errors
 ///
@@ -427,22 +259,9 @@ pub async fn fetch_and_download_with_client(
     asin: &str,
     options: &DownloadOptions,
     cache_dir: &Path,
-    scope: Option<&SourceScope>,
 ) -> Result<(AccountClient, EncryptedDownload, LicenseSummary)> {
-    let auth_stem = account_client.account_id.clone();
-
     if options.widevine {
-        return fetch_via_widevine(
-            account_client,
-            asin,
-            options,
-            cache_dir,
-            files_dir,
-            Some(auth_stem.as_str()),
-            true,
-            scope,
-        )
-        .await;
+        return fetch_via_widevine(account_client, asin, options, cache_dir, files_dir, true).await;
     }
 
     match request_content_license(
@@ -495,122 +314,12 @@ pub async fn fetch_and_download_with_client(
                 asin,
                 "Adrm unavailable (000307); falling back to Widevine/CENC"
             );
-            fetch_via_widevine(
-                account_client,
-                asin,
-                options,
-                cache_dir,
-                files_dir,
-                Some(auth_stem.as_str()),
-                false,
-                scope,
-            )
-            .await
+            fetch_via_widevine(account_client, asin, options, cache_dir, files_dir, false).await
         }
         Err(err) => Err(err),
     }
 }
 
-/// Like [`fetch_and_download`] but honors Widevine / xHE-AAC options.
-///
-/// Auth and Widevine CDM bytes come from `encrypted_secrets`. `files_dir` is
-/// only used for temporary cache / optional BYO CDM path resolution.
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn fetch_and_download_with_options(
-    scope: &SourceScope,
-    files_dir: &Path,
-    account: &str,
-    asin: &str,
-    options: &DownloadOptions,
-    cache_dir: &Path,
-) -> Result<(AccountClient, EncryptedDownload, LicenseSummary)> {
-    let account_client = open_account_client(scope, account).await?;
-    let auth_stem = account_client.account_id.clone();
-
-    if options.widevine {
-        return fetch_via_widevine(
-            account_client,
-            asin,
-            options,
-            cache_dir,
-            files_dir,
-            Some(auth_stem.as_str()),
-            true,
-            Some(scope),
-        )
-        .await;
-    }
-
-    match request_content_license(
-        &account_client.client,
-        &account_client.marketplace,
-        asin,
-        options.quality,
-    )
-    .await
-    {
-        Ok(license) => {
-            let summary = summarize_license(&license);
-            if !summary.granted {
-                return Err(AudibleError::License(format!(
-                    "license denied for {asin}: {}",
-                    summary
-                        .denial_message
-                        .as_deref()
-                        .unwrap_or("no reason given")
-                )));
-            }
-            let format = license
-                .content_format
-                .as_deref()
-                .filter(|f| {
-                    !f.is_empty()
-                        && !f.contains("..")
-                        && !f.contains('/')
-                        && !f.contains('\\')
-                        && f.chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                })
-                .unwrap_or("audio");
-            let work = join_cache_component(cache_dir, asin)
-                .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
-            std::fs::create_dir_all(&work)?;
-            let dest = join_cache_component(&work, &format!("{asin}.{format}.aaxc"))
-                .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
-            let download = download_licensed_audio(
-                &account_client.client,
-                &license,
-                &dest,
-                options.download_speed_limit_kbps,
-            )
-            .await?;
-            Ok((account_client, download, summary))
-        }
-        Err(err) if err.is_no_aaxc_asset() => {
-            tracing::info!(
-                asin,
-                "Adrm unavailable (000307); falling back to Widevine/CENC"
-            );
-            fetch_via_widevine(
-                account_client,
-                asin,
-                options,
-                cache_dir,
-                files_dir,
-                Some(auth_stem.as_str()),
-                false,
-                Some(scope),
-            )
-            .await
-        }
-        Err(err) => Err(err),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
 /// Downloads via Widevine L3 after ensuring a CDM, returning the encrypted payload and license summary.
 async fn fetch_via_widevine(
     account_client: AccountClient,
@@ -618,16 +327,13 @@ async fn fetch_via_widevine(
     options: &DownloadOptions,
     cache_dir: &Path,
     files_dir: &Path,
-    auth_stem: Option<&str>,
     forced: bool,
-    scope: Option<&SourceScope>,
 ) -> Result<(AccountClient, EncryptedDownload, LicenseSummary)> {
     let (cdm, cdm_path) = ensure_widevine_cdm(
         files_dir,
         options.widevine_cdm.as_deref(),
-        auth_stem,
+        None,
         options.widevine_cdm_provider.as_deref(),
-        scope,
     )
     .await?;
     tracing::info!(
@@ -673,9 +379,6 @@ async fn fetch_via_widevine(
 
     let download = EncryptedDownload {
         path: wv.path,
-        drm_type: Some(wv.drm_type),
-        content_format: wv.content_format,
-        content_size: wv.content_size,
         drm_kind,
         key: None,
         iv: None,

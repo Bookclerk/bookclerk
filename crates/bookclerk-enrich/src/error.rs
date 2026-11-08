@@ -14,6 +14,10 @@ pub enum EnrichError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// The public Audible catalog request failed.
+    #[error(transparent)]
+    Catalog(#[from] bookclerk_audible_catalog::CatalogError),
+
     /// Error propagated from [`bookclerk_library`].
     #[error(transparent)]
     Library(#[from] bookclerk_library::LibraryError),

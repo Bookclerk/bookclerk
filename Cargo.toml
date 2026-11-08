@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/bookclerk-acquire",
+    "crates/bookclerk-audible-catalog",
     "crates/bookclerk-cli",
     "crates/bookclerk-config",
     "crates/bookclerk-cover",
@@ -77,6 +78,7 @@ description = "Multi-storefront audiobook library manager with pluggable integra
 
 [workspace.dependencies]
 # Internal crates
+bookclerk-audible-catalog = { path = "crates/bookclerk-audible-catalog" }
 bookclerk-config = { path = "crates/bookclerk-config" }
 bookclerk-db-exec = { path = "crates/bookclerk-db-exec" }
 bookclerk-db-guest = { path = "crates/bookclerk-db-guest" }

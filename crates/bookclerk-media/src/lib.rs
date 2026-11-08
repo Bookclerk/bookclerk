@@ -32,7 +32,6 @@
     clippy::unwrap_used
 )]
 
-mod brand;
 mod chapter_align;
 mod chapters_mp4;
 mod cover_worker;
@@ -49,14 +48,14 @@ mod package_m4b;
 mod pool;
 
 pub use bookclerk_cover::{CoverSet, CoverSize};
+pub use bookclerk_mp4::{
+    brand_durations_from_chapter_info, brand_trim_range, rebase_chapters_after_brand_trim,
+    runtime_length_ms_from_chapter_info, BrandDurations,
+};
 /// Container plumbing lives in [`bookclerk_mp4`]; these are re-exported so
 /// callers of this crate do not need a second dependency to read an M4B.
 pub use bookclerk_mp4::{
     extract_mp4a_config, parse_mp4, track_duration_ms, Mp4aConfig, SampleEntryKind, TrimRange,
-};
-pub use brand::{
-    brand_durations_from_chapter_info, brand_trim_range, rebase_chapters_after_brand_trim,
-    runtime_length_ms_from_chapter_info, BrandDurations,
 };
 pub use chapter_align::{align_chapter_starts, scale_chapters_to_duration, ChapterAlignOptions};
 pub use cover_worker::{COVER_THREADS_ENV, COVER_WORKER_ARG};

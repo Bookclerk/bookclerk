@@ -22,15 +22,14 @@ use audible_rs::auth::login::{self as login_flow, LoginServer};
 use audible_rs::auth::Authenticator;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use bookclerk_config::AudioQuality;
-use bookclerk_media::{
+use bookclerk_mp4::{
     brand_durations_from_chapter_info, brand_trim_range, parse_mp4,
     runtime_length_ms_from_chapter_info, track_duration_ms,
 };
 use bookclerk_plugin_sdk::{
     FetchOptions, LoginParams, LoginResult, PlainFetch, PlainPart, ScanSummary, SourceAccount,
 };
-use bookclerk_source::abi::{credentials_to_bytes, scan_summary};
+use bookclerk_storefront::abi::{credentials_to_bytes, scan_summary};
 use serde_json::{json, Value};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -38,13 +37,12 @@ use uuid::Uuid;
 use crate::artifacts::{download_cover_jpeg, fetch_chapter_info};
 use crate::auth::{
     export_authfile_plain_bytes, login_defaults, login_server_url, session_from_authenticator,
-    AuthLoginOptions,
 };
 use crate::download::{fetch_and_download_with_client, AccountClient, DrmKind};
 use crate::error::{AudibleError, Result};
 use crate::options::DownloadOptions;
-use crate::source::ID;
 use crate::sync::collect_account_books;
+use crate::ID;
 
 /// In-flight LoginServer OAuth waiting for [`guest_login_complete`].
 struct PendingGuestLogin {
@@ -78,20 +76,9 @@ pub async fn guest_login_start(params: &LoginParams) -> Result<(String, String)>
         params.marketplace.trim().to_ascii_lowercase()
     };
     let callback_bind = parse_callback_bind(params.callback_bind.as_deref())?;
-    let opts = AuthLoginOptions {
-        marketplace,
-        label: params.label.clone(),
-        callback_bind,
-        show_qr: false,
-        scope: None,
-        force: params.force,
-        timeout_secs: params.timeout_secs.unwrap_or(300),
-        ..AuthLoginOptions::default()
-    };
-
-    let defaults = login_defaults(&opts);
-    let timeout = Duration::from_secs(opts.timeout_secs);
-    let label = opts.label.clone();
+    let defaults = login_defaults(&marketplace);
+    let timeout = Duration::from_secs(params.timeout_secs.unwrap_or(300));
+    let label = params.label.clone();
 
     let (url, handle) = if let (Some(ipc), Some(public_base)) = (
         params.callback_ipc.as_deref(),
@@ -127,8 +114,8 @@ pub async fn guest_login_start(params: &LoginParams) -> Result<(String, String)>
         });
         (url, handle)
     } else {
-        let server = LoginServer::bind(opts.callback_bind, defaults).await?;
-        let (url, _addr) = login_server_url(&server, opts.callback_bind);
+        let server = LoginServer::bind(callback_bind, defaults).await?;
+        let (url, _addr) = login_server_url(&server, callback_bind);
         let handle = tokio::spawn(async move {
             let login = server.run(timeout).await?;
             register_after_login(login).await
@@ -326,8 +313,8 @@ pub async fn deregister_device(client: &Client) -> Result<Option<String>> {
 /// Download + decrypt one title; return plain paths (never encrypted on the wire).
 ///
 /// `fetch` carries the host fetch knobs from the ABI `FetchTitleParams.fetch`
-/// field; packaging knobs use guest defaults. Plugin bitrate from
-/// `source_config` overlays `quality` (same as in-process).
+/// field, and the instance's `bitrate` setting in `source_config` picks the
+/// license tier. Packaging stays with the host.
 ///
 /// # Errors
 ///
@@ -366,69 +353,51 @@ pub async fn guest_fetch_title(
         }
     }
 
-    let options = download_options_from_host(fetch, source_config);
+    let options = DownloadOptions::from_host(fetch, source_config);
 
-    let (account, downloaded, _summary) = fetch_and_download_with_client(
-        account_client,
-        cache_dir,
+    let (account, downloaded, _summary) =
+        fetch_and_download_with_client(account_client, cache_dir, title_id, &options, cache_dir)
+            .await?;
+
+    // The host re-tags the plain audio, so chapters and the cover are always
+    // fetched (a failure only drops them from the result).
+    let chapter_info = match fetch_chapter_info(
+        &account.client,
+        &account.marketplace,
         title_id,
-        &options,
-        cache_dir,
-        None,
+        options.quality,
+        &options.chapter_layout,
     )
-    .await?;
-
-    let need_chapters = options.create_cue
-        || options.fixup_metadata
-        || options.wants_chapter_json()
-        || options.wants_split_by_chapter()
-        || options.strip_audible_brand_audio;
-    let mut chapter_info = None;
-    if need_chapters {
-        match fetch_chapter_info(
-            &account.client,
-            &account.marketplace,
-            title_id,
-            options.quality,
-            &options.chapter_layout,
-        )
-        .await
-        {
-            Ok(info) => chapter_info = Some(info),
-            Err(err) => {
-                tracing::warn!(asin = %title_id, error = %err, "guest chapter metadata fetch failed");
-            }
+    .await
+    {
+        Ok(info) => Some(info),
+        Err(err) => {
+            tracing::warn!(asin = %title_id, error = %err, "guest chapter metadata fetch failed");
+            None
         }
-    }
-
-    let want_cover = options.download_cover || options.fixup_metadata;
-    let mut cover_path = None;
-    if want_cover {
-        let work_dir = join_cache_component(cache_dir, title_id)
-            .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
-        tokio::fs::create_dir_all(&work_dir).await?;
-        let cover_name = format!("{title_id}.cover.jpg");
-        let cover_dest = join_cache_component(&work_dir, &cover_name)
-            .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
-        match download_cover_jpeg(
-            &account.client,
-            &account.marketplace,
-            title_id,
-            &options.cover_size,
-            &cover_dest,
-        )
-        .await
-        {
-            Ok(path) => cover_path = path,
-            Err(err) => {
-                tracing::warn!(asin = %title_id, error = %err, "guest cover download failed");
-            }
-        }
-    }
+    };
 
     let work_dir = join_cache_component(cache_dir, title_id)
         .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
     tokio::fs::create_dir_all(&work_dir).await?;
+    let cover_dest = join_cache_component(&work_dir, &format!("{title_id}.cover.jpg"))
+        .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
+    let cover_path = match download_cover_jpeg(
+        &account.client,
+        &account.marketplace,
+        title_id,
+        &options.cover_size,
+        &cover_dest,
+    )
+    .await
+    {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::warn!(asin = %title_id, error = %err, "guest cover download failed");
+            None
+        }
+    };
+
     let m4b_name = format!("{title_id}.m4b");
     let m4b_path = join_cache_component(&work_dir, &m4b_name)
         .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
@@ -449,7 +418,17 @@ pub async fn guest_fetch_title(
                 }
             }
         }
-        brand_trim_range(brand, runtime_ms)
+        let trim = brand_trim_range(brand, runtime_ms);
+        if trim.is_none() && !brand.is_empty() {
+            tracing::warn!(
+                asin = %title_id,
+                intro_ms = brand.intro_ms,
+                outro_ms = brand.outro_ms,
+                "brand outro set but the runtime is unknown; not trimming, so the \
+                 outro branding is not left on while only the intro is cut"
+            );
+        }
+        trim
     } else {
         None
     };
@@ -528,13 +507,6 @@ pub async fn guest_fetch_title(
     })
 }
 
-/// Merge host fetch knobs with `[sources.audible]` bitrate (in-process parity).
-fn download_options_from_host(fetch: &FetchOptions, source_config: &Value) -> DownloadOptions {
-    let mut options = DownloadOptions::from_fetch_options(fetch);
-    options.quality = resolve_bitrate(source_config);
-    options
-}
-
 /// Build credential JSON from an authenticator (optional Widevine CDM bytes).
 ///
 /// # Errors
@@ -571,19 +543,6 @@ fn parse_callback_bind(raw: Option<&str>) -> Result<SocketAddr> {
             .parse()
             .map_err(|e| AudibleError::Auth(format!("invalid callback_bind `{s}`: {e}"))),
     }
-}
-
-/// Maps guest `bitrate` (`high` / `normal`) to [`AudioQuality`]; unknown values use the default.
-fn resolve_bitrate(source_config: &Value) -> AudioQuality {
-    source_config
-        .get("bitrate")
-        .and_then(Value::as_str)
-        .and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
-            "high" => Some(AudioQuality::High),
-            "normal" => Some(AudioQuality::Normal),
-            _ => None,
-        })
-        .unwrap_or_default()
 }
 
 /// Flattens Audible `chapter_info` into `(title, start_ms)` pairs, sorted and deduped by start.

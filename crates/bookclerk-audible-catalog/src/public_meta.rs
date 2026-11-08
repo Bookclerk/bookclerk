@@ -1,9 +1,9 @@
 //! Unauthenticated Audible catalog metadata (AudioBookshelf-style).
 //!
 //! ABS uses the public `api.audible{tld}` catalog for title/author search, then
-//! enriches each ASIN from Audnexus; here that second step is a lookup through
-//! the deployed metadata providers ([`crate::MetadataProviders`]). No Audible
-//! login is required.
+//! enriches each ASIN from Audnexus; in Bookclerk that second step is a lookup
+//! through the deployed metadata providers (`bookclerk_enrich::MetadataProviders`).
+//! No Audible login is required.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -12,8 +12,8 @@ use std::time::Duration;
 use bookclerk_plugin_sdk::http::{Client, RequestBuilder, StatusCode};
 use serde_json::Value;
 
-use crate::error::{EnrichError, Result};
-use crate::match_score::is_valid_asin;
+use crate::error::{CatalogError, Result};
+use crate::is_valid_asin;
 
 /// Timeout for unauthenticated Audible catalog HTTP (15 seconds).
 const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -97,7 +97,7 @@ pub fn public_http_client() -> Result<Client> {
         .build()
         // Prefer `{:#}` so TLS/cert-store failures (common under the guest jail)
         // include the underlying cause, not just a short builder error.
-        .map_err(|err| EnrichError::Sync(format!("{err:#}")))
+        .map_err(|err| CatalogError::Http(format!("{err:#}")))
 }
 
 /// One Audible catalog product (public search hit).
@@ -736,13 +736,13 @@ async fn genre_category_nodes(http: &Client, region: &str) -> Result<Vec<GenreCa
         .query(&[("categories_num_levels", "3"), ("root", "Genres")])
         .send()
         .await
-        .map_err(|err| EnrichError::Sync(err.to_string()))?
+        .map_err(|err| CatalogError::Http(err.to_string()))?
         .error_for_status()
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
+        .map_err(|err| CatalogError::Http(err.to_string()))?;
     let body: Value = response
         .json()
         .await
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
+        .map_err(|err| CatalogError::Http(err.to_string()))?;
     let mut nodes = Vec::new();
     if let Some(categories) = body.get("categories").and_then(Value::as_array) {
         flatten_genre_categories(categories, &[], &mut nodes);
@@ -818,7 +818,9 @@ fn genre_category_score(node: &GenreCategoryNode) -> i64 {
     let path_lower = node.path.to_ascii_lowercase();
     // Depth is primary; SF&F bonus beats one extra depth level so "Fantasy"
     // resolves to Science Fiction & Fantasy / Fantasy over deeper Lit Fiction forks.
-    let mut score = (node.depth as i64) * 100;
+    let mut score = i64::try_from(node.depth)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(100);
     if path_lower.contains("science fiction & fantasy") {
         score += 150;
     }
@@ -882,13 +884,13 @@ async fn catalog_products_from_response(req: RequestBuilder) -> Result<Vec<Catal
     let response = req
         .send()
         .await
-        .map_err(|err| EnrichError::Sync(err.to_string()))?
+        .map_err(|err| CatalogError::Http(err.to_string()))?
         .error_for_status()
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
+        .map_err(|err| CatalogError::Http(err.to_string()))?;
     let body: Value = response
         .json()
         .await
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
+        .map_err(|err| CatalogError::Http(err.to_string()))?;
     let Some(products) = body.get("products").and_then(Value::as_array) else {
         return Ok(Vec::new());
     };
@@ -928,8 +930,8 @@ pub fn is_audible_podcast_product(p: &Value) -> bool {
     ) || matches!(
         delivery.as_str(),
         "podcastparent" | "podcastepisode" | "episode"
-    ) || bookclerk_library::is_podcast_parent(&content_type)
-        || bookclerk_library::is_episode(&content_type)
+    ) || bookclerk_storefront::is_podcast_parent(&content_type)
+        || bookclerk_storefront::is_episode(&content_type)
 }
 
 /// Maps one catalog JSON object onto [`CatalogProduct`]; missing ASIN yields `None`.
@@ -996,7 +998,7 @@ fn parse_catalog_product(p: &Value) -> Option<CatalogProduct> {
         .get("runtime_length_min")
         .and_then(|v| {
             v.as_i64()
-                .or_else(|| v.as_f64().map(|n| n.round() as i64))
+                .or_else(|| v.as_f64().map(|n| saturating_i64(n.round())))
                 .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         })
         .filter(|n| *n > 0);
@@ -1104,7 +1106,7 @@ fn price_from_catalog_product(p: &Value) -> (Option<i64>, Option<String>, Option
         .and_then(Value::as_str)
         .unwrap_or("USD")
         .to_string();
-    let cents = (amount * 100.0).round() as i64;
+    let cents = saturating_i64((amount * 100.0).round());
     let cents = cents.max(0);
     let label = if cents == 0 {
         String::from("FREE")
@@ -1242,7 +1244,7 @@ pub async fn fetch_audible_catalog_rating(
         .query(&[("response_groups", "rating")])
         .send()
         .await
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
+        .map_err(|err| CatalogError::Http(err.to_string()))?;
     if response.status() == StatusCode::NOT_FOUND {
         return Ok(None);
     }
@@ -1257,7 +1259,7 @@ pub async fn fetch_audible_catalog_rating(
     let body: Value = response
         .json()
         .await
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
+        .map_err(|err| CatalogError::Http(err.to_string()))?;
     Ok(parse_catalog_rating(body.get("product").unwrap_or(&body)))
 }
 
@@ -1409,7 +1411,7 @@ pub async fn fetch_audible_catalog_reviews_page(
         ])
         .send()
         .await
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
+        .map_err(|err| CatalogError::Http(err.to_string()))?;
     if response.status() == StatusCode::NOT_FOUND {
         return Ok(CatalogReviewsPage {
             reviews: Vec::new(),
@@ -1436,7 +1438,7 @@ pub async fn fetch_audible_catalog_reviews_page(
     let body: Value = response
         .json()
         .await
-        .map_err(|err| EnrichError::Sync(err.to_string()))?;
+        .map_err(|err| CatalogError::Http(err.to_string()))?;
     let mut reviews = parse_catalog_reviews(&body, fetch_size);
     let has_more = if fetch_size > page_size {
         reviews.len() > page_size
@@ -1546,7 +1548,7 @@ fn looks_like_guided_review_array(items: &[Value]) -> bool {
     guided_hits > 0 && guided_hits * 2 >= items.len()
 }
 
-pub use bookclerk_library::decode_html_entities;
+pub use bookclerk_storefront::decode_html_entities;
 
 /// Maps one review JSON object, normalizing the body and skipping empty text.
 fn parse_one_catalog_review(v: &Value) -> Option<CatalogReview> {
@@ -1614,8 +1616,17 @@ fn dist_average(dist: Option<&Value>) -> Option<f64> {
 /// Coerces a JSON number to `i64`, truncating floats.
 fn json_i64(v: &Value) -> Option<i64> {
     v.as_i64()
-        .or_else(|| v.as_u64().map(|n| n as i64))
-        .or_else(|| v.as_f64().map(|n| n as i64))
+        .or_else(|| v.as_u64().map(|n| i64::try_from(n).unwrap_or(i64::MAX)))
+        .or_else(|| v.as_f64().map(saturating_i64))
+}
+
+/// A JSON float as an `i64`, truncated toward zero and clamped to the `i64`
+/// range (`NaN` reads as `0`).
+// Float to integer `as` saturates and truncates, which is the clamp wanted
+// here; there is no `try_from` for f64.
+#[allow(clippy::cast_possible_truncation)]
+fn saturating_i64(n: f64) -> i64 {
+    n as i64
 }
 
 #[cfg(test)]

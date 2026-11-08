@@ -15,9 +15,10 @@ in; the plugin model is the same in all three, and
 
 Third-party plugins depend on the SDK only, never on
 `bookclerk-plugin-host`, `bookclerk-library` or `bookclerk-source`.
-First-party native storefront guests add their private store crate and
+First-party native storefront guests add their private store crates and
 `bookclerk-storefront`, the slim crate of storefront types they share with
-the host. It has no database, ORM, configuration or OpenAPI dependencies,
+the host (the Audible guest also links `bookclerk-audible-catalog` and
+`bookclerk-mp4`). It has no database, ORM, configuration or OpenAPI dependencies,
 so a guest build stays small.
 
 ## Runtimes

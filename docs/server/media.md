@@ -288,8 +288,10 @@ Two reasons keep it there:
 ### Brand trimming follows the same line
 
 Where Audible's brand intro and outro sit is arithmetic on
-`chapter_info`. `bookclerk_media::brand_trim_range` computes the window,
-and the plugin applies it during the decryption pass it already makes. So
+`chapter_info`. `bookclerk_mp4::brand_trim_range` computes the window
+(`bookclerk-mp4` holds it so the Audible guest need not link
+`bookclerk-media`), and the plugin applies it during the decryption pass it
+already makes. So
 the branding never reaches the disk, and no second copy of the file is
 made. Chapter splitting works on clear media, so it is an ordinary
 `remux_trimmed` job in the pool.
