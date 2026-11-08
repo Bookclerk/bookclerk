@@ -13,7 +13,7 @@ use bookclerk_db_exec::{
 };
 #[cfg(feature = "host-helpers")]
 use bookclerk_library::{apply_host_schema, LibraryStore};
-use bookclerk_plugin_abi::DbCapabilities;
+use bookclerk_plugin_abi::{DbCapabilities, LimitExceeded};
 use bookclerk_plugin_sdk::{DbColumn, DbType};
 use rusqlite::Connection;
 use sea_orm::{
@@ -387,8 +387,13 @@ impl SqliteProxy {
                         let n = bookclerk_db_exec::json_cell_utf8_len(&cell);
                         if n > cell_cap {
                             return Err(DbErr::Custom(format!(
-                                "column `{name}` is {n} bytes; maxCellBytes is {}",
-                                caps.max_cell_bytes
+                                "{} (column `{name}`)",
+                                LimitExceeded::new(
+                                    "maxCellBytes",
+                                    u64::from(caps.max_cell_bytes),
+                                    u64::try_from(n).unwrap_or(u64::MAX),
+                                )
+                                .to_message()
                             )));
                         }
                     }
@@ -401,10 +406,14 @@ impl SqliteProxy {
                 )?;
                 out.push(ProxyRow { values });
                 if budget.note_row() {
-                    return Err(DbErr::Custom(format!(
-                        "query returned {} rows; maxResultRows exceeded",
-                        out.len()
-                    )));
+                    return Err(DbErr::Custom(
+                        LimitExceeded::new(
+                            "maxResultRows",
+                            u64::try_from(budget.raw_query_row_cap()).unwrap_or(u64::MAX),
+                            u64::try_from(out.len()).unwrap_or(u64::MAX),
+                        )
+                        .to_message(),
+                    ));
                 }
             }
             let elapsed_ms = started.elapsed().as_millis();

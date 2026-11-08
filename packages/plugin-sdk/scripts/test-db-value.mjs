@@ -14,8 +14,15 @@ const {
   canonicalExecuteRequestHash,
   encodeExecuteResultReply,
   decodeExecuteResultReply,
+  encodeDbCapabilitiesReply,
+  decodeDbCapabilitiesReply,
 } = await import(join(dist, "db-execute.js"));
+const { PluginError, parseLimitExceeded, limitExceededMessage } = await import(
+  join(dist, "errors.js")
+);
 const { guestStatementKind } = await import(join(dist, "guest-sql.js"));
+const { CapnpMessage } = await import(join(dist, "db-capnp.js"));
+const { MAX_SCALAR_BYTES } = await import(join(dist, "abi.js"));
 
 function hex(bytes) {
   return Buffer.from(bytes).toString("hex");
@@ -425,6 +432,146 @@ try {
   assert.equal(err.wireCode, "unavailable");
   assert.equal(err.message, "retry me");
 }
+
+// Typed limit errors: `details` rides the wire and `limit` reads it back.
+const limit = { limit: "maxResultBytes", cap: 262144, used: 300000 };
+assert.equal(limitExceededMessage(limit), "limit exceeded: maxResultBytes is 262144; used 300000");
+assert.deepEqual(
+  parseLimitExceeded("statement 2: limit exceeded: maxCellBytes is 1024; used 4096 (column `b`)"),
+  {
+    limit: "maxCellBytes",
+    cap: 1024,
+    used: 4096,
+  },
+);
+assert.equal(parseLimitExceeded("maxResultBytes is advertised as 262144"), undefined);
+const limitErr = PluginError.limitExceeded(limit);
+assert.equal(limitErr.code, "limit_exceeded");
+assert.deepEqual(limitErr.limit, limit);
+const limitReply = encodeExecuteResultReply({
+  err: { code: limitErr.wireCode, message: limitErr.message, details: limitErr.detailsText },
+});
+try {
+  decodeExecuteResultReply(limitReply);
+  assert.fail("expected PluginError");
+} catch (err) {
+  assert.ok(err instanceof PluginError);
+  assert.equal(err.code, "limit_exceeded");
+  assert.deepEqual(err.details, limit);
+  assert.deepEqual(err.limit, limit);
+}
+// `details` round-trips as UTF-8 bytes: text within the scalar ceiling in
+// characters but over it in bytes is dropped, and mistyped or malformed
+// limit fields do not become a limit.
+const wideDetails = `{"pad":"${"\u00e9".repeat(MAX_SCALAR_BYTES / 2 + 8)}"}`;
+assert.ok(wideDetails.length <= MAX_SCALAR_BYTES);
+assert.equal(PluginError.fromWire("unavailable", "wide", wideDetails).details, undefined);
+for (const bad of [
+  { limit: "max result bytes", cap: 1, used: 2 },
+  { limit: "maxResultBytes", cap: -1, used: 2 },
+  { limit: "maxResultBytes", cap: 1.5, used: 2 },
+  { limit: "maxResultBytes", cap: 1, used: Number.MAX_SAFE_INTEGER + 2 },
+]) {
+  assert.equal(new PluginError("limit_exceeded", "not canonical", bad).limit, undefined, bad);
+}
+const cyclic = { self: undefined };
+cyclic.self = cyclic;
+assert.equal(new PluginError("unavailable", "cycle", cyclic).detailsText, "");
+// A reply from a pre-`details` encoder (a two-pointer `PluginError`) still
+// decodes, with no details.
+const twoPointerErr = (() => {
+  const msg = new CapnpMessage();
+  const root = msg.initRoot(1, 1);
+  root.setUint16(0, 1);
+  const err = root.initStruct(0, 0, 2);
+  err.setText(0, "unavailable");
+  err.setText(1, "old encoder");
+  return msg.finish();
+})();
+try {
+  decodeExecuteResultReply(twoPointerErr);
+  assert.fail("expected PluginError");
+} catch (err) {
+  assert.ok(err instanceof PluginError);
+  assert.equal(err.code, "unavailable");
+  assert.equal(err.message, "old encoder");
+  assert.equal(err.details, undefined);
+  assert.equal(err.limit, undefined);
+}
+// Malformed details are dropped, never fatal.
+assert.equal(PluginError.fromWire("internal", "x", "[1,2]").details, undefined);
+assert.equal(PluginError.fromWire("internal", "x", "{not json").details, undefined);
+assert.deepEqual(PluginError.fromWire("internal", "x", '{"engineCode":"23505"}').details, {
+  engineCode: "23505",
+});
+
+// `GuestDatabase.limits` reply codec.
+const caps = {
+  sqlContractVersion: 1,
+  atomicBatch: true,
+  returning: true,
+  affectedRows: true,
+  schemaMigrations: true,
+  cancellation: true,
+  timing: true,
+  // Every field distinct, so a swapped slot in the codec fails the test.
+  maxBinds: 100,
+  maxStatements: 50,
+  maxResultRows: 1000,
+  maxPayloadBytes: 100000,
+  maxResultBytes: 262144,
+  maxCellBytes: 65536,
+  maxRequestBytes: 131072,
+  maxAtomicResultBytes: 524288,
+  pluginDatabases: true,
+  maxFunctionArgs: 32,
+  maxSchemaColumns: 99,
+  maxPatternBytes: 16,
+  maxLoweredStatementBytes: 100001,
+  consistentBackupRead: true,
+  atomicUnitRestore: true,
+};
+assert.deepEqual(decodeDbCapabilitiesReply(encodeDbCapabilitiesReply({ ok: caps })), caps);
+try {
+  decodeDbCapabilitiesReply(
+    encodeDbCapabilitiesReply({
+      err: { code: "unsupported", message: "GuestDatabase.limits", details: "" },
+    }),
+  );
+  assert.fail("expected PluginError");
+} catch (err) {
+  assert.equal(err.code, "unsupported");
+}
+
+// Bindings expose `limits()` and fail closed on hosts without it.
+const limitsBinding = createDatabaseBinding({
+  async execute() {
+    throw new Error("unused");
+  },
+  async limits() {
+    return caps;
+  },
+});
+assert.deepEqual(await limitsBinding.limits(), caps);
+const noLimitsBinding = createDatabaseBinding({
+  async execute() {
+    throw new Error("unused");
+  },
+});
+await assert.rejects(noLimitsBinding.limits(), (err) => err.code === "unsupported");
+const tinyBinding = createDatabaseBinding(
+  {
+    async execute() {
+      throw new Error("must not send");
+    },
+  },
+  { maxRequestBytes: 16 },
+);
+await assert.rejects(
+  tinyBinding.prepare("SELECT title FROM books").all(),
+  (err) =>
+    err.code === "limit_exceeded" && err.limit.limit === "maxRequestBytes" && err.limit.cap === 16,
+);
 
 assert.throws(() => decodeDbValue(new Uint8Array([0, 0])), /truncated/);
 const multi = new Uint8Array(24);

@@ -564,6 +564,17 @@ pub trait GuestDatabase {
     async fn close(&self) -> Result<()> {
         Ok(())
     }
+
+    /// Negotiated limits of this session (`DbCapabilities`), so a guest can
+    /// size requests and reads before sending.
+    ///
+    /// # Errors
+    ///
+    /// Hosts answer with the adapter's advertisement; the default fails with
+    /// `unsupported` for sessions that predate the method.
+    async fn limits(&self) -> Result<crate::DbCapabilities> {
+        Err(PluginError::unsupported("GuestDatabase.limits"))
+    }
 }
 
 /// Plain-data portion of [`Bindings`]: every granted value that is not a

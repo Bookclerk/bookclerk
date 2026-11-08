@@ -752,8 +752,11 @@ impl DbCapabilities {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::PluginError::invalid_params`] when a statement exceeds
-    /// schema-column, LIKE-pattern, TEXT-domain, or lowered-statement limits.
+    /// Returns a typed `limit_exceeded` error (see [`crate::LimitExceeded`])
+    /// when a statement exceeds the `maxPatternBytes`, `maxFunctionArgs`,
+    /// `maxSchemaColumns` or `maxLoweredStatementBytes` cap, and
+    /// [`crate::PluginError::invalid_params`] when it leaves the portable TEXT
+    /// domain or a LIKE pattern length cannot be proven.
     pub fn admit_statement(&self, sql: &str, parameters: &[crate::DbValue]) -> crate::Result<()> {
         let proof = admit_literal_proof(sql, parameters);
         self.admit_statement_proven(sql, parameters, proof.as_ref())
@@ -763,9 +766,11 @@ impl DbCapabilities {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::PluginError::invalid_params`] when a statement exceeds
-    /// negotiated limits, or [`crate::PluginError::internal`] when overflow
-    /// wrapping fails.
+    /// Returns a typed `limit_exceeded` error (see [`crate::LimitExceeded`])
+    /// when a statement exceeds a negotiated cap,
+    /// [`crate::PluginError::invalid_params`] when it leaves the portable TEXT
+    /// domain or a LIKE pattern length cannot be proven, or
+    /// [`crate::PluginError::internal`] when overflow wrapping fails.
     pub fn admit_statement_proven(
         &self,
         sql: &str,
@@ -779,19 +784,26 @@ impl DbCapabilities {
         if let Some(schema) = crate::sql_types::parse_create_table_schema(sql) {
             let n = u32::try_from(schema.columns.len()).unwrap_or(u32::MAX);
             if self.max_schema_columns > 0 && n > self.max_schema_columns {
-                return Err(crate::PluginError::invalid_params(format!(
-                    "CREATE TABLE has {n} columns; guest maxSchemaColumns is {}",
-                    self.max_schema_columns
-                )));
+                return Err(crate::PluginError::limit_exceeded(
+                    crate::LimitExceeded::new(
+                        "maxSchemaColumns",
+                        u64::from(self.max_schema_columns),
+                        u64::from(n),
+                    ),
+                ));
             }
         }
         let pre = lowered_statement_preflight(sql, parameters.len(), proof)?;
         if self.max_lowered_statement_bytes > 0 {
             let cap = self.max_lowered_statement_bytes as usize;
             if pre > cap {
-                return Err(crate::PluginError::invalid_params(format!(
-                    "lowered SQL preflight is {pre} bytes; advertised maxLoweredStatementBytes is {cap}"
-                )));
+                return Err(crate::PluginError::limit_exceeded(
+                    crate::LimitExceeded::new(
+                        "maxLoweredStatementBytes",
+                        u64::from(self.max_lowered_statement_bytes),
+                        u64::try_from(pre).unwrap_or(u64::MAX),
+                    ),
+                ));
             }
         }
         Ok(())
@@ -1033,7 +1045,24 @@ mod tests {
         caps.admit_statement(&sql_ok, &[]).expect("N pattern");
         let sql_over = format!("SELECT * FROM t WHERE x LIKE '{}'", "a".repeat(n + 1));
         let err = caps.admit_statement(&sql_over, &[]).unwrap_err();
-        assert!(err.to_string().contains("maxPatternBytes"), "{err}");
+        assert_eq!(err.code, crate::PluginErrorCode::LimitExceeded, "{err}");
+        assert_eq!(
+            err.limit(),
+            Some(crate::LimitExceeded::new(
+                "maxPatternBytes",
+                u64::from(caps.max_pattern_bytes),
+                u64::try_from(n + 1).unwrap_or(u64::MAX),
+            ))
+        );
+        let sql_bind = "SELECT * FROM t WHERE x LIKE ?";
+        let err = caps
+            .admit_statement(sql_bind, &[DbValue::Text("a".repeat(n + 1))])
+            .unwrap_err();
+        assert_eq!(err.code, crate::PluginErrorCode::LimitExceeded, "{err}");
+        assert_eq!(
+            err.limit().map(|l| l.limit),
+            Some("maxPatternBytes".to_string())
+        );
 
         caps.max_schema_columns = 2;
         caps.admit_statement("CREATE TABLE t (a INTEGER, b TEXT)", &[])

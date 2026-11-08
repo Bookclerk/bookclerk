@@ -535,6 +535,10 @@ impl GuestDatabase for GuestJobDatabase {
     ) -> std::result::Result<ExecuteReply, AbiPluginError> {
         self.store.execute_guest_atomic(request, &self.policy).await
     }
+
+    async fn limits(&self) -> std::result::Result<DbCapabilities, AbiPluginError> {
+        Ok(self.store.db_capabilities().clone())
+    }
 }
 
 /// Caps a guest `deadlineUnixMs` by the host job lease.
@@ -617,6 +621,10 @@ impl GuestDatabase for BindingGuestDatabase {
             }
         })
         .await
+    }
+
+    async fn limits(&self) -> std::result::Result<DbCapabilities, AbiPluginError> {
+        Ok(self.caps.clone())
     }
 }
 
@@ -1681,16 +1689,16 @@ impl RpcDatabaseProxy {
     ///
     /// # Errors
     ///
-    /// Returns a plugin ABI `invalid_params` error when the request exceeds
-    /// negotiated caps or the retry hash does not match, and a plugin error
-    /// when typed `execute` fails.
+    /// Returns a plugin ABI `limit_exceeded` error when the request exceeds
+    /// negotiated caps, `invalid_params` when the retry hash does not match,
+    /// and a plugin error when typed `execute` fails.
     async fn execute_typed_validated(
         &self,
         mut req: ExecuteRequest,
         catalog: &SqlTypeEnv,
     ) -> Result<bookclerk_plugin_sdk::ExecuteReply, crate::PluginError> {
         bookclerk_library::authorize_typed_request(&mut req, &self.caps)
-            .map_err(|err| crate::PluginError::from_abi(Some("invalid_params"), err.to_string()))?;
+            .map_err(map_reply_validation_err)?;
         let validate_req = req.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let on_txn = self.depth() > 0;
@@ -2052,6 +2060,13 @@ impl RpcAtomicBackend {
 
 /// Maps guest RPC failures: lost/ambiguous replies become [`LibraryError::Unavailable`].
 fn map_plugin_err(err: crate::PluginError) -> bookclerk_library::LibraryError {
+    if let crate::PluginError::Abi { code, message } = &err {
+        if code == "limit_exceeded" {
+            if let Some(limit) = bookclerk_plugin_abi::LimitExceeded::from_message(message) {
+                return bookclerk_library::LibraryError::LimitExceeded(limit);
+            }
+        }
+    }
     if err.is_ambiguous_transport() {
         bookclerk_library::LibraryError::Unavailable(err.to_string())
     } else {
@@ -2186,8 +2201,7 @@ impl bookclerk_library::TypedAtomicExec for RpcAtomicBackend {
             .require_proofs()
             .map_err(|err| AbiPluginError::invalid_params(err.to_string()))?;
         self.caps
-            .admit_proven_execute(&envelope.request, &envelope.proofs)
-            .map_err(|err| AbiPluginError::invalid_params(err.to_string()))?;
+            .admit_proven_execute(&envelope.request, &envelope.proofs)?;
         let validate_req = envelope.request.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let reply = self
@@ -2880,11 +2894,19 @@ fn sqlite_connect_params(config: &Config, plugin_data_dir: &Path) -> DbConnectPa
     }
 }
 
-/// Maps host reply validation onto a plugin-host RPC error.
+/// Maps host request admission or reply validation onto a plugin-host RPC
+/// error.
+///
+/// A negotiated-cap failure stays `limit_exceeded` (its canonical message
+/// carries the cap for the guest's `err.limit`), a mismatched envelope stays
+/// `unavailable`, and everything else is `invalid_params`.
 fn map_reply_validation_err(err: bookclerk_library::LibraryError) -> crate::PluginError {
     match err {
         bookclerk_library::LibraryError::Unavailable(message) => {
             crate::PluginError::Unavailable(message)
+        }
+        bookclerk_library::LibraryError::LimitExceeded(limit) => {
+            crate::PluginError::from_abi(Some("limit_exceeded"), limit.to_message())
         }
         other => crate::PluginError::from_abi(Some("invalid_params"), other.to_string()),
     }
@@ -2895,6 +2917,9 @@ fn map_reply_validation_abi(err: bookclerk_library::LibraryError) -> AbiPluginEr
     match err {
         bookclerk_library::LibraryError::Unavailable(message) => {
             AbiPluginError::unavailable(message)
+        }
+        bookclerk_library::LibraryError::LimitExceeded(limit) => {
+            AbiPluginError::limit_exceeded(limit)
         }
         other => AbiPluginError::invalid_params(other.to_string()),
     }
@@ -3121,6 +3146,44 @@ mod tests {
         ));
         let permanent = crate::PluginError::message("D1 HTTP 400: SQL error");
         assert!(!permanent.is_ambiguous_transport());
+    }
+
+    #[test]
+    fn limit_plugin_errors_map_to_typed_library_errors() {
+        let limit = bookclerk_plugin_abi::LimitExceeded::new("maxResultBytes", 262_144, 300_000);
+        let err = crate::PluginError::Abi {
+            code: "limit_exceeded".into(),
+            message: limit.to_message(),
+        };
+        assert!(matches!(
+            map_plugin_err(err),
+            bookclerk_library::LibraryError::LimitExceeded(ref l) if *l == limit
+        ));
+        let back = map_reply_validation_abi(bookclerk_library::LibraryError::LimitExceeded(
+            limit.clone(),
+        ));
+        assert_eq!(
+            back.code,
+            bookclerk_plugin_abi::PluginErrorCode::LimitExceeded
+        );
+        assert_eq!(back.limit(), Some(limit.clone()));
+        // The proxy RPC path keeps the typed code through the host error.
+        let proxied = map_reply_validation_err(bookclerk_library::LibraryError::LimitExceeded(
+            limit.clone(),
+        ));
+        assert!(matches!(
+            map_plugin_err(proxied),
+            bookclerk_library::LibraryError::LimitExceeded(ref l) if *l == limit
+        ));
+        // A limit code with an unparseable message falls back to the plain mapping.
+        let vague = crate::PluginError::Abi {
+            code: "limit_exceeded".into(),
+            message: "too big".into(),
+        };
+        assert!(matches!(
+            map_plugin_err(vague),
+            bookclerk_library::LibraryError::Other(_)
+        ));
     }
 
     #[test]

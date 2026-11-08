@@ -79,17 +79,19 @@ _scalar_limits_codec = _Codec(2, 0, _write_scalar_limits, _read_scalar_limits)
 def _write_plugin_error(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["code"])
     s.set_text(1, v["message"])
+    s.set_text(2, v["details"])
 
 
 def _read_plugin_error(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "code": s.get_text(0),
         "message": s.get_text(1),
+        "details": s.get_text(2),
     }
 
 
-_plugin_error_codec = _Codec(0, 2, _write_plugin_error, _read_plugin_error)
-"""Wire codec for ``PluginError`` (0 data words, 2 pointers)."""
+_plugin_error_codec = _Codec(0, 3, _write_plugin_error, _read_plugin_error)
+"""Wire codec for ``PluginError`` (0 data words, 3 pointers)."""
 
 
 def _write_object_metadata(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -345,7 +347,7 @@ def _write_oidc_clients_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _oidc_clients_ok_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown OidcClientsReply union member: {kind}")
 
@@ -355,7 +357,7 @@ def _read_oidc_clients_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _oidc_clients_ok_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown OidcClientsReply union member: {disc}")
 
 
@@ -522,7 +524,7 @@ def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _entrypoints_codec.write(s.init_struct(0, 0, 12), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown EntrypointsReply union member: {kind}")
 
@@ -532,7 +534,7 @@ def _read_entrypoints_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 12), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown EntrypointsReply union member: {disc}")
 
 
@@ -883,7 +885,7 @@ def _write_event_batch_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
             _event_result_codec.write(item, elem, caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown EventBatchReply union member: {kind}")
 
@@ -893,7 +895,7 @@ def _read_event_batch_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": [_event_result_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)]}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown EventBatchReply union member: {disc}")
 
 
@@ -963,7 +965,7 @@ def _write_head_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _head_ok_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown HeadReply union member: {kind}")
 
@@ -973,7 +975,7 @@ def _read_head_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _head_ok_codec.read(s.get_struct(0, 1, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown HeadReply union member: {disc}")
 
 
@@ -988,7 +990,7 @@ def _write_list_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _list_page_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown ListReply union member: {kind}")
 
@@ -998,7 +1000,7 @@ def _read_list_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _list_page_codec.read(s.get_struct(0, 0, 2), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown ListReply union member: {disc}")
 
 
@@ -1034,7 +1036,7 @@ def _write_get_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _get_ok_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown GetReply union member: {kind}")
 
@@ -1044,7 +1046,7 @@ def _read_get_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _get_ok_codec.read(s.get_struct(0, 0, 2), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown GetReply union member: {disc}")
 
 
@@ -1059,7 +1061,7 @@ def _write_put_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _put_result_codec.write(s.init_struct(0, 1, 3), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown PutReply union member: {kind}")
 
@@ -1069,7 +1071,7 @@ def _read_put_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _put_result_codec.read(s.get_struct(0, 1, 3), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown PutReply union member: {disc}")
 
 
@@ -1084,7 +1086,7 @@ def _write_copy_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _copy_result_codec.write(s.init_struct(0, 1, 0), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown CopyReply union member: {kind}")
 
@@ -1094,7 +1096,7 @@ def _read_copy_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _copy_result_codec.read(s.get_struct(0, 1, 0), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown CopyReply union member: {disc}")
 
 
@@ -1108,7 +1110,7 @@ def _write_empty_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         s.set_u16(0, 0)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown EmptyReply union member: {kind}")
 
@@ -1118,7 +1120,7 @@ def _read_empty_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok"}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown EmptyReply union member: {disc}")
 
 
@@ -1149,7 +1151,7 @@ def _write_pull_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _pull_ok_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown PullReply union member: {kind}")
 
@@ -1159,7 +1161,7 @@ def _read_pull_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _pull_ok_codec.read(s.get_struct(0, 1, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown PullReply union member: {disc}")
 
 
@@ -1195,7 +1197,7 @@ def _write_open_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _open_ok_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown OpenReply union member: {kind}")
 
@@ -1205,7 +1207,7 @@ def _read_open_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _open_ok_codec.read(s.get_struct(0, 0, 2), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown OpenReply union member: {disc}")
 
 
@@ -1220,7 +1222,7 @@ def _write_describe_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _plugin_describe_codec.write(s.init_struct(0, 2, 10), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown DescribeReply union member: {kind}")
 
@@ -1230,7 +1232,7 @@ def _read_describe_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _plugin_describe_codec.read(s.get_struct(0, 2, 10), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown DescribeReply union member: {disc}")
 
 
@@ -1245,7 +1247,7 @@ def _write_handle_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _job_outcome_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown HandleReply union member: {kind}")
 
@@ -1255,7 +1257,7 @@ def _read_handle_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _job_outcome_codec.read(s.get_struct(0, 1, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown HandleReply union member: {disc}")
 
 
@@ -1286,7 +1288,7 @@ def _write_health_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _health_ok_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown HealthReply union member: {kind}")
 
@@ -1296,7 +1298,7 @@ def _read_health_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _health_ok_codec.read(s.get_struct(0, 1, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown HealthReply union member: {disc}")
 
 
@@ -1312,7 +1314,7 @@ def _write_adapter_session_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> No
             s.set_cap(0, caps.export_cap(v["value"]))
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown AdapterSessionReply union member: {kind}")
 
@@ -1322,7 +1324,7 @@ def _read_adapter_session_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": caps.import_cap(s.get_cap_index(0))}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown AdapterSessionReply union member: {disc}")
 
 
@@ -1338,7 +1340,7 @@ def _write_guest_database_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
             s.set_cap(0, caps.export_cap(v["value"]))
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown GuestDatabaseReply union member: {kind}")
 
@@ -1348,7 +1350,7 @@ def _read_guest_database_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": caps.import_cap(s.get_cap_index(0))}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown GuestDatabaseReply union member: {disc}")
 
 
@@ -1679,7 +1681,7 @@ def _write_cli_schema_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _cli_schema_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown CliSchemaReply union member: {kind}")
 
@@ -1689,7 +1691,7 @@ def _read_cli_schema_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _cli_schema_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown CliSchemaReply union member: {disc}")
 
 
@@ -1704,7 +1706,7 @@ def _write_cli_invoke_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _cli_invoke_result_codec.write(s.init_struct(0, 1, 3), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown CliInvokeReply union member: {kind}")
 
@@ -1714,7 +1716,7 @@ def _read_cli_invoke_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _cli_invoke_result_codec.read(s.get_struct(0, 1, 3), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown CliInvokeReply union member: {disc}")
 
 
@@ -1772,7 +1774,7 @@ def _write_diagnose_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _diagnose_result_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown DiagnoseReply union member: {kind}")
 
@@ -1782,7 +1784,7 @@ def _read_diagnose_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _diagnose_result_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown DiagnoseReply union member: {disc}")
 
 
@@ -1938,7 +1940,7 @@ def _write_login_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _login_result_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown LoginReply union member: {kind}")
 
@@ -1948,7 +1950,7 @@ def _read_login_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _login_result_codec.read(s.get_struct(0, 0, 2), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown LoginReply union member: {disc}")
 
 
@@ -1963,7 +1965,7 @@ def _write_login_start_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _login_start_result_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown LoginStartReply union member: {kind}")
 
@@ -1973,7 +1975,7 @@ def _read_login_start_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _login_start_result_codec.read(s.get_struct(0, 0, 2), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown LoginStartReply union member: {disc}")
 
 
@@ -2203,7 +2205,7 @@ def _write_scan_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _scan_summary_codec.write(s.init_struct(0, 2, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown ScanReply union member: {kind}")
 
@@ -2213,7 +2215,7 @@ def _read_scan_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _scan_summary_codec.read(s.get_struct(0, 2, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown ScanReply union member: {disc}")
 
 
@@ -2380,7 +2382,7 @@ def _write_fetch_title_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _plain_fetch_codec.write(s.init_struct(0, 0, 5), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown FetchTitleReply union member: {kind}")
 
@@ -2390,7 +2392,7 @@ def _read_fetch_title_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _plain_fetch_codec.read(s.get_struct(0, 0, 5), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown FetchTitleReply union member: {disc}")
 
 
@@ -2421,7 +2423,7 @@ def _write_source_accounts_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> No
         _source_accounts_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown SourceAccountsReply union member: {kind}")
 
@@ -2431,7 +2433,7 @@ def _read_source_accounts_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _source_accounts_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown SourceAccountsReply union member: {disc}")
 
 
@@ -2759,7 +2761,7 @@ def _write_catalog_hits_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _catalog_hits_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown CatalogHitsReply union member: {kind}")
 
@@ -2769,7 +2771,7 @@ def _read_catalog_hits_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _catalog_hits_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown CatalogHitsReply union member: {disc}")
 
 
@@ -2800,7 +2802,7 @@ def _write_catalog_detail_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
         _catalog_detail_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown CatalogDetailReply union member: {kind}")
 
@@ -2810,7 +2812,7 @@ def _read_catalog_detail_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _catalog_detail_codec.read(s.get_struct(0, 1, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown CatalogDetailReply union member: {disc}")
 
 
@@ -2901,7 +2903,7 @@ def _write_purchase_hint_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None
         _purchase_hint_result_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown PurchaseHintReply union member: {kind}")
 
@@ -2911,7 +2913,7 @@ def _read_purchase_hint_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _purchase_hint_result_codec.read(s.get_struct(0, 1, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown PurchaseHintReply union member: {disc}")
 
 
@@ -2983,7 +2985,7 @@ def _write_external_user_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None
         _external_user_codec.write(s.init_struct(0, 0, 4), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown ExternalUserReply union member: {kind}")
 
@@ -2993,7 +2995,7 @@ def _read_external_user_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _external_user_codec.read(s.get_struct(0, 0, 4), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown ExternalUserReply union member: {disc}")
 
 
@@ -3024,7 +3026,7 @@ def _write_event_poll_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _event_poll_result_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown EventPollReply union member: {kind}")
 
@@ -3034,7 +3036,7 @@ def _read_event_poll_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _event_poll_result_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown EventPollReply union member: {disc}")
 
 
@@ -3129,7 +3131,7 @@ def _write_sync_listening_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
         _sync_listening_result_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown SyncListeningReply union member: {kind}")
 
@@ -3139,7 +3141,7 @@ def _read_sync_listening_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _sync_listening_result_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown SyncListeningReply union member: {disc}")
 
 
@@ -3196,7 +3198,7 @@ def _write_publish_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _publish_ok_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown PublishReply union member: {kind}")
 
@@ -3206,7 +3208,7 @@ def _read_publish_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _publish_ok_codec.read(s.get_struct(0, 1, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown PublishReply union member: {disc}")
 
 
@@ -3341,7 +3343,7 @@ def _write_queue_batch_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _queue_batch_ok_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown QueueBatchReply union member: {kind}")
 
@@ -3351,7 +3353,7 @@ def _read_queue_batch_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _queue_batch_ok_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown QueueBatchReply union member: {disc}")
 
 
@@ -3398,7 +3400,7 @@ def _write_queue_send_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _queue_send_ok_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown QueueSendReply union member: {kind}")
 
@@ -3408,7 +3410,7 @@ def _read_queue_send_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _queue_send_ok_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown QueueSendReply union member: {disc}")
 
 
@@ -3461,7 +3463,7 @@ def _write_kv_get_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _kv_get_ok_codec.write(s.init_struct(0, 2, 2), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown KvGetReply union member: {kind}")
 
@@ -3471,7 +3473,7 @@ def _read_kv_get_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _kv_get_ok_codec.read(s.get_struct(0, 2, 2), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown KvGetReply union member: {disc}")
 
 
@@ -3514,7 +3516,7 @@ def _write_kv_put_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _kv_put_ok_codec.write(s.init_struct(0, 1, 0), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown KvPutReply union member: {kind}")
 
@@ -3524,7 +3526,7 @@ def _read_kv_put_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _kv_put_ok_codec.read(s.get_struct(0, 1, 0), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown KvPutReply union member: {disc}")
 
 
@@ -3539,7 +3541,7 @@ def _write_kv_delete_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _kv_delete_ok_codec.write(s.init_struct(0, 1, 0), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown KvDeleteReply union member: {kind}")
 
@@ -3549,7 +3551,7 @@ def _read_kv_delete_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _kv_delete_ok_codec.read(s.get_struct(0, 1, 0), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown KvDeleteReply union member: {disc}")
 
 
@@ -3620,7 +3622,7 @@ def _write_kv_list_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _kv_list_ok_codec.write(s.init_struct(0, 1, 2), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown KvListReply union member: {kind}")
 
@@ -3630,7 +3632,7 @@ def _read_kv_list_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _kv_list_ok_codec.read(s.get_struct(0, 1, 2), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown KvListReply union member: {disc}")
 
 
@@ -3857,7 +3859,7 @@ def _write_metadata_records_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> N
         _metadata_records_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown MetadataRecordsReply union member: {kind}")
 
@@ -3867,7 +3869,7 @@ def _read_metadata_records_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _metadata_records_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown MetadataRecordsReply union member: {disc}")
 
 
@@ -3942,7 +3944,7 @@ def _write_metadata_chapters_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> 
         _metadata_chapters_codec.write(s.init_struct(0, 4, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown MetadataChaptersReply union member: {kind}")
 
@@ -3952,7 +3954,7 @@ def _read_metadata_chapters_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _metadata_chapters_codec.read(s.get_struct(0, 4, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown MetadataChaptersReply union member: {disc}")
 
 
@@ -4085,7 +4087,7 @@ def _write_cover_images_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _cover_images_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown CoverImagesReply union member: {kind}")
 
@@ -4095,7 +4097,7 @@ def _read_cover_images_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _cover_images_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown CoverImagesReply union member: {disc}")
 
 
@@ -4679,7 +4681,7 @@ def _write_execute_result_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
         _execute_reply_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown ExecuteResultReply union member: {kind}")
 
@@ -4689,7 +4691,7 @@ def _read_execute_result_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _execute_reply_codec.read(s.get_struct(0, 0, 3), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown ExecuteResultReply union member: {disc}")
 
 
@@ -4760,7 +4762,7 @@ def _write_db_bootstrap_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         _db_bootstrap_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown DbBootstrapReply union member: {kind}")
 
@@ -4770,7 +4772,7 @@ def _read_db_bootstrap_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _db_bootstrap_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown DbBootstrapReply union member: {disc}")
 
 
@@ -4799,7 +4801,7 @@ def _write_db_capabilities_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> No
         _db_capabilities_codec.write(s.init_struct(0, 7, 0), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown DbCapabilitiesReply union member: {kind}")
 
@@ -4809,7 +4811,7 @@ def _read_db_capabilities_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _db_capabilities_codec.read(s.get_struct(0, 7, 0), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown DbCapabilitiesReply union member: {disc}")
 
 
@@ -4842,7 +4844,7 @@ def _write_identity_export_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> No
             _identity_high_water_codec.write(item, elem, caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown IdentityExportReply union member: {kind}")
 
@@ -4852,7 +4854,7 @@ def _read_identity_export_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": [_identity_high_water_codec.read(item, caps) for item in s.get_struct_list(0, 1, 1)]}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown IdentityExportReply union member: {disc}")
 
 
@@ -4867,7 +4869,7 @@ def _write_user_relations_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
         s.set_text_list(0, v["value"])
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown UserRelationsReply union member: {kind}")
 
@@ -4877,7 +4879,7 @@ def _read_user_relations_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": s.get_text_list(0)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown UserRelationsReply union member: {disc}")
 
 
@@ -4951,7 +4953,7 @@ def _write_plugin_migrations_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> 
         _plugin_migrations_ok_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
-        _plugin_error_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
         raise ValueError(f"unknown PluginMigrationsReply union member: {kind}")
 
@@ -4961,7 +4963,7 @@ def _read_plugin_migrations_reply(s: _StructReader, caps: _CapTable) -> Any:
     if disc == 0:
         return {"kind": "ok", "value": _plugin_migrations_ok_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
-        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 2), caps)}
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown PluginMigrationsReply union member: {disc}")
 
 
@@ -6861,6 +6863,32 @@ def _read_guest_database_close_results(s: _StructReader, caps: _CapTable) -> Any
 
 _guest_database_close_results_codec = _Codec(0, 1, _write_guest_database_close_results, _read_guest_database_close_results)
 """Wire codec for ``GuestDatabaseCloseResults`` (0 data words, 1 pointers)."""
+
+
+def _write_guest_database_limits_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    pass
+
+
+def _read_guest_database_limits_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {}
+
+
+_guest_database_limits_params_codec = _Codec(0, 0, _write_guest_database_limits_params, _read_guest_database_limits_params)
+"""Wire codec for ``GuestDatabaseLimitsParams`` (0 data words, 0 pointers)."""
+
+
+def _write_guest_database_limits_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    _db_capabilities_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_guest_database_limits_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _db_capabilities_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_guest_database_limits_results_codec = _Codec(0, 1, _write_guest_database_limits_results, _read_guest_database_limits_results)
+"""Wire codec for ``GuestDatabaseLimitsResults`` (0 data words, 1 pointers)."""
 
 
 def _write_plugin_worker_describe_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

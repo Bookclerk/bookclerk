@@ -7074,7 +7074,14 @@ fn map_book(m: books::Model) -> Result<BookRecord> {
 /// Maps a SeaORM engine failure onto a structured guest [`bookclerk_plugin_abi::PluginError`].
 fn plugin_err_from_db(err: sea_orm::DbErr) -> bookclerk_plugin_abi::PluginError {
     let msg = err.to_string();
-    if msg.contains("cancelled:") {
+    if let Some(limit) = bookclerk_plugin_abi::LimitExceeded::from_message(&msg) {
+        let mut typed = bookclerk_plugin_abi::PluginError::new(
+            bookclerk_plugin_abi::PluginErrorCode::LimitExceeded,
+            msg,
+        );
+        typed.details = Some(limit.details());
+        typed
+    } else if msg.contains("cancelled:") {
         bookclerk_plugin_abi::PluginError::cancelled(msg)
     } else if msg.contains("deadline_exceeded") {
         bookclerk_plugin_abi::PluginError::deadline_exceeded(msg)

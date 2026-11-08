@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bookclerk_plugin_abi::{
-    encoded_execute_request_bytes, guest_statement_kind, DbPlanStatementKind, DbResultSelection,
-    DbTiming, DbValue, ExecuteReply, ExecuteRequest, PluginError, Result, StatementResult,
-    TypedDbStatement,
+    encoded_execute_request_bytes, guest_statement_kind, DbCapabilities, DbPlanStatementKind,
+    DbResultSelection, DbTiming, DbValue, ExecuteReply, ExecuteRequest, LimitExceeded, PluginError,
+    Result, StatementResult, TypedDbStatement,
 };
 use bookclerk_plugin_abi::{Bindings, GuestDatabase};
 
@@ -119,6 +119,19 @@ impl DatabaseBinding {
             .map(|db| Self::from_session(Arc::from(db)))
     }
 
+    /// The negotiated limits of the granted session (`DbCapabilities`).
+    ///
+    /// Use it to size a batch or a read before sending: `max_request_bytes`,
+    /// `max_statements`, `max_result_bytes`, `max_result_rows` and the rest.
+    ///
+    /// # Errors
+    ///
+    /// Returns `unsupported` when the host session predates
+    /// `GuestDatabase.limits`.
+    pub async fn limits(&self) -> Result<DbCapabilities> {
+        self.session.limits().await
+    }
+
     /// Prepare one canonical-SQL statement (`?` placeholders).
     #[must_use]
     pub fn prepare(&self, sql: impl Into<String>) -> PreparedStatement {
@@ -205,9 +218,10 @@ impl DatabaseBinding {
         let encoded = encoded_execute_request_bytes(&request)?;
         let cap = self.options.max_request_bytes;
         if cap > 0 && encoded.len() > cap as usize {
-            return Err(PluginError::payload_too_large(format!(
-                "atomic request is {} bytes; guest maxRequestBytes is {cap}",
-                encoded.len()
+            return Err(PluginError::limit_exceeded(LimitExceeded::new(
+                "maxRequestBytes",
+                u64::from(cap),
+                u64::try_from(encoded.len()).unwrap_or(u64::MAX),
             )));
         }
         self.session.execute(request).await
@@ -523,6 +537,62 @@ mod tests {
                 },
             })
         }
+    }
+
+    /// A session that answers `limits` with the sqlite advertisement.
+    struct LimitsSession;
+
+    #[async_trait::async_trait(?Send)]
+    impl GuestDatabase for LimitsSession {
+        async fn execute(&self, _request: ExecuteRequest) -> Result<ExecuteReply> {
+            Err(PluginError::unsupported("execute"))
+        }
+
+        async fn limits(&self) -> Result<DbCapabilities> {
+            Ok(DbCapabilities::advertised_sqlite())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn limits_come_from_the_session_or_are_unsupported() {
+        let binding = DatabaseBinding::from_session(Arc::new(LimitsSession));
+        let caps = binding.limits().await.expect("limits");
+        assert_eq!(caps, DbCapabilities::advertised_sqlite());
+
+        // A session that predates `GuestDatabase.limits` keeps the default.
+        let legacy = DatabaseBinding::from_session(Arc::new(RecordingSession {
+            last: Mutex::new(None),
+        }));
+        let err = legacy.limits().await.expect_err("default is unsupported");
+        assert_eq!(err.code, PluginErrorCode::Unsupported);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn over_cap_request_is_a_typed_limit_error_before_execute() {
+        let session = Arc::new(RecordingSession {
+            last: Mutex::new(None),
+        });
+        let binding = DatabaseBinding::from_session_with(
+            session.clone(),
+            DatabaseBindingOptions {
+                max_request_bytes: 16,
+                ..DatabaseBindingOptions::default()
+            },
+        );
+        let err = binding
+            .prepare("SELECT n FROM t")
+            .all(None)
+            .await
+            .expect_err("request is over 16 bytes");
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+        let limit = err.limit().expect("typed limit");
+        assert_eq!(limit.limit, "maxRequestBytes");
+        assert_eq!(limit.cap, 16);
+        assert!(limit.used > 16, "{limit:?}");
+        assert!(
+            session.last.lock().expect("lock").is_none(),
+            "an over-cap request never reaches the session"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

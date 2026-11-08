@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use bookclerk_db_exec::DbPlanStatementKind;
 use bookclerk_plugin_abi::{
-    lowered_statement_preflight_len_proven, DbCapabilities, D1_MAX_SQL_STATEMENT_BYTES,
+    lowered_statement_preflight_len_proven, DbCapabilities, LimitExceeded,
+    D1_MAX_SQL_STATEMENT_BYTES,
 };
 use bookclerk_plugin_sdk::{
     encoded_execute_reply_bytes, encoded_statement_result_bytes, DbColumn, DbResultSelection,
@@ -940,15 +941,28 @@ pub fn is_ambiguous_d1(err: &DbErr) -> bool {
     err.to_string().contains("D1 ambiguous")
 }
 
-/// Maps a D1 [`DbErr`] onto the guest ABI: retryable/ambiguous → `unavailable`,
-/// client 4xx → `invalid_params`, engine codes via the shared mapper.
+/// Maps a D1 [`DbErr`] onto the guest ABI.
+///
+/// Ambiguity wins: a receipt-lost or `D1 ambiguous` failure is `unavailable`
+/// even when it wraps a cap failure, because the mutation may have committed
+/// and a terminal `limit_exceeded` would tell the caller it did not. The
+/// canonical limit text stays in the message so the host still reads the cap
+/// back. A cap failure without the marker is `limit_exceeded` with `details`;
+/// other retryable failures are `unavailable`, client 4xx is
+/// `invalid_params`, and engine codes go through the shared mapper.
 #[must_use]
 pub fn plugin_error_from_d1(err: DbErr) -> PluginError {
-    if bookclerk_db_exec::is_guest_receipt_result_lost(&err) {
+    if bookclerk_db_exec::is_guest_receipt_result_lost(&err) || is_ambiguous_d1(&err) {
         return PluginError::unavailable(err.to_string());
     }
-    if is_ambiguous_d1(&err) {
-        return PluginError::unavailable(err.to_string());
+    let message = err.to_string();
+    if let Some(limit) = LimitExceeded::from_message(&message) {
+        let mut typed = PluginError::new(
+            bookclerk_plugin_abi::PluginErrorCode::LimitExceeded,
+            message,
+        );
+        typed.details = Some(limit.details());
+        return typed;
     }
     if is_post_commit_unavailable(&err) {
         return PluginError::unavailable(err.to_string());
@@ -1363,8 +1377,13 @@ fn parse_typed_batch(
                     .unwrap_or(&[]);
                 if raw_rows.len() > row_cap {
                     return Err(ambiguous_d1(format!(
-                        "D1 statement {i} returned {} rows; maxResultRows is {row_cap}",
-                        raw_rows.len()
+                        "D1 statement {i}: {}",
+                        LimitExceeded::new(
+                            "maxResultRows",
+                            u64::try_from(row_cap).unwrap_or(u64::MAX),
+                            u64::try_from(raw_rows.len()).unwrap_or(u64::MAX),
+                        )
+                        .to_message()
                     )));
                 }
                 let mut columns: Vec<DbColumn> =
@@ -1402,8 +1421,13 @@ fn parse_typed_batch(
             let cap = usize::try_from(caps.max_result_bytes).unwrap_or(usize::MAX);
             if used > cap {
                 return Err(ambiguous_d1(format!(
-                    "query result is {used} bytes; maxResultBytes is {}",
-                    caps.max_result_bytes
+                    "D1 statement {i}: {}",
+                    LimitExceeded::new(
+                        "maxResultBytes",
+                        u64::from(caps.max_result_bytes),
+                        u64::try_from(used).unwrap_or(u64::MAX),
+                    )
+                    .to_message()
                 )));
             }
         }
@@ -1426,10 +1450,14 @@ fn parse_typed_batch(
         Ok(bytes) => {
             let cap = usize::try_from(caps.max_atomic_result_bytes).unwrap_or(0);
             if cap > 0 && bytes.len() > cap {
-                return Err(ambiguous_d1(format!(
-                    "atomic result is {} bytes; maxAtomicResultBytes is {cap}",
-                    bytes.len()
-                )));
+                return Err(ambiguous_d1(
+                    LimitExceeded::new(
+                        "maxAtomicResultBytes",
+                        u64::from(caps.max_atomic_result_bytes),
+                        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                    )
+                    .to_message(),
+                ));
             }
         }
         Err(err) => {

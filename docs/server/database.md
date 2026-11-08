@@ -493,7 +493,10 @@ hashed.
 - A cancel or deadline seen before `BEGIN` or HTTP, or between
   statements, is `cancelled` or `deadline_exceeded`.
 - One seen around `COMMIT` or the HTTP return is `unavailable`, because
-  the outcome is ambiguous.
+  the outcome is ambiguous. Ambiguity wins over a cap: a reply that may
+  have committed stays `unavailable` even when it reports a
+  `limit exceeded: …` failure, and the canonical limit text stays in the
+  message for the host to read back.
 
 ### Schema versions
 

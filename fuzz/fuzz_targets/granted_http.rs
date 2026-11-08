@@ -62,14 +62,30 @@ fn check_body_reader(framing: BodyFraming, body: &[u8]) {
     let (out, verdict) = drive(framing, cap, std::iter::once(body));
     let step = body.get(1).map_or(7, |b| usize::from(*b) + 1);
     let (piece_out, piece_verdict) = drive(framing, cap, body.chunks(step));
+    for v in [&verdict, &piece_verdict] {
+        if let Err(BodyError::TooLarge { cap: c, used }) = v {
+            assert_eq!(Some(*c), cap, "cap tripped with a cap that was not set");
+            assert!(used > c, "TooLarge reported used {used} within cap {c}");
+            if let BodyFraming::Length(len) = framing {
+                assert_eq!(*used, len, "a declared-length body trips the cap at its length");
+            }
+        }
+    }
+    // `TooLarge::used` is the size seen when the cap tripped, which depends
+    // on the split; the verdict itself must not.
+    let without_used = |v: &Result<(), BodyError>| match v {
+        Err(BodyError::TooLarge { cap, .. }) => Err(BodyError::TooLarge { cap: *cap, used: 0 }),
+        other => *other,
+    };
     assert_eq!(
-        verdict, piece_verdict,
+        without_used(&verdict),
+        without_used(&piece_verdict),
         "split changed the body reader's verdict"
     );
     if let Some(cap) = cap {
         assert!(out.len() <= cap, "yielded past the cap");
         assert!(piece_out.len() <= cap, "yielded past the cap");
-        if verdict == Err(BodyError::TooLarge { cap }) {
+        if matches!(verdict, Err(BodyError::TooLarge { cap: c, .. }) if c == cap) {
             // How much was yielded before the cap tripped depends on the
             // split; the server discards it either way.
             return;

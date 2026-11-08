@@ -381,8 +381,12 @@ fn nocase_key_order(left: &BookKey, right: &BookKey) -> std::cmp::Ordering {
 
 /// True when `err` is a guest result-byte cap, not a lock.
 pub(crate) fn is_result_too_large(err: &LibraryError) -> bool {
-    let upper = err.to_string().to_ascii_uppercase();
-    upper.contains("MAXRESULTBYTES") || upper.contains("QUERY RESULT IS")
+    err.limit().is_some_and(|limit| {
+        matches!(
+            limit.limit.as_str(),
+            "maxResultBytes" | "maxAtomicResultBytes"
+        )
+    })
 }
 
 /// Puts `books` back into `keys` order.
@@ -741,6 +745,21 @@ mod tests {
     use super::*;
     use crate::models::AcquireStatus;
     use crate::store::NewBook;
+    use bookclerk_plugin_abi::LimitExceeded;
+
+    #[test]
+    fn result_too_large_matches_only_result_byte_caps() {
+        let bytes = LibraryError::LimitExceeded(LimitExceeded::new("maxResultBytes", 10, 20));
+        assert!(is_result_too_large(&bytes));
+        let atomic = LibraryError::Unavailable(
+            LimitExceeded::new("maxAtomicResultBytes", 10, 20).to_message(),
+        );
+        assert!(is_result_too_large(&atomic));
+        let rows = LibraryError::LimitExceeded(LimitExceeded::new("maxResultRows", 1, 2));
+        assert!(!is_result_too_large(&rows), "a row cap is not a byte cap");
+        let busy = LibraryError::Unavailable("SQLITE_BUSY".into());
+        assert!(!is_result_too_large(&busy));
+    }
 
     async fn memory_store() -> LibraryStore {
         LibraryStore::from_connection(

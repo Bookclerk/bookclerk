@@ -32,6 +32,7 @@ import {
 } from "./abi.js";
 import {
   createDatabaseBinding,
+  decodeDbCapabilitiesReply,
   decodeExecuteResultReply,
   encodeExecuteRequest,
   type AtomicTransport,
@@ -54,7 +55,7 @@ import type {
   QueueSendBatchEntry,
   QueueSendOptions,
 } from "./env.js";
-import { PluginError } from "./errors.js";
+import { PluginError, parseLimitExceeded } from "./errors.js";
 import {
   dispatchInvoke,
   InvokeError,
@@ -71,6 +72,7 @@ import type {
   CliInvokeResult,
   CliSchema,
   DbBootstrap,
+  DbCapabilities,
   DomainEvent,
   ExpandCandidatesParams,
   ExtensibleConfig,
@@ -571,6 +573,19 @@ export interface GrantedDatabaseTransport extends AtomicTransport {
    * @returns Unpacked `ExecuteResultReply` message.
    */
   executeBytes(bytes: Uint8Array): Promise<Uint8Array>;
+  /**
+   * Negotiated limits of the granted session (`GuestDatabase.limits`).
+   *
+   * @returns The adapter's `DbCapabilities` for this binding.
+   */
+  limits(): Promise<DbCapabilities>;
+  /**
+   * Same answer as {@link GrantedDatabaseTransport.limits}, as Cap'n Proto
+   * bytes (`DbCapabilitiesReply`) for Python authors.
+   *
+   * @returns Unpacked `DbCapabilitiesReply` message.
+   */
+  limitsBytes(): Promise<Uint8Array>;
 }
 
 /**
@@ -692,6 +707,7 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
           const transport = entry.transport;
           merged[entry.name] = createDatabaseBinding({
             execute: (request) => transport.execute(request),
+            limits: () => transport.limits(),
           });
         }
       }
@@ -2962,19 +2978,63 @@ class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
       headers: { ...this.#auth, "content-type": "application/octet-stream" },
       body: bytes,
     });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
+    return grantedDatabaseBody(resp);
+  }
+
+  /**
+   * Negotiated limits of the granted session (`GET /db/limits`).
+   *
+   * @returns The adapter's `DbCapabilities` for this binding.
+   */
+  async limits(): Promise<DbCapabilities> {
+    return decodeDbCapabilitiesReply(await this.limitsBytes());
+  }
+
+  /**
+   * Same answer as Cap'n Proto bytes (Python authors decode locally).
+   *
+   * @returns Unpacked `DbCapabilitiesReply` message.
+   */
+  async limitsBytes(): Promise<Uint8Array> {
+    const resp = await this.#granted.fetch("http://granted/db/limits", {
+      method: "GET",
+      headers: { ...this.#auth },
+    });
+    return grantedDatabaseBody(resp, "limits");
+  }
+}
+
+/**
+ * Reads a granted `/db/*` response body, mapping a non-2xx status onto the
+ * `PluginError` the channel implies: `401` is `unauthorized`, `413` is
+ * `limit_exceeded` (the request was over the grant's `maxRequestBytes`; the
+ * body is the canonical limit message, parsed back into `details`), `404`
+ * and `405` are `unsupported` (an older host without the route), anything
+ * else is `unavailable`.
+ *
+ * @param resp - Granted channel response.
+ * @param method - `GuestDatabase` method name for the error text.
+ * @returns Response body bytes.
+ */
+async function grantedDatabaseBody(resp: Response, method = "execute"): Promise<Uint8Array> {
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    const message = `database grant: ${resp.status} ${text}`.trim();
+    if (resp.status === 413) {
+      const limit = parseLimitExceeded(text);
+      throw limit === undefined
+        ? PluginError.fromWire("limit_exceeded", message)
+        : new PluginError("limit_exceeded", message, { ...limit });
+    }
+    if (resp.status === 404 || resp.status === 405) {
       throw PluginError.fromWire(
-        resp.status === 401
-          ? "unauthorized"
-          : resp.status === 413
-            ? "payload_too_large"
-            : "unavailable",
-        `database grant: ${resp.status} ${text}`.trim(),
+        "unsupported",
+        `GuestDatabase.${method} is not served by this host (${message})`,
       );
     }
-    return new Uint8Array(await resp.arrayBuffer());
+    throw PluginError.fromWire(resp.status === 401 ? "unauthorized" : "unavailable", message);
   }
+  return new Uint8Array(await resp.arrayBuffer());
 }
 
 /**

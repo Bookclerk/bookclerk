@@ -273,6 +273,7 @@ function isLegacySdkEmbed(name: string): boolean {
     n === "bookclerk_plugin_sdk/db_value.py" ||
     n === "bookclerk_plugin_sdk/_abi.py" ||
     n === "bookclerk_plugin_sdk/guest_sql.py" ||
+    n === "bookclerk_plugin_sdk/limits.py" ||
     n === "bookclerk_plugin_sdk/__init__.py"
   );
 }
@@ -525,6 +526,7 @@ export function materializeConfig(
     const pySiblings: Array<[string, string, string]> = [
       ["bookclerk_plugin_sdk/_abi.py", "_abi.py", "sdk-product-abi.py"],
       ["bookclerk_plugin_sdk/guest_sql.py", "guest_sql.py", "sdk-guest-sql.py"],
+      ["bookclerk_plugin_sdk/limits.py", "limits.py", "sdk-limits.py"],
       ["bookclerk_plugin_sdk/db_value.py", "db_value.py", "sdk-db-value.py"],
     ];
     for (const [modName, srcName, embedFile] of pySiblings) {

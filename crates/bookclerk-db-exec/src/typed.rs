@@ -17,7 +17,7 @@ use bookclerk_plugin_abi::{
     parse_create_table_schema, require_portable_text, require_portable_text_binds,
     sql_catalog_create_table_sql, sql_ddl_create_table_sql, sql_host_bookkeeping_type_env,
     sql_schema_create_table_sql, typecheck_execute_request_proofs, AdapterExecuteRequest,
-    ResolvedStatement, SchemaAction,
+    LimitExceeded, ResolvedStatement, SchemaAction,
 };
 use bookclerk_plugin_abi::{
     sql_catalog_page_rows, DbColumn, DbPlanStatementKind, DbResultSelection, DbRow, DbTiming,
@@ -1181,10 +1181,10 @@ fn statement_result_from_query_results(
     row_cap: u32,
 ) -> Result<StatementResult, DbErr> {
     if exceeds_result_row_cap(engine_rows.len(), row_cap) {
-        return Err(DbErr::Custom(format!(
-            "query returned {} rows; maxRows/maxResultRows is {row_cap}",
-            engine_rows.len(),
-        )));
+        let used = u64::try_from(engine_rows.len()).unwrap_or(u64::MAX);
+        return Err(DbErr::Custom(
+            LimitExceeded::new("maxResultRows", u64::from(row_cap), used).to_message(),
+        ));
     }
     let mut db_columns = take_positional_result_columns().unwrap_or_else(|| {
         engine_rows
@@ -1202,9 +1202,12 @@ fn statement_result_from_query_results(
             for (col, cell) in db_columns.iter().zip(values.iter()) {
                 let n = db_value_cell_len(cell);
                 if n > cap {
+                    let used = u64::try_from(n).unwrap_or(u64::MAX);
                     return Err(DbErr::Custom(format!(
-                        "column `{}` is {n} bytes; maxCellBytes is {}",
-                        col.name, caps.max_cell_bytes
+                        "{} (column `{}`)",
+                        LimitExceeded::new("maxCellBytes", u64::from(caps.max_cell_bytes), used)
+                            .to_message(),
+                        col.name
                     )));
                 }
             }
@@ -1358,9 +1361,10 @@ fn reject_statement_result_bytes(
     }
     let cap = usize::try_from(max_result_bytes).unwrap_or(usize::MAX);
     if used > cap {
-        return Err(DbErr::Custom(format!(
-            "query result is {used} bytes; maxResultBytes is {max_result_bytes}"
-        )));
+        let used = u64::try_from(used).unwrap_or(u64::MAX);
+        return Err(DbErr::Custom(
+            LimitExceeded::new("maxResultBytes", u64::from(max_result_bytes), used).to_message(),
+        ));
     }
     Ok(())
 }
@@ -2225,10 +2229,15 @@ where
                 let used = bytes.len();
                 let cap = usize::try_from(caps.max_atomic_result_bytes).unwrap_or(usize::MAX);
                 if used > cap {
-                    return Err(DbErr::Custom(format!(
-                        "atomic result is {used} bytes; maxAtomicResultBytes is {}",
-                        caps.max_atomic_result_bytes
-                    )));
+                    let used = u64::try_from(used).unwrap_or(u64::MAX);
+                    return Err(DbErr::Custom(
+                        LimitExceeded::new(
+                            "maxAtomicResultBytes",
+                            u64::from(caps.max_atomic_result_bytes),
+                            used,
+                        )
+                        .to_message(),
+                    ));
                 }
             }
         }
@@ -2551,10 +2560,15 @@ where
                 if used > cap {
                     let _ = txn.rollback().await;
                     let _ = take_txn_fault();
-                    return Err(DbErr::Custom(format!(
-                        "atomic result is {used} bytes; maxAtomicResultBytes is {}",
-                        caps.max_atomic_result_bytes
-                    )));
+                    let used = u64::try_from(used).unwrap_or(u64::MAX);
+                    return Err(DbErr::Custom(
+                        LimitExceeded::new(
+                            "maxAtomicResultBytes",
+                            u64::from(caps.max_atomic_result_bytes),
+                            used,
+                        )
+                        .to_message(),
+                    ));
                 }
             }
         }
