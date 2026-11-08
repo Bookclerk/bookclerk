@@ -205,7 +205,7 @@ pub async fn guest_fetch_title_rpc(
     Ok(plain.into())
 }
 
-/// Resolve GraphQL endpoint (tests may override via `[sources.chirp]` JSON).
+/// Resolve GraphQL endpoint (tests may override via the plugin settings document).
 #[must_use]
 pub fn resolve_graphql_url(source_config: &Value) -> String {
     source_config

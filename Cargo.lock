@@ -1628,7 +1628,6 @@ name = "bookclerk-demo-seed"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "bookclerk-config",
  "bookclerk-library",
  "bookclerk-node-proto",

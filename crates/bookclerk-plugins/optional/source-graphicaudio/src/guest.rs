@@ -305,7 +305,7 @@ pub async fn guest_fetch_title_rpc(
     Ok(plain.into())
 }
 
-/// Resolve Access App API base URL from `[sources.graphicaudio]` JSON.
+/// Resolve Access App API base URL from the plugin settings document.
 #[must_use]
 pub fn resolve_access_base_url(source_config: &Value) -> String {
     source_config
@@ -317,7 +317,7 @@ pub fn resolve_access_base_url(source_config: &Value) -> String {
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
 }
 
-/// Resolve Magento storefront base URL from `[sources.graphicaudio]` JSON.
+/// Resolve Magento storefront base URL from the plugin settings document.
 #[must_use]
 pub fn resolve_store_base_url(source_config: &Value) -> String {
     source_config
@@ -343,7 +343,7 @@ pub fn resolve_access(source_config: &Value) -> GraphicAudioAccess {
         .unwrap_or_default()
 }
 
-/// Resolve device bitrate preference from `[sources.graphicaudio]` JSON.
+/// Resolve device bitrate preference from the plugin settings document.
 #[must_use]
 pub fn resolve_bitrate(source_config: &Value) -> GraphicAudioBitrate {
     source_config
@@ -353,7 +353,7 @@ pub fn resolve_bitrate(source_config: &Value) -> GraphicAudioBitrate {
         .unwrap_or_default()
 }
 
-/// Resolve ZIP container preference from `[sources.graphicaudio]` JSON.
+/// Resolve ZIP container preference from the plugin settings document.
 #[must_use]
 pub fn resolve_container(source_config: &Value) -> GraphicAudioContainer {
     source_config

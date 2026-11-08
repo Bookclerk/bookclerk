@@ -10,8 +10,9 @@ authors.workspace = true
 publish = false
 
 # Storefront guests link this crate, so keep it free of the host stack:
-# no `bookclerk-library` / `bookclerk-config`, no ORM, SQL driver, OpenAPI,
-# TLS or async runtime. `bookclerk-source` re-exports it for host code.
+# no `bookclerk-library` / `bookclerk-config`, no ORM, SQL driver, OpenAPI
+# or TLS (the async runtime comes only through `bookclerk-plugin-abi`, which
+# every guest links anyway). `bookclerk-source` re-exports it for host code.
 [dependencies]
 anyhow.workspace = true
 bookclerk-plugin-abi.workspace = true

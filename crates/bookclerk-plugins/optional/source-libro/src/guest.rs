@@ -214,7 +214,7 @@ pub fn resolve_base_url(source_config: &Value) -> String {
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
 }
 
-/// Resolve download container from `[sources.libro]` JSON.
+/// Resolve download container from the plugin settings document.
 #[must_use]
 pub fn resolve_container(source_config: &Value) -> LibroContainer {
     source_config

@@ -8,7 +8,6 @@ use bookclerk_storefront::{
 };
 
 use crate::client::DEFAULT_BASE_URL;
-use crate::container::LibroContainer;
 
 /// Describe / config id for this store (`libro`).
 pub const ID: &str = "libro";
@@ -21,8 +20,6 @@ pub const ID: &str = "libro";
 pub struct LibroSource {
     /// Libro.fm API origin (production default, or a wiremock / staging URL).
     base_url: String,
-    /// Preferred download container (`container` plugin setting).
-    pub container: LibroContainer,
 }
 
 impl Default for LibroSource {
@@ -37,7 +34,6 @@ impl LibroSource {
     pub fn new() -> Self {
         Self {
             base_url: DEFAULT_BASE_URL.to_string(),
-            container: LibroContainer::M4b,
         }
     }
 
@@ -46,15 +42,7 @@ impl LibroSource {
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            container: LibroContainer::M4b,
         }
-    }
-
-    /// Sets the preferred download container (`m4b` / track zip).
-    #[must_use]
-    pub fn with_container(mut self, container: LibroContainer) -> Self {
-        self.container = container;
-        self
     }
 
     /// Searches the public catalog.

@@ -38,7 +38,7 @@ use bookclerk_library::{
     AcquireStatus, LibraryStore, NewBook, NewTitleRequest, RequestStatus, UserRole,
 };
 use bookclerk_node_proto::{CatalogFile, CatalogMetadata, CatalogTitle};
-use bookclerk_source::{CatalogHit, ContentSource};
+use bookclerk_source::CatalogHit;
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
@@ -909,7 +909,8 @@ fn catalog_title(sample: &SampleTitle, hit: Option<&CatalogHit>) -> CatalogTitle
 ///
 /// # Arguments
 ///
-/// * `source` - The storefront the hit came from.
+/// * `details` - The storefront's catalog-detail lookup for a product id
+///   (the source's `catalog_detail`); only this call is made.
 /// * `hit` - The search row [`best_match`] chose.
 /// * `deadline` - When the lookup budget runs out.
 ///
@@ -919,12 +920,16 @@ fn catalog_title(sample: &SampleTitle, hit: Option<&CatalogHit>) -> CatalogTitle
 /// details call fails, times out, finds nothing, or returns a different
 /// product than the search matched (neither the same product id nor the
 /// same ISBN).
-pub async fn with_details(
-    source: &dyn ContentSource,
+pub async fn with_details<F, Fut>(
+    details: F,
     hit: CatalogHit,
     deadline: tokio::time::Instant,
-) -> CatalogHit {
-    let lookup = tokio::time::timeout_at(deadline, source.catalog_detail(&hit.product_id));
+) -> CatalogHit
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = bookclerk_source::Result<Option<CatalogHit>>>,
+{
+    let lookup = tokio::time::timeout_at(deadline, details(hit.product_id.clone()));
     match lookup.await {
         Ok(Ok(Some(mut full))) if same_product(&full, &hit) => {
             // Keep the id the search matched, so records stay keyed alike.

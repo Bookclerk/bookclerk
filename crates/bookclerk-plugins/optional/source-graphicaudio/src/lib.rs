@@ -1,7 +1,7 @@
 //! GraphicAudio content source: auth, library sync, and DRM-free download.
 //!
 //! Access paths (see `docs/contributing/research/source-candidates.md`), selected by
-//! `[sources.graphicaudio] access` (default `web`):
+//! the `access` plugin setting (default `web`):
 //! 1. Browser Player (`/library`) — Magento session + CloudFront cookies
 //! 2. Magento ZIP (`My Downloadable Products`) — opt-in (`access = "zip"`)
 //! 3. Access App Retrofit API (`/access`) — opt-in device activation (`access = "device"`)

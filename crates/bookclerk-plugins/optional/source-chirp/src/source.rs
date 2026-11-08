@@ -346,7 +346,10 @@ impl ChirpSource {
         let mut hits = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
-        match client.top_deals(limit.min(40) as u32).await {
+        match client
+            .top_deals(u32::try_from(limit.min(40)).unwrap_or(40))
+            .await
+        {
             Ok(books) => {
                 for book in books {
                     if hits.len() >= limit || !seen.insert(book.id.clone()) {

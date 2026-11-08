@@ -29,7 +29,7 @@ pub enum SourceError {
     /// Guests never open the library; the host converts its store errors
     /// into this variant (`bookclerk-library` implements the `From`).
     #[error("{0}")]
-    Library(Box<dyn std::error::Error + Send + Sync + 'static>),
+    Library(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     /// Catch-all for plugin-internal failures wrapped as [`anyhow::Error`].
     #[error("{0}")]
     Other(#[from] anyhow::Error),

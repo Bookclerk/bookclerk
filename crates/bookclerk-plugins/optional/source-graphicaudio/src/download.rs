@@ -1,6 +1,6 @@
 //! Download GraphicAudio title materials into a cache dir.
 //!
-//! Access path is selected by `[sources.graphicaudio] access` (default `web`):
+//! Access path is selected by the `access` plugin setting (default `web`):
 //! - `web` — Browser Player media URL (Magento session + CloudFront cookies)
 //! - `zip` — Magento ZIP (M4B/MP3/FLAC); opt-in; consumes ≤3 download attempts
 //! - `device` — Access App `api/links` Hi/Lo; opt-in; uses a device activation

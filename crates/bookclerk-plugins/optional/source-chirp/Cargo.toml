@@ -43,7 +43,6 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 wiremock.workspace = true
 serde_json.workspace = true
-bookclerk-storefront.workspace = true
 
 [lints]
 workspace = true

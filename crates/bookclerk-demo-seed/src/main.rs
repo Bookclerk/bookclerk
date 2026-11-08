@@ -205,7 +205,12 @@ async fn store_records(host: &HostControlPlane) -> StoreRecords {
                 }
             };
             let hit = best_match(&lookup, &hits, now)?.clone();
-            let hit = bookclerk_demo_seed::with_details(source.as_ref(), hit, deadline).await;
+            let hit = bookclerk_demo_seed::with_details(
+                |id| async move { source.catalog_detail(&id).await },
+                hit,
+                deadline,
+            )
+            .await;
             Some((lookup, hit))
         }
     });
