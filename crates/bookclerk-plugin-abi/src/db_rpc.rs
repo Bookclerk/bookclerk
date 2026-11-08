@@ -382,12 +382,20 @@ pub(super) fn write_execute_result_reply(
     result: execute_result_reply::Builder<'_>,
     outcome: Result<ExecuteReply>,
 ) {
+    write_execute_result_reply_ref(result, outcome.as_ref());
+}
+
+/// [`write_execute_result_reply`] over a borrowed outcome.
+fn write_execute_result_reply_ref(
+    result: execute_result_reply::Builder<'_>,
+    outcome: std::result::Result<&ExecuteReply, &PluginError>,
+) {
     match outcome {
-        Ok(reply) => match require_portable_execute_reply(&reply) {
-            Ok(()) => fill_execute_reply(result.init_ok(), &reply),
+        Ok(reply) => match require_portable_execute_reply(reply) {
+            Ok(()) => fill_execute_reply(result.init_ok(), reply),
             Err(err) => write_error(result.init_err(), &err),
         },
-        Err(err) => write_error(result.init_err(), &err),
+        Err(err) => write_error(result.init_err(), err),
     }
 }
 
@@ -464,9 +472,17 @@ pub(super) fn write_db_capabilities_reply(
     result: db_capabilities_reply::Builder<'_>,
     outcome: Result<DbCapabilities>,
 ) {
+    write_db_capabilities_reply_ref(result, outcome.as_ref());
+}
+
+/// [`write_db_capabilities_reply`] over a borrowed outcome.
+fn write_db_capabilities_reply_ref(
+    result: db_capabilities_reply::Builder<'_>,
+    outcome: std::result::Result<&DbCapabilities, &PluginError>,
+) {
     match outcome {
-        Ok(caps) => write_db_capabilities(result.init_ok(), &caps),
-        Err(err) => write_error(result.init_err(), &err),
+        Ok(caps) => write_db_capabilities(result.init_ok(), caps),
+        Err(err) => write_error(result.init_err(), err),
     }
 }
 
@@ -534,6 +550,42 @@ fn write_message_bytes(
     Ok(out)
 }
 
+/// Builds a standalone Cap'n message with `fill` and serializes it as a
+/// single segment.
+///
+/// The default allocator starts a new segment once the first one fills, and
+/// every decoder of these standalone messages (`read_unpacked_message`, the
+/// TypeScript and Python SDKs) accepts one segment only. When the first pass
+/// spills, the message is rebuilt with a first segment sized to hold it all.
+///
+/// # Errors
+///
+/// Returns [`PluginError::internal`] when the message cannot be serialized or
+/// still spans several segments after resizing.
+fn encode_single_segment(
+    fill: impl Fn(&mut capnp::message::Builder<capnp::message::HeapAllocator>),
+) -> Result<Vec<u8>> {
+    let mut message = capnp::message::Builder::new_default();
+    fill(&mut message);
+    let spilled_words = {
+        let segments = message.get_segments_for_output();
+        (segments.len() > 1).then(|| segments.iter().map(|seg| seg.len() / 8).sum::<usize>())
+    };
+    if let Some(words) = spilled_words {
+        let words = u32::try_from(words.saturating_add(1))
+            .map_err(|_| PluginError::internal("Cap'n message does not fit one segment"))?;
+        let allocator = capnp::message::HeapAllocator::new().first_segment_words(words);
+        message = capnp::message::Builder::new(allocator);
+        fill(&mut message);
+        if message.get_segments_for_output().len() > 1 {
+            return Err(PluginError::internal(
+                "Cap'n message does not fit one segment",
+            ));
+        }
+    }
+    write_message_bytes(&message)
+}
+
 /// Encodes a standalone Cap'n `DbValue` message (unpacked stream).
 ///
 /// # Errors
@@ -542,9 +594,7 @@ fn write_message_bytes(
 /// U+0000, or [`PluginError::internal`] when the message cannot be serialized.
 pub fn encoded_db_value_bytes(v: &DbValue) -> Result<Vec<u8>> {
     require_portable_value(v)?;
-    let mut message = capnp::message::Builder::new_default();
-    write_db_value(message.init_root(), v);
-    write_message_bytes(&message)
+    encode_single_segment(|message| write_db_value(message.init_root(), v))
 }
 
 /// Encodes a standalone Cap'n `ExecuteRequest` message (unpacked stream).
@@ -554,9 +604,12 @@ pub fn encoded_db_value_bytes(v: &DbValue) -> Result<Vec<u8>> {
 /// Returns [`PluginError::invalid_params`] when SQL or TEXT binds contain
 /// U+0000, or [`PluginError::internal`] when the message cannot be serialized.
 pub fn encoded_execute_request_bytes(req: &ExecuteRequest) -> Result<Vec<u8>> {
-    let mut message = capnp::message::Builder::new_default();
-    write_execute_request(message.init_root(), req)?;
-    write_message_bytes(&message)
+    // Validate once so the fill below cannot fail.
+    write_execute_request(capnp::message::Builder::new_default().init_root(), req)?;
+    encode_single_segment(|message| {
+        // Validated above; a second pass over the same request cannot fail.
+        let _ = write_execute_request(message.init_root(), req);
+    })
 }
 
 /// SHA-256 hex of the Cap'n-encoded request with transport metadata cleared.
@@ -587,9 +640,7 @@ pub fn canonical_execute_request_hash(req: &ExecuteRequest) -> Result<String> {
 /// or [`PluginError::internal`] when the message cannot be serialized.
 pub fn encoded_execute_reply_bytes(reply: &ExecuteReply) -> Result<Vec<u8>> {
     require_portable_execute_reply(reply)?;
-    let mut message = capnp::message::Builder::new_default();
-    fill_execute_reply(message.init_root(), reply);
-    write_message_bytes(&message)
+    encode_single_segment(|message| fill_execute_reply(message.init_root(), reply))
 }
 
 /// Encodes a standalone Cap'n `ExecuteAtomicReply` (`ok` or `err`).
@@ -598,9 +649,33 @@ pub fn encoded_execute_reply_bytes(reply: &ExecuteReply) -> Result<Vec<u8>> {
 ///
 /// Returns [`PluginError::internal`] when the message cannot be serialized.
 pub fn encoded_execute_result_reply_bytes(outcome: Result<ExecuteReply>) -> Result<Vec<u8>> {
-    let mut message = capnp::message::Builder::new_default();
-    write_execute_result_reply(message.init_root(), outcome);
-    write_message_bytes(&message)
+    encode_single_segment(|message| {
+        write_execute_result_reply_ref(message.init_root(), outcome.as_ref())
+    })
+}
+
+/// Encodes a standalone Cap'n `DbCapabilitiesReply` (`ok` or `err`).
+///
+/// Carries a `GuestDatabase.limits` answer over the workerd granted HTTP
+/// channel (`GET /db/limits`).
+///
+/// # Errors
+///
+/// Returns [`PluginError::internal`] when the message cannot be serialized.
+pub fn encoded_db_capabilities_reply_bytes(outcome: Result<DbCapabilities>) -> Result<Vec<u8>> {
+    encode_single_segment(|message| {
+        write_db_capabilities_reply_ref(message.init_root(), outcome.as_ref())
+    })
+}
+
+/// Decodes a standalone Cap'n `DbCapabilitiesReply` message.
+///
+/// # Errors
+///
+/// Returns the guest [`PluginError`] on `err`, or a decode failure on `ok`.
+pub fn decode_db_capabilities_reply_bytes(bytes: &[u8]) -> Result<DbCapabilities> {
+    let reader = read_unpacked_message(bytes)?;
+    read_db_capabilities_reply(reader.get_root().map_err(from_capnp)?)
 }
 
 /// Reads one unpacked single-segment Cap'n message.
@@ -659,9 +734,7 @@ pub fn decode_execute_result_reply_bytes(bytes: &[u8]) -> Result<ExecuteReply> {
 /// or [`PluginError::internal`] when the message cannot be serialized.
 pub fn encoded_statement_result_bytes(stmt: &StatementResult) -> Result<Vec<u8>> {
     require_portable_statement_result(stmt)?;
-    let mut message = capnp::message::Builder::new_default();
-    write_statement_result(message.init_root(), stmt);
-    write_message_bytes(&message)
+    encode_single_segment(|message| write_statement_result(message.init_root(), stmt))
 }
 
 /// Decodes a standalone Cap'n `DbValue` message.

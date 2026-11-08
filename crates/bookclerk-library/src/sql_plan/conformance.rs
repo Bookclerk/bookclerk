@@ -1396,7 +1396,11 @@ async fn typed_sqlite_statement_max_rows_is_a_proven_bound() {
     )
     .await
     .unwrap_err();
-    assert!(err.to_string().contains("maxRows"), "{err}");
+    assert_eq!(
+        bookclerk_plugin_abi::LimitExceeded::from_message(&err.to_string()).map(|l| l.limit),
+        Some("maxResultRows".to_string()),
+        "{err}"
+    );
 
     let reply = bookclerk_db_exec::execute_typed_on_session(
         &db,

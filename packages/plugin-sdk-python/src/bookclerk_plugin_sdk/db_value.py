@@ -17,10 +17,12 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from ._abi import DB_RESULT_SELECTIONS, DB_STATEMENT_KINDS, DB_TYPES
 from ._capnp import _CapnpMessage, _CapnpReader, _CapnpStruct, _StructReader
+from ._wire import _db_capabilities_reply_codec, _decode_message, _encode_message
 from .guest_sql import guest_statement_kind, split_exec_queries
+from .limits import LimitExceeded
 
 if TYPE_CHECKING:
-    from .abi import DbType
+    from .abi import DbCapabilities, DbType
 
 KINDS = frozenset({"null", "boolean", "int64", "float64", "text", "bytes"})
 TYPES = frozenset(DB_TYPES)
@@ -263,16 +265,25 @@ def decode_execute_request(data: bytes) -> ExecuteRequest:
 
 
 def encode_execute_result_reply(
-    outcome: ExecuteReply | tuple[str, str],
+    outcome: ExecuteReply | tuple[str, str] | tuple[str, str, str],
 ) -> bytes:
-    """Encode ``ExecuteResultReply`` (``ok`` reply or ``(code, message)`` err)."""
+    """Encode ``ExecuteResultReply``.
+
+    Args:
+        outcome: The ``ok`` reply, or an ``err`` as ``(code, message)`` or
+            ``(code, message, details_json)``.
+
+    Returns:
+        Unpacked Cap'n stream bytes.
+    """
     msg = _CapnpMessage()
     root = msg.init_root(1, 1)
     if isinstance(outcome, tuple):
         root.set_u16(0, 1)
-        err = root.init_struct(0, 0, 2)
+        err = root.init_struct(0, 0, 3)
         err.set_text(0, outcome[0])
         err.set_text(1, outcome[1])
+        err.set_text(2, outcome[2] if len(outcome) > 2 else "")
     else:
         root.set_u16(0, 0)
         _write_execute_reply(root.init_struct(0, 0, 3), outcome)
@@ -286,11 +297,60 @@ def decode_execute_result_reply(data: bytes) -> ExecuteReply:
     if disc == 0:
         return _read_execute_reply(root.get_struct(0, 0, 3))
     if disc == 1:
-        err = root.get_struct(0, 0, 2)
+        err = root.get_struct(0, 0, 3)
         from bookclerk_plugin_sdk.workerd import PluginError
 
-        raise PluginError.from_wire(err.get_text(0), err.get_text(1))
+        raise PluginError.from_wire(err.get_text(0), err.get_text(1), err.get_text(2))
     raise ValueError("unknown ExecuteResultReply union member")
+
+
+def encode_db_capabilities_reply(
+    outcome: DbCapabilities | tuple[str, str] | tuple[str, str, str],
+) -> bytes:
+    """Encode ``DbCapabilitiesReply``, the ``GuestDatabase.limits`` answer.
+
+    Args:
+        outcome: The ``ok`` capabilities, or an ``err`` as ``(code, message)``
+            or ``(code, message, details_json)``.
+
+    Returns:
+        Unpacked Cap'n stream bytes (the ``GET /db/limits`` body).
+    """
+    if isinstance(outcome, tuple):
+        value: dict[str, Any] = {
+            "kind": "err",
+            "value": {
+                "code": outcome[0],
+                "message": outcome[1],
+                "details": outcome[2] if len(outcome) > 2 else "",
+            },
+        }
+    else:
+        value = {"kind": "ok", "value": outcome}
+    return _encode_message(_db_capabilities_reply_codec, value)
+
+
+def decode_db_capabilities_reply(data: bytes) -> DbCapabilities:
+    """Decode ``DbCapabilitiesReply``. ``err`` is raised as ``PluginError``.
+
+    Args:
+        data: Unpacked Cap'n stream.
+
+    Returns:
+        The session's ``DbCapabilities``.
+
+    Raises:
+        PluginError: When the union is ``err``.
+        ValueError: When the buffer is not a ``DbCapabilitiesReply``.
+    """
+    reply = _decode_message(_db_capabilities_reply_codec, data)
+    if reply["kind"] == "ok":
+        caps: DbCapabilities = reply["value"]
+        return caps
+    from bookclerk_plugin_sdk.workerd import PluginError
+
+    err = reply["value"]
+    raise PluginError.from_wire(err["code"], err["message"], err.get("details", ""))
 
 
 def _write_execute_reply(root: _CapnpStruct, reply: ExecuteReply) -> None:
@@ -441,6 +501,7 @@ class DatabaseBinding:
         self,
         execute: AtomicTransport,
         *,
+        limits: LimitsTransport | None = None,
         max_request_bytes: int = 0,
         max_result_rows: int = 0,
         operation_id: str | None = None,
@@ -451,6 +512,8 @@ class DatabaseBinding:
 
         Args:
             execute: Host session projection.
+            limits: ``GuestDatabase.limits`` projection; ``None`` on a host
+                that predates it (:meth:`limits` then raises ``unsupported``).
             max_request_bytes: Negotiated cap (``0`` = unlimited).
             max_result_rows: Default ``maxRows`` for :meth:`PreparedStatement.all`.
             operation_id: Default retry id; omitted calls mint a UUID.
@@ -458,6 +521,7 @@ class DatabaseBinding:
             deadline_unix_ms: Guest-visible deadline (unix ms).
         """
         self._execute = execute
+        self._limits = limits
         self._max_request_bytes = max_request_bytes
         self._max_result_rows = max_result_rows
         self._operation_id = operation_id
@@ -474,6 +538,28 @@ class DatabaseBinding:
             A statement that can be bound and executed.
         """
         return PreparedStatement(self, sql, [], max_result_rows=self._max_result_rows)
+
+    async def limits(self) -> DbCapabilities:
+        """The negotiated limits of this binding's session (``DbCapabilities``).
+
+        ``maxRequestBytes``, ``maxStatements``, ``maxResultBytes``,
+        ``maxResultRows`` and the rest: use them to size a batch or a read
+        before sending.
+
+        Returns:
+            The adapter's capability advertisement for this session.
+
+        Raises:
+            PluginError: ``unsupported`` on a host that predates
+                ``GuestDatabase.limits``.
+        """
+        if self._limits is None:
+            from bookclerk_plugin_sdk.workerd import PluginError
+
+            raise PluginError.from_wire(
+                "unsupported", "GuestDatabase.limits is not available on this host"
+            )
+        return await self._limits()
 
     async def batch(
         self,
@@ -542,28 +628,45 @@ class DatabaseBinding:
         }
         encoded = encode_execute_request(request)
         if self._max_request_bytes and len(encoded) > self._max_request_bytes:
-            raise ValueError(
-                f"atomic request is {len(encoded)} bytes; guest maxRequestBytes is "
-                f"{self._max_request_bytes}"
+            from bookclerk_plugin_sdk.workerd import PluginError
+
+            raise PluginError.limit_exceeded(
+                LimitExceeded("maxRequestBytes", self._max_request_bytes, len(encoded))
             )
         return await self._execute(request)
 
 
 AtomicTransport = Callable[[ExecuteRequest], Awaitable[ExecuteReply]]
+LimitsTransport = Callable[[], Awaitable["DbCapabilities"]]
 
 
 def create_database_binding(
     transport: AtomicTransport,
     *,
+    limits: LimitsTransport | None = None,
     max_request_bytes: int = 0,
     max_result_rows: int = 0,
     operation_id: str | None = None,
     request_hash: str = "",
     deadline_unix_ms: int = 0,
 ) -> DatabaseBinding:
-    """Build a host-mediated :class:`DatabaseBinding` over an async transport."""
+    """Build a host-mediated :class:`DatabaseBinding` over an async transport.
+
+    Args:
+        transport: Host ``execute`` projection.
+        limits: Host ``limits`` projection, when the host offers one.
+        max_request_bytes: Negotiated cap (``0`` = unlimited).
+        max_result_rows: Default ``maxRows`` for ``all()``.
+        operation_id: Default retry id; omitted calls mint a UUID.
+        request_hash: Default retry hash; empty lets the host stamp one.
+        deadline_unix_ms: Guest-visible deadline (unix ms).
+
+    Returns:
+        A binding whose terminal methods route through ``transport``.
+    """
     return DatabaseBinding(
         transport,
+        limits=limits,
         max_request_bytes=max_request_bytes,
         max_result_rows=max_result_rows,
         operation_id=operation_id,

@@ -110,6 +110,9 @@ struct PluginError {
   code @0 :Text;
   # Human-readable detail; never contains secrets.
   message @1 :Text;
+  # Structured extras as one JSON object (`limitExceeded` carries `limit`,
+  # `cap` and `used`; engine failures carry `engineCode`). Empty when none.
+  details @2 :Text;
 }
 
 # Full metadata of one stored object.
@@ -1110,6 +1113,10 @@ enum PluginErrorCode $jsonEnum {
   cancelled @10;
   # The operation conflicts with current state (conditional put, ...).
   conflict @11;
+  # A negotiated database limit was exceeded (`maxResultBytes`, `maxResultRows`,
+  # `maxRequestBytes`, ...). `details` names the limit, its cap and the value
+  # that exceeded it.
+  limitExceeded @12;
 }
 
 #############################################################################
@@ -3166,6 +3173,9 @@ interface GuestDatabase {
   ) -> (result :ExecuteResultReply);
   # Release the session; further calls fail.
   close @1 () -> (result :EmptyReply);
+  # Negotiated limits of this session, so guests size requests and reads
+  # before sending instead of discovering caps from errors.
+  limits @2 () -> (result :DbCapabilitiesReply);
 }
 
 # One already-separated BookclerkSQL operation in a plugin-owned migration.

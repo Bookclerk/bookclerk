@@ -333,9 +333,15 @@ pub fn note_encoded_result_bytes(
     *used = used.saturating_add(extra);
     let cap = usize::try_from(max_result_bytes).unwrap_or(usize::MAX);
     if *used > cap {
-        return Err(DbErr::Custom(format!(
-            "query result is {used} bytes; maxResultBytes is {max_result_bytes}"
-        )));
+        let used = u64::try_from(*used).unwrap_or(u64::MAX);
+        return Err(DbErr::Custom(
+            bookclerk_plugin_abi::LimitExceeded::new(
+                "maxResultBytes",
+                u64::from(max_result_bytes),
+                used,
+            )
+            .to_message(),
+        ));
     }
     Ok(())
 }
@@ -448,9 +454,23 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::cap_query_sql;
-    use bookclerk_plugin_abi::DbPlanStatementKind;
+    use super::{cap_query_sql, note_encoded_result_bytes};
+    use bookclerk_plugin_abi::{DbPlanStatementKind, LimitExceeded};
     use sea_orm::Value;
+
+    #[test]
+    fn result_byte_cap_failure_is_a_typed_limit_message() {
+        let mut used = 0usize;
+        note_encoded_result_bytes(&mut used, 100, 150).expect("under cap");
+        let err = note_encoded_result_bytes(&mut used, 100, 150).expect_err("over cap");
+        assert_eq!(
+            LimitExceeded::from_message(&err.to_string()),
+            Some(LimitExceeded::new("maxResultBytes", 150, 200)),
+            "{err}"
+        );
+        let mut unlimited = 0usize;
+        note_encoded_result_bytes(&mut unlimited, 1 << 20, 0).expect("0 is unlimited");
+    }
 
     #[test]
     fn cap_query_sql_wraps_readonly_select() {

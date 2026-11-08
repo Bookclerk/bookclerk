@@ -42,9 +42,11 @@ from .db_value import (
     RetryToken,
     canonical_execute_request_hash,
     create_database_binding,
+    decode_db_capabilities_reply,
     decode_db_value,
     decode_execute_request,
     decode_execute_result_reply,
+    encode_db_capabilities_reply,
     encode_db_value,
     encode_execute_request,
     encode_execute_result_reply,
@@ -52,6 +54,7 @@ from .db_value import (
     parse_db_value,
     statement_result_to_d1_result,
 )
+from .limits import LimitExceeded, limit_exceeded_message, parse_limit_exceeded
 
 __all__ = [
     "PLUGIN_ERROR_CODES",
@@ -78,7 +81,12 @@ __all__ = [
     "create_database_binding",
     "decode_db_value",
     "decode_execute_request",
+    "decode_db_capabilities_reply",
     "decode_execute_result_reply",
+    "encode_db_capabilities_reply",
+    "LimitExceeded",
+    "limit_exceeded_message",
+    "parse_limit_exceeded",
     "encode_db_value",
     "encode_execute_request",
     "encode_execute_result_reply",

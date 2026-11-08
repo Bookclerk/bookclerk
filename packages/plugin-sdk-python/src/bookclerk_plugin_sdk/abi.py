@@ -25,6 +25,7 @@ PluginErrorCode = Literal[
     "invalid_cursor",
     "cancelled",
     "conflict",
+    "limit_exceeded",
 ]
 """Stable `PluginError.code` strings. Unknown future codes are forwarded
 as-is; SDKs surface them as a local `unknown` while keeping the raw wire
@@ -149,10 +150,13 @@ class PluginError(TypedDict):
     Attributes:
         code: Stable snake_case error code (see `PluginErrorCode`).
         message: Human-readable detail; never contains secrets.
+        details: Structured extras as one JSON object (`limitExceeded` carries `limit`,
+            `cap` and `used`; engine failures carry `engineCode`). Empty when none.
     """
 
     code: str
     message: str
+    details: str
 
 
 class ObjectMetadata(TypedDict):
@@ -5508,6 +5512,15 @@ class GuestDatabase(Protocol):
 
         Returns:
             ``EmptyReply``
+        """
+        ...
+
+    async def limits(self) -> DbCapabilitiesReply:
+        """Negotiated limits of this session, so guests size requests and reads
+        before sending instead of discovering caps from errors.
+
+        Returns:
+            ``DbCapabilitiesReply``
         """
         ...
 

@@ -25,7 +25,9 @@ mod vectors_typed;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) const CONTRACT_VECTOR_ROW_CAP: u32 = 5;
 
-use bookclerk_plugin_abi::{encoded_execute_request_bytes, DbCapabilities, ExecuteRequest};
+use bookclerk_plugin_abi::{
+    encoded_execute_request_bytes, DbCapabilities, ExecuteRequest, LimitExceeded,
+};
 
 pub use bookclerk_plugin_abi::DbPlanStatementKind;
 pub use host_ir::AtomicSelection;
@@ -107,7 +109,9 @@ fn validate_selection(selection: &AtomicSelection, stmt_len: usize) -> crate::er
 ///
 /// # Errors
 ///
-/// Returns [`crate::LibraryError::Other`] when the request cannot be sent.
+/// Returns [`crate::LibraryError::LimitExceeded`] when a negotiated cap is
+/// exceeded and [`crate::LibraryError::Other`] when the request cannot be
+/// sent for another reason.
 pub fn validate_execute_request(
     req: &ExecuteRequest,
     caps: &DbCapabilities,
@@ -119,19 +123,21 @@ pub fn validate_execute_request(
     }
     let n_stmt = u32::try_from(req.statements.len()).unwrap_or(u32::MAX);
     if caps.max_statements > 0 && n_stmt > caps.max_statements {
-        return Err(crate::LibraryError::Other(anyhow::anyhow!(
-            "atomic request has {n_stmt} statements; guest maxStatements is {}",
-            caps.max_statements
+        return Err(crate::LibraryError::LimitExceeded(LimitExceeded::new(
+            "maxStatements",
+            u64::from(caps.max_statements),
+            u64::from(n_stmt),
         )));
     }
-    for (i, stmt) in req.statements.iter().enumerate() {
+    for stmt in &req.statements {
         caps.admit_statement(&stmt.sql, &stmt.parameters)
-            .map_err(|err| crate::LibraryError::Other(anyhow::anyhow!(err.to_string())))?;
+            .map_err(crate::LibraryError::from_abi_err)?;
         let n_binds = u32::try_from(stmt.parameters.len()).unwrap_or(u32::MAX);
         if caps.max_binds > 0 && n_binds > caps.max_binds {
-            return Err(crate::LibraryError::Other(anyhow::anyhow!(
-                "atomic request statement {i} has {n_binds} binds; guest maxBinds is {}",
-                caps.max_binds
+            return Err(crate::LibraryError::LimitExceeded(LimitExceeded::new(
+                "maxBinds",
+                u64::from(caps.max_binds),
+                u64::from(n_binds),
             )));
         }
         if caps.max_payload_bytes > 0 {
@@ -148,9 +154,10 @@ pub fn validate_execute_request(
             let payload = stmt.sql.len().saturating_add(binds_len);
             let cap = usize::try_from(caps.max_payload_bytes).unwrap_or(usize::MAX);
             if payload > cap {
-                return Err(crate::LibraryError::Other(anyhow::anyhow!(
-                    "atomic request statement {i} encoded payload is {payload} bytes; guest maxPayloadBytes is {}",
-                    caps.max_payload_bytes
+                return Err(crate::LibraryError::LimitExceeded(LimitExceeded::new(
+                    "maxPayloadBytes",
+                    u64::from(caps.max_payload_bytes),
+                    u64::try_from(payload).unwrap_or(u64::MAX),
                 )));
             }
         }
@@ -163,8 +170,10 @@ pub fn validate_execute_request(
         .map_err(|err| crate::LibraryError::Other(anyhow::anyhow!(err.to_string())))?
         .len();
     if bytes > cap {
-        return Err(crate::LibraryError::Other(anyhow::anyhow!(
-            "atomic request is {bytes} bytes; guest maxRequestBytes is {cap}"
+        return Err(crate::LibraryError::LimitExceeded(LimitExceeded::new(
+            "maxRequestBytes",
+            u64::try_from(cap).unwrap_or(u64::MAX),
+            u64::try_from(bytes).unwrap_or(u64::MAX),
         )));
     }
     Ok(())
@@ -180,14 +189,15 @@ pub fn validate_execute_request(
 /// # Errors
 ///
 /// Returns [`crate::LibraryError::Other`] when proofs are missing/mismatched
-/// or the standardized lowering upper bound exceeds the advertised ceiling.
+/// and [`crate::LibraryError::LimitExceeded`] when the standardized lowering
+/// upper bound exceeds the advertised ceiling.
 pub fn validate_proven_execute_request(
     req: &ExecuteRequest,
     proofs: &[bookclerk_plugin_abi::ResolvedStatement],
     caps: &DbCapabilities,
 ) -> crate::error::Result<()> {
     caps.admit_proven_execute(req, proofs)
-        .map_err(|err| crate::LibraryError::Other(anyhow::anyhow!("{err}")))
+        .map_err(crate::LibraryError::from_abi_err)
 }
 
 /// Host-authorizes a guest typed batch: overwrite statement kinds, enforce
@@ -253,7 +263,9 @@ pub fn authorize_typed_request(
 /// # Errors
 ///
 /// Returns [`bookclerk_plugin_abi::PluginError::invalid_params`] when the SQL
-/// is outside the guest grammar or `policy`, and the executor's error or a
+/// is outside the guest grammar or `policy`,
+/// [`bookclerk_plugin_abi::PluginError::limit_exceeded`] when the request or
+/// its result exceeds a negotiated cap, and the executor's error or a
 /// validation error when the batch fails.
 pub async fn execute_guest_atomic_with<F, Fut>(
     mut req: ExecuteRequest,
@@ -270,16 +282,40 @@ where
         >,
     >,
 {
-    authorize_guest_typed_request(&mut req, caps, policy)
-        .map_err(|err| bookclerk_plugin_abi::PluginError::invalid_params(err.to_string()))?;
+    authorize_guest_typed_request(&mut req, caps, policy).map_err(guest_admission_error)?;
     let guest_req = req.clone();
     let envelope = wrap_guest_typed_request(req, policy.sql_types())?;
-    caps.admit_proven_execute(&envelope.request, &envelope.proofs)
-        .map_err(|err| bookclerk_plugin_abi::PluginError::invalid_params(err.to_string()))?;
+    caps.admit_proven_execute(&envelope.request, &envelope.proofs)?;
     let reply = exec(envelope.clone()).await?;
     crate::validate_execute_reply(&envelope.request, &reply, caps)
-        .map_err(|err| bookclerk_plugin_abi::PluginError::unavailable(err.to_string()))?;
+        .map_err(guest_reply_validation_error)?;
     unwrap_guest_typed_reply(reply, &guest_req, caps)
+}
+
+/// Maps a guest admission failure onto the ABI error the guest receives.
+///
+/// A negotiated-cap failure (`maxStatements`, `maxBinds`, `maxPayloadBytes`,
+/// `maxRequestBytes`, ...) stays a typed `limit_exceeded` error with
+/// `details`, so the SDKs' `err.limit` is populated; every other
+/// authorization failure is `invalid_params`.
+fn guest_admission_error(err: crate::LibraryError) -> bookclerk_plugin_abi::PluginError {
+    match err.limit() {
+        Some(limit) => bookclerk_plugin_abi::PluginError::limit_exceeded(limit),
+        None => bookclerk_plugin_abi::PluginError::invalid_params(err.to_string()),
+    }
+}
+
+/// Maps a reply-validation failure onto the ABI error the guest receives.
+///
+/// A result that exceeded a negotiated cap (`maxResultBytes`,
+/// `maxResultRows`) is a typed `limit_exceeded` error the guest narrows;
+/// an envelope that does not echo the request is `unavailable`, which the
+/// guest may retry.
+fn guest_reply_validation_error(err: crate::LibraryError) -> bookclerk_plugin_abi::PluginError {
+    match err.limit() {
+        Some(limit) => bookclerk_plugin_abi::PluginError::limit_exceeded(limit),
+        None => bookclerk_plugin_abi::PluginError::unavailable(err.to_string()),
+    }
 }
 
 /// Authorizes a **guest-authored** typed batch.
@@ -1123,5 +1159,54 @@ mod limits_tests {
             err.to_string().contains("maxLoweredStatementBytes"),
             "host proven path must reject without consulting an engine: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod guest_error_mapping_tests {
+    use super::{guest_admission_error, guest_reply_validation_error};
+    use bookclerk_plugin_abi::{LimitExceeded, PluginErrorCode};
+
+    #[test]
+    fn admission_keeps_a_cap_failure_typed_and_demotes_the_rest_to_invalid_params() {
+        let limit = LimitExceeded::new("maxStatements", 2, 3);
+        let typed = guest_admission_error(crate::LibraryError::LimitExceeded(limit.clone()));
+        assert_eq!(typed.code, PluginErrorCode::LimitExceeded);
+        assert_eq!(typed.limit(), Some(limit.clone()));
+        assert_eq!(
+            typed.details.as_ref().and_then(LimitExceeded::from_details),
+            Some(limit)
+        );
+
+        // A cap that crossed a string hop (`Other` carrying the canonical
+        // message) is still recognised.
+        let hopped = crate::LibraryError::Other(anyhow::anyhow!(
+            "adapter: {}",
+            LimitExceeded::new("maxBinds", 2, 5).to_message()
+        ));
+        assert_eq!(
+            guest_admission_error(hopped).limit(),
+            Some(LimitExceeded::new("maxBinds", 2, 5))
+        );
+
+        let other = guest_admission_error(crate::LibraryError::Other(anyhow::anyhow!(
+            "statement 0 is not in the guest grammar"
+        )));
+        assert_eq!(other.code, PluginErrorCode::InvalidParams);
+        assert!(other.limit().is_none());
+    }
+
+    #[test]
+    fn reply_validation_keeps_a_cap_failure_typed_and_the_rest_retryable() {
+        let limit = LimitExceeded::new("maxResultRows", 10, 11);
+        let typed = guest_reply_validation_error(crate::LibraryError::LimitExceeded(limit.clone()));
+        assert_eq!(typed.code, PluginErrorCode::LimitExceeded);
+        assert_eq!(typed.limit(), Some(limit));
+
+        let echo = guest_reply_validation_error(crate::LibraryError::Unavailable(
+            "execute reply has 2 statements; request has 1".into(),
+        ));
+        assert_eq!(echo.code, PluginErrorCode::Unavailable);
+        assert!(echo.limit().is_none());
     }
 }

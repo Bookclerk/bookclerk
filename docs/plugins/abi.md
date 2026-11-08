@@ -156,6 +156,13 @@ Native plugins must be rebuilt against this SDK.
   lexicographic walk over an unsorted folder without an index.
 - Scalar RPC values are capped at **256 KiB** (`payload_too_large` if
   exceeded). List pages are clamped.
+- A SQL request or result over a negotiated `DbCapabilities` cap fails
+  with `limit_exceeded`. `PluginError.details` (a JSON object, empty when
+  an error carries none) holds `{ "limit", "cap", "used" }`, and the
+  message reads `limit exceeded: <cap> is <n>; used <m>`; the SDKs expose
+  both as `err.limit`. `GuestDatabase.limits` returns the caps of the
+  session so a guest can stay under them; on a host that predates the
+  method it fails with `unsupported`.
 - Integrity metadata (etag, sha256) rides on `PutResult` and
   `ReadResult`.
 - Optional facilities *within* the ABI are feature flags (`rpc.streams`,
@@ -1127,10 +1134,11 @@ See the [SQL contract v1](sql-contract/v1.md).
 - For workerd guests, the launcher mints one database-only grant token per
   binding at `open`, and carries it in the bridge context
   (`databases: { DB: <token> }`). The trusted adapter isolate turns each
-  token into a granted-channel transport over `POST /db/execute`, and
-  installs the resulting `env.DB` on the author's `env` for every call of
-  that `open` (events, storefront, jobs, …). It is a full `DatabaseBinding`:
-  `prepare`, `bind`, `run`, `all`, `first`, `raw` and `batch`.
+  token into a granted-channel transport over `POST /db/execute` (and
+  `GET /db/limits` for `GuestDatabase.limits`), and installs the resulting
+  `env.DB` on the author's `env` for every call of that `open` (events,
+  storefront, jobs, …). It is a full `DatabaseBinding`: `prepare`, `bind`,
+  `run`, `all`, `first`, `raw`, `batch` and `limits()`.
 
 Authors never see the token.
 

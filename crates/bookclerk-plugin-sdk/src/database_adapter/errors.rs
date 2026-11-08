@@ -4,7 +4,7 @@
 //! `"unique"` are not the primary signal. COMMIT-time and connection-loss
 //! failures are `unavailable` so the host retries the same `operationId`.
 
-use crate::{PluginError, PluginErrorCode};
+use crate::{LimitExceeded, PluginError, PluginErrorCode};
 use sea_orm::{DbErr, RuntimeErr};
 use serde_json::json;
 use std::ops::Deref;
@@ -48,6 +48,11 @@ fn sqlx_engine_code(err: &DbErr) -> Option<String> {
 
 /// Classifies a formatted engine error into a [`PluginError`].
 fn classify_message(message: &str) -> PluginError {
+    if let Some(limit) = LimitExceeded::from_message(message) {
+        let mut out = PluginError::new(PluginErrorCode::LimitExceeded, message.to_string());
+        out.details = Some(limit.details());
+        return out;
+    }
     let (code, engine_code) = classify_engine_message(message);
     with_engine_code(code, message.to_string(), engine_code)
 }
@@ -222,6 +227,29 @@ mod tests {
     #![allow(clippy::missing_panics_doc)]
 
     use super::*;
+
+    #[test]
+    fn limit_messages_classify_as_limit_exceeded_with_details() {
+        let message = "limit exceeded: maxCellBytes is 1024; used 4096 (column `body`)";
+        let err = plugin_error_from_engine(message);
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded, "{err}");
+        assert_eq!(err.message, message);
+        assert_eq!(
+            err.limit(),
+            Some(LimitExceeded::new("maxCellBytes", 1024, 4096))
+        );
+        let wrapped = plugin_error_from_db_err(&DbErr::Custom(
+            "statement 2: limit exceeded: maxResultBytes is 262144; used 300000".into(),
+        ));
+        assert_eq!(wrapped.code, PluginErrorCode::LimitExceeded, "{wrapped}");
+        assert_eq!(
+            wrapped.limit().map(|l| l.limit),
+            Some("maxResultBytes".to_string())
+        );
+        // A message that only mentions a cap name is not a limit error.
+        let plain = plugin_error_from_engine("maxResultBytes is advertised as 262144");
+        assert_ne!(plain.code, PluginErrorCode::LimitExceeded);
+    }
 
     #[test]
     fn unique_sqlstate_is_conflict() {

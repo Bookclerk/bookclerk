@@ -1640,3 +1640,58 @@ async fn binding_stamped_proofs_survive_catalog_wipe() {
     .expect("stamped proofs must not re-typecheck against a wiped catalog");
     assert_eq!(reply.statements.len(), 1);
 }
+
+/// A batch over `maxStatements` is a typed `limit_exceeded` error with
+/// `details`, refused before the executor runs, so `err.limit` is populated
+/// in every SDK rather than a bare `invalid_params`.
+#[tokio::test]
+async fn over_cap_batch_is_a_typed_limit_error_before_execute() {
+    let db = binding_db().await;
+    apply_plugin_tables(
+        &db,
+        &["CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)"],
+    )
+    .await;
+    let mut caps = DbCapabilities::advertised_sqlite();
+    caps.max_statements = 2;
+    let env = bookclerk_db_exec::load_sql_type_env(&db)
+        .await
+        .expect("load binding catalog");
+    let policy = GuestSqlPolicy::binding_owned().with_sql_types(env);
+    let request = req(
+        "over-cap",
+        (0..3)
+            .map(|i| {
+                stmt(
+                    "INSERT INTO notes (body) VALUES (?)",
+                    vec![DbValue::Text(format!("row {i}"))],
+                )
+            })
+            .collect(),
+    );
+    let executed = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&executed);
+    let err = bookclerk_library::execute_guest_atomic_with(request, &caps, &policy, |_| {
+        seen.store(true, std::sync::atomic::Ordering::SeqCst);
+        async { Err(PluginError::internal("executor must not run")) }
+    })
+    .await
+    .expect_err("three statements over a cap of two");
+    assert!(
+        !executed.load(std::sync::atomic::Ordering::SeqCst),
+        "the executor must not see an over-cap batch"
+    );
+    assert_eq!(
+        err.code,
+        bookclerk_plugin_abi::PluginErrorCode::LimitExceeded,
+        "{err:?}"
+    );
+    let limit = bookclerk_plugin_abi::LimitExceeded::new("maxStatements", 2, 3);
+    assert_eq!(err.limit(), Some(limit.clone()));
+    assert_eq!(
+        err.details
+            .as_ref()
+            .and_then(bookclerk_plugin_abi::LimitExceeded::from_details),
+        Some(limit)
+    );
+}

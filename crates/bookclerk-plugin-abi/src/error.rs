@@ -42,6 +42,9 @@ pub enum PluginErrorCode {
     Cancelled,
     /// The operation conflicts with current state (conditional put, …).
     Conflict,
+    /// A negotiated database limit was exceeded; [`PluginError::limit`]
+    /// names which one.
+    LimitExceeded,
     /// Unrecognized wire code. See [`PluginError::wire_str`].
     Unknown,
 }
@@ -63,6 +66,7 @@ impl PluginErrorCode {
             Self::InvalidCursor => "invalid_cursor",
             Self::Cancelled => "cancelled",
             Self::Conflict => "conflict",
+            Self::LimitExceeded => "limit_exceeded",
             Self::Unknown => "unknown",
         }
     }
@@ -83,6 +87,7 @@ impl PluginErrorCode {
             "invalid_cursor" | "invalidCursor" => Self::InvalidCursor,
             "cancelled" | "canceled" => Self::Cancelled,
             "conflict" | "unique" | "constraint" | "unique_constraint" => Self::Conflict,
+            "limit_exceeded" | "limitExceeded" => Self::LimitExceeded,
             "timeout" | "timed_out" => Self::DeadlineExceeded,
             "retryable" => Self::Unavailable,
             _ => Self::Unknown,
@@ -239,6 +244,136 @@ impl PluginError {
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::new(PluginErrorCode::Conflict, message)
     }
+
+    /// Builds a [`PluginErrorCode::LimitExceeded`] error whose `details`
+    /// carry `limit`, `cap` and `used` and whose message is
+    /// [`LimitExceeded::to_message`].
+    #[must_use]
+    pub fn limit_exceeded(limit: LimitExceeded) -> Self {
+        let mut out = Self::new(PluginErrorCode::LimitExceeded, limit.to_message());
+        out.details = Some(limit.details());
+        out
+    }
+
+    /// The exceeded limit when this is a [`PluginErrorCode::LimitExceeded`]
+    /// error.
+    ///
+    /// Reads the structured `details` first and falls back to the message
+    /// text, so an error relayed by a hop that dropped `details` still
+    /// names its limit.
+    #[must_use]
+    pub fn limit(&self) -> Option<LimitExceeded> {
+        if self.code != PluginErrorCode::LimitExceeded {
+            return None;
+        }
+        self.details
+            .as_ref()
+            .and_then(LimitExceeded::from_details)
+            .or_else(|| LimitExceeded::from_message(&self.message))
+    }
+}
+
+/// One exceeded negotiated limit: which cap, its value, and the value that
+/// exceeded it.
+///
+/// Every emitter (adapter SDK, host reply checks, SDK request checks) formats
+/// the same message through [`Self::to_message`], and every classifier parses
+/// it back through [`Self::from_message`], so a limit error stays typed across
+/// a `DbErr` string hop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LimitExceeded {
+    /// Capability field name as advertised (`maxResultBytes`, `maxResultRows`,
+    /// `maxRequestBytes`, ...).
+    pub limit: String,
+    /// The negotiated cap.
+    pub cap: u64,
+    /// The observed value that exceeded `cap`.
+    pub used: u64,
+}
+
+/// Message prefix every limit error starts with.
+const LIMIT_MESSAGE_PREFIX: &str = "limit exceeded: ";
+
+impl LimitExceeded {
+    /// Builds the record.
+    #[must_use]
+    pub fn new(limit: impl Into<String>, cap: u64, used: u64) -> Self {
+        Self {
+            limit: limit.into(),
+            cap,
+            used,
+        }
+    }
+
+    /// Canonical message: `limit exceeded: maxResultBytes is 262144; used 300000`.
+    #[must_use]
+    pub fn to_message(&self) -> String {
+        format!(
+            "{LIMIT_MESSAGE_PREFIX}{} is {}; used {}",
+            self.limit, self.cap, self.used
+        )
+    }
+
+    /// Parses a message produced by [`Self::to_message`], possibly followed by
+    /// further text after a `;` or `:`.
+    #[must_use]
+    pub fn from_message(message: &str) -> Option<Self> {
+        let start = message.find(LIMIT_MESSAGE_PREFIX)?;
+        let rest = &message[start + LIMIT_MESSAGE_PREFIX.len()..];
+        let (limit, rest) = rest.split_once(" is ")?;
+        let (cap, rest) = rest.split_once("; used ")?;
+        let used_end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if !is_limit_name(limit) {
+            return None;
+        }
+        Some(Self {
+            limit: limit.to_string(),
+            cap: cap.parse().ok()?,
+            used: rest[..used_end].parse().ok()?,
+        })
+    }
+
+    /// The `details` object: `{ "limit": ..., "cap": ..., "used": ... }`.
+    #[must_use]
+    pub fn details(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut map = serde_json::Map::new();
+        map.insert("limit".into(), serde_json::Value::from(self.limit.clone()));
+        map.insert("cap".into(), serde_json::Value::from(self.cap));
+        map.insert("used".into(), serde_json::Value::from(self.used));
+        map
+    }
+
+    /// Reads the record back from a `details` object; `None` when any field
+    /// is missing or not of the expected type, or when `limit` is not a
+    /// name [`Self::from_message`] would accept, so a record read from
+    /// `details` always round-trips through its canonical message.
+    #[must_use]
+    pub fn from_details(details: &serde_json::Map<String, serde_json::Value>) -> Option<Self> {
+        let limit = details.get("limit")?.as_str()?;
+        if !is_limit_name(limit) {
+            return None;
+        }
+        Some(Self {
+            limit: limit.to_string(),
+            cap: details.get("cap")?.as_u64()?,
+            used: details.get("used")?.as_u64()?,
+        })
+    }
+}
+
+/// True when `name` is a cap name both limit parsers accept: non-empty ASCII
+/// letters, digits and `_` (the SQL-v1 `maxResultBytes` style), so it cannot
+/// contain the `" is "` and `"; used "` separators of the canonical message.
+fn is_limit_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+impl std::fmt::Display for LimitExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_message())
+    }
 }
 
 impl Serialize for PluginError {
@@ -289,6 +424,71 @@ mod tests {
         let back: PluginError = serde_json::from_value(v).unwrap();
         assert_eq!(back.code, PluginErrorCode::Unknown);
         assert_eq!(back.wire_str(), "future_retry_policy");
+    }
+
+    #[test]
+    fn limit_exceeded_round_trips_through_message_and_details() {
+        let limit = LimitExceeded::new("maxResultBytes", 262_144, 300_000);
+        let err = PluginError::limit_exceeded(limit.clone());
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+        assert_eq!(
+            err.message,
+            "limit exceeded: maxResultBytes is 262144; used 300000"
+        );
+        assert_eq!(err.limit(), Some(limit.clone()));
+        assert_eq!(
+            LimitExceeded::from_message(&err.message),
+            Some(limit.clone())
+        );
+        assert_eq!(
+            LimitExceeded::from_message("execute reply statement 2: limit exceeded: maxCellBytes is 1024; used 4096 (column `body`)"),
+            Some(LimitExceeded::new("maxCellBytes", 1024, 4096))
+        );
+        assert_eq!(
+            LimitExceeded::from_message("limit exceeded: is 1; used 2"),
+            None
+        );
+        assert_eq!(
+            LimitExceeded::from_message("limit exceeded: maxBinds is x; used 2"),
+            None
+        );
+        let mut relayed = PluginError::from_wire("limit_exceeded", err.message.clone());
+        assert_eq!(relayed.limit(), Some(limit.clone()));
+        relayed.details = Some(serde_json::Map::new());
+        assert_eq!(relayed.limit(), Some(limit));
+        assert_eq!(
+            PluginError::conflict("limit exceeded: maxBinds is 1; used 2").limit(),
+            None
+        );
+    }
+
+    #[test]
+    fn details_with_a_name_the_message_grammar_rejects_fall_back_to_the_message() {
+        // Both parsers accept the same names, so a record read from
+        // `details` always round-trips through its canonical message.
+        let mut details = serde_json::Map::new();
+        details.insert("limit".into(), serde_json::Value::from("maxResult-Bytes"));
+        details.insert("cap".into(), serde_json::Value::from(1u64));
+        details.insert("used".into(), serde_json::Value::from(2u64));
+        assert_eq!(LimitExceeded::from_details(&details), None);
+        let mut err = PluginError::from_wire(
+            "limit_exceeded",
+            LimitExceeded::new("maxResultBytes", 1, 2).to_message(),
+        );
+        err.details = Some(details.clone());
+        assert_eq!(
+            err.limit(),
+            Some(LimitExceeded::new("maxResultBytes", 1, 2))
+        );
+
+        details.insert("limit".into(), serde_json::Value::from(""));
+        assert_eq!(LimitExceeded::from_details(&details), None);
+        details.insert("limit".into(), serde_json::Value::from("max_cell_bytes2"));
+        let parsed = LimitExceeded::from_details(&details).expect("valid name");
+        assert_eq!(
+            LimitExceeded::from_message(&parsed.to_message()),
+            Some(parsed)
+        );
     }
 
     #[test]
