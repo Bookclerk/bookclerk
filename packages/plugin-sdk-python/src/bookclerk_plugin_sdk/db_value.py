@@ -606,16 +606,25 @@ class DatabaseBinding:
         """The session's limits, fetched once per binding (one invocation).
 
         Overlapping first reads share one fetch, so a later failure cannot
-        replace an earlier success.
+        replace an earlier success. The fetch is shielded from its callers:
+        a cancelled or timed-out read leaves it running for the others, and
+        a fetch that was itself cancelled is forgotten so the next read
+        retries instead of inheriting the cancellation.
 
         Returns:
             The capabilities, or ``None`` when the host predates
             ``GuestDatabase.limits`` or the call failed; the binding then
             reads inline and :meth:`limits` reports the error itself.
         """
-        if self._limits_fetch is None:
-            self._limits_fetch = asyncio.ensure_future(self._fetch_limits())
-        return await self._limits_fetch
+        fetch = self._limits_fetch
+        if fetch is None:
+            fetch = self._limits_fetch = asyncio.ensure_future(self._fetch_limits())
+        try:
+            return await asyncio.shield(fetch)
+        except asyncio.CancelledError:
+            if fetch.cancelled() and self._limits_fetch is fetch:
+                self._limits_fetch = None
+            raise
 
     async def _fetch_limits(self) -> DbCapabilities | None:
         """One ``GuestDatabase.limits`` call, with any failure read as ``None``."""

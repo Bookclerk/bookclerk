@@ -816,6 +816,47 @@ class BindingStreamTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(db.prepare("SELECT 1").all(), db.prepare("SELECT 2").all())
         self.assertEqual(transport.calls["limits"], 1)
 
+    async def test_a_cancelled_read_leaves_the_shared_limits_fetch_usable(self) -> None:
+        gate = asyncio.Event()
+        transport = _Transport(caps=SQLITE_CAPS, body=lambda r: _stream(r["operationId"], []))
+
+        async def slow_limits() -> Any:
+            await gate.wait()
+            return await transport.limits()
+
+        db = create_database_binding(
+            transport.execute, limits=slow_limits, execute_streamed=transport.execute_streamed
+        )
+        first = asyncio.ensure_future(db.prepare("SELECT 1").all())
+        await asyncio.sleep(0)
+        first.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await first
+        # The shared fetch survived the caller's cancellation: the next read
+        # waits on the same fetch and then streams with the session's limits.
+        second = asyncio.ensure_future(db.prepare("SELECT 2").all())
+        await asyncio.sleep(0)
+        gate.set()
+        self.assertEqual((await second)["results"], [])
+        self.assertEqual(transport.calls, {"inline": 0, "streamed": 1, "limits": 1})
+        self.assertEqual(await db.limits(), SQLITE_CAPS)
+
+        # A fetch that was itself cancelled (the loop tearing the task down)
+        # is forgotten, so the following read retries instead of failing.
+        fetch = db._limits_fetch  # noqa: SLF001
+        assert fetch is not None
+        db._limits_fetch = asyncio.ensure_future(slow_limits())  # noqa: SLF001
+        gate.clear()
+        third = asyncio.ensure_future(db.prepare("SELECT 3").all())
+        await asyncio.sleep(0)
+        db._limits_fetch.cancel()  # noqa: SLF001
+        with self.assertRaises(asyncio.CancelledError):
+            await third
+        self.assertIsNone(db._limits_fetch)  # noqa: SLF001
+        gate.set()
+        self.assertEqual((await db.prepare("SELECT 4").all())["results"], [])
+        self.assertEqual(transport.calls["limits"], 2)
+
     async def test_the_sessions_request_cap_applies_locally_and_chunk_caps_compose(self) -> None:
         transport = _Transport(caps={**SQLITE_CAPS, "maxRequestBytes": 200}, inline=_inline_reply)
         db = transport.binding()
