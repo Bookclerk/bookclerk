@@ -622,7 +622,7 @@ mod tests {
         // Only this test sets the variable; no other test loads ONNX.
         std::env::set_var("ORT_DYLIB_PATH", "/nonexistent/libonnxruntime.so");
         let dir = std::env::temp_dir().join("bookclerk-discover-onnx-missing");
-        let opened = panic::catch_unwind(|| OnnxEmbedder::open(&dir, 1));
+        let opened = panic::catch_unwind(|| open_onnx(&dir, 1));
         std::env::remove_var("ORT_DYLIB_PATH");
         assert!(matches!(opened, Ok(Err(DiscoverError::Embed(_)))));
     }
