@@ -34,6 +34,7 @@ members = [
     "crates/bookclerk-source",
     "crates/bookclerk-storefront",
     "crates/bookclerk-storage",
+    "crates/bookclerk-tls",
     "crates/bookclerk-tray",
     "crates/bookclerk-workerd",
     "crates/bookclerkd",
@@ -112,6 +113,7 @@ bookclerk-search = { path = "crates/bookclerk-search" }
 bookclerk-integrations = { path = "crates/bookclerk-integrations" }
 bookclerk-discover = { path = "crates/bookclerk-discover" }
 bookclerk-tray = { path = "crates/bookclerk-tray" }
+bookclerk-tls = { path = "crates/bookclerk-tls" }
 bookclerk-plugin-abi = { path = "crates/bookclerk-plugin-abi" }
 bookclerk-plugin-manifest = { path = "crates/bookclerk-plugin-manifest" }
 bookclerk-plugin-sdk = { path = "crates/bookclerk-plugin-sdk", default-features = false }
@@ -137,7 +139,12 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Sync HTTP for crash/error diagnostics upload (usable from panic hooks).
-ureq = { version = "3", features = ["json"] }
+# `rustls-no-provider`: ureq's `rustls` feature would compile ring as a second
+# crypto library; host crates import `bookclerk_tls::ureq`, whose request
+# functions hand ureq the one aws-lc-rs provider (docs/internals/tls.md).
+ureq = { version = "3", default-features = false, features = ["json", "gzip", "rustls-no-provider", "rustls-webpki-roots"] }
+# The hosts' one TLS backend: rustls on aws-lc-rs (its default features).
+rustls = "0.23"
 
 # Serde / config
 serde = { version = "1", features = ["derive"] }
@@ -171,9 +178,13 @@ sea-orm = { version = "2.0.0", default-features = false, features = [
     "with-json",
     "proxy",
     "sqlx-postgres",
-    "runtime-tokio-rustls",
+    "runtime-tokio",
     "stream",
 ] }
+# Postgres TLS for sea-orm: sea-orm's `runtime-tokio-rustls` would pick sqlx's
+# ring provider, so the database guests enable sqlx's aws-lc-rs one instead
+# (bookclerk-db-guest; docs/internals/tls.md).
+sqlx = { version = "0.9", default-features = false, features = ["tls-rustls-aws-lc-rs"] }
 # Crypto for encrypted_secrets (Argon2id KDF + XChaCha20-Poly1305 cipher).
 # These are already in the dependency tree via audible-rs — adding them as
 # explicit workspace deps keeps versions aligned with no extra downloads.

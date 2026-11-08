@@ -1525,6 +1525,7 @@ dependencies = [
  "bookclerk-search",
  "bookclerk-source",
  "bookclerk-storage",
+ "bookclerk-tls",
  "chrono",
  "clap",
  "csv",
@@ -1540,7 +1541,6 @@ dependencies = [
  "tokio-postgres",
  "toml",
  "tracing",
- "ureq",
  "url",
  "windows-sys 0.61.2",
  "zeroize",
@@ -1551,6 +1551,7 @@ name = "bookclerk-config"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bookclerk-tls",
  "directories",
  "getrandom 0.4.3",
  "oslog",
@@ -1563,7 +1564,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "ureq",
  "utoipa",
  "windows-sys 0.61.2",
 ]
@@ -1613,6 +1613,7 @@ dependencies = [
  "sea-orm",
  "serde",
  "serde_json",
+ "sqlx",
  "tokio",
  "uuid",
 ]
@@ -1873,6 +1874,7 @@ dependencies = [
  "bookclerk-library",
  "bookclerk-node-proto",
  "bookclerk-plugin-host",
+ "bookclerk-tls",
  "futures",
  "rand 0.8.7",
  "serde",
@@ -1939,6 +1941,7 @@ dependencies = [
  "anyhow",
  "bookclerk-plugin-manifest",
  "bookclerk-sandbox",
+ "bookclerk-tls",
  "chrono",
  "flate2",
  "fs4 1.1.0",
@@ -1951,7 +1954,6 @@ dependencies = [
  "thiserror 2.0.21",
  "toml",
  "tracing",
- "ureq",
  "url",
  "walkdir",
  "windows-sys 0.61.2",
@@ -2110,6 +2112,7 @@ dependencies = [
  "bookclerk-sandbox",
  "bookclerk-source",
  "bookclerk-storage",
+ "bookclerk-tls",
  "bookclerk-workerd",
  "bytes",
  "chrono",
@@ -2126,7 +2129,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "ureq",
  "url",
  "uuid",
  "windows-sys 0.61.2",
@@ -2306,6 +2308,7 @@ version = "0.1.0"
 dependencies = [
  "bookclerk-plugin-manifest",
  "bookclerk-plugin-sdk",
+ "bookclerk-tls",
  "bookclerk-workerd",
  "chrono",
  "flate2",
@@ -2314,7 +2317,6 @@ dependencies = [
  "sha2 0.11.1",
  "tar",
  "tempfile",
- "ureq",
 ]
 
 [[package]]
@@ -2422,11 +2424,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-tls"
+version = "0.1.0"
+dependencies = [
+ "rustls",
+ "ureq",
+]
+
+[[package]]
 name = "bookclerk-tray"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "bookclerk-tls",
  "ksni",
  "objc2-core-foundation",
  "open",
@@ -2435,7 +2446,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tray-icon",
- "ureq",
  "winit",
 ]
 
@@ -2449,6 +2459,7 @@ dependencies = [
  "bookclerk-plugin-manifest",
  "bookclerk-plugin-sdk",
  "bookclerk-sandbox",
+ "bookclerk-tls",
  "capnp",
  "capnp-rpc",
  "chrono",
@@ -2464,7 +2475,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "ureq",
 ]
 
 [[package]]
@@ -2494,6 +2504,7 @@ dependencies = [
  "bookclerk-search",
  "bookclerk-source",
  "bookclerk-storage",
+ "bookclerk-tls",
  "bookclerk-tray",
  "bytes",
  "chrono",

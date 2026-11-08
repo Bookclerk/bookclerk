@@ -19,6 +19,7 @@
 //! on the first hop or any redirect. The fetch never uses a proxy from the
 //! environment: a proxy resolves the target itself, past that resolver.
 
+use bookclerk_tls::ureq;
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
@@ -185,6 +186,7 @@ fn owner_agent(connector: impl Connector, resolver: PublicOnlyResolver<impl Reso
         .proxy(None)
         .max_redirects(0)
         .timeout_global(Some(DOWNLOAD_TIMEOUT))
+        .tls_config(bookclerk_tls::ureq_tls_config())
         .build();
     Agent::with_parts(config, connector, resolver)
 }

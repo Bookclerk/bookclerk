@@ -96,6 +96,7 @@ PostgreSQL 16+, or Cloudflare D1
 | Search | `bookclerk-search` |
 | Discovery / recommendations | `bookclerk-discover` (via registered `ContentSource` catalog APIs) |
 | Storage backends | `bookclerk-storage` |
+| TLS provider and HTTP client | `bookclerk-tls` (one rustls provider, aws-lc-rs; see [tls.md](tls.md)) |
 | Catalog enrichment | `bookclerk-enrich` (shared HTTP helpers; Audible plugin owns Discover catalog) |
 | Integrations framework + portal | `bookclerk-integrations` (traits / registry / portal; ABS lives in its plugin) |
 | External plugin host | `bookclerk-plugin-host` |
