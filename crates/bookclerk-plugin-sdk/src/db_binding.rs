@@ -339,14 +339,15 @@ impl DatabaseBinding {
         };
         let encoded = encoded_execute_request_bytes(&request)?;
         let session_caps = self.session_limits().await;
-        // The binding's configured cap, else the session's, so an oversized
-        // request fails locally with the typed error the host would raise.
-        let cap = match self.options.max_request_bytes {
-            0 => session_caps
+        // The tighter of the binding's configured cap and the session's, so
+        // an oversized request fails locally with the typed error the host
+        // would raise (the same cap `chunk()` splits to).
+        let cap = tighter_cap(
+            self.options.max_request_bytes,
+            session_caps
                 .as_ref()
                 .map_or(0, |caps| caps.max_request_bytes),
-            cap => cap,
-        };
+        );
         if cap > 0 && encoded.len() > cap as usize {
             return Err(PluginError::limit_exceeded(LimitExceeded::new(
                 "maxRequestBytes",
@@ -588,14 +589,16 @@ fn tighter_cap(a: u32, b: u32) -> u32 {
 }
 
 /// `reply` once it is checked to answer `request`: the same operation id
-/// and one result per statement.
+/// (a request sent without one takes the id the host minted), one result
+/// per statement, and no result with more rows than its statement's
+/// `max_rows` asked for.
 ///
 /// # Errors
 ///
 /// Returns [`PluginError::invalid_params`] when the reply is for another
-/// request.
+/// request or a result carries more rows than its statement allowed.
 fn reply_for(request: &ExecuteRequest, reply: ExecuteReply) -> Result<ExecuteReply> {
-    if reply.operation_id != request.operation_id {
+    if !request.operation_id.is_empty() && reply.operation_id != request.operation_id {
         return Err(PluginError::invalid_params(format!(
             "reply answers operation {}, not {}",
             reply.operation_id, request.operation_id
@@ -607,6 +610,15 @@ fn reply_for(request: &ExecuteRequest, reply: ExecuteReply) -> Result<ExecuteRep
             reply.statements.len(),
             request.statements.len()
         )));
+    }
+    for (i, (statement, result)) in request.statements.iter().zip(&reply.statements).enumerate() {
+        let max_rows = usize::try_from(statement.max_rows).unwrap_or(usize::MAX);
+        if statement.max_rows > 0 && result.rows.len() > max_rows {
+            return Err(PluginError::invalid_params(format!(
+                "reply carries {} rows for statement {i}, which asked for at most {max_rows}",
+                result.rows.len()
+            )));
+        }
     }
     Ok(reply)
 }
@@ -1032,6 +1044,138 @@ mod tests {
             .expect_err("unavailable surfaces");
         assert_eq!(err.code, PluginErrorCode::Unavailable);
         assert_eq!(session.counts().0, 0);
+    }
+
+    /// A rewrite of a reply before it returns to the binding.
+    type Tamper = fn(ExecuteReply) -> ExecuteReply;
+
+    /// A session whose replies are rewritten by `tamper` before they
+    /// return, on every path: inline, streamed, and the inline fallback
+    /// behind an `unsupported` stream.
+    struct TamperingSession {
+        caps: DbCapabilities,
+        stream: bool,
+        tamper: Tamper,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl GuestDatabase for TamperingSession {
+        async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply> {
+            Ok((self.tamper)(reply_with_rows(&request, 2)))
+        }
+
+        async fn limits(&self) -> Result<DbCapabilities> {
+            Ok(self.caps.clone())
+        }
+
+        async fn execute_streamed(
+            &self,
+            request: ExecuteRequest,
+        ) -> Result<bookclerk_plugin_abi::ExecuteStream> {
+            if !self.stream {
+                return Err(PluginError::unsupported("no stream"));
+            }
+            bookclerk_plugin_abi::ExecuteStream::from_reply(&(self.tamper)(reply_with_rows(
+                &request, 2,
+            )))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replies_must_answer_the_request_on_every_path() {
+        let mut inline_only = DbCapabilities::advertised_sqlite();
+        inline_only.max_streamed_result_bytes = 0;
+        inline_only.max_streamed_result_rows = 0;
+        let paths: [(DbCapabilities, bool); 3] = [
+            (inline_only, false),
+            (DbCapabilities::advertised_sqlite(), true),
+            (DbCapabilities::advertised_sqlite(), false),
+        ];
+        let tampers: [(&str, Tamper); 4] = [
+            ("another operation", |mut reply| {
+                reply.operation_id = "someone-else".into();
+                reply
+            }),
+            ("a missing result", |mut reply| {
+                reply.statements.pop();
+                reply
+            }),
+            ("an extra result", |mut reply| {
+                let extra = reply.statements[0].clone();
+                reply.statements.push(extra);
+                reply
+            }),
+            ("too many rows for first()", |reply| reply),
+        ];
+        for (caps, stream) in &paths {
+            for (what, tamper) in &tampers {
+                let binding = DatabaseBinding::from_session(Arc::new(TamperingSession {
+                    caps: caps.clone(),
+                    stream: *stream,
+                    tamper: *tamper,
+                }));
+                let outcome = if *what == "too many rows for first()" {
+                    // The session answers two rows where `first()` asked for one.
+                    binding
+                        .prepare("SELECT id FROM books")
+                        .first(None)
+                        .await
+                        .map(|_| ())
+                } else {
+                    binding
+                        .prepare("SELECT id FROM books")
+                        .all(None)
+                        .await
+                        .map(|_| ())
+                };
+                let err = outcome
+                    .err()
+                    .unwrap_or_else(|| panic!("{what} must be refused (stream = {stream})"));
+                assert_eq!(err.code, PluginErrorCode::InvalidParams, "{what}");
+            }
+            // An honest reply passes on the same path.
+            let binding = DatabaseBinding::from_session(Arc::new(TamperingSession {
+                caps: caps.clone(),
+                stream: *stream,
+                tamper: |reply| reply,
+            }));
+            let rows = binding
+                .prepare("SELECT id FROM books")
+                .all(None)
+                .await
+                .expect("honest reply")
+                .results
+                .expect("rows");
+            assert_eq!(rows.len(), 2);
+        }
+
+        // A request sent without an operation id takes the one the host minted.
+        let minted = ExecuteReply {
+            operation_id: "host-minted".into(),
+            statements: Vec::new(),
+            timing: DbTiming {
+                attempt_elapsed_us: 0,
+                db_execution_us: 0,
+                db_timing_source: "test".into(),
+            },
+        };
+        let anonymous = ExecuteRequest {
+            operation_id: String::new(),
+            request_hash: String::new(),
+            statements: Vec::new(),
+            deadline_unix_ms: 0,
+        };
+        assert_eq!(
+            reply_for(&anonymous, minted.clone())
+                .expect("minted id accepted")
+                .operation_id,
+            "host-minted"
+        );
+        let named = ExecuteRequest {
+            operation_id: "mine".into(),
+            ..anonymous
+        };
+        assert!(reply_for(&named, minted).is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -593,30 +593,33 @@ export interface GrantedDatabaseTransport extends AtomicTransport {
   /**
    * Same batch as {@link AtomicTransport.executeStreamed}: the reply as
    * `ExecuteStreamFrame` bytes (`POST /db/execute-streamed`), read under the
-   * session's streamed budget.
+   * session's streamed budget. A transport that predates the streamed read
+   * leaves it out; the binding then reads inline.
    *
    * @param request - Structured `ExecuteRequest`.
    * @returns The frame sequence as the channel delivers it.
    */
-  executeStreamed(request: ExecuteRequest): Promise<ReadableStream<Uint8Array> | Uint8Array>;
+  executeStreamed?(request: ExecuteRequest): Promise<ReadableStream<Uint8Array> | Uint8Array>;
   /**
    * Same frames as {@link GrantedDatabaseTransport.executeStreamed}, whole,
-   * from Cap'n request bytes (Python authors decode locally).
+   * from Cap'n request bytes (Python authors decode locally). Optional like
+   * {@link GrantedDatabaseTransport.executeStreamed}.
    *
    * @param bytes - Unpacked `ExecuteRequest` message.
    * @returns Every `ExecuteStreamFrame`, concatenated.
    */
-  executeStreamedBytes(bytes: Uint8Array): Promise<Uint8Array>;
+  executeStreamedBytes?(bytes: Uint8Array): Promise<Uint8Array>;
   /**
    * Same frames as {@link GrantedDatabaseTransport.executeStreamedBytes},
    * as the channel delivers them: a `ReadableStream` when it streams, so an
    * author's `iterate()` can decode frames as they arrive instead of holding
-   * the reply whole.
+   * the reply whole. Optional like
+   * {@link GrantedDatabaseTransport.executeStreamed}.
    *
    * @param bytes - Unpacked `ExecuteRequest` message.
    * @returns The frame sequence, streamed when the channel streams it.
    */
-  openStreamedBytes(bytes: Uint8Array): Promise<ReadableStream<Uint8Array> | Uint8Array>;
+  openStreamedBytes?(bytes: Uint8Array): Promise<ReadableStream<Uint8Array> | Uint8Array>;
   /**
    * Negotiated limits of the granted session (`GuestDatabase.limits`).
    *

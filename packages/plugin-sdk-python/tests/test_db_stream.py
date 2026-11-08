@@ -117,6 +117,34 @@ def _err_stream(operation_id: str, code: str, message: str) -> bytes:
     )
 
 
+def _rows_with_unknown_cell(count: int) -> bytes:
+    """A rows frame of ``count`` single-cell rows whose first cell has an unknown discriminant.
+
+    The codec refuses the frame if it decodes the cells. The discriminant is
+    located by encoding the first cell as ``int64 0`` and as ``boolean
+    False``, which differ only in that field.
+    """
+    rest = [{"values": [{"kind": "int64", "value": 0}]} for _ in range(count - 1)]
+    as_int = _frame("rows", [{"values": [{"kind": "int64", "value": 0}]}, *rest])
+    as_bool = _frame("rows", [{"values": [{"kind": "boolean", "value": False}]}, *rest])
+    assert len(as_int) == len(as_bool)
+    at = next(i for i, (a, b) in enumerate(zip(as_int, as_bool, strict=True)) if a != b)
+    out = bytearray(as_int)
+    out[at] = 0xFF
+    out[at + 1] = 0xFF
+    return bytes(out)
+
+
+def _zero_width_rows(count: int) -> bytes:
+    """A rows frame whose list is ``count`` zero-width rows.
+
+    A composite list of zero words that still carries its tag (the count, no
+    data words, no pointer words).
+    """
+    words = [1 << 32 | 1 << 48, 2, 1 | (7 << 32), count << 2]
+    return struct.pack("<II", 0, len(words)) + b"".join(struct.pack("<Q", w) for w in words)
+
+
 async def _chunked(data: bytes, size: int) -> AsyncIterator[bytes]:
     for at in range(0, len(data), size):
         yield data[at : at + size]
@@ -550,14 +578,43 @@ class DecoderTests(unittest.TestCase):
         head = _frame("head", {"operationId": "op-order", "statementCount": 1})
         statement = _frame(
             "statement",
-            {"index": 0, "columns": [{"name": "v", "dbType": "text"}], "rowsAffected": 0},
+            {"index": 0, "columns": [{"name": "v", "dbType": "int64"}], "rowsAffected": 0},
         )
-        over_cap = head + statement + _frame("rows", [{"values": [bad]}] * 5)
+        # The frame's first cell does not even decode, so refusing it as
+        # `limit_exceeded` shows the count was checked before any cell was read.
+        with self.assertRaisesRegex(ValueError, "union"):
+            _decode_message(_execute_stream_frame_codec, _rows_with_unknown_cell(5))
         with self.assertRaises(PluginError) as ctx:
-            ExecuteStreamDecoder(TINY_LIMITS).push(over_cap)
+            ExecuteStreamDecoder(TINY_LIMITS).push(head + statement + _rows_with_unknown_cell(5))
         limit = ctx.exception.limit
         assert limit is not None
         self.assertEqual((limit.limit, limit.cap, limit.used), ("maxStreamedResultRows", 4, 5))
+        # Under the cap the same frame is refused for what it is.
+        with self.assertRaisesRegex(PluginError, "does not decode"):
+            ExecuteStreamDecoder(TINY_LIMITS).push(head + statement + _rows_with_unknown_cell(3))
+        # Zero-width rows occupy no words, yet their count is read from the
+        # tag: five of them pass the cap of four, three are rows of no cells.
+        with self.assertRaises(PluginError) as ctx:
+            ExecuteStreamDecoder(TINY_LIMITS).push(head + statement + _zero_width_rows(5))
+        limit = ctx.exception.limit
+        assert limit is not None
+        self.assertEqual((limit.limit, limit.used), ("maxStreamedResultRows", 5))
+        with self.assertRaisesRegex(PluginError, "row of 0 cells for 1 columns"):
+            ExecuteStreamDecoder(TINY_LIMITS).push(head + statement + _zero_width_rows(3))
+        self.assertEqual(_CapnpReader(_zero_width_rows(3)).root(1, 1).get_struct_list_length(0), 3)
+        self.assertEqual(
+            len(_CapnpReader(_zero_width_rows(3)).root(1, 1).get_struct_list(0, 0, 0)), 3
+        )
+        # Zero-width elements are charged to the traversal budget by count.
+        with self.assertRaisesRegex(ValueError, "traversal budget"):
+            _CapnpReader(_zero_width_rows(1000), 16).root(1, 1).get_struct_list_length(0)
+        with self.assertRaisesRegex(ValueError, "traversal budget"):
+            _CapnpReader(_zero_width_rows(1000), 1000).root(1, 1).get_struct_list(0, 0, 0)
+        # A row of the wrong width for its statement's columns is out of sequence.
+        with self.assertRaisesRegex(PluginError, "row of 2 cells for 1 columns"):
+            ExecuteStreamDecoder(TINY_LIMITS).push(
+                head + statement + _frame("rows", [{"values": [bad, bad]}])
+            )
         with self.assertRaisesRegex(PluginError, "before a statement frame"):
             ExecuteStreamDecoder(TINY_LIMITS).push(head + _frame("rows", [{"values": [bad]}]))
         # The count comes from the list tag alone, and a tag that announces
@@ -992,7 +1049,85 @@ class BindingStreamTests(unittest.IsolatedAsyncioTestCase):
             if first:
                 self.assertLess(pulls["n"], total / 2, "the first row arrives early")
                 first = False
+        self.assertFalse(first, "rows were yielded")
         self.assertEqual(pulls["n"], total)
+
+    async def test_the_binding_checks_replies_and_caps(self) -> None:
+        # The tighter of the binding's request cap and the session's applies,
+        # as it does to `chunk()`: a request between the two fails locally.
+        transport = _Transport(
+            caps={**SQLITE_CAPS, "maxRequestBytes": 200},
+            body=lambda req: _stream(req["operationId"], [_row(0)]),
+        )
+        roomy = create_database_binding(
+            transport.execute,
+            limits=transport.limits,
+            execute_streamed=transport.execute_streamed,
+            max_request_bytes=1_000_000,
+        )
+        with self.assertRaises(PluginError) as ctx:
+            await roomy.prepare("SELECT ?").bind({"kind": "text", "value": "x" * 300}).all()
+        limit = ctx.exception.limit
+        assert limit is not None
+        self.assertEqual((limit.limit, limit.cap), ("maxRequestBytes", 200))
+        self.assertEqual(transport.calls["streamed"], 0, "refused before it was sent")
+
+        # A result with more rows than its statement asked for is refused, on
+        # the inline and the streamed path alike.
+        two = [_row(0), _row(1)]
+        for over in (
+            _Transport(inline=lambda r: _inline_reply(r, two)),
+            _Transport(caps=SQLITE_CAPS, body=lambda req: _stream(req["operationId"], two)),
+        ):
+            db = over.binding()
+            with self.assertRaisesRegex(PluginError, "at most 1"):
+                await db.prepare("SELECT id FROM books").first()
+            self.assertEqual(len((await db.prepare("SELECT id FROM books").all())["results"]), 2)
+
+        # A request sent without an operation id takes the one the host minted.
+        minted = create_database_binding(
+            lambda r: _reply_async({**_inline_reply(r, [_row(0)]), "operationId": "minted"}),
+            operation_id="",
+        )
+        self.assertEqual(len((await minted.prepare("SELECT 1").all())["results"]), 1)
+        streamed = _Transport(caps=SQLITE_CAPS, body=lambda _r: _stream("minted", [_row(0)]))
+        minted_stream = create_database_binding(
+            streamed.execute,
+            limits=streamed.limits,
+            execute_streamed=streamed.execute_streamed,
+            operation_id="",
+        )
+        self.assertEqual(len((await minted_stream.prepare("SELECT 1").all())["results"]), 1)
+
+    async def test_a_cancelled_cached_limits_fetch_is_replaced(self) -> None:
+        # A fetch cancelled with no waiter (its loop closed under it) must not
+        # hand its cancellation to the next read on the binding.
+        transport = _Transport(
+            caps=SQLITE_CAPS, body=lambda req: _stream(req["operationId"], [_row(0)])
+        )
+        binding = transport.binding()
+        abandoned: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        abandoned.cancel()
+        binding._limits_fetch = abandoned
+        result = await binding.prepare("SELECT 1").all()
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(transport.calls, {"inline": 0, "streamed": 1, "limits": 1})
+
+    async def test_a_refused_frame_closes_the_chunk_source_of_a_whole_read(self) -> None:
+        closed = {"n": 0}
+
+        async def body(request: dict[str, Any]) -> AsyncIterator[bytes]:
+            try:
+                yield _frame("head", {"operationId": request["operationId"], "statementCount": 1})
+                yield _frame("rows", [_row(0)])
+                yield _frame("end", TIMING)
+            finally:
+                closed["n"] += 1
+
+        transport = _Transport(caps=SQLITE_CAPS, body=body)
+        with self.assertRaisesRegex(PluginError, "before a statement frame"):
+            await transport.binding().prepare("SELECT id").all()
+        self.assertEqual(closed["n"], 1, "the unread body was released")
 
     async def test_chunk_splits_to_the_session_caps(self) -> None:
         transport = _Transport(caps={**SQLITE_CAPS, "maxStatements": 2}, inline=_inline_reply)

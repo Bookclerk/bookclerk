@@ -640,8 +640,18 @@ export function createDatabaseBinding(
   // reads inline and lets `limits()` report the error itself.
   let cachedLimits: Promise<DbCapabilities | null> | undefined;
   const sessionLimits = (): Promise<DbCapabilities | null> => {
-    cachedLimits ??=
-      transport.limits === undefined ? Promise.resolve(null) : transport.limits().catch(() => null);
+    if (cachedLimits === undefined) {
+      try {
+        cachedLimits =
+          transport.limits === undefined
+            ? Promise.resolve(null)
+            : transport.limits().catch(() => null);
+      } catch {
+        // A transport that throws synchronously is read inline like one
+        // whose promise rejects.
+        cachedLimits = Promise.resolve(null);
+      }
+    }
     return cachedLimits;
   };
 
@@ -654,9 +664,13 @@ export function createDatabaseBinding(
     }
     const request = await executeRequestFromBatch(batch, options, retry);
     const encoded = encodeExecuteRequest(request);
-    // The binding's configured cap, else the session's, so an oversized
-    // request fails locally with the typed error the host would raise.
-    const cap = options.maxRequestBytes || ((await sessionLimits())?.maxRequestBytes ?? 0);
+    // The tighter of the binding's configured cap and the session's, so an
+    // oversized request fails locally with the typed error the host would
+    // raise (the same cap `chunk()` splits to).
+    const cap = tighterCap(
+      options.maxRequestBytes ?? 0,
+      (await sessionLimits())?.maxRequestBytes ?? 0,
+    );
     if (cap > 0 && encoded.byteLength > cap) {
       throw PluginError.limitExceeded({
         limit: "maxRequestBytes",
@@ -884,8 +898,9 @@ function tighterCap(a: number, b: number): number {
 }
 
 /**
- * Checks that a reply answers `request`: the same `operationId` and one
- * result per statement.
+ * Checks that a reply answers `request`: the same `operationId` (a request
+ * sent without one takes the id the host minted) and one result per
+ * statement.
  *
  * @param request - The request sent.
  * @param operationId - The reply's operation id.
@@ -897,7 +912,7 @@ function checkReplyIdentity(
   operationId: string,
   statementCount: number,
 ): void {
-  if (operationId !== request.operationId) {
+  if (request.operationId !== "" && operationId !== request.operationId) {
     throw PluginError.fromWire(
       "invalid_params",
       `reply answers operation ${operationId}, not ${request.operationId}`,
@@ -912,15 +927,27 @@ function checkReplyIdentity(
 }
 
 /**
- * `reply` once it is checked against `request`.
+ * `reply` once it is checked against `request`: its identity, and no result
+ * with more rows than its statement's `maxRows` asked for.
  *
  * @param request - The request sent.
  * @param reply - The reply received.
  * @returns `reply`.
- * @throws See {@link checkReplyIdentity}.
+ * @throws See {@link checkReplyIdentity}; `PluginError` `invalid_params`
+ *   when a result carries more rows than its statement allowed.
  */
 function replyFor(request: ExecuteRequest, reply: ExecuteReply): ExecuteReply {
   checkReplyIdentity(request, reply.operationId, reply.statements.length);
+  for (let i = 0; i < reply.statements.length; i++) {
+    const maxRows = request.statements[i]?.maxRows ?? 0;
+    const rows = reply.statements[i]?.rows.length ?? 0;
+    if (maxRows > 0 && rows > maxRows) {
+      throw PluginError.fromWire(
+        "invalid_params",
+        `reply carries ${rows} rows for statement ${i}, which asked for at most ${maxRows}`,
+      );
+    }
+  }
   return reply;
 }
 

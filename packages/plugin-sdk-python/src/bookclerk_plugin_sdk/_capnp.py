@@ -358,6 +358,16 @@ class _CapnpReader:
     def _visit(self, word: int, n_words: int) -> None:
         """Check a struct or list range and charge it to the traversal budget."""
         self._check_range(word, n_words)
+        self._charge(n_words)
+
+    def _charge(self, n_words: int) -> None:
+        """Charge ``n_words`` to the traversal budget without a range check.
+
+        For elements that occupy no words of their own.
+
+        Raises:
+            ValueError: The budget is exhausted.
+        """
         self._remaining -= n_words
         if self._remaining < 0:
             raise ValueError("Cap'n message exceeds traversal budget")
@@ -476,20 +486,14 @@ class _CapnpReader:
         self, ptr_word: int, data_words: int, pointer_words: int
     ) -> list[_StructReader]:
         lp = self._list_pointer(ptr_word, 7)
-        if lp is None or lp.length == 0:
+        if lp is None:
             return []
-        tag_word = lp.target
-        self._check_range(tag_word, 1)
-        tag = self.read_word(tag_word)
-        count = (tag >> 2) & 0x3FFFFFFF
-        dw = (tag >> 32) & 0xFFFF
-        pw = (tag >> 48) & 0xFFFF
+        tag_word, count, dw, pw = self._composite_tag(lp)
         elem_words = dw + pw
-        if elem_words and count > lp.length // elem_words:
-            raise ValueError("composite list count exceeds payload")
-        if count > self._max_words:
-            raise ValueError("composite list count exceeds traversal budget")
-        self._visit(tag_word, 1 + count * elem_words)
+        # Zero-width elements occupy no words, so they are charged by count:
+        # a list cannot announce more elements than the budget has words.
+        self._check_range(tag_word, 1 + count * elem_words)
+        self._charge(1 + max(count * elem_words, count))
         return [_StructReader(self, tag_word + 1 + i * elem_words, dw, pw) for i in range(count)]
 
     def read_struct_list_length(self, ptr_word: int) -> int:
@@ -509,16 +513,39 @@ class _CapnpReader:
                 count exceeds the list's payload.
         """
         lp = self._list_pointer(ptr_word, 7)
-        if lp is None or lp.length == 0:
+        if lp is None:
             return 0
+        return self._composite_tag(lp)[1]
+
+    def _composite_tag(self, lp: _ListPointer) -> tuple[int, int, int, int]:
+        """The tag word of a composite list: its element count and element shape.
+
+        A composite list of zero words still carries its tag (zero-width
+        elements, or no elements), so the tag is read whenever the pointer
+        is not null.
+
+        Args:
+            lp: A composite (element size 7) list pointer.
+
+        Returns:
+            The tag's word, the element count, data words and pointer words.
+
+        Raises:
+            ValueError: The count exceeds the list's payload or the
+                traversal budget.
+        """
         tag_word = lp.target
         self._check_range(tag_word, 1)
         tag = self.read_word(tag_word)
         count = (tag >> 2) & 0x3FFFFFFF
-        elem_words = ((tag >> 32) & 0xFFFF) + ((tag >> 48) & 0xFFFF)
+        dw = (tag >> 32) & 0xFFFF
+        pw = (tag >> 48) & 0xFFFF
+        elem_words = dw + pw
         if elem_words and count > lp.length // elem_words:
             raise ValueError("composite list count exceeds payload")
-        return count
+        if count > self._max_words:
+            raise ValueError("composite list count exceeds traversal budget")
+        return tag_word, count, dw, pw
 
 
 class _StructReader:

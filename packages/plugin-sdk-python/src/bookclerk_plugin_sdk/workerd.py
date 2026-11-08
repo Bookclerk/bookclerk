@@ -2072,8 +2072,15 @@ async def _granted_body_chunks(resp: Any, method: str) -> AsyncIterator[bytes]:
     """
     stream = getattr(resp, "body", None)
     if stream is not None and hasattr(stream, "getReader"):
-        async for chunk in _reader_chunks(stream):
-            yield chunk
+        chunks = _reader_chunks(stream)
+        try:
+            async for chunk in chunks:
+                yield chunk
+        finally:
+            # Closing this iterator closes the reader's too, so the body is
+            # cancelled and the lock released before `aclose()` returns
+            # rather than whenever the inner generator is finalized.
+            await chunks.aclose()
         return
     if hasattr(resp, "arrayBuffer"):
         yield bytes(await resp.arrayBuffer())

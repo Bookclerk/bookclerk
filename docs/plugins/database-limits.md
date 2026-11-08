@@ -150,7 +150,8 @@ may carry, how many statements a request holds, how large a cell may be.
 Once the session's limits are known (or the binding was created with a
 request cap of its own), the SDK checks the encoded request against
 `maxRequestBytes` before sending it, so an oversized request fails locally
-with the same typed error the host would raise.
+with the same typed error the host would raise. When both caps are known the
+tighter one applies, the same cap `chunk()` splits to.
 
 ```ts
 const caps = await env.DB.limits();

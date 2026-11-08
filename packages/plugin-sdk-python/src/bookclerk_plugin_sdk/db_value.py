@@ -617,7 +617,9 @@ class DatabaseBinding:
             reads inline and :meth:`limits` reports the error itself.
         """
         fetch = self._limits_fetch
-        if fetch is None:
+        if fetch is None or fetch.cancelled():
+            # A fetch cancelled with no waiter (its loop closed under it) is
+            # replaced rather than awaited, which would raise its cancellation.
             fetch = self._limits_fetch = asyncio.ensure_future(self._fetch_limits())
         try:
             return await asyncio.shield(fetch)
@@ -768,12 +770,13 @@ class DatabaseBinding:
             "deadlineUnixMs": self._deadline_unix_ms,
         }
         encoded = encode_execute_request(request)
-        # The binding's configured cap, else the session's, so an oversized
-        # request fails locally with the typed error the host would raise.
-        cap = self._max_request_bytes
-        if not cap:
-            caps = await self._session_limits()
-            cap = caps["maxRequestBytes"] if caps is not None else 0
+        # The tighter of the binding's configured cap and the session's, so
+        # an oversized request fails locally with the typed error the host
+        # would raise (the same cap `chunk()` splits to).
+        caps = await self._session_limits()
+        cap = _tighter_cap(
+            self._max_request_bytes, caps["maxRequestBytes"] if caps is not None else 0
+        )
         if cap and len(encoded) > cap:
             raise _plugin_error().limit_exceeded(
                 LimitExceeded("maxRequestBytes", cap, len(encoded))
@@ -817,8 +820,13 @@ class DatabaseBinding:
             return _reply_for(request, await self._execute(request))
         chunks, caps = streamed
         decoder = ExecuteStreamDecoder(execute_stream_limits(caps))
-        async for chunk in chunks:
-            decoder.push(bytes(chunk))
+        try:
+            async for chunk in chunks:
+                decoder.push(bytes(chunk))
+        finally:
+            # A refused frame closes the chunk source, which releases the
+            # unread transport body instead of leaving it parked.
+            await _aclose(chunks)
         try:
             reply = decoder.finish()
         except _plugin_error() as err:
@@ -916,10 +924,12 @@ def _tighter_cap(a: int, b: int) -> int:
 def _check_reply_identity(request: ExecuteRequest, operation_id: str, statement_count: int) -> None:
     """Check that a reply answers ``request``: same id, one result per statement.
 
+    A request sent without an id takes the id the host minted.
+
     Raises:
         PluginError: ``invalid_params`` when the reply is for another request.
     """
-    if operation_id != request["operationId"]:
+    if request["operationId"] and operation_id != request["operationId"]:
         raise _plugin_error().from_wire(
             "invalid_params",
             f"reply answers operation {operation_id}, not {request['operationId']}",
@@ -932,8 +942,26 @@ def _check_reply_identity(request: ExecuteRequest, operation_id: str, statement_
 
 
 def _reply_for(request: ExecuteRequest, reply: ExecuteReply) -> ExecuteReply:
-    """``reply`` once it is checked against ``request`` (see :func:`_check_reply_identity`)."""
+    """``reply`` once it is checked against ``request``.
+
+    Its identity (see :func:`_check_reply_identity`), and no result with more
+    rows than its statement's ``maxRows`` asked for.
+
+    Raises:
+        PluginError: ``invalid_params`` when the reply is for another request
+            or a result carries more rows than its statement allowed.
+    """
     _check_reply_identity(request, reply["operationId"], len(reply["statements"]))
+    for i, (statement, result) in enumerate(
+        zip(request["statements"], reply["statements"], strict=True)
+    ):
+        max_rows = statement.get("maxRows") or 0
+        rows = len(result.get("rows") or [])
+        if 0 < max_rows < rows:
+            raise _plugin_error().from_wire(
+                "invalid_params",
+                f"reply carries {rows} rows for statement {i}, which asked for at most {max_rows}",
+            )
     return reply
 
 
@@ -1496,7 +1524,12 @@ class ExecuteStreamDecoder:
         if kind == "rows":
             if self._open is None:
                 raise self._sequence("carries rows before a statement frame")
+            width = len(self._open["columns"])
             for row in value:
+                if len(row["values"]) != width:
+                    raise self._sequence(
+                        f"carries a row of {len(row['values'])} cells for {width} columns"
+                    )
                 for cell in row["values"]:
                     _validate_cell(cell)
             self._open_rows += len(value)

@@ -107,7 +107,10 @@ type DecoderState =
 export class ExecuteStreamDecoder {
   readonly #limits: ExecuteStreamLimits;
   readonly #retainRows: boolean;
+  /** Bytes not yet consumed: `#buf[0, #len)`; the rest is spare capacity. */
   #buf: Uint8Array = new Uint8Array(0);
+  /** Bytes of `#buf` in use. */
+  #len = 0;
   #seen = 0;
   #state: DecoderState = { kind: "awaitingHead" };
   #columns: DbColumn[] = [];
@@ -186,12 +189,12 @@ export class ExecuteStreamDecoder {
     if (this.#seen > ceiling) {
       throw this.#bytesExceeded(this.#seen);
     }
-    this.#buf = concat(this.#buf, bytes);
+    this.#append(bytes);
     // Completed frames are consumed by offset; only an incomplete remainder
-    // is carried (as a view) into the next push, so a reply of many frames
-    // is decoded in one pass over its bytes.
+    // is carried into the next push, so a reply of many frames is decoded
+    // in one pass over its bytes.
     let at = 0;
-    while (this.#buf.byteLength - at >= 8) {
+    while (this.#len - at >= 8) {
       const view = new DataView(this.#buf.buffer, this.#buf.byteOffset + at, 8);
       if (view.getUint32(0, true) !== 0) {
         throw PluginError.fromWire(
@@ -203,7 +206,7 @@ export class ExecuteStreamDecoder {
       if (frameLen > ceiling) {
         throw this.#bytesExceeded(frameLen);
       }
-      if (this.#buf.byteLength - at < frameLen) {
+      if (this.#len - at < frameLen) {
         break;
       }
       // Each frame is decoded from its own copy, so a BYTES cell an author
@@ -215,7 +218,7 @@ export class ExecuteStreamDecoder {
       this.#apply(frame);
       frames.push(frame);
       if (this.finished) {
-        if (this.#buf.byteLength > at) {
+        if (this.#len > at) {
           throw PluginError.fromWire(
             "invalid_params",
             "streamed reply carries bytes after its final frame",
@@ -224,8 +227,57 @@ export class ExecuteStreamDecoder {
         break;
       }
     }
-    this.#buf = at === 0 ? this.#buf : this.#buf.subarray(at);
+    this.#consume(at);
     return frames;
+  }
+
+  /**
+   * Appends `bytes` to the unconsumed remainder.
+   *
+   * The backing store grows geometrically, so a frame that arrives in many
+   * small chunks is copied a bounded number of times rather than once per
+   * chunk. A push onto an empty remainder is held as is, without a copy.
+   *
+   * @param bytes - The pushed bytes.
+   */
+  #append(bytes: Uint8Array): void {
+    if (this.#len === 0) {
+      this.#buf = bytes;
+      this.#len = bytes.byteLength;
+      return;
+    }
+    const need = this.#len + bytes.byteLength;
+    if (need > this.#buf.byteLength) {
+      const grown = new Uint8Array(Math.max(need, this.#buf.byteLength * 2));
+      grown.set(this.#buf.subarray(0, this.#len), 0);
+      this.#buf = grown;
+    }
+    this.#buf.set(bytes, this.#len);
+    this.#len = need;
+  }
+
+  /**
+   * Drops the first `at` bytes of the remainder.
+   *
+   * A remainder consumed whole releases its backing store, so a completed
+   * decoder an author keeps does not pin the last chunk it was pushed.
+   *
+   * @param at - Bytes consumed from the front.
+   */
+  #consume(at: number): void {
+    if (at === 0) {
+      return;
+    }
+    if (at === this.#len) {
+      this.#buf = new Uint8Array(0);
+      this.#len = 0;
+      return;
+    }
+    // The pushed chunk is held as is, so the remainder is moved into a store
+    // of its own rather than written back over the caller's bytes.
+    const rest = this.#buf.slice(at, this.#len);
+    this.#buf = rest;
+    this.#len = rest.byteLength;
   }
 
   /**
@@ -364,6 +416,11 @@ export class ExecuteStreamDecoder {
           throw this.#sequence("carries rows before a statement frame");
         }
         for (const row of frame.value) {
+          if (row.values.length !== open.columns.length) {
+            throw this.#sequence(
+              `carries a row of ${row.values.length} cells for ${open.columns.length} columns`,
+            );
+          }
           for (const cell of row.values) {
             validateCell(cell);
           }
@@ -540,21 +597,4 @@ function decodeFrame(
       `streamed reply frame does not decode: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-}
-
-/**
- * Joins two byte runs, reusing `b` when `a` is empty.
- *
- * @param a - Bytes carried over from the previous push.
- * @param b - Bytes just pushed.
- * @returns `a` followed by `b`.
- */
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  if (a.byteLength === 0) {
-    return b;
-  }
-  const out = new Uint8Array(a.byteLength + b.byteLength);
-  out.set(a, 0);
-  out.set(b, a.byteLength);
-  return out;
 }

@@ -422,6 +422,16 @@ var CapnpReader = class {
    */
   visit(word, nWords) {
     this.checkRange(word, nWords);
+    this.charge(nWords);
+  }
+  /**
+   * Charges `nWords` to the traversal budget without a range check, for
+   * elements that occupy no words of their own.
+   *
+   * @param nWords - Words to charge.
+   * @throws `Error` when the budget is exhausted.
+   */
+  charge(nWords) {
     this.remaining -= nWords;
     if (this.remaining < 0) {
       throw new Error("Cap'n message exceeds traversal budget");
@@ -558,23 +568,13 @@ var CapnpReader = class {
     void dataWords;
     void pointerWords;
     const lp = this.listPointer(ptrWord, 7);
-    if (lp === null || lp.length === 0) {
+    if (lp === null) {
       return [];
     }
-    const tagWord = lp.target;
-    this.checkRange(tagWord, 1);
-    const tag = this.readWord(tagWord);
-    const count = Number(tag >> 2n & 0x3fffffffn);
-    const dw = Number(tag >> 32n & 0xffffn);
-    const pw = Number(tag >> 48n & 0xffffn);
+    const { tagWord, count, dw, pw } = this.compositeTag(lp);
     const elemWords = dw + pw;
-    if (elemWords > 0 && count > Math.floor(lp.length / elemWords)) {
-      throw new Error("composite list count exceeds payload");
-    }
-    if (count > this.maxWords) {
-      throw new Error("composite list count exceeds traversal budget");
-    }
-    this.visit(tagWord, 1 + count * elemWords);
+    this.checkRange(tagWord, 1 + count * elemWords);
+    this.charge(1 + Math.max(count * elemWords, count));
     const out = [];
     for (let i = 0; i < count; i++) {
       out.push(new StructReader(this, tagWord + 1 + i * elemWords, dw, pw));
@@ -593,18 +593,38 @@ var CapnpReader = class {
    */
   readStructListLength(ptrWord) {
     const lp = this.listPointer(ptrWord, 7);
-    if (lp === null || lp.length === 0) {
+    if (lp === null) {
       return 0;
     }
+    return this.compositeTag(lp).count;
+  }
+  /**
+   * The tag word of a composite list: its element count and element shape.
+   *
+   * A composite list of zero words still carries its tag (zero-width
+   * elements, or no elements), so the tag is read whenever the pointer is
+   * not null.
+   *
+   * @param lp - A composite (element size 7) list pointer.
+   * @returns The tag's word, element count, data words and pointer words.
+   * @throws `Error` when the count exceeds the list's payload or the
+   *   traversal budget.
+   */
+  compositeTag(lp) {
     const tagWord = lp.target;
     this.checkRange(tagWord, 1);
     const tag = this.readWord(tagWord);
     const count = Number(tag >> 2n & 0x3fffffffn);
-    const elemWords = Number(tag >> 32n & 0xffffn) + Number(tag >> 48n & 0xffffn);
+    const dw = Number(tag >> 32n & 0xffffn);
+    const pw = Number(tag >> 48n & 0xffffn);
+    const elemWords = dw + pw;
     if (elemWords > 0 && count > Math.floor(lp.length / elemWords)) {
       throw new Error("composite list count exceeds payload");
     }
-    return count;
+    if (count > this.maxWords) {
+      throw new Error("composite list count exceeds traversal budget");
+    }
+    return { tagWord, count, dw, pw };
   }
 };
 function signExtend30(n) {
@@ -7308,7 +7328,10 @@ function rawStreamCeiling(limits) {
 var ExecuteStreamDecoder = class {
   #limits;
   #retainRows;
+  /** Bytes not yet consumed: `#buf[0, #len)`; the rest is spare capacity. */
   #buf = new Uint8Array(0);
+  /** Bytes of `#buf` in use. */
+  #len = 0;
   #seen = 0;
   #state = { kind: "awaitingHead" };
   #columns = [];
@@ -7377,9 +7400,9 @@ var ExecuteStreamDecoder = class {
     if (this.#seen > ceiling) {
       throw this.#bytesExceeded(this.#seen);
     }
-    this.#buf = concat(this.#buf, bytes);
+    this.#append(bytes);
     let at = 0;
-    while (this.#buf.byteLength - at >= 8) {
+    while (this.#len - at >= 8) {
       const view = new DataView(this.#buf.buffer, this.#buf.byteOffset + at, 8);
       if (view.getUint32(0, true) !== 0) {
         throw PluginError.fromWire("invalid_params", "streamed reply frame is not a single-segment Cap'n message");
@@ -7388,7 +7411,7 @@ var ExecuteStreamDecoder = class {
       if (frameLen > ceiling) {
         throw this.#bytesExceeded(frameLen);
       }
-      if (this.#buf.byteLength - at < frameLen) {
+      if (this.#len - at < frameLen) {
         break;
       }
       const frame = decodeFrame(this.#buf.slice(at, at + frameLen), ceiling, (count) => this.#admitRows(count));
@@ -7396,14 +7419,59 @@ var ExecuteStreamDecoder = class {
       this.#apply(frame);
       frames.push(frame);
       if (this.finished) {
-        if (this.#buf.byteLength > at) {
+        if (this.#len > at) {
           throw PluginError.fromWire("invalid_params", "streamed reply carries bytes after its final frame");
         }
         break;
       }
     }
-    this.#buf = at === 0 ? this.#buf : this.#buf.subarray(at);
+    this.#consume(at);
     return frames;
+  }
+  /**
+   * Appends `bytes` to the unconsumed remainder.
+   *
+   * The backing store grows geometrically, so a frame that arrives in many
+   * small chunks is copied a bounded number of times rather than once per
+   * chunk. A push onto an empty remainder is held as is, without a copy.
+   *
+   * @param bytes - The pushed bytes.
+   */
+  #append(bytes) {
+    if (this.#len === 0) {
+      this.#buf = bytes;
+      this.#len = bytes.byteLength;
+      return;
+    }
+    const need = this.#len + bytes.byteLength;
+    if (need > this.#buf.byteLength) {
+      const grown = new Uint8Array(Math.max(need, this.#buf.byteLength * 2));
+      grown.set(this.#buf.subarray(0, this.#len), 0);
+      this.#buf = grown;
+    }
+    this.#buf.set(bytes, this.#len);
+    this.#len = need;
+  }
+  /**
+   * Drops the first `at` bytes of the remainder.
+   *
+   * A remainder consumed whole releases its backing store, so a completed
+   * decoder an author keeps does not pin the last chunk it was pushed.
+   *
+   * @param at - Bytes consumed from the front.
+   */
+  #consume(at) {
+    if (at === 0) {
+      return;
+    }
+    if (at === this.#len) {
+      this.#buf = new Uint8Array(0);
+      this.#len = 0;
+      return;
+    }
+    const rest = this.#buf.slice(at, this.#len);
+    this.#buf = rest;
+    this.#len = rest.byteLength;
   }
   /**
    * Takes the reassembled reply once the stream has ended.
@@ -7535,6 +7603,9 @@ var ExecuteStreamDecoder = class {
           throw this.#sequence("carries rows before a statement frame");
         }
         for (const row of frame.value) {
+          if (row.values.length !== open.columns.length) {
+            throw this.#sequence(`carries a row of ${row.values.length} cells for ${open.columns.length} columns`);
+          }
           for (const cell of row.values) {
             validateCell(cell);
           }
@@ -7637,15 +7708,6 @@ function decodeFrame(bytes, ceiling, admitRows) {
     }
     throw PluginError.fromWire("invalid_params", `streamed reply frame does not decode: ${err instanceof Error ? err.message : String(err)}`);
   }
-}
-function concat(a, b) {
-  if (a.byteLength === 0) {
-    return b;
-  }
-  const out = new Uint8Array(a.byteLength + b.byteLength);
-  out.set(a, 0);
-  out.set(b, a.byteLength);
-  return out;
 }
 
 // dist/guest-sql.js
@@ -8107,7 +8169,13 @@ function readStatementResult(s) {
 function createDatabaseBinding(transport, options = {}) {
   let cachedLimits;
   const sessionLimits = () => {
-    cachedLimits ??= transport.limits === void 0 ? Promise.resolve(null) : transport.limits().catch(() => null);
+    if (cachedLimits === void 0) {
+      try {
+        cachedLimits = transport.limits === void 0 ? Promise.resolve(null) : transport.limits().catch(() => null);
+      } catch {
+        cachedLimits = Promise.resolve(null);
+      }
+    }
     return cachedLimits;
   };
   const requestFor = async (batch, retry) => {
@@ -8116,7 +8184,7 @@ function createDatabaseBinding(transport, options = {}) {
     }
     const request = await executeRequestFromBatch(batch, options, retry);
     const encoded = encodeExecuteRequest(request);
-    const cap = options.maxRequestBytes || ((await sessionLimits())?.maxRequestBytes ?? 0);
+    const cap = tighterCap(options.maxRequestBytes ?? 0, (await sessionLimits())?.maxRequestBytes ?? 0);
     if (cap > 0 && encoded.byteLength > cap) {
       throw PluginError.limitExceeded({
         limit: "maxRequestBytes",
@@ -8284,7 +8352,7 @@ function tighterCap(a, b) {
   return a > 0 ? a : b;
 }
 function checkReplyIdentity(request, operationId, statementCount) {
-  if (operationId !== request.operationId) {
+  if (request.operationId !== "" && operationId !== request.operationId) {
     throw PluginError.fromWire("invalid_params", `reply answers operation ${operationId}, not ${request.operationId}`);
   }
   if (statementCount !== request.statements.length) {
@@ -8293,6 +8361,13 @@ function checkReplyIdentity(request, operationId, statementCount) {
 }
 function replyFor(request, reply) {
   checkReplyIdentity(request, reply.operationId, reply.statements.length);
+  for (let i = 0; i < reply.statements.length; i++) {
+    const maxRows = request.statements[i]?.maxRows ?? 0;
+    const rows = reply.statements[i]?.rows.length ?? 0;
+    if (maxRows > 0 && rows > maxRows) {
+      throw PluginError.fromWire("invalid_params", `reply carries ${rows} rows for statement ${i}, which asked for at most ${maxRows}`);
+    }
+  }
   return reply;
 }
 function rowMap(columns, row) {

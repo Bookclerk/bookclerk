@@ -218,6 +218,36 @@ function streamOf(operationId, rows, { rowsPerFrame = 2 } = {}) {
 function errStreamOf(operationId, err) {
   return concat([frame("head", { operationId, statementCount: 1 }), frame("err", err)]);
 }
+// A rows frame of `count` single-cell rows whose first cell carries an
+// unknown union discriminant, so the codec refuses the frame if it decodes
+// the cells. The discriminant is located by encoding the first cell as
+// `int64 0` and as `boolean false`, which differ only in that field.
+function rowsWithUnknownCell(count) {
+  const rest = Array.from({ length: count - 1 }, () => ({
+    values: [{ kind: "int64", value: 0n }],
+  }));
+  const asInt = frame("rows", [{ values: [{ kind: "int64", value: 0n }] }, ...rest]);
+  const asBool = frame("rows", [{ values: [{ kind: "boolean", value: false }] }, ...rest]);
+  assert.equal(asInt.byteLength, asBool.byteLength);
+  const at = asInt.findIndex((byte, i) => byte !== asBool[i]);
+  assert.ok(at >= 0, "the two encodings differ in the discriminant");
+  const out = asInt.slice();
+  out[at] = 0xff;
+  out[at + 1] = 0xff;
+  assert.throws(() => decodeMessage(ExecuteStreamFrameCodec, out), /union/);
+  return out;
+}
+// A rows frame whose list is `count` zero-width rows: a composite list of
+// zero words that still carries its tag (count, no data, no pointers).
+function zeroWidthRows(count) {
+  const words = [(1n << 32n) | (1n << 48n), 2n, 1n | (7n << 32n), BigInt(count) << 2n];
+  const out = new Uint8Array(8 + words.length * 8);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, 0, true);
+  view.setUint32(4, words.length, true);
+  words.forEach((w, i) => view.setBigUint64(8 + i * 8, w, true));
+  return out;
+}
 function readable(bytes, size) {
   let at = 0;
   return new ReadableStream({
@@ -740,20 +770,56 @@ for (const setup of [
 // out of sequence, without materializing either.
 {
   const bad = { kind: "text", value: "a\u0000b" };
-  const overCap = concat([
-    frame("head", { operationId: "op-order", statementCount: 1 }),
-    frame("statement", { index: 0, columns: [{ name: "v", dbType: "text" }], rowsAffected: 0 }),
-    frame(
-      "rows",
-      Array.from({ length: 5 }, () => ({ values: [bad] })),
-    ),
-  ]);
+  const head = frame("head", { operationId: "op-order", statementCount: 1 });
+  const statement = frame("statement", {
+    index: 0,
+    columns: [{ name: "v", dbType: "int64" }],
+    rowsAffected: 0,
+  });
+  // The frame's first cell does not even decode, so refusing it as
+  // `limit_exceeded` shows the count was checked before any cell was read.
+  const overCap = concat([head, statement, rowsWithUnknownCell(5)]);
   assert.throws(
     () => new ExecuteStreamDecoder(tinyLimits).push(overCap),
     (err) =>
       err.wireCode === "limit_exceeded" &&
       err.limit.limit === "maxStreamedResultRows" &&
       err.limit.used === 5,
+  );
+  // Under the cap the same frame is refused for what it is.
+  assert.throws(
+    () =>
+      new ExecuteStreamDecoder(tinyLimits).push(concat([head, statement, rowsWithUnknownCell(3)])),
+    (err) => err.wireCode === "invalid_params" && /does not decode/.test(err.message),
+  );
+  // Zero-width rows occupy no words, yet their count is read from the tag:
+  // five of them pass the cap of four, three are rows of no cells.
+  assert.throws(
+    () => new ExecuteStreamDecoder(tinyLimits).push(concat([head, statement, zeroWidthRows(5)])),
+    (err) => err.wireCode === "limit_exceeded" && err.limit.used === 5,
+  );
+  assert.throws(
+    () => new ExecuteStreamDecoder(tinyLimits).push(concat([head, statement, zeroWidthRows(3)])),
+    (err) => err.wireCode === "invalid_params" && /row of 0 cells for 1 columns/.test(err.message),
+  );
+  assert.equal(new CapnpReader(zeroWidthRows(3)).root(1, 1).getStructListLength(0), 3);
+  assert.equal(new CapnpReader(zeroWidthRows(3)).root(1, 1).getStructList(0, 0, 0).length, 3);
+  // Zero-width elements are charged to the traversal budget by count.
+  assert.throws(
+    () => new CapnpReader(zeroWidthRows(1000), 16).root(1, 1).getStructListLength(0),
+    /traversal budget/,
+  );
+  assert.throws(
+    () => new CapnpReader(zeroWidthRows(1000), 1000).root(1, 1).getStructList(0, 0, 0),
+    /traversal budget/,
+  );
+  // A row of the wrong width for its statement's columns is out of sequence.
+  assert.throws(
+    () =>
+      new ExecuteStreamDecoder(tinyLimits).push(
+        concat([head, statement, frame("rows", [{ values: [bad, bad] }])]),
+      ),
+    (err) => err.wireCode === "invalid_params" && /row of 2 cells for 1 columns/.test(err.message),
   );
   const early = concat([
     frame("head", { operationId: "op-order", statementCount: 1 }),
@@ -939,7 +1005,67 @@ for (const setup of [
       first = false;
     }
   }
+  assert.equal(first, false, "rows were yielded");
   assert.ok(pulls >= totalChunks);
+}
+
+// --- The binding's checks on replies and caps --------------------------
+{
+  // The tighter of the binding's request cap and the session's applies, as
+  // it does to `chunk()`: a request between the two fails locally.
+  const { transport, calls } = transportOf({
+    caps: { ...sqliteCaps, maxRequestBytes: 200 },
+    body: (req) => streamOf(req.operationId, [row(0)]),
+  });
+  const roomy = createDatabaseBinding(transport, { maxRequestBytes: 1_000_000 });
+  await assert.rejects(
+    roomy
+      .prepare("SELECT ?")
+      .bind({ kind: "text", value: "x".repeat(300) })
+      .all(),
+    (err) => err.wireCode === "limit_exceeded" && err.limit.cap === 200,
+  );
+  assert.equal(calls.streamed, 0, "refused before it was sent");
+
+  // A result with more rows than its statement asked for is refused, on the
+  // inline and the streamed path alike.
+  const twoRows = [row(0), row(1)];
+  for (const over of [
+    transportOf({ onInline: (req) => inlineReply(req, twoRows) }).transport,
+    transportOf({ caps: sqliteCaps, body: (req) => streamOf(req.operationId, twoRows) }).transport,
+  ]) {
+    const db = createDatabaseBinding(over);
+    await assert.rejects(
+      db.prepare("SELECT id FROM books").first(),
+      (err) => err.wireCode === "invalid_params" && /at most 1/.test(err.message),
+    );
+    assert.equal((await db.prepare("SELECT id FROM books").all()).results.length, 2);
+  }
+
+  // A request sent without an operation id takes the one the host minted.
+  const minted = createDatabaseBinding(
+    transportOf({ onInline: (req) => ({ ...inlineReply(req, [row(0)]), operationId: "minted" }) })
+      .transport,
+    { operationId: "" },
+  );
+  assert.equal((await minted.prepare("SELECT 1").all()).results.length, 1);
+  const mintedStream = createDatabaseBinding(
+    transportOf({ caps: sqliteCaps, body: () => streamOf("minted", [row(0)]) }).transport,
+    { operationId: "" },
+  );
+  assert.equal((await mintedStream.prepare("SELECT 1").all()).results.length, 1);
+
+  // A transport whose `limits()` throws synchronously reads inline, like one
+  // whose promise rejects.
+  const throwing = transportOf({ onInline: (req) => inlineReply(req, [row(0)]) });
+  throwing.transport.limits = () => {
+    throw new Error("no limits here");
+  };
+  assert.equal(
+    (await createDatabaseBinding(throwing.transport).prepare("SELECT 1").all()).results.length,
+    1,
+  );
+  assert.equal(throwing.calls.inline, 1);
 }
 
 // --- `chunk()` splits a batch to the request caps ------------------------

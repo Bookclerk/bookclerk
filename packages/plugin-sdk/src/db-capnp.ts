@@ -497,6 +497,17 @@ export class CapnpReader {
    */
   private visit(word: number, nWords: number): void {
     this.checkRange(word, nWords);
+    this.charge(nWords);
+  }
+
+  /**
+   * Charges `nWords` to the traversal budget without a range check, for
+   * elements that occupy no words of their own.
+   *
+   * @param nWords - Words to charge.
+   * @throws `Error` when the budget is exhausted.
+   */
+  private charge(nWords: number): void {
     this.remaining -= nWords;
     if (this.remaining < 0) {
       throw new Error("Cap'n message exceeds traversal budget");
@@ -655,23 +666,15 @@ export class CapnpReader {
     void dataWords;
     void pointerWords;
     const lp = this.listPointer(ptrWord, 7);
-    if (lp === null || lp.length === 0) {
+    if (lp === null) {
       return [];
     }
-    const tagWord = lp.target;
-    this.checkRange(tagWord, 1);
-    const tag = this.readWord(tagWord);
-    const count = Number((tag >> 2n) & 0x3fffffffn);
-    const dw = Number((tag >> 32n) & 0xffffn);
-    const pw = Number((tag >> 48n) & 0xffffn);
+    const { tagWord, count, dw, pw } = this.compositeTag(lp);
     const elemWords = dw + pw;
-    if (elemWords > 0 && count > Math.floor(lp.length / elemWords)) {
-      throw new Error("composite list count exceeds payload");
-    }
-    if (count > this.maxWords) {
-      throw new Error("composite list count exceeds traversal budget");
-    }
-    this.visit(tagWord, 1 + count * elemWords);
+    // Zero-width elements occupy no words, so they are charged by count:
+    // a list cannot announce more elements than the budget has words.
+    this.checkRange(tagWord, 1 + count * elemWords);
+    this.charge(1 + Math.max(count * elemWords, count));
     const out: StructReader[] = [];
     for (let i = 0; i < count; i++) {
       out.push(new StructReader(this, tagWord + 1 + i * elemWords, dw, pw));
@@ -691,18 +694,44 @@ export class CapnpReader {
    */
   readStructListLength(ptrWord: number): number {
     const lp = this.listPointer(ptrWord, 7);
-    if (lp === null || lp.length === 0) {
+    if (lp === null) {
       return 0;
     }
+    return this.compositeTag(lp).count;
+  }
+
+  /**
+   * The tag word of a composite list: its element count and element shape.
+   *
+   * A composite list of zero words still carries its tag (zero-width
+   * elements, or no elements), so the tag is read whenever the pointer is
+   * not null.
+   *
+   * @param lp - A composite (element size 7) list pointer.
+   * @returns The tag's word, element count, data words and pointer words.
+   * @throws `Error` when the count exceeds the list's payload or the
+   *   traversal budget.
+   */
+  private compositeTag(lp: ListPointer): {
+    tagWord: number;
+    count: number;
+    dw: number;
+    pw: number;
+  } {
     const tagWord = lp.target;
     this.checkRange(tagWord, 1);
     const tag = this.readWord(tagWord);
     const count = Number((tag >> 2n) & 0x3fffffffn);
-    const elemWords = Number((tag >> 32n) & 0xffffn) + Number((tag >> 48n) & 0xffffn);
+    const dw = Number((tag >> 32n) & 0xffffn);
+    const pw = Number((tag >> 48n) & 0xffffn);
+    const elemWords = dw + pw;
     if (elemWords > 0 && count > Math.floor(lp.length / elemWords)) {
       throw new Error("composite list count exceeds payload");
     }
-    return count;
+    if (count > this.maxWords) {
+      throw new Error("composite list count exceeds traversal budget");
+    }
+    return { tagWord, count, dw, pw };
   }
 }
 
