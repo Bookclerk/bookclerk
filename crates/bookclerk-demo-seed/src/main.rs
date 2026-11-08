@@ -244,7 +244,8 @@ async fn store_records(host: &HostControlPlane) -> StoreRecords {
 ///
 /// # Errors
 ///
-/// Returns an error when the grants file or a deployment cannot be written.
+/// Returns an error when the grants file or a storefront's deployment cannot
+/// be written. An extra plugin that cannot be deployed is logged instead.
 async fn enable_demo_plugins(host: &HostControlPlane) -> anyhow::Result<()> {
     let files_dir = &host.config.paths().files_dir;
     let actor = ConfigActor::Operator {
@@ -254,58 +255,77 @@ async fn enable_demo_plugins(host: &HostControlPlane) -> anyhow::Result<()> {
     let mut fronts = Vec::new();
     let ids = STOREFRONTS
         .iter()
-        .map(|front| front.id)
-        .chain(EXTRA_PLUGINS);
-    for id in ids {
+        .map(|front| (front.id, true))
+        .chain(EXTRA_PLUGINS.iter().map(|id| (*id, false)));
+    for (id, required) in ids {
         if let Some(enrolled) = host.enrolled.iter().find(|e| e.plugin.alias() == id) {
             let plugin = &enrolled.plugin;
             grants.upsert(consent_request(&plugin.manifest, plugin.plugin_key()));
-            fronts.push(plugin.plugin_key().canonical());
+            fronts.push((plugin.plugin_key().canonical(), required));
         }
     }
     grants.save(files_dir)?;
-    for key in fronts {
-        let instance = default_instance_for_key(&host.store, key)
-            .await?
-            .with_context(|| format!("no default instance for {key}"))?;
-        // A scheduler-placed instance is not the seed's to deploy, as for
-        // `plugins deploy`.
-        ensure_hand_managed(&host.store, &instance.id).await?;
-        let present = DesiredState::operator(true);
-        let current = match load_deployment_for_node(&host.store, &instance.id, host.node_id())
-            .await?
-        {
-            Some(current) => current,
-            None => {
-                ensure_plugin_deployment(&host.store, &actor, &instance.id, host.node_id(), present)
-                    .await?
-            }
-        };
-        if current.desired == present {
-            continue;
-        }
-        let operation = format!(
-            "demo-seed-deploy-{}-{}",
-            instance.id,
-            Utc::now().timestamp_micros()
-        );
-        match replace_plugin_deployment(
-            &host.store,
-            &actor,
-            &current.deployment_id,
-            current.revision,
-            present,
-            &operation,
-        )
-        .await?
-        {
-            DeploymentReplace::Applied(_) | DeploymentReplace::Replayed { .. } => {}
-            DeploymentReplace::Conflict { current_revision } => {
-                bail!("deployment of {key} changed concurrently (revision {current_revision})")
-            }
+    for (key, required) in fronts {
+        match deploy_here(host, &actor, key).await {
+            Ok(()) => {}
+            Err(err) if required => return Err(err),
+            // An optional plugin (covers) must not cost the storefronts their
+            // live records; the demo runs without it.
+            Err(err) => eprintln!("bookclerk-demo-seed: {key} not deployed: {err:#}"),
         }
     }
     Ok(())
+}
+
+/// Deploys a plugin's default instance on this node, as `plugins deploy`
+/// does; an instance already present is left alone.
+///
+/// # Errors
+///
+/// Returns an error when the plugin has no default instance, the scheduler
+/// manages it, or a deployment write fails or races another writer.
+async fn deploy_here(
+    host: &HostControlPlane,
+    actor: &ConfigActor,
+    key: &str,
+) -> anyhow::Result<()> {
+    let instance = default_instance_for_key(&host.store, key)
+        .await?
+        .with_context(|| format!("no default instance for {key}"))?;
+    // A scheduler-placed instance is not the seed's to deploy, as for
+    // `plugins deploy`.
+    ensure_hand_managed(&host.store, &instance.id).await?;
+    let present = DesiredState::operator(true);
+    let current = match load_deployment_for_node(&host.store, &instance.id, host.node_id()).await? {
+        Some(current) => current,
+        None => {
+            ensure_plugin_deployment(&host.store, actor, &instance.id, host.node_id(), present)
+                .await?
+        }
+    };
+    if current.desired == present {
+        return Ok(());
+    }
+    let operation = format!(
+        "demo-seed-deploy-{}-{}",
+        instance.id,
+        Utc::now().timestamp_micros()
+    );
+    match replace_plugin_deployment(
+        &host.store,
+        actor,
+        &current.deployment_id,
+        current.revision,
+        present,
+        &operation,
+    )
+    .await?
+    {
+        DeploymentReplace::Applied(_) | DeploymentReplace::Replayed { .. } => Ok(()),
+        DeploymentReplace::Conflict { current_revision } => {
+            bail!("deployment of {key} changed concurrently (revision {current_revision})")
+        }
+    }
 }
 
 /// Turns the seeded files dir into the template the demo image ships.

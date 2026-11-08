@@ -39,10 +39,13 @@ VM that never joins a cluster, the ids carry no secret, and the baked plugin
 deployments are keyed by the node id.
 
 A fresh container's entrypoint (`packaging/demo/boot.sh`) copies that
-template into its empty files dir and execs `bookclerkd`, which mints and
-wraps the container's own `master.key` with the Worker's password. Without a
+template into its files dir through a staging dir, so a failed copy leaves
+the dir as it was, and execs `bookclerkd`, which mints and wraps the
+container's own `master.key` with the Worker's password. Without a
 template, or when the copy fails, it seeds live as before; if that fails
-too, `bookclerkd` starts with an empty library.
+too, `bookclerkd` starts with an empty library. A `.demo-seeded` marker
+records that the library holds the sample data, so a boot after a failed
+seed tries again.
 
 ## How a session works
 
