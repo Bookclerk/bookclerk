@@ -8,9 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bookclerk_demo_seed::{
-    best_match, clear_install_files, committed_records, distinct_records, lookups, merge_records,
-    parse_mode, parse_records, records_json, search_query, seed, Lookup, Mode, SeedReport, Seeded,
-    StoreRecords, SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
+    best_match, clear_install_files, committed_records, deploy_on_node, distinct_records, lookups,
+    merge_records, parse_mode, parse_records, records_json, search_query, seed, Lookup, Mode,
+    SeedReport, Seeded, StoreRecords, SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
 };
 use bookclerk_library::control_plane::branch_title_counts;
 use bookclerk_library::entities::nodes;
@@ -547,4 +547,34 @@ fn finishing_a_bake_reports_a_file_it_cannot_remove() {
     std::fs::create_dir_all(bookclerk_library::master_key_path(&files)).unwrap();
     let err = clear_install_files(&files, &files.join("cache")).unwrap_err();
     assert!(err.to_string().contains("remove"), "{err}");
+}
+
+#[tokio::test]
+async fn deploys_a_default_instance_on_the_node_once() {
+    use bookclerk_library::control_plane::{
+        ensure_plugin_instance, load_deployment_for_node, ConfigActor, DesiredState,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let store = fresh(dir.path()).await;
+    let key = "path:file:///opt/bookclerk/storefronts/libro#libro";
+
+    let err = deploy_on_node(&store, "node-a", key).await.unwrap_err();
+    assert!(err.to_string().contains("no default instance"), "{err}");
+
+    let instance = ensure_plugin_instance(&store, &ConfigActor::Bootstrap, key)
+        .await
+        .unwrap();
+    deploy_on_node(&store, "node-a", key).await.unwrap();
+    let first = load_deployment_for_node(&store, &instance.id, "node-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.desired, DesiredState::operator(true));
+    // Already present: nothing changes.
+    deploy_on_node(&store, "node-a", key).await.unwrap();
+    let again = load_deployment_for_node(&store, &instance.id, "node-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.revision, first.revision);
 }

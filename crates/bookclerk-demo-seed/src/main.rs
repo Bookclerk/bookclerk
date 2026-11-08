@@ -21,15 +21,11 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use bookclerk_config::Config;
 use bookclerk_demo_seed::{
-    best_match, clear_install_files, committed_records, distinct_records, lookups, merge_records,
-    parse_mode, records_json, search_query, seed, Lookup, Mode, Seeded, StoreRecords,
-    EXTRA_PLUGINS, STOREFRONTS,
+    best_match, clear_install_files, committed_records, deploy_on_node, distinct_records, lookups,
+    merge_records, parse_mode, records_json, search_query, seed, Lookup, Mode, Seeded,
+    StoreRecords, EXTRA_PLUGINS, STOREFRONTS,
 };
-use bookclerk_library::control_plane::{
-    default_instance_for_key, ensure_hand_managed, ensure_plugin_deployment,
-    load_deployment_for_node, replace_plugin_deployment, strip_install_state, ConfigActor,
-    DeploymentReplace, DesiredState,
-};
+use bookclerk_library::control_plane::strip_install_state;
 use bookclerk_plugin_host::{consent_request, HostControlPlane, PluginGrantStore, SessionServices};
 use bookclerk_source::{CatalogHit, CatalogSearchOpts};
 use chrono::Utc;
@@ -248,9 +244,6 @@ async fn store_records(host: &HostControlPlane) -> StoreRecords {
 /// be written. An extra plugin that cannot be deployed is logged instead.
 async fn enable_demo_plugins(host: &HostControlPlane) -> anyhow::Result<()> {
     let files_dir = &host.config.paths().files_dir;
-    let actor = ConfigActor::Operator {
-        id: "demo-seed".into(),
-    };
     let mut grants = PluginGrantStore::load(files_dir)?;
     let mut fronts = Vec::new();
     let ids = STOREFRONTS
@@ -266,7 +259,7 @@ async fn enable_demo_plugins(host: &HostControlPlane) -> anyhow::Result<()> {
     }
     grants.save(files_dir)?;
     for (key, required) in fronts {
-        match deploy_here(host, &actor, key).await {
+        match deploy_on_node(&host.store, host.node_id(), key).await {
             Ok(()) => {}
             Err(err) if required => return Err(err),
             // An optional plugin (covers) must not cost the storefronts their
@@ -275,57 +268,6 @@ async fn enable_demo_plugins(host: &HostControlPlane) -> anyhow::Result<()> {
         }
     }
     Ok(())
-}
-
-/// Deploys a plugin's default instance on this node, as `plugins deploy`
-/// does; an instance already present is left alone.
-///
-/// # Errors
-///
-/// Returns an error when the plugin has no default instance, the scheduler
-/// manages it, or a deployment write fails or races another writer.
-async fn deploy_here(
-    host: &HostControlPlane,
-    actor: &ConfigActor,
-    key: &str,
-) -> anyhow::Result<()> {
-    let instance = default_instance_for_key(&host.store, key)
-        .await?
-        .with_context(|| format!("no default instance for {key}"))?;
-    // A scheduler-placed instance is not the seed's to deploy, as for
-    // `plugins deploy`.
-    ensure_hand_managed(&host.store, &instance.id).await?;
-    let present = DesiredState::operator(true);
-    let current = match load_deployment_for_node(&host.store, &instance.id, host.node_id()).await? {
-        Some(current) => current,
-        None => {
-            ensure_plugin_deployment(&host.store, actor, &instance.id, host.node_id(), present)
-                .await?
-        }
-    };
-    if current.desired == present {
-        return Ok(());
-    }
-    let operation = format!(
-        "demo-seed-deploy-{}-{}",
-        instance.id,
-        Utc::now().timestamp_micros()
-    );
-    match replace_plugin_deployment(
-        &host.store,
-        actor,
-        &current.deployment_id,
-        current.revision,
-        present,
-        &operation,
-    )
-    .await?
-    {
-        DeploymentReplace::Applied(_) | DeploymentReplace::Replayed { .. } => Ok(()),
-        DeploymentReplace::Conflict { current_revision } => {
-            bail!("deployment of {key} changed concurrently (revision {current_revision})")
-        }
-    }
 }
 
 /// Turns the seeded files dir into the template the demo image ships.

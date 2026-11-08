@@ -30,7 +30,9 @@
 
 use anyhow::{bail, Context};
 use bookclerk_library::control_plane::{
-    accept_catalog_batch, begin_catalog, CatalogAccept, CatalogBegin,
+    accept_catalog_batch, begin_catalog, default_instance_for_key, ensure_hand_managed,
+    ensure_plugin_deployment, load_deployment_for_node, replace_plugin_deployment, CatalogAccept,
+    CatalogBegin, ConfigActor, DeploymentReplace, DesiredState,
 };
 use bookclerk_library::entities::{node_credentials, nodes};
 use bookclerk_library::CatalogEnrichmentFields;
@@ -1080,5 +1082,58 @@ fn remove_dir_if_present(path: &Path) -> anyhow::Result<()> {
             Err(err).with_context(|| format!("remove {}", path.display()))
         }
         _ => Ok(()),
+    }
+}
+
+/// Deploys a plugin's default instance on `node_id` as the operator, as
+/// `plugins deploy` does; an instance already present is left alone.
+///
+/// # Arguments
+///
+/// * `store` - The library.
+/// * `node_id` - The node the instance should run on (this host's).
+/// * `key` - The plugin's canonical key.
+///
+/// # Errors
+///
+/// Returns an error when the plugin has no default instance, the scheduler
+/// manages it, or a deployment write fails or races another writer.
+pub async fn deploy_on_node(store: &LibraryStore, node_id: &str, key: &str) -> anyhow::Result<()> {
+    let actor = &ConfigActor::Operator {
+        id: "demo-seed".into(),
+    };
+    let instance = default_instance_for_key(store, key)
+        .await?
+        .with_context(|| format!("no default instance for {key}"))?;
+    // A scheduler-placed instance is not the seed's to deploy, as for
+    // `plugins deploy`.
+    ensure_hand_managed(store, &instance.id).await?;
+    let present = DesiredState::operator(true);
+    let current = match load_deployment_for_node(store, &instance.id, node_id).await? {
+        Some(current) => current,
+        None => ensure_plugin_deployment(store, actor, &instance.id, node_id, present).await?,
+    };
+    if current.desired == present {
+        return Ok(());
+    }
+    let operation = format!(
+        "demo-seed-deploy-{}-{}",
+        instance.id,
+        Utc::now().timestamp_micros()
+    );
+    match replace_plugin_deployment(
+        store,
+        actor,
+        &current.deployment_id,
+        current.revision,
+        present,
+        &operation,
+    )
+    .await?
+    {
+        DeploymentReplace::Applied(_) | DeploymentReplace::Replayed { .. } => Ok(()),
+        DeploymentReplace::Conflict { current_revision } => {
+            bail!("deployment of {key} changed concurrently (revision {current_revision})")
+        }
     }
 }
