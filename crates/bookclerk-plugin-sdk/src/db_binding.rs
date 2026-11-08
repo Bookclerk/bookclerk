@@ -644,7 +644,7 @@ pub fn chunk_indexes(
     }
     let bytes_cap = usize::try_from(max_request_bytes).unwrap_or(usize::MAX);
     let statements_cap = usize::try_from(max_statements).unwrap_or(usize::MAX);
-    let fits = |run: &[usize]| -> Result<bool> {
+    let mut fits = |run: &[usize]| -> Result<bool> {
         if max_request_bytes == 0 {
             return Ok(true);
         }
@@ -652,38 +652,51 @@ pub fn chunk_indexes(
         Ok(request_bytes(RETRY_ID_PLACEHOLDER, &retry_hash, &statements)? <= bytes_cap)
     };
     let mut out: Vec<Vec<usize>> = Vec::new();
-    let mut pending: Vec<Vec<usize>> = Vec::new();
-    let mut emit = |run: Vec<usize>, out: &mut Vec<Vec<usize>>| -> Result<()> {
-        pending.push(run);
-        while let Some(run) = pending.pop() {
-            if run.len() <= 1 || fits(&run)? {
-                out.push(run);
-                continue;
-            }
-            let half = run.len().div_ceil(2);
-            let (left, right) = run.split_at(half);
-            // Pushed right first so the left half comes out first.
-            pending.push(right.to_vec());
-            pending.push(left.to_vec());
-        }
-        Ok(())
-    };
     let mut run: Vec<usize> = Vec::new();
     let mut used = base;
     for (i, &size) in sizes.iter().enumerate() {
         let over_statements = max_statements > 0 && run.len() >= statements_cap;
         let over_bytes = max_request_bytes > 0 && !run.is_empty() && used + size > bytes_cap;
         if over_statements || over_bytes {
-            emit(std::mem::take(&mut run), &mut out)?;
+            split_to_fit(std::mem::take(&mut run), &mut fits, &mut out)?;
             used = base;
         }
         run.push(i);
         used += size;
     }
     if !run.is_empty() {
-        emit(run, &mut out)?;
+        split_to_fit(run, &mut fits, &mut out)?;
     }
     Ok(out)
+}
+
+/// Appends `run` to `out` as runs that each satisfy `fits`, in order.
+///
+/// A run the per-statement estimate let through is halved until `fits`
+/// accepts it; a lone index is appended without asking, since it cannot be
+/// split further.
+///
+/// # Errors
+///
+/// Returns the error `fits` returns, which is an encoding failure.
+fn split_to_fit(
+    run: Vec<usize>,
+    fits: &mut impl FnMut(&[usize]) -> Result<bool>,
+    out: &mut Vec<Vec<usize>>,
+) -> Result<()> {
+    let mut pending = vec![run];
+    while let Some(run) = pending.pop() {
+        if run.len() <= 1 || fits(&run)? {
+            out.push(run);
+            continue;
+        }
+        let half = run.len().div_ceil(2);
+        let (left, right) = run.split_at(half);
+        // Pushed right first so the left half comes out first.
+        pending.push(right.to_vec());
+        pending.push(left.to_vec());
+    }
+    Ok(())
 }
 
 fn default_terminal_intent(options: &DatabaseBindingOptions) -> TerminalIntent {
@@ -1173,6 +1186,28 @@ mod tests {
             chunk_indexes(&typed[..5], 2, 0).expect("statement cap"),
             vec![vec![0, 1], vec![2, 3], vec![4]]
         );
+    }
+
+    #[test]
+    fn split_to_fit_halves_a_run_the_estimate_let_through() {
+        // Runs of three or more do not fit, so the eight indexes come out as
+        // ordered pairs and an odd run splits with the larger half first.
+        let mut pairs = |run: &[usize]| Ok(run.len() <= 2);
+        let mut out = Vec::new();
+        split_to_fit((0..8).collect(), &mut pairs, &mut out).expect("split");
+        assert_eq!(out, vec![vec![0, 1], vec![2, 3], vec![4, 5], vec![6, 7]]);
+        let mut out = Vec::new();
+        split_to_fit((0..5).collect(), &mut pairs, &mut out).expect("split");
+        assert_eq!(out, vec![vec![0, 1], vec![2], vec![3, 4]]);
+
+        // A lone index is never asked whether it fits; an encoding failure
+        // from the check surfaces.
+        let mut failing =
+            |_: &[usize]| -> Result<bool> { Err(PluginError::invalid_params("cannot encode")) };
+        let mut out = Vec::new();
+        split_to_fit(vec![7], &mut failing, &mut out).expect("lone index");
+        assert_eq!(out, vec![vec![7]]);
+        assert!(split_to_fit(vec![1, 2], &mut failing, &mut out).is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]

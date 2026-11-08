@@ -1614,29 +1614,35 @@ def chunk_indexes(
         return encoded <= max_request_bytes
 
     out: list[list[int]] = []
-
-    def emit(run: list[int]) -> None:
-        if len(run) <= 1 or fits(run):
-            out.append(run)
-            return
-        half = (len(run) + 1) // 2
-        emit(run[:half])
-        emit(run[half:])
-
     run: list[int] = []
     used = base
     for i, size in enumerate(sizes):
         over_statements = 0 < max_statements <= len(run)
         over_bytes = max_request_bytes > 0 and run and used + size > max_request_bytes
         if over_statements or over_bytes:
-            emit(run)
+            _split_to_fit(run, fits, out)
             run = []
             used = base
         run.append(i)
         used += size
     if run:
-        emit(run)
+        _split_to_fit(run, fits, out)
     return out
+
+
+def _split_to_fit(run: list[int], fits: Callable[[list[int]], bool], out: list[list[int]]) -> None:
+    """Append ``run`` to ``out`` as runs that each satisfy ``fits``, in order.
+
+    A run the per-statement estimate let through is halved until ``fits``
+    accepts it; a lone index is appended without asking, since it cannot be
+    split further.
+    """
+    if len(run) <= 1 or fits(run):
+        out.append(run)
+        return
+    half = (len(run) + 1) // 2
+    _split_to_fit(run[:half], fits, out)
+    _split_to_fit(run[half:], fits, out)
 
 
 def canonical_execute_request_hash(request: ExecuteRequest) -> str:

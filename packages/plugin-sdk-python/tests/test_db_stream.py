@@ -10,7 +10,9 @@ import unittest
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
+from bookclerk_plugin_sdk import db_value
 from bookclerk_plugin_sdk._abi import MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES
 from bookclerk_plugin_sdk._capnp import _CapnpReader
 from bookclerk_plugin_sdk._wire import (
@@ -21,6 +23,7 @@ from bookclerk_plugin_sdk._wire import (
 from bookclerk_plugin_sdk.db_value import (
     ExecuteStreamDecoder,
     ExecuteStreamLimits,
+    _split_to_fit,
     chunk_indexes,
     create_database_binding,
     decode_execute_stream,
@@ -466,6 +469,69 @@ class DecoderTests(unittest.TestCase):
         roomy = _CapnpReader(data, words * 2 + 16).root(0, 2)
         self.assertEqual(len(roomy.get_text(1)), text_bytes)
 
+    def test_apply_keeps_the_guards_the_admission_check_runs_first(self) -> None:
+        # `_push` admits rows frames by count before their cells decode, so
+        # these guards in `_apply` are reached only by a frame that bypassed
+        # admission; they still hold, as does the order of the frames.
+        decoder = ExecuteStreamDecoder(TINY_LIMITS)
+        decoder._apply({"kind": "head", "value": {"operationId": "op", "statementCount": 1}})
+        with self.assertRaises(PluginError) as ctx:
+            decoder._apply({"kind": "rows", "value": [_row(0)]})
+        self.assertIn("rows before a statement frame", str(ctx.exception))
+        decoder._apply(
+            {"kind": "statement", "value": {"index": 0, "columns": COLUMNS, "rowsAffected": 0}}
+        )
+        with self.assertRaises(PluginError) as ctx:
+            decoder._apply({"kind": "rows", "value": [_row(i) for i in range(5)]})
+        limit = ctx.exception.limit
+        assert limit is not None
+        self.assertEqual((limit.limit, limit.cap, limit.used), ("maxStreamedResultRows", 4, 5))
+        with self.assertRaises(PluginError) as ctx:
+            decoder._apply({"kind": "stats", "value": None})
+        self.assertIn("unknown stats frame", str(ctx.exception))
+        decoder._apply({"kind": "end", "value": TIMING})
+        self.assertTrue(decoder.finished)
+        with self.assertRaises(PluginError) as ctx:
+            decoder._apply({"kind": "rows", "value": [_row(0)]})
+        self.assertIn("after its final frame", str(ctx.exception))
+
+    def test_list_readers_charge_their_elements_to_the_budget(self) -> None:
+        # Hand built: word 0 points at two text pointers (words 1-2, texts at
+        # words 3-4), word 5 at a List(UInt16) in word 6, word 7 at a
+        # List(Bool) in word 8.
+        list_ptr = lambda offset, size, length: 1 | (offset << 2) | (size << 32) | (length << 35)  # noqa: E731
+        text = b"ab\x00" + bytes(5)
+        words = [
+            struct.pack("<Q", list_ptr(0, 6, 2)),
+            struct.pack("<Q", list_ptr(1, 2, 3)),
+            struct.pack("<Q", list_ptr(1, 2, 3)),
+            text,
+            text,
+            struct.pack("<Q", list_ptr(0, 3, 3)),
+            struct.pack("<HHHH", 1, 2, 3, 0),
+            struct.pack("<Q", list_ptr(0, 1, 10)),
+            struct.pack("<Q", 0b1010101011),
+        ]
+        data = struct.pack("<II", 0, len(words)) + b"".join(words)
+        budget = len(words) + 4
+        reader = _CapnpReader(data, budget)
+        self.assertEqual(reader.read_text_list(0), ["ab", "ab"])
+        self.assertEqual(reader.read_data_list(0), [b"ab\x00", b"ab\x00"])
+        self.assertEqual(reader.read_uint_list(5, 2), [1, 2, 3])
+        self.assertEqual(
+            reader.read_bool_list(7),
+            [True, True, False, True, False, True, False, True, False, True],
+        )
+        # The budget is cumulative: the lists read so far charged 10 of the 13
+        # words, so reading the two texts again (4 more) is refused.
+        with self.assertRaisesRegex(ValueError, "traversal budget"):
+            reader.read_text_list(0)
+        # A pointer list longer than the budget fails before any element is visited.
+        words[0] = struct.pack("<Q", list_ptr(0, 6, len(words) + 1))
+        over = struct.pack("<II", 0, len(words)) + b"".join(words)
+        with self.assertRaisesRegex(ValueError, "pointer list exceeds traversal budget"):
+            _CapnpReader(over, len(words)).read_text_list(0)
+
     def test_a_failed_push_is_latched(self) -> None:
         decoder = ExecuteStreamDecoder(execute_stream_limits(SQLITE_CAPS))
         with self.assertRaises(PluginError) as ctx:
@@ -767,6 +833,26 @@ class BindingStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.code, "unavailable")
         self.assertEqual(unavailable.calls["inline"], 0)
 
+    async def test_iterate_falls_back_inline_when_a_push_reports_unsupported(self) -> None:
+        # `unsupported` raised while frames decode, before any row was handed
+        # out, takes the same inline fallback as an `unsupported` err frame.
+        class Refusing(ExecuteStreamDecoder):
+            def push(self, data: bytes) -> list[dict[str, Any]]:
+                raise PluginError.from_wire("unsupported", "no stream")
+
+        rows = [_row(i) for i in range(2)]
+        transport = _Transport(
+            caps=SQLITE_CAPS,
+            body=lambda req: _stream(req["operationId"], rows),
+            inline=lambda r: _inline_reply(r, rows),
+        )
+        with mock.patch.object(db_value, "ExecuteStreamDecoder", Refusing):
+            seen = [
+                r["id"]["value"] async for r in transport.binding().prepare("SELECT id").iterate()
+            ]
+        self.assertEqual(seen, [0, 1])
+        self.assertEqual(transport.calls, {"inline": 1, "streamed": 1, "limits": 1})
+
     async def test_replies_must_answer_the_request(self) -> None:
         other = create_database_binding(
             lambda r: _reply_async({**_inline_reply(r), "operationId": "someone-else"})
@@ -972,6 +1058,21 @@ class ChunkIndexesTests(unittest.TestCase):
         self.assertEqual(chunk_indexes([], 5, 100), [])
         self.assertEqual(chunk_indexes(typed[:3], 0, 0), [[0, 1, 2]])
         self.assertEqual(chunk_indexes(typed[:5], 2, 0), [[0, 1], [2, 3], [4]])
+
+    def test_a_run_the_estimate_let_through_is_halved_until_it_fits(self) -> None:
+        # Runs of three or more do not fit, so eight indexes come out as
+        # ordered pairs and an odd run splits with the larger half first.
+        pairs = lambda run: len(run) <= 2  # noqa: E731
+        out: list[list[int]] = []
+        _split_to_fit(list(range(8)), pairs, out)
+        self.assertEqual(out, [[0, 1], [2, 3], [4, 5], [6, 7]])
+        out = []
+        _split_to_fit(list(range(5)), pairs, out)
+        self.assertEqual(out, [[0, 1], [2], [3, 4]])
+        # A lone index is never asked whether it fits.
+        out = []
+        _split_to_fit([7], lambda _run: self.fail("asked about a lone index"), out)
+        self.assertEqual(out, [[7]])
 
 
 if __name__ == "__main__":
