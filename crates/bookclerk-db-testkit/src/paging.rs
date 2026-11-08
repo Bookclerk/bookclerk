@@ -57,7 +57,10 @@ where
     F: FnMut(Option<C>, u64) -> Fut,
     Fut: Future<Output = (Vec<T>, Option<C>)>,
 {
-    let max_pages = full.len() / usize::try_from(page_size.max(1)).unwrap_or(1) + 2;
+    // Every page but the last carries at least one item (an empty page with
+    // a cursor fails the walk), so a listing that caps its pages below the
+    // requested size still ends within one page per item.
+    let max_pages = full.len() + 2;
     let paged = collect_pages(page_size, max_pages, next_page).await;
     assert_eq!(
         paged, full,
@@ -87,6 +90,24 @@ mod tests {
                     .last()
                     .copied()
                     .filter(|_| start + page.len() < items.len());
+                (page, next)
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_listing_that_caps_its_pages_below_the_requested_size_still_ends() {
+        let items: Vec<u32> = (0..10).collect();
+        let full = items.clone();
+        // One item per page whatever size is asked for, as a listing under a
+        // one-row result cap answers.
+        assert_pages_match_full(&full, 10, |after: Option<u32>, _| {
+            let items = items.clone();
+            async move {
+                let start = after.map_or(0, |a| usize::try_from(a).unwrap() + 1);
+                let page: Vec<u32> = items.iter().copied().skip(start).take(1).collect();
+                let next = page.last().copied().filter(|_| start + 1 < items.len());
                 (page, next)
             }
         })

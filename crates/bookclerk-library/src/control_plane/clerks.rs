@@ -206,71 +206,74 @@ pub async fn remove_owner_node(
     // deployments). Node-scoped configuration documents and their audit
     // history are kept, as the configuration audit trail is.
     //
-    // The deletes go to the database plugin as one atomic batch. Every
-    // delete is guarded by the heartbeat checked above: with a status row,
-    // the row must still hold that heartbeat; without one, none may have
-    // appeared. A node that beat in the meantime makes every guard false,
-    // so the batch deletes nothing and the node stays.
-    let guard = match &checked {
-        Some(_) => "EXISTS (SELECT 1 FROM node_status WHERE node_id = ? AND heartbeat_ms = ?)",
-        None => "NOT EXISTS (SELECT 1 FROM node_status WHERE node_id = ?)",
-    };
-    let guard_binds = || -> Vec<bookclerk_plugin_abi::DbValue> {
-        match &checked {
-            Some(status) => vec![batch::text(node_id), batch::int(status.heartbeat_ms)],
-            None => vec![batch::text(node_id)],
-        }
-    };
-    let guarded = |sql: &str, mut binds: Vec<bookclerk_plugin_abi::DbValue>| {
-        binds.extend(guard_binds());
-        batch::exec(&format!("{sql} AND {guard}"), binds)
-    };
-    let mut statements = vec![
-        guarded(
-            "DELETE FROM event_subscriber_nodes WHERE node_id = ?",
-            vec![batch::text(node_id)],
-        ),
-        guarded(
-            "DELETE FROM job_secret_handoffs WHERE node_id = ?",
-            vec![batch::text(node_id)],
-        ),
-        guarded(
-            "DELETE FROM plugin_deployment_observations \
-             WHERE (node_id = ? OR deployment_id IN \
-                 (SELECT deployment_id FROM plugin_deployments WHERE node_id = ?))",
-            vec![batch::text(node_id), batch::text(node_id)],
-        ),
-        guarded(
-            "DELETE FROM plugin_deployments WHERE node_id = ?",
-            vec![batch::text(node_id)],
-        ),
-        guarded(
-            "DELETE FROM nodes WHERE node_id = ? AND kind = ?",
-            vec![batch::text(node_id), batch::text(NodeKind::Owner.as_str())],
-        ),
-    ];
-    /// Index of the `nodes` delete in the batch.
-    const NODES_DELETE: usize = 4;
-    // Compare and delete: the status row goes last, and only while it still
-    // holds the heartbeat checked above.
+    // The deletes go to the database plugin as one atomic batch, ordered so
+    // that a heartbeat landing between two statements (statements see
+    // committed writes one at a time under READ COMMITTED) cannot leave a
+    // partial cleanup behind:
+    //
+    // 1. Compare and delete the status row while it still holds the
+    //    heartbeat checked above. The delete takes the row, so a heartbeat
+    //    racing it waits and then finds no row to update.
+    // 2. Delete the `nodes` row only while no status row exists, which in
+    //    this transaction means step 1 succeeded (or none had appeared).
+    // 3. Delete the dependent rows only while the `nodes` row is gone. Only
+    //    this batch deletes `nodes` rows, so the guard is decided by step 2
+    //    alone, whatever a heartbeat does meanwhile.
+    //
+    // A node that beat before step 1 keeps its status row, so steps 2 and 3
+    // delete nothing and the node stays.
+    let mut statements = Vec::with_capacity(6);
     if let Some(status) = &checked {
         statements.push(batch::exec(
             "DELETE FROM node_status WHERE node_id = ? AND heartbeat_ms = ?",
             vec![batch::text(node_id), batch::int(status.heartbeat_ms)],
         ));
     }
+    let nodes_delete = statements.len();
+    statements.push(batch::exec(
+        "DELETE FROM nodes WHERE node_id = ? AND kind = ? \
+         AND NOT EXISTS (SELECT 1 FROM node_status WHERE node_id = ?)",
+        vec![
+            batch::text(node_id),
+            batch::text(NodeKind::Owner.as_str()),
+            batch::text(node_id),
+        ],
+    ));
+    let cascade = |sql: &str, mut binds: Vec<bookclerk_plugin_abi::DbValue>| {
+        binds.push(batch::text(node_id));
+        batch::exec(
+            &format!("{sql} AND NOT EXISTS (SELECT 1 FROM nodes WHERE node_id = ?)"),
+            binds,
+        )
+    };
+    statements.extend([
+        cascade(
+            "DELETE FROM event_subscriber_nodes WHERE node_id = ?",
+            vec![batch::text(node_id)],
+        ),
+        cascade(
+            "DELETE FROM job_secret_handoffs WHERE node_id = ?",
+            vec![batch::text(node_id)],
+        ),
+        cascade(
+            "DELETE FROM plugin_deployment_observations \
+             WHERE (node_id = ? OR deployment_id IN \
+                 (SELECT deployment_id FROM plugin_deployments WHERE node_id = ?))",
+            vec![batch::text(node_id), batch::text(node_id)],
+        ),
+        cascade(
+            "DELETE FROM plugin_deployments WHERE node_id = ?",
+            vec![batch::text(node_id)],
+        ),
+    ]);
     let operation_id = format!("owner-node-remove-{}", uuid::Uuid::new_v4());
     let reply = store
         .execute_host_batch(batch::request(&operation_id, statements))
         .await?;
-    // With a checked row it must be the one deleted; with none, a row that
-    // appeared since is a first heartbeat, so the node is starting and the
-    // guards kept its rows.
-    let removed = match &checked {
-        Some(_) => batch::rows_affected(&reply, NODES_DELETE + 1) == 1,
-        None => batch::rows_affected(&reply, NODES_DELETE) == 1,
-    };
-    if !removed {
+    // The `nodes` delete decides the whole batch: it went through only when
+    // the status row was taken (or none had appeared), and the dependent
+    // deletes went through only when it did.
+    if batch::rows_affected(&reply, nodes_delete) != 1 {
         return Err(running());
     }
     let detail = serde_json::json!({ "node_id": node_id }).to_string();
