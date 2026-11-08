@@ -18,6 +18,12 @@ import { PluginError } from "./errors.js";
 import type { DbCapabilities } from "./generated.js";
 import { DbCapabilitiesReplyCodec, decodeMessage, encodeMessage } from "./generated-wire.js";
 import { readDbValue, writeDbValue, type DbType, type DbValue } from "./db-value.js";
+import {
+  ExecuteStreamDecoder,
+  executeStreamLimits,
+  streamChunks,
+  streamsResults,
+} from "./db-stream.js";
 import { guestStatementKind, splitExecQueries } from "./guest-sql.js";
 
 // Ordinal tables come from the generated `abi.ts` projection of
@@ -142,6 +148,16 @@ export interface AtomicTransport {
    * @returns The adapter's capability advertisement for this session.
    */
   limits?(): Promise<DbCapabilities>;
+  /**
+   * Runs the same typed atomic batch as {@link AtomicTransport.execute} but
+   * answered as `ExecuteStreamFrame` bytes (`GuestDatabase.executeStreamed`),
+   * so the result may grow to the session's streamed budget. Transports
+   * that predate it leave it out; the binding then reads inline.
+   *
+   * @param request Structured Cap'n `ExecuteRequest`.
+   * @returns The frame sequence, whole or as a byte stream.
+   */
+  executeStreamed?(request: ExecuteRequest): Promise<ReadableStream<Uint8Array> | Uint8Array>;
 }
 
 /**
@@ -251,6 +267,16 @@ export interface PreparedStatement {
    * @param options Optional retry token.
    */
   all(options?: { retry?: RetryToken }): Promise<D1Result>;
+  /**
+   * Rows one at a time from the same single-snapshot streamed read as
+   * {@link PreparedStatement.all}, without holding the whole result:
+   * `for await (const row of stmt.iterate()) …`. The read still fails closed
+   * (`limit_exceeded`) past the session's streamed budget. On a session that
+   * does not stream the rows come from one inline `all()`.
+   *
+   * @param options Optional retry token.
+   */
+  iterate(options?: { retry?: RetryToken }): AsyncIterable<Record<string, DbValue>>;
   /** Mark DML intent for {@link DatabaseBinding.batch}. */
   asRun(): PreparedStatement;
   /** Mark `maxRows = 1` row intent for {@link DatabaseBinding.batch}. */
@@ -298,6 +324,20 @@ export interface DatabaseBinding {
    * @param options Optional retry token.
    */
   execute(batch: TypedDbStatement[], options?: { retry?: RetryToken }): Promise<ExecuteReply>;
+  /**
+   * Splits `statements` into batches that each fit one request
+   * (`maxStatements` and `maxRequestBytes` of the session, or the caps in
+   * `options`): `for await (const b of db.chunk(stmts)) await db.batch(b)`.
+   * Each batch is atomic; the loop is not. A single statement larger than
+   * the request cap is yielded alone, so `batch()` reports the typed error.
+   *
+   * @param statements Prepared statements (binds and intent already applied).
+   * @param options Caps to split by when the session's limits are not available.
+   */
+  chunk(
+    statements: PreparedStatement[],
+    options?: { maxStatements?: number; maxRequestBytes?: number },
+  ): AsyncIterable<PreparedStatement[]>;
   /**
    * The negotiated limits of this binding's session (`DbCapabilities`):
    * `maxRequestBytes`, `maxStatements`, `maxResultBytes`, `maxResultRows`
@@ -591,10 +631,20 @@ export function createDatabaseBinding(
   transport: AtomicTransport,
   options: DatabaseBindingOptions = {},
 ): DatabaseBinding {
-  const runExecute = async (
+  // The session's limits, fetched once per binding (one invocation). `null`
+  // when the host predates `limits()` or the call failed: the binding then
+  // reads inline and lets `limits()` report the error itself.
+  let cachedLimits: Promise<DbCapabilities | null> | undefined;
+  const sessionLimits = (): Promise<DbCapabilities | null> => {
+    cachedLimits ??=
+      transport.limits === undefined ? Promise.resolve(null) : transport.limits().catch(() => null);
+    return cachedLimits;
+  };
+
+  const requestFor = async (
     batch: TypedDbStatement[],
     retry?: RetryToken,
-  ): Promise<ExecuteReply> => {
+  ): Promise<ExecuteRequest> => {
     if (!Array.isArray(batch) || batch.length === 0) {
       throw new Error("execute statements must be non-empty");
     }
@@ -608,7 +658,99 @@ export function createDatabaseBinding(
         used: encoded.byteLength,
       });
     }
-    return transport.execute(request);
+    return request;
+  };
+
+  // Opens the streamed read for `request` when the transport and the session
+  // both stream; `undefined` means read inline. An `unsupported` answer (an
+  // older host, or a session that advertised streaming it cannot serve)
+  // also falls back to inline.
+  const openStreamed = async (
+    request: ExecuteRequest,
+  ): Promise<{ chunks: AsyncIterable<Uint8Array>; caps: DbCapabilities } | undefined> => {
+    if (transport.executeStreamed === undefined) {
+      return undefined;
+    }
+    const caps = await sessionLimits();
+    if (caps === null || !streamsResults(caps)) {
+      return undefined;
+    }
+    let body: ReadableStream<Uint8Array> | Uint8Array;
+    try {
+      body = await transport.executeStreamed(request);
+    } catch (err) {
+      if (err instanceof PluginError && err.wireCode === "unsupported") {
+        return undefined;
+      }
+      throw err;
+    }
+    const chunks =
+      body instanceof Uint8Array
+        ? (async function* one(): AsyncIterable<Uint8Array> {
+            yield body;
+          })()
+        : streamChunks(body);
+    return { chunks, caps };
+  };
+
+  const runExecute = async (
+    batch: TypedDbStatement[],
+    retry?: RetryToken,
+  ): Promise<ExecuteReply> => {
+    const request = await requestFor(batch, retry);
+    const streamed = await openStreamed(request);
+    if (streamed === undefined) {
+      return transport.execute(request);
+    }
+    const decoder = new ExecuteStreamDecoder(executeStreamLimits(streamed.caps));
+    for await (const chunk of streamed.chunks) {
+      decoder.push(chunk);
+    }
+    try {
+      return decoder.finish();
+    } catch (err) {
+      if (err instanceof PluginError && err.wireCode === "unsupported") {
+        return transport.execute(request);
+      }
+      throw err;
+    }
+  };
+
+  // Rows of a single-statement request as they arrive, without keeping them.
+  const iterateRows = async function* (
+    batch: TypedDbStatement[],
+    retry?: RetryToken,
+  ): AsyncIterable<Record<string, DbValue>> {
+    const request = await requestFor(batch, retry);
+    const streamed = await openStreamed(request);
+    if (streamed === undefined) {
+      const reply = await transport.execute(request);
+      const result = reply.statements[0];
+      if (result) {
+        for (const row of result.rows) {
+          yield rowMap(result.columns, row);
+        }
+      }
+      return;
+    }
+    const decoder = new ExecuteStreamDecoder(executeStreamLimits(streamed.caps), {
+      retainRows: false,
+    });
+    // One push can complete the statement, its rows and the end frame at
+    // once, so the columns come from the frames rather than the decoder.
+    let columns: DbColumn[] = [];
+    for await (const chunk of streamed.chunks) {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.kind === "statement") {
+          columns = frame.value.columns;
+        } else if (frame.kind === "rows") {
+          for (const row of frame.value) {
+            yield rowMap(columns, row);
+          }
+        }
+      }
+    }
+    decoder.finish();
   };
 
   const binding: DatabaseBinding = {
@@ -639,11 +781,157 @@ export function createDatabaseBinding(
           PluginError.fromWire("unsupported", "GuestDatabase.limits is not available on this host"),
         );
       }
-      return transport.limits();
+      return sessionLimits().then((caps) =>
+        caps === null ? (transport.limits as () => Promise<DbCapabilities>)() : caps,
+      );
+    },
+    async *chunk(statements, opts) {
+      const caps =
+        opts?.maxStatements === undefined || opts.maxRequestBytes === undefined
+          ? await sessionLimits()
+          : null;
+      const maxStatements = opts?.maxStatements ?? caps?.maxStatements ?? 0;
+      const maxRequestBytes =
+        opts?.maxRequestBytes ?? caps?.maxRequestBytes ?? options.maxRequestBytes ?? 0;
+      if (maxStatements <= 0 && maxRequestBytes <= 0) {
+        throw PluginError.fromWire(
+          "unsupported",
+          "chunk needs the session limits (GuestDatabase.limits) or explicit maxStatements / maxRequestBytes",
+        );
+      }
+      const typed = statements.map((stmt) => (stmt as PreparedInternal)._asTyped());
+      for (const indexes of chunkIndexes(typed, maxStatements, maxRequestBytes)) {
+        yield indexes.map((i) => statements[i]!);
+      }
     },
   };
+  // `iterate()` needs the binding's streamed path; `makePrepared` reaches it
+  // through this hook so prepared statements stay plain objects.
+  (binding as BindingInternal)._iterateRows = iterateRows;
   return binding;
 }
+
+interface BindingInternal extends DatabaseBinding {
+  _iterateRows?(
+    batch: TypedDbStatement[],
+    retry?: RetryToken,
+  ): AsyncIterable<Record<string, DbValue>>;
+}
+
+function rowMap(columns: DbColumn[], row: DbRow): Record<string, DbValue> {
+  const out: Record<string, DbValue> = {};
+  for (let i = 0; i < columns.length; i++) {
+    const value = row.values[i];
+    if (value !== undefined) {
+      out[columns[i]!.name] = value;
+    }
+  }
+  return out;
+}
+
+/**
+ * Greedy split of `typed` into index runs whose encoded request stays within
+ * `maxRequestBytes` and whose length stays within `maxStatements` (`0` lifts
+ * a cap). Sizes are estimated per statement and each run is verified by one
+ * exact encode; a run the estimate let through is halved until it fits, and
+ * a lone statement over the cap is yielded on its own.
+ *
+ * @param typed Statements to split.
+ * @param maxStatements Statements per request (`0` = no cap).
+ * @param maxRequestBytes Encoded request bytes (`0` = no cap).
+ * @returns Index runs in order, covering every statement once.
+ */
+export function chunkIndexes(
+  typed: TypedDbStatement[],
+  maxStatements: number,
+  maxRequestBytes: number,
+): number[][] {
+  if (typed.length === 0) {
+    return [];
+  }
+  // Requests never encode empty, so the fixed cost of a request and the
+  // cost of each statement are measured against one probe statement.
+  const base =
+    encodeExecuteRequest({
+      operationId: RETRY_ID_PLACEHOLDER,
+      requestHash: RETRY_HASH_PLACEHOLDER,
+      statements: [PROBE_STATEMENT],
+      deadlineUnixMs: 0,
+    }).byteLength - PROBE_STATEMENT_BYTES;
+  const sizes = typed.map(
+    (stmt) =>
+      encodeExecuteRequest({
+        operationId: "",
+        requestHash: "",
+        statements: [PROBE_STATEMENT, stmt],
+        deadlineUnixMs: 0,
+      }).byteLength - PROBE_REQUEST_BYTES,
+  );
+  const fits = (run: number[]): boolean =>
+    maxRequestBytes <= 0 ||
+    encodeExecuteRequest({
+      operationId: RETRY_ID_PLACEHOLDER,
+      requestHash: RETRY_HASH_PLACEHOLDER,
+      statements: run.map((i) => typed[i]!),
+      deadlineUnixMs: 0,
+    }).byteLength <= maxRequestBytes;
+  const out: number[][] = [];
+  const emit = (run: number[]): void => {
+    if (run.length <= 1 || fits(run)) {
+      out.push(run);
+      return;
+    }
+    const half = Math.ceil(run.length / 2);
+    emit(run.slice(0, half));
+    emit(run.slice(half));
+  };
+  let run: number[] = [];
+  let bytes = base;
+  for (let i = 0; i < typed.length; i++) {
+    const size = sizes[i]!;
+    const overStatements = maxStatements > 0 && run.length >= maxStatements;
+    const overBytes = maxRequestBytes > 0 && run.length > 0 && bytes + size > maxRequestBytes;
+    if (overStatements || overBytes) {
+      emit(run);
+      run = [];
+      bytes = base;
+    }
+    run.push(i);
+    bytes += size;
+  }
+  if (run.length > 0) {
+    emit(run);
+  }
+  return out;
+}
+
+/** A UUID-shaped `operationId`, the widest the binding mints. */
+const RETRY_ID_PLACEHOLDER = "00000000-0000-4000-8000-000000000000";
+/** A SHA-256 hex `requestHash`, the widest a retry token carries. */
+const RETRY_HASH_PLACEHOLDER = "0".repeat(64);
+/** The smallest statement a request can carry, used to measure the others. */
+const PROBE_STATEMENT: TypedDbStatement = {
+  sql: "",
+  parameters: [],
+  kind: "select",
+  maxRows: 0,
+  resultSelection: "rows",
+};
+/** Encoded bytes of a request with empty ids and one probe statement. */
+const PROBE_REQUEST_BYTES = encodeExecuteRequest({
+  operationId: "",
+  requestHash: "",
+  statements: [PROBE_STATEMENT],
+  deadlineUnixMs: 0,
+}).byteLength;
+/** Encoded bytes one probe statement adds to a request. */
+const PROBE_STATEMENT_BYTES =
+  encodeExecuteRequest({
+    operationId: "",
+    requestHash: "",
+    statements: [PROBE_STATEMENT, PROBE_STATEMENT],
+    deadlineUnixMs: 0,
+  }).byteLength - PROBE_REQUEST_BYTES;
 
 interface TerminalIntent {
   resultSelection: DbResultSelection;
@@ -730,6 +1018,22 @@ function makePrepared(
       return binding
         .execute([(this.asAll() as PreparedInternal)._asTyped()], options)
         .then((reply) => statementResultToD1Result(reply.statements[0]!, reply.timing));
+    },
+    iterate(options) {
+      const typed = [(this.asAll() as PreparedInternal)._asTyped()];
+      const streamedRows = (binding as BindingInternal)._iterateRows;
+      if (streamedRows !== undefined) {
+        return streamedRows(typed, options?.retry);
+      }
+      return (async function* inline(): AsyncIterable<Record<string, DbValue>> {
+        const reply = await binding.execute(typed, options);
+        const result = reply.statements[0];
+        if (result) {
+          for (const row of result.rows) {
+            yield rowMap(result.columns, row);
+          }
+        }
+      })();
     },
     _asTyped(): TypedDbStatement {
       const used = intent ?? defaultIntent({ maxResultRows: defaultAllRows });

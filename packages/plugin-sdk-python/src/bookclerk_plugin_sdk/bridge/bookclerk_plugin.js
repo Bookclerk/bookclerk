@@ -5018,6 +5018,105 @@ var ExecuteResultReplyCodec = {
     }
   }
 };
+var ExecuteStreamHeadCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.operationId ?? "");
+    s.setUint32(0, v.statementCount ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      operationId: s.getText(0),
+      statementCount: s.getUint32(0)
+    };
+  }
+};
+var ExecuteStreamStatementCodec = {
+  dataWords: 2,
+  pointerCount: 1,
+  write(s, v, caps) {
+    s.setUint32(0, v.index ?? 0);
+    {
+      const list = v.columns ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        DbColumnCodec.write(items[i], list[i], caps);
+      }
+    }
+    s.setUint64(1, BigInt(v.rowsAffected ?? 0));
+  },
+  read(s, caps) {
+    return {
+      index: s.getUint32(0),
+      columns: s.getStructList(0, 1, 1).map((item) => DbColumnCodec.read(item, caps)),
+      rowsAffected: Number(s.getUint64(1))
+    };
+  }
+};
+var ExecuteStreamFrameCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "head":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          ExecuteStreamHeadCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
+        break;
+      case "statement":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          ExecuteStreamStatementCodec.write(s.initStruct(0, 2, 1), v.value, caps);
+        }
+        break;
+      case "rows":
+        s.setUint16(0, 2);
+        {
+          const list = v.value ?? [];
+          const items = s.initStructList(0, list.length, 0, 1);
+          for (let i = 0; i < items.length; i++) {
+            DbRowCodec.write(items[i], list[i], caps);
+          }
+        }
+        break;
+      case "end":
+        s.setUint16(0, 3);
+        if (v.value != null) {
+          DbTimingCodec.write(s.initStruct(0, 2, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 4);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("ExecuteStreamFrame", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "head", value: ExecuteStreamHeadCodec.read(s.getStruct(0, 1, 1), caps) };
+      case 1:
+        return { kind: "statement", value: ExecuteStreamStatementCodec.read(s.getStruct(0, 2, 1), caps) };
+      case 2:
+        return { kind: "rows", value: s.getStructList(0, 0, 1).map((item) => DbRowCodec.read(item, caps)) };
+      case 3:
+        return { kind: "end", value: DbTimingCodec.read(s.getStruct(0, 2, 1), caps) };
+      case 4:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("ExecuteStreamFrame", disc);
+    }
+  }
+};
 var ExecuteStreamReplyCodec = {
   dataWords: 1,
   pointerCount: 1,
@@ -7114,6 +7213,279 @@ function decodeBase64(b64) {
   return out;
 }
 
+// dist/db-stream.js
+function streamsResults(caps) {
+  return caps.maxStreamedResultBytes > 0 && caps.maxStreamedResultRows > 0;
+}
+function executeStreamLimits(caps) {
+  if (streamsResults(caps)) {
+    return {
+      maxBytes: caps.maxStreamedResultBytes,
+      bytesLimit: "maxStreamedResultBytes",
+      maxRows: caps.maxStreamedResultRows,
+      rowsLimit: "maxStreamedResultRows"
+    };
+  }
+  return {
+    maxBytes: caps.maxAtomicResultBytes,
+    bytesLimit: "maxAtomicResultBytes",
+    maxRows: caps.maxResultRows,
+    rowsLimit: "maxResultRows"
+  };
+}
+function rawStreamCeiling(limits) {
+  return limits.maxBytes + Math.floor(limits.maxBytes / 8) + MAX_STREAM_WINDOW_BYTES;
+}
+var ExecuteStreamDecoder = class {
+  #limits;
+  #retainRows;
+  #buf = new Uint8Array(0);
+  #seen = 0;
+  #state = { kind: "awaitingHead" };
+  #columns = [];
+  /**
+   * @param limits - Budget the stream is held to.
+   * @param options - `retainRows: false` counts rows against the budget but
+   *   drops them from the collected reply (for `iterate()`).
+   */
+  constructor(limits, options = {}) {
+    this.#limits = limits;
+    this.#retainRows = options.retainRows ?? true;
+  }
+  /**
+   * Whether the final frame (`end` or `err`) has been decoded.
+   *
+   * @returns True once the stream is complete.
+   */
+  get finished() {
+    return this.#state.kind === "finished";
+  }
+  /**
+   * Columns of the statement whose rows are arriving.
+   *
+   * @returns The open statement's columns, or an empty list between statements.
+   */
+  get columns() {
+    return this.#columns;
+  }
+  /**
+   * Feeds the next bytes of the stream.
+   *
+   * @param bytes - Any slice of the frame sequence.
+   * @returns The frames completed by these bytes, in order.
+   * @throws `PluginError` `limit_exceeded` when the stream exceeds the byte
+   *   or row budget, `invalid_params` when a frame is malformed or out of
+   *   sequence or bytes follow the final frame.
+   */
+  push(bytes) {
+    const frames = [];
+    if (bytes.byteLength === 0) {
+      return frames;
+    }
+    if (this.finished) {
+      throw PluginError.fromWire("invalid_params", "streamed reply carries bytes after its final frame");
+    }
+    this.#seen += bytes.byteLength;
+    const ceiling = rawStreamCeiling(this.#limits);
+    if (this.#seen > ceiling) {
+      throw this.#bytesExceeded(this.#seen);
+    }
+    this.#buf = concat(this.#buf, bytes);
+    while (this.#buf.byteLength >= 8) {
+      const view = new DataView(this.#buf.buffer, this.#buf.byteOffset, this.#buf.byteLength);
+      if (view.getUint32(0, true) !== 0) {
+        throw PluginError.fromWire("invalid_params", "streamed reply frame is not a single-segment Cap'n message");
+      }
+      const frameLen = view.getUint32(4, true) * 8 + 8;
+      if (frameLen > ceiling) {
+        throw this.#bytesExceeded(frameLen);
+      }
+      if (this.#buf.byteLength < frameLen) {
+        break;
+      }
+      let frame;
+      try {
+        frame = decodeMessage(ExecuteStreamFrameCodec, this.#buf.subarray(0, frameLen));
+      } catch (err) {
+        throw PluginError.fromWire("invalid_params", `streamed reply frame does not decode: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      this.#buf = this.#buf.slice(frameLen);
+      this.#apply(frame);
+      frames.push(frame);
+      if (this.finished) {
+        if (this.#buf.byteLength > 0) {
+          throw PluginError.fromWire("invalid_params", "streamed reply carries bytes after its final frame");
+        }
+        break;
+      }
+    }
+    return frames;
+  }
+  /**
+   * Takes the reassembled reply once the stream has ended.
+   *
+   * @returns The reply the frames described.
+   * @throws The adapter's `PluginError` when the stream ended with `err`, and
+   *   `unavailable` when it ended before its final frame.
+   */
+  finish() {
+    if (this.#state.kind !== "finished") {
+      throw PluginError.fromWire("unavailable", "streamed reply ended before its final frame");
+    }
+    const outcome = this.#state.outcome;
+    if ("err" in outcome) {
+      throw outcome.err;
+    }
+    return outcome.ok;
+  }
+  #bytesExceeded(used) {
+    return PluginError.limitExceeded({
+      limit: this.#limits.bytesLimit,
+      cap: this.#limits.maxBytes,
+      used
+    });
+  }
+  #sequence(message) {
+    return PluginError.fromWire("invalid_params", `streamed reply ${message}`);
+  }
+  #apply(frame) {
+    const state = this.#state;
+    if (frame.kind === "err") {
+      this.#columns = [];
+      this.#state = {
+        kind: "finished",
+        outcome: {
+          err: PluginError.fromWire(frame.value.code, frame.value.message, frame.value.details)
+        }
+      };
+      return;
+    }
+    if (state.kind === "awaitingHead") {
+      if (frame.kind !== "head") {
+        throw this.#sequence(`opens with a ${frame.kind} frame instead of head`);
+      }
+      this.#state = {
+        kind: "inReply",
+        operationId: frame.value.operationId,
+        statementCount: frame.value.statementCount,
+        nextIndex: 0,
+        statements: [],
+        open: void 0,
+        openRows: 0
+      };
+      return;
+    }
+    if (state.kind === "finished") {
+      throw this.#sequence("carries a frame after its final frame");
+    }
+    switch (frame.kind) {
+      case "head":
+        throw this.#sequence("carries a second head frame");
+      case "statement": {
+        if (frame.value.index !== state.nextIndex) {
+          throw this.#sequence(`statement frame ${frame.value.index} arrived where ${state.nextIndex} was expected`);
+        }
+        if (state.nextIndex >= state.statementCount) {
+          throw this.#sequence(`carries more statements than its head announced`);
+        }
+        if (state.open) {
+          state.statements.push(state.open);
+        }
+        state.open = {
+          rows: [],
+          columns: frame.value.columns,
+          rowsAffected: frame.value.rowsAffected
+        };
+        state.openRows = 0;
+        state.nextIndex += 1;
+        this.#columns = frame.value.columns;
+        return;
+      }
+      case "rows": {
+        const open = state.open;
+        if (!open) {
+          throw this.#sequence("carries rows before a statement frame");
+        }
+        state.openRows += frame.value.length;
+        if (this.#limits.maxRows > 0 && state.openRows > this.#limits.maxRows) {
+          throw PluginError.limitExceeded({
+            limit: this.#limits.rowsLimit,
+            cap: this.#limits.maxRows,
+            used: state.openRows
+          });
+        }
+        if (this.#retainRows) {
+          for (const row of frame.value) {
+            open.rows.push(row);
+          }
+        }
+        return;
+      }
+      case "end": {
+        if (state.open) {
+          state.statements.push(state.open);
+          state.open = void 0;
+        }
+        if (state.statements.length !== state.statementCount) {
+          throw this.#sequence(`ended with ${state.statements.length} statements; its head announced ${state.statementCount}`);
+        }
+        this.#columns = [];
+        this.#state = {
+          kind: "finished",
+          outcome: {
+            ok: {
+              operationId: state.operationId,
+              statements: state.statements,
+              timing: frame.value
+            }
+          }
+        };
+        return;
+      }
+    }
+  }
+};
+function decodeExecuteStream(bytes, limits) {
+  const decoder = new ExecuteStreamDecoder(limits);
+  decoder.push(bytes);
+  return decoder.finish();
+}
+async function collectExecuteStream(chunks, limits) {
+  const decoder = new ExecuteStreamDecoder(limits);
+  for await (const chunk of chunks) {
+    decoder.push(chunk);
+  }
+  return decoder.finish();
+}
+async function* streamChunks(body) {
+  if (!body) {
+    return;
+  }
+  const reader = body.getReader();
+  try {
+    for (; ; ) {
+      const { done, value } = await reader.read();
+      if (done) {
+        return;
+      }
+      if (value) {
+        yield value;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+function concat(a, b) {
+  if (a.byteLength === 0) {
+    return b;
+  }
+  const out = new Uint8Array(a.byteLength + b.byteLength);
+  out.set(a, 0);
+  out.set(b, a.byteLength);
+  return out;
+}
+
 // dist/guest-sql.js
 function identStart(c) {
   const code = c.charCodeAt(0);
@@ -7571,7 +7943,12 @@ function readStatementResult(s) {
   };
 }
 function createDatabaseBinding(transport, options = {}) {
-  const runExecute = async (batch, retry) => {
+  let cachedLimits;
+  const sessionLimits = () => {
+    cachedLimits ??= transport.limits === void 0 ? Promise.resolve(null) : transport.limits().catch(() => null);
+    return cachedLimits;
+  };
+  const requestFor = async (batch, retry) => {
     if (!Array.isArray(batch) || batch.length === 0) {
       throw new Error("execute statements must be non-empty");
     }
@@ -7585,7 +7962,78 @@ function createDatabaseBinding(transport, options = {}) {
         used: encoded.byteLength
       });
     }
-    return transport.execute(request);
+    return request;
+  };
+  const openStreamed = async (request) => {
+    if (transport.executeStreamed === void 0) {
+      return void 0;
+    }
+    const caps = await sessionLimits();
+    if (caps === null || !streamsResults(caps)) {
+      return void 0;
+    }
+    let body;
+    try {
+      body = await transport.executeStreamed(request);
+    } catch (err) {
+      if (err instanceof PluginError && err.wireCode === "unsupported") {
+        return void 0;
+      }
+      throw err;
+    }
+    const chunks = body instanceof Uint8Array ? (async function* one() {
+      yield body;
+    })() : streamChunks(body);
+    return { chunks, caps };
+  };
+  const runExecute = async (batch, retry) => {
+    const request = await requestFor(batch, retry);
+    const streamed = await openStreamed(request);
+    if (streamed === void 0) {
+      return transport.execute(request);
+    }
+    const decoder = new ExecuteStreamDecoder(executeStreamLimits(streamed.caps));
+    for await (const chunk of streamed.chunks) {
+      decoder.push(chunk);
+    }
+    try {
+      return decoder.finish();
+    } catch (err) {
+      if (err instanceof PluginError && err.wireCode === "unsupported") {
+        return transport.execute(request);
+      }
+      throw err;
+    }
+  };
+  const iterateRows = async function* (batch, retry) {
+    const request = await requestFor(batch, retry);
+    const streamed = await openStreamed(request);
+    if (streamed === void 0) {
+      const reply = await transport.execute(request);
+      const result = reply.statements[0];
+      if (result) {
+        for (const row of result.rows) {
+          yield rowMap(result.columns, row);
+        }
+      }
+      return;
+    }
+    const decoder = new ExecuteStreamDecoder(executeStreamLimits(streamed.caps), {
+      retainRows: false
+    });
+    let columns = [];
+    for await (const chunk of streamed.chunks) {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.kind === "statement") {
+          columns = frame.value.columns;
+        } else if (frame.kind === "rows") {
+          for (const row of frame.value) {
+            yield rowMap(columns, row);
+          }
+        }
+      }
+    }
+    decoder.finish();
   };
   const binding = {
     prepare(sql) {
@@ -7613,11 +8061,106 @@ function createDatabaseBinding(transport, options = {}) {
       if (transport.limits === void 0) {
         return Promise.reject(PluginError.fromWire("unsupported", "GuestDatabase.limits is not available on this host"));
       }
-      return transport.limits();
+      return sessionLimits().then((caps) => caps === null ? transport.limits() : caps);
+    },
+    async *chunk(statements, opts) {
+      const caps = opts?.maxStatements === void 0 || opts.maxRequestBytes === void 0 ? await sessionLimits() : null;
+      const maxStatements = opts?.maxStatements ?? caps?.maxStatements ?? 0;
+      const maxRequestBytes = opts?.maxRequestBytes ?? caps?.maxRequestBytes ?? options.maxRequestBytes ?? 0;
+      if (maxStatements <= 0 && maxRequestBytes <= 0) {
+        throw PluginError.fromWire("unsupported", "chunk needs the session limits (GuestDatabase.limits) or explicit maxStatements / maxRequestBytes");
+      }
+      const typed = statements.map((stmt) => stmt._asTyped());
+      for (const indexes of chunkIndexes(typed, maxStatements, maxRequestBytes)) {
+        yield indexes.map((i) => statements[i]);
+      }
     }
   };
+  binding._iterateRows = iterateRows;
   return binding;
 }
+function rowMap(columns, row) {
+  const out = {};
+  for (let i = 0; i < columns.length; i++) {
+    const value = row.values[i];
+    if (value !== void 0) {
+      out[columns[i].name] = value;
+    }
+  }
+  return out;
+}
+function chunkIndexes(typed, maxStatements, maxRequestBytes) {
+  if (typed.length === 0) {
+    return [];
+  }
+  const base = encodeExecuteRequest({
+    operationId: RETRY_ID_PLACEHOLDER,
+    requestHash: RETRY_HASH_PLACEHOLDER,
+    statements: [PROBE_STATEMENT],
+    deadlineUnixMs: 0
+  }).byteLength - PROBE_STATEMENT_BYTES;
+  const sizes = typed.map((stmt) => encodeExecuteRequest({
+    operationId: "",
+    requestHash: "",
+    statements: [PROBE_STATEMENT, stmt],
+    deadlineUnixMs: 0
+  }).byteLength - PROBE_REQUEST_BYTES);
+  const fits = (run2) => maxRequestBytes <= 0 || encodeExecuteRequest({
+    operationId: RETRY_ID_PLACEHOLDER,
+    requestHash: RETRY_HASH_PLACEHOLDER,
+    statements: run2.map((i) => typed[i]),
+    deadlineUnixMs: 0
+  }).byteLength <= maxRequestBytes;
+  const out = [];
+  const emit = (run2) => {
+    if (run2.length <= 1 || fits(run2)) {
+      out.push(run2);
+      return;
+    }
+    const half = Math.ceil(run2.length / 2);
+    emit(run2.slice(0, half));
+    emit(run2.slice(half));
+  };
+  let run = [];
+  let bytes = base;
+  for (let i = 0; i < typed.length; i++) {
+    const size = sizes[i];
+    const overStatements = maxStatements > 0 && run.length >= maxStatements;
+    const overBytes = maxRequestBytes > 0 && run.length > 0 && bytes + size > maxRequestBytes;
+    if (overStatements || overBytes) {
+      emit(run);
+      run = [];
+      bytes = base;
+    }
+    run.push(i);
+    bytes += size;
+  }
+  if (run.length > 0) {
+    emit(run);
+  }
+  return out;
+}
+var RETRY_ID_PLACEHOLDER = "00000000-0000-4000-8000-000000000000";
+var RETRY_HASH_PLACEHOLDER = "0".repeat(64);
+var PROBE_STATEMENT = {
+  sql: "",
+  parameters: [],
+  kind: "select",
+  maxRows: 0,
+  resultSelection: "rows"
+};
+var PROBE_REQUEST_BYTES = encodeExecuteRequest({
+  operationId: "",
+  requestHash: "",
+  statements: [PROBE_STATEMENT],
+  deadlineUnixMs: 0
+}).byteLength;
+var PROBE_STATEMENT_BYTES = encodeExecuteRequest({
+  operationId: "",
+  requestHash: "",
+  statements: [PROBE_STATEMENT, PROBE_STATEMENT],
+  deadlineUnixMs: 0
+}).byteLength - PROBE_REQUEST_BYTES;
 function defaultIntent(options) {
   return {
     resultSelection: "rows",
@@ -7678,6 +8221,22 @@ function makePrepared(binding, sql, parameters, defaultAllRows, intent) {
     },
     all(options) {
       return binding.execute([this.asAll()._asTyped()], options).then((reply) => statementResultToD1Result(reply.statements[0], reply.timing));
+    },
+    iterate(options) {
+      const typed = [this.asAll()._asTyped()];
+      const streamedRows = binding._iterateRows;
+      if (streamedRows !== void 0) {
+        return streamedRows(typed, options?.retry);
+      }
+      return (async function* inline() {
+        const reply = await binding.execute(typed, options);
+        const result = reply.statements[0];
+        if (result) {
+          for (const row of result.rows) {
+            yield rowMap(result.columns, row);
+          }
+        }
+      })();
     },
     _asTyped() {
       const used = intent ?? defaultIntent({ maxResultRows: defaultAllRows });
@@ -8624,7 +9183,8 @@ function invocationEnv(rawEnv, context) {
           const transport = entry.transport;
           merged[entry.name] = createDatabaseBinding({
             execute: (request) => transport.execute(request),
-            limits: () => transport.limits()
+            limits: () => transport.limits(),
+            executeStreamed: (request) => transport.executeStreamed(request)
           });
         }
       }
@@ -10215,6 +10775,40 @@ var GrantedDatabase = class extends RpcTarget {
     return grantedDatabaseBody(resp);
   }
   /**
+   * Run one typed atomic batch answered as stream frames
+   * (`POST /db/execute-streamed`). A non-2xx status is the channel's error;
+   * an adapter or authorization failure travels inside the frames.
+   *
+   * @param request - Structured `ExecuteRequest`.
+   * @returns The response body: the frame sequence.
+   */
+  async executeStreamed(request) {
+    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/octet-stream" },
+      body: encodeExecuteRequest(request)
+    });
+    if (!resp.ok) {
+      await grantedDatabaseBody(resp, "executeStreamed");
+    }
+    return resp.body ?? new Uint8Array(0);
+  }
+  /**
+   * Same frames, whole, from Cap'n request bytes (Python authors decode
+   * locally).
+   *
+   * @param bytes - Unpacked `ExecuteRequest` message.
+   * @returns Every `ExecuteStreamFrame`, concatenated.
+   */
+  async executeStreamedBytes(bytes) {
+    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/octet-stream" },
+      body: bytes
+    });
+    return grantedDatabaseBody(resp, "executeStreamed");
+  }
+  /**
    * Negotiated limits of the granted session (`GET /db/limits`).
    *
    * @returns The adapter's `DbCapabilities` for this binding.
@@ -10684,6 +11278,7 @@ export {
   ENTRYPOINT_CLASSES,
   EventBatch,
   EventMessage,
+  ExecuteStreamDecoder,
   FEATURE_SCALAR_LIMITS,
   FEATURE_STORAGE_COPY,
   FEATURE_STREAMS,
@@ -10712,12 +11307,15 @@ export {
   TRIGGER_FAMILIES,
   allowedEntrypointFamilies,
   canonicalExecuteRequestHash,
+  chunkIndexes,
   cliArgs,
+  collectExecuteStream,
   createDatabaseBinding,
   dataMigrationOp,
   decodeDbValue,
   decodeExecuteRequest,
   decodeExecuteResultReply,
+  decodeExecuteStream,
   decodeExtensibleConfig,
   dispatchInvoke,
   encodeDbValue,
@@ -10725,15 +11323,18 @@ export {
   encodeExecuteResultReply,
   eventBatchResults,
   executeReplyToD1Results,
+  executeStreamLimits,
   fromBridgeJson,
   invocationOf,
   jobOutcomeFor,
   jsonPayload,
   parseDbValue,
   queueBatchResults,
+  rawStreamCeiling,
   requirePluginMigrationRegistration,
   schemaMigrationOp,
   statementResultToD1Result,
+  streamsResults,
   toBridgeJson,
   wrapPluginFromBinding,
   wrapPluginFromNative

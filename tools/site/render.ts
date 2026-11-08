@@ -159,6 +159,7 @@ export const NAV: NavSpec[] = [
       "plugins/registry",
       "plugins/sql-contract/README",
       "plugins/sql-contract/v1",
+      "plugins/database-limits",
       "plugins/sdk/README",
       "plugins/sdk/typescript/README",
       "plugins/sdk/python/README",

@@ -34,14 +34,48 @@ _CAPS = {
 }
 
 
+_INLINE_ONLY_CAPS = {**_CAPS, "maxStreamedResultBytes": 0, "maxStreamedResultRows": 0}
+
+
+def _frames(operation_id: str) -> bytes:
+    """One `ExecuteStreamFrame` sequence: `n = 1` for the request's operation id."""
+    from bookclerk_plugin_sdk._wire import _encode_message, _execute_stream_frame_codec
+
+    def frame(kind: str, value) -> bytes:
+        return _encode_message(_execute_stream_frame_codec, {"kind": kind, "value": value})
+
+    return b"".join(
+        [
+            frame("head", {"operationId": operation_id, "statementCount": 1}),
+            frame(
+                "statement",
+                {"index": 0, "columns": [{"name": "n", "dbType": "int64"}], "rowsAffected": 0},
+            ),
+            frame("rows", [{"values": [{"kind": "int64", "value": 1}]}]),
+            frame("end", {"attemptElapsedUs": 0, "dbExecutionUs": 0, "dbTimingSource": "granted"}),
+        ]
+    )
+
+
 class _MockFetcher:
-    def __init__(self, status: int = 200) -> None:
+    def __init__(
+        self,
+        status: int = 200,
+        *,
+        streamed_status: int | None = None,
+        caps: dict | None = None,
+    ) -> None:
         self.calls: list[tuple[str, dict]] = []
         self._status = status
+        self._streamed_status = streamed_status
+        self._caps = _CAPS if caps is None else caps
 
     async def fetch(self, url: str, **kwargs):
         self.calls.append((url, kwargs))
         status = self._status
+        if url.endswith("/db/execute-streamed") and self._streamed_status is not None:
+            status = self._streamed_status
+        caps = self._caps
 
         class _Resp:
             async def text(self):
@@ -56,7 +90,11 @@ class _MockFetcher:
                 )
 
                 if url.endswith("/db/limits"):
-                    return encode_db_capabilities_reply(_CAPS)
+                    return encode_db_capabilities_reply(caps)
+                if url.endswith("/db/execute-streamed"):
+                    from bookclerk_plugin_sdk.db_value import decode_execute_request
+
+                    return _frames(decode_execute_request(bytes(kwargs["body"]))["operationId"])
                 return encode_execute_result_reply(
                     {
                         "operationId": "op",
@@ -145,17 +183,67 @@ class WorkerdGrantedDbTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(limit.used, 16)
 
     async def test_context_database_prepare_first_hits_granted_route(self) -> None:
-        fetcher = _MockFetcher()
+        # A session that does not stream reads inline over `/db/execute`.
+        fetcher = _MockFetcher(caps=_INLINE_ONLY_CAPS)
         databases = granted_databases(fetcher, {"DB": "grant-token"})
         self.assertEqual(sorted(databases), ["DB"])
         row = await databases["DB"].prepare("SELECT 1").first()
-        self.assertEqual(len(fetcher.calls), 1)
-        url, kwargs = fetcher.calls[0]
-        self.assertEqual(url, "http://granted/db/execute")
+        self.assertEqual(
+            [url for url, _ in fetcher.calls],
+            [
+                "http://granted/db/limits",
+                "http://granted/db/execute",
+            ],
+        )
+        url, kwargs = fetcher.calls[1]
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer grant-token")
         self.assertEqual(kwargs["headers"]["content-type"], "application/octet-stream")
         self.assertIsInstance(kwargs["body"], (bytes, bytearray))
         self.assertEqual(row["n"]["value"], 1)
+
+    async def test_streaming_session_reads_over_the_streamed_route(self) -> None:
+        fetcher = _MockFetcher()
+        databases = granted_databases(fetcher, {"DB": "grant-token"})
+        result = await databases["DB"].prepare("SELECT 1").all()
+        self.assertEqual(result["results"][0]["n"]["value"], 1)
+        await databases["DB"].prepare("SELECT 1").all()
+        self.assertEqual(
+            [url for url, _ in fetcher.calls],
+            [
+                "http://granted/db/limits",
+                "http://granted/db/execute-streamed",
+                "http://granted/db/execute-streamed",
+            ],
+        )
+        url, kwargs = fetcher.calls[1]
+        self.assertEqual(kwargs["method"], "POST")
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer grant-token")
+        self.assertEqual(kwargs["headers"]["content-type"], "application/octet-stream")
+        rows = [r async for r in databases["DB"].prepare("SELECT 1").iterate()]
+        self.assertEqual(rows, [{"n": {"kind": "int64", "value": 1}}])
+
+    async def test_host_without_the_streamed_route_falls_back_to_inline(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError
+
+        fetcher = _MockFetcher(streamed_status=404)
+        databases = granted_databases(fetcher, {"DB": "grant-token"})
+        row = await databases["DB"].prepare("SELECT 1").first()
+        self.assertEqual(row["n"]["value"], 1)
+        self.assertEqual(
+            [url for url, _ in fetcher.calls],
+            [
+                "http://granted/db/limits",
+                "http://granted/db/execute-streamed",
+                "http://granted/db/execute",
+            ],
+        )
+        # Any other failure of the streamed route is the caller's.
+        fetcher = _MockFetcher(streamed_status=503)
+        databases = granted_databases(fetcher, {"DB": "grant-token"})
+        with self.assertRaises(PluginError) as ctx:
+            await databases["DB"].prepare("SELECT 1").first()
+        self.assertEqual(ctx.exception.code, "unavailable")
+        self.assertEqual(len(fetcher.calls), 2)
 
 
 if __name__ == "__main__":
@@ -167,11 +255,20 @@ class _MockTransport:
 
     def __init__(self) -> None:
         self.requests: list[bytes] = []
+        self.methods: list[tuple[str, bytes | None]] = []
 
     async def limitsBytes(self):  # noqa: N802  (Workers RPC method name)
         from bookclerk_plugin_sdk.db_value import encode_db_capabilities_reply
 
+        self.methods.append(("limitsBytes", None))
         return encode_db_capabilities_reply(_CAPS)
+
+    async def executeStreamedBytes(self, body):  # noqa: N802  (Workers RPC method name)
+        from bookclerk_plugin_sdk.db_value import decode_execute_request
+
+        self.requests.append(bytes(body))
+        self.methods.append(("executeStreamedBytes", bytes(body)))
+        return _frames(decode_execute_request(bytes(body))["operationId"])
 
     async def executeBytes(self, body):  # noqa: N802  (Workers RPC method name)
         from bookclerk_plugin_sdk.db_value import (
@@ -206,9 +303,13 @@ class WorkerdTransportDbTests(unittest.IsolatedAsyncioTestCase):
 
         transport = _MockTransport()
         env = _invocation_env({}, {"databases": [{"name": "DB", "transport": transport}]})
-        row = await env.DB.prepare("SELECT 7").first()
-        self.assertEqual(row["n"]["value"], 7)
+        # The stub's session streams, so the read crosses `executeStreamedBytes`.
+        row = await env.DB.prepare("SELECT 1").first()
+        self.assertEqual(row["n"]["value"], 1)
         self.assertEqual(len(transport.requests), 1, "one Cap'n request crossed the stub")
+        self.assertEqual(
+            [name for name, _ in transport.methods], ["limitsBytes", "executeStreamedBytes"]
+        )
 
     async def test_transport_limits_decode_the_capabilities_reply(self) -> None:
         from bookclerk_plugin_sdk.workerd import PluginError, _invocation_env

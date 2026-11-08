@@ -711,6 +711,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             "test:tools",
             "test:path-security",
             "test:db-value",
+            "test:db-stream",
             "test:plugin-migrations",
             "test:entrypoints",
             "test:entrypoints-codec",

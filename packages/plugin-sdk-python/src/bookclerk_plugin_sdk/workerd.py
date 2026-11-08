@@ -24,6 +24,7 @@ from __future__ import annotations
 import inspect
 import json
 import time
+from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
@@ -1781,6 +1782,21 @@ class GuestDatabase:
         """Host-mediated typed batch (``ExecuteRequest`` → ``ExecuteReply``)."""
         raise _unsupported("execute")
 
+    async def execute_streamed(self, _request: ExecuteRequest) -> bytes | AsyncIterable[bytes]:
+        """The same batch answered as ``ExecuteStreamFrame`` bytes.
+
+        The reply is counted against the session's ``maxStreamedResultBytes``
+        / ``maxStreamedResultRows`` instead of the inline caps, so a result
+        past them still arrives whole.
+
+        Returns:
+            Every frame, concatenated, or the frames as a byte stream.
+
+        Raises:
+            PluginError: ``unsupported`` on a host that predates the method.
+        """
+        raise _unsupported("executeStreamed")
+
     async def close(self) -> None:
         """Close the grant."""
         return None
@@ -1899,6 +1915,31 @@ class _GrantedGuestDatabase(GuestDatabase):
         except Exception as err:
             raise PluginError.from_wire("internal", str(err)) from err
 
+    async def execute_streamed(self, request: ExecuteRequest) -> bytes | AsyncIterable[bytes]:
+        """The same batch over ``POST /db/execute-streamed``.
+
+        Args:
+            request: Statements, binds and deadline.
+
+        Returns:
+            The response body, chunk by chunk when the channel streams it.
+        """
+        from bookclerk_plugin_sdk.db_value import encode_execute_request
+
+        body = encode_execute_request(request)
+        kwargs: dict[str, Any] = {
+            "method": "POST",
+            "headers": {**self._auth, "content-type": "application/octet-stream"},
+            "body": body,
+        }
+        if self._signal is not None:
+            kwargs["signal"] = self._signal
+        resp = await self._granted.fetch("http://granted/db/execute-streamed", **kwargs)
+        status = getattr(resp, "status", None)
+        if status is not None and int(status) >= 400:
+            await _granted_database_body(resp, "executeStreamed")
+        return _granted_body_chunks(resp, "executeStreamed")
+
     async def limits(self) -> DbCapabilities:
         """Negotiated limits of the granted session (``GET /db/limits``).
 
@@ -1964,6 +2005,42 @@ async def _granted_database_body(resp: Any, method: str) -> bytes:
     raise PluginError.from_wire("internal", f"granted {method} response missing body")
 
 
+async def _granted_body_chunks(resp: Any, method: str) -> AsyncIterator[bytes]:
+    """Read a successful granted response body in chunks.
+
+    A streaming body (``getReader``) is read window by window; anything else
+    is read whole.
+
+    Args:
+        resp: Granted-channel response with a 2xx status.
+        method: ``GuestDatabase`` method name for the error text.
+
+    Yields:
+        Body bytes in order.
+
+    Raises:
+        PluginError: ``internal`` when the response carries no body.
+    """
+    stream = getattr(resp, "body", None)
+    if stream is not None and hasattr(stream, "getReader"):
+        reader = stream.getReader()
+        while True:
+            result = await reader.read()
+            if bool(getattr(result, "done", False)):
+                return
+            value = getattr(result, "value", None)
+            if value is not None:
+                yield _bytes(value)
+        return
+    if hasattr(resp, "arrayBuffer"):
+        yield bytes(await resp.arrayBuffer())
+        return
+    if stream is not None:
+        yield bytes(await stream)
+        return
+    raise PluginError.from_wire("internal", f"granted {method} response missing body")
+
+
 def granted_databases(
     granted: _GrantedFetcher,
     database_tokens: dict[str, str],
@@ -2000,7 +2077,12 @@ def granted_databases(
             async def bound_limits() -> DbCapabilities:
                 return await g.limits()
 
-            return create_database_binding(bound_execute, limits=bound_limits)
+            async def bound_streamed(request: ExecuteRequest) -> bytes | AsyncIterable[bytes]:
+                return await g.execute_streamed(request)
+
+            return create_database_binding(
+                bound_execute, limits=bound_limits, execute_streamed=bound_streamed
+            )
 
         databases[name] = _bind(binding_guest)
     return databases
@@ -2036,6 +2118,24 @@ class _TransportGuestDatabase(GuestDatabase):
         except Exception as err:
             raise PluginError.from_wire("internal", str(err)) from err
 
+    async def execute_streamed(self, request: ExecuteRequest) -> bytes | AsyncIterable[bytes]:
+        """The same batch through the transport's ``executeStreamedBytes``.
+
+        Args:
+            request: Statements, binds and deadline.
+
+        Returns:
+            Every ``ExecuteStreamFrame``, concatenated.
+        """
+        from bookclerk_plugin_sdk.db_value import encode_execute_request
+
+        body = encode_execute_request(request)
+        raw = await self._transport.executeStreamedBytes(js(body))
+        data = _bytes(raw)
+        if not data:
+            raise PluginError.from_wire("internal", "granted executeStreamed reply missing body")
+        return data
+
     async def limits(self) -> DbCapabilities:
         """Negotiated limits through the transport's ``limitsBytes``.
 
@@ -2060,8 +2160,8 @@ def transport_database(transport: Any) -> DatabaseBinding:
     """Wrap an adapter ``GrantedDatabaseTransport`` stub as a :class:`DatabaseBinding`.
 
     Args:
-        transport: Stub exposing ``executeBytes(bytes) -> bytes`` and
-            ``limitsBytes() -> bytes``.
+        transport: Stub exposing ``executeBytes(bytes) -> bytes``,
+            ``executeStreamedBytes(bytes) -> bytes`` and ``limitsBytes() -> bytes``.
 
     Returns:
         D1-shaped binding whose terminal methods route through the transport.
@@ -2076,4 +2176,9 @@ def transport_database(transport: Any) -> DatabaseBinding:
     async def bound_limits() -> DbCapabilities:
         return await guest.limits()
 
-    return create_database_binding(bound_execute, limits=bound_limits)
+    async def bound_streamed(request: ExecuteRequest) -> bytes | AsyncIterable[bytes]:
+        return await guest.execute_streamed(request)
+
+    return create_database_binding(
+        bound_execute, limits=bound_limits, execute_streamed=bound_streamed
+    )
