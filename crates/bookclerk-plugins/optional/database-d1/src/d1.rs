@@ -835,6 +835,12 @@ async fn parse_d1_response(
 }
 
 /// Incrementally reads `response` and errors if the body would exceed `max`.
+///
+/// The error carries the canonical `maxAtomicResultBytes` limit text (the
+/// ceiling as the limit, the bytes seen so far as the use), so a host page
+/// reader recognises a reply whose JSON encoding outgrew the ceiling and
+/// reads the page in smaller pieces; after a successful status the error
+/// stays ambiguous, because a write in the batch may have committed.
 async fn read_body_capped(
     mut response: Response,
     max: usize,
@@ -843,7 +849,7 @@ async fn read_body_capped(
         if len > max as u64 {
             return Err(body_cap_error(
                 response.status(),
-                format!("D1 body {len} bytes exceeds {max}"),
+                body_cap_message(max, usize::try_from(len).unwrap_or(usize::MAX)),
             ));
         }
     }
@@ -856,15 +862,26 @@ async fn read_body_capped(
         let Some(chunk) = chunk else {
             break;
         };
-        if buf.len().saturating_add(chunk.len()) > max {
+        let seen = buf.len().saturating_add(chunk.len());
+        if seen > max {
             return Err(body_cap_error(
                 response.status(),
-                format!("D1 body exceeds {max}"),
+                body_cap_message(max, seen),
             ));
         }
         buf.extend_from_slice(&chunk);
     }
     Ok(buf)
+}
+
+/// Error text for a D1 body of at least `seen` bytes past the `max` ceiling.
+fn body_cap_message(max: usize, seen: usize) -> String {
+    let limit = bookclerk_plugin_abi::LimitExceeded::new(
+        "maxAtomicResultBytes",
+        u64::try_from(max).unwrap_or(u64::MAX),
+        u64::try_from(seen).unwrap_or(u64::MAX),
+    );
+    format!("D1 body exceeds {max}: {}", limit.to_message())
 }
 
 /// Oversized bodies after a successful or retryable HTTP status are ambiguous.
@@ -2096,6 +2113,17 @@ mod tests {
         assert!(
             msg.contains("exceeds"),
             "expected incremental body cap, got {msg}"
+        );
+        let limit = bookclerk_plugin_abi::LimitExceeded::from_message(&msg)
+            .unwrap_or_else(|| panic!("the body cap names a result limit: {msg}"));
+        assert_eq!(limit.limit, "maxAtomicResultBytes");
+        assert_eq!(
+            limit.used,
+            u64::try_from(max_d1_http_body_bytes() + 1).expect("fits")
+        );
+        assert!(
+            msg.contains("ambiguous"),
+            "a 200 body past the ceiling may have committed: {msg}"
         );
     }
 
