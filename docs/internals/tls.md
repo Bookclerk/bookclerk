@@ -17,12 +17,15 @@ The hosts name the provider in one place, the `bookclerk-tls` crate:
 | Need | Use |
 | --- | --- |
 | A rustls `ClientConfig` or `ServerConfig` (the node API listener and client) | `bookclerk_tls::crypto_provider()` |
-| A blocking HTTP request (diagnostics upload, plugin catalog, workerd download, CLI to daemon) | `bookclerk_tls::http_agent()` instead of `ureq::get` / `ureq::post` |
+| A blocking HTTP request (diagnostics upload, plugin catalog, workerd download, CLI to daemon) | `use bookclerk_tls::ureq;`, then `ureq::get(url)` as usual |
 | A custom `ureq` agent | `.tls_config(bookclerk_tls::ureq_tls_config())` on its config builder |
 
-The workspace builds `ureq` with `rustls-no-provider`, so `ureq`'s own
-default agent has no provider and panics on its first HTTPS request. Always
-go through `bookclerk_tls`.
+`bookclerk_tls::ureq` is the `ureq` crate with one change: its request
+functions (`get`, `post` and the rest) send through a shared agent that
+carries the provider. The workspace builds `ureq` with `rustls-no-provider`,
+so `ureq`'s own default agent has no provider and would panic on its first
+HTTPS request. Host crates therefore depend on `bookclerk-tls`, not on
+`ureq` directly.
 
 Other clients pick aws-lc-rs through their features:
 

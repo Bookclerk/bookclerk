@@ -26,7 +26,6 @@ thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
 bookclerk-tls.workspace = true
-ureq.workspace = true
 url = { version = "2", features = ["serde"] }
 walkdir.workspace = true
 zip.workspace = true

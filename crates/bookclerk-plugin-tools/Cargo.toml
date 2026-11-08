@@ -24,7 +24,6 @@ sha2.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 bookclerk-tls.workspace = true
-ureq.workspace = true
 
 [dev-dependencies]
 chrono.workspace = true

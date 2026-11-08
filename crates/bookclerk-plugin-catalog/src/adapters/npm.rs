@@ -1,5 +1,6 @@
 //! npm registry adapter — search + packument `bookclerk` field.
 
+use bookclerk_tls::ureq;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -116,8 +117,7 @@ impl RegistryAdapter for NpmAdapter {
 
 /// GETs `url` as JSON with the catalog User-Agent; maps non-success HTTP into `CatalogError`.
 fn http_get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
-    let mut response = bookclerk_tls::http_agent()
-        .get(url)
+    let mut response = ureq::get(url)
         .header("User-Agent", UA)
         .header("Accept", "application/json")
         .call()

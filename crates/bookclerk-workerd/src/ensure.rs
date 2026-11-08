@@ -1,5 +1,6 @@
 //! Download / refresh the pinned Cloudflare `workerd` binary.
 
+use bookclerk_tls::ureq;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -428,8 +429,7 @@ fn classify(url: &str, err: ureq::Error) -> Attempt {
 /// redirects, so any other non-2xx answer that reaches this function (a
 /// 304, a 3xx without `Location`) will not change and is permanent.
 fn download_once(url: &str) -> Attempt {
-    let request = bookclerk_tls::http_agent()
-        .get(url)
+    let request = ureq::get(url)
         .config()
         .timeout_global(Some(DOWNLOAD_ATTEMPT_TIMEOUT))
         .build();

@@ -138,8 +138,8 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Sync HTTP for crash/error diagnostics upload (usable from panic hooks).
 # `rustls-no-provider`: ureq's `rustls` feature would compile ring as a second
-# crypto library; host crates use `bookclerk_tls::http_agent()`, which hands
-# ureq the one aws-lc-rs provider (docs/internals/tls.md).
+# crypto library; host crates import `bookclerk_tls::ureq`, whose request
+# functions hand ureq the one aws-lc-rs provider (docs/internals/tls.md).
 ureq = { version = "3", default-features = false, features = ["json", "gzip", "rustls-no-provider", "rustls-webpki-roots"] }
 # The hosts' one TLS backend: rustls on aws-lc-rs (its default features).
 rustls = "0.23"

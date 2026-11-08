@@ -1547,7 +1547,6 @@ dependencies = [
  "tokio-postgres",
  "toml",
  "tracing",
- "ureq",
  "url",
  "windows-sys 0.61.2",
  "zeroize",
@@ -1571,7 +1570,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "ureq",
  "utoipa",
  "windows-sys 0.61.2",
 ]
@@ -1962,7 +1960,6 @@ dependencies = [
  "thiserror 2.0.21",
  "toml",
  "tracing",
- "ureq",
  "url",
  "walkdir",
  "windows-sys 0.61.2",
@@ -2138,7 +2135,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "ureq",
  "url",
  "uuid",
  "windows-sys 0.61.2",
@@ -2336,7 +2332,6 @@ dependencies = [
  "sha2 0.11.1",
  "tar",
  "tempfile",
- "ureq",
 ]
 
 [[package]]
@@ -2452,7 +2447,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tray-icon",
- "ureq",
  "winit",
 ]
 
@@ -2482,7 +2476,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "ureq",
 ]
 
 [[package]]

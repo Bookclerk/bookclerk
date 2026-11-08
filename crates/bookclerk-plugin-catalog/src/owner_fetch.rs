@@ -19,6 +19,7 @@
 //! on the first hop or any redirect. The fetch never uses a proxy from the
 //! environment: a proxy resolves the target itself, past that resolver.
 
+use bookclerk_tls::ureq;
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;

@@ -28,6 +28,7 @@
 
 mod manifest_env;
 
+use bookclerk_tls::ureq;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -702,15 +703,13 @@ async fn bridge_http(
     let auth = format!("Bearer {token}");
     tokio::task::spawn_blocking(move || {
         let mut response = match method.as_str() {
-            "GET" => bookclerk_tls::http_agent()
-                .get(&url_owned)
+            "GET" => ureq::get(&url_owned)
                 .header("Authorization", &auth)
                 .call()
                 .with_context(|| url_owned.clone())?,
             "POST" => {
                 let body = body.unwrap_or_default();
-                bookclerk_tls::http_agent()
-                    .post(&url_owned)
+                ureq::post(&url_owned)
                     .header("content-type", "application/json")
                     .header("Authorization", &auth)
                     .send(body)

@@ -8,6 +8,7 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
+use bookclerk_tls::ureq;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -158,11 +159,7 @@ fn wait_for_health(base: &str, token: &str) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(15);
     let auth = format!("Bearer {token}");
     loop {
-        match bookclerk_tls::http_agent()
-            .get(&url)
-            .header("Authorization", &auth)
-            .call()
-        {
+        match ureq::get(&url).header("Authorization", &auth).call() {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             _ => {
                 if Instant::now() > deadline {
@@ -175,8 +172,7 @@ fn wait_for_health(base: &str, token: &str) -> Result<(), String> {
 }
 
 fn post_json(url: &str, body: &Value, token: &str) -> Result<Value, String> {
-    let mut response = bookclerk_tls::http_agent()
-        .post(url)
+    let mut response = ureq::post(url)
         .header("content-type", "application/json")
         .header("Authorization", &format!("Bearer {token}"))
         .send_json(body)

@@ -1,5 +1,6 @@
 //! crates.io adapter — search via API; hydrate via inert `.crate` download.
 
+use bookclerk_tls::ureq;
 use std::io::Read;
 
 use flate2::read::GzDecoder;
@@ -178,8 +179,7 @@ fn parse_crate_name(name: &str) -> Option<(PluginKind, String)> {
 
 /// GET `url` as JSON; non-success HTTP statuses become [`CatalogError`].
 fn http_get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
-    let mut response = bookclerk_tls::http_agent()
-        .get(url)
+    let mut response = ureq::get(url)
         .header("User-Agent", UA)
         .header("Accept", "application/json")
         .call()
@@ -198,8 +198,7 @@ fn http_get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
 
 /// GET `url` as bytes, capped at 32 MiB, for an inert `.crate` download.
 fn http_get_bytes(url: &str) -> Result<Vec<u8>> {
-    let mut response = bookclerk_tls::http_agent()
-        .get(url)
+    let mut response = ureq::get(url)
         .header("User-Agent", UA)
         .call()
         .map_err(|e| CatalogError::message(format!("download failed: {e}")))?;

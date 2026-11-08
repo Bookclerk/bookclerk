@@ -1,5 +1,6 @@
 //! Secure plugin installer state machine.
 
+use bookclerk_tls::ureq;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -1483,8 +1484,7 @@ fn download_to(url: &str, dest: &Path, offline: bool) -> Result<()> {
             "remote install requires https:// (or localhost http for fixtures)",
         ));
     }
-    let mut response = bookclerk_tls::http_agent()
-        .get(url)
+    let mut response = ureq::get(url)
         .header(
             "User-Agent",
             concat!("bookclerk/", env!("CARGO_PKG_VERSION"), " (plugin-install)"),

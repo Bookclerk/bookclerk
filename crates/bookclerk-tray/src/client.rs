@@ -1,5 +1,6 @@
 //! Talk to the local `bookclerkd` HTTP API from the tray thread.
 
+use bookclerk_tls::ureq;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -97,8 +98,7 @@ impl TrayConfig {
     fn prepare_tray_handoff(&self) -> anyhow::Result<PreparedHandoff> {
         let base = self.base_url.trim_end_matches('/');
         let url = format!("{base}/api/auth/tray-handoff/prepare");
-        let mut req = bookclerk_tls::http_agent()
-            .post(&url)
+        let mut req = ureq::post(&url)
             .config()
             .timeout_global(Some(Duration::from_secs(10)))
             .build();
@@ -133,8 +133,7 @@ impl TrayConfig {
     /// Returns an error when the HTTP request fails or the daemon rejects it.
     pub fn trigger_scan(&self) -> anyhow::Result<()> {
         let url = format!("{}/api/library/scan", self.base_url.trim_end_matches('/'));
-        let mut req = bookclerk_tls::http_agent()
-            .post(&url)
+        let mut req = ureq::post(&url)
             .header("Content-Type", "application/json")
             .config()
             .timeout_global(Some(Duration::from_secs(10)))

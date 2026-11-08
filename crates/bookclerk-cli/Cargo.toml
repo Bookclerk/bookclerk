@@ -49,7 +49,6 @@ toml.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 bookclerk-tls.workspace = true
-ureq.workspace = true
 url.workspace = true
 secrecy.workspace = true
 zeroize.workspace = true

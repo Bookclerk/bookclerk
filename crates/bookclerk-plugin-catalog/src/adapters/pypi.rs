@@ -1,5 +1,6 @@
 //! PyPI adapter — exact lookup only (no supported search API).
 
+use bookclerk_tls::ureq;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -134,8 +135,7 @@ impl RegistryAdapter for PypiAdapter {
 
 /// GET + JSON decode with the catalog UA; non-success HTTP becomes [`CatalogError`].
 fn http_get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
-    let mut response = bookclerk_tls::http_agent()
-        .get(url)
+    let mut response = ureq::get(url)
         .header("User-Agent", UA)
         .header("Accept", "application/json")
         .call()

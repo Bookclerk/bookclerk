@@ -9,9 +9,13 @@
 //! - [`crypto_provider`] hands the provider to code that builds a rustls
 //!   `ClientConfig` or `ServerConfig` itself (the node API listener and
 //!   client).
-//! - [`http_agent`] is the blocking HTTP client (`ureq`) every host crate uses
-//!   instead of `ureq::get` / `ureq::post`, whose default agent would need a
-//!   provider of its own.
+//! - [`ureq`] is the `ureq` crate as host crates use it: `use bookclerk_tls::ureq;`
+//!   and then `ureq::get(url)` as usual. Its request functions send through
+//!   [`http_agent`] instead of `ureq`'s own default agent, which has no
+//!   provider (the workspace builds `ureq` with `rustls-no-provider`) and would
+//!   panic on its first HTTPS request. Host crates depend on this crate rather
+//!   than on `ureq` directly, so that agent is out of reach.
+//! - [`http_agent`] is the shared blocking HTTP client behind those functions.
 //! - [`ureq_tls_config`] is the same TLS setting for crates that build a
 //!   custom `ureq` agent.
 //!
@@ -72,6 +76,59 @@ pub fn http_agent() -> ureq::Agent {
         .clone()
 }
 
+/// The `ureq` crate with the hosts' TLS: everything `ureq` exports, except
+/// that the request functions (`get`, `post`, …) use [`http_agent`].
+///
+/// Import it in place of the crate (`use bookclerk_tls::ureq;`); call sites
+/// then read like plain `ureq`.
+pub mod ureq {
+    pub use ::ureq::*;
+
+    use ::ureq::http::Uri;
+    use ::ureq::typestate::{WithBody, WithoutBody};
+
+    /// Defines one request function that sends through [`super::http_agent`].
+    macro_rules! request_fn {
+        ($(#[$doc:meta])* $name:ident -> $body:ty) => {
+            $(#[$doc])*
+            ///
+            /// # Arguments
+            ///
+            /// * `uri` - The request target, anything that converts to a URI.
+            ///
+            /// # Returns
+            ///
+            /// A request builder on the shared agent.
+            pub fn $name<T>(uri: T) -> RequestBuilder<$body>
+            where
+                Uri: TryFrom<T>,
+                <Uri as TryFrom<T>>::Error: Into<::ureq::http::Error>,
+            {
+                super::http_agent().$name(uri)
+            }
+        };
+    }
+
+    request_fn!(/// Starts a `GET` request.
+        get -> WithoutBody);
+    request_fn!(/// Starts a `POST` request.
+        post -> WithBody);
+    request_fn!(/// Starts a `PUT` request.
+        put -> WithBody);
+    request_fn!(/// Starts a `DELETE` request.
+        delete -> WithoutBody);
+    request_fn!(/// Starts a `HEAD` request.
+        head -> WithoutBody);
+    request_fn!(/// Starts an `OPTIONS` request.
+        options -> WithoutBody);
+    request_fn!(/// Starts a `CONNECT` request.
+        connect -> WithoutBody);
+    request_fn!(/// Starts a `PATCH` request.
+        patch -> WithBody);
+    request_fn!(/// Starts a `TRACE` request.
+        trace -> WithoutBody);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +156,35 @@ mod tests {
             .as_ref()
             .map(Arc::clone);
         assert!(configured.is_some_and(|p| Arc::ptr_eq(&p, &crypto_provider())));
+    }
+
+    #[test]
+    fn every_request_function_builds_its_method() {
+        use ::ureq::http::Method;
+        let url = "https://example.invalid/";
+        let methods = [
+            (super::ureq::get(url).method_ref().cloned(), Method::GET),
+            (
+                super::ureq::delete(url).method_ref().cloned(),
+                Method::DELETE,
+            ),
+            (super::ureq::head(url).method_ref().cloned(), Method::HEAD),
+            (
+                super::ureq::options(url).method_ref().cloned(),
+                Method::OPTIONS,
+            ),
+            (
+                super::ureq::connect(url).method_ref().cloned(),
+                Method::CONNECT,
+            ),
+            (super::ureq::trace(url).method_ref().cloned(), Method::TRACE),
+            (super::ureq::post(url).method_ref().cloned(), Method::POST),
+            (super::ureq::put(url).method_ref().cloned(), Method::PUT),
+            (super::ureq::patch(url).method_ref().cloned(), Method::PATCH),
+        ];
+        for (got, want) in methods {
+            assert_eq!(got, Some(want));
+        }
     }
 
     #[test]
