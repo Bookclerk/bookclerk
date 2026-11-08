@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 /// Credential envelope for one GraphicAudio account.
 ///
-/// Persisted as JSON in `encrypted_secrets` (see [`crate::db`]); never written
+/// The guest returns it from login; the host seals it into `encrypted_secrets`
+/// and passes it back on scan and fetch. Never written
 /// to disk under `Accounts/`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphicAudioAuthFile {

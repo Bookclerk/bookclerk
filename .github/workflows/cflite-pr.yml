@@ -23,7 +23,7 @@ on:
       - "crates/bookclerk-node-proto/**"
       - "crates/bookclerk-cover/**"
       - "crates/bookclerk-config/**"
-      - "crates/bookclerk-source/**"
+      - "crates/bookclerk-storefront/**"
       - "crates/bookclerk-plugins/optional/source-libro/**"
       - ".clusterfuzzlite/**"
       - ".github/workflows/cflite-*.yml"

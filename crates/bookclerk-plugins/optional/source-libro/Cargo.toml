@@ -1,6 +1,6 @@
 [package]
 name = "bookclerk-plugin-source-libro"
-description = "Libro.fm source plugin: in-process ContentSource + Workers RPC guest binary"
+description = "Libro.fm source plugin: native storefront guest binary"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -30,10 +30,8 @@ anyhow.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 chrono.workspace = true
-bookclerk-config.workspace = true
-bookclerk-library.workspace = true
 bookclerk-plugin-sdk = { workspace = true, features = ["http"] }
-bookclerk-source.workspace = true
+bookclerk-storefront.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -42,13 +40,10 @@ tracing.workspace = true
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
-bookclerk-plugin-database-sqlite = { workspace = true, features = ["host-helpers"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 wiremock.workspace = true
 serde_json.workspace = true
-bookclerk-library.workspace = true
-bookclerk-source.workspace = true
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [lints]

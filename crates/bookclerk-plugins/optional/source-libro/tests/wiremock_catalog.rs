@@ -6,7 +6,7 @@
 
 use bookclerk_plugin_source_libro::APP_VER;
 use bookclerk_plugin_source_libro::{explore_search_path, LibroSource, CATALOG_USER_AGENT};
-use bookclerk_source::{CatalogSearchOpts, ContentSource, ExpandSeed, PurchaseHintOpts};
+use bookclerk_storefront::{CatalogSearchOpts, ExpandSeed, PurchaseHintOpts};
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

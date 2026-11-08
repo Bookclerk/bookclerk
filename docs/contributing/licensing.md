@@ -21,8 +21,9 @@ may be used. The reasons behind these choices are in
 | `normalize` in `bookclerk-resolve`, ported from audiobookshelf (title and author cleaning moved out of `match_score`) | GPL-3.0-only |
 | Vendored code under `third_party/` and fonts under `ui/public/fonts/` | Their own licenses, next to them |
 
-The plugin SDKs and everything a plugin links are permissive so plugin
-authors can license their plugins however they like. They use the MIT OR
+The plugin SDKs and everything a third-party plugin built on them links
+are permissive so plugin authors can license their plugins however they
+like. They use the MIT OR
 Apache-2.0 dual license (the user picks either; Apache-2.0 adds an explicit
 patent grant), with both texts next to each package. A plugin runs as a separate,
 jailed process and talks to the host only over the plugin ABI, so the
@@ -36,6 +37,9 @@ from and which license it keeps.
 
 Every crate states its license in `Cargo.toml`. A new crate inherits
 AGPL-3.0-or-later from `[workspace.package]` unless it is plugin-facing.
+First-party storefront guests are part of Bookclerk and also link
+AGPL-licensed crates such as `bookclerk-storefront`; those crates are not
+plugin-facing, and third-party plugins link only the SDK crates above.
 
 ## What the AGPL asks of people who run Bookclerk
 

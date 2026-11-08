@@ -5,14 +5,15 @@
 
 use std::io::{Cursor, Write};
 
-use bookclerk_library::configure_master_key;
+use std::collections::BTreeMap;
+
 use bookclerk_plugin_source_libro::{
-    fetch_title_materials, load_auth_from_db, save_auth_to_db, scan_account_into_library,
-    LibroAuthFile, LibroClient, LibroSource, APP_VER, DOWNLOAD_MANIFEST_PATH, LIBRARY_PATH,
+    collect_account_books, fetch_title_materials, guest_fetch_title, guest_login, guest_scan,
+    LibroAuthFile, LibroClient, LibroContainer, APP_VER, DOWNLOAD_MANIFEST_PATH, LIBRARY_PATH,
     PACKAGED_M4B_PATH, USER_AGENT_VALUE,
 };
-use bookclerk_source::{ContentSource, LoginOptions, ScanOptions};
-use tempfile::TempDir;
+use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
+use bookclerk_storefront::LoginOptions;
 use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use zip::write::SimpleFileOptions;
@@ -20,19 +21,6 @@ use zip::ZipWriter;
 
 fn test_password() -> String {
     ["sec", "ret"].concat()
-}
-
-fn dek_lock() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
-async fn setup_dek() -> (tokio::sync::MutexGuard<'static, ()>, TempDir) {
-    let guard = dek_lock().lock().await;
-    let dir = tempfile::tempdir().unwrap();
-    std::env::remove_var(bookclerk_library::MASTER_KEY_AUTH_PASSWORD_ENV);
-    configure_master_key(dir.path()).unwrap();
-    (guard, dir)
 }
 
 fn sample_audiobook(isbn: &str, title: &str) -> serde_json::Value {
@@ -76,8 +64,7 @@ fn zip_with_mp3() -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn oauth_token_login_saves_auth_to_db() {
-    let (_guard, _dek_dir) = setup_dek().await;
+async fn oauth_token_login_returns_credentials_for_the_host() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
@@ -93,40 +80,34 @@ async fn oauth_token_login_saves_auth_to_db() {
         .mount(&server)
         .await;
 
-    let store = bookclerk_plugin_database_sqlite::open_store_memory()
-        .await
-        .unwrap();
-    let source = LibroSource::with_base_url(server.uri());
-    let account = source
-        .login(
-            &store.scope("libro", "libro"),
-            LoginOptions {
-                marketplace: "us".into(),
-                label: Some("Main".into()),
-                email: Some("reader@example.com".into()),
-                password: Some(test_password()),
-                force: true,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+    let (account_id, marketplace, label, scan_enabled, credentials) = guest_login(
+        &server.uri(),
+        LoginOptions {
+            marketplace: "us".into(),
+            label: Some("Main".into()),
+            email: Some("reader@example.com".into()),
+            password: Some(test_password()),
+            force: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
 
-    assert_eq!(account.source, "libro");
     // user_id is None in the Libro auth, so account_id falls back to email.
-    assert_eq!(account.account_id, "reader@example.com");
+    assert_eq!(account_id, "reader@example.com");
+    assert_eq!(marketplace, "us");
+    assert_eq!(label.as_deref(), Some("Main"));
+    assert!(scan_enabled);
 
-    // Verify credentials were persisted to the DB.
-    let auth = load_auth_from_db(&store.scope("libro", "libro"), "reader@example.com")
-        .await
-        .unwrap()
-        .expect("auth must be present in DB");
+    // The guest hands the credential document back for the host to seal.
+    let auth: LibroAuthFile = serde_json::from_value(credentials).unwrap();
     assert_eq!(auth.access_token, "test-token-abc");
     assert!(auth.expires_at.is_some());
 }
 
 #[tokio::test]
-async fn library_page_upserts_libro_books() {
+async fn library_page_maps_libro_books_to_scan_rows() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(LIBRARY_PATH))
@@ -150,41 +131,33 @@ async fn library_page_upserts_libro_books() {
         .mount(&server)
         .await;
 
-    let store = bookclerk_plugin_database_sqlite::open_store_memory()
-        .await
-        .unwrap();
-    store
-        .upsert_account(
-            "libro",
-            "reader@example.com",
-            "us",
-            Some("Main"),
-            true,
-            "libro",
-        )
-        .await
-        .unwrap();
-
     let client = LibroClient::new(server.uri()).with_token("tok");
-    let (books, pages) = scan_account_into_library(
-        &store.scope("libro", "libro"),
-        &client,
-        "reader@example.com",
-        "us",
-    )
-    .await
-    .unwrap();
+    let (books, pages) = collect_account_books(&client, "reader@example.com", "us")
+        .await
+        .unwrap();
 
     assert_eq!(pages, 1);
-    assert_eq!(books, 2);
+    assert_eq!(books.len(), 2);
 
-    let found = store.find_books_by_isbn("9781234567890").await.unwrap();
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].source, "libro");
-    assert_eq!(found[0].product_id, "9781234567890");
-    assert!(found[0].asin.is_none());
-    assert_eq!(found[0].authors.as_deref(), Some("Ada Author"));
-    assert_eq!(found[0].length_minutes, Some(61));
+    let found = books
+        .iter()
+        .find(|book| book.product_id == "9781234567890")
+        .expect("string ISBN row");
+    assert_eq!(found.account_id, "reader@example.com");
+    assert_eq!(
+        records::identifier_value(&found.identifiers, IdentifierScheme::Isbn).as_deref(),
+        Some("9781234567890")
+    );
+    assert!(records::asin_for_marketplace(&found.identifiers, "us").is_none());
+    assert_eq!(
+        records::joined_names(&found.credits, CreditRole::Author).as_deref(),
+        Some("Ada Author")
+    );
+    assert_eq!(found.length_minutes, Some(61));
+    assert!(
+        books.iter().any(|book| book.product_id == "9789999999999"),
+        "numeric ISBNs become product ids"
+    );
 }
 
 #[tokio::test]
@@ -370,8 +343,7 @@ async fn packaged_m4b_used_when_format_m4b_has_no_m4b_part() {
 }
 
 #[tokio::test]
-async fn content_source_scan_and_fetch_title() {
-    let (_guard, _dek_dir) = setup_dek().await;
+async fn guest_scan_and_fetch_title_use_host_credentials() {
     let server = MockServer::start().await;
     let zip_bytes = zip_with_mp3();
 
@@ -425,10 +397,8 @@ async fn content_source_scan_and_fetch_title() {
         .mount(&server)
         .await;
 
-    // Credentials are now stored in the DB (not files).
-    let store = bookclerk_plugin_database_sqlite::open_store_memory()
-        .await
-        .unwrap();
+    // The host injects each account's credential document; the guest never
+    // reads a database.
     let auth = LibroAuthFile {
         access_token: "tok".into(),
         token_type: "Bearer".into(),
@@ -438,41 +408,26 @@ async fn content_source_scan_and_fetch_title() {
         marketplace: "us".into(),
         label: None,
     };
-    // user_id is None so account_id() returns the email.
-    save_auth_to_db(&auth, &store.scope("libro", "libro"), "scan@example.com")
-        .await
-        .unwrap();
+    let credentials = serde_json::to_value(&auth).unwrap();
+    let mut by_account = BTreeMap::new();
+    by_account.insert("scan@example.com".to_string(), credentials.clone());
 
-    let source = LibroSource::with_base_url(server.uri());
-    let accounts = source
-        .list_accounts(&store.scope("libro", "libro"))
-        .await
-        .unwrap();
-    assert_eq!(accounts.len(), 1);
-
-    let summary = source
-        .scan(&store.scope("libro", "libro"), ScanOptions::default())
-        .await
-        .unwrap();
-    assert_eq!(summary.accounts, 1);
-    assert_eq!(summary.books_upserted, 1);
+    let (books, accounts, pages) = guest_scan(&server.uri(), &by_account, &[]).await.unwrap();
+    assert_eq!(accounts, 1);
+    assert_eq!(pages, 1);
+    assert_eq!(books.len(), 1);
+    assert_eq!(books[0].product_id, "9783333333333");
 
     let cache = tempfile::tempdir().unwrap();
-    let fetch = source
-        .fetch_title(
-            &store.scope("libro", "libro"),
-            "scan@example.com",
-            "9783333333333",
-            &bookclerk_source::FetchOptions {
-                download: Default::default(),
-                cache_dir: cache.path().to_path_buf(),
-                files_dir: cache.path().to_path_buf(),
-                max_cache_bytes: None,
-                cancel: None,
-            },
-        )
-        .await
-        .unwrap();
+    let fetch = guest_fetch_title(
+        &server.uri(),
+        &credentials,
+        "9783333333333",
+        cache.path(),
+        LibroContainer::M4b,
+    )
+    .await
+    .unwrap();
 
     assert!(!fetch.parts.is_empty());
 }

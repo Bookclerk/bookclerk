@@ -13,6 +13,14 @@ use tokio::time::Instant;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// The Libro.fm catalog-detail lookup `with_details` calls.
+async fn detail(
+    source: &LibroSource,
+    product_id: String,
+) -> bookclerk_source::Result<Option<CatalogHit>> {
+    source.catalog_detail(&product_id).await
+}
+
 /// Path of `explore/audiobook_details/{isbn}` beside the search path.
 fn details_path(isbn: &str) -> String {
     explore_search_path().replace(
@@ -60,7 +68,7 @@ async fn a_lean_hit_takes_the_full_record() {
         .mount(&server)
         .await;
     let source = LibroSource::with_base_url(server.uri());
-    let hit = with_details(&source, lean("9781478975311"), later()).await;
+    let hit = with_details(|id| detail(&source, id), lean("9781478975311"), later()).await;
     assert_eq!(hit.publisher.as_deref(), Some("Hachette Audio"));
     assert_eq!(hit.price_cents, Some(3359));
 }
@@ -75,10 +83,10 @@ async fn the_hit_stays_when_details_name_another_product_or_miss() {
         .mount(&server)
         .await;
     let source = LibroSource::with_base_url(server.uri());
-    let hit = with_details(&source, lean("9781478975311"), later()).await;
+    let hit = with_details(|id| detail(&source, id), lean("9781478975311"), later()).await;
     assert_eq!(hit.publisher, None);
     // A product id that is not an ISBN finds nothing.
-    let hit = with_details(&source, lean("not-an-isbn"), later()).await;
+    let hit = with_details(|id| detail(&source, id), lean("not-an-isbn"), later()).await;
     assert_eq!(hit.product_id, "not-an-isbn");
 }
 
@@ -96,7 +104,7 @@ async fn the_hit_stays_when_details_fail_or_run_out_of_time() {
         .await;
     let source = LibroSource::with_base_url(server.uri());
     let hit = with_details(
-        &source,
+        |id| detail(&source, id),
         lean("9781478975311"),
         Instant::now() + Duration::from_millis(50),
     )
@@ -109,7 +117,7 @@ async fn the_hit_stays_when_details_fail_or_run_out_of_time() {
         .mount(&refusing)
         .await;
     let source = LibroSource::with_base_url(refusing.uri());
-    let hit = with_details(&source, lean("9781478975311"), later()).await;
+    let hit = with_details(|id| detail(&source, id), lean("9781478975311"), later()).await;
     assert_eq!(hit.title, "Circe");
     assert_eq!(hit.publisher, None);
 }
@@ -131,7 +139,7 @@ async fn a_slug_keyed_hit_takes_details_with_the_same_isbn() {
     )
     .into_iter()
     .collect();
-    let hit = with_details(&source, slugged, later()).await;
+    let hit = with_details(|id| detail(&source, id), slugged, later()).await;
     assert_eq!(hit.publisher.as_deref(), Some("Hachette Audio"));
     assert_eq!(hit.product_id, "9781478975311-circe");
 }

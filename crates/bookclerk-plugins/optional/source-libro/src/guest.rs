@@ -2,7 +2,7 @@
 //!
 //! These APIs do **not** open the library DB — the host seals credentials and
 //! upserts scan rows via `bookclerk_plugin_host::ExternalSource`. Conversions
-//! between storefront types and the typed ABI live in [`bookclerk_source::abi`].
+//! between storefront types and the typed ABI live in [`bookclerk_storefront::abi`].
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -12,10 +12,10 @@ use bookclerk_plugin_sdk::{
     FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch, ScanParams,
     ScanSummary, SourceAccount,
 };
-use bookclerk_source::abi::{
+use bookclerk_storefront::abi::{
     account_credentials_json, credentials_from_bytes, credentials_to_bytes, scan_summary,
 };
-use bookclerk_source::{LoginOptions, PlainFetch};
+use bookclerk_storefront::{LoginOptions, PlainFetch};
 use chrono::{Duration, TimeZone, Utc};
 use serde_json::Value;
 
@@ -214,7 +214,7 @@ pub fn resolve_base_url(source_config: &Value) -> String {
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
 }
 
-/// Resolve download container from `[sources.libro]` JSON.
+/// Resolve download container from the plugin settings document.
 #[must_use]
 pub fn resolve_container(source_config: &Value) -> LibroContainer {
     source_config

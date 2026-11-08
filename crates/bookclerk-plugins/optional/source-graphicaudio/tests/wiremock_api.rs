@@ -5,39 +5,36 @@
 
 use std::io::{Cursor, Write};
 
-use bookclerk_library::configure_master_key;
+use std::collections::BTreeMap;
+
 use bookclerk_plugin_source_graphicaudio::{
-    fetch_title_materials, load_auth_from_db, save_auth_to_db, GraphicAudioAccess,
-    GraphicAudioAuthFile, GraphicAudioClient, GraphicAudioSource, LOGIN_PATH, PRODUCTS_PATH,
-    REMOVE_PATH,
+    fetch_title_materials, guest_fetch_title, guest_login, guest_scan, GraphicAudioAccess,
+    GraphicAudioAuthFile, GraphicAudioBitrate, GraphicAudioClient, GraphicAudioContainer,
+    DEFAULT_STORE_URL, LOGIN_PATH, PRODUCTS_PATH, REMOVE_PATH,
 };
-use bookclerk_source::{ContentSource, LoginOptions, ScanOptions};
-use tempfile::TempDir;
+use bookclerk_storefront::LoginOptions;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
-fn dek_lock() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+/// A stored GraphicAudio account the way the host keeps it.
+fn stored_auth(email: &str) -> GraphicAudioAuthFile {
+    GraphicAudioAuthFile {
+        token: "tok".into(),
+        client_id: "dev".into(),
+        email: email.into(),
+        marketplace: "us".into(),
+        label: None,
+    }
 }
 
 fn test_password() -> String {
     ["sec", "ret"].concat()
 }
 
-async fn setup_dek() -> (tokio::sync::MutexGuard<'static, ()>, TempDir) {
-    let guard = dek_lock().lock().await;
-    let dir = tempfile::tempdir().unwrap();
-    std::env::remove_var(bookclerk_library::MASTER_KEY_AUTH_PASSWORD_ENV);
-    configure_master_key(dir.path()).unwrap();
-    (guard, dir)
-}
-
 #[tokio::test]
-async fn login_saves_auth_to_db() {
-    let (_guard, _dek_dir) = setup_dek().await;
+async fn device_login_returns_credentials_for_the_host() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(LOGIN_PATH))
@@ -48,45 +45,35 @@ async fn login_saves_auth_to_db() {
         .mount(&server)
         .await;
 
-    let store = bookclerk_plugin_database_sqlite::open_store_memory()
-        .await
-        .unwrap();
-    let source =
-        GraphicAudioSource::with_base_url(server.uri()).with_access(GraphicAudioAccess::Device);
-    let account = source
-        .login(
-            &store.scope("graphicaudio", "graphicaudio"),
-            LoginOptions {
-                marketplace: "us".into(),
-                label: Some("GA".into()),
-                email: Some("reader@example.com".into()),
-                password: Some(test_password()),
-                force: true,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(account.source, "graphicaudio");
-    // GraphicAudioAuthFile::account_id() returns email.
-    assert_eq!(account.account_id, "reader@example.com");
-
-    // Verify credentials were persisted to the DB.
-    let auth = load_auth_from_db(
-        &store.scope("graphicaudio", "graphicaudio"),
-        "reader@example.com",
+    let (account_id, _marketplace, label, scan_enabled, credentials) = guest_login(
+        &server.uri(),
+        DEFAULT_STORE_URL,
+        GraphicAudioAccess::Device,
+        LoginOptions {
+            marketplace: "us".into(),
+            label: Some("GA".into()),
+            email: Some("reader@example.com".into()),
+            password: Some(test_password()),
+            force: true,
+            ..Default::default()
+        },
     )
     .await
-    .unwrap()
-    .expect("auth must be present in DB");
+    .unwrap();
+
+    // GraphicAudioAuthFile::account_id() returns email.
+    assert_eq!(account_id, "reader@example.com");
+    assert_eq!(label.as_deref(), Some("GA"));
+    assert!(scan_enabled);
+
+    // The guest hands the credential document back for the host to seal.
+    let auth: GraphicAudioAuthFile = serde_json::from_value(credentials).unwrap();
     assert_eq!(auth.token, "ga-token-xyz");
     assert!(!auth.client_id.is_empty());
 }
 
 #[tokio::test]
-async fn scan_skips_samples_upserts_owned() {
-    let (_guard, _dek_dir) = setup_dek().await;
+async fn scan_skips_samples_returns_owned() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(PRODUCTS_PATH))
@@ -113,38 +100,26 @@ async fn scan_skips_samples_upserts_owned() {
         .mount(&server)
         .await;
 
-    // Credentials are now stored in the DB (not files).
-    let store = bookclerk_plugin_database_sqlite::open_store_memory()
-        .await
-        .unwrap();
-    save_auth_to_db(
-        &GraphicAudioAuthFile {
-            token: "tok".into(),
-            client_id: "dev".into(),
-            email: "a@ex.com".into(),
-            marketplace: "us".into(),
-            label: None,
-        },
-        &store.scope("graphicaudio", "graphicaudio"),
-        "a@ex.com",
+    let mut credentials = BTreeMap::new();
+    credentials.insert(
+        "a@ex.com".to_string(),
+        serde_json::to_value(stored_auth("a@ex.com")).unwrap(),
+    );
+    let (books, accounts, _pages) = guest_scan(
+        &server.uri(),
+        DEFAULT_STORE_URL,
+        GraphicAudioAccess::Device,
+        None,
+        &credentials,
+        &[],
+        false,
     )
     .await
     .unwrap();
-
-    let source =
-        GraphicAudioSource::with_base_url(server.uri()).with_access(GraphicAudioAccess::Device);
-    let summary = source
-        .scan(
-            &store.scope("graphicaudio", "graphicaudio"),
-            ScanOptions::default(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(summary.books_upserted, 1);
-    let books = store.list_books(None).await.unwrap();
+    assert_eq!(accounts, 1);
     assert_eq!(books.len(), 1);
     assert_eq!(books[0].product_id, "99");
-    assert_eq!(books[0].source, "graphicaudio");
+    assert_eq!(books[0].account_id, "a@ex.com");
 }
 
 #[tokio::test]
@@ -178,8 +153,7 @@ async fn fetch_title_downloads_hi_mp3() {
 }
 
 #[tokio::test]
-async fn fetch_title_via_content_source() {
-    let (_guard, _dek_dir) = setup_dek().await;
+async fn guest_fetch_uses_host_credentials() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(PRODUCTS_PATH))
@@ -206,42 +180,21 @@ async fn fetch_title_via_content_source() {
         .mount(&server)
         .await;
 
-    // Credentials are now stored in the DB (not files).
-    let store = bookclerk_plugin_database_sqlite::open_store_memory()
-        .await
-        .unwrap();
-    save_auth_to_db(
-        &GraphicAudioAuthFile {
-            token: "tok".into(),
-            client_id: "dev".into(),
-            email: "u@ex.com".into(),
-            marketplace: "us".into(),
-            label: None,
-        },
-        &store.scope("graphicaudio", "graphicaudio"),
-        "u@ex.com",
+    let credentials = serde_json::to_value(stored_auth("u@ex.com")).unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let fetch = guest_fetch_title(
+        &server.uri(),
+        DEFAULT_STORE_URL,
+        &credentials,
+        "7",
+        cache.path(),
+        GraphicAudioAccess::Device,
+        GraphicAudioBitrate::Hi,
+        GraphicAudioContainer::Auto,
+        None,
     )
     .await
     .unwrap();
-
-    let source =
-        GraphicAudioSource::with_base_url(server.uri()).with_fetch_mode(GraphicAudioAccess::Device);
-    let cache = tempfile::tempdir().unwrap();
-    let fetch = source
-        .fetch_title(
-            &store.scope("graphicaudio", "graphicaudio"),
-            "u@ex.com",
-            "7",
-            &bookclerk_source::FetchOptions {
-                download: bookclerk_source::DownloadOptions::default(),
-                cache_dir: cache.path().to_path_buf(),
-                files_dir: cache.path().to_path_buf(),
-                max_cache_bytes: None,
-                cancel: None,
-            },
-        )
-        .await
-        .unwrap();
     assert_eq!(fetch.parts.len(), 1);
 }
 
@@ -264,8 +217,7 @@ async fn remove_activation_posts_client_id() {
 }
 
 #[tokio::test]
-async fn magento_zip_fetch_via_content_source() {
-    let (_guard, _dek_dir) = setup_dek().await;
+async fn magento_zip_guest_fetch() {
     let store_server = MockServer::start().await;
     let access = MockServer::start().await;
 
@@ -344,44 +296,21 @@ async fn magento_zip_fetch_via_content_source() {
         .mount(&access)
         .await;
 
-    // Credentials are now stored in the DB (not files).
-    let db_store = bookclerk_plugin_database_sqlite::open_store_memory()
-        .await
-        .unwrap();
-    save_auth_to_db(
-        &GraphicAudioAuthFile {
-            token: "tok".into(),
-            client_id: "dev".into(),
-            email: "u@ex.com".into(),
-            marketplace: "us".into(),
-            label: None,
-        },
-        &db_store.scope("graphicaudio", "graphicaudio"),
-        "u@ex.com",
+    let credentials = serde_json::to_value(stored_auth("u@ex.com")).unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let fetch = guest_fetch_title(
+        &access.uri(),
+        &store_server.uri(),
+        &credentials,
+        "99",
+        cache.path(),
+        GraphicAudioAccess::Zip,
+        GraphicAudioBitrate::Hi,
+        GraphicAudioContainer::Auto,
+        Some(&test_password()),
     )
     .await
     .unwrap();
-
-    let cache = tempfile::tempdir().unwrap();
-    let source = GraphicAudioSource::with_base_url(access.uri())
-        .with_store_url(store_server.uri())
-        .with_fetch_mode(GraphicAudioAccess::Zip)
-        .with_magento_password(test_password());
-    let fetch = source
-        .fetch_title(
-            &db_store.scope("graphicaudio", "graphicaudio"),
-            "u@ex.com",
-            "99",
-            &bookclerk_source::FetchOptions {
-                download: bookclerk_source::DownloadOptions::default(),
-                cache_dir: cache.path().to_path_buf(),
-                files_dir: cache.path().to_path_buf(),
-                max_cache_bytes: None,
-                cancel: None,
-            },
-        )
-        .await
-        .unwrap();
     assert!(
         fetch.m4b_path.is_some(),
         "expected m4b_path from Magento ZIP"
@@ -391,8 +320,7 @@ async fn magento_zip_fetch_via_content_source() {
 }
 
 #[tokio::test]
-async fn browser_player_fetch_via_content_source() {
-    let (_guard, _dek_dir) = setup_dek().await;
+async fn browser_player_guest_fetch() {
     let store_server = MockServer::start().await;
     let access = MockServer::start().await;
 
@@ -452,44 +380,21 @@ async fn browser_player_fetch_via_content_source() {
         .mount(&access)
         .await;
 
-    // Credentials are now stored in the DB (not files).
-    let db_store = bookclerk_plugin_database_sqlite::open_store_memory()
-        .await
-        .unwrap();
-    save_auth_to_db(
-        &GraphicAudioAuthFile {
-            token: "tok".into(),
-            client_id: "dev".into(),
-            email: "u@ex.com".into(),
-            marketplace: "us".into(),
-            label: None,
-        },
-        &db_store.scope("graphicaudio", "graphicaudio"),
-        "u@ex.com",
+    let credentials = serde_json::to_value(stored_auth("u@ex.com")).unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let fetch = guest_fetch_title(
+        &access.uri(),
+        &store_server.uri(),
+        &credentials,
+        "5273",
+        cache.path(),
+        GraphicAudioAccess::Web,
+        GraphicAudioBitrate::Hi,
+        GraphicAudioContainer::Auto,
+        Some(&test_password()),
     )
     .await
     .unwrap();
-
-    let cache = tempfile::tempdir().unwrap();
-    let source = GraphicAudioSource::with_base_url(access.uri())
-        .with_store_url(store_server.uri())
-        .with_fetch_mode(GraphicAudioAccess::Web)
-        .with_magento_password(test_password());
-    let fetch = source
-        .fetch_title(
-            &db_store.scope("graphicaudio", "graphicaudio"),
-            "u@ex.com",
-            "5273",
-            &bookclerk_source::FetchOptions {
-                download: bookclerk_source::DownloadOptions::default(),
-                cache_dir: cache.path().to_path_buf(),
-                files_dir: cache.path().to_path_buf(),
-                max_cache_bytes: None,
-                cancel: None,
-            },
-        )
-        .await
-        .unwrap();
     assert_eq!(fetch.parts.len(), 1);
     assert!(std::fs::read(&fetch.parts[0].path)
         .unwrap()

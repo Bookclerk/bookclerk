@@ -1,129 +1,14 @@
-//! Library scan: paginate Chirp `currentUserAudiobooks` into [`SourceScope`].
+//! Library scan: paginate Chirp `currentUserAudiobooks` into structured scan rows.
+//!
+//! The guest returns the rows over the plugin ABI; the host writes them.
 
-use bookclerk_library::SourceScope;
 use bookclerk_plugin_sdk::ScanBook;
-use bookclerk_source::abi::{abridgement_from_flag, rfc3339, scanned_title};
-use bookclerk_source::records::{self, CreditRole};
-use bookclerk_source::ScanSummary;
+use bookclerk_storefront::abi::{abridgement_from_flag, rfc3339};
+use bookclerk_storefront::records::{self, CreditRole};
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::auth::ChirpAuthFile;
 use crate::client::{Audiobook, ChirpClient};
-use crate::db::list_auth_from_db;
-use crate::error::{ChirpError, Result};
-
-/// Options for a Chirp library scan.
-#[derive(Debug, Clone)]
-pub struct ScanOptions {
-    /// Accounts.
-    pub accounts: Vec<String>,
-    /// Page size.
-    pub page_size: u32,
-}
-
-impl Default for ScanOptions {
-    fn default() -> Self {
-        Self {
-            accounts: Vec::new(),
-            page_size: 20,
-        }
-    }
-}
-
-impl From<&bookclerk_source::ScanOptions> for ScanOptions {
-    fn from(opts: &bookclerk_source::ScanOptions) -> Self {
-        Self {
-            accounts: opts.accounts.clone(),
-            page_size: opts.page_size.max(1),
-        }
-    }
-}
-
-/// Sync Chirp libraries for configured accounts into `library`.
-///
-/// Accounts are resolved from `encrypted_secrets` (DB-backed); no
-/// `Accounts/*.chirp.auth` files are read.
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn scan_library(
-    library: &SourceScope,
-    options: ScanOptions,
-    graphql_url: Option<&str>,
-) -> Result<ScanSummary> {
-    let explicit = !options.accounts.is_empty();
-    let all = list_auth_from_db(library).await?;
-    let targets: Vec<(String, ChirpAuthFile)> = if explicit {
-        all.into_iter()
-            .filter(|(id, auth)| {
-                options.accounts.iter().any(|needle| {
-                    id.eq_ignore_ascii_case(needle)
-                        || auth
-                            .label
-                            .as_deref()
-                            .is_some_and(|l| l.eq_ignore_ascii_case(needle))
-                        || auth.email.eq_ignore_ascii_case(needle)
-                })
-            })
-            .collect()
-    } else {
-        all
-    };
-
-    if targets.is_empty() {
-        return Err(ChirpError::no_accounts(
-            "no Chirp accounts configured — run login first",
-        ));
-    }
-
-    let mut summary = ScanSummary::default();
-    let gql = graphql_url.unwrap_or(crate::client::DEFAULT_GRAPHQL_URL);
-
-    for (account_id, auth) in targets {
-        let marketplace = auth.marketplace.clone();
-
-        if !explicit {
-            if let Some(acct) = library.get_account(&account_id).await? {
-                if !acct.scan_enabled {
-                    tracing::info!(
-                        account = %account_id,
-                        "skipping Chirp account — scan_enabled=false"
-                    );
-                    summary.skipped_disabled += 1;
-                    continue;
-                }
-            }
-        }
-
-        library
-            .ensure_account(&account_id, &marketplace, auth.label.as_deref())
-            .await?;
-
-        let client = ChirpClient::new(gql).with_token(&auth.access_token);
-        let (books, pages) = scan_account_into_library(
-            library,
-            &client,
-            &account_id,
-            &marketplace,
-            options.page_size,
-        )
-        .await?;
-        summary.accounts += 1;
-        summary.books_upserted += books;
-        summary.pages += pages;
-
-        tracing::info!(
-            account = %account_id,
-            marketplace = %marketplace,
-            books,
-            pages,
-            "Chirp library scan finished"
-        );
-    }
-
-    Ok(summary)
-}
+use crate::error::Result;
 
 /// Fetch all library pages for one client and collect books (no DB writes).
 ///
@@ -163,30 +48,6 @@ pub async fn collect_account_books(
     }
 
     Ok((books, pages))
-}
-
-/// Fetch all library pages for one client and upsert books.
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn scan_account_into_library(
-    library: &SourceScope,
-    client: &ChirpClient,
-    account_id: &str,
-    marketplace: &str,
-    page_size: u32,
-) -> Result<(usize, u32)> {
-    let (books, pages) = collect_account_books(client, account_id, marketplace, page_size).await?;
-    let mut books_upserted = 0usize;
-    for new in books
-        .into_iter()
-        .filter_map(|book| scanned_title("chirp", book))
-    {
-        library.upsert_scanned_title(&new).await?;
-        books_upserted += 1;
-    }
-    Ok((books_upserted, pages))
 }
 
 /// Map a Chirp audiobook to a structured scan row. Chirp returns one display

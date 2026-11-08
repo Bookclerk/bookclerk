@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use bookclerk_source::{PlainAudioPart, PlainFetch};
+use bookclerk_storefront::{PlainAudioPart, PlainFetch};
 
 use crate::client::ChirpClient;
 use crate::error::{ChirpError, Result};
@@ -85,5 +85,5 @@ pub async fn fetch_title_materials(
 
 /// Sniffs a Chirp part URL and bytes for an audio extension, defaulting to `.bin`.
 fn audio_extension(url: &str, bytes: &[u8]) -> &'static str {
-    bookclerk_source::audio_extension(url, Some(bytes), None, ".bin")
+    bookclerk_storefront::audio_extension(url, Some(bytes), None, ".bin")
 }

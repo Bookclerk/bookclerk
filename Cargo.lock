@@ -1771,13 +1771,13 @@ dependencies = [
  "bookclerk-plugin-database-sqlite",
  "bookclerk-resolve",
  "bookclerk-sandbox",
+ "bookclerk-storefront",
  "chacha20poly1305 0.11.0",
  "chrono",
  "email_address",
  "flate2",
  "hex",
  "hmac 0.13.0",
- "html-escape",
  "rand 0.8.7",
  "rusqlite",
  "sea-orm",
@@ -2249,11 +2249,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bookclerk-config",
- "bookclerk-library",
- "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
- "bookclerk-source",
+ "bookclerk-storefront",
  "bytes",
  "chrono",
  "serde",
@@ -2271,11 +2268,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bookclerk-config",
- "bookclerk-library",
- "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
- "bookclerk-source",
+ "bookclerk-storefront",
  "bytes",
  "chrono",
  "html-escape",
@@ -2298,11 +2292,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bookclerk-config",
- "bookclerk-library",
- "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
- "bookclerk-source",
+ "bookclerk-storefront",
  "bytes",
  "chrono",
  "serde",
@@ -2382,12 +2373,10 @@ dependencies = [
  "bookclerk-plugin-abi",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-resolve",
- "chrono",
- "infer",
- "mime_guess",
+ "bookclerk-storefront",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
+ "tempfile",
  "tokio",
  "tracing",
 ]
@@ -2420,6 +2409,22 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "bookclerk-storefront"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bookclerk-plugin-abi",
+ "bookclerk-resolve",
+ "chrono",
+ "html-escape",
+ "infer",
+ "mime_guess",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
