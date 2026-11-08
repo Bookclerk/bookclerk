@@ -109,6 +109,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # tests; a briefly missing table stands in for a database fault).
 sea-orm.workspace = true
 tempfile.workspace = true
+# Paused test clock for the requirements sweep's wakeup timing tests.
+tokio = { workspace = true, features = ["test-util"] }
 # Same version axum's `ws` feature uses: a host-side client for socket tests.
 tokio-tungstenite = "0.30"
 tower = { version = "0.5", features = ["util"] }
