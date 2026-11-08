@@ -10,11 +10,12 @@
  * decoder, fed in any split, yields the same reply as one push.
  */
 
-import { MAX_STREAM_WINDOW_BYTES } from "./abi.js";
+import { MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES } from "./abi.js";
 import type { ExecuteReply, StatementResult } from "./db-execute.js";
 import { PluginError } from "./errors.js";
 import type { DbCapabilities, DbColumn, ExecuteStreamFrame } from "./generated.js";
-import { ExecuteStreamFrameCodec, decodeMessage } from "./generated-wire.js";
+import { CapnpReader, NO_CAPS } from "./db-capnp.js";
+import { ExecuteStreamFrameCodec } from "./generated-wire.js";
 
 /**
  * What a receiver lets a streamed reply grow to.
@@ -159,8 +160,12 @@ export class ExecuteStreamDecoder {
       throw this.#bytesExceeded(this.#seen);
     }
     this.#buf = concat(this.#buf, bytes);
-    while (this.#buf.byteLength >= 8) {
-      const view = new DataView(this.#buf.buffer, this.#buf.byteOffset, this.#buf.byteLength);
+    // Completed frames are consumed by offset; only an incomplete remainder
+    // is carried (as a view) into the next push, so a reply of many frames
+    // is decoded in one pass over its bytes.
+    let at = 0;
+    while (this.#buf.byteLength - at >= 8) {
+      const view = new DataView(this.#buf.buffer, this.#buf.byteOffset + at, 8);
       if (view.getUint32(0, true) !== 0) {
         throw PluginError.fromWire(
           "invalid_params",
@@ -171,23 +176,15 @@ export class ExecuteStreamDecoder {
       if (frameLen > ceiling) {
         throw this.#bytesExceeded(frameLen);
       }
-      if (this.#buf.byteLength < frameLen) {
+      if (this.#buf.byteLength - at < frameLen) {
         break;
       }
-      let frame: ExecuteStreamFrame;
-      try {
-        frame = decodeMessage(ExecuteStreamFrameCodec, this.#buf.subarray(0, frameLen));
-      } catch (err) {
-        throw PluginError.fromWire(
-          "invalid_params",
-          `streamed reply frame does not decode: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      this.#buf = this.#buf.slice(frameLen);
+      const frame = decodeFrame(this.#buf.subarray(at, at + frameLen), ceiling);
+      at += frameLen;
       this.#apply(frame);
       frames.push(frame);
       if (this.finished) {
-        if (this.#buf.byteLength > 0) {
+        if (this.#buf.byteLength > at) {
           throw PluginError.fromWire(
             "invalid_params",
             "streamed reply carries bytes after its final frame",
@@ -196,6 +193,7 @@ export class ExecuteStreamDecoder {
         break;
       }
     }
+    this.#buf = at === 0 ? this.#buf : this.#buf.subarray(at);
     return frames;
   }
 
@@ -388,6 +386,37 @@ export async function* streamChunks(
     }
   } finally {
     reader.releaseLock();
+  }
+}
+
+/**
+ * Decodes one frame under the traversal budget its stream negotiated.
+ *
+ * A frame carrying one wide row can be larger than the budget that suits
+ * control messages, so the reader's budget follows the frame's own size,
+ * clamped to the stream's raw ceiling, as the host's decoder does.
+ *
+ * @param bytes - One complete single-segment frame.
+ * @param ceiling - Raw byte ceiling of the stream (`rawStreamCeiling`).
+ * @returns The decoded frame.
+ * @throws `PluginError` `invalid_params` when the frame does not decode.
+ */
+function decodeFrame(bytes: Uint8Array, ceiling: number): ExecuteStreamFrame {
+  const words = Math.min(
+    Math.floor(bytes.byteLength / 8) + 16,
+    Math.floor(Math.max(ceiling, MAX_SCALAR_BYTES) / 8),
+  );
+  try {
+    const reader = new CapnpReader(bytes, words);
+    return ExecuteStreamFrameCodec.read(
+      reader.root(ExecuteStreamFrameCodec.dataWords, ExecuteStreamFrameCodec.pointerCount),
+      NO_CAPS,
+    );
+  } catch (err) {
+    throw PluginError.fromWire(
+      "invalid_params",
+      `streamed reply frame does not decode: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 

@@ -16,8 +16,14 @@ from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from ._abi import DB_RESULT_SELECTIONS, DB_STATEMENT_KINDS, DB_TYPES, MAX_STREAM_WINDOW_BYTES
-from ._capnp import _CapnpMessage, _CapnpReader, _CapnpStruct, _StructReader
+from ._abi import (
+    DB_RESULT_SELECTIONS,
+    DB_STATEMENT_KINDS,
+    DB_TYPES,
+    MAX_SCALAR_BYTES,
+    MAX_STREAM_WINDOW_BYTES,
+)
+from ._capnp import NO_CAPS, _CapnpMessage, _CapnpReader, _CapnpStruct, _StructReader
 from ._wire import (
     _db_capabilities_reply_codec,
     _decode_message,
@@ -1148,6 +1154,34 @@ def raw_stream_ceiling(limits: ExecuteStreamLimits) -> int:
     return limits.max_bytes + limits.max_bytes // 8 + MAX_STREAM_WINDOW_BYTES
 
 
+def _decode_frame(data: bytes, ceiling: int) -> dict[str, Any]:
+    """Decode one frame under the traversal budget its stream negotiated.
+
+    A frame carrying one wide row can be larger than the budget that suits
+    control messages, so the reader's budget follows the frame's own size,
+    clamped to the stream's raw ceiling, as the host's decoder does.
+
+    Args:
+        data: One complete single-segment frame.
+        ceiling: Raw byte ceiling of the stream (:func:`raw_stream_ceiling`).
+
+    Returns:
+        The ``ExecuteStreamFrame`` dict.
+
+    Raises:
+        PluginError: ``invalid_params`` when the frame does not decode.
+    """
+    words = min(len(data) // 8 + 16, max(ceiling, MAX_SCALAR_BYTES) // 8)
+    try:
+        reader = _CapnpReader(data, words)
+        codec = _execute_stream_frame_codec
+        return codec.read(reader.root(codec.data_words, codec.pointer_count), NO_CAPS)
+    except Exception as err:
+        raise _plugin_error().from_wire(
+            "invalid_params", f"streamed reply frame does not decode: {err}"
+        ) from err
+
+
 class ExecuteStreamDecoder:
     """Sans-IO decoder of a streamed execute reply.
 
@@ -1169,6 +1203,7 @@ class ExecuteStreamDecoder:
         self._limits = limits
         self._retain_rows = retain_rows
         self._buf = bytearray()
+        self._at = 0
         self._seen = 0
         self._state = "awaitingHead"
         self._operation_id = ""
@@ -1222,30 +1257,32 @@ class ExecuteStreamDecoder:
         if self._seen > ceiling:
             raise self._bytes_exceeded(self._seen)
         self._buf += data
-        while len(self._buf) >= 8:
-            if int.from_bytes(self._buf[0:4], "little") != 0:
+        # Completed frames are consumed by offset and the buffer is compacted
+        # once per push, so a reply of many frames is decoded in one pass.
+        buf = self._buf
+        at = self._at
+        while len(buf) - at >= 8:
+            if int.from_bytes(buf[at : at + 4], "little") != 0:
                 raise _plugin_error().from_wire(
                     "invalid_params",
                     "streamed reply frame is not a single-segment Cap'n message",
                 )
-            frame_len = int.from_bytes(self._buf[4:8], "little") * 8 + 8
+            frame_len = int.from_bytes(buf[at + 4 : at + 8], "little") * 8 + 8
             if frame_len > ceiling:
                 raise self._bytes_exceeded(frame_len)
-            if len(self._buf) < frame_len:
+            if len(buf) - at < frame_len:
                 break
-            try:
-                frame = _decode_message(_execute_stream_frame_codec, bytes(self._buf[:frame_len]))
-            except Exception as err:
-                raise _plugin_error().from_wire(
-                    "invalid_params", f"streamed reply frame does not decode: {err}"
-                ) from err
-            del self._buf[:frame_len]
+            frame = _decode_frame(bytes(buf[at : at + frame_len]), ceiling)
+            at += frame_len
             self._apply(frame)
             frames.append(frame)
             if self.finished:
-                if self._buf:
+                if len(buf) > at:
                     raise self._sequence("carries bytes after its final frame")
                 break
+        if at:
+            del buf[:at]
+        self._at = 0
         return frames
 
     def finish(self) -> ExecuteReply:

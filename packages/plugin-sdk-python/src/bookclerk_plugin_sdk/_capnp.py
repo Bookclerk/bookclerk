@@ -301,9 +301,18 @@ class _ListPointer:
 class _CapnpReader:
     """Single-segment unpacked Cap'n reader."""
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, max_words: int = _MAX_TRAVERSAL_WORDS) -> None:
+        """Open a single-segment unpacked message.
+
+        Args:
+            data: The message bytes.
+            max_words: Traversal budget in words for the segment and each
+                list; the default suits control messages, a streamed result
+                frame passes the budget its stream negotiated.
+        """
         if len(data) < WORD:
             raise ValueError("truncated Cap'n message")
+        self._max_words = max_words
         nseg_minus, size0 = struct.unpack_from("<II", data, 0)
         if nseg_minus + 1 != 1:
             raise ValueError("multi-segment Cap'n messages are not supported")
@@ -312,7 +321,7 @@ class _CapnpReader:
         self._size0 = size0
         if self._seg + size0 * WORD > len(data):
             raise ValueError("truncated Cap'n segment")
-        if size0 > _MAX_TRAVERSAL_WORDS:
+        if size0 > self._max_words:
             raise ValueError("Cap'n segment exceeds traversal budget")
 
     def root(self, data_words: int, pointer_words: int) -> _StructReader:
@@ -415,7 +424,7 @@ class _CapnpReader:
         lp = self._list_pointer(ptr_word, 6)
         if lp is None or lp.length == 0:
             return []
-        if lp.length > _MAX_TRAVERSAL_WORDS:
+        if lp.length > self._max_words:
             raise ValueError("pointer list exceeds traversal budget")
         self._check_range(lp.target, lp.length)
         return [lp.target + i for i in range(lp.length)]
@@ -467,7 +476,7 @@ class _CapnpReader:
         elem_words = dw + pw
         if elem_words and count > lp.length // elem_words:
             raise ValueError("composite list count exceeds payload")
-        if count > _MAX_TRAVERSAL_WORDS:
+        if count > self._max_words:
             raise ValueError("composite list count exceeds traversal budget")
         self._check_range(tag_word, 1 + count * elem_words)
         return [_StructReader(self, tag_word + 1 + i * elem_words, dw, pw) for i in range(count)]

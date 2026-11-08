@@ -412,7 +412,17 @@ export class CapnpReader {
   private readonly segOff: number;
   private readonly size0: number;
 
-  constructor(bytes: Uint8Array) {
+  /** Largest segment, pointer list or composite list, in words. */
+  private readonly maxWords: number;
+
+  /**
+   * @param bytes - Unpacked single-segment message.
+   * @param maxWords - Traversal budget in words; the default suits control
+   *   messages, a streamed result frame passes the budget its stream
+   *   negotiated.
+   */
+  constructor(bytes: Uint8Array, maxWords: number = MAX_TRAVERSAL_WORDS) {
+    this.maxWords = maxWords;
     if (bytes.byteLength < WORD) {
       throw new Error("truncated Cap'n message");
     }
@@ -427,7 +437,7 @@ export class CapnpReader {
     if (this.segOff + size0 * WORD > bytes.byteLength) {
       throw new Error("truncated Cap'n segment");
     }
-    if (size0 > MAX_TRAVERSAL_WORDS) {
+    if (size0 > this.maxWords) {
       throw new Error("Cap'n segment exceeds traversal budget");
     }
   }
@@ -559,7 +569,7 @@ export class CapnpReader {
     if (lp === null || lp.length === 0) {
       return [];
     }
-    if (lp.length > MAX_TRAVERSAL_WORDS) {
+    if (lp.length > this.maxWords) {
       throw new Error("pointer list exceeds traversal budget");
     }
     this.checkRange(lp.target, lp.length);
@@ -634,7 +644,7 @@ export class CapnpReader {
     if (elemWords > 0 && count > Math.floor(lp.length / elemWords)) {
       throw new Error("composite list count exceeds payload");
     }
-    if (count > MAX_TRAVERSAL_WORDS) {
+    if (count > this.maxWords) {
       throw new Error("composite list count exceeds traversal budget");
     }
     this.checkRange(tagWord, 1 + count * elemWords);

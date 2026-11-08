@@ -18,7 +18,9 @@ const {
 const { createDatabaseBinding, chunkIndexes, encodeExecuteRequest } = await import(
   join(dist, "db-execute.js")
 );
-const { ExecuteStreamFrameCodec, encodeMessage } = await import(join(dist, "generated-wire.js"));
+const { ExecuteStreamFrameCodec, decodeMessage, encodeMessage } = await import(
+  join(dist, "generated-wire.js")
+);
 const { MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES } = await import(join(dist, "abi.js"));
 
 // The first-party sqlite advertisement as the host reads it (every value
@@ -352,6 +354,39 @@ function mutate(stream, rand) {
   }
   assert.ok(mutants >= 24 * Object.keys(EXPECTED).length);
   assert.ok(accepted > 0, "some mutants still decode (the sweep is not all noise)");
+}
+
+// A frame carrying one wide row decodes under the stream's budget even when
+// it is larger than the generic reader's budget, which still applies to
+// control messages; many frames in one push are consumed in one pass.
+{
+  const wide = ["a", "b", "c"].map((name) => ({ name, dbType: "text" }));
+  const cells = wide.map((c) => ({ kind: "text", value: c.name.repeat(400 * 1024) }));
+  const bytes = concat([
+    frame("head", { operationId: "op-wide", statementCount: 1 }),
+    frame("statement", { index: 0, columns: wide, rowsAffected: 0 }),
+    frame("rows", [{ values: cells }]),
+    frame("end", timing),
+  ]);
+  assert.ok(bytes.byteLength > 1024 * 1024, "the row frame is wider than the 1 MiB window");
+  const reply = decodeExecuteStream(bytes, executeStreamLimits(sqliteCaps));
+  assert.equal(reply.statements[0].rows[0].values[2].value.length, 400 * 1024);
+  assert.deepEqual(decodeChunked(bytes, 4096, executeStreamLimits(sqliteCaps)), reply);
+  assert.throws(
+    () => decodeMessage(ExecuteStreamFrameCodec, frame("rows", [{ values: cells }])),
+    /traversal budget/,
+  );
+  // Under a budget the frame does not fit, the declared length fails closed.
+  assert.throws(
+    () => decodeExecuteStream(bytes, tinyLimits),
+    (err) => err.wireCode === "limit_exceeded" && err.limit.limit === "maxStreamedResultBytes",
+  );
+
+  const many = Array.from({ length: 3000 }, (_, i) => row(i));
+  const decoder = new ExecuteStreamDecoder(executeStreamLimits(sqliteCaps), { retainRows: false });
+  const frames = decoder.push(streamOf("op-many", many, { rowsPerFrame: 1 }));
+  assert.equal(frames.filter((f) => f.kind === "rows").length, 3000);
+  assert.ok(decoder.finished);
 }
 
 // --- The binding reads through `executeStreamed` --------------------------

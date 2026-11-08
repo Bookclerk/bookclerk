@@ -343,7 +343,16 @@ var CapnpReader = class {
   view;
   segOff;
   size0;
-  constructor(bytes) {
+  /** Largest segment, pointer list or composite list, in words. */
+  maxWords;
+  /**
+   * @param bytes - Unpacked single-segment message.
+   * @param maxWords - Traversal budget in words; the default suits control
+   *   messages, a streamed result frame passes the budget its stream
+   *   negotiated.
+   */
+  constructor(bytes, maxWords = MAX_TRAVERSAL_WORDS) {
+    this.maxWords = maxWords;
     if (bytes.byteLength < WORD) {
       throw new Error("truncated Cap'n message");
     }
@@ -358,7 +367,7 @@ var CapnpReader = class {
     if (this.segOff + size0 * WORD > bytes.byteLength) {
       throw new Error("truncated Cap'n segment");
     }
-    if (size0 > MAX_TRAVERSAL_WORDS) {
+    if (size0 > this.maxWords) {
       throw new Error("Cap'n segment exceeds traversal budget");
     }
   }
@@ -473,7 +482,7 @@ var CapnpReader = class {
     if (lp === null || lp.length === 0) {
       return [];
     }
-    if (lp.length > MAX_TRAVERSAL_WORDS) {
+    if (lp.length > this.maxWords) {
       throw new Error("pointer list exceeds traversal budget");
     }
     this.checkRange(lp.target, lp.length);
@@ -539,7 +548,7 @@ var CapnpReader = class {
     if (elemWords > 0 && count > Math.floor(lp.length / elemWords)) {
       throw new Error("composite list count exceeds payload");
     }
-    if (count > MAX_TRAVERSAL_WORDS) {
+    if (count > this.maxWords) {
       throw new Error("composite list count exceeds traversal budget");
     }
     this.checkRange(tagWord, 1 + count * elemWords);
@@ -7291,8 +7300,9 @@ var ExecuteStreamDecoder = class {
       throw this.#bytesExceeded(this.#seen);
     }
     this.#buf = concat(this.#buf, bytes);
-    while (this.#buf.byteLength >= 8) {
-      const view = new DataView(this.#buf.buffer, this.#buf.byteOffset, this.#buf.byteLength);
+    let at = 0;
+    while (this.#buf.byteLength - at >= 8) {
+      const view = new DataView(this.#buf.buffer, this.#buf.byteOffset + at, 8);
       if (view.getUint32(0, true) !== 0) {
         throw PluginError.fromWire("invalid_params", "streamed reply frame is not a single-segment Cap'n message");
       }
@@ -7300,25 +7310,21 @@ var ExecuteStreamDecoder = class {
       if (frameLen > ceiling) {
         throw this.#bytesExceeded(frameLen);
       }
-      if (this.#buf.byteLength < frameLen) {
+      if (this.#buf.byteLength - at < frameLen) {
         break;
       }
-      let frame;
-      try {
-        frame = decodeMessage(ExecuteStreamFrameCodec, this.#buf.subarray(0, frameLen));
-      } catch (err) {
-        throw PluginError.fromWire("invalid_params", `streamed reply frame does not decode: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      this.#buf = this.#buf.slice(frameLen);
+      const frame = decodeFrame(this.#buf.subarray(at, at + frameLen), ceiling);
+      at += frameLen;
       this.#apply(frame);
       frames.push(frame);
       if (this.finished) {
-        if (this.#buf.byteLength > 0) {
+        if (this.#buf.byteLength > at) {
           throw PluginError.fromWire("invalid_params", "streamed reply carries bytes after its final frame");
         }
         break;
       }
     }
+    this.#buf = at === 0 ? this.#buf : this.#buf.subarray(at);
     return frames;
   }
   /**
@@ -7474,6 +7480,15 @@ async function* streamChunks(body) {
     }
   } finally {
     reader.releaseLock();
+  }
+}
+function decodeFrame(bytes, ceiling) {
+  const words = Math.min(Math.floor(bytes.byteLength / 8) + 16, Math.floor(Math.max(ceiling, MAX_SCALAR_BYTES) / 8));
+  try {
+    const reader = new CapnpReader(bytes, words);
+    return ExecuteStreamFrameCodec.read(reader.root(ExecuteStreamFrameCodec.dataWords, ExecuteStreamFrameCodec.pointerCount), NO_CAPS);
+  } catch (err) {
+    throw PluginError.fromWire("invalid_params", `streamed reply frame does not decode: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 function concat(a, b) {

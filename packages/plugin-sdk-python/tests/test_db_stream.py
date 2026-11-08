@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from bookclerk_plugin_sdk._abi import MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES
-from bookclerk_plugin_sdk._wire import _encode_message, _execute_stream_frame_codec
+from bookclerk_plugin_sdk._wire import (
+    _decode_message,
+    _encode_message,
+    _execute_stream_frame_codec,
+)
 from bookclerk_plugin_sdk.db_value import (
     ExecuteStreamDecoder,
     ExecuteStreamLimits,
@@ -402,6 +406,41 @@ class DecoderTests(unittest.TestCase):
                 decode_execute_stream(b"".join(frames), TINY_LIMITS)
             self.assertEqual(ctx.exception.code, "invalid_params")
             self.assertIn(text, str(ctx.exception))
+
+    def test_a_wide_row_frame_decodes_under_the_streams_budget(self) -> None:
+        wide = [{"name": name, "dbType": "text"} for name in "abc"]
+        cells = [{"kind": "text", "value": c["name"] * (400 * 1024)} for c in wide]
+        stream = b"".join(
+            [
+                _frame("head", {"operationId": "op-wide", "statementCount": 1}),
+                _frame("statement", {"index": 0, "columns": wide, "rowsAffected": 0}),
+                _frame("rows", [{"values": cells}]),
+                _frame("end", TIMING),
+            ]
+        )
+        self.assertGreater(len(stream), 1024 * 1024)
+        limits = execute_stream_limits(SQLITE_CAPS)
+        reply = decode_execute_stream(stream, limits)
+        self.assertEqual(len(reply["statements"][0]["rows"][0]["values"][2]["value"]), 400 * 1024)
+        decoder = ExecuteStreamDecoder(limits)
+        for at in range(0, len(stream), 4096):
+            decoder.push(stream[at : at + 4096])
+        self.assertEqual(decoder.finish(), reply)
+        # The generic reader keeps its budget for control messages.
+        with self.assertRaisesRegex(ValueError, "traversal budget"):
+            _decode_message(_execute_stream_frame_codec, _frame("rows", [{"values": cells}]))
+        # Under a budget the frame does not fit, the declared length fails closed.
+        with self.assertRaises(PluginError) as ctx:
+            decode_execute_stream(stream, TINY_LIMITS)
+        limit = ctx.exception.limit
+        assert limit is not None
+        self.assertEqual(limit.limit, "maxStreamedResultBytes")
+
+        many = _stream("op-many", [_row(i) for i in range(3000)], rows_per_frame=1)
+        decoder = ExecuteStreamDecoder(limits, retain_rows=False)
+        frames = decoder.push(many)
+        self.assertEqual(sum(1 for f in frames if f["kind"] == "rows"), 3000)
+        self.assertTrue(decoder.finished)
 
     def test_finish_before_the_end_is_unavailable(self) -> None:
         decoder = ExecuteStreamDecoder(TINY_LIMITS)
