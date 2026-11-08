@@ -8,7 +8,10 @@ use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 use tempfile::TempDir;
 
 use super::*;
-use crate::entities::{bookclerk_receipts, domain_events, node_credentials, node_enrollment_links};
+use crate::entities::{
+    bookclerk_receipts, domain_events, event_subscriber_nodes, node_credentials,
+    node_enrollment_links,
+};
 use crate::error::LibraryError;
 use crate::master_key::master_key_test_lock_async;
 use crate::models::{UserRole, UserStatus};
@@ -660,6 +663,116 @@ async fn redeem_refuses_keys_that_are_not_prime_order_points() {
         .await
         .unwrap());
     assert!(!record_node_connected(&store, "no-such-node").await.unwrap());
+}
+
+/// External database adapters refuse interactive transactions, so the
+/// removal goes to the plugin as one guarded batch (#733): every delete is
+/// conditioned on the heartbeat checked first, and the node's rows go while
+/// this node's stay.
+#[tokio::test]
+async fn owner_node_removal_is_one_batch_without_an_interactive_transaction() {
+    let _guard = master_key_test_lock_async().await;
+    // The bootstrap batch itself does not pass the `Profile::Minimum`
+    // function-argument admission yet (#777), so the removal is checked under
+    // the two shipped advertisements.
+    for profile in [
+        crate::test_support::Profile::FirstParty,
+        crate::test_support::Profile::D1,
+    ] {
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store().clone();
+        let dir = tempfile::tempdir().unwrap();
+        bootstrap(&store, &dir).await;
+        let this_node = load_or_create_node_identity(dir.path()).unwrap().node_id;
+        let owner = user(&store, UserRole::Owner, "Morgan").await;
+        let minted = mint_enrollment_link(&store, &operator(), owner, "rack", None)
+            .await
+            .unwrap();
+        let enrolled =
+            redeem_enrollment_link_as(&store, &redeem_request(&minted, 7), NodeKind::Owner)
+                .await
+                .unwrap();
+        for node in [&enrolled.node_id, &this_node] {
+            store
+                .db()
+                .execute_unprepared(&format!(
+                    "INSERT INTO event_subscriber_nodes (node_id, plugin_id, subscriptions_json, heartbeat_at) \
+                     VALUES ('{node}', 'p', '[]', '2026-01-01T00:00:00Z')"
+                ))
+                .await
+                .unwrap();
+        }
+        let batches_before = kit.batch_sizes().len();
+        let as_owner = EnrollmentActor::User { user_id: owner };
+
+        // A stale heartbeat row: the status delete is the sixth statement.
+        let beat = NodeSampler::new(dir.path()).sample();
+        record_node_heartbeat(&store, &enrolled.node_id, &beat)
+            .await
+            .unwrap();
+        store
+            .db()
+            .execute_unprepared(&format!(
+                "UPDATE node_status SET heartbeat_ms = 0 WHERE node_id = '{}'",
+                enrolled.node_id
+            ))
+            .await
+            .unwrap();
+        remove_owner_node(&store, &as_owner, &enrolled.node_id, &this_node)
+            .await
+            .unwrap();
+        assert_eq!(kit.refused_begins(), 0, "{}", profile.name());
+        assert_eq!(
+            &kit.batch_sizes()[batches_before..],
+            [6],
+            "{}",
+            profile.name()
+        );
+        assert!(matches!(
+            load_node(&store, &enrolled.node_id).await.unwrap_err(),
+            LibraryError::NotFound(_)
+        ));
+        assert!(load_node_status(&store, &enrolled.node_id)
+            .await
+            .unwrap()
+            .is_none());
+        let subscribers = event_subscriber_nodes_for(&store).await;
+        assert_eq!(subscribers, vec![this_node.clone()], "{}", profile.name());
+
+        // No status row at all: five statements, each guarded on none
+        // having appeared.
+        let minted = mint_enrollment_link(&store, &operator(), owner, "rack-2", None)
+            .await
+            .unwrap();
+        let second =
+            redeem_enrollment_link_as(&store, &redeem_request(&minted, 8), NodeKind::Owner)
+                .await
+                .unwrap();
+        let batches_before = kit.batch_sizes().len();
+        remove_owner_node(&store, &as_owner, &second.node_id, &this_node)
+            .await
+            .unwrap();
+        assert_eq!(
+            &kit.batch_sizes()[batches_before..],
+            [5],
+            "{}",
+            profile.name()
+        );
+        assert_eq!(kit.refused_begins(), 0, "{}", profile.name());
+    }
+}
+
+/// Node ids with an event-subscriber registration, sorted.
+async fn event_subscriber_nodes_for(store: &LibraryStore) -> Vec<String> {
+    let mut ids: Vec<String> = event_subscriber_nodes::Entity::find()
+        .all(store.db())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.node_id)
+        .collect();
+    ids.sort();
+    ids
 }
 
 #[tokio::test]

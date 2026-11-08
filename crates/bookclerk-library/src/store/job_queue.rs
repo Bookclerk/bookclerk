@@ -37,6 +37,10 @@ impl LibraryStore {
         if let Some(atomic) = &self.atomic {
             return atomic.enqueue_job(spec).await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match enqueue_job_on(&txn, self.leftover_in_process(), spec).await {
             Ok(outcome) => {
@@ -70,6 +74,10 @@ impl LibraryStore {
                 .claim_next_job(resource_class, owner, lease_secs, operation_id)
                 .await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match claim_next_job_on(
             &txn,
@@ -1079,6 +1087,10 @@ impl LibraryStore {
                 .reserve_job_temp_path(job_id, path, reserved_bytes, quota_bytes)
                 .await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match reserve_job_temp_path_on(
             &txn,

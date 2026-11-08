@@ -1587,6 +1587,7 @@ dependencies = [
 name = "bookclerk-db-exec"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.23.1",
  "bookclerk-plugin-abi",
  "chrono",
@@ -1615,6 +1616,19 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "bookclerk-db-testkit"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-library",
+ "bookclerk-plugin-abi",
+ "bookclerk-plugin-database-sqlite",
+ "rusqlite",
+ "sea-orm",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

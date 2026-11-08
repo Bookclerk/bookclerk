@@ -15,6 +15,8 @@ use bookclerk_plugin_abi::DbColumn;
 
 mod b64;
 mod backup;
+#[cfg(feature = "test-support")]
+pub mod begin_gate;
 mod canonical;
 mod classify;
 mod exec;
