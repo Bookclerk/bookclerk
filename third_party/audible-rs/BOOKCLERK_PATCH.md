@@ -48,6 +48,10 @@ This vendored tree is identical to the pinned upstream revision except:
      private operation unblinded.
 7. `downloader` lib tests import `url::Url` (used by the annotation-base
    lockstep test; the type was previously unresolved under `--lib` tests).
+8. `scraper` 0.29 (login-page HTML) and `protox` 0.10 (build-time Widevine
+   proto codegen), the versions the rest of the workspace uses, so a
+   workspace build compiles one HTML parser stack and one `logos`
+   (#756). No source change was needed.
 
 Re-vendor when bumping the `audible-rs` git rev in the workspace
 `Cargo.toml`, then re-apply these patches.
