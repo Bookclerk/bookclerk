@@ -584,6 +584,57 @@ mod tests {
     use super::*;
     use crate::client::{CatalogAudiobook, CatalogTag};
 
+    /// Search options for `query` with a page of `limit` results.
+    fn search(query: &str, limit: usize) -> CatalogSearchOpts {
+        CatalogSearchOpts {
+            query: query.into(),
+            region: "us".into(),
+            limit,
+            page: 1,
+            sort: bookclerk_storefront::CatalogSearchSort::Relevance,
+            field: None,
+            language: None,
+        }
+    }
+
+    /// A related-titles seed with no optional fields set.
+    fn seed() -> ExpandSeed {
+        ExpandSeed {
+            source: "chirp".into(),
+            product_id: "1".into(),
+            title: "Title".into(),
+            authors: None,
+            narrators: None,
+            series: None,
+            series_asin: None,
+            asin: None,
+            isbn: None,
+            region: "us".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_requests_answer_without_calling_the_store() {
+        // An unroutable GraphQL URL proves no request is made.
+        let source = ChirpSource::with_graphql_url("http://127.0.0.1:9/graphql");
+        assert!(source
+            .search_catalog(&search("  ", 10))
+            .await
+            .expect("blank")
+            .is_empty());
+        assert!(source
+            .search_catalog(&search("dune", 0))
+            .await
+            .expect("zero")
+            .is_empty());
+        assert!(source
+            .expand_candidates(&seed(), 0)
+            .await
+            .expect("expand")
+            .is_empty());
+        assert!(source.list_deals(0).await.expect("deals").is_empty());
+    }
+
     #[test]
     fn catalog_hit_maps_genres_language_abridged() {
         let book = CatalogAudiobook {

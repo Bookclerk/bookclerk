@@ -412,3 +412,80 @@ fn format_usd(cents: i64) -> String {
     }
     format!("${}.{:02}", cents / 100, (cents % 100).unsigned_abs())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Search options for `query` with a page of `limit` results.
+    fn search(query: &str, limit: usize) -> CatalogSearchOpts {
+        CatalogSearchOpts {
+            query: query.into(),
+            region: "us".into(),
+            limit,
+            page: 1,
+            sort: bookclerk_storefront::CatalogSearchSort::Relevance,
+            field: None,
+            language: None,
+        }
+    }
+
+    /// A related-titles seed with no optional fields set.
+    fn seed() -> ExpandSeed {
+        ExpandSeed {
+            source: "graphicaudio".into(),
+            product_id: "1".into(),
+            title: "Title".into(),
+            authors: None,
+            narrators: None,
+            series: None,
+            series_asin: None,
+            asin: None,
+            isbn: None,
+            region: "us".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_requests_answer_without_calling_the_store() {
+        // An unroutable store URL proves no request is made.
+        let source = GraphicAudioSource::new().with_store_url("http://127.0.0.1:9");
+        assert!(source
+            .search_catalog(&search("  ", 10))
+            .await
+            .expect("blank")
+            .is_empty());
+        assert!(source
+            .search_catalog(&search("dune", 0))
+            .await
+            .expect("zero")
+            .is_empty());
+        assert!(source
+            .expand_candidates(&seed(), 0)
+            .await
+            .expect("expand")
+            .is_empty());
+    }
+
+    #[test]
+    fn catalog_hit_is_a_dramatisation_with_series() {
+        let product = MagentoCatalogProduct {
+            product_id: "42".into(),
+            sku: None,
+            title: "The Spider".into(),
+            url: Some("https://example.test/spider".into()),
+            series: Some("The Spider".into()),
+            cover_url: Some("https://example.test/spider.jpg".into()),
+        };
+        let hit = ga_catalog_hit(&product, "search".into());
+        assert_eq!(hit.product_id, "42");
+        assert_eq!(hit.origin, "search");
+        assert_eq!(hit.url, product.url);
+        assert_eq!(hit.cover_url, product.cover_url);
+        assert!(matches!(
+            hit.expression_kind,
+            bookclerk_storefront::records::ExpressionKind::Dramatisation
+        ));
+        assert_eq!(hit.series_entries.len(), 1);
+    }
+}
