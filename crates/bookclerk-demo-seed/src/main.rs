@@ -332,8 +332,8 @@ async fn bake_finish(config: &Config) -> anyhow::Result<()> {
             .await
             .context("strip install state")?;
         eprintln!(
-            "bookclerk-demo-seed: stripped {} secret root(s), {} lease(s), {} heartbeat(s)",
-            stripped.secret_roots, stripped.leases, stripped.node_status
+            "bookclerk-demo-seed: stripped {} cluster identity row(s), {} lease(s), {} heartbeat(s)",
+            stripped.identity_rows, stripped.leases, stripped.node_status
         );
     }
     let files = &paths.files_dir;

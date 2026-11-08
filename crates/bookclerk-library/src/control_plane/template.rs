@@ -28,8 +28,9 @@ const MUST_BE_EMPTY: [&str; 4] = [
 /// What [`strip_install_state`] removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TemplateStrip {
-    /// Cluster secret fingerprint rows deleted (0 or 1).
-    pub secret_roots: u64,
+    /// `cluster_identity` rows deleted (0 or 1); each holds the cluster id and
+    /// the fingerprint of its key, never the key.
+    pub identity_rows: u64,
     /// Cluster lease rows deleted.
     pub leases: u64,
     /// Node heartbeat rows deleted.
@@ -89,7 +90,7 @@ pub async fn strip_install_state(store: &LibraryStore) -> Result<TemplateStrip> 
         ))
         .await?;
     Ok(TemplateStrip {
-        secret_roots: batch::rows_affected(&reply, 0),
+        identity_rows: batch::rows_affected(&reply, 0),
         leases: batch::rows_affected(&reply, 1),
         node_status: batch::rows_affected(&reply, 2),
     })
@@ -132,7 +133,7 @@ mod tests {
         )
         .await;
         let stripped = strip_install_state(&store).await.unwrap();
-        assert_eq!(stripped.secret_roots, 1);
+        assert_eq!(stripped.identity_rows, 1);
         // The migration's own lease and the test's.
         assert!(stripped.leases >= 1, "{stripped:?}");
         assert_eq!(stripped.node_status, 0);
@@ -141,7 +142,7 @@ mod tests {
         assert_eq!(
             again,
             TemplateStrip {
-                secret_roots: 0,
+                identity_rows: 0,
                 leases: 0,
                 node_status: 0
             }
