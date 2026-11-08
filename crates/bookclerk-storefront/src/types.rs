@@ -14,16 +14,16 @@ use serde::{Deserialize, Serialize};
 /// One allowed value for a [`SourceConfigOption`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigOptionValue {
-    /// Wire / TOML id (`high`, `m4b`, `web`, …).
+    /// Stored setting value (`high`, `m4b`, `web`, …).
     pub id: &'static str,
     /// Operator-facing display name for this choice in Settings / CLI help.
     pub label: &'static str,
 }
 
-/// One source-native config knob under `[sources.<id>]`.
+/// One source-native setting a storefront declares for its plugin instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceConfigOption {
-    /// TOML key (`bitrate`, `container`, `access`).
+    /// Setting key in the plugin instance document (`bitrate`, `container`, `access`).
     pub key: &'static str,
     /// Operator-facing display name for this knob in Settings.
     pub label: &'static str,

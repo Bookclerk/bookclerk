@@ -36,6 +36,9 @@ from and which license it keeps.
 
 Every crate states its license in `Cargo.toml`. A new crate inherits
 AGPL-3.0-or-later from `[workspace.package]` unless it is plugin-facing.
+First-party storefront guests are part of Bookclerk and also link
+AGPL-licensed crates such as `bookclerk-storefront`; those crates are not
+plugin-facing, and third-party plugins link only the SDK crates above.
 
 ## What the AGPL asks of people who run Bookclerk
 

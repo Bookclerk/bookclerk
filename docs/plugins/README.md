@@ -82,7 +82,9 @@ Each language has its own guide and generated reference under
 
 > [!IMPORTANT]
 > Third-party authors should depend on the SDK only, not on
-> `bookclerk-plugin-host`, `bookclerk-library` or `bookclerk-source`.
+> `bookclerk-plugin-host`, `bookclerk-library`, `bookclerk-source` or
+> `bookclerk-storefront` (the AGPL crate first-party storefront guests
+> share).
 
 ## How the ABI works
 
