@@ -311,24 +311,41 @@ where
     Ok(rows.into_iter().take(stop_after).collect())
 }
 
-/// Wire bytes of one PostgreSQL row's cells (`0` for a non-Postgres row).
+/// Encoded bytes every result row costs besides its cells: the row's
+/// pointer in the `rows` list and its `values` list tag word.
+pub(crate) const ENCODED_ROW_OVERHEAD_BYTES: usize = 16;
+
+/// Encoded bytes every cell costs besides its payload: a `DbValue` is two
+/// data words (union discriminant and inline scalar) in a struct list
+/// before any text or bytes it points to.
+pub(crate) const ENCODED_CELL_OVERHEAD_BYTES: usize = 16;
+
+/// Lower bound of one PostgreSQL row's encoded size (`0` for a non-Postgres
+/// row).
 ///
-/// Text and `bytea` cells arrive as their own bytes and numbers as a few,
-/// so the sum is a lower bound of the row's encoded size: enough to stop a
-/// wide result early, never enough to reject one the encoded check accepts.
+/// Charges the row and cell framing of the encoded result plus each cell's
+/// wire bytes: text and `bytea` cells arrive as their own bytes and numbers
+/// as a few. The sum stays below the row's encoded size, so it stops a wide
+/// result early without rejecting one the encoded check accepts, and the
+/// framing charge keeps a result of many NULL or empty cells, which carry no
+/// wire bytes, from growing unbounded under the row budget.
 fn pg_row_payload_len(row: &QueryResult) -> usize {
     use sea_orm::sqlx::Row as _;
     let Some(pg) = row.try_as_pg_row() else {
         return 0;
     };
-    (0..pg.len())
+    let cells = pg.len();
+    let payload: usize = (0..cells)
         .map(|i| {
             pg.try_get_raw(i)
                 .ok()
                 .and_then(|cell| cell.as_bytes().ok().map(<[u8]>::len))
                 .unwrap_or(0)
         })
-        .sum()
+        .sum();
+    payload
+        .saturating_add(ENCODED_ROW_OVERHEAD_BYTES)
+        .saturating_add(cells.saturating_mul(ENCODED_CELL_OVERHEAD_BYTES))
 }
 
 /// Uniform `rowsAffected` by host-authored kind.
@@ -497,9 +514,64 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{cap_query_sql, note_encoded_result_bytes};
-    use bookclerk_plugin_abi::{DbPlanStatementKind, LimitExceeded};
+    use super::{
+        cap_query_sql, note_encoded_result_bytes, ENCODED_CELL_OVERHEAD_BYTES,
+        ENCODED_ROW_OVERHEAD_BYTES,
+    };
+    use bookclerk_plugin_abi::{
+        encoded_statement_result_bytes, DbColumn, DbPlanStatementKind, DbRow, DbType, DbValue,
+        LimitExceeded, StatementResult,
+    };
     use sea_orm::Value;
+
+    /// Encoded size of a result of `rows` rows of `cells` cells each.
+    fn encoded_rows_len(rows: usize, cells: usize, cell: &DbValue) -> usize {
+        let columns = (0..cells)
+            .map(|i| DbColumn {
+                name: format!("c{i}"),
+                db_type: DbType::Unspecified,
+            })
+            .collect();
+        let rows = (0..rows)
+            .map(|_| DbRow {
+                values: vec![cell.clone(); cells],
+            })
+            .collect();
+        let result = StatementResult::from_rows(columns, rows).expect("uniform rows");
+        encoded_statement_result_bytes(&result)
+            .expect("encodes")
+            .len()
+    }
+
+    #[test]
+    fn row_and_cell_overheads_stay_below_the_encoded_result() {
+        for cells in [1usize, 16, 1_600] {
+            for cell in [
+                DbValue::Null(DbType::Text),
+                DbValue::Text(String::new()),
+                DbValue::Int64(1),
+                DbValue::Text("é".repeat(37)),
+            ] {
+                let payload = match &cell {
+                    DbValue::Text(s) => s.len(),
+                    DbValue::Int64(_) => 8,
+                    _ => 0,
+                };
+                let one_more_row =
+                    encoded_rows_len(3, cells, &cell) - encoded_rows_len(2, cells, &cell);
+                let charged =
+                    ENCODED_ROW_OVERHEAD_BYTES + cells * (ENCODED_CELL_OVERHEAD_BYTES + payload);
+                assert!(
+                    charged <= one_more_row,
+                    "{cells} cells of {cell:?}: charged {charged} must not exceed the {one_more_row} encoded bytes a row adds"
+                );
+                assert!(
+                    one_more_row < 2 * charged,
+                    "{cells} cells of {cell:?}: the lower bound stays within a factor of two of the {one_more_row} encoded bytes"
+                );
+            }
+        }
+    }
 
     #[test]
     fn result_byte_cap_failure_is_a_typed_limit_message() {

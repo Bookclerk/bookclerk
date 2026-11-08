@@ -1385,20 +1385,35 @@ fn reject_statement_result_bytes(
 /// enforced while the batch runs, not only after it: each statement is held
 /// to the smaller of `max_result_bytes` and what is left of the whole-batch
 /// budget, and the batch fails as soon as the admitted results would exceed
-/// it. The encoded reply adds framing on top of the statement results, so
-/// the caller still checks the whole encoded reply at the end.
+/// it. A statement is charged what it adds to the encoded reply, not its
+/// standalone message size (see [`Self::STANDALONE_FRAMING_BYTES`]), so a
+/// batch the negotiated budget admits is not rejected early; the reply's
+/// own framing comes on top, so the caller still checks the whole encoded
+/// reply at the end.
 #[derive(Clone, Copy, Debug)]
 struct BatchByteBudget {
     /// Negotiated per-statement and whole-reply caps (`0` = unlimited).
     caps: ExecCaps,
-    /// Encoded bytes of the statement results admitted so far.
+    /// Bytes the admitted statement results add to the encoded reply.
     used: usize,
 }
 
 impl BatchByteBudget {
+    /// Bytes a standalone `StatementResult` message carries that its
+    /// embedded copy in an `ExecuteReply` does not: the single-segment
+    /// table and the root pointer, one word each. Pinned against the
+    /// encoder by `a_statement_result_embeds_without_its_standalone_framing`.
+    const STANDALONE_FRAMING_BYTES: usize = 16;
+
     /// Starts an empty budget under `caps`.
     fn new(caps: ExecCaps) -> Self {
         Self { caps, used: 0 }
+    }
+
+    /// Bytes a statement result whose standalone encoding is `encoded_len`
+    /// bytes long adds to the encoded reply.
+    fn embedded_len(encoded_len: usize) -> usize {
+        encoded_len.saturating_sub(Self::STANDALONE_FRAMING_BYTES)
     }
 
     /// Whole-batch bytes still available, or `None` when the whole-reply cap
@@ -1412,12 +1427,15 @@ impl BatchByteBudget {
     }
 
     /// Caps for the next statement: `max_result_bytes` clamped to the
-    /// remaining whole-batch budget (never below one byte, so an exhausted
-    /// budget fails the next result instead of lifting its cap).
+    /// remaining whole-batch budget plus the standalone framing the
+    /// per-statement check measures (so an exhausted budget leaves only
+    /// that framing allowance and fails the next result instead of lifting
+    /// its cap).
     fn statement_caps(&self) -> ExecCaps {
         let mut caps = self.caps;
         if let Some(remaining) = self.remaining() {
-            let remaining = u32::try_from(remaining.max(1)).unwrap_or(u32::MAX);
+            let remaining = u32::try_from(remaining.saturating_add(Self::STANDALONE_FRAMING_BYTES))
+                .unwrap_or(u32::MAX);
             caps.max_result_bytes = if caps.max_result_bytes == 0 {
                 remaining
             } else {
@@ -1427,14 +1445,15 @@ impl BatchByteBudget {
         caps
     }
 
-    /// Charges one admitted statement result of `encoded_len` bytes.
+    /// Charges one admitted statement result whose standalone encoding is
+    /// `encoded_len` bytes long.
     ///
     /// # Errors
     ///
     /// Returns a `maxAtomicResultBytes` limit error when the admitted
     /// results exceed the whole-batch budget.
     fn admit(&mut self, encoded_len: usize) -> Result<(), DbErr> {
-        self.used = self.used.saturating_add(encoded_len);
+        self.used = self.used.saturating_add(Self::embedded_len(encoded_len));
         if self.caps.max_atomic_result_bytes > 0 {
             let cap = usize::try_from(self.caps.max_atomic_result_bytes).unwrap_or(usize::MAX);
             if self.used > cap {
@@ -1463,8 +1482,7 @@ impl BatchByteBudget {
         if !whole_budget_binds || u64::from(stmt_cap) != limit.cap {
             return err;
         }
-        let used = usize::try_from(limit.used)
-            .unwrap_or(usize::MAX)
+        let used = Self::embedded_len(usize::try_from(limit.used).unwrap_or(usize::MAX))
             .saturating_add(self.used);
         self.whole_batch_error(used)
     }
@@ -2769,25 +2787,30 @@ mod tests {
 
     #[test]
     fn batch_budget_clamps_each_statement_to_the_remaining_whole_batch_bytes() {
+        // Standalone sizes carry 16 framing bytes the embedded copy does not.
         let caps = ExecCaps {
             max_result_rows: 0,
-            max_result_bytes: 64,
+            max_result_bytes: 96,
             max_cell_bytes: 0,
             max_atomic_result_bytes: 100,
         };
         let mut budget = BatchByteBudget::new(caps);
-        assert_eq!(budget.statement_caps().max_result_bytes, 64);
-        budget.admit(50).expect("first statement fits");
-        assert_eq!(budget.statement_caps().max_result_bytes, 50);
+        assert_eq!(budget.statement_caps().max_result_bytes, 96);
+        budget.admit(66).expect("first statement fits (adds 50)");
+        assert_eq!(
+            budget.statement_caps().max_result_bytes,
+            66,
+            "50 remaining plus the standalone framing"
+        );
         budget
-            .admit(50)
+            .admit(66)
             .expect("second statement exactly fills the budget");
         assert_eq!(
             budget.statement_caps().max_result_bytes,
-            1,
-            "an exhausted budget keeps a one-byte cap instead of lifting it"
+            16,
+            "an exhausted budget leaves only the framing allowance instead of lifting the cap"
         );
-        let err = budget.admit(1).expect_err("over the whole-batch budget");
+        let err = budget.admit(17).expect_err("over the whole-batch budget");
         let limit = LimitExceeded::from_message(&err.to_string()).expect("typed limit");
         assert_eq!(limit.limit, "maxAtomicResultBytes");
         assert_eq!((limit.cap, limit.used), (100, 101));
@@ -2796,12 +2819,12 @@ mod tests {
             max_result_bytes: 0,
             ..caps
         });
-        assert_eq!(unlimited_statement.statement_caps().max_result_bytes, 100);
+        assert_eq!(unlimited_statement.statement_caps().max_result_bytes, 116);
         let mut unlimited_batch = BatchByteBudget::new(ExecCaps {
             max_atomic_result_bytes: 0,
             ..caps
         });
-        assert_eq!(unlimited_batch.statement_caps().max_result_bytes, 64);
+        assert_eq!(unlimited_batch.statement_caps().max_result_bytes, 96);
         unlimited_batch
             .admit(usize::MAX)
             .expect("no whole-batch cap to exceed");
@@ -2823,12 +2846,17 @@ mod tests {
             per_statement.to_string(),
             "the negotiated per-statement cap bound this statement"
         );
-        budget.admit(60).expect("fits");
-        let clamped = DbErr::Custom(LimitExceeded::new("maxResultBytes", 40, 45).to_message());
+        budget.admit(76).expect("fits (adds 60)");
+        assert_eq!(budget.statement_caps().max_result_bytes, 56);
+        let clamped = DbErr::Custom(LimitExceeded::new("maxResultBytes", 56, 61).to_message());
         let limit =
             LimitExceeded::from_message(&budget.rewrite(clamped).to_string()).expect("typed limit");
         assert_eq!(limit.limit, "maxAtomicResultBytes");
-        assert_eq!((limit.cap, limit.used), (100, 105));
+        assert_eq!(
+            (limit.cap, limit.used),
+            (100, 105),
+            "60 admitted plus the 45 bytes the rejected statement would add"
+        );
         let other_cap = DbErr::Custom(LimitExceeded::new("maxResultBytes", 64, 70).to_message());
         assert_eq!(
             budget.rewrite(other_cap.clone()).to_string(),
@@ -2839,6 +2867,106 @@ mod tests {
         assert_eq!(budget.rewrite(rows.clone()).to_string(), rows.to_string());
         let plain = DbErr::Custom("boom".into());
         assert_eq!(budget.rewrite(plain.clone()).to_string(), plain.to_string());
+    }
+
+    /// Standalone encodings of the statement results in `statements`.
+    fn standalone_sizes(statements: &[StatementResult]) -> Vec<usize> {
+        statements
+            .iter()
+            .map(|stmt| encoded_statement_result_bytes(stmt).expect("encodes").len())
+            .collect()
+    }
+
+    /// Encoded size of an `ExecuteReply` carrying `statements`.
+    fn reply_size(statements: &[StatementResult]) -> usize {
+        encoded_execute_reply_bytes(&ExecuteReply {
+            operation_id: "budget".into(),
+            statements: statements.to_vec(),
+            timing: DbTiming::default(),
+        })
+        .expect("encodes")
+        .len()
+    }
+
+    /// A one-row, one-column TEXT result whose cell is `len` bytes long.
+    fn text_result(len: usize) -> StatementResult {
+        StatementResult::from_rows(
+            vec![DbColumn {
+                name: "body".into(),
+                db_type: DbType::Text,
+            }],
+            vec![DbRow {
+                values: vec![DbValue::Text("x".repeat(len))],
+            }],
+        )
+        .expect("one column, one cell")
+    }
+
+    #[test]
+    fn a_statement_result_embeds_without_its_standalone_framing() {
+        let affected = StatementResult::from_affected(7);
+        let one_row = text_result(1000);
+        let two_rows = StatementResult::from_rows(
+            vec![DbColumn {
+                name: "n".into(),
+                db_type: DbType::Int64,
+            }],
+            vec![
+                DbRow {
+                    values: vec![DbValue::Int64(1)],
+                },
+                DbRow {
+                    values: vec![DbValue::Null(DbType::Int64)],
+                },
+            ],
+        )
+        .expect("one column, two rows");
+        let mut statements = vec![affected];
+        for next in [one_row, two_rows, StatementResult::from_affected(0)] {
+            let before = reply_size(&statements);
+            statements.push(next);
+            let after = reply_size(&statements);
+            let standalone = standalone_sizes(&statements)[statements.len() - 1];
+            assert_eq!(
+                after - before,
+                BatchByteBudget::embedded_len(standalone),
+                "statement {} adds its standalone size less the framing",
+                statements.len()
+            );
+        }
+    }
+
+    #[test]
+    fn batch_budget_admits_a_batch_whose_encoded_reply_fits() {
+        // 99 affected-row results and one 257 000-byte text result encode
+        // under a 256 KiB reply; their standalone sizes alone would not.
+        let cap = 256 * 1024;
+        let mut statements: Vec<StatementResult> =
+            (0..99).map(StatementResult::from_affected).collect();
+        statements.push(text_result(257_000));
+        let sizes = standalone_sizes(&statements);
+        assert!(reply_size(&statements) <= cap, "the oracle reply fits");
+        assert!(
+            sizes.iter().sum::<usize>() > cap,
+            "standalone sizes overcount the reply"
+        );
+        let caps = ExecCaps {
+            max_result_rows: 0,
+            max_result_bytes: u32::try_from(cap).expect("fits u32"),
+            max_cell_bytes: 0,
+            max_atomic_result_bytes: u32::try_from(cap).expect("fits u32"),
+        };
+        let mut budget = BatchByteBudget::new(caps);
+        for (stmt, size) in statements.iter().zip(&sizes) {
+            let encoded_len =
+                reject_statement_result_bytes(stmt, budget.statement_caps().max_result_bytes)
+                    .expect("each statement fits its clamped cap");
+            assert_eq!(encoded_len, *size);
+            budget
+                .admit(encoded_len)
+                .expect("the batch fits its budget");
+        }
+        assert!(budget.used <= cap);
     }
 
     #[test]

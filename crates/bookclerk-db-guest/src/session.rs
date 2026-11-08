@@ -2478,6 +2478,59 @@ mod tests {
         );
     }
 
+    /// A streamed Postgres read of rows whose cells carry no wire bytes
+    /// (NULLs) still fails on the byte budget while the rows arrive: the
+    /// encoded row and cell framing is charged per row, so 250 000 rows of
+    /// 400 NULL cells (over 1.5 GiB encoded) stop well under the streamed
+    /// row budget instead of being retained whole.
+    #[tokio::test]
+    #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+    async fn postgres_null_cells_still_count_toward_the_streamed_byte_budget() {
+        let _lock = SESSION_LOCK.lock().await;
+        let db = postgres_test_pool().await;
+        let columns: Vec<String> = (0..400).map(|i| format!("c{i}")).collect();
+        let ddl = format!(
+            "CREATE TABLE null_cells (id INTEGER PRIMARY KEY, {})",
+            columns
+                .iter()
+                .map(|c| format!("{c} TEXT"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        postgres_exec(&db, &ddl).await;
+        postgres_exec(
+            &db,
+            "INSERT INTO null_cells (id) SELECT g FROM generate_series(1, 250000) AS g",
+        )
+        .await;
+        let mut req = typed_select(
+            "pg-nulls",
+            &format!("SELECT {} FROM null_cells", columns.join(", ")),
+        );
+        req.statements[0].max_rows = 250_000;
+        let mut env = bookclerk_library::migrations::host_sql_type_env();
+        env.merge(&bookclerk_plugin_abi::sql_type_env_from_canonical_ddl(&ddl));
+        let stamped = stamp_req_env(req, &env).expect("stamp proofs");
+        let err = guest_execute_streamed_request_on(&db, stamped)
+            .await
+            .expect_err("100 million NULL cells exceed the 64 MiB streamed budget");
+        let limit = err
+            .limit()
+            .unwrap_or_else(|| panic!("a typed result limit: {err}"));
+        assert!(
+            matches!(
+                limit.limit.as_str(),
+                "maxResultBytes" | "maxStreamedResultBytes"
+            ),
+            "{err}"
+        );
+        let seen = bookclerk_db_exec::query_rows_seen();
+        assert!(
+            seen < 20_000,
+            "the stream stopped at the budget after {seen} rows, not at the end"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
     async fn postgres_page_pins_one_session_with_busy_pool() {
