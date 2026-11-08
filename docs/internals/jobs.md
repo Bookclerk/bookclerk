@@ -402,7 +402,10 @@ or retired, or the scheduler moves a replica. Each daemon runs a sweep loop
 `control_plane::sweep_job_requirements`), but only the holder of the
 `jobs:requirements-sweep` cluster lease (90 s, renewed every pass) sweeps.
 A pass runs every 30 s, on a deployment or install wakeup on this node, and
-after a scheduler pass that moved replicas. It re-resolves the requirements
+after a scheduler pass that moved replicas. A wakeup waits until wakeups have
+been quiet for 0.5 s (at most 3 s), so a burst of deployment changes, such
+as enabling several plugins at once, is swept once. Discovery runs on a
+blocking thread. It re-resolves the requirements
 of every pending acquire, pinned job, or job that already has requirements,
 with the node-bound output keys the daemon discovers plus every instance
 keyed as the first-party `local` destination (so a sweeping node without
