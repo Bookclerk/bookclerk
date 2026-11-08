@@ -28,8 +28,7 @@ use tokio_rustls::rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
 };
 use tokio_rustls::rustls::crypto::{
-    aws_lc_rs, verify_tls12_signature, verify_tls13_signature, CryptoProvider,
-    WebPkiSupportedAlgorithms,
+    verify_tls12_signature, verify_tls13_signature, CryptoProvider, WebPkiSupportedAlgorithms,
 };
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use tokio_rustls::rustls::server::ParsedCertificate;
@@ -899,9 +898,9 @@ fn chunked_body_complete(
     }
 }
 
-/// The process crypto provider (aws-lc, like the rest of the tree).
+/// The hosts' one crypto provider (aws-lc-rs); see `bookclerk_tls`.
 fn provider() -> Arc<CryptoProvider> {
-    Arc::new(aws_lc_rs::default_provider())
+    bookclerk_tls::crypto_provider()
 }
 
 /// TLS settings: the pinned verifier, or the webpki roots.

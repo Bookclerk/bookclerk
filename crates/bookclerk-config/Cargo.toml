@@ -20,6 +20,7 @@ toml.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
+bookclerk-tls.workspace = true
 ureq.workspace = true
 utoipa.workspace = true
 

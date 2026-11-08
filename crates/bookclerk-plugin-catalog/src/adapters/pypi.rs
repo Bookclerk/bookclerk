@@ -134,7 +134,8 @@ impl RegistryAdapter for PypiAdapter {
 
 /// GET + JSON decode with the catalog UA; non-success HTTP becomes [`CatalogError`].
 fn http_get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
-    let mut response = ureq::get(url)
+    let mut response = bookclerk_tls::http_agent()
+        .get(url)
         .header("User-Agent", UA)
         .header("Accept", "application/json")
         .call()

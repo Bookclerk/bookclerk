@@ -47,7 +47,8 @@ pub fn load_static_index(path_or_url: &str) -> Result<StaticIndex> {
         || path_or_url.starts_with("http://127.0.0.1")
         || path_or_url.starts_with("http://localhost")
     {
-        let mut response = ureq::get(path_or_url)
+        let mut response = bookclerk_tls::http_agent()
+            .get(path_or_url)
             .header(
                 "User-Agent",
                 concat!("bookclerk/", env!("CARGO_PKG_VERSION"), " (plugin-catalog)"),

@@ -185,6 +185,7 @@ fn owner_agent(connector: impl Connector, resolver: PublicOnlyResolver<impl Reso
         .proxy(None)
         .max_redirects(0)
         .timeout_global(Some(DOWNLOAD_TIMEOUT))
+        .tls_config(bookclerk_tls::ureq_tls_config())
         .build();
     Agent::with_parts(config, connector, resolver)
 }

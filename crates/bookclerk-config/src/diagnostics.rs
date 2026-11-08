@@ -421,7 +421,8 @@ fn post_http_payload(
     if url.is_empty() {
         return Err("diagnostics collector_url is empty".into());
     }
-    ureq::post(&url)
+    bookclerk_tls::http_agent()
+        .post(&url)
         .header("Content-Type", "application/json")
         .header(
             "User-Agent",

@@ -17,6 +17,8 @@ confined. It assumes you can read Rust.
   a plugin isolate.
 - [Node API and the live socket](node-api.md): how hosts of one library
   talk, and how the web app hears about changes.
+- [One TLS backend](tls.md): the one crypto provider every TLS connection
+  uses, and where it is set.
 - [Windows AppContainer](windows-appcontainer.md): confinement notes for
   Windows.
 - [Rust crates](crates/README.md): the reference for every workspace

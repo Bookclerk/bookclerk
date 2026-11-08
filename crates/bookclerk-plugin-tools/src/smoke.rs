@@ -158,7 +158,11 @@ fn wait_for_health(base: &str, token: &str) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(15);
     let auth = format!("Bearer {token}");
     loop {
-        match ureq::get(&url).header("Authorization", &auth).call() {
+        match bookclerk_tls::http_agent()
+            .get(&url)
+            .header("Authorization", &auth)
+            .call()
+        {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             _ => {
                 if Instant::now() > deadline {
@@ -171,7 +175,8 @@ fn wait_for_health(base: &str, token: &str) -> Result<(), String> {
 }
 
 fn post_json(url: &str, body: &Value, token: &str) -> Result<Value, String> {
-    let mut response = ureq::post(url)
+    let mut response = bookclerk_tls::http_agent()
+        .post(url)
         .header("content-type", "application/json")
         .header("Authorization", &format!("Bearer {token}"))
         .send_json(body)

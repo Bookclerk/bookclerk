@@ -1483,7 +1483,8 @@ fn download_to(url: &str, dest: &Path, offline: bool) -> Result<()> {
             "remote install requires https:// (or localhost http for fixtures)",
         ));
     }
-    let mut response = ureq::get(url)
+    let mut response = bookclerk_tls::http_agent()
+        .get(url)
         .header(
             "User-Agent",
             concat!("bookclerk/", env!("CARGO_PKG_VERSION"), " (plugin-install)"),

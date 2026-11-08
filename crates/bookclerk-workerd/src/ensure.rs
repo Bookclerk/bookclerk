@@ -428,7 +428,8 @@ fn classify(url: &str, err: ureq::Error) -> Attempt {
 /// redirects, so any other non-2xx answer that reaches this function (a
 /// 304, a 3xx without `Location`) will not change and is permanent.
 fn download_once(url: &str) -> Attempt {
-    let request = ureq::get(url)
+    let request = bookclerk_tls::http_agent()
+        .get(url)
         .config()
         .timeout_global(Some(DOWNLOAD_ATTEMPT_TIMEOUT))
         .build();

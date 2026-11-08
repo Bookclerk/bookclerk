@@ -283,7 +283,9 @@ async fn post_prepare_async(url: &str, bearer: Option<&str>) -> anyhow::Result<V
 
 /// Synchronous prepare POST; maps 403 / connection failures to operator-facing errors.
 fn post_prepare(url: &str, bearer: Option<&str>) -> anyhow::Result<Value> {
-    let mut req = ureq::post(url).header("Content-Type", "application/json");
+    let mut req = bookclerk_tls::http_agent()
+        .post(url)
+        .header("Content-Type", "application/json");
     if let Some(token) = bearer {
         req = req.header("Authorization", format!("Bearer {token}"));
     }
@@ -351,7 +353,7 @@ pub(crate) async fn post_json_async(
 
 /// Synchronous GET against bookclerkd, attaching a bearer token when present.
 fn get_json(url: &str, bearer: Option<&str>) -> anyhow::Result<Value> {
-    let mut req = ureq::get(url);
+    let mut req = bookclerk_tls::http_agent().get(url);
     if let Some(token) = bearer {
         req = req.header("Authorization", format!("Bearer {token}"));
     }
@@ -366,7 +368,9 @@ fn get_json(url: &str, bearer: Option<&str>) -> anyhow::Result<Value> {
 
 /// Synchronous JSON POST against bookclerkd (`Content-Type: application/json`).
 fn post_json(url: &str, body: Value, bearer: Option<&str>) -> anyhow::Result<Value> {
-    let mut req = ureq::post(url).header("Content-Type", "application/json");
+    let mut req = bookclerk_tls::http_agent()
+        .post(url)
+        .header("Content-Type", "application/json");
     if let Some(token) = bearer {
         req = req.header("Authorization", format!("Bearer {token}"));
     }

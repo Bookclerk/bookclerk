@@ -57,7 +57,8 @@ pub fn search_crates_io(query: Option<&str>, per_page: u32) -> Result<Vec<Plugin
 
 /// GET `url` as JSON; non-2xx or decode failures become [`PluginError`].
 fn http_get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
-    let mut response = ureq::get(url)
+    let mut response = bookclerk_tls::http_agent()
+        .get(url)
         .header("User-Agent", CRATES_IO_USER_AGENT)
         .header("Accept", "application/json")
         .call()
