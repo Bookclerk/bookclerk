@@ -1052,16 +1052,26 @@ fn max_d1_http_body_bytes() -> usize {
     max_d1_http_body_bytes_for(MAX_SCALAR_BYTES)
 }
 
+/// Worst-case growth of one result byte in D1's JSON body.
+///
+/// A control character in a TEXT cell is escaped as `\u00XX`, six bytes
+/// for one; a BLOB byte is a decimal array element, at most four bytes; the
+/// column name repeated per row is already counted in the result budget's
+/// own per-row accounting. Six covers every cell encoding D1 produces.
+const D1_JSON_EXPANSION: usize = 6;
+
 /// HTTP-body ceiling for a typed attempt held to `result_cap_bytes`.
 ///
-/// D1 answers rows as JSON objects, so the body carries each column name
-/// per row and escapes text; twice the result budget covers that encoding
-/// for any result the attempt may accept, plus the envelope. A budget under
+/// D1 answers rows as JSON objects and escapes text, so a result that fits
+/// the budget can arrive as up to [`D1_JSON_EXPANSION`] times as many body
+/// bytes; the ceiling covers that encoding for any result the attempt may
+/// accept, plus the envelope, so an admitted result is never refused for
+/// its escaping while a body past it is still cut off early. A budget under
 /// one scalar still gets the page ceiling.
 fn max_d1_http_body_bytes_for(result_cap_bytes: u32) -> usize {
     usize::try_from(result_cap_bytes.max(MAX_SCALAR_BYTES))
         .unwrap_or(usize::MAX)
-        .saturating_mul(2)
+        .saturating_mul(D1_JSON_EXPANSION)
         .saturating_add(D1_JSON_ENVELOPE_BYTES)
 }
 
@@ -2093,7 +2103,7 @@ mod tests {
     fn d1_http_body_ceiling_is_page_budget_plus_envelope() {
         assert_eq!(
             max_d1_http_body_bytes(),
-            2 * MAX_SCALAR_BYTES as usize + D1_JSON_ENVELOPE_BYTES
+            D1_JSON_EXPANSION * MAX_SCALAR_BYTES as usize + D1_JSON_ENVELOPE_BYTES
         );
         assert_eq!(max_d1_http_body_bytes_for(1), max_d1_http_body_bytes());
         let streamed = bookclerk_plugin_abi::DbCapabilities::advertised_d1()
@@ -2102,9 +2112,31 @@ mod tests {
             .max_atomic_result_bytes;
         assert_eq!(
             max_d1_http_body_bytes_for(streamed),
-            2 * streamed as usize + D1_JSON_ENVELOPE_BYTES,
+            D1_JSON_EXPANSION * streamed as usize + D1_JSON_ENVELOPE_BYTES,
             "a streamed attempt may read its whole budget as JSON"
         );
+    }
+
+    /// A result made of the worst-escaping text D1 can return (control
+    /// characters, six JSON bytes each) and of BLOB bytes as decimal array
+    /// elements still fits the body ceiling for its budget.
+    #[test]
+    fn d1_http_body_ceiling_covers_worst_case_json_escaping() {
+        let cap = MAX_SCALAR_BYTES as usize;
+        let text = "\u{1}".repeat(cap);
+        let escaped = serde_json::to_string(&JsonValue::String(text)).expect("json text");
+        assert!(
+            escaped.len() >= 6 * cap,
+            "control characters escape to six bytes"
+        );
+        let ceiling = max_d1_http_body_bytes_for(MAX_SCALAR_BYTES);
+        assert!(
+            escaped.len() <= ceiling - D1_JSON_ENVELOPE_BYTES / 2,
+            "the escaped cell leaves room for the envelope"
+        );
+        let blob = serde_json::to_string(&JsonValue::Array(vec![JsonValue::from(255u8); cap]))
+            .expect("json blob");
+        assert!(blob.len() <= ceiling - D1_JSON_ENVELOPE_BYTES / 2);
     }
 
     struct ExecutingD1 {

@@ -185,12 +185,13 @@ impl LibraryStore {
     }
 
     /// Reads `[offset, offset+limit)`, falling back to pieces when the
-    /// adapter answers with a result-byte cap.
+    /// adapter answers with a result cap.
     ///
     /// The first read asks for the whole page: at most
     /// [`BOOK_PAGE_MAX_LIMIT`] rows, which an adapter's streamed result
     /// budget normally covers. An adapter without streamed results rejects a
-    /// large page with `maxResultBytes`, and unusually wide rows can pass
+    /// large page with `maxResultBytes` (or `maxResultRows` when its row
+    /// budget is smaller than the page), and unusually wide rows can pass
     /// even `maxStreamedResultBytes`; the read then continues in pieces of
     /// at most [`BOOK_PAGE_CHUNK`] rows, halving a piece that still exceeds
     /// the cap and keeping that width for the rest of the page.
@@ -388,17 +389,24 @@ fn nocase_key_order(left: &BookKey, right: &BookKey) -> std::cmp::Ordering {
         .then_with(|| left.uuid.cmp(&right.uuid))
 }
 
-/// True when `err` is a result-byte cap, not a lock or a row cap.
+/// True when `err` is a result cap a smaller read can satisfy, not a lock.
 ///
 /// The inline caps (`maxResultBytes`, `maxAtomicResultBytes`) match for an
 /// adapter that only answers inline; `maxStreamedResultBytes` matches so a
 /// page whose rows are wide enough to pass even the streamed budget is read
-/// in smaller pieces instead of failing. A row cap is never halved around.
+/// in smaller pieces instead of failing. The row caps (`maxResultRows`,
+/// `maxStreamedResultRows`) match for the same reason: an adapter that
+/// advertises a row budget below a page still meets the host minimums, and
+/// the page it rejects whole is read in pieces that fit its budget.
 pub(crate) fn is_result_too_large(err: &LibraryError) -> bool {
     err.limit().is_some_and(|limit| {
         matches!(
             limit.limit.as_str(),
-            "maxResultBytes" | "maxAtomicResultBytes" | "maxStreamedResultBytes"
+            "maxResultBytes"
+                | "maxAtomicResultBytes"
+                | "maxStreamedResultBytes"
+                | "maxResultRows"
+                | "maxStreamedResultRows"
         )
     })
 }
@@ -762,7 +770,7 @@ mod tests {
     use bookclerk_plugin_abi::LimitExceeded;
 
     #[test]
-    fn result_too_large_matches_only_result_byte_caps() {
+    fn result_too_large_matches_only_result_caps() {
         let bytes = LibraryError::LimitExceeded(LimitExceeded::new("maxResultBytes", 10, 20));
         assert!(is_result_too_large(&bytes));
         let atomic = LibraryError::Unavailable(
@@ -770,7 +778,19 @@ mod tests {
         );
         assert!(is_result_too_large(&atomic));
         let rows = LibraryError::LimitExceeded(LimitExceeded::new("maxResultRows", 1, 2));
-        assert!(!is_result_too_large(&rows), "a row cap is not a byte cap");
+        assert!(
+            is_result_too_large(&rows),
+            "a page past an adapter's row budget is read in pieces"
+        );
+        let streamed_rows = LibraryError::Unavailable(
+            LimitExceeded::new("maxStreamedResultRows", 1, 2).to_message(),
+        );
+        assert!(is_result_too_large(&streamed_rows));
+        let cell = LibraryError::LimitExceeded(LimitExceeded::new("maxCellBytes", 1, 2));
+        assert!(
+            !is_result_too_large(&cell),
+            "a cell cap never shrinks with the read"
+        );
         let streamed =
             LibraryError::LimitExceeded(LimitExceeded::new("maxStreamedResultBytes", 10, 20));
         assert!(
@@ -1395,6 +1415,14 @@ mod tests {
         assert_filtered_page_256_under_cap(CapMode::Inline).await;
     }
 
+    /// An inline-only adapter whose row budget is smaller than the page
+    /// rejects the whole page with `maxResultRows`; the page is read in
+    /// pieces of at most its budget instead.
+    #[tokio::test]
+    async fn filtered_page_limit_256_fits_a_64_row_budget() {
+        assert_filtered_page_256_under_cap(CapMode::FewRows).await;
+    }
+
     /// Seeds 256 books and reads them as one filtered page of 256.
     async fn assert_filtered_page_256_under_cap(mode: CapMode) {
         let store = capped_store(mode).await;
@@ -1429,6 +1457,9 @@ mod tests {
         /// Only the inline caps (256 KiB), as an adapter without streamed
         /// results enforces.
         Inline,
+        /// The inline caps with a 64-row result budget, the smallest an
+        /// adapter may advertise and still meet the host minimums.
+        FewRows,
     }
 
     /// Store whose guest enforces the sqlite result caps selected by `mode`.
@@ -1447,13 +1478,21 @@ mod tests {
                 bookclerk_plugin_abi::ExecuteReply,
                 bookclerk_plugin_abi::PluginError,
             > {
-                let caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
+                let mut caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
                 let exec_caps = match self.mode {
                     CapMode::Streamed => {
                         bookclerk_db_exec::ExecCaps::streamed_from_capabilities(&caps)
                             .expect("first-party sqlite streams results")
                     }
                     CapMode::Inline => bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
+                    CapMode::FewRows => {
+                        caps.max_result_rows = 64;
+                        assert!(
+                            caps.meets_host_minimums(),
+                            "a 64-row budget is a valid adapter advertisement"
+                        );
+                        bookclerk_db_exec::ExecCaps::from_capabilities(&caps)
+                    }
                 };
                 bookclerk_db_exec::execute_typed_envelope_on_connection(
                     &self.db,

@@ -296,8 +296,8 @@ mod tests {
         TypedDbStatement,
     };
 
-    /// Stamps a typed `SELECT` against the host catalog so the guest accepts
-    /// it as a proven request.
+    /// Stamps a typed `SELECT` over constants, typed against the guest's own
+    /// bookkeeping tables, so the guest accepts it as a proven request.
     fn stamped_select(operation_id: &str, sql: &str) -> AdapterExecuteRequest {
         let req = ExecuteRequest {
             operation_id: operation_id.into(),
@@ -313,9 +313,9 @@ mod tests {
         };
         bookclerk_db_exec::stamp_adapter_execute(
             req,
-            &bookclerk_library::migrations::host_sql_type_env(),
+            &bookclerk_plugin_abi::sql_host_bookkeeping_type_env(),
         )
-        .expect("stamp host proofs")
+        .expect("stamp proofs")
     }
 
     /// A dedicated (binding) session answers `executeStreamed` with the
@@ -330,10 +330,7 @@ mod tests {
         let caps = session.capabilities().await.expect("capabilities");
         assert!(caps.streams_results(), "first-party sqlite streams results");
         let reply = session
-            .execute_streamed(stamped_select(
-                "stream-dedicated",
-                "SELECT COUNT(*) AS n FROM bookclerk_slots",
-            ))
+            .execute_streamed(stamped_select("stream-dedicated", "SELECT 7 AS n"))
             .await
             .expect("streamed reply")
             .collect(ExecuteStreamLimits::from_capabilities(&caps))
@@ -342,7 +339,7 @@ mod tests {
         assert_eq!(reply.operation_id, "stream-dedicated");
         assert_eq!(reply.statements.len(), 1);
         assert_eq!(reply.statements[0].rows.len(), 1);
-        assert_eq!(reply.statements[0].rows[0].values[0], DbValue::Int64(0));
+        assert_eq!(reply.statements[0].rows[0].values[0], DbValue::Int64(7));
     }
 
     /// The shared library session streams through the process-wide
@@ -355,16 +352,13 @@ mod tests {
         let session = database.open_session().await.expect("session");
         let caps = session.capabilities().await.expect("capabilities");
         let reply = session
-            .execute_streamed(stamped_select(
-                "stream-shared",
-                "SELECT COUNT(*) AS n FROM bookclerk_slots",
-            ))
+            .execute_streamed(stamped_select("stream-shared", "SELECT 7 AS n"))
             .await
             .expect("streamed reply")
             .collect(ExecuteStreamLimits::from_capabilities(&caps))
             .await
             .expect("frames decode");
         assert_eq!(reply.operation_id, "stream-shared");
-        assert_eq!(reply.statements[0].rows[0].values[0], DbValue::Int64(0));
+        assert_eq!(reply.statements[0].rows[0].values[0], DbValue::Int64(7));
     }
 }

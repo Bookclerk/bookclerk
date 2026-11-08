@@ -477,7 +477,8 @@ After `openSession` the host calls the typed
   8 MiB and 50 000 rows. A result past the streamed budget still fails
   closed with `limit_exceeded`. Against a guest that doesn't stream, those
   reads fall back to pieces, halving a piece whose inline result would
-  exceed `maxResultBytes`.
+  exceed `maxResultBytes` or whose rows would exceed the guest's
+  `maxResultRows`.
 - Guests that omit `returning`, or advertise `0` row, payload or atomic
   caps, aren't loaded.
 
