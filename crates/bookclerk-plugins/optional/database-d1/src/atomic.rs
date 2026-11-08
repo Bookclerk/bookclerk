@@ -344,10 +344,13 @@ impl D1Proxy {
                         // follow-up HTTP batch after the main batch commits. Same-batch
                         // finalize would require provider support for dependent SQL.
                         let hint = &guest_receipt;
+                        let guest_len =
+                            usize::try_from(hint.guest_statement_len).unwrap_or(usize::MAX);
                         let finalize = bookclerk_db_exec::guest_receipt_finalize_stmts(
                             &reply,
-                            usize::try_from(hint.guest_statement_len).unwrap_or(usize::MAX),
+                            guest_len,
                             &hint.guest_request_hash,
+                            bookclerk_db_exec::guest_batch_is_read_only(req, guest_len),
                         )?;
                         if !finalize.is_empty() {
                             let fin_stmts: Vec<SqlStmt> = finalize
@@ -579,10 +582,12 @@ impl D1Proxy {
         self.normalize_reply_from_declared(req, &mut reply, timeout)
             .await?;
         reply.statements = collapse_d1_wire(companion_groups, reply.statements);
+        let guest_len = usize::try_from(guest_receipt.guest_statement_len).unwrap_or(usize::MAX);
         let finalize = bookclerk_db_exec::guest_receipt_finalize_stmts(
             &reply,
-            usize::try_from(guest_receipt.guest_statement_len).unwrap_or(usize::MAX),
+            guest_len,
             &guest_receipt.guest_request_hash,
+            bookclerk_db_exec::guest_batch_is_read_only(req, guest_len),
         )?;
         if !finalize.is_empty() {
             let fin_stmts: Vec<SqlStmt> = finalize

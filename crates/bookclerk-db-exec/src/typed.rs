@@ -1721,6 +1721,8 @@ async fn execute_typed_on_session_proofs(
     }
     let hint = guest_receipt;
     let guest_hash = hint.guest_request_hash.clone();
+    let guest_len = usize::try_from(hint.guest_statement_len).unwrap_or(usize::MAX);
+    let read_only = crate::guest_receipt::guest_batch_is_read_only(req, guest_len);
     execute_typed_on_session_then_proofs(
         engine,
         db,
@@ -1731,8 +1733,9 @@ async fn execute_typed_on_session_proofs(
         move |partial| {
             crate::guest_receipt::guest_receipt_finalize_stmts(
                 &partial,
-                usize::try_from(hint.guest_statement_len).unwrap_or(usize::MAX),
+                guest_len,
                 &hint.guest_request_hash,
+                read_only,
             )
         },
         Some(guest_hash),
@@ -2198,6 +2201,7 @@ where
             &partial,
             guest_len,
             &guest_receipt.guest_request_hash,
+            crate::guest_receipt::guest_batch_is_read_only(&req, guest_len),
         )?
         .into_iter()
         .enumerate()
