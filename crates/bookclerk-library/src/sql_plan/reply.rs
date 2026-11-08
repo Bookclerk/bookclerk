@@ -16,8 +16,11 @@ use crate::error::{LibraryError, Result};
 ///
 /// # Errors
 ///
-/// Returns [`LibraryError::Unavailable`] when the echo, statement count,
-/// result selection shape, or byte/row bounds do not match the request.
+/// Returns [`LibraryError::Unavailable`] when the echo, statement count or
+/// result selection shape does not match the request, and
+/// [`LibraryError::LimitExceeded`] when a statement result or the whole
+/// reply exceeds a negotiated cap (`maxResultRows`, `maxCellBytes`,
+/// `maxResultBytes`, `maxAtomicResultBytes`).
 pub fn validate_execute_reply(
     req: &ExecuteRequest,
     reply: &ExecuteReply,
@@ -51,8 +54,10 @@ pub fn validate_execute_reply(
             .map_err(|err| LibraryError::Unavailable(err.to_string()))?
             .len();
         if bytes > cap {
-            return Err(LibraryError::Unavailable(format!(
-                "execute reply is {bytes} bytes; guest maxAtomicResultBytes is {cap}"
+            return Err(LibraryError::LimitExceeded(LimitExceeded::new(
+                "maxAtomicResultBytes",
+                u64::try_from(cap).unwrap_or(u64::MAX),
+                u64::try_from(bytes).unwrap_or(u64::MAX),
             )));
         }
     }
@@ -315,6 +320,29 @@ mod tests {
             "{err}"
         );
         assert!(err.to_string().contains("maxCellBytes"), "{err}");
+    }
+
+    #[test]
+    fn validate_execute_reply_rejects_oversized_aggregate_reply() {
+        // Two statements that each fit `maxResultBytes` but together exceed
+        // `maxAtomicResultBytes` are a typed limit error, not a retryable
+        // `unavailable`.
+        let mut req = rows_request(1);
+        req.statements.push(req.statements[0].clone());
+        let mut reply = rows_reply("op-1", 1);
+        reply.statements[0].rows[0].values[0] = DbValue::Text("x".repeat(100));
+        reply.statements.push(reply.statements[0].clone());
+        let mut caps = tiny_caps();
+        caps.max_cell_bytes = 0;
+        caps.max_result_bytes = 256;
+        caps.max_atomic_result_bytes = 160;
+        let err = validate_execute_reply(&req, &reply, &caps).unwrap_err();
+        assert!(matches!(err, LibraryError::LimitExceeded(_)), "{err}");
+        let limit = err.limit().expect("typed limit");
+        assert_eq!(limit.limit, "maxAtomicResultBytes");
+        assert_eq!(limit.cap, 160);
+        assert!(limit.used > 160, "{limit:?}");
+        assert!(err.to_string().contains("maxAtomicResultBytes"), "{err}");
     }
 
     #[test]
