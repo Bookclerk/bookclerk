@@ -231,10 +231,6 @@ pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
 /// * `root` - Cargo workspace root directory.
 /// * `out_dir` - Filesystem path (`out_dir`).
 /// * `version` - String `version` for this call.
-/// * `extra_packages` - More Cargo packages compiled in the same `cargo build`
-///   as the platform but left out of the bundle (they stay in
-///   `target/release/`). The hosted demo passes its storefronts and seed so
-///   the dependencies they share with the hosts compile once.
 ///
 /// # Returns
 ///
@@ -247,17 +243,15 @@ pub fn package_hosts(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
 /// # Panics
 ///
 /// Panics when an internal invariant does not hold.
-pub fn package_platform(
-    root: &Path,
-    out_dir: &Path,
-    version: &str,
-    extra_packages: &[String],
-) -> Result<()> {
+pub fn package_platform(root: &Path, out_dir: &Path, version: &str) -> Result<()> {
     ensure_ui_dist(root)?;
-    plugins::build_packages(
+    plugins::build_selection(
         root,
         true,
-        &plugins::platform_packages(root, extra_packages)?,
+        BuildSelection {
+            platform: true,
+            ..Default::default()
+        },
     )?;
     let staged = root.join("target").join("plugin-artifacts-pack-platform");
     plugins::stage_platform_for_pack(root, &staged, true, true)?;
@@ -518,17 +512,6 @@ fn set_executable(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn package_platform_refuses_a_root_without_the_ui() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let out = root.path().join("dist");
-        let extras = vec!["bookclerk-demo-seed".to_owned()];
-        let err =
-            package_platform(root.path(), &out, "0.0.0", &extras).expect_err("no ui/package.json");
-        assert!(err.to_string().contains("ui/package.json missing"));
-        assert!(!out.exists());
-    }
 
     #[test]
     fn archive_names_prefer_bookclerk_target() {

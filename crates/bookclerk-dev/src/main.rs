@@ -157,10 +157,6 @@ enum Commands {
         #[arg(long)]
         /// Version stamped into the archive name (default: workspace version).
         version: Option<String>,
-        #[arg(long = "extra-package", value_name = "PACKAGE")]
-        /// Also compile this Cargo package in the same `cargo build` (repeatable).
-        /// It stays in `target/release/` and is not bundled.
-        extra_packages: Vec<String>,
     },
     /// Download/update the pinned Cloudflare `workerd` binary into `target/<profile>/`.
     EnsureWorkerd,
@@ -341,17 +337,12 @@ fn run() -> Result<()> {
                 version.as_deref().unwrap_or(workspace_version()),
             )
         }
-        Commands::PackagePlatform {
-            out,
-            version,
-            extra_packages,
-        } => {
+        Commands::PackagePlatform { out, version } => {
             let out = out.unwrap_or_else(|| root.join("target").join("dist"));
             package::package_platform(
                 &root,
                 &out,
                 version.as_deref().unwrap_or(workspace_version()),
-                &extra_packages,
             )
         }
         Commands::Reset {
@@ -570,28 +561,6 @@ fn stage_plugins_skip_build(skip_build: bool, full: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::stage_plugins_skip_build;
-    use super::{Cli, Commands};
-    use clap::Parser;
-
-    #[test]
-    fn package_platform_collects_repeated_extra_packages() {
-        let cli = Cli::try_parse_from([
-            "bookclerk-dev",
-            "package-platform",
-            "--extra-package",
-            "bookclerk-plugin-source-libro",
-            "--extra-package",
-            "bookclerk-demo-seed",
-        ])
-        .expect("parse");
-        let Commands::PackagePlatform { extra_packages, .. } = cli.command else {
-            panic!("expected package-platform");
-        };
-        assert_eq!(
-            extra_packages,
-            ["bookclerk-plugin-source-libro", "bookclerk-demo-seed"]
-        );
-    }
 
     #[test]
     fn full_staged_test_stages_without_rebuilding() {
