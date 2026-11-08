@@ -14,7 +14,18 @@ cd "$ROOT"
 
 # Crates that only a decrypt path needs. Anything sealing Bookclerk's own data
 # uses XChaCha20-Poly1305, which is not on this list and must not be.
-CIPHERS='^(aes|aes-gcm|cbc|ctr|aes-kw|widevine.*)$'
+# `--format '{lib}'` prints library names, so match `_` as well as `-`.
+CIPHERS='^(aes|aes[-_]gcm|cbc|ctr|aes[-_]kw|widevine.*)( \(\*\))?$'
+
+# The one allowed route to generic block ciphers: crypto-glue, which
+# webauthn-rs (passkeys in bookclerkd) uses for its RustCrypto primitives and
+# which links AES, CBC and CTR unconditionally. They verify nothing about
+# media and come with no content keys or CDM; the binary already carries the
+# same ciphers inside aws-lc-rs for TLS. The exception holds only while
+# webauthn-rs is crypto-glue's sole user and the host reaches no cipher that
+# crypto-glue does not itself bring. Widevine crates are never allowed.
+GLUE='crypto-glue'
+GLUE_USERS='^(webauthn-rs-core|webauthn-attestation-ca)$'
 
 status=0
 
@@ -33,7 +44,21 @@ for host in bookclerk-cli bookclerkd; do
     status=1
   fi
 
-  ciphers="$(grep -E "$CIPHERS" <<<"$tree" | sort -u || true)"
+  ciphers="$(grep -E "$CIPHERS" <<<"$tree" | sed 's/ (\*)$//' | sort -u || true)"
+  if [[ -n "$ciphers" ]] && grep -qx "${GLUE//-/_}" <<<"$tree"; then
+    users="$(cargo tree -p "$host" --edges normal -i "$GLUE" --depth 1 --prefix none --format '{p}' |
+      awk '{print $1}' | grep -vx "$GLUE" | sort -u)"
+    strangers="$(grep -Ev "$GLUE_USERS" <<<"$users" || true)"
+    if [[ -n "$strangers" ]]; then
+      echo "FAIL: $host (default) has $GLUE users other than webauthn-rs:" >&2
+      sed 's/^/  /' <<<"$strangers" >&2
+      status=1
+    else
+      glue_ciphers="$(cargo tree -p "$GLUE" --edges normal --prefix none --format '{lib}' |
+        grep -E "$CIPHERS" | sed 's/ (\*)$//' | grep -v '^widevine' | sort -u || true)"
+      ciphers="$(comm -23 <(printf '%s\n' "$ciphers") <(printf '%s\n' "$glue_ciphers") | sed '/^$/d')"
+    fi
+  fi
   if [[ -n "$ciphers" ]]; then
     echo "FAIL: $host (default) reaches cipher crates:" >&2
     sed 's/^/  /' <<<"$ciphers" >&2
@@ -41,7 +66,7 @@ for host in bookclerk-cli bookclerkd; do
     status=1
   fi
 
-  [[ $status -eq 0 ]] && echo "ok: $host (default) links no store and no cipher"
+  [[ $status -eq 0 ]] && echo "ok: $host (default) links no store and no cipher outside passkeys"
 done
 
 exit "$status"
