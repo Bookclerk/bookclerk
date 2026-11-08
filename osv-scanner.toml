@@ -15,7 +15,8 @@ INFO / unmaintained advisory on crates.io `paste` 1.0.15 — no CVE, no patched
 registry release, and no safe crates.io substitute under the same package name.
 Pulled only as a compile-time proc-macro by transitive deps of discovery
 embeddings (`fastembed` → `tokenizers` / related crates; `onig` feature does not
-drop it). It does not ship in Bookclerk binaries and has no known runtime
+drop it), and only in hosts built with the opt-in `onnx-embeddings` feature;
+it stays in Cargo.lock either way. It does not ship in Bookclerk binaries and has no known runtime
 exploit path. We do not vendor a rename-to-`paste` fork: OSV still matches the
 lockfile package name, so a path patch would not clear the scan. Accept the
 INFO finding until upstream moves to maintained `pastey` (or equivalent).

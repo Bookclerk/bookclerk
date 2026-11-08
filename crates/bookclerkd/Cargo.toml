@@ -15,6 +15,9 @@ path = "src/main.rs"
 [features]
 # External guests only. Production hosts never link storefront crates.
 default = []
+# Link the ONNX MiniLM embedder for `discovery.embeddings_enabled`. Without
+# it the setting warns and discovery ranks with local-hash embeddings.
+onnx-embeddings = ["bookclerk-discover/onnx"]
 
 [dependencies]
 anyhow.workspace = true

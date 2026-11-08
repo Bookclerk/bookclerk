@@ -10,6 +10,12 @@ authors.workspace = true
 
 [features]
 default = []
+# Quantized MiniLM through ONNX Runtime (`OnnxEmbedder`). Off by default:
+# `discovery.embeddings_enabled` is an opt-in experiment, and the embedder
+# pulls fastembed, hf-hub, tokenizers, onig, OpenSSL and a second reqwest
+# into the build. Without it an ONNX request warns and uses local-hash.
+# Hosts forward it as `onnx-embeddings`; see docs/internals/discovery.md.
+onnx = ["dep:fastembed", "dep:ort"]
 
 [dependencies]
 anyhow.workspace = true
@@ -20,7 +26,7 @@ bookclerk-plugin-sdk.workspace = true
 bookclerk-resolve.workspace = true
 bookclerk-source.workspace = true
 chrono.workspace = true
-# Always compiled in: try MiniLM ONNX at runtime, fall back to local-hash.
+# Only with the `onnx` feature: try MiniLM ONNX at runtime, fall back to local-hash.
 # - no image-models (drops rav1e/image weight)
 # - load-dynamic: do not statically link ORT (works on glibc < 2.38 hosts;
 #   OnnxEmbedder::open downloads/loads the dylib or fails → hash fallback)
@@ -31,11 +37,11 @@ fastembed = { version = "7", default-features = false, features = [
     "ort-load-dynamic",
     "ort-download-binaries-native-tls",
     "hf-hub-native-tls",
-] }
+], optional = true }
 hex = "0.4"
 # Same `ort` as fastembed's; used only to load the runtime library up front
 # (`init_from` returns an error where `ort` itself would panic).
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"], optional = true }
 reqwest = { version = "0.13", default-features = true, features = ["json", "query"] }
 serde.workspace = true
 serde_json.workspace = true
