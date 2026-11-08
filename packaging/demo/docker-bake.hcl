@@ -20,6 +20,13 @@ variable "RELEASE_CODEGEN_UNITS" {
   default = "16"
 }
 
+# The demo's own Rust packages, compiled in the production builder's single
+# `cargo build` (package-platform --extra-package) so the dependencies they
+# share with the hosts compile once instead of twice.
+variable "EXTRA_PACKAGES" {
+  default = "bookclerk-plugin-source-audible bookclerk-plugin-source-libro bookclerk-plugin-source-chirp bookclerk-plugin-source-graphicaudio bookclerk-demo-seed"
+}
+
 variable "TAG" {
   default = "bookclerk-demo:local"
 }
@@ -30,6 +37,7 @@ target "_production" {
   args = {
     RELEASE_LTO           = RELEASE_LTO
     RELEASE_CODEGEN_UNITS = RELEASE_CODEGEN_UNITS
+    EXTRA_PACKAGES        = EXTRA_PACKAGES
   }
 }
 
@@ -53,10 +61,8 @@ target "demo" {
     runtime = "target:runtime"
   }
   args = {
-    BUILDER               = "builder"
-    RUNTIME               = "runtime"
-    RELEASE_LTO           = RELEASE_LTO
-    RELEASE_CODEGEN_UNITS = RELEASE_CODEGEN_UNITS
+    BUILDER = "builder"
+    RUNTIME = "runtime"
   }
   tags = [TAG]
 }

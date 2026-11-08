@@ -93,6 +93,54 @@ pub fn packages_for(root: &Path, sel: BuildSelection) -> Result<Vec<String>> {
     Ok(pkgs)
 }
 
+/// Appends `extras` to a Cargo `-p` list, skipping packages already in it.
+///
+/// `package-platform --extra-package` uses this to compile more packages in
+/// the same `cargo build` as the platform, so the units they share with the
+/// hosts compile once, with one feature set.
+///
+/// # Arguments
+///
+/// * `pkgs` - The resolved package list, kept in order.
+/// * `extras` - Additional package names, appended in order.
+///
+/// # Returns
+///
+/// `pkgs` followed by every package of `extras` it did not already hold.
+pub fn with_extra_packages(mut pkgs: Vec<String>, extras: &[String]) -> Vec<String> {
+    for pkg in extras {
+        push_unique(&mut pkgs, pkg.clone());
+    }
+    pkgs
+}
+
+/// The `cargo build` package list of `package-platform`: the workspace
+/// `default-members` and platform guests, then `extras` in order.
+///
+/// # Arguments
+///
+/// * `root` - Cargo workspace root directory.
+/// * `extras` - Packages from `--extra-package`, compiled in the same build.
+///
+/// # Returns
+///
+/// The deduplicated `-p` list.
+///
+/// # Errors
+///
+/// Returns an error when the workspace manifest or a guest manifest cannot be
+/// read or parsed.
+pub fn platform_packages(root: &Path, extras: &[String]) -> Result<Vec<String>> {
+    let base = packages_for(
+        root,
+        BuildSelection {
+            platform: true,
+            ..Default::default()
+        },
+    )?;
+    Ok(with_extra_packages(base, extras))
+}
+
 /// Resolves plugin manifest ids to discovered guests across every tier.
 ///
 /// Lets CI and developers build or stage one guest (for example `libro`)
@@ -1079,6 +1127,39 @@ mode = "deny"
         leaves
     }
 
+    #[test]
+    fn platform_packages_append_extras_after_the_platform() {
+        let root = workspace_root();
+        let base = super::platform_packages(&root, &[]).expect("platform packages");
+        assert!(base.iter().any(|p| p == "bookclerkd"));
+        assert!(!base.iter().any(|p| p == "bookclerk-demo-seed"));
+        let extras = vec!["bookclerk-demo-seed".to_owned(), "bookclerkd".to_owned()];
+        let with = super::platform_packages(&root, &extras).expect("platform packages");
+        assert_eq!(with.len(), base.len() + 1);
+        assert_eq!(with[..base.len()], base[..]);
+        assert_eq!(with.last().map(String::as_str), Some("bookclerk-demo-seed"));
+    }
+
+    #[test]
+    fn extra_packages_append_in_order_without_duplicates() {
+        let base = vec!["bookclerkd".to_owned(), "bookclerk-jail".to_owned()];
+        let extras = vec![
+            "bookclerk-plugin-source-libro".to_owned(),
+            "bookclerkd".to_owned(),
+            "bookclerk-demo-seed".to_owned(),
+            "bookclerk-plugin-source-libro".to_owned(),
+        ];
+        assert_eq!(
+            super::with_extra_packages(base.clone(), &extras),
+            vec![
+                "bookclerkd",
+                "bookclerk-jail",
+                "bookclerk-plugin-source-libro",
+                "bookclerk-demo-seed",
+            ]
+        );
+        assert_eq!(super::with_extra_packages(base.clone(), &[]), base);
+    }
     #[test]
     fn foreign_legacy_sqlite_alias_blocks_platform_install_before_mutation() {
         let files = tempfile::tempdir().unwrap();
