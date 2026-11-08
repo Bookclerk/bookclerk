@@ -169,7 +169,9 @@ Native plugins must be rebuilt against this SDK.
   as `ExecuteStreamFrame`s under `maxStreamedResultBytes` /
   `maxStreamedResultRows`, which are at least the inline caps; an adapter
   that advertises `0` for both does not stream and answers `unsupported`.
-  See [streamed results](sql-contract/v1.md#streamed-results).
+  The SDKs read `all()` and `iterate()` through it when the session
+  streams. See [streamed results](sql-contract/v1.md#streamed-results)
+  and [Working within database limits](database-limits.md).
 - Integrity metadata (etag, sha256) rides on `PutResult` and
   `ReadResult`.
 - Optional facilities *within* the ABI are feature flags (`rpc.streams`,

@@ -1,5 +1,6 @@
 //! Static HTTPS / local JSON registry.
 
+use bookclerk_tls::ureq;
 use std::fs;
 use std::path::Path;
 

@@ -343,7 +343,24 @@ var CapnpReader = class {
   view;
   segOff;
   size0;
-  constructor(bytes) {
+  /** Largest segment, pointer list or composite list, in words. */
+  maxWords;
+  /**
+   * Words the reader may still visit. Every struct and list reached is
+   * charged its size, so a message whose pointers alias one large value
+   * many times over cannot materialize more than the budget, as the Cap'n
+   * Proto traversal limit does.
+   */
+  remaining;
+  /**
+   * @param bytes - Unpacked single-segment message.
+   * @param maxWords - Traversal budget in words; the default suits control
+   *   messages, a streamed result frame passes the budget its stream
+   *   negotiated.
+   */
+  constructor(bytes, maxWords = MAX_TRAVERSAL_WORDS) {
+    this.maxWords = maxWords;
+    this.remaining = maxWords;
     if (bytes.byteLength < WORD) {
       throw new Error("truncated Cap'n message");
     }
@@ -358,7 +375,7 @@ var CapnpReader = class {
     if (this.segOff + size0 * WORD > bytes.byteLength) {
       throw new Error("truncated Cap'n segment");
     }
-    if (size0 > MAX_TRAVERSAL_WORDS) {
+    if (size0 > this.maxWords) {
       throw new Error("Cap'n segment exceeds traversal budget");
     }
   }
@@ -383,7 +400,7 @@ var CapnpReader = class {
     const dw = Number(word >> 32n & 0xffffn);
     const pw = Number(word >> 48n & 0xffffn);
     const target = ptrWord + 1 + offset;
-    this.checkRange(target, dw + pw);
+    this.visit(target, dw + pw);
     return new StructReader(this, target, dw, pw);
   }
   readWord(word) {
@@ -393,6 +410,31 @@ var CapnpReader = class {
   checkRange(word, nWords) {
     if (word < 0 || nWords < 0 || word + nWords > this.size0) {
       throw new Error("Cap'n pointer out of segment");
+    }
+  }
+  /**
+   * Checks that `nWords` from `word` lie in the segment and charges them to
+   * the traversal budget.
+   *
+   * @param word - First word of the struct or list reached.
+   * @param nWords - Its size in words.
+   * @throws When the range leaves the segment or exhausts the budget.
+   */
+  visit(word, nWords) {
+    this.checkRange(word, nWords);
+    this.charge(nWords);
+  }
+  /**
+   * Charges `nWords` to the traversal budget without a range check, for
+   * elements that occupy no words of their own.
+   *
+   * @param nWords - Words to charge.
+   * @throws `Error` when the budget is exhausted.
+   */
+  charge(nWords) {
+    this.remaining -= nWords;
+    if (this.remaining < 0) {
+      throw new Error("Cap'n message exceeds traversal budget");
     }
   }
   listPointer(ptrWord, expectSize) {
@@ -446,7 +488,7 @@ var CapnpReader = class {
       return new Uint8Array(0);
     }
     const nWords = lp.length === 0 ? 0 : Math.ceil(lp.length / WORD);
-    this.checkRange(lp.target, nWords);
+    this.visit(lp.target, nWords);
     const start = this.segOff + lp.target * WORD;
     if (start + lp.length > this.view.byteLength) {
       throw new Error("truncated Cap'n byte list");
@@ -473,10 +515,10 @@ var CapnpReader = class {
     if (lp === null || lp.length === 0) {
       return [];
     }
-    if (lp.length > MAX_TRAVERSAL_WORDS) {
+    if (lp.length > this.maxWords) {
       throw new Error("pointer list exceeds traversal budget");
     }
-    this.checkRange(lp.target, lp.length);
+    this.visit(lp.target, lp.length);
     const out = [];
     for (let i = 0; i < lp.length; i++) {
       out.push(lp.target + i);
@@ -501,7 +543,7 @@ var CapnpReader = class {
     if (lp === null || lp.length === 0) {
       return [];
     }
-    this.checkRange(lp.target, Math.ceil(lp.length * byteWidth / WORD));
+    this.visit(lp.target, Math.ceil(lp.length * byteWidth / WORD));
     const base = this.segOff + lp.target * WORD;
     const out = [];
     for (let i = 0; i < lp.length; i++) {
@@ -514,7 +556,7 @@ var CapnpReader = class {
     if (lp === null || lp.length === 0) {
       return [];
     }
-    this.checkRange(lp.target, Math.ceil(lp.length / 64));
+    this.visit(lp.target, Math.ceil(lp.length / 64));
     const base = this.segOff + lp.target * WORD;
     const out = [];
     for (let i = 0; i < lp.length; i++) {
@@ -526,9 +568,49 @@ var CapnpReader = class {
     void dataWords;
     void pointerWords;
     const lp = this.listPointer(ptrWord, 7);
-    if (lp === null || lp.length === 0) {
+    if (lp === null) {
       return [];
     }
+    const { tagWord, count, dw, pw } = this.compositeTag(lp);
+    const elemWords = dw + pw;
+    this.checkRange(tagWord, 1 + count * elemWords);
+    this.charge(1 + Math.max(count * elemWords, count));
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      out.push(new StructReader(this, tagWord + 1 + i * elemWords, dw, pw));
+    }
+    return out;
+  }
+  /**
+   * Element count of a composite list without visiting its elements, so a
+   * caller can refuse a list that is too long before any element decodes.
+   *
+   * @param ptrWord - Word holding the list pointer.
+   * @returns The number of elements the list's tag announces, `0` for a
+   *   null or empty list.
+   * @throws `Error` when the pointer is not a composite list pointer or the
+   *   count exceeds the list's payload.
+   */
+  readStructListLength(ptrWord) {
+    const lp = this.listPointer(ptrWord, 7);
+    if (lp === null) {
+      return 0;
+    }
+    return this.compositeTag(lp).count;
+  }
+  /**
+   * The tag word of a composite list: its element count and element shape.
+   *
+   * A composite list of zero words still carries its tag (zero-width
+   * elements, or no elements), so the tag is read whenever the pointer is
+   * not null.
+   *
+   * @param lp - A composite (element size 7) list pointer.
+   * @returns The tag's word, element count, data words and pointer words.
+   * @throws `Error` when the count exceeds the list's payload or the
+   *   traversal budget.
+   */
+  compositeTag(lp) {
     const tagWord = lp.target;
     this.checkRange(tagWord, 1);
     const tag = this.readWord(tagWord);
@@ -539,15 +621,10 @@ var CapnpReader = class {
     if (elemWords > 0 && count > Math.floor(lp.length / elemWords)) {
       throw new Error("composite list count exceeds payload");
     }
-    if (count > MAX_TRAVERSAL_WORDS) {
+    if (count > this.maxWords) {
       throw new Error("composite list count exceeds traversal budget");
     }
-    this.checkRange(tagWord, 1 + count * elemWords);
-    const out = [];
-    for (let i = 0; i < count; i++) {
-      out.push(new StructReader(this, tagWord + 1 + i * elemWords, dw, pw));
-    }
-    return out;
+    return { tagWord, count, dw, pw };
   }
 };
 function signExtend30(n) {
@@ -636,6 +713,17 @@ var StructReader = class _StructReader {
   getStructList(pointerIndex, dataWords, pointerWords) {
     const ptr = this.pointerWord(pointerIndex);
     return ptr === null ? [] : this.reader.readStructList(ptr, dataWords, pointerWords);
+  }
+  /**
+   * Element count of the composite list at `pointerIndex`, read from its tag
+   * alone (see {@link CapnpReader.readStructListLength}).
+   *
+   * @param pointerIndex - Pointer field index.
+   * @returns The announced element count, `0` for a null or empty list.
+   */
+  getStructListLength(pointerIndex) {
+    const ptr = this.pointerWord(pointerIndex);
+    return ptr === null ? 0 : this.reader.readStructListLength(ptr);
   }
   getStruct(pointerIndex, dataWords, pointerWords) {
     const ptr = this.pointerWord(pointerIndex);
@@ -5018,6 +5106,105 @@ var ExecuteResultReplyCodec = {
     }
   }
 };
+var ExecuteStreamHeadCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.operationId ?? "");
+    s.setUint32(0, v.statementCount ?? 0);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      operationId: s.getText(0),
+      statementCount: s.getUint32(0)
+    };
+  }
+};
+var ExecuteStreamStatementCodec = {
+  dataWords: 2,
+  pointerCount: 1,
+  write(s, v, caps) {
+    s.setUint32(0, v.index ?? 0);
+    {
+      const list = v.columns ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        DbColumnCodec.write(items[i], list[i], caps);
+      }
+    }
+    s.setUint64(1, BigInt(v.rowsAffected ?? 0));
+  },
+  read(s, caps) {
+    return {
+      index: s.getUint32(0),
+      columns: s.getStructList(0, 1, 1).map((item) => DbColumnCodec.read(item, caps)),
+      rowsAffected: Number(s.getUint64(1))
+    };
+  }
+};
+var ExecuteStreamFrameCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "head":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          ExecuteStreamHeadCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
+        break;
+      case "statement":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          ExecuteStreamStatementCodec.write(s.initStruct(0, 2, 1), v.value, caps);
+        }
+        break;
+      case "rows":
+        s.setUint16(0, 2);
+        {
+          const list = v.value ?? [];
+          const items = s.initStructList(0, list.length, 0, 1);
+          for (let i = 0; i < items.length; i++) {
+            DbRowCodec.write(items[i], list[i], caps);
+          }
+        }
+        break;
+      case "end":
+        s.setUint16(0, 3);
+        if (v.value != null) {
+          DbTimingCodec.write(s.initStruct(0, 2, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 4);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("ExecuteStreamFrame", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "head", value: ExecuteStreamHeadCodec.read(s.getStruct(0, 1, 1), caps) };
+      case 1:
+        return { kind: "statement", value: ExecuteStreamStatementCodec.read(s.getStruct(0, 2, 1), caps) };
+      case 2:
+        return { kind: "rows", value: s.getStructList(0, 0, 1).map((item) => DbRowCodec.read(item, caps)) };
+      case 3:
+        return { kind: "end", value: DbTimingCodec.read(s.getStruct(0, 2, 1), caps) };
+      case 4:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("ExecuteStreamFrame", disc);
+    }
+  }
+};
 var ExecuteStreamReplyCodec = {
   dataWords: 1,
   pointerCount: 1,
@@ -7114,6 +7301,415 @@ function decodeBase64(b64) {
   return out;
 }
 
+// dist/db-stream.js
+var ROWS_FRAME = 2;
+function streamsResults(caps) {
+  return caps.maxStreamedResultBytes > 0 && caps.maxStreamedResultRows > 0;
+}
+function executeStreamLimits(caps) {
+  if (streamsResults(caps)) {
+    return {
+      maxBytes: caps.maxStreamedResultBytes,
+      bytesLimit: "maxStreamedResultBytes",
+      maxRows: caps.maxStreamedResultRows,
+      rowsLimit: "maxStreamedResultRows"
+    };
+  }
+  return {
+    maxBytes: caps.maxAtomicResultBytes,
+    bytesLimit: "maxAtomicResultBytes",
+    maxRows: caps.maxResultRows,
+    rowsLimit: "maxResultRows"
+  };
+}
+function rawStreamCeiling(limits) {
+  return limits.maxBytes + Math.floor(limits.maxBytes / 8) + MAX_STREAM_WINDOW_BYTES;
+}
+var ExecuteStreamDecoder = class {
+  #limits;
+  #retainRows;
+  /** Bytes not yet consumed: `#buf[0, #len)`; the rest is spare capacity. */
+  #buf = new Uint8Array(0);
+  /** Bytes of `#buf` in use. */
+  #len = 0;
+  #seen = 0;
+  #state = { kind: "awaitingHead" };
+  #columns = [];
+  /**
+   * @param limits - Budget the stream is held to.
+   * @param options - `retainRows: false` counts rows against the budget but
+   *   drops them from the collected reply (for `iterate()`).
+   */
+  constructor(limits, options = {}) {
+    this.#limits = limits;
+    this.#retainRows = options.retainRows ?? true;
+  }
+  /**
+   * Whether the final frame (`end` or `err`) has been decoded.
+   *
+   * @returns True once the stream is complete.
+   */
+  get finished() {
+    return this.#state.kind === "finished";
+  }
+  /**
+   * Columns of the statement whose rows are arriving.
+   *
+   * @returns The open statement's columns, or an empty list between statements.
+   */
+  get columns() {
+    return this.#columns;
+  }
+  /**
+   * Feeds the next bytes of the stream.
+   *
+   * @param bytes - Any slice of the frame sequence.
+   * @returns The frames completed by these bytes, in order.
+   * @throws `PluginError` `limit_exceeded` when the stream exceeds the byte
+   *   or row budget, `invalid_params` when a frame is malformed or out of
+   *   sequence or bytes follow the final frame.
+   */
+  push(bytes) {
+    try {
+      return this.#push(bytes);
+    } catch (err) {
+      if (err instanceof PluginError) {
+        this.#columns = [];
+        this.#state = { kind: "finished", outcome: { err } };
+      }
+      throw err;
+    }
+  }
+  /**
+   * `push` before its failure is latched.
+   *
+   * @param bytes - Any slice of the frame sequence.
+   * @returns The frames completed by these bytes, in order.
+   * @throws See {@link ExecuteStreamDecoder.push}.
+   */
+  #push(bytes) {
+    const frames = [];
+    if (bytes.byteLength === 0) {
+      return frames;
+    }
+    if (this.finished) {
+      throw PluginError.fromWire("invalid_params", "streamed reply carries bytes after its final frame");
+    }
+    this.#seen += bytes.byteLength;
+    const ceiling = rawStreamCeiling(this.#limits);
+    if (this.#seen > ceiling) {
+      throw this.#bytesExceeded(this.#seen);
+    }
+    this.#append(bytes);
+    let at = 0;
+    while (this.#len - at >= 8) {
+      const view = new DataView(this.#buf.buffer, this.#buf.byteOffset + at, 8);
+      if (view.getUint32(0, true) !== 0) {
+        throw PluginError.fromWire("invalid_params", "streamed reply frame is not a single-segment Cap'n message");
+      }
+      const frameLen = view.getUint32(4, true) * 8 + 8;
+      if (frameLen > ceiling) {
+        throw this.#bytesExceeded(frameLen);
+      }
+      if (this.#len - at < frameLen) {
+        break;
+      }
+      const frame = decodeFrame(this.#buf.slice(at, at + frameLen), ceiling, (count) => this.#admitRows(count));
+      at += frameLen;
+      this.#apply(frame);
+      frames.push(frame);
+      if (this.finished) {
+        if (this.#len > at) {
+          throw PluginError.fromWire("invalid_params", "streamed reply carries bytes after its final frame");
+        }
+        break;
+      }
+    }
+    this.#consume(at);
+    return frames;
+  }
+  /**
+   * Appends `bytes` to the unconsumed remainder.
+   *
+   * The backing store grows geometrically, so a frame that arrives in many
+   * small chunks is copied a bounded number of times rather than once per
+   * chunk. A push onto an empty remainder is held as is, without a copy.
+   *
+   * @param bytes - The pushed bytes.
+   */
+  #append(bytes) {
+    if (this.#len === 0) {
+      this.#buf = bytes;
+      this.#len = bytes.byteLength;
+      return;
+    }
+    const need = this.#len + bytes.byteLength;
+    if (need > this.#buf.byteLength) {
+      const grown = new Uint8Array(Math.max(need, this.#buf.byteLength * 2));
+      grown.set(this.#buf.subarray(0, this.#len), 0);
+      this.#buf = grown;
+    }
+    this.#buf.set(bytes, this.#len);
+    this.#len = need;
+  }
+  /**
+   * Drops the first `at` bytes of the remainder.
+   *
+   * A remainder consumed whole releases its backing store, so a completed
+   * decoder an author keeps does not pin the last chunk it was pushed.
+   *
+   * @param at - Bytes consumed from the front.
+   */
+  #consume(at) {
+    if (at === 0) {
+      return;
+    }
+    if (at === this.#len) {
+      this.#buf = new Uint8Array(0);
+      this.#len = 0;
+      return;
+    }
+    const rest = this.#buf.slice(at, this.#len);
+    this.#buf = rest;
+    this.#len = rest.byteLength;
+  }
+  /**
+   * Takes the reassembled reply once the stream has ended.
+   *
+   * @returns The reply the frames described.
+   * @throws The adapter's `PluginError` when the stream ended with `err`, and
+   *   `unavailable` when it ended before its final frame.
+   */
+  finish() {
+    if (this.#state.kind !== "finished") {
+      throw PluginError.fromWire("unavailable", "streamed reply ended before its final frame");
+    }
+    const outcome = this.#state.outcome;
+    if ("err" in outcome) {
+      throw outcome.err;
+    }
+    return outcome.ok;
+  }
+  /**
+   * The typed error for a stream over its byte budget.
+   *
+   * @param used - Bytes seen or declared.
+   * @returns `limit_exceeded` naming the budget's capability field.
+   */
+  #bytesExceeded(used) {
+    return PluginError.limitExceeded({
+      limit: this.#limits.bytesLimit,
+      cap: this.#limits.maxBytes,
+      used
+    });
+  }
+  /**
+   * The error for a frame out of sequence.
+   *
+   * @param message - What the stream did, completing "streamed reply …".
+   * @returns `invalid_params`.
+   */
+  #sequence(message) {
+    return PluginError.fromWire("invalid_params", `streamed reply ${message}`);
+  }
+  /**
+   * Admits a rows frame by its row count before any of its cells decode, so
+   * a frame past the row cap (or out of sequence) is refused without
+   * materializing the rows it carries.
+   *
+   * @param count - Rows the frame announces.
+   * @throws `PluginError` `invalid_params` when no statement is open,
+   *   `limit_exceeded` when the rows would pass the statement's row cap.
+   */
+  #admitRows(count) {
+    const state = this.#state;
+    if (state.kind !== "inReply" || !state.open) {
+      throw this.#sequence("carries rows before a statement frame");
+    }
+    const used = state.openRows + count;
+    if (this.#limits.maxRows > 0 && used > this.#limits.maxRows) {
+      throw PluginError.limitExceeded({
+        limit: this.#limits.rowsLimit,
+        cap: this.#limits.maxRows,
+        used
+      });
+    }
+  }
+  /**
+   * Advances the sequence by one decoded frame: opens the reply on `head`,
+   * a statement on `statement`, counts (and keeps, when retained) `rows`,
+   * and closes the reply on `end` or `err`.
+   *
+   * @param frame - The frame just decoded.
+   * @throws `PluginError` `invalid_params` when the frame is out of sequence
+   *   or a cell is not a valid `DbValue`, `limit_exceeded` past the row cap.
+   */
+  #apply(frame) {
+    const state = this.#state;
+    if (frame.kind === "err") {
+      this.#columns = [];
+      this.#state = {
+        kind: "finished",
+        outcome: {
+          err: PluginError.fromWire(frame.value.code, frame.value.message, frame.value.details)
+        }
+      };
+      return;
+    }
+    if (state.kind === "awaitingHead") {
+      if (frame.kind !== "head") {
+        throw this.#sequence(`opens with a ${frame.kind} frame instead of head`);
+      }
+      this.#state = {
+        kind: "inReply",
+        operationId: frame.value.operationId,
+        statementCount: frame.value.statementCount,
+        nextIndex: 0,
+        statements: [],
+        open: void 0,
+        openRows: 0
+      };
+      return;
+    }
+    if (state.kind === "finished") {
+      throw this.#sequence("carries a frame after its final frame");
+    }
+    switch (frame.kind) {
+      case "head":
+        throw this.#sequence("carries a second head frame");
+      case "statement": {
+        if (frame.value.index !== state.nextIndex) {
+          throw this.#sequence(`statement frame ${frame.value.index} arrived where ${state.nextIndex} was expected`);
+        }
+        if (state.nextIndex >= state.statementCount) {
+          throw this.#sequence(`carries more statements than its head announced`);
+        }
+        if (state.open) {
+          state.statements.push(state.open);
+        }
+        state.open = {
+          rows: [],
+          columns: frame.value.columns,
+          rowsAffected: frame.value.rowsAffected
+        };
+        state.openRows = 0;
+        state.nextIndex += 1;
+        this.#columns = frame.value.columns;
+        return;
+      }
+      case "rows": {
+        const open = state.open;
+        if (!open) {
+          throw this.#sequence("carries rows before a statement frame");
+        }
+        for (const row of frame.value) {
+          if (row.values.length !== open.columns.length) {
+            throw this.#sequence(`carries a row of ${row.values.length} cells for ${open.columns.length} columns`);
+          }
+          for (const cell of row.values) {
+            validateCell(cell);
+          }
+        }
+        state.openRows += frame.value.length;
+        if (this.#limits.maxRows > 0 && state.openRows > this.#limits.maxRows) {
+          throw PluginError.limitExceeded({
+            limit: this.#limits.rowsLimit,
+            cap: this.#limits.maxRows,
+            used: state.openRows
+          });
+        }
+        if (this.#retainRows) {
+          for (const row of frame.value) {
+            open.rows.push(row);
+          }
+        }
+        return;
+      }
+      case "end": {
+        if (state.open) {
+          state.statements.push(state.open);
+          state.open = void 0;
+        }
+        if (state.statements.length !== state.statementCount) {
+          throw this.#sequence(`ended with ${state.statements.length} statements; its head announced ${state.statementCount}`);
+        }
+        this.#columns = [];
+        this.#state = {
+          kind: "finished",
+          outcome: {
+            ok: {
+              operationId: state.operationId,
+              statements: state.statements,
+              timing: frame.value
+            }
+          }
+        };
+        return;
+      }
+    }
+  }
+};
+function decodeExecuteStream(bytes, limits) {
+  const decoder = new ExecuteStreamDecoder(limits);
+  decoder.push(bytes);
+  return decoder.finish();
+}
+async function collectExecuteStream(chunks, limits) {
+  const decoder = new ExecuteStreamDecoder(limits);
+  for await (const chunk of chunks) {
+    decoder.push(chunk);
+  }
+  return decoder.finish();
+}
+async function* streamChunks(body) {
+  if (!body) {
+    return;
+  }
+  const reader = body.getReader();
+  let drained = false;
+  try {
+    for (; ; ) {
+      const { done, value } = await reader.read();
+      if (done) {
+        drained = true;
+        return;
+      }
+      if (value) {
+        yield value;
+      }
+    }
+  } finally {
+    if (!drained) {
+      await reader.cancel().catch(() => void 0);
+    }
+    reader.releaseLock();
+  }
+}
+function validateCell(cell) {
+  if (cell.kind === "float64" && !Number.isFinite(cell.value)) {
+    throw PluginError.fromWire("invalid_params", "streamed reply float64 cell is not finite");
+  }
+  if (cell.kind === "text" && cell.value.includes("\0")) {
+    throw PluginError.fromWire("invalid_params", "streamed reply TEXT cell contains U+0000");
+  }
+}
+function decodeFrame(bytes, ceiling, admitRows) {
+  const words = Math.min(Math.floor(bytes.byteLength / 8) + 16, Math.floor(Math.max(ceiling, MAX_SCALAR_BYTES) / 8));
+  try {
+    const reader = new CapnpReader(bytes, words);
+    const root = reader.root(ExecuteStreamFrameCodec.dataWords, ExecuteStreamFrameCodec.pointerCount);
+    if (root.getUint16(0) === ROWS_FRAME) {
+      admitRows(root.getStructListLength(0));
+    }
+    return ExecuteStreamFrameCodec.read(root, NO_CAPS);
+  } catch (err) {
+    if (err instanceof PluginError) {
+      throw err;
+    }
+    throw PluginError.fromWire("invalid_params", `streamed reply frame does not decode: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // dist/guest-sql.js
 function identStart(c) {
   const code = c.charCodeAt(0);
@@ -7571,13 +8167,24 @@ function readStatementResult(s) {
   };
 }
 function createDatabaseBinding(transport, options = {}) {
-  const runExecute = async (batch, retry) => {
+  let cachedLimits;
+  const sessionLimits = () => {
+    if (cachedLimits === void 0) {
+      try {
+        cachedLimits = transport.limits === void 0 ? Promise.resolve(null) : transport.limits().catch(() => null);
+      } catch {
+        cachedLimits = Promise.resolve(null);
+      }
+    }
+    return cachedLimits;
+  };
+  const requestFor = async (batch, retry) => {
     if (!Array.isArray(batch) || batch.length === 0) {
       throw new Error("execute statements must be non-empty");
     }
     const request = await executeRequestFromBatch(batch, options, retry);
     const encoded = encodeExecuteRequest(request);
-    const cap = options.maxRequestBytes ?? 0;
+    const cap = tighterCap(options.maxRequestBytes ?? 0, (await sessionLimits())?.maxRequestBytes ?? 0);
     if (cap > 0 && encoded.byteLength > cap) {
       throw PluginError.limitExceeded({
         limit: "maxRequestBytes",
@@ -7585,7 +8192,106 @@ function createDatabaseBinding(transport, options = {}) {
         used: encoded.byteLength
       });
     }
-    return transport.execute(request);
+    return request;
+  };
+  const openStreamed = async (request) => {
+    if (transport.executeStreamed === void 0) {
+      return void 0;
+    }
+    const caps = await sessionLimits();
+    if (caps === null || !streamsResults(caps)) {
+      return void 0;
+    }
+    let body;
+    try {
+      body = await transport.executeStreamed(request);
+    } catch (err) {
+      if (err instanceof PluginError && err.wireCode === "unsupported") {
+        return void 0;
+      }
+      throw err;
+    }
+    const chunks = body instanceof Uint8Array ? (async function* one() {
+      yield body;
+    })() : streamChunks(body);
+    return { chunks, caps };
+  };
+  const runExecute = async (batch, retry) => {
+    const request = await requestFor(batch, retry);
+    const streamed = await openStreamed(request);
+    if (streamed === void 0) {
+      return replyFor(request, await transport.execute(request));
+    }
+    const decoder = new ExecuteStreamDecoder(executeStreamLimits(streamed.caps));
+    for await (const chunk of streamed.chunks) {
+      decoder.push(chunk);
+    }
+    let reply;
+    try {
+      reply = decoder.finish();
+    } catch (err) {
+      if (err instanceof PluginError && err.wireCode === "unsupported") {
+        return replyFor(request, await transport.execute(request));
+      }
+      throw err;
+    }
+    return replyFor(request, reply);
+  };
+  const inlineRows = async function* (request) {
+    const reply = replyFor(request, await transport.execute(request));
+    const result = reply.statements[0];
+    if (result) {
+      for (const row of result.rows) {
+        yield rowMap(result.columns, row);
+      }
+    }
+  };
+  const iterateRows = async function* (batch, retry) {
+    const request = await requestFor(batch, retry);
+    const streamed = await openStreamed(request);
+    if (streamed === void 0) {
+      yield* inlineRows(request);
+      return;
+    }
+    const decoder = new ExecuteStreamDecoder(executeStreamLimits(streamed.caps), {
+      retainRows: false
+    });
+    const fallsBackInline = (err, yielded2) => !yielded2 && err instanceof PluginError && err.wireCode === "unsupported";
+    let columns = [];
+    let yielded = false;
+    for await (const chunk of streamed.chunks) {
+      let frames;
+      try {
+        frames = decoder.push(chunk);
+      } catch (err) {
+        if (fallsBackInline(err, yielded)) {
+          yield* inlineRows(request);
+          return;
+        }
+        throw err;
+      }
+      for (const frame of frames) {
+        if (frame.kind === "head") {
+          checkReplyIdentity(request, frame.value.operationId, frame.value.statementCount);
+        } else if (frame.kind === "statement") {
+          columns = frame.value.columns;
+        } else if (frame.kind === "rows") {
+          for (const row of frame.value) {
+            yielded = true;
+            yield rowMap(columns, row);
+          }
+        }
+      }
+    }
+    try {
+      decoder.finish();
+    } catch (err) {
+      if (fallsBackInline(err, yielded)) {
+        yield* inlineRows(request);
+        return;
+      }
+      throw err;
+    }
   };
   const binding = {
     prepare(sql) {
@@ -7613,11 +8319,139 @@ function createDatabaseBinding(transport, options = {}) {
       if (transport.limits === void 0) {
         return Promise.reject(PluginError.fromWire("unsupported", "GuestDatabase.limits is not available on this host"));
       }
-      return transport.limits();
+      return sessionLimits().then(async (caps) => {
+        if (caps !== null) {
+          return caps;
+        }
+        const fetched = await transport.limits();
+        cachedLimits = Promise.resolve(fetched);
+        return fetched;
+      });
+    },
+    async *chunk(statements, opts) {
+      const explicit = opts?.maxStatements !== void 0 && opts.maxRequestBytes !== void 0;
+      const caps = explicit ? null : await sessionLimits();
+      const maxStatements = opts?.maxStatements ?? caps?.maxStatements ?? 0;
+      const maxRequestBytes = opts?.maxRequestBytes ?? tighterCap(caps?.maxRequestBytes ?? 0, options.maxRequestBytes ?? 0);
+      if (!explicit && maxStatements <= 0 && maxRequestBytes <= 0) {
+        throw PluginError.fromWire("unsupported", "chunk needs the session limits (GuestDatabase.limits) or explicit maxStatements / maxRequestBytes");
+      }
+      const typed = statements.map((stmt) => stmt._asTyped());
+      for (const indexes of chunkIndexes(typed, maxStatements, maxRequestBytes)) {
+        yield indexes.map((i) => statements[i]);
+      }
     }
   };
+  binding._iterateRows = iterateRows;
   return binding;
 }
+function tighterCap(a, b) {
+  if (a > 0 && b > 0) {
+    return Math.min(a, b);
+  }
+  return a > 0 ? a : b;
+}
+function checkReplyIdentity(request, operationId, statementCount) {
+  if (request.operationId !== "" && operationId !== request.operationId) {
+    throw PluginError.fromWire("invalid_params", `reply answers operation ${operationId}, not ${request.operationId}`);
+  }
+  if (statementCount !== request.statements.length) {
+    throw PluginError.fromWire("invalid_params", `reply carries ${statementCount} results for ${request.statements.length} statements`);
+  }
+}
+function replyFor(request, reply) {
+  checkReplyIdentity(request, reply.operationId, reply.statements.length);
+  for (let i = 0; i < reply.statements.length; i++) {
+    const maxRows = request.statements[i]?.maxRows ?? 0;
+    const rows = reply.statements[i]?.rows.length ?? 0;
+    if (maxRows > 0 && rows > maxRows) {
+      throw PluginError.fromWire("invalid_params", `reply carries ${rows} rows for statement ${i}, which asked for at most ${maxRows}`);
+    }
+  }
+  return reply;
+}
+function rowMap(columns, row) {
+  const out = {};
+  for (let i = 0; i < columns.length; i++) {
+    const value = row.values[i];
+    if (value !== void 0) {
+      out[columns[i].name] = value;
+    }
+  }
+  return out;
+}
+function chunkIndexes(typed, maxStatements, maxRequestBytes) {
+  if (typed.length === 0) {
+    return [];
+  }
+  const base = encodeExecuteRequest({
+    operationId: RETRY_ID_PLACEHOLDER,
+    requestHash: RETRY_HASH_PLACEHOLDER,
+    statements: [PROBE_STATEMENT],
+    deadlineUnixMs: 0
+  }).byteLength - PROBE_STATEMENT_BYTES;
+  const sizes = typed.map((stmt) => encodeExecuteRequest({
+    operationId: "",
+    requestHash: "",
+    statements: [PROBE_STATEMENT, stmt],
+    deadlineUnixMs: 0
+  }).byteLength - PROBE_REQUEST_BYTES);
+  const fits = (run2) => maxRequestBytes <= 0 || encodeExecuteRequest({
+    operationId: RETRY_ID_PLACEHOLDER,
+    requestHash: RETRY_HASH_PLACEHOLDER,
+    statements: run2.map((i) => typed[i]),
+    deadlineUnixMs: 0
+  }).byteLength <= maxRequestBytes;
+  const out = [];
+  const emit = (run2) => {
+    if (run2.length <= 1 || fits(run2)) {
+      out.push(run2);
+      return;
+    }
+    const half = Math.ceil(run2.length / 2);
+    emit(run2.slice(0, half));
+    emit(run2.slice(half));
+  };
+  let run = [];
+  let bytes = base;
+  for (let i = 0; i < typed.length; i++) {
+    const size = sizes[i];
+    const overStatements = maxStatements > 0 && run.length >= maxStatements;
+    const overBytes = maxRequestBytes > 0 && run.length > 0 && bytes + size > maxRequestBytes;
+    if (overStatements || overBytes) {
+      emit(run);
+      run = [];
+      bytes = base;
+    }
+    run.push(i);
+    bytes += size;
+  }
+  if (run.length > 0) {
+    emit(run);
+  }
+  return out;
+}
+var RETRY_ID_PLACEHOLDER = "00000000-0000-4000-8000-000000000000";
+var RETRY_HASH_PLACEHOLDER = "0".repeat(64);
+var PROBE_STATEMENT = {
+  sql: "",
+  parameters: [],
+  kind: "select",
+  maxRows: 0,
+  resultSelection: "rows"
+};
+var PROBE_REQUEST_BYTES = encodeExecuteRequest({
+  operationId: "",
+  requestHash: "",
+  statements: [PROBE_STATEMENT],
+  deadlineUnixMs: 0
+}).byteLength;
+var PROBE_STATEMENT_BYTES = encodeExecuteRequest({
+  operationId: "",
+  requestHash: "",
+  statements: [PROBE_STATEMENT, PROBE_STATEMENT],
+  deadlineUnixMs: 0
+}).byteLength - PROBE_REQUEST_BYTES;
 function defaultIntent(options) {
   return {
     resultSelection: "rows",
@@ -7678,6 +8512,22 @@ function makePrepared(binding, sql, parameters, defaultAllRows, intent) {
     },
     all(options) {
       return binding.execute([this.asAll()._asTyped()], options).then((reply) => statementResultToD1Result(reply.statements[0], reply.timing));
+    },
+    iterate(options) {
+      const typed = [this.asAll()._asTyped()];
+      const streamedRows = binding._iterateRows;
+      if (streamedRows !== void 0) {
+        return streamedRows(typed, options?.retry);
+      }
+      return (async function* inline() {
+        const reply = await binding.execute(typed, options);
+        const result = reply.statements[0];
+        if (result) {
+          for (const row of result.rows) {
+            yield rowMap(result.columns, row);
+          }
+        }
+      })();
     },
     _asTyped() {
       const used = intent ?? defaultIntent({ maxResultRows: defaultAllRows });
@@ -8622,9 +9472,14 @@ function invocationEnv(rawEnv, context) {
           merged[entry.name] = entry.database;
         } else if (entry.transport) {
           const transport = entry.transport;
+          const limits = transport.limits;
+          const executeStreamed = transport.executeStreamed;
           merged[entry.name] = createDatabaseBinding({
             execute: (request) => transport.execute(request),
-            limits: () => transport.limits()
+            ...typeof limits === "function" ? { limits: () => limits.call(transport) } : {},
+            ...typeof executeStreamed === "function" ? {
+              executeStreamed: (request) => executeStreamed.call(transport, request)
+            } : {}
           });
         }
       }
@@ -10215,6 +11070,59 @@ var GrantedDatabase = class extends RpcTarget {
     return grantedDatabaseBody(resp);
   }
   /**
+   * Run one typed atomic batch answered as stream frames
+   * (`POST /db/execute-streamed`). A non-2xx status is the channel's error;
+   * an adapter or authorization failure travels inside the frames.
+   *
+   * @param request - Structured `ExecuteRequest`.
+   * @returns The response body: the frame sequence.
+   */
+  async executeStreamed(request) {
+    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/octet-stream" },
+      body: encodeExecuteRequest(request)
+    });
+    if (!resp.ok) {
+      await grantedDatabaseBody(resp, "executeStreamed");
+    }
+    return resp.body ?? new Uint8Array(0);
+  }
+  /**
+   * Same frames, whole, from Cap'n request bytes (Python authors decode
+   * locally).
+   *
+   * @param bytes - Unpacked `ExecuteRequest` message.
+   * @returns Every `ExecuteStreamFrame`, concatenated.
+   */
+  async executeStreamedBytes(bytes) {
+    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/octet-stream" },
+      body: bytes
+    });
+    return grantedDatabaseBody(resp, "executeStreamed");
+  }
+  /**
+   * Same frames, as the channel delivers them (a `ReadableStream` when it
+   * streams), from Cap'n request bytes, so a Python `iterate()` decodes
+   * frames as they arrive.
+   *
+   * @param bytes - Unpacked `ExecuteRequest` message.
+   * @returns The response body: the frame sequence.
+   */
+  async openStreamedBytes(bytes) {
+    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/octet-stream" },
+      body: bytes
+    });
+    if (!resp.ok) {
+      await grantedDatabaseBody(resp, "executeStreamed");
+    }
+    return resp.body ?? new Uint8Array(0);
+  }
+  /**
    * Negotiated limits of the granted session (`GET /db/limits`).
    *
    * @returns The adapter's `DbCapabilities` for this binding.
@@ -10684,6 +11592,7 @@ export {
   ENTRYPOINT_CLASSES,
   EventBatch,
   EventMessage,
+  ExecuteStreamDecoder,
   FEATURE_SCALAR_LIMITS,
   FEATURE_STORAGE_COPY,
   FEATURE_STREAMS,
@@ -10712,12 +11621,15 @@ export {
   TRIGGER_FAMILIES,
   allowedEntrypointFamilies,
   canonicalExecuteRequestHash,
+  chunkIndexes,
   cliArgs,
+  collectExecuteStream,
   createDatabaseBinding,
   dataMigrationOp,
   decodeDbValue,
   decodeExecuteRequest,
   decodeExecuteResultReply,
+  decodeExecuteStream,
   decodeExtensibleConfig,
   dispatchInvoke,
   encodeDbValue,
@@ -10725,15 +11637,18 @@ export {
   encodeExecuteResultReply,
   eventBatchResults,
   executeReplyToD1Results,
+  executeStreamLimits,
   fromBridgeJson,
   invocationOf,
   jobOutcomeFor,
   jsonPayload,
   parseDbValue,
   queueBatchResults,
+  rawStreamCeiling,
   requirePluginMigrationRegistration,
   schemaMigrationOp,
   statementResultToD1Result,
+  streamsResults,
   toBridgeJson,
   wrapPluginFromBinding,
   wrapPluginFromNative

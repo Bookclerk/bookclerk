@@ -3,11 +3,12 @@
 #
 # The image is layered on the production image built from the same commit
 # (packaging/demo/Dockerfile), so every crate and plugin in the demo is the
-# version that commit ships. It is a full release build (about half an hour),
-# so a commit whose demo image images-publish.yml already pushed to GHCR is
-# not rebuilt: the workflow verifies that image's build provenance and
-# deploys it. Only a commit without one (a push that changes the demo, a
-# fork without published images) builds here.
+# version that commit ships. It is a release build (about 15 minutes, see
+# packaging/demo/docker-bake.hcl), so a commit whose demo image
+# images-publish.yml already pushed to GHCR is not rebuilt: the workflow
+# verifies that image's build provenance and deploys it. Only a commit
+# without one (a push that changes the demo, a manual run on a newer commit,
+# a fork without published images) builds here.
 #
 # When it runs: when the demo itself changes on main, when a release is
 # published, after each "Publish images" run on main (the nightly publish,
@@ -269,17 +270,16 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
 
-      # Both from the commit being deployed: the demo image starts FROM them.
-      # The second build reuses every builder layer of the first (the log
-      # shows them CACHED) and only assembles the runtime image.
-      - name: Build the production builder and image
+      # From the commit being deployed, the build images-publish.yml runs:
+      # the production builder and runtime stages and the demo layer in one
+      # bake, which never exports the builder. Tagged bookclerk-demo:local.
+      - name: Build the demo image
         if: steps.gate.outputs.deploy == 'true' && steps.gate.outputs.image == ''
         working-directory: .
         run: |
           set -euo pipefail
-          docker build -f packaging/docker/Dockerfile --target builder -t bookclerk-builder:demo .
-          docker build -f packaging/docker/Dockerfile -t bookclerk:demo .
           git rev-parse HEAD > packaging/demo/version.txt
+          docker buildx bake -f packaging/demo/docker-bake.hcl --load demo
 
       - name: Route the Worker
         id: route
@@ -307,13 +307,14 @@ jobs:
           echo "url=https://${host}" >> "$GITHUB_OUTPUT"
           echo "site=https://${DOMAIN}" >> "$GITHUB_OUTPUT"
 
-      # Cloudflare's container registry cannot pull from GHCR, so wrangler
-      # builds a one-line Dockerfile on the verified published image (by
-      # digest, nothing to compile) and pushes that instead.
-      - name: Use the published demo image
-        if: steps.gate.outputs.deploy == 'true' && steps.gate.outputs.image != ''
+      # Wrangler builds a one-line Dockerfile on the demo image and pushes
+      # that: the verified published image (by digest; Cloudflare's container
+      # registry cannot pull from GHCR itself) or the one built above, so
+      # wrangler never compiles anything.
+      - name: Point wrangler at the demo image
+        if: steps.gate.outputs.deploy == 'true'
         env:
-          IMAGE: ${{ steps.gate.outputs.image }}
+          IMAGE: ${{ steps.gate.outputs.image || 'bookclerk-demo:local' }}
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/demo-image"
@@ -326,9 +327,7 @@ jobs:
           grep -qxF "image = \"$dir/Dockerfile\"" wrangler.toml
           grep -qxF "image_build_context = \"$dir\"" wrangler.toml
 
-      # Without a published image: builds packaging/demo/Dockerfile with the
-      # local Docker daemon, so its FROM lines find the two images above.
-      # Either way wrangler pushes the result to Cloudflare's registry.
+      # Wrangler pushes the result to Cloudflare's registry.
       - name: Deploy Worker and container
         id: deploy
         if: steps.gate.outputs.deploy == 'true'

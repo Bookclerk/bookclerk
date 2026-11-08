@@ -41,6 +41,7 @@ on:
     paths:
       - ".github/workflows/images-publish.yml"
       - ".github/actions/image-build/**"
+      - "packaging/demo/**"
       - "scripts/image_release_tags.py"
   release:
     types: [published]

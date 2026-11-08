@@ -72,8 +72,8 @@ operator, a household user, or a portal identity) has a **subject key**
    each as large as the database plugin's `maxStatements` and
    `maxRequestBytes` allow, not one statement per row and not an interactive
    transaction, which the external database plugins refuse. The delete
-   rides in the last batch, so a reader can briefly see a store's new rows
-   beside its old ones. Each answer in the storefront call cache is stored
+   rides in the last batch, so a reader can briefly see part of a store's
+   new rows beside its old ones. Each answer in the storefront call cache is stored
    with one upsert. A store whose calls all fail or come back empty keeps its
    previous rows, since a plugin adapter can report a guest failure as an
    empty answer. The

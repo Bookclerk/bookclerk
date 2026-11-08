@@ -367,6 +367,14 @@ class ScenarioTests(unittest.TestCase):
         self.assertTrue(p.selected("plugin_sdk_abi"))
         self.assertTrue(p.params("api_docs")["typescript"])
 
+    def test_shared_sdk_vectors_select_both_sdk_checks(self) -> None:
+        # The TypeScript and Python SDK tests replay the `db_stream` corpus as
+        # shared vectors, so a seed change runs them besides the abi crate.
+        p = plan("fuzz/corpus/db_stream/regression_1.bin")
+        self.assertTrue(p.selected("plugin_sdk_abi"))
+        self.assertTrue(p.selected("python_sdk"))
+        self.assertIn("bookclerk-plugin-abi", p.test_packages())
+
     def test_embedded_python_sdk_selects_workerd_runtime_subset(self) -> None:
         p = plan("packages/plugin-sdk-python/src/bookclerk_plugin_sdk/workerd.py")
         self.assertIn("bookclerk-workerd", p.test_packages())

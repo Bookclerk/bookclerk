@@ -176,7 +176,9 @@ class DbValueGoldens(unittest.TestCase):
             seen["n"] = len(encode_execute_request(req))
             return {
                 "operationId": req["operationId"],
-                "statements": [],
+                "statements": [
+                    {"rows": [], "columns": [], "rowsAffected": 0} for _ in req["statements"]
+                ],
                 "timing": {
                     "attemptElapsedUs": 0,
                     "dbExecutionUs": 0,
@@ -596,9 +598,9 @@ class DbValueGoldens(unittest.TestCase):
         asyncio.run(self._test_exec_two_queries())
 
     async def _test_first_missing_column_errors(self) -> None:
-        async def transport(_req):
+        async def transport(req):
             return {
-                "operationId": "op",
+                "operationId": req["operationId"],
                 "statements": [
                     {
                         "rows": [{"values": [{"kind": "int64", "value": 1}]}],

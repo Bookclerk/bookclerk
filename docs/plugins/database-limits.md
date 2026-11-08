@@ -1,0 +1,170 @@
+# Working within database limits
+
+A plugin's `[[databases]]` binding talks to its database through the host,
+and every request and reply crosses the plugin boundary as a bounded
+message. This page explains which limits apply, how the SDKs keep ordinary
+code under them, and what to do when a result or a batch is larger than one
+message.
+
+The SQL contract defines the limits themselves; see
+[Advertised numeric limits](sql-contract/v1.md#advertised-numeric-limits) and
+[Streamed results](sql-contract/v1.md#streamed-results). This page is about
+using them from a plugin.
+
+## The limits a plugin meets
+
+Every database session advertises its caps as `DbCapabilities`, and a
+binding's `limits()` returns them. The ones that shape plugin code:
+
+| Limit | What it bounds |
+| --- | --- |
+| `maxRequestBytes` | One encoded request: the statements, their binds and the retry identity |
+| `maxStatements` | Statements in one request (`batch()` or `exec()`) |
+| `maxBinds` | Bind parameters in one statement |
+| `maxCellBytes` | One TEXT or BYTES cell in a reply |
+| `maxResultRows` / `maxResultBytes` | A reply read inline: rows and encoded bytes per statement |
+| `maxAtomicResultBytes` | A reply read inline: encoded bytes for the whole reply |
+| `maxStreamedResultBytes` / `maxStreamedResultRows` | A reply read as a stream: bytes for the whole reply and rows per statement. `0` on both means the session does not stream |
+
+First-party sqlite and Postgres stream up to 64 MiB and 250 000 rows; D1 up
+to 8 MiB and 50 000 rows. The inline caps stay at 256 KiB.
+
+Any cap that is hit fails the whole call with one typed error: a
+`PluginError` whose `code` is `limit_exceeded` and whose `limit` carries
+`limit` (the capability name), `cap` and `used`. Results are never
+truncated, and a batch that fails a cap is not committed.
+
+```ts
+try {
+  await env.DB.prepare("SELECT * FROM books").all();
+} catch (err) {
+  if (err instanceof PluginError && err.limit?.limit === "maxStreamedResultBytes") {
+    // The result is too large even for the streamed budget: narrow the query.
+  }
+  throw err;
+}
+```
+
+In Python the same error is `PluginError` with `err.code == "limit_exceeded"`
+and `err.limit.limit`; in Rust it is `PluginError` with
+`err.code == PluginErrorCode::LimitExceeded` and `err.limit()`.
+
+## Reads: `all()` streams when the session can
+
+`prepare(sql).all()`, `raw()`, `first()` and `run()` work as they do on D1.
+Behind them the SDK fetches the session's limits once per invocation and,
+when the session advertises a streamed budget, reads every row-returning
+statement through `GuestDatabase.executeStreamed`. The result arrives as a
+sequence of frames that the SDK reassembles into the same `D1Result`, so a
+page of enriched rows that would not fit one inline reply is one call, one
+statement and one snapshot. The code does not change:
+
+```ts
+const { results } = await env.DB.prepare("SELECT id, title FROM books").all();
+```
+
+On a session that does not stream, or on a host that answers
+`executeStreamed` with `unsupported`, the SDK reads inline and the inline
+caps apply.
+
+> [!NOTE]
+> Streaming changes how a result crosses the boundary, not how much the
+> adapter may return. A result past `maxStreamedResultBytes` or
+> `maxStreamedResultRows` still fails closed with `limit_exceeded`, and the
+> SDK stops decoding as soon as the budget is passed. Statement `maxRows`
+> (`as_first()` / `asFirst()`) stays available as a hard row cap.
+
+### Row at a time: `iterate()`
+
+When a plugin walks a large result without needing it all at once, use
+`iterate()`. It issues the same single-snapshot streamed read as `all()` but
+yields each row as its frame is decoded, so memory stays at one frame
+rather than the whole result. There is no key to page by and no `OFFSET`
+that skips or repeats rows under concurrent writes.
+
+```ts
+for await (const row of env.DB.prepare("SELECT id, path FROM edition_files").iterate()) {
+  await check(row.path);
+}
+```
+
+```python
+async for row in self.env.DB.prepare("SELECT id, path FROM edition_files").iterate():
+    await check(row["path"]["value"])
+```
+
+The loop fails with the same `limit_exceeded` as `all()` when the result
+passes the streamed budget. On a session that does not stream the rows come
+from one inline `all()`. `iterate()` is available in the TypeScript and
+Python SDKs; a Rust guest reads with `all()` or `raw()`.
+
+## Writes: `batch()` is one transaction, `chunk()` splits a list
+
+`batch([...])` and `exec("...")` run their statements as one transaction,
+all or nothing, as D1 documents them. One request is bounded by
+`maxStatements` and `maxRequestBytes`, so a long list of statements has to
+be split into requests that fit. `chunk()` does only that:
+
+```ts
+const inserts = rows.map((r) => env.DB.prepare("INSERT INTO seen (id) VALUES (?)").bind(r.id));
+for await (const batch of env.DB.chunk(inserts)) {
+  await env.DB.batch(batch);
+}
+```
+
+```python
+inserts = [self.env.DB.prepare("INSERT INTO seen (id) VALUES (?)").bind(r["id"]) for r in rows]
+async for batch in self.env.DB.chunk(inserts):
+    await self.env.DB.batch(batch)
+```
+
+```rust
+for batch in db.chunk(inserts, None).await? {
+    db.batch(batch, None).await?;
+}
+```
+
+Each batch is atomic; the loop is not. If a later batch fails, the earlier
+ones stay committed, and the plugin decides whether to retry or to record
+how far it got (a job checkpoint is the usual place). `chunk()` uses the
+session's `maxStatements` and `maxRequestBytes` (the binding's own request
+cap, when it has one, tightens the latter); pass explicit caps to split
+smaller, or when the host predates `limits()`, and explicit zeros to get one
+batch. A single statement that is larger than the request cap is yielded on
+its own, so `batch()` reports the typed error for that statement instead of
+the split hiding it. Batches are sized with the UUID-shaped retry id the
+binding mints, so a caller-chosen retry id that is longer leaves that much
+less room.
+
+> [!NOTE]
+> There is no guest-side transaction API. A plugin that needs several
+> statements to commit together puts them in one `batch()`; a plugin that
+> needs more statements than one request holds restructures the work, for
+> example by inserting from a staging table in one statement.
+
+## Sizing before sending
+
+`limits()` returns the session's `DbCapabilities`, cached for the
+invocation, so a plugin can size its own work: how many binds a statement
+may carry, how many statements a request holds, how large a cell may be.
+Once the session's limits are known (or the binding was created with a
+request cap of its own), the SDK checks the encoded request against
+`maxRequestBytes` before sending it, so an oversized request fails locally
+with the same typed error the host would raise. When both caps are known the
+tighter one applies, the same cap `chunk()` splits to.
+
+```ts
+const caps = await env.DB.limits();
+const perStatement = Math.floor(caps.maxBinds / COLUMNS);
+```
+
+## Checklist
+
+- Read with `all()`; the SDK streams when it can, and the result is still
+  one snapshot.
+- Walk a large result with `iterate()` instead of paging with `OFFSET`.
+- Split long writes with `chunk()` and keep each `batch()` to what must
+  commit together.
+- Handle `limit_exceeded` by its `limit`, not by matching the message.
+- Prefer narrower queries over larger budgets: the caps are the adapter's,
+  and D1's are smaller than sqlite's.

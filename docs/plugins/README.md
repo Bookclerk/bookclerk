@@ -31,6 +31,9 @@ through `bookclerk-workerd`. There is no in-process fallback.
   planned registry.
 - [SQL contract](sql-contract/README.md): what a database adapter must
   accept.
+- [Working within database limits](database-limits.md): the caps a
+  `[[databases]]` binding meets, how `all()` streams large results, and
+  `iterate()` and `chunk()`.
 - [Plugin SDKs](sdk/README.md): the [TypeScript](sdk/typescript/README.md),
   [Python](sdk/python/README.md) and [Rust](sdk/rust/README.md) guides,
   each followed by the reference generated from its code.

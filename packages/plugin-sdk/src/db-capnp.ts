@@ -412,7 +412,25 @@ export class CapnpReader {
   private readonly segOff: number;
   private readonly size0: number;
 
-  constructor(bytes: Uint8Array) {
+  /** Largest segment, pointer list or composite list, in words. */
+  private readonly maxWords: number;
+  /**
+   * Words the reader may still visit. Every struct and list reached is
+   * charged its size, so a message whose pointers alias one large value
+   * many times over cannot materialize more than the budget, as the Cap'n
+   * Proto traversal limit does.
+   */
+  private remaining: number;
+
+  /**
+   * @param bytes - Unpacked single-segment message.
+   * @param maxWords - Traversal budget in words; the default suits control
+   *   messages, a streamed result frame passes the budget its stream
+   *   negotiated.
+   */
+  constructor(bytes: Uint8Array, maxWords: number = MAX_TRAVERSAL_WORDS) {
+    this.maxWords = maxWords;
+    this.remaining = maxWords;
     if (bytes.byteLength < WORD) {
       throw new Error("truncated Cap'n message");
     }
@@ -427,7 +445,7 @@ export class CapnpReader {
     if (this.segOff + size0 * WORD > bytes.byteLength) {
       throw new Error("truncated Cap'n segment");
     }
-    if (size0 > MAX_TRAVERSAL_WORDS) {
+    if (size0 > this.maxWords) {
       throw new Error("Cap'n segment exceeds traversal budget");
     }
   }
@@ -454,7 +472,7 @@ export class CapnpReader {
     const dw = Number((word >> 32n) & 0xffffn);
     const pw = Number((word >> 48n) & 0xffffn);
     const target = ptrWord + 1 + offset;
-    this.checkRange(target, dw + pw);
+    this.visit(target, dw + pw);
     return new StructReader(this, target, dw, pw);
   }
 
@@ -466,6 +484,33 @@ export class CapnpReader {
   private checkRange(word: number, nWords: number): void {
     if (word < 0 || nWords < 0 || word + nWords > this.size0) {
       throw new Error("Cap'n pointer out of segment");
+    }
+  }
+
+  /**
+   * Checks that `nWords` from `word` lie in the segment and charges them to
+   * the traversal budget.
+   *
+   * @param word - First word of the struct or list reached.
+   * @param nWords - Its size in words.
+   * @throws When the range leaves the segment or exhausts the budget.
+   */
+  private visit(word: number, nWords: number): void {
+    this.checkRange(word, nWords);
+    this.charge(nWords);
+  }
+
+  /**
+   * Charges `nWords` to the traversal budget without a range check, for
+   * elements that occupy no words of their own.
+   *
+   * @param nWords - Words to charge.
+   * @throws `Error` when the budget is exhausted.
+   */
+  private charge(nWords: number): void {
+    this.remaining -= nWords;
+    if (this.remaining < 0) {
+      throw new Error("Cap'n message exceeds traversal budget");
     }
   }
 
@@ -529,7 +574,7 @@ export class CapnpReader {
       return new Uint8Array(0);
     }
     const nWords = lp.length === 0 ? 0 : Math.ceil(lp.length / WORD);
-    this.checkRange(lp.target, nWords);
+    this.visit(lp.target, nWords);
     const start = this.segOff + lp.target * WORD;
     if (start + lp.length > this.view.byteLength) {
       throw new Error("truncated Cap'n byte list");
@@ -559,10 +604,10 @@ export class CapnpReader {
     if (lp === null || lp.length === 0) {
       return [];
     }
-    if (lp.length > MAX_TRAVERSAL_WORDS) {
+    if (lp.length > this.maxWords) {
       throw new Error("pointer list exceeds traversal budget");
     }
-    this.checkRange(lp.target, lp.length);
+    this.visit(lp.target, lp.length);
     const out: number[] = [];
     for (let i = 0; i < lp.length; i++) {
       out.push(lp.target + i);
@@ -590,7 +635,7 @@ export class CapnpReader {
     if (lp === null || lp.length === 0) {
       return [];
     }
-    this.checkRange(lp.target, Math.ceil((lp.length * byteWidth) / WORD));
+    this.visit(lp.target, Math.ceil((lp.length * byteWidth) / WORD));
     const base = this.segOff + lp.target * WORD;
     const out: number[] = [];
     for (let i = 0; i < lp.length; i++) {
@@ -608,7 +653,7 @@ export class CapnpReader {
     if (lp === null || lp.length === 0) {
       return [];
     }
-    this.checkRange(lp.target, Math.ceil(lp.length / 64));
+    this.visit(lp.target, Math.ceil(lp.length / 64));
     const base = this.segOff + lp.target * WORD;
     const out: boolean[] = [];
     for (let i = 0; i < lp.length; i++) {
@@ -621,9 +666,58 @@ export class CapnpReader {
     void dataWords;
     void pointerWords;
     const lp = this.listPointer(ptrWord, 7);
-    if (lp === null || lp.length === 0) {
+    if (lp === null) {
       return [];
     }
+    const { tagWord, count, dw, pw } = this.compositeTag(lp);
+    const elemWords = dw + pw;
+    // Zero-width elements occupy no words, so they are charged by count:
+    // a list cannot announce more elements than the budget has words.
+    this.checkRange(tagWord, 1 + count * elemWords);
+    this.charge(1 + Math.max(count * elemWords, count));
+    const out: StructReader[] = [];
+    for (let i = 0; i < count; i++) {
+      out.push(new StructReader(this, tagWord + 1 + i * elemWords, dw, pw));
+    }
+    return out;
+  }
+
+  /**
+   * Element count of a composite list without visiting its elements, so a
+   * caller can refuse a list that is too long before any element decodes.
+   *
+   * @param ptrWord - Word holding the list pointer.
+   * @returns The number of elements the list's tag announces, `0` for a
+   *   null or empty list.
+   * @throws `Error` when the pointer is not a composite list pointer or the
+   *   count exceeds the list's payload.
+   */
+  readStructListLength(ptrWord: number): number {
+    const lp = this.listPointer(ptrWord, 7);
+    if (lp === null) {
+      return 0;
+    }
+    return this.compositeTag(lp).count;
+  }
+
+  /**
+   * The tag word of a composite list: its element count and element shape.
+   *
+   * A composite list of zero words still carries its tag (zero-width
+   * elements, or no elements), so the tag is read whenever the pointer is
+   * not null.
+   *
+   * @param lp - A composite (element size 7) list pointer.
+   * @returns The tag's word, element count, data words and pointer words.
+   * @throws `Error` when the count exceeds the list's payload or the
+   *   traversal budget.
+   */
+  private compositeTag(lp: ListPointer): {
+    tagWord: number;
+    count: number;
+    dw: number;
+    pw: number;
+  } {
     const tagWord = lp.target;
     this.checkRange(tagWord, 1);
     const tag = this.readWord(tagWord);
@@ -634,15 +728,10 @@ export class CapnpReader {
     if (elemWords > 0 && count > Math.floor(lp.length / elemWords)) {
       throw new Error("composite list count exceeds payload");
     }
-    if (count > MAX_TRAVERSAL_WORDS) {
+    if (count > this.maxWords) {
       throw new Error("composite list count exceeds traversal budget");
     }
-    this.checkRange(tagWord, 1 + count * elemWords);
-    const out: StructReader[] = [];
-    for (let i = 0; i < count; i++) {
-      out.push(new StructReader(this, tagWord + 1 + i * elemWords, dw, pw));
-    }
-    return out;
+    return { tagWord, count, dw, pw };
   }
 }
 
@@ -755,6 +844,18 @@ export class StructReader {
   getStructList(pointerIndex: number, dataWords: number, pointerWords: number): StructReader[] {
     const ptr = this.pointerWord(pointerIndex);
     return ptr === null ? [] : this.reader.readStructList(ptr, dataWords, pointerWords);
+  }
+
+  /**
+   * Element count of the composite list at `pointerIndex`, read from its tag
+   * alone (see {@link CapnpReader.readStructListLength}).
+   *
+   * @param pointerIndex - Pointer field index.
+   * @returns The announced element count, `0` for a null or empty list.
+   */
+  getStructListLength(pointerIndex: number): number {
+    const ptr = this.pointerWord(pointerIndex);
+    return ptr === null ? 0 : this.reader.readStructListLength(ptr);
   }
 
   getStruct(pointerIndex: number, dataWords: number, pointerWords: number): StructReader {

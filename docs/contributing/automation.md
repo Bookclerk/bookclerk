@@ -825,9 +825,10 @@ building it twice:
    one-line Dockerfile on it and pushes that to Cloudflare's container
    registry, which can't pull from GHCR itself. This takes a few minutes.
 3. Without one (a push that changes the demo, a fork that publishes no
-   images), or when verification fails, the deploy builds the production
-   builder and image from the deployed commit, and `wrangler deploy` builds
-   `packaging/demo/Dockerfile` on top of them. This takes about half an hour.
+   images), or when verification fails, the deploy builds the demo image
+   from the deployed commit with `packaging/demo/docker-bake.hcl`, the build
+   `images-publish.yml` runs, and deploys it the same way. This takes about
+   15 minutes.
 
 It runs when the demo changes on `main`, when a release is published, after
 every `Publish images` run on `main` (the nightly publish, which is how crate

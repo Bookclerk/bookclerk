@@ -1,5 +1,6 @@
 //! Download / refresh the pinned Cloudflare `workerd` binary.
 
+use bookclerk_tls::ureq;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

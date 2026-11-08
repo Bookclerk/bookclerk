@@ -43,7 +43,7 @@ use rustls_acme::{is_tls_alpn_challenge, AcmeConfig, EventOk};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
-use tokio_rustls::rustls::crypto::{aws_lc_rs, CryptoProvider};
+use tokio_rustls::rustls::crypto::CryptoProvider;
 use tokio_rustls::rustls::pki_types::pem::PemObject as _;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio_rustls::rustls::server::{Acceptor, ResolvesServerCert};
@@ -173,10 +173,9 @@ pub struct NodeApiTls {
     pub local: Option<SocketAddr>,
 }
 
-/// The process crypto provider for the node API (aws-lc, like the rest of
-/// the tree).
+/// The hosts' one crypto provider (aws-lc-rs); see `bookclerk_tls`.
 fn provider() -> Arc<CryptoProvider> {
-    Arc::new(aws_lc_rs::default_provider())
+    bookclerk_tls::crypto_provider()
 }
 
 /// Creates `dir` (and parents) readable only by this user.

@@ -109,9 +109,11 @@ The host recomputes an installed tree's payload-root digest each time it
 discovers plugins. Every pass walks the tree and checks every entry again
 (symlinks, special files, added or removed files). On Unix, a file whose
 inode, size, modification time and change time are unchanged reuses the
-content digest from its last read. A rewrite always moves the change time,
-even when the modification time is put back, and a file written in the last
-2 s is read again each time.
+content digest from its last read. A write moves the change time, even
+when the modification time is put back, and a file written in the last 2 s
+is read again each time. The reuse relies on installed trees staying
+read-only once materialized: a later write through a shared memory mapping
+may not move the timestamps again.
 
 ### Health is an observation
 

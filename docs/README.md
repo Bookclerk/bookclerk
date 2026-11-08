@@ -49,6 +49,7 @@ others go deeper.
 - [Entrypoints, events and the ABI](plugins/abi.md): the Workers RPC surface, events, KV and queues
 - [Plugin registry](plugins/registry.md): crate naming, archives and installing without Rust
 - [SQL contract](plugins/sql-contract/README.md): the canonical SQL that database adapters implement ([v1](plugins/sql-contract/v1.md))
+- [Working within database limits](plugins/database-limits.md): what the caps are, how `all()` streams, `iterate()` and `chunk()`
 - [Plugin SDKs](plugins/sdk/README.md): choose an SDK and a runtime
 - [TypeScript plugin SDK](plugins/sdk/typescript/README.md), [Python plugin SDK](plugins/sdk/python/README.md) and [Rust plugin SDK](plugins/sdk/rust/README.md): a guide for each, followed by the reference generated from its code
 
@@ -62,6 +63,7 @@ others go deeper.
 - [The guest jail](internals/guest-jail.md): why plugins run as jailed processes, and how each platform confines them
 - [workerd bridge](internals/workerd-bridge.md): the wire between the launcher and a plugin isolate
 - [Node API and the live socket](internals/node-api.md): how hosts of one library talk, and how the web app hears about changes
+- [One TLS backend](internals/tls.md): the one crypto provider every TLS connection uses, and where it is set
 - [Windows AppContainer](internals/windows-appcontainer.md): confinement notes for Windows
 - [Rust crates](internals/crates/README.md): every workspace crate, from its doc comments (generated)
 

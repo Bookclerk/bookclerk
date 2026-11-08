@@ -5,6 +5,7 @@
 //! Host binaries that call [`crate::logging::init_tracing_with`]. Guests never
 //! depend on this module. See `docs/server/diagnostics.md`.
 
+use bookclerk_tls::ureq;
 use std::collections::VecDeque;
 use std::panic::{self, PanicHookInfo};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

@@ -8,6 +8,7 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
+use bookclerk_tls::ureq;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

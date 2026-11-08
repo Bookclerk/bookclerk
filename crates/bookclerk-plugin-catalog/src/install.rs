@@ -1,5 +1,6 @@
 //! Secure plugin installer state machine.
 
+use bookclerk_tls::ureq;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};

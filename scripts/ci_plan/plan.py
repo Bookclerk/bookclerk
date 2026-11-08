@@ -87,6 +87,9 @@ ABI_SYNC_PATHS = frozenset(
         "workerd.pin.json",
     }
 )
+# Fuzz seed corpora the TypeScript and Python SDK tests replay as shared
+# vectors besides the owning crate (docs/contributing/fuzzing.md).
+SHARED_SDK_VECTOR_PREFIXES = ("fuzz/corpus/db_stream/",)
 DOCS_PREFIX = "docs/"
 # The bookclerk.app website (Worker, generator and its tests), the brand
 # assets its build copies, the diagnostics collector Worker and the hosted
@@ -880,7 +883,7 @@ def build_plan(
         if path.startswith(PY_SDK_PREFIX):
             surf.python_sdk.append(path)
             classified = True
-        if path in ABI_SYNC_PATHS:
+        if path in ABI_SYNC_PATHS or path.startswith(SHARED_SDK_VECTOR_PREFIXES):
             surf.abi.append(path)
             classified = True
         if path.startswith(SITE_PREFIX) or path.startswith(BRAND_PREFIX) or path in SITE_SOURCE_FILES:

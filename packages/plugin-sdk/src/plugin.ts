@@ -591,6 +591,36 @@ export interface GrantedDatabaseTransport extends AtomicTransport {
    */
   executeBytes(bytes: Uint8Array): Promise<Uint8Array>;
   /**
+   * Same batch as {@link AtomicTransport.executeStreamed}: the reply as
+   * `ExecuteStreamFrame` bytes (`POST /db/execute-streamed`), read under the
+   * session's streamed budget. A transport that predates the streamed read
+   * leaves it out; the binding then reads inline.
+   *
+   * @param request - Structured `ExecuteRequest`.
+   * @returns The frame sequence as the channel delivers it.
+   */
+  executeStreamed?(request: ExecuteRequest): Promise<ReadableStream<Uint8Array> | Uint8Array>;
+  /**
+   * Same frames as {@link GrantedDatabaseTransport.executeStreamed}, whole,
+   * from Cap'n request bytes (Python authors decode locally). Optional like
+   * {@link GrantedDatabaseTransport.executeStreamed}.
+   *
+   * @param bytes - Unpacked `ExecuteRequest` message.
+   * @returns Every `ExecuteStreamFrame`, concatenated.
+   */
+  executeStreamedBytes?(bytes: Uint8Array): Promise<Uint8Array>;
+  /**
+   * Same frames as {@link GrantedDatabaseTransport.executeStreamedBytes},
+   * as the channel delivers them: a `ReadableStream` when it streams, so an
+   * author's `iterate()` can decode frames as they arrive instead of holding
+   * the reply whole. Optional like
+   * {@link GrantedDatabaseTransport.executeStreamed}.
+   *
+   * @param bytes - Unpacked `ExecuteRequest` message.
+   * @returns The frame sequence, streamed when the channel streams it.
+   */
+  openStreamedBytes?(bytes: Uint8Array): Promise<ReadableStream<Uint8Array> | Uint8Array>;
+  /**
    * Negotiated limits of the granted session (`GuestDatabase.limits`).
    *
    * @returns The adapter's `DbCapabilities` for this binding.
@@ -721,10 +751,21 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
         if (entry.database) {
           merged[entry.name] = entry.database;
         } else if (entry.transport) {
-          const transport = entry.transport;
+          // A transport that predates `limits` or `executeStreamed` reads
+          // inline; the binding only calls what the transport offers.
+          const transport: Partial<GrantedDatabaseTransport> &
+            Pick<GrantedDatabaseTransport, "execute"> = entry.transport;
+          const limits = transport.limits;
+          const executeStreamed = transport.executeStreamed;
           merged[entry.name] = createDatabaseBinding({
             execute: (request) => transport.execute(request),
-            limits: () => transport.limits(),
+            ...(typeof limits === "function" ? { limits: () => limits.call(transport) } : {}),
+            ...(typeof executeStreamed === "function"
+              ? {
+                  executeStreamed: (request: ExecuteRequest) =>
+                    executeStreamed.call(transport, request),
+                }
+              : {}),
           });
         }
       }
@@ -2997,6 +3038,62 @@ class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
       body: bytes,
     });
     return grantedDatabaseBody(resp);
+  }
+
+  /**
+   * Run one typed atomic batch answered as stream frames
+   * (`POST /db/execute-streamed`). A non-2xx status is the channel's error;
+   * an adapter or authorization failure travels inside the frames.
+   *
+   * @param request - Structured `ExecuteRequest`.
+   * @returns The response body: the frame sequence.
+   */
+  async executeStreamed(request: ExecuteRequest): Promise<ReadableStream<Uint8Array> | Uint8Array> {
+    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/octet-stream" },
+      body: encodeExecuteRequest(request),
+    });
+    if (!resp.ok) {
+      await grantedDatabaseBody(resp, "executeStreamed");
+    }
+    return resp.body ?? new Uint8Array(0);
+  }
+
+  /**
+   * Same frames, whole, from Cap'n request bytes (Python authors decode
+   * locally).
+   *
+   * @param bytes - Unpacked `ExecuteRequest` message.
+   * @returns Every `ExecuteStreamFrame`, concatenated.
+   */
+  async executeStreamedBytes(bytes: Uint8Array): Promise<Uint8Array> {
+    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/octet-stream" },
+      body: bytes,
+    });
+    return grantedDatabaseBody(resp, "executeStreamed");
+  }
+
+  /**
+   * Same frames, as the channel delivers them (a `ReadableStream` when it
+   * streams), from Cap'n request bytes, so a Python `iterate()` decodes
+   * frames as they arrive.
+   *
+   * @param bytes - Unpacked `ExecuteRequest` message.
+   * @returns The response body: the frame sequence.
+   */
+  async openStreamedBytes(bytes: Uint8Array): Promise<ReadableStream<Uint8Array> | Uint8Array> {
+    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/octet-stream" },
+      body: bytes,
+    });
+    if (!resp.ok) {
+      await grantedDatabaseBody(resp, "executeStreamed");
+    }
+    return resp.body ?? new Uint8Array(0);
   }
 
   /**

@@ -49,16 +49,37 @@ pub const WAKEUP_SETTLE_MAX: Duration = Duration::from_secs(3);
 /// Starts the sweep loop.
 pub fn spawn_requirements_sweep(state: Arc<AppState>) {
     tokio::spawn(async move {
-        loop {
-            run_requirements_sweep(&state).await;
-            tokio::select! {
-                () = crate::node_queue::requirements_wakeup() => {
-                    settle(crate::node_queue::requirements_wakeup, WAKEUP_SETTLE, WAKEUP_SETTLE_MAX).await;
+        sweep_loop(
+            || {
+                let state = state.clone();
+                async move {
+                    run_requirements_sweep(&state).await;
                 }
-                () = tokio::time::sleep(SWEEP_INTERVAL) => {}
-            }
-        }
+            },
+            crate::node_queue::requirements_wakeup,
+        )
+        .await;
     });
+}
+
+/// Runs `pass` now, then after each settled burst of `wakeup`s and at least
+/// every [`SWEEP_INTERVAL`]. Never returns.
+async fn sweep_loop<P, PFut, W, WFut>(mut pass: P, mut wakeup: W)
+where
+    P: FnMut() -> PFut,
+    PFut: std::future::Future<Output = ()>,
+    W: FnMut() -> WFut,
+    WFut: std::future::Future<Output = ()>,
+{
+    loop {
+        pass().await;
+        tokio::select! {
+            () = wakeup() => {
+                settle(&mut wakeup, WAKEUP_SETTLE, WAKEUP_SETTLE_MAX).await;
+            }
+            () = tokio::time::sleep(SWEEP_INTERVAL) => {}
+        }
+    }
 }
 
 /// Waits until `wakeup` has been quiet for `quiet`, or `max` has passed.
@@ -349,7 +370,7 @@ mod tests {
 
     /// A burst of wakeups ends in one pass once it has been quiet for the
     /// settle time.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_burst_of_wakeups_settles_once_it_goes_quiet() {
         let notify = Arc::new(tokio::sync::Notify::new());
         let sender = notify.clone();
@@ -372,13 +393,13 @@ mod tests {
         .await;
         let waited = started.elapsed();
         burst.await.unwrap();
-        // The last wakeup lands near 200 ms; the pass waits a quiet 100 ms after it.
-        assert!(waited >= Duration::from_millis(280), "{waited:?}");
-        assert!(waited < Duration::from_secs(2), "{waited:?}");
+        // The last wakeup lands at 200 ms; the pass waits a quiet 100 ms after it.
+        assert!(waited >= Duration::from_millis(300), "{waited:?}");
+        assert!(waited < Duration::from_millis(320), "{waited:?}");
     }
 
     /// A stream of wakeups that never goes quiet still lets a pass run.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_steady_stream_of_wakeups_is_capped() {
         let notify = Arc::new(tokio::sync::Notify::new());
         let sender = notify.clone();
@@ -402,6 +423,43 @@ mod tests {
         let waited = started.elapsed();
         stream.abort();
         assert!(waited >= Duration::from_millis(300), "{waited:?}");
-        assert!(waited < Duration::from_millis(900), "{waited:?}");
+        assert!(waited < Duration::from_millis(320), "{waited:?}");
+    }
+
+    /// The loop sweeps once at start, then once for a whole burst of
+    /// wakeups after it settles, well before the periodic sweep is due.
+    #[tokio::test(start_paused = true)]
+    async fn the_loop_sweeps_a_burst_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let passes = Arc::new(AtomicUsize::new(0));
+        let counted = passes.clone();
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let waiter = notify.clone();
+        let sweeper = tokio::spawn(super::sweep_loop(
+            move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(())
+            },
+            move || {
+                let waiter = waiter.clone();
+                async move { waiter.notified().await }
+            },
+        ));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(
+            passes.load(Ordering::SeqCst),
+            1,
+            "the first pass runs at once"
+        );
+
+        for _ in 0..6 {
+            notify.notify_one();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(passes.load(Ordering::SeqCst), 1, "still settling");
+        tokio::time::sleep(super::WAKEUP_SETTLE * 2).await;
+        assert_eq!(passes.load(Ordering::SeqCst), 2, "one pass for the burst");
+        assert!(super::WAKEUP_SETTLE * 4 < super::SWEEP_INTERVAL);
+        sweeper.abort();
     }
 }

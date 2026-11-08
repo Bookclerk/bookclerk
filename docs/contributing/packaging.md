@@ -161,7 +161,11 @@ repository's owner. A fork publishes to its own namespace with its own
 
 The `bookclerk-dev` image carries inline cache metadata, so the Dev
 Container's `build.cacheFrom` reuses its layers. The demo image builds on
-the production builder and runtime. The hosted demo's deploy pulls the
+the production builder and runtime, all three in one build from
+[`packaging/demo/docker-bake.hcl`](../../packaging/demo/docker-bake.hcl).
+That build links with thin LTO and parallel codegen units. Shipped images
+keep `Cargo.toml`'s fat LTO: `packaging/docker/Dockerfile` takes the
+settings as build arguments that default to it. The hosted demo's deploy pulls the
 published demo image without signing in, so the package must be public.
 When the image for the deployed commit exists and its attestation
 verifies, the deploy uses it instead of building it again. Otherwise a
