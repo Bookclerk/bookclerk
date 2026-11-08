@@ -24,6 +24,7 @@
 )]
 
 pub mod boxutil;
+mod brand;
 pub mod edit;
 /// [`Mp4Error`] and the crate [`Result`] alias.
 mod error;
@@ -36,6 +37,10 @@ mod read;
 mod remux;
 mod samples;
 
+pub use brand::{
+    brand_durations_from_chapter_info, brand_trim_range, rebase_chapters_after_brand_trim,
+    runtime_length_ms_from_chapter_info, BrandDurations,
+};
 pub use error::{Mp4Error, Result};
 pub use parser::{
     extract_mp4a_config, parse_mp4, track_duration_ms, AudioTrack, Mp4File, Mp4aConfig,

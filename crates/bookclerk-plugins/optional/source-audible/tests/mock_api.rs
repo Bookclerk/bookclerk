@@ -5,14 +5,14 @@
 
 use audible_rs::api::client::Client;
 use audible_rs::auth::Authenticator;
-use bookclerk_config::AudioQuality;
-
 use bookclerk_plugin_source_audible::{
     collect_account_books, deregister_device, fetch_chapter_info, request_content_license,
-    scan_account_into_library, summarize_license,
+    summarize_license, Bitrate,
 };
 use url::Url;
-use wiremock::matchers::{body_json, body_string_contains, header, method, path, query_param};
+use wiremock::matchers::{
+    body_json, body_partial_json, body_string_contains, header, method, path, query_param,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn synthetic_client(server: &MockServer) -> Client {
@@ -70,7 +70,7 @@ async fn license_grant_is_summarized() {
         .await;
 
     let client = synthetic_client(&server);
-    let license = request_content_license(&client, "us", "B00EXAMPLE1", AudioQuality::High)
+    let license = request_content_license(&client, "us", "B00EXAMPLE1", Bitrate::High)
         .await
         .unwrap();
     let summary = summarize_license(&license);
@@ -85,6 +85,7 @@ async fn license_denial_surfaces_message() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/1.0/content/B00DENIED01/licenserequest"))
+        .and(body_partial_json(serde_json::json!({"quality": "Normal"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "content_license": {
                 "status_code": "Denied",
@@ -97,7 +98,7 @@ async fn license_denial_surfaces_message() {
         .await;
 
     let client = synthetic_client(&server);
-    let license = request_content_license(&client, "us", "B00DENIED01", AudioQuality::Normal)
+    let license = request_content_license(&client, "us", "B00DENIED01", Bitrate::Normal)
         .await
         .unwrap();
     let summary = summarize_license(&license);
@@ -121,14 +122,14 @@ async fn license_000307_is_an_error() {
         .await;
 
     let client = synthetic_client(&server);
-    let err = request_content_license(&client, "us", "B00WIDEVINE", AudioQuality::High)
+    let err = request_content_license(&client, "us", "B00WIDEVINE", Bitrate::High)
         .await
         .unwrap_err();
     assert!(err.is_no_aaxc_asset(), "expected NoAaxcAsset, got: {err}");
 }
 
 #[tokio::test]
-async fn scan_account_upserts_library_rows() {
+async fn scan_account_returns_one_row_per_library_title() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/1.0/library"))
@@ -143,44 +144,26 @@ async fn scan_account_upserts_library_rows() {
         .mount(&server)
         .await;
 
-    let library = bookclerk_plugin_database_sqlite::open_store_memory()
-        .await
-        .unwrap();
-    let scope = library.scope("audible", "audible");
-    library
-        .upsert_account(
-            "audible",
-            "amzn1.account.TEST",
-            "us",
-            Some("Main"),
-            true,
-            "audible",
-        )
-        .await
-        .unwrap();
-
     let client = synthetic_client(&server);
-    let (books, pages) =
-        scan_account_into_library(&scope, &client, "amzn1.account.TEST", "us", 50, true, true)
-            .await
-            .unwrap();
+    let (rows, pages) = collect_account_books(&client, "amzn1.account.TEST", "us", 50, true, true)
+        .await
+        .unwrap();
 
     assert_eq!(pages, 1);
-    assert_eq!(books, 2);
-    assert!(library
-        .get_book("B00EXAMPLE1", "amzn1.account.TEST")
-        .await
-        .unwrap()
-        .is_some());
+    let titles: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|row| (row.product_id.as_str(), row.title.as_str()))
+        .collect();
     assert_eq!(
-        library
-            .get_book("B00EXAMPLE2", "amzn1.account.TEST")
-            .await
-            .unwrap()
-            .unwrap()
-            .title,
-        "Second Book"
+        titles,
+        [
+            ("B00EXAMPLE1", "First Book"),
+            ("B00EXAMPLE2", "Second Book")
+        ]
     );
+    assert!(rows
+        .iter()
+        .all(|row| row.account_id == "amzn1.account.TEST"));
 }
 
 #[tokio::test]
@@ -285,7 +268,7 @@ async fn chapter_metadata_is_fetched() {
         .await;
 
     let client = synthetic_client(&server);
-    let info = fetch_chapter_info(&client, "us", "B00EXAMPLE1", AudioQuality::High, "tree")
+    let info = fetch_chapter_info(&client, "us", "B00EXAMPLE1", Bitrate::High, "tree")
         .await
         .unwrap();
     assert_eq!(

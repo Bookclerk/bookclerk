@@ -1502,6 +1502,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-audible-catalog"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-plugin-sdk",
+ "bookclerk-storefront",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "bookclerk-cli"
 version = "0.1.0"
 dependencies = [
@@ -1696,6 +1707,7 @@ name = "bookclerk-enrich"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bookclerk-audible-catalog",
  "bookclerk-library",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
@@ -1852,6 +1864,7 @@ version = "0.1.0"
 dependencies = [
  "bookclerk-mp4",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
 ]
@@ -2213,21 +2226,15 @@ dependencies = [
  "async-trait",
  "audible-rs",
  "base64 0.23.1",
- "bookclerk-config",
- "bookclerk-enrich",
- "bookclerk-library",
- "bookclerk-media",
+ "bookclerk-audible-catalog",
  "bookclerk-mp4",
- "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-sdk",
- "bookclerk-source",
+ "bookclerk-storefront",
  "cbc 0.2.1",
  "chrono",
  "ctr",
  "futures",
  "hex",
- "qrcode",
- "secrecy",
  "serde",
  "serde_json",
  "tempfile",
