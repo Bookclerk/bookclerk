@@ -17,18 +17,32 @@ marker="$dir/.demo-seeded"
 
 # Copies the template into a staging dir first, so a failed copy leaves the
 # files dir as it was, then moves each entry in, never over one already
-# there (a mounted config.toml wins).
+# there (a mounted config.toml wins). If a move fails, the entries already
+# moved in go back, so the files dir is again as it was.
 use_template() {
 	staging=$(mktemp -d "$dir/.baked.XXXXXX") || return 1
+	moved=""
 	ok=0
 	if cp -a "$template/." "$staging/"; then
 		for entry in "$staging"/* "$staging"/.[!.]*; do
 			[ -e "$entry" ] || continue
-			[ -e "$dir/${entry##*/}" ] && continue
-			mv "$entry" "$dir/" || ok=1
+			name=${entry##*/}
+			[ -e "$dir/$name" ] && continue
+			if mv "$entry" "$dir/"; then
+				moved="$moved $name"
+			else
+				ok=1
+				break
+			fi
 		done
 	else
 		ok=1
+	fi
+	if [ "$ok" -ne 0 ]; then
+		# Template entry names have no spaces (see bake-seed.sh).
+		for name in $moved; do
+			rm -rf "${dir:?}/$name"
+		done
 	fi
 	rm -rf "$staging"
 	return "$ok"

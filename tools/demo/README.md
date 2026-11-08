@@ -18,7 +18,9 @@ covers plugin, with exactly the grants their manifests request, then looks
 each title up in its store's public catalog through the storefront plugins
 (the search Discover uses, at most 15 seconds) and writes the record the
 store returns, so product ids, cover art and descriptions match the store.
-A title it cannot find keeps built-in fields under a made-up `demo-…` id.
+A title not found live uses its committed store record
+(`crates/bookclerk-demo-seed/records.json`) when there is one, and otherwise
+keeps built-in fields under a made-up `demo-…` id.
 The accounts hold no tokens. It writes through the library code of the same
 commit, never raw SQL, and its test runs against a fresh database in CI, so
 a schema change that breaks it fails there.
