@@ -1689,16 +1689,16 @@ impl RpcDatabaseProxy {
     ///
     /// # Errors
     ///
-    /// Returns a plugin ABI `invalid_params` error when the request exceeds
-    /// negotiated caps or the retry hash does not match, and a plugin error
-    /// when typed `execute` fails.
+    /// Returns a plugin ABI `limit_exceeded` error when the request exceeds
+    /// negotiated caps, `invalid_params` when the retry hash does not match,
+    /// and a plugin error when typed `execute` fails.
     async fn execute_typed_validated(
         &self,
         mut req: ExecuteRequest,
         catalog: &SqlTypeEnv,
     ) -> Result<bookclerk_plugin_sdk::ExecuteReply, crate::PluginError> {
         bookclerk_library::authorize_typed_request(&mut req, &self.caps)
-            .map_err(|err| crate::PluginError::from_abi(Some("invalid_params"), err.to_string()))?;
+            .map_err(map_reply_validation_err)?;
         let validate_req = req.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let on_txn = self.depth() > 0;
@@ -2201,8 +2201,7 @@ impl bookclerk_library::TypedAtomicExec for RpcAtomicBackend {
             .require_proofs()
             .map_err(|err| AbiPluginError::invalid_params(err.to_string()))?;
         self.caps
-            .admit_proven_execute(&envelope.request, &envelope.proofs)
-            .map_err(|err| AbiPluginError::invalid_params(err.to_string()))?;
+            .admit_proven_execute(&envelope.request, &envelope.proofs)?;
         let validate_req = envelope.request.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let reply = self
@@ -2895,7 +2894,12 @@ fn sqlite_connect_params(config: &Config, plugin_data_dir: &Path) -> DbConnectPa
     }
 }
 
-/// Maps host reply validation onto a plugin-host RPC error.
+/// Maps host request admission or reply validation onto a plugin-host RPC
+/// error.
+///
+/// A negotiated-cap failure stays `limit_exceeded` (its canonical message
+/// carries the cap for the guest's `err.limit`), a mismatched envelope stays
+/// `unavailable`, and everything else is `invalid_params`.
 fn map_reply_validation_err(err: bookclerk_library::LibraryError) -> crate::PluginError {
     match err {
         bookclerk_library::LibraryError::Unavailable(message) => {

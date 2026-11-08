@@ -7102,3 +7102,29 @@ async fn wishlist_writes_publish_wishlist_changed() {
     assert_eq!(deleted.len(), 1, "{deleted:?}");
     assert_eq!(deleted[0]["requestId"], open.uuid.as_str());
 }
+
+/// A cap the in-process executor reports in its message becomes the typed
+/// `limit_exceeded` error with `details`, not an opaque `internal` error.
+#[test]
+fn plugin_err_from_db_keeps_a_cap_failure_typed() {
+    let limit = bookclerk_plugin_abi::LimitExceeded::new("maxResultBytes", 262_144, 300_000);
+    let typed = plugin_err_from_db(sea_orm::DbErr::Custom(limit.to_message()));
+    assert_eq!(
+        typed.code,
+        bookclerk_plugin_abi::PluginErrorCode::LimitExceeded
+    );
+    assert_eq!(typed.limit(), Some(limit.clone()));
+    assert_eq!(
+        typed
+            .details
+            .as_ref()
+            .and_then(bookclerk_plugin_abi::LimitExceeded::from_details),
+        Some(limit)
+    );
+
+    let cancelled = plugin_err_from_db(sea_orm::DbErr::Custom("cancelled: by caller".into()));
+    assert_eq!(
+        cancelled.code,
+        bookclerk_plugin_abi::PluginErrorCode::Cancelled
+    );
+}
