@@ -113,6 +113,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "db_stream"
+path = "fuzz_targets/db_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "guest_sql_authz"
 path = "fuzz_targets/guest_sql_authz.rs"
 test = false

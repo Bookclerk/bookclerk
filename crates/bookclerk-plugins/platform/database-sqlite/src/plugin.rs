@@ -11,10 +11,11 @@ use bookclerk_db_guest::{
     bootstrap_for, capabilities_for, guest_assert_restore_constraints,
     guest_assert_restore_constraints_on, guest_bootstrap, guest_capabilities,
     guest_drop_user_relations, guest_drop_user_relations_on, guest_execute_request,
-    guest_execute_request_on, guest_export_identity, guest_export_identity_on,
-    guest_import_identity, guest_import_identity_on, guest_list_user_relations,
-    guest_list_user_relations_on, guest_prepare_unit_restore, guest_prepare_unit_restore_on,
-    host_session, host_session_on, set_connection,
+    guest_execute_request_on, guest_execute_streamed_request, guest_execute_streamed_request_on,
+    guest_export_identity, guest_export_identity_on, guest_import_identity,
+    guest_import_identity_on, guest_list_user_relations, guest_list_user_relations_on,
+    guest_prepare_unit_restore, guest_prepare_unit_restore_on, host_session, host_session_on,
+    set_connection,
 };
 use bookclerk_plugin_abi::db::{connect_params_from_bindings, DbConnectParams};
 use bookclerk_plugin_abi::HostAdapterDatabaseSession;
@@ -26,7 +27,7 @@ use bookclerk_plugin_sdk::{
 };
 use bookclerk_plugin_sdk::{
     AdapterExecuteRequest, DbBootstrap, DbCapabilities, DbIdentityHighWater, ExecuteReply,
-    PluginError,
+    ExecuteStream, PluginError,
 };
 use sea_orm::DatabaseConnection;
 
@@ -213,6 +214,13 @@ impl AdapterDatabaseSession for SqliteSession {
         }
     }
 
+    async fn execute_streamed(&self, request: AdapterExecuteRequest) -> Result<ExecuteStream> {
+        match &self.dedicated {
+            Some(conn) => guest_execute_streamed_request_on(conn, request).await,
+            None => guest_execute_streamed_request(request).await,
+        }
+    }
+
     async fn export_identity(&self) -> Result<Vec<DbIdentityHighWater>> {
         match &self.dedicated {
             Some(conn) => guest_export_identity_on(conn)
@@ -277,5 +285,80 @@ impl AdapterDatabaseSession for SqliteSession {
                 .await
                 .map_err(plugin_error_from_engine),
         }
+    }
+}
+
+#[cfg(all(test, feature = "host-helpers"))]
+mod tests {
+    use super::*;
+    use bookclerk_plugin_abi::{
+        DbPlanStatementKind, DbResultSelection, DbValue, ExecuteRequest, ExecuteStreamLimits,
+        TypedDbStatement,
+    };
+
+    /// Stamps a typed `SELECT` over constants, typed against the guest's own
+    /// bookkeeping tables, so the guest accepts it as a proven request.
+    fn stamped_select(operation_id: &str, sql: &str) -> AdapterExecuteRequest {
+        let req = ExecuteRequest {
+            operation_id: operation_id.into(),
+            request_hash: String::new(),
+            statements: vec![TypedDbStatement {
+                sql: sql.into(),
+                parameters: vec![],
+                kind: DbPlanStatementKind::Select,
+                max_rows: 0,
+                result_selection: DbResultSelection::Rows,
+            }],
+            deadline_unix_ms: 0,
+        };
+        bookclerk_db_exec::stamp_adapter_execute(
+            req,
+            &bookclerk_plugin_abi::sql_host_bookkeeping_type_env(),
+        )
+        .expect("stamp proofs")
+    }
+
+    /// A dedicated (binding) session answers `executeStreamed` with the
+    /// framed reply of the same batch `execute` would run.
+    #[tokio::test]
+    async fn dedicated_session_streams_the_reply() {
+        let conn = crate::sqlite::open_memory().await.expect("memory db");
+        let database = SqliteDatabase {
+            dedicated: Some(conn),
+        };
+        let session = database.open_session().await.expect("session");
+        let caps = session.capabilities().await.expect("capabilities");
+        assert!(caps.streams_results(), "first-party sqlite streams results");
+        let reply = session
+            .execute_streamed(stamped_select("stream-dedicated", "SELECT 7 AS n"))
+            .await
+            .expect("streamed reply")
+            .collect(ExecuteStreamLimits::from_capabilities(&caps))
+            .await
+            .expect("frames decode");
+        assert_eq!(reply.operation_id, "stream-dedicated");
+        assert_eq!(reply.statements.len(), 1);
+        assert_eq!(reply.statements[0].rows.len(), 1);
+        assert_eq!(reply.statements[0].rows[0].values[0], DbValue::Int64(7));
+    }
+
+    /// The shared library session streams through the process-wide
+    /// connection, as the platform guest does for the host library.
+    #[tokio::test]
+    async fn shared_session_streams_through_the_process_connection() {
+        let conn = crate::sqlite::open_memory().await.expect("memory db");
+        set_connection(conn).await;
+        let database = SqliteDatabase { dedicated: None };
+        let session = database.open_session().await.expect("session");
+        let caps = session.capabilities().await.expect("capabilities");
+        let reply = session
+            .execute_streamed(stamped_select("stream-shared", "SELECT 7 AS n"))
+            .await
+            .expect("streamed reply")
+            .collect(ExecuteStreamLimits::from_capabilities(&caps))
+            .await
+            .expect("frames decode");
+        assert_eq!(reply.operation_id, "stream-shared");
+        assert_eq!(reply.statements[0].rows[0].values[0], DbValue::Int64(7));
     }
 }

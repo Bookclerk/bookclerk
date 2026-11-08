@@ -1,7 +1,8 @@
 //! Host-granted HTTP reverse channel for workerd isolates: `JobRunner.job`
 //! streams (`Source` / `Destination` / `ProgressSink`), the job's
 //! `Cancellation` long poll (`/cancel`), named database sessions
-//! (`/db/execute`), and the `EVENTS` outbox publisher (`/events/publish`).
+//! (`/db/execute`, `/db/execute-streamed`), and the `EVENTS` outbox publisher
+//! (`/events/publish`).
 //!
 //! HTTP accept/read/write runs on the multi-thread runtime (`tokio::spawn`) so
 //! it is not starved by the Cap'n Proto vat `LocalSet`. Stub calls stay on the
@@ -23,11 +24,12 @@ use bookclerk_plugin_abi::{
     PluginError,
 };
 use bookclerk_plugin_abi::{
-    encoded_db_capabilities_reply_bytes, encoded_execute_result_reply_bytes, Cancellation,
-    Destination, EventPublisher, GuestDatabase, KvDeleteOk, KvGetOk, KvListOk, KvListOptions,
-    KvNamespace, KvPutOk, KvPutOptions, ObjectMetadata, PluginEvent, ProgressSink, PublishOk,
-    QueueProducer, QueueSendMessage, QueueSendOk, Source, WriteOptions, MAX_EVENT_PAYLOAD_BYTES,
-    MAX_LIST_PAGE, MAX_SCALAR_BYTES,
+    encode_execute_stream_error, encoded_db_capabilities_reply_bytes,
+    encoded_execute_result_reply_bytes, Cancellation, Destination, EventPublisher,
+    ExecuteStreamLimits, GuestDatabase, KvDeleteOk, KvGetOk, KvListOk, KvListOptions, KvNamespace,
+    KvPutOk, KvPutOptions, ObjectMetadata, PluginEvent, ProgressSink, PublishOk, QueueProducer,
+    QueueSendMessage, QueueSendOk, Source, WriteOptions, MAX_EVENT_PAYLOAD_BYTES, MAX_LIST_PAGE,
+    MAX_SCALAR_BYTES,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -253,6 +255,14 @@ enum GrantedCmd {
         request_bytes: Vec<u8>,
         resp: oneshot::Sender<Result<Vec<u8>, String>>,
     },
+    /// `POST /db/execute-streamed`: the same typed batch answered as
+    /// `ExecuteStreamFrame`s, so a result may grow to the session's streamed
+    /// budget instead of one inline reply.
+    ExecuteStreamed {
+        invocation: String,
+        request_bytes: Vec<u8>,
+        resp: oneshot::Sender<Result<Vec<u8>, String>>,
+    },
     /// `env.<QUEUE>.send` / `sendBatch`: every message with its own delay
     /// applied, `delay_seconds` for the rest.
     QueueSend {
@@ -400,6 +410,14 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                     resp,
                 } => {
                     let _ = resp.send(dispatch_execute(&table, invocation, request_bytes).await);
+                }
+                GrantedCmd::ExecuteStreamed {
+                    invocation,
+                    request_bytes,
+                    resp,
+                } => {
+                    let _ = resp
+                        .send(dispatch_execute_streamed(&table, invocation, request_bytes).await);
                 }
                 GrantedCmd::AtomicBudget { invocation, resp } => {
                     let _ = resp.send(dispatch_atomic_budget(&table, invocation));
@@ -833,6 +851,59 @@ async fn dispatch_execute(
     encoded_execute_result_reply_bytes(outcome).map_err(|err| err.to_string())
 }
 
+/// Authorizes and runs one typed batch as `GuestDatabase.executeStreamed`.
+///
+/// Every outcome is answered as stream frames: the session's frames when it
+/// streams, or an `err` frame carrying its refusal, an authorization
+/// failure, or `unsupported` from a session that does not stream. The
+/// frames are collected in memory (they are bounded by the session's
+/// streamed budget) so the HTTP reply can carry a content length.
+///
+/// # Errors
+///
+/// Returns the reason when the grant is unknown, expired or has no
+/// database, when the request bytes do not decode, or when a frame cannot
+/// be encoded.
+async fn dispatch_execute_streamed(
+    table: &GrantedTable,
+    invocation: String,
+    request_bytes: Vec<u8>,
+) -> Result<Vec<u8>, String> {
+    let mut req = decode_execute_request_bytes(&request_bytes).map_err(|err| err.to_string())?;
+    let (db, cap, policy) = {
+        let mut table = table.borrow_mut();
+        let slot = table
+            .get_mut(&invocation)
+            .ok_or_else(|| "unknown or revoked grant".to_string())?;
+        if slot.expires <= std::time::Instant::now() {
+            table.remove(&invocation);
+            return Err("grant expired".into());
+        }
+        if !slot.allow_database {
+            return Err("database not permitted on this grant".into());
+        }
+        let db = slot
+            .database
+            .clone()
+            .ok_or_else(|| "database not granted".to_string())?;
+        (db, slot.max_request_bytes, slot.sql_policy.clone())
+    };
+    if let Err(err) = authorize_granted_request(&mut req, cap, &policy) {
+        return encode_execute_stream_error(&err).map_err(|err| err.to_string());
+    }
+    let limits = match db.limits().await {
+        Ok(caps) => ExecuteStreamLimits::from_capabilities(&caps),
+        Err(err) => return encode_execute_stream_error(&err).map_err(|err| err.to_string()),
+    };
+    match db.execute_streamed(req).await {
+        Ok(stream) => match stream.into_bytes(limits).await {
+            Ok(frames) => Ok(frames),
+            Err(err) => encode_execute_stream_error(&err).map_err(|err| err.to_string()),
+        },
+        Err(err) => encode_execute_stream_error(&err).map_err(|err| err.to_string()),
+    }
+}
+
 /// Adapts the granted `/put` body channel to `AsyncRead` for the destination.
 ///
 /// A closed channel is end of body; an `Err` chunk (the HTTP pump hit a
@@ -1167,7 +1238,8 @@ where
         return Ok(());
     }
 
-    if method == "POST" && path_only == "/db/execute" {
+    if method == "POST" && (path_only == "/db/execute" || path_only == "/db/execute-streamed") {
+        let streamed = path_only == "/db/execute-streamed";
         let (budget_tx, budget_rx) = oneshot::channel();
         cmds.send(GrantedCmd::AtomicBudget {
             invocation: invocation.clone(),
@@ -1205,13 +1277,20 @@ where
             }
         };
         let (resp_tx, resp_rx) = oneshot::channel();
-        cmds.send(GrantedCmd::Execute {
-            invocation,
-            request_bytes: rest,
-            resp: resp_tx,
-        })
-        .await
-        .context("granted dispatch closed")?;
+        let cmd = if streamed {
+            GrantedCmd::ExecuteStreamed {
+                invocation,
+                request_bytes: rest,
+                resp: resp_tx,
+            }
+        } else {
+            GrantedCmd::Execute {
+                invocation,
+                request_bytes: rest,
+                resp: resp_tx,
+            }
+        };
+        cmds.send(cmd).await.context("granted dispatch closed")?;
         let payload = resp_rx
             .await
             .context("granted execute dropped")?
@@ -1733,6 +1812,466 @@ mod tests {
             err.contains("not permitted") || err.contains("not granted"),
             "{err}"
         );
+    }
+
+    /// A granted session that does not implement `executeStreamed` answers
+    /// the streamed route with an `unsupported` error frame, never a
+    /// transport failure.
+    #[tokio::test]
+    async fn streamed_execute_on_an_inline_only_session_is_an_error_frame() {
+        use bookclerk_plugin_abi::{
+            decode_execute_stream, encoded_execute_request_bytes, DbCapabilities,
+            DbPlanStatementKind, DbResultSelection, ExecuteRequest, ExecuteStreamLimits,
+            PluginErrorCode, TypedDbStatement,
+        };
+
+        struct InlineOnly;
+
+        #[async_trait::async_trait(?Send)]
+        impl GuestDatabase for InlineOnly {
+            async fn execute(
+                &self,
+                _request: ExecuteRequest,
+            ) -> Result<bookclerk_plugin_abi::ExecuteReply, PluginError> {
+                unreachable!("the streamed route never falls back to execute")
+            }
+
+            async fn limits(&self) -> Result<DbCapabilities, PluginError> {
+                Ok(DbCapabilities::advertised_sqlite())
+            }
+        }
+
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert(
+            "g-db".into(),
+            GrantedSlot {
+                input: None,
+                output: None,
+                progress: None,
+                cancel: None,
+                expires: Instant::now() + Duration::from_secs(60),
+                allow_open: false,
+                allow_put: false,
+                allow_progress: false,
+                database: Some(Rc::new(InlineOnly)),
+                allow_database: true,
+                sql_policy: GuestSqlPolicy::allow_tables(["t"]),
+                max_request_bytes: 0,
+                events: None,
+                queue: None,
+                kv: None,
+            },
+        );
+        let req = ExecuteRequest {
+            operation_id: "op-stream".into(),
+            request_hash: String::new(),
+            statements: vec![TypedDbStatement {
+                sql: "SELECT id FROM t".into(),
+                parameters: vec![],
+                kind: DbPlanStatementKind::Select,
+                max_rows: 0,
+                result_selection: DbResultSelection::Rows,
+            }],
+            deadline_unix_ms: 0,
+        };
+        let bytes = encoded_execute_request_bytes(&req).expect("encode");
+        let frames = dispatch_execute_streamed(&table, "g-db".into(), bytes)
+            .await
+            .expect("frames");
+        let limits = ExecuteStreamLimits::from_capabilities(&DbCapabilities::advertised_sqlite());
+        let err = decode_execute_stream(&frames, limits).expect_err("error frame");
+        assert_eq!(err.code, PluginErrorCode::Unsupported);
+    }
+
+    /// A streaming session's frames come back whole, and a request the
+    /// policy refuses is an `invalid_params` frame.
+    #[tokio::test]
+    async fn streamed_execute_returns_the_session_frames() {
+        use bookclerk_plugin_abi::{
+            decode_execute_stream, encoded_execute_request_bytes, DbCapabilities, DbColumn,
+            DbPlanStatementKind, DbResultSelection, DbRow, DbTiming, DbType, DbValue, ExecuteReply,
+            ExecuteRequest, ExecuteStream, ExecuteStreamLimits, PluginErrorCode, StatementResult,
+            TypedDbStatement,
+        };
+
+        struct Streaming;
+
+        #[async_trait::async_trait(?Send)]
+        impl GuestDatabase for Streaming {
+            async fn execute(&self, _request: ExecuteRequest) -> Result<ExecuteReply, PluginError> {
+                unreachable!("the streamed route never falls back to execute")
+            }
+
+            async fn execute_streamed(
+                &self,
+                request: ExecuteRequest,
+            ) -> Result<ExecuteStream, PluginError> {
+                let reply = ExecuteReply {
+                    operation_id: request.operation_id,
+                    statements: vec![StatementResult::from_rows(
+                        vec![DbColumn {
+                            name: "id".into(),
+                            db_type: DbType::Int64,
+                        }],
+                        (0..3)
+                            .map(|i| DbRow {
+                                values: vec![DbValue::Int64(i)],
+                            })
+                            .collect(),
+                    )
+                    .expect("rows")],
+                    timing: DbTiming {
+                        attempt_elapsed_us: 1,
+                        db_execution_us: 1,
+                        db_timing_source: "sqlite_txn".into(),
+                    },
+                };
+                ExecuteStream::from_reply(&reply)
+            }
+
+            async fn limits(&self) -> Result<DbCapabilities, PluginError> {
+                Ok(DbCapabilities::advertised_sqlite())
+            }
+        }
+
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert(
+            "g-db".into(),
+            GrantedSlot {
+                input: None,
+                output: None,
+                progress: None,
+                cancel: None,
+                expires: Instant::now() + Duration::from_secs(60),
+                allow_open: false,
+                allow_put: false,
+                allow_progress: false,
+                database: Some(Rc::new(Streaming)),
+                allow_database: true,
+                sql_policy: GuestSqlPolicy::allow_tables(["t"]),
+                max_request_bytes: 0,
+                events: None,
+                queue: None,
+                kv: None,
+            },
+        );
+        let request = |sql: &str| ExecuteRequest {
+            operation_id: "op-stream".into(),
+            request_hash: String::new(),
+            statements: vec![TypedDbStatement {
+                sql: sql.into(),
+                parameters: vec![],
+                kind: DbPlanStatementKind::Select,
+                max_rows: 0,
+                result_selection: DbResultSelection::Rows,
+            }],
+            deadline_unix_ms: 0,
+        };
+        let limits = ExecuteStreamLimits::from_capabilities(&DbCapabilities::advertised_sqlite());
+
+        let bytes = encoded_execute_request_bytes(&request("SELECT id FROM t")).expect("encode");
+        let frames = dispatch_execute_streamed(&table, "g-db".into(), bytes)
+            .await
+            .expect("frames");
+        let reply = decode_execute_stream(&frames, limits).expect("reply");
+        assert_eq!(reply.operation_id, "op-stream");
+        assert_eq!(reply.statements[0].rows.len(), 3);
+
+        let bytes =
+            encoded_execute_request_bytes(&request("SELECT id FROM secrets")).expect("encode");
+        let frames = dispatch_execute_streamed(&table, "g-db".into(), bytes)
+            .await
+            .expect("frames");
+        let err = decode_execute_stream(&frames, limits).expect_err("policy refusal");
+        assert_eq!(err.code, PluginErrorCode::InvalidParams);
+    }
+
+    /// A grant slot whose database answers streamed reads with `session`.
+    fn grant_streamed_slot(
+        session: Rc<dyn GuestDatabase>,
+        expires: Instant,
+        allow_database: bool,
+    ) -> GrantedTable {
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert(
+            "g-db".into(),
+            GrantedSlot {
+                input: None,
+                output: None,
+                progress: None,
+                cancel: None,
+                expires,
+                allow_open: false,
+                allow_put: false,
+                allow_progress: false,
+                database: Some(session),
+                allow_database,
+                sql_policy: GuestSqlPolicy::allow_tables(["t"]),
+                max_request_bytes: 0,
+                events: None,
+                queue: None,
+                kv: None,
+            },
+        );
+        table
+    }
+
+    /// Session whose streamed reply is `bytes` behind a reader, so the relay
+    /// has to count the frames against the raw ceiling as they arrive.
+    struct ReaderSession(usize);
+
+    #[async_trait::async_trait(?Send)]
+    impl GuestDatabase for ReaderSession {
+        async fn execute(
+            &self,
+            _request: bookclerk_plugin_abi::ExecuteRequest,
+        ) -> Result<bookclerk_plugin_abi::ExecuteReply, PluginError> {
+            unreachable!("the streamed route never falls back to execute")
+        }
+
+        async fn execute_streamed(
+            &self,
+            _request: bookclerk_plugin_abi::ExecuteRequest,
+        ) -> Result<bookclerk_plugin_abi::ExecuteStream, PluginError> {
+            Ok(bookclerk_plugin_abi::ExecuteStream::reader(Box::pin(
+                std::io::Cursor::new(vec![0u8; self.0]),
+            )))
+        }
+
+        async fn limits(&self) -> Result<bookclerk_plugin_abi::DbCapabilities, PluginError> {
+            // An inline-only budget: the raw ceiling is one scalar plus an
+            // eighth plus one window, well under the 4 MiB reader below.
+            let mut caps = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
+            caps.max_streamed_result_bytes = 0;
+            caps.max_streamed_result_rows = 0;
+            Ok(caps)
+        }
+    }
+
+    /// The streamed route fails closed on an expired grant and on a grant
+    /// without database access, before any adapter call.
+    #[tokio::test]
+    async fn streamed_dispatch_refuses_expired_and_unpermitted_grants() {
+        let bytes = guest_sql_bytes(
+            "SELECT id FROM t",
+            vec![],
+            bookclerk_plugin_abi::DbPlanStatementKind::Select,
+            bookclerk_plugin_abi::DbResultSelection::Rows,
+            0,
+        );
+        let expired = grant_streamed_slot(
+            Rc::new(ReaderSession(8)),
+            Instant::now() - Duration::from_secs(1),
+            true,
+        );
+        let err = dispatch_execute_streamed(&expired, "g-db".into(), bytes.clone())
+            .await
+            .expect_err("expired grant");
+        assert!(err.contains("expired"), "{err}");
+        assert!(
+            expired.borrow().get("g-db").is_none(),
+            "an expired grant is revoked on use"
+        );
+
+        let unpermitted = grant_streamed_slot(
+            Rc::new(ReaderSession(8)),
+            Instant::now() + Duration::from_secs(60),
+            false,
+        );
+        let err = dispatch_execute_streamed(&unpermitted, "g-db".into(), bytes.clone())
+            .await
+            .expect_err("database not permitted");
+        assert!(err.contains("not permitted"), "{err}");
+
+        let err = dispatch_execute_streamed(&unpermitted, "missing".into(), bytes)
+            .await
+            .expect_err("unknown grant");
+        assert!(err.contains("unknown or revoked"), "{err}");
+    }
+
+    /// Frames past the receiver's raw ceiling become a typed `limit_exceeded`
+    /// error frame instead of an oversized relay.
+    #[tokio::test(flavor = "current_thread")]
+    async fn streamed_frames_past_the_raw_ceiling_are_a_limit_error_frame() {
+        use bookclerk_plugin_abi::{
+            decode_execute_stream, DbCapabilities, ExecuteStreamLimits, PluginErrorCode,
+        };
+        let table = grant_streamed_slot(
+            Rc::new(ReaderSession(4 * 1024 * 1024)),
+            Instant::now() + Duration::from_secs(60),
+            true,
+        );
+        let bytes = guest_sql_bytes(
+            "SELECT id FROM t",
+            vec![],
+            bookclerk_plugin_abi::DbPlanStatementKind::Select,
+            bookclerk_plugin_abi::DbResultSelection::Rows,
+            0,
+        );
+        let frames = dispatch_execute_streamed(&table, "g-db".into(), bytes)
+            .await
+            .expect("an error frame, not a transport failure");
+        let limits = ExecuteStreamLimits::from_capabilities(&DbCapabilities::advertised_sqlite());
+        let err = decode_execute_stream(&frames, limits).expect_err("limit error frame");
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+        let limit = err.limit().expect("typed limit record");
+        assert_eq!(limit.limit, "maxAtomicResultBytes");
+    }
+
+    /// The dispatch loop routes `ExecuteStreamed` commands to the streamed
+    /// dispatcher and answers on the command's reply channel.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_loop_answers_streamed_commands() {
+        use bookclerk_plugin_abi::{
+            decode_execute_stream, DbCapabilities, ExecuteStreamLimits, PluginErrorCode,
+        };
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let table = grant_streamed_slot(
+                    Rc::new(ReaderSession(8)),
+                    Instant::now() + Duration::from_secs(60),
+                    true,
+                );
+                let (cmds_tx, cmds_rx) = mpsc::channel(4);
+                tokio::task::spawn_local(dispatch_granted(cmds_rx, Rc::clone(&table)));
+                let (resp_tx, resp_rx) = oneshot::channel();
+                cmds_tx
+                    .send(GrantedCmd::ExecuteStreamed {
+                        invocation: "g-db".into(),
+                        request_bytes: guest_sql_bytes(
+                            "SELECT id FROM t",
+                            vec![],
+                            bookclerk_plugin_abi::DbPlanStatementKind::Select,
+                            bookclerk_plugin_abi::DbResultSelection::Rows,
+                            0,
+                        ),
+                        resp: resp_tx,
+                    })
+                    .await
+                    .expect("dispatch loop alive");
+                let frames = resp_rx
+                    .await
+                    .expect("reply sent")
+                    .expect("eight zero bytes relay as frames");
+                assert_eq!(frames, vec![0u8; 8]);
+                // The relayed bytes are what the session produced; decoding
+                // them is the host's job, and an empty frame header is a
+                // truncated stream.
+                let limits =
+                    ExecuteStreamLimits::from_capabilities(&DbCapabilities::advertised_sqlite());
+                let err = decode_execute_stream(&frames, limits).expect_err("not a frame");
+                assert_eq!(err.code, PluginErrorCode::Unavailable);
+            })
+            .await;
+    }
+
+    /// `POST /db/execute-streamed` reads the body under the atomic budget and
+    /// relays the dispatcher's frames as one octet-stream reply.
+    #[tokio::test]
+    async fn streamed_route_relays_frames_over_http() {
+        let (cmds_tx, mut cmds_rx) = mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(cmd) = cmds_rx.recv().await {
+                match cmd {
+                    GrantedCmd::AtomicBudget { resp, .. } => {
+                        let _ = resp.send(Ok(4096));
+                    }
+                    GrantedCmd::ExecuteStreamed {
+                        invocation,
+                        request_bytes,
+                        resp,
+                    } => {
+                        assert_eq!(invocation, "grant-1");
+                        assert_eq!(request_bytes, b"request-bytes");
+                        let _ = resp.send(Ok(vec![7, 8, 9]));
+                    }
+                    GrantedCmd::Execute { .. } => {
+                        panic!("the streamed route never dispatches execute")
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let (client, server) = tokio::io::duplex(4096);
+        let serve = tokio::spawn(async move { handle_conn(server, "bridge", cmds_tx).await });
+        let body = "request-bytes";
+        let req = format!(
+            "POST /db/execute-streamed HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (mut reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(req.as_bytes())
+            .await
+            .expect("write request");
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), reader.read_to_end(&mut out))
+            .await
+            .expect("http response")
+            .expect("read response");
+        drop(writer);
+        serve.await.expect("serve task").expect("handled");
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+        assert!(
+            text.contains("content-type: application/octet-stream\r\n"),
+            "{text}"
+        );
+        assert!(text.contains("content-length: 3\r\n"), "{text}");
+        assert!(out.ends_with(&[7, 8, 9]), "{text}");
+    }
+
+    /// `POST /db/execute` dispatches the plain execute command and relays
+    /// the dispatcher's reply the same way.
+    #[tokio::test]
+    async fn execute_route_dispatches_execute_over_http() {
+        let (cmds_tx, mut cmds_rx) = mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(cmd) = cmds_rx.recv().await {
+                match cmd {
+                    GrantedCmd::AtomicBudget { resp, .. } => {
+                        let _ = resp.send(Ok(4096));
+                    }
+                    GrantedCmd::Execute {
+                        invocation,
+                        request_bytes,
+                        resp,
+                    } => {
+                        assert_eq!(invocation, "grant-1");
+                        assert_eq!(request_bytes, b"request-bytes");
+                        let _ = resp.send(Ok(vec![1, 2]));
+                    }
+                    GrantedCmd::ExecuteStreamed { .. } => {
+                        panic!("the execute route never dispatches the streamed command")
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let (client, server) = tokio::io::duplex(4096);
+        let serve = tokio::spawn(async move { handle_conn(server, "bridge", cmds_tx).await });
+        let body = "request-bytes";
+        let req = format!(
+            "POST /db/execute HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (mut reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(req.as_bytes())
+            .await
+            .expect("write request");
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), reader.read_to_end(&mut out))
+            .await
+            .expect("http response")
+            .expect("read response");
+        drop(writer);
+        serve.await.expect("serve task").expect("handled");
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+        assert!(text.contains("content-length: 2\r\n"), "{text}");
+        assert!(out.ends_with(&[1, 2]), "{text}");
     }
 
     #[test]

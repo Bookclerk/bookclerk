@@ -1075,10 +1075,10 @@ mod tests {
         assert_eq!(listed.len(), count);
     }
 
-    /// A stored feed too large to read back is still replaced, since the
-    /// write does not load the old row.
+    /// A stored feed larger than one inline result reads back whole and is
+    /// still replaced, since the write does not load the old row.
     #[tokio::test]
-    async fn an_unreadable_feed_is_replaced() {
+    async fn a_large_feed_reads_back_and_is_replaced() {
         let store = store().await;
         let alice = DiscoverSubject::User(1);
         let quoted = "\"".repeat(150_000);
@@ -1086,8 +1086,8 @@ mod tests {
             .put_discover_feed(&alice, &quoted, SeedScope::Own, None)
             .await
             .unwrap();
-        let err = store.get_discover_feed(&alice).await.unwrap_err();
-        assert!(super::super::books_page::is_result_too_large(&err), "{err}");
+        let feed = store.get_discover_feed(&alice).await.unwrap().unwrap();
+        assert_eq!(feed.feed_json, quoted);
         store
             .put_discover_feed(&alice, "{}", SeedScope::Own, None)
             .await

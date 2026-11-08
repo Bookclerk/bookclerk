@@ -10,7 +10,8 @@ use crate::plugin_capnp::{
     db_bootstrap_reply, db_capabilities as db_caps_capnp, db_capabilities_reply,
     db_column as db_column_capnp, db_row as db_row_capnp, db_statement as db_statement_capnp,
     db_timing as db_timing_capnp, db_value as db_value_capnp, execute_reply as execute_reply_capnp,
-    execute_request as execute_request_capnp, execute_result_reply, identity_export_reply,
+    execute_request as execute_request_capnp, execute_result_reply,
+    execute_stream_frame as execute_stream_frame_capnp, identity_export_reply,
     identity_high_water as identity_high_water_capnp,
     integer_arith_site as integer_arith_site_capnp, named_sql_type as named_sql_type_capnp,
     optional_column_reference as optional_column_reference_capnp,
@@ -254,7 +255,7 @@ pub(super) fn read_execute_request(r: execute_request_capnp::Reader<'_>) -> Resu
     })
 }
 
-fn write_column(mut b: db_column_capnp::Builder<'_>, col: &DbColumn) {
+pub(super) fn write_column(mut b: db_column_capnp::Builder<'_>, col: &DbColumn) {
     b.set_name(&col.name);
     b.set_db_type(write_db_type(col.db_type));
 }
@@ -262,7 +263,7 @@ fn write_column(mut b: db_column_capnp::Builder<'_>, col: &DbColumn) {
 /// # Errors
 ///
 /// Returns when the column name or declared type cannot be decoded.
-fn read_column(r: db_column_capnp::Reader<'_>) -> Result<DbColumn> {
+pub(super) fn read_column(r: db_column_capnp::Reader<'_>) -> Result<DbColumn> {
     Ok(DbColumn {
         name: text_of(r.get_name().map_err(from_capnp)?),
         db_type: read_db_type(
@@ -272,7 +273,7 @@ fn read_column(r: db_column_capnp::Reader<'_>) -> Result<DbColumn> {
     })
 }
 
-fn write_row(mut b: db_row_capnp::Builder<'_>, row: &DbRow) {
+pub(super) fn write_row(mut b: db_row_capnp::Builder<'_>, row: &DbRow) {
     let mut vals = b.reborrow().init_values(row.values.len() as u32);
     for (i, v) in row.values.iter().enumerate() {
         write_db_value(vals.reborrow().get(i as u32), v);
@@ -282,7 +283,7 @@ fn write_row(mut b: db_row_capnp::Builder<'_>, row: &DbRow) {
 /// # Errors
 ///
 /// Returns when a cell cannot be decoded as [`DbValue`].
-fn read_row(r: db_row_capnp::Reader<'_>) -> Result<DbRow> {
+pub(super) fn read_row(r: db_row_capnp::Reader<'_>) -> Result<DbRow> {
     let list = r.get_values().map_err(from_capnp)?;
     let mut values = Vec::with_capacity(list.len() as usize);
     for item in list.iter() {
@@ -329,7 +330,7 @@ fn read_statement_result(r: statement_result_capnp::Reader<'_>) -> Result<Statem
     Ok(result)
 }
 
-fn write_timing(mut b: db_timing_capnp::Builder<'_>, t: &DbTiming) {
+pub(super) fn write_timing(mut b: db_timing_capnp::Builder<'_>, t: &DbTiming) {
     b.set_attempt_elapsed_us(t.attempt_elapsed_us);
     b.set_db_execution_us(t.db_execution_us);
     b.set_db_timing_source(&t.db_timing_source);
@@ -338,7 +339,7 @@ fn write_timing(mut b: db_timing_capnp::Builder<'_>, t: &DbTiming) {
 /// # Errors
 ///
 /// Returns when the timing source string cannot be decoded.
-fn read_timing(r: db_timing_capnp::Reader<'_>) -> Result<DbTiming> {
+pub(super) fn read_timing(r: db_timing_capnp::Reader<'_>) -> Result<DbTiming> {
     Ok(DbTiming {
         attempt_elapsed_us: r.get_attempt_elapsed_us(),
         db_execution_us: r.get_db_execution_us(),
@@ -434,6 +435,8 @@ pub(super) fn write_db_capabilities(mut b: db_caps_capnp::Builder<'_>, caps: &Db
     b.set_max_schema_columns(caps.max_schema_columns);
     b.set_max_pattern_bytes(caps.max_pattern_bytes);
     b.set_max_lowered_statement_bytes(caps.max_lowered_statement_bytes);
+    b.set_max_streamed_result_bytes(caps.max_streamed_result_bytes);
+    b.set_max_streamed_result_rows(caps.max_streamed_result_rows);
 }
 
 /// Decodes negotiated database capabilities from a Cap'n Proto reader.
@@ -465,6 +468,8 @@ pub(super) fn read_db_capabilities(r: db_caps_capnp::Reader<'_>) -> Result<DbCap
         max_schema_columns: r.get_max_schema_columns(),
         max_pattern_bytes: r.get_max_pattern_bytes(),
         max_lowered_statement_bytes: r.get_max_lowered_statement_bytes(),
+        max_streamed_result_bytes: r.get_max_streamed_result_bytes(),
+        max_streamed_result_rows: r.get_max_streamed_result_rows(),
     })
 }
 
@@ -692,6 +697,21 @@ pub fn decode_db_capabilities_reply_bytes(bytes: &[u8]) -> Result<DbCapabilities
 fn read_unpacked_message(
     bytes: &[u8],
 ) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
+    read_unpacked_message_within(bytes, MAX_SCALAR_BYTES)
+}
+
+/// [`read_unpacked_message`] with the traversal ceiling at `max_bytes`
+/// instead of the scalar ceiling (streamed frames that carry one row larger
+/// than a scalar).
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] when the stream is truncated or
+/// multi-segment, and [`PluginError::unavailable`] when Cap'n decode fails.
+pub(super) fn read_unpacked_message_within(
+    bytes: &[u8],
+    max_bytes: u32,
+) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
     if bytes.len() < 8 {
         return Err(PluginError::invalid_params("truncated Cap'n message"));
     }
@@ -705,7 +725,7 @@ fn read_unpacked_message(
     }
     let words = (bytes.len() / 8)
         .saturating_add(16)
-        .min(usize::try_from(MAX_SCALAR_BYTES).unwrap_or(usize::MAX) / 8);
+        .min(usize::try_from(max_bytes.max(MAX_SCALAR_BYTES)).unwrap_or(usize::MAX) / 8);
     let mut opts = capnp::message::ReaderOptions::new();
     opts.traversal_limit_in_words(Some(words));
     opts.nesting_limit(32);
@@ -1416,4 +1436,144 @@ pub(super) fn read_user_relations_reply(
         user_relations_reply::Ok(ok) => read_text_list(ok.map_err(from_capnp)?),
         user_relations_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
     }
+}
+
+/// Fills one `ExecuteStreamFrame` builder from its Rust value.
+pub(super) fn write_execute_stream_frame(
+    b: execute_stream_frame_capnp::Builder<'_>,
+    frame: &crate::db_stream::ExecuteStreamFrame,
+) {
+    use crate::db_stream::ExecuteStreamFrame as Frame;
+    match frame {
+        Frame::Head {
+            operation_id,
+            statement_count,
+        } => {
+            let mut head = b.init_head();
+            head.set_operation_id(operation_id);
+            head.set_statement_count(*statement_count);
+        }
+        Frame::Statement {
+            index,
+            columns,
+            rows_affected,
+        } => {
+            let mut stmt = b.init_statement();
+            stmt.set_index(*index);
+            stmt.set_rows_affected(*rows_affected);
+            // `encoded_execute_stream_frame_bytes` refused lists past `u32::MAX`.
+            let mut cols = stmt
+                .reborrow()
+                .init_columns(u32::try_from(columns.len()).unwrap_or(u32::MAX));
+            for (i, col) in columns.iter().enumerate() {
+                write_column(
+                    cols.reborrow().get(u32::try_from(i).unwrap_or(u32::MAX)),
+                    col,
+                );
+            }
+        }
+        Frame::Rows(rows) => {
+            let mut list = b.init_rows(u32::try_from(rows.len()).unwrap_or(u32::MAX));
+            for (i, row) in rows.iter().enumerate() {
+                write_row(
+                    list.reborrow().get(u32::try_from(i).unwrap_or(u32::MAX)),
+                    row,
+                );
+            }
+        }
+        Frame::End(timing) => write_timing(b.init_end(), timing),
+        Frame::Err(err) => write_error(b.init_err(), err),
+    }
+}
+
+/// Reads one `ExecuteStreamFrame`.
+///
+/// # Errors
+///
+/// Returns when the union member, a column, a row or the error cannot be
+/// decoded, or the union carries a member this build does not know.
+pub(super) fn read_execute_stream_frame(
+    r: execute_stream_frame_capnp::Reader<'_>,
+) -> Result<crate::db_stream::ExecuteStreamFrame> {
+    use crate::db_stream::ExecuteStreamFrame as Frame;
+    Ok(match r.which().map_err(from_capnp)? {
+        execute_stream_frame_capnp::Head(head) => {
+            let head = head.map_err(from_capnp)?;
+            Frame::Head {
+                operation_id: text_of(head.get_operation_id().map_err(from_capnp)?),
+                statement_count: head.get_statement_count(),
+            }
+        }
+        execute_stream_frame_capnp::Statement(stmt) => {
+            let stmt = stmt.map_err(from_capnp)?;
+            let cols = stmt.get_columns().map_err(from_capnp)?;
+            let mut columns = Vec::with_capacity(cols.len() as usize);
+            for item in cols.iter() {
+                columns.push(read_column(item)?);
+            }
+            Frame::Statement {
+                index: stmt.get_index(),
+                columns,
+                rows_affected: stmt.get_rows_affected(),
+            }
+        }
+        execute_stream_frame_capnp::Rows(rows) => {
+            let list = rows.map_err(from_capnp)?;
+            let mut out = Vec::with_capacity(list.len() as usize);
+            for item in list.iter() {
+                out.push(read_row(item)?);
+            }
+            Frame::Rows(out)
+        }
+        execute_stream_frame_capnp::End(timing) => {
+            Frame::End(read_timing(timing.map_err(from_capnp)?)?)
+        }
+        execute_stream_frame_capnp::Err(err) => Frame::Err(read_error(err.map_err(from_capnp)?)),
+    })
+}
+
+/// Encodes one standalone `ExecuteStreamFrame` message (unpacked stream, one
+/// segment).
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] when a TEXT cell contains U+0000,
+/// or [`PluginError::internal`] when the message cannot be serialized.
+pub fn encoded_execute_stream_frame_bytes(
+    frame: &crate::db_stream::ExecuteStreamFrame,
+) -> Result<Vec<u8>> {
+    if let crate::db_stream::ExecuteStreamFrame::Rows(rows) = frame {
+        for row in rows {
+            for value in &row.values {
+                require_portable_value(value)?;
+            }
+        }
+    }
+    let list_len = match frame {
+        crate::db_stream::ExecuteStreamFrame::Statement { columns, .. } => columns.len(),
+        crate::db_stream::ExecuteStreamFrame::Rows(rows) => rows.len(),
+        crate::db_stream::ExecuteStreamFrame::Head { .. }
+        | crate::db_stream::ExecuteStreamFrame::End(_)
+        | crate::db_stream::ExecuteStreamFrame::Err(_) => 0,
+    };
+    if u32::try_from(list_len).is_err() {
+        return Err(PluginError::internal(
+            "execute stream frame holds more than u32::MAX list items",
+        ));
+    }
+    encode_single_segment(|message| write_execute_stream_frame(message.init_root(), frame))
+}
+
+/// Decodes one standalone `ExecuteStreamFrame` message whose traversal is
+/// capped at `max_bytes` (at least the scalar ceiling).
+///
+/// # Errors
+///
+/// Returns when the buffer is not one valid unpacked frame.
+pub fn decode_execute_stream_frame_bytes(
+    bytes: &[u8],
+    max_bytes: u32,
+) -> Result<crate::db_stream::ExecuteStreamFrame> {
+    let reader = read_unpacked_message_within(bytes, max_bytes)?;
+    read_execute_stream_frame(reader.get_root().map_err(from_capnp)?)
 }

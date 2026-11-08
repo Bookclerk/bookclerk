@@ -207,6 +207,33 @@ pub const HOST_MIN_CELL_BYTES: u32 = 1_024;
 /// request/result scalar. Must stay at or below [`crate::MAX_SCALAR_BYTES`].
 pub const FIRST_PARTY_MAX_RESULT_BYTES: u32 = MAX_SCALAR_BYTES;
 
+/// First-party budget for one `executeStreamed` reply (all statements'
+/// encoded results together): 64 MiB. The adapter holds up to this much
+/// before it commits, so a result above the inline scalar ceiling still
+/// arrives whole instead of failing closed.
+pub const FIRST_PARTY_MAX_STREAMED_RESULT_BYTES: u32 = 64 * 1024 * 1024;
+
+/// First-party row budget for one statement answered through
+/// `executeStreamed`.
+pub const FIRST_PARTY_MAX_STREAMED_RESULT_ROWS: u32 = 250_000;
+
+/// Largest streamed result byte budget the host accepts from an adapter
+/// (the first-party budget): the host holds a streamed reply in memory while
+/// it reassembles it, so the ceiling is the host's, not the adapter's.
+pub const HOST_MAX_STREAMED_RESULT_BYTES: u32 = FIRST_PARTY_MAX_STREAMED_RESULT_BYTES;
+
+/// Largest streamed per-statement row budget the host accepts from an adapter.
+pub const HOST_MAX_STREAMED_RESULT_ROWS: u32 = FIRST_PARTY_MAX_STREAMED_RESULT_ROWS;
+
+/// Cloudflare D1 budget for one `executeStreamed` reply: 8 MiB. D1 answers
+/// one HTTP request with the whole result, so the adapter stays well under
+/// what one REST reply carries.
+pub const D1_MAX_STREAMED_RESULT_BYTES: u32 = 8 * 1024 * 1024;
+
+/// Cloudflare D1 row budget for one statement answered through
+/// `executeStreamed`.
+pub const D1_MAX_STREAMED_RESULT_ROWS: u32 = 50_000;
+
 /// Bookclerk SQL contract version advertised by first-party adapters.
 ///
 /// This integer is a **monotonic backward-compatible language/semantic level**.
@@ -538,6 +565,15 @@ pub struct DbCapabilities {
     /// ordinary restore failure does not leave that unit partially replaced.
     #[serde(default)]
     pub atomic_unit_restore: bool,
+    /// Maximum encoded bytes of one `ExecuteReply` answered through
+    /// `executeStreamed` (every statement result together). `0` means the
+    /// adapter does not stream; otherwise at least `max_atomic_result_bytes`.
+    #[serde(default)]
+    pub max_streamed_result_bytes: u32,
+    /// Maximum rows one statement may return through `executeStreamed`. `0`
+    /// means the adapter does not stream; otherwise at least `max_result_rows`.
+    #[serde(default)]
+    pub max_streamed_result_rows: u32,
 }
 
 impl DbCapabilities {
@@ -630,6 +666,40 @@ impl DbCapabilities {
                 self.max_result_bytes, self.max_atomic_result_bytes
             ));
         }
+        if (self.max_streamed_result_bytes == 0) != (self.max_streamed_result_rows == 0) {
+            return Some(format!(
+                "database guest maxStreamedResultBytes {} and maxStreamedResultRows {} must both be set or both be 0",
+                self.max_streamed_result_bytes, self.max_streamed_result_rows
+            ));
+        }
+        if self.max_streamed_result_bytes != 0
+            && self.max_streamed_result_bytes < self.max_atomic_result_bytes
+        {
+            return Some(format!(
+                "database guest maxStreamedResultBytes {} is below maxAtomicResultBytes {}",
+                self.max_streamed_result_bytes, self.max_atomic_result_bytes
+            ));
+        }
+        if self.max_streamed_result_rows != 0
+            && self.max_streamed_result_rows < self.max_result_rows
+        {
+            return Some(format!(
+                "database guest maxStreamedResultRows {} is below maxResultRows {}",
+                self.max_streamed_result_rows, self.max_result_rows
+            ));
+        }
+        if self.max_streamed_result_bytes > HOST_MAX_STREAMED_RESULT_BYTES {
+            return Some(format!(
+                "database guest maxStreamedResultBytes {} exceeds host maximum {HOST_MAX_STREAMED_RESULT_BYTES}",
+                self.max_streamed_result_bytes
+            ));
+        }
+        if self.max_streamed_result_rows > HOST_MAX_STREAMED_RESULT_ROWS {
+            return Some(format!(
+                "database guest maxStreamedResultRows {} exceeds host maximum {HOST_MAX_STREAMED_RESULT_ROWS}",
+                self.max_streamed_result_rows
+            ));
+        }
         if self.sql_contract_version < SQL_CONTRACT_VERSION {
             return Some(format!(
                 "database guest sqlContractVersion {} is below host minimum {SQL_CONTRACT_VERSION}",
@@ -671,6 +741,33 @@ impl DbCapabilities {
         self.atomic_unit_restore
     }
 
+    /// True when the adapter answers `executeStreamed` (a non-zero streamed
+    /// budget).
+    #[must_use]
+    pub fn streams_results(&self) -> bool {
+        self.max_streamed_result_bytes != 0 && self.max_streamed_result_rows != 0
+    }
+
+    /// The caps a streamed reply is validated against: this advertisement
+    /// with the result byte caps raised to `max_streamed_result_bytes` and
+    /// the row cap to `max_streamed_result_rows`.
+    ///
+    /// # Returns
+    ///
+    /// `None` when the adapter does not stream.
+    #[must_use]
+    pub fn streamed(&self) -> Option<Self> {
+        if !self.streams_results() {
+            return None;
+        }
+        Some(Self {
+            max_result_rows: self.max_streamed_result_rows,
+            max_result_bytes: self.max_streamed_result_bytes,
+            max_atomic_result_bytes: self.max_streamed_result_bytes,
+            ..self.clone()
+        })
+    }
+
     /// First-party SQLite capability advertisement (`bookclerk_schema_migrations` rows).
     #[must_use]
     pub fn advertised_sqlite() -> Self {
@@ -697,6 +794,8 @@ impl DbCapabilities {
             max_schema_columns: SQLITE_MAX_SCHEMA_COLUMNS,
             max_pattern_bytes: SQLITE_MAX_PATTERN_BYTES,
             max_lowered_statement_bytes: 0,
+            max_streamed_result_bytes: FIRST_PARTY_MAX_STREAMED_RESULT_BYTES,
+            max_streamed_result_rows: FIRST_PARTY_MAX_STREAMED_RESULT_ROWS,
         }
     }
 
@@ -722,6 +821,8 @@ impl DbCapabilities {
             max_lowered_statement_bytes: D1_MAX_SQL_STATEMENT_BYTES,
             consistent_backup_read: false,
             atomic_unit_restore: false,
+            max_streamed_result_bytes: D1_MAX_STREAMED_RESULT_BYTES,
+            max_streamed_result_rows: D1_MAX_STREAMED_RESULT_ROWS,
             ..Self::advertised_sqlite()
         }
     }
@@ -1034,6 +1135,69 @@ mod tests {
         assert!(zero_pat
             .capability_failure_reason()
             .contains("maxPatternBytes"));
+    }
+
+    #[test]
+    fn streamed_budgets_are_validated_together_and_above_the_inline_caps() {
+        let caps = DbCapabilities::advertised_sqlite();
+        assert!(caps.streams_results());
+        let streamed = caps.streamed().expect("streamed caps");
+        assert_eq!(streamed.max_result_rows, caps.max_streamed_result_rows);
+        assert_eq!(streamed.max_result_bytes, caps.max_streamed_result_bytes);
+        assert_eq!(
+            streamed.max_atomic_result_bytes,
+            caps.max_streamed_result_bytes
+        );
+
+        let mut half = caps.clone();
+        half.max_streamed_result_rows = 0;
+        assert!(!half.meets_host_minimums());
+        assert!(half
+            .capability_failure_reason()
+            .contains("must both be set or both be 0"));
+
+        let mut inline_only = caps.clone();
+        inline_only.max_streamed_result_bytes = 0;
+        inline_only.max_streamed_result_rows = 0;
+        assert!(!inline_only.streams_results());
+        assert!(inline_only.streamed().is_none());
+        assert!(inline_only.meets_host_minimums());
+
+        let mut low_bytes = caps.clone();
+        low_bytes.max_streamed_result_bytes = caps.max_atomic_result_bytes - 1;
+        assert!(low_bytes
+            .capability_failure_reason()
+            .contains("maxStreamedResultBytes"));
+        assert!(low_bytes
+            .capability_failure_reason()
+            .contains("is below maxAtomicResultBytes"));
+
+        let mut huge_bytes = caps.clone();
+        huge_bytes.max_streamed_result_bytes = HOST_MAX_STREAMED_RESULT_BYTES + 1;
+        assert!(huge_bytes
+            .capability_failure_reason()
+            .contains("maxStreamedResultBytes"));
+        assert!(huge_bytes
+            .capability_failure_reason()
+            .contains("exceeds host maximum"));
+
+        let mut huge_rows = caps.clone();
+        huge_rows.max_streamed_result_rows = HOST_MAX_STREAMED_RESULT_ROWS + 1;
+        assert!(huge_rows
+            .capability_failure_reason()
+            .contains("maxStreamedResultRows"));
+        assert!(huge_rows
+            .capability_failure_reason()
+            .contains("exceeds host maximum"));
+
+        let mut low_rows = caps;
+        low_rows.max_streamed_result_rows = low_rows.max_result_rows - 1;
+        assert!(low_rows
+            .capability_failure_reason()
+            .contains("maxStreamedResultRows"));
+        assert!(low_rows
+            .capability_failure_reason()
+            .contains("is below maxResultRows"));
     }
 
     #[test]

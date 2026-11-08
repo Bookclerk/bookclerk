@@ -3170,6 +3170,53 @@ export type ExecuteResultReply =
   | { kind: "ok"; value: ExecuteReply } // Success: statement results.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
+/** First frame of a streamed execute reply: what the reply is about. */
+export interface ExecuteStreamHead {
+  /** Echo of the request `operationId`. */
+  operationId: string;
+  /** Number of `statement` frames that follow, one per request statement. */
+  statementCount: number;
+}
+
+/**
+ * Opens one statement result inside a streamed execute reply. Its rows, if
+ * any, follow in `rows` frames until the next `statement`, `end` or `err`.
+ */
+export interface ExecuteStreamStatement {
+  /** Request statement index, `0`-based and increasing by one per frame. */
+  index: number;
+  /** Result column descriptors. */
+  columns: DbColumn[];
+  /** Rows changed by a mutation. */
+  rowsAffected: number;
+}
+
+/**
+ * One frame of a streamed execute reply (`executeStreamed`). Frames are
+ * consecutive unpacked single-segment Cap'n Proto messages, each at most
+ * `maxScalarBytes` unless it carries one row that alone exceeds it. The
+ * sequence is `head`, then for each statement `statement` followed by its
+ * `rows` frames in order, then `end`; `err` ends the sequence early.
+ */
+export type ExecuteStreamFrame =
+  | { kind: "head"; value: ExecuteStreamHead } // First frame.
+  | { kind: "statement"; value: ExecuteStreamStatement } // Opens the next statement result.
+  | { kind: "rows"; value: DbRow[] } // Rows of the open statement, in order.
+  | { kind: "end"; value: DbTiming } // Last frame: the batch committed; engine timing.
+  | { kind: "err"; value: PluginError }; // Last frame: the batch failed; `code` is a `PluginErrorCode` wire string.
+
+/**
+ * Result union of `executeStreamed`. The frames (`ExecuteStreamFrame`) travel
+ * inline when they fit one scalar, otherwise as a transferred byte stream in
+ * `maxStreamWindowBytes` windows. The adapter counts the reply against
+ * `maxStreamedResultBytes` and `maxStreamedResultRows` before it commits, so
+ * results still fail closed and are never truncated.
+ */
+export type ExecuteStreamReply =
+  | { kind: "inline"; value: Uint8Array } // Success: every frame, concatenated, at most `maxScalarBytes`.
+  | { kind: "stream"; value: ByteSource } // Success: the frames as a byte stream.
+  | { kind: "err"; value: PluginError }; // Typed failure before any frame; `code` is a `PluginErrorCode` wire string.
+
 /**
  * Semantic SQL-contract advertisement. Diagnostic engine identity is not
  * part of the capability plane — see `DbBootstrap`.
@@ -3244,6 +3291,19 @@ export interface DbCapabilities {
    * ordinary restore failure does not leave that unit partially replaced.
    */
   atomicUnitRestore: boolean;
+  /**
+   * Maximum encoded bytes of one `ExecuteReply` answered through
+   * `executeStreamed` (the sum of its frames' statement results). `0` means
+   * the adapter does not stream and callers stay under the inline caps.
+   * When set it is at least `maxAtomicResultBytes`.
+   */
+  maxStreamedResultBytes: number;
+  /**
+   * Maximum rows one statement may return through `executeStreamed`. `0`
+   * means the adapter does not stream. When set it is at least
+   * `maxResultRows`.
+   */
+  maxStreamedResultRows: number;
 }
 
 /** Result union of `AdapterDatabaseSession.bootstrap`. */
@@ -3368,6 +3428,16 @@ export interface AdapterDatabaseSession {
    * @returns {@link EmptyReply}
    */
   assertRestoreConstraints(): Promise<EmptyReply>;
+  /**
+   * `execute` whose reply is framed (`ExecuteStreamFrame`) and counted against
+   * `maxStreamedResultBytes` / `maxStreamedResultRows` instead of the inline
+   * caps. One transaction, one snapshot; `unsupported` when the adapter
+   * advertises no streamed budget.
+   *
+   * @param request - Proven statements plus isolation and receipt.
+   * @returns {@link ExecuteStreamReply}
+   */
+  executeStreamed(request: AdapterExecuteRequest): Promise<ExecuteStreamReply>;
 }
 
 /**
@@ -3397,6 +3467,16 @@ export interface GuestDatabase {
    * @returns {@link DbCapabilitiesReply}
    */
   limits(): Promise<DbCapabilitiesReply>;
+  /**
+   * `execute` whose reply is framed (`ExecuteStreamFrame`) and counted against
+   * the session's `maxStreamedResultBytes` / `maxStreamedResultRows`, so a
+   * result past the inline caps still arrives whole. `unsupported` when the
+   * session advertises no streamed budget.
+   *
+   * @param request - Statements, binds, and deadline.
+   * @returns {@link ExecuteStreamReply}
+   */
+  executeStreamed(request: ExecuteRequest): Promise<ExecuteStreamReply>;
 }
 
 /**

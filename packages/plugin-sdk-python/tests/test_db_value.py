@@ -519,6 +519,8 @@ class DbValueGoldens(unittest.TestCase):
             "maxCellBytes": 65_536,
             "maxRequestBytes": 131_072,
             "maxAtomicResultBytes": 524_288,
+            "maxStreamedResultBytes": 67_108_864,
+            "maxStreamedResultRows": 250_001,
             "pluginDatabases": True,
             "maxFunctionArgs": 32,
             "maxSchemaColumns": 99,

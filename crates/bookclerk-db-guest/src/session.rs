@@ -22,8 +22,8 @@ use crate::sql::{
     GuestStatement,
 };
 use bookclerk_plugin_abi::{
-    AdapterExecuteRequest, DbCapabilities, DbIdentityHighWater, ExecuteReply, IsolationReq,
-    PluginError,
+    AdapterExecuteRequest, DbCapabilities, DbIdentityHighWater, ExecuteReply, ExecuteStream,
+    IsolationReq, PluginError,
 };
 use bookclerk_plugin_sdk::database_adapter::plugin_error_from_db_err;
 use bookclerk_plugin_sdk::{QueryPage, MAX_LIST_PAGE, MAX_SCALAR_BYTES};
@@ -615,7 +615,75 @@ pub async fn guest_execute_atomic(
         .map_err(bookclerk_plugin_abi::PluginError::internal)?;
     let deadline =
         (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
-    guest_execute_typed(&conn, envelope, library_typed_session(deadline)).await
+    let caps = bookclerk_db_exec::ExecCaps::from_capabilities(&capabilities_for(&conn));
+    guest_execute_typed(&conn, envelope, library_typed_session(deadline), caps).await
+}
+
+/// [`guest_execute_atomic`] answered as a streamed reply: the batch runs
+/// under the advertised streamed budget and its reply is framed.
+///
+/// # Errors
+///
+/// Returns `unsupported` when this engine advertises no streamed budget, and
+/// otherwise what [`guest_execute_atomic`] returns.
+pub async fn guest_execute_streamed_request(
+    envelope: AdapterExecuteRequest,
+) -> std::result::Result<ExecuteStream, bookclerk_plugin_abi::PluginError> {
+    require_session_isolation(envelope.isolation)?;
+    envelope.require_proofs()?;
+    let gate = txn_gate();
+    let _gate = gate.lock().await;
+    let conn = connection()
+        .await
+        .map_err(bookclerk_plugin_abi::PluginError::internal)?;
+    let caps = streamed_exec_caps(&conn)?;
+    let deadline =
+        (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
+    let reply = guest_execute_typed(&conn, envelope, library_typed_session(deadline), caps).await?;
+    ExecuteStream::from_reply(&reply)
+}
+
+/// [`guest_execute_atomic_on`] answered as a streamed reply (per-binding
+/// sessions).
+///
+/// # Errors
+///
+/// Returns `unsupported` when this engine advertises no streamed budget, and
+/// otherwise what [`guest_execute_atomic_on`] returns.
+pub async fn guest_execute_streamed_request_on(
+    conn: &DatabaseConnection,
+    envelope: AdapterExecuteRequest,
+) -> std::result::Result<ExecuteStream, bookclerk_plugin_abi::PluginError> {
+    require_session_isolation(envelope.isolation)?;
+    envelope.require_proofs()?;
+    let caps = streamed_exec_caps(conn)?;
+    let deadline =
+        (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
+    let reply = guest_execute_typed(
+        conn,
+        envelope,
+        bookclerk_db_exec::AtomicSession::from_deadline(deadline),
+        caps,
+    )
+    .await?;
+    ExecuteStream::from_reply(&reply)
+}
+
+/// The streamed execution caps of `conn`'s engine family.
+///
+/// # Errors
+///
+/// Returns `unsupported` when the advertisement has no streamed budget.
+fn streamed_exec_caps(
+    conn: &DatabaseConnection,
+) -> std::result::Result<bookclerk_db_exec::ExecCaps, bookclerk_plugin_abi::PluginError> {
+    bookclerk_db_exec::ExecCaps::streamed_from_capabilities(&capabilities_for(conn)).ok_or_else(
+        || {
+            bookclerk_plugin_abi::PluginError::unsupported(
+                "this adapter advertises no streamed result budget",
+            )
+        },
+    )
 }
 
 /// Typed `execute` on an explicit connection (per-binding sessions).
@@ -635,10 +703,12 @@ pub async fn guest_execute_atomic_on(
     envelope.require_proofs()?;
     let deadline =
         (envelope.request.deadline_unix_ms > 0).then_some(envelope.request.deadline_unix_ms);
+    let caps = bookclerk_db_exec::ExecCaps::from_capabilities(&capabilities_for(conn));
     guest_execute_typed(
         conn,
         envelope,
         bookclerk_db_exec::AtomicSession::from_deadline(deadline),
+        caps,
     )
     .await
 }
@@ -679,13 +749,14 @@ fn require_session_isolation(iso: IsolationReq) -> std::result::Result<(), Plugi
     }
 }
 
-/// Runs a typed envelope with the given session (library vs binding type env).
+/// Runs a typed envelope with the given session (library vs binding type env)
+/// under `caps` (inline or streamed result budgets).
 async fn guest_execute_typed(
     conn: &DatabaseConnection,
     envelope: AdapterExecuteRequest,
     session: bookclerk_db_exec::AtomicSession,
+    caps: bookclerk_db_exec::ExecCaps,
 ) -> std::result::Result<ExecuteReply, bookclerk_plugin_abi::PluginError> {
-    let caps = capabilities_for(conn);
     let timing_source = match conn.get_database_backend() {
         DbBackend::Postgres => "postgres_txn",
         DbBackend::Sqlite => "sqlite_txn",
@@ -696,7 +767,7 @@ async fn guest_execute_typed(
         conn,
         &envelope,
         timing_source,
-        bookclerk_db_exec::ExecCaps::from_capabilities(&caps),
+        caps,
         session,
     )
     .await
@@ -2070,6 +2141,110 @@ mod tests {
         assert_eq!(rows[0]["values"]["x"], "DELETE");
     }
 
+    fn typed_select(op: &str, sql: &str) -> ExecuteRequest {
+        use bookclerk_plugin_abi::{DbPlanStatementKind, DbResultSelection, TypedDbStatement};
+        ExecuteRequest {
+            operation_id: op.into(),
+            request_hash: String::new(),
+            statements: vec![TypedDbStatement {
+                sql: sql.into(),
+                parameters: vec![],
+                kind: DbPlanStatementKind::Select,
+                max_rows: 10,
+                result_selection: DbResultSelection::Rows,
+            }],
+            deadline_unix_ms: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn guest_execute_streamed_frames_the_same_reply_as_inline() {
+        use bookclerk_plugin_abi::{DbCapabilities, ExecuteStreamLimits};
+        let _lock = SESSION_LOCK.lock().await;
+        set_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+        .await;
+        execute_stamped(typed_exec(
+            "seed-stream",
+            &[
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('stream-a', 1)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('stream-b', 2)",
+            ],
+        ))
+        .await
+        .unwrap();
+        let select = || {
+            typed_select(
+                "read-stream",
+                "SELECT slot_key, bump FROM bookclerk_slots \
+                 WHERE slot_key IN ('stream-a', 'stream-b') ORDER BY slot_key",
+            )
+        };
+        let inline = execute_stamped(select()).await.unwrap();
+        let limits = ExecuteStreamLimits::from_capabilities(&DbCapabilities::advertised_sqlite());
+        let streamed = guest_execute_streamed_request(stamp_req(select()).unwrap())
+            .await
+            .unwrap()
+            .collect(limits)
+            .await
+            .unwrap();
+        assert_eq!(streamed.operation_id, "read-stream");
+        assert_eq!(streamed.statements, inline.statements);
+        assert_eq!(streamed.statements[0].rows.len(), 2);
+
+        let unproven = AdapterExecuteRequest::new(
+            select(),
+            bookclerk_plugin_abi::GuestReceiptPersist::default(),
+        );
+        let err = guest_execute_streamed_request(unproven).await.unwrap_err();
+        assert_eq!(
+            err.code,
+            bookclerk_plugin_abi::PluginErrorCode::Internal,
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn guest_execute_streamed_on_an_explicit_connection_reads_rows() {
+        use bookclerk_plugin_abi::{DbCapabilities, ExecuteStreamLimits};
+        let db = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap();
+        guest_execute_request_on(
+            &db,
+            stamp_req(typed_exec(
+                "seed-on",
+                &["INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('on-a', 7)"],
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let limits = ExecuteStreamLimits::from_capabilities(&DbCapabilities::advertised_sqlite());
+        let reply = guest_execute_streamed_request_on(
+            &db,
+            stamp_req(typed_select(
+                "read-on",
+                "SELECT bump FROM bookclerk_slots WHERE slot_key = 'on-a'",
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+        .collect(limits)
+        .await
+        .unwrap();
+        assert_eq!(reply.statements.len(), 1);
+        assert_eq!(reply.statements[0].rows.len(), 1);
+        assert_eq!(
+            reply.statements[0].rows[0].values[0],
+            bookclerk_plugin_abi::DbValue::Int64(7)
+        );
+    }
+
     #[tokio::test]
     async fn guest_execute_unique_is_conflict_and_commit_is_unavailable() {
         use bookclerk_plugin_abi::PluginErrorCode;
@@ -2211,6 +2386,149 @@ mod tests {
         db.execute_raw(Statement::from_string(DbBackend::Postgres, sql.to_string()))
             .await
             .unwrap_or_else(|err| panic!("postgres setup `{sql}` failed: {err}"));
+    }
+
+    /// A streamed Postgres read of wide rows fails on the byte budget while
+    /// the rows are still arriving, not after the whole result is retained:
+    /// 600 rows of 128 KiB pass the streamed row budget and would take
+    /// 75 MiB against the 64 MiB streamed byte budget.
+    /// A batch whose statements each fit `maxResultBytes` still fails with
+    /// `maxAtomicResultBytes` as soon as the admitted results exceed the
+    /// whole-batch budget, before the remaining statements run.
+    #[tokio::test]
+    async fn a_batch_of_admissible_statements_stops_at_the_whole_batch_budget() {
+        let _lock = SESSION_LOCK.lock().await;
+        set_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+        .await;
+        let ddl = "CREATE TABLE wide_batch (id INTEGER PRIMARY KEY, v TEXT NOT NULL)";
+        typed_create_table(ddl).await;
+        let row_bytes = 50 * 1024;
+        guest_execute(stmt(&format!(
+            "INSERT INTO wide_batch (id, v) VALUES (1, '{}')",
+            "x".repeat(row_bytes)
+        )))
+        .await
+        .unwrap();
+        let mut req = typed_select("wide-batch", "SELECT v FROM wide_batch WHERE id = 1");
+        let one = req.statements[0].clone();
+        req.statements = vec![one; 12];
+        let mut env = bookclerk_library::migrations::host_sql_type_env();
+        env.merge(&bookclerk_plugin_abi::sql_type_env_from_canonical_ddl(ddl));
+        let stamped = stamp_req_env(req, &env).expect("stamp proofs");
+        let conn = connection().await.unwrap();
+        let caps = bookclerk_db_exec::ExecCaps {
+            max_result_rows: 10,
+            max_result_bytes: 128 * 1024,
+            max_cell_bytes: 0,
+            max_atomic_result_bytes: 192 * 1024,
+        };
+        let err = guest_execute_typed(&conn, stamped, library_typed_session(None), caps)
+            .await
+            .expect_err("twelve 50 KiB results exceed the 192 KiB whole-batch budget");
+        let limit = err
+            .limit()
+            .unwrap_or_else(|| panic!("a typed result limit: {err}"));
+        assert_eq!(limit.limit, "maxAtomicResultBytes", "{err}");
+        assert_eq!(limit.cap, 192 * 1024);
+        assert!(
+            limit.used > limit.cap && limit.used < 2 * limit.cap,
+            "an early statement tripped the budget, not the encoded twelve-result reply: {err}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+    async fn postgres_wide_streamed_read_stops_at_the_byte_budget() {
+        let _lock = SESSION_LOCK.lock().await;
+        let db = postgres_test_pool().await;
+        let ddl = "CREATE TABLE wide_rows (id INTEGER PRIMARY KEY, v TEXT NOT NULL)";
+        postgres_exec(&db, ddl).await;
+        postgres_exec(
+            &db,
+            "INSERT INTO wide_rows (id, v) \
+             SELECT g, repeat('x', 131072) FROM generate_series(1, 600) AS g",
+        )
+        .await;
+        let mut req = typed_select("pg-wide", "SELECT v FROM wide_rows");
+        req.statements[0].max_rows = 600;
+        let mut env = bookclerk_library::migrations::host_sql_type_env();
+        env.merge(&bookclerk_plugin_abi::sql_type_env_from_canonical_ddl(ddl));
+        let stamped = stamp_req_env(req, &env).expect("stamp proofs");
+        let err = guest_execute_streamed_request_on(&db, stamped)
+            .await
+            .expect_err("75 MiB of rows exceed the 64 MiB streamed budget");
+        let limit = err
+            .limit()
+            .unwrap_or_else(|| panic!("a typed result limit: {err}"));
+        assert!(
+            matches!(
+                limit.limit.as_str(),
+                "maxResultBytes" | "maxStreamedResultBytes"
+            ),
+            "{err}"
+        );
+        let seen = bookclerk_db_exec::query_rows_seen();
+        assert!(
+            seen < 600,
+            "the stream stopped at the budget after {seen} rows, not at the end"
+        );
+    }
+
+    /// A streamed Postgres read of rows whose cells carry no wire bytes
+    /// (NULLs) still fails on the byte budget while the rows arrive: the
+    /// encoded row and cell framing is charged per row, so 250 000 rows of
+    /// 400 NULL cells (over 1.5 GiB encoded) stop well under the streamed
+    /// row budget instead of being retained whole.
+    #[tokio::test]
+    #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+    async fn postgres_null_cells_still_count_toward_the_streamed_byte_budget() {
+        let _lock = SESSION_LOCK.lock().await;
+        let db = postgres_test_pool().await;
+        let columns: Vec<String> = (0..400).map(|i| format!("c{i}")).collect();
+        let ddl = format!(
+            "CREATE TABLE null_cells (id INTEGER PRIMARY KEY, {})",
+            columns
+                .iter()
+                .map(|c| format!("{c} TEXT"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        postgres_exec(&db, &ddl).await;
+        postgres_exec(
+            &db,
+            "INSERT INTO null_cells (id) SELECT g FROM generate_series(1, 250000) AS g",
+        )
+        .await;
+        let mut req = typed_select(
+            "pg-nulls",
+            &format!("SELECT {} FROM null_cells", columns.join(", ")),
+        );
+        req.statements[0].max_rows = 250_000;
+        let mut env = bookclerk_library::migrations::host_sql_type_env();
+        env.merge(&bookclerk_plugin_abi::sql_type_env_from_canonical_ddl(&ddl));
+        let stamped = stamp_req_env(req, &env).expect("stamp proofs");
+        let err = guest_execute_streamed_request_on(&db, stamped)
+            .await
+            .expect_err("100 million NULL cells exceed the 64 MiB streamed budget");
+        let limit = err
+            .limit()
+            .unwrap_or_else(|| panic!("a typed result limit: {err}"));
+        assert!(
+            matches!(
+                limit.limit.as_str(),
+                "maxResultBytes" | "maxStreamedResultBytes"
+            ),
+            "{err}"
+        );
+        let seen = bookclerk_db_exec::query_rows_seen();
+        assert!(
+            seen < 20_000,
+            "the stream stopped at the budget after {seen} rows, not at the end"
+        );
     }
 
     #[tokio::test]

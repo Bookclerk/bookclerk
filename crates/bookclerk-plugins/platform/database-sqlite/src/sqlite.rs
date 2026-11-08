@@ -372,6 +372,16 @@ impl SqliteProxy {
                 .map_err(rusqlite_db_err)?;
             let caps = DbCapabilities::advertised_sqlite();
             let cell_cap = usize::try_from(caps.max_cell_bytes).unwrap_or(usize::MAX);
+            // The attempt's negotiated result byte cap: `maxResultBytes` for an
+            // inline execute, `maxStreamedResultBytes` for a streamed one. An
+            // in-process query that no typed budget scopes (host-authored
+            // store reads in tests, migrations, restore checks) is held to
+            // the streamed budget, so an unbounded result cannot exhaust the
+            // adapter.
+            let byte_cap = match budget.raw_query_byte_cap() {
+                0 => caps.max_streamed_result_bytes,
+                cap => cap,
+            };
             let mut out = Vec::new();
             let mut result_bytes = 0usize;
             while let Some(row) = rows.next().map_err(rusqlite_db_err)? {
@@ -399,11 +409,7 @@ impl SqliteProxy {
                     }
                 }
                 let nbytes = bookclerk_db_exec::encoded_proxy_row_len(&values);
-                bookclerk_db_exec::note_encoded_result_bytes(
-                    &mut result_bytes,
-                    nbytes,
-                    caps.max_result_bytes,
-                )?;
+                bookclerk_db_exec::note_encoded_result_bytes(&mut result_bytes, nbytes, byte_cap)?;
                 out.push(ProxyRow { values });
                 if budget.note_row() {
                     return Err(DbErr::Custom(

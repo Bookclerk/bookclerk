@@ -220,6 +220,7 @@ const INTERFACES: &[InterfaceEntry] = &[
             "prepareUnitRestore",
             "dropUserRelations",
             "assertRestoreConstraints",
+            "executeStreamed",
         ],
     },
 ];

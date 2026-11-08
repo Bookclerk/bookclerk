@@ -74,6 +74,9 @@ pub struct ExecBudget {
     deadline_unix_ms: AtomicU64,
     /// Advertised query row cap (`0` = unlimited).
     query_row_cap: AtomicUsize,
+    /// Advertised per-statement result byte cap (`0` = unlimited), so an
+    /// engine proxy stops materializing rows as soon as a result is too big.
+    query_byte_cap: AtomicU32,
     /// Rows materialized by the current capped query.
     query_rows_seen: AtomicUsize,
     /// Engine column metadata for the in-flight query (crosses `spawn_blocking`).
@@ -103,9 +106,30 @@ impl ExecBudget {
         query_row_cap: u32,
         cancel: Option<Arc<AtomicBool>>,
     ) -> Arc<Self> {
+        Self::with_result_caps(deadline_unix_ms, query_row_cap, 0, cancel)
+    }
+
+    /// Builds a budget for one atomic attempt with both result caps.
+    ///
+    /// # Arguments
+    ///
+    /// * `deadline_unix_ms` - Guest-visible deadline (`None` = none).
+    /// * `query_row_cap` - Advertised query row cap (`0` = unlimited).
+    /// * `query_byte_cap` - Advertised per-statement result byte cap (`0` =
+    ///   unlimited); an inline attempt passes `maxResultBytes`, a streamed
+    ///   attempt `maxStreamedResultBytes`.
+    /// * `cancel` - Host cancel flag of the atomic session, if any.
+    #[must_use]
+    pub fn with_result_caps(
+        deadline_unix_ms: Option<u64>,
+        query_row_cap: u32,
+        query_byte_cap: u32,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             deadline_unix_ms: AtomicU64::new(deadline_unix_ms.unwrap_or(0)),
             query_row_cap: AtomicUsize::new(usize::try_from(query_row_cap).unwrap_or(0)),
+            query_byte_cap: AtomicU32::new(query_byte_cap),
             query_rows_seen: AtomicUsize::new(0),
             positional_columns: Mutex::new(None),
             cancel,
@@ -159,6 +183,17 @@ impl ExecBudget {
     #[must_use]
     pub fn raw_query_row_cap(&self) -> usize {
         self.query_row_cap.load(Ordering::SeqCst)
+    }
+
+    /// Per-statement result byte cap, `0` for unlimited.
+    #[must_use]
+    pub fn raw_query_byte_cap(&self) -> u32 {
+        self.query_byte_cap.load(Ordering::SeqCst)
+    }
+
+    /// Sets the per-statement result byte cap (`0` = unlimited).
+    pub fn set_query_byte_cap(&self, cap: u32) {
+        self.query_byte_cap.store(cap, Ordering::SeqCst);
     }
 
     /// Clears the per-query row counter.
@@ -492,4 +527,21 @@ pub fn note_query_row() -> bool {
 #[must_use]
 pub fn query_rows_seen() -> usize {
     LAST_QUERY_ROWS_SEEN.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExecBudget;
+
+    /// The per-statement byte cap starts at the advertised value and can be
+    /// lowered for an attempt that is read under a smaller budget.
+    #[test]
+    fn query_byte_cap_is_advertised_then_adjustable() {
+        let budget = ExecBudget::with_cancel(None, 0, None);
+        assert_eq!(budget.raw_query_byte_cap(), 0, "no cap until one is set");
+        budget.set_query_byte_cap(64 * 1024);
+        assert_eq!(budget.raw_query_byte_cap(), 64 * 1024);
+        budget.set_query_byte_cap(0);
+        assert_eq!(budget.raw_query_byte_cap(), 0, "0 clears the cap");
+    }
 }

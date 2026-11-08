@@ -553,7 +553,9 @@ impl D1Proxy {
     /// POSTs a JSON body with the API token; serializes concurrent requests to one database.
     ///
     /// Every D1 JSON body is read incrementally and aborted at
-    /// [`max_d1_http_body_bytes`] (page scalar budget plus a narrow envelope).
+    /// [`max_d1_http_body_bytes`] (page scalar budget plus a narrow envelope);
+    /// a typed batch read under a larger result budget goes through
+    /// [`Self::run_batch_capped`] instead.
     async fn post_json(
         &self,
         url: &str,
@@ -571,6 +573,22 @@ impl D1Proxy {
         url: &str,
         body: JsonValue,
         timeout: Duration,
+    ) -> std::result::Result<JsonValue, D1Error> {
+        self.post_json_capped(url, body, timeout, max_d1_http_body_bytes())
+            .await
+    }
+
+    /// [`Self::post_json_timed`] reading the response under `body_cap` bytes.
+    ///
+    /// The cap comes from [`max_d1_http_body_bytes_for`] with the result
+    /// budget the attempt is held to, so a streamed read is not cut at the
+    /// inline page ceiling.
+    async fn post_json_capped(
+        &self,
+        url: &str,
+        body: JsonValue,
+        timeout: Duration,
+        body_cap: usize,
     ) -> std::result::Result<JsonValue, D1Error> {
         let timeout = timeout.min(D1_REQUEST_TIMEOUT);
         if timeout.is_zero() {
@@ -597,7 +615,7 @@ impl D1Proxy {
                 .send()
                 .await
                 .map_err(|e| D1Error::ambiguous(format!("transport: {e}")))?;
-            parse_d1_response(response).await
+            parse_d1_response(response, body_cap).await
         };
         match tokio::time::timeout(timeout, send).await {
             Ok(result) => result,
@@ -631,6 +649,38 @@ impl D1Proxy {
         statements: &[(String, Vec<JsonValue>)],
         timeout: Duration,
     ) -> std::result::Result<JsonValue, D1Error> {
+        self.run_batch_capped(statements, timeout, max_d1_http_body_bytes())
+            .await
+    }
+
+    /// [`Self::run_batch_with_timeout`] reading the response under the HTTP
+    /// body ceiling for `result_cap_bytes`, the result budget of the attempt
+    /// (`maxAtomicResultBytes`, or the streamed budget of a streamed read).
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::run_batch_with_timeout`].
+    pub(crate) async fn run_batch_for_result_cap(
+        &self,
+        statements: &[(String, Vec<JsonValue>)],
+        timeout: Duration,
+        result_cap_bytes: u32,
+    ) -> std::result::Result<JsonValue, D1Error> {
+        self.run_batch_capped(
+            statements,
+            timeout,
+            max_d1_http_body_bytes_for(result_cap_bytes),
+        )
+        .await
+    }
+
+    /// Runs a batch and reads the JSON response under `body_cap` bytes.
+    async fn run_batch_capped(
+        &self,
+        statements: &[(String, Vec<JsonValue>)],
+        timeout: Duration,
+        body_cap: usize,
+    ) -> std::result::Result<JsonValue, D1Error> {
         if statements.is_empty() {
             return Err(D1Error::Permanent {
                 status: 400,
@@ -643,7 +693,8 @@ impl D1Proxy {
                 .map(|(sql, params)| json!({ "sql": sql, "params": params }))
                 .collect::<Vec<_>>(),
         });
-        self.post_json_timed(&self.query_url(), body, timeout).await
+        self.post_json_capped(&self.query_url(), body, timeout, body_cap)
+            .await
     }
 
     /// Runs one autocommit `{ sql, params }` statement (not an interactive transaction).
@@ -743,12 +794,15 @@ impl ProxyDatabaseTrait for D1Proxy {
 /// Reads a D1 HTTP response; retryable statuses become [`D1Error::Ambiguous`], others permanent.
 ///
 /// The body is pulled in chunks and aborted at byte `max + 1` so a chunked or
-/// lying-small `Content-Length` cannot buffer past the page scalar budget plus
-/// a narrow D1 JSON envelope.
-async fn parse_d1_response(response: Response) -> std::result::Result<JsonValue, D1Error> {
+/// lying-small `Content-Length` cannot buffer past the caller's ceiling: the
+/// page scalar budget plus a narrow D1 JSON envelope, or the ceiling for the
+/// result budget of a typed attempt.
+async fn parse_d1_response(
+    response: Response,
+    max: usize,
+) -> std::result::Result<JsonValue, D1Error> {
     let status = response.status();
     let retry_after = parse_retry_after(&response);
-    let max = max_d1_http_body_bytes();
     let bytes = read_body_capped(response, max).await?;
     let text = String::from_utf8_lossy(&bytes);
     if !status.is_success() {
@@ -781,6 +835,15 @@ async fn parse_d1_response(response: Response) -> std::result::Result<JsonValue,
 }
 
 /// Incrementally reads `response` and errors if the body would exceed `max`.
+///
+/// After a successful status the body is a result, so the error carries the
+/// canonical `maxAtomicResultBytes` limit text (the ceiling as the limit, the
+/// bytes seen so far as the use) for a host page reader to recognise a reply
+/// whose JSON encoding outgrew the ceiling and read the page in smaller
+/// pieces; it stays ambiguous, because a write in the batch may have
+/// committed. An oversized body after an error status is only that status's
+/// failure (retryable statuses ambiguous, the rest permanent), never a
+/// result limit.
 async fn read_body_capped(
     mut response: Response,
     max: usize,
@@ -789,7 +852,8 @@ async fn read_body_capped(
         if len > max as u64 {
             return Err(body_cap_error(
                 response.status(),
-                format!("D1 body {len} bytes exceeds {max}"),
+                max,
+                usize::try_from(len).unwrap_or(usize::MAX),
             ));
         }
     }
@@ -802,20 +866,33 @@ async fn read_body_capped(
         let Some(chunk) = chunk else {
             break;
         };
-        if buf.len().saturating_add(chunk.len()) > max {
-            return Err(body_cap_error(
-                response.status(),
-                format!("D1 body exceeds {max}"),
-            ));
+        let seen = buf.len().saturating_add(chunk.len());
+        if seen > max {
+            return Err(body_cap_error(response.status(), max, seen));
         }
         buf.extend_from_slice(&chunk);
     }
     Ok(buf)
 }
 
-/// Oversized bodies after a successful or retryable HTTP status are ambiguous.
-fn body_cap_error(status: StatusCode, message: String) -> D1Error {
-    if status.is_success() || retryable_http_status(status) {
+/// Error for a D1 body of at least `seen` bytes past the `max` ceiling.
+///
+/// A successful status makes the body a result, so the message names the
+/// `maxAtomicResultBytes` limit and the error is ambiguous (the batch may
+/// have committed). An error status's body is not a result: the message
+/// states only the overrun, so the error maps as that status would, ambiguous
+/// for a retryable status and permanent otherwise.
+fn body_cap_error(status: StatusCode, max: usize, seen: usize) -> D1Error {
+    if status.is_success() {
+        let limit = bookclerk_plugin_abi::LimitExceeded::new(
+            "maxAtomicResultBytes",
+            u64::try_from(max).unwrap_or(u64::MAX),
+            u64::try_from(seen).unwrap_or(u64::MAX),
+        );
+        return D1Error::ambiguous(format!("D1 body exceeds {max}: {}", limit.to_message()));
+    }
+    let message = format!("D1 body exceeds {max} (HTTP {status}, at least {seen} bytes)");
+    if retryable_http_status(status) {
         D1Error::ambiguous(message)
     } else {
         D1Error::Permanent {
@@ -992,9 +1069,33 @@ fn sql_is_bookclerk_page(sql: &str) -> bool {
 /// Cloudflare JSON envelope around row payload (`success` / `result` / `meta`).
 const D1_JSON_ENVELOPE_BYTES: usize = 4096;
 
-/// HTTP-body ceiling for every D1 JSON response: one page of scalars plus envelope.
+/// HTTP-body ceiling for a D1 JSON response read without a typed result
+/// budget: one page of scalars plus envelope.
 fn max_d1_http_body_bytes() -> usize {
-    (MAX_SCALAR_BYTES as usize).saturating_add(D1_JSON_ENVELOPE_BYTES)
+    max_d1_http_body_bytes_for(MAX_SCALAR_BYTES)
+}
+
+/// Worst-case growth of one result byte in D1's JSON body.
+///
+/// A control character in a TEXT cell is escaped as `\u00XX`, six bytes
+/// for one; a BLOB byte is a decimal array element, at most four bytes; the
+/// column name repeated per row is already counted in the result budget's
+/// own per-row accounting. Six covers every cell encoding D1 produces.
+const D1_JSON_EXPANSION: usize = 6;
+
+/// HTTP-body ceiling for a typed attempt held to `result_cap_bytes`.
+///
+/// D1 answers rows as JSON objects and escapes text, so a result that fits
+/// the budget can arrive as up to [`D1_JSON_EXPANSION`] times as many body
+/// bytes; the ceiling covers that encoding for any result the attempt may
+/// accept, plus the envelope, so an admitted result is never refused for
+/// its escaping while a body past it is still cut off early. A budget under
+/// one scalar still gets the page ceiling.
+fn max_d1_http_body_bytes_for(result_cap_bytes: u32) -> usize {
+    usize::try_from(result_cap_bytes.max(MAX_SCALAR_BYTES))
+        .unwrap_or(usize::MAX)
+        .saturating_mul(D1_JSON_EXPANSION)
+        .saturating_add(D1_JSON_ENVELOPE_BYTES)
 }
 
 /// UTF-8 / JSON length of one D1 cell, used to accumulate a page budget.
@@ -1022,13 +1123,18 @@ fn oversized_cell_err(column: &str, nbytes: usize) -> DbErr {
     ))
 }
 
-/// Truncates an error body to `max` bytes so logs stay bounded.
+/// Truncates an error body to at most `max` bytes, ending on a UTF-8
+/// character boundary, so logs stay bounded and a multi-byte character
+/// crossing the cut never panics the slice.
 fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
-        s
-    } else {
-        &s[..max]
+        return s;
     }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 #[cfg(test)]
@@ -1036,6 +1142,17 @@ mod tests {
     use super::*;
     use sea_orm::{DatabaseBackend, ProxyDatabaseTrait, Statement};
     use wiremock::matchers::{method, path_regex};
+
+    #[test]
+    fn truncate_stops_at_a_character_boundary() {
+        assert_eq!(truncate("plain", 10), "plain");
+        assert_eq!(truncate("abcdef", 3), "abc");
+        // U+00E9 is two bytes; a cut inside it backs off to the boundary.
+        let text = "ab\u{e9}cd";
+        assert_eq!(truncate(text, 3), "ab");
+        assert_eq!(truncate(text, 4), "ab\u{e9}");
+        assert_eq!(truncate("\u{1F600}", 2), "");
+    }
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn named_plan(
@@ -2019,15 +2136,57 @@ mod tests {
             msg.contains("exceeds"),
             "expected incremental body cap, got {msg}"
         );
+        let limit = bookclerk_plugin_abi::LimitExceeded::from_message(&msg)
+            .unwrap_or_else(|| panic!("the body cap names a result limit: {msg}"));
+        assert_eq!(limit.limit, "maxAtomicResultBytes");
+        assert_eq!(
+            limit.used,
+            u64::try_from(max_d1_http_body_bytes() + 1).expect("fits")
+        );
+        assert!(
+            msg.contains("ambiguous"),
+            "a 200 body past the ceiling may have committed: {msg}"
+        );
     }
 
     #[test]
     fn d1_http_body_ceiling_is_page_budget_plus_envelope() {
         assert_eq!(
             max_d1_http_body_bytes(),
-            MAX_SCALAR_BYTES as usize + D1_JSON_ENVELOPE_BYTES
+            D1_JSON_EXPANSION * MAX_SCALAR_BYTES as usize + D1_JSON_ENVELOPE_BYTES
         );
-        assert!(max_d1_http_body_bytes() < (MAX_SCALAR_BYTES as usize).saturating_mul(2));
+        assert_eq!(max_d1_http_body_bytes_for(1), max_d1_http_body_bytes());
+        let streamed = bookclerk_plugin_abi::DbCapabilities::advertised_d1()
+            .streamed()
+            .expect("D1 streams")
+            .max_atomic_result_bytes;
+        assert_eq!(
+            max_d1_http_body_bytes_for(streamed),
+            D1_JSON_EXPANSION * streamed as usize + D1_JSON_ENVELOPE_BYTES,
+            "a streamed attempt may read its whole budget as JSON"
+        );
+    }
+
+    /// A result made of the worst-escaping text D1 can return (control
+    /// characters, six JSON bytes each) and of BLOB bytes as decimal array
+    /// elements still fits the body ceiling for its budget.
+    #[test]
+    fn d1_http_body_ceiling_covers_worst_case_json_escaping() {
+        let cap = MAX_SCALAR_BYTES as usize;
+        let text = "\u{1}".repeat(cap);
+        let escaped = serde_json::to_string(&JsonValue::String(text)).expect("json text");
+        assert!(
+            escaped.len() >= 6 * cap,
+            "control characters escape to six bytes"
+        );
+        let ceiling = max_d1_http_body_bytes_for(MAX_SCALAR_BYTES);
+        assert!(
+            escaped.len() <= ceiling - D1_JSON_ENVELOPE_BYTES / 2,
+            "the escaped cell leaves room for the envelope"
+        );
+        let blob = serde_json::to_string(&JsonValue::Array(vec![JsonValue::from(255u8); cap]))
+            .expect("json blob");
+        assert!(blob.len() <= ceiling - D1_JSON_ENVELOPE_BYTES / 2);
     }
 
     struct ExecutingD1 {
@@ -2868,6 +3027,10 @@ mod tests {
     async fn executing_mock_oversized_400_body_after_commit_is_permanent() {
         let err = oversized_after_commit(400).await;
         assert!(!crate::atomic::is_ambiguous_d1(&err), "{err}");
+        assert!(
+            bookclerk_plugin_abi::LimitExceeded::from_message(&err.to_string()).is_none(),
+            "an error status's oversized body is not a result limit: {err}"
+        );
         let mapped = crate::atomic::plugin_error_from_d1(err);
         assert_eq!(
             mapped.code,

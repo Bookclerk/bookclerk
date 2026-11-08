@@ -5018,8 +5018,47 @@ var ExecuteResultReplyCodec = {
     }
   }
 };
+var ExecuteStreamReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "inline":
+        s.setUint16(0, 0);
+        s.setData(0, v.value ?? EMPTY_BYTES);
+        break;
+      case "stream":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          s.setCap(0, caps.exportCap(v.value));
+        }
+        break;
+      case "err":
+        s.setUint16(0, 2);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("ExecuteStreamReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "inline", value: s.getData(0) };
+      case 1:
+        return { kind: "stream", value: caps.importCap(s.getCapIndex(0)) };
+      case 2:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("ExecuteStreamReply", disc);
+    }
+  }
+};
 var DbCapabilitiesCodec = {
-  dataWords: 7,
+  dataWords: 8,
   pointerCount: 0,
   write(s, v, caps) {
     void caps;
@@ -5045,6 +5084,8 @@ var DbCapabilitiesCodec = {
     s.setUint32(13, v.maxLoweredStatementBytes ?? 0);
     s.setBool(39, v.consistentBackupRead ?? false);
     s.setBool(40, v.atomicUnitRestore ?? false);
+    s.setUint32(14, v.maxStreamedResultBytes ?? 0);
+    s.setUint32(15, v.maxStreamedResultRows ?? 0);
   },
   read(s, caps) {
     void caps;
@@ -5070,7 +5111,9 @@ var DbCapabilitiesCodec = {
       maxPatternBytes: s.getUint32(12),
       maxLoweredStatementBytes: s.getUint32(13),
       consistentBackupRead: s.getBool(39),
-      atomicUnitRestore: s.getBool(40)
+      atomicUnitRestore: s.getBool(40),
+      maxStreamedResultBytes: s.getUint32(14),
+      maxStreamedResultRows: s.getUint32(15)
     };
   }
 };
@@ -5129,7 +5172,7 @@ var DbCapabilitiesReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          DbCapabilitiesCodec.write(s.initStruct(0, 7, 0), v.value, caps);
+          DbCapabilitiesCodec.write(s.initStruct(0, 8, 0), v.value, caps);
         }
         break;
       case "err":
@@ -5146,7 +5189,7 @@ var DbCapabilitiesReplyCodec = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: DbCapabilitiesCodec.read(s.getStruct(0, 7, 0), caps) };
+        return { kind: "ok", value: DbCapabilitiesCodec.read(s.getStruct(0, 8, 0), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -6842,6 +6885,34 @@ var AdapterDatabaseSessionAssertRestoreConstraintsResultsCodec = {
     };
   }
 };
+var AdapterDatabaseSessionExecuteStreamedParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      AdapterExecuteRequestCodec.write(s.initStruct(0, 2, 4), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: AdapterExecuteRequestCodec.read(s.getStruct(0, 2, 4), caps)
+    };
+  }
+};
+var AdapterDatabaseSessionExecuteStreamedResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      ExecuteStreamReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: ExecuteStreamReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var PluginWorkerDatabaseMigrationsParamsCodec = {
   dataWords: 0,
   pointerCount: 1,
@@ -7853,7 +7924,7 @@ function sessionCall(method) {
       throw new InvokeError(400, "invalid_params", `AdapterDatabaseSession.${method} requires X-Bookclerk-Target`);
     }
     const params = p;
-    const args = method === "execute" ? [params.request] : method === "importIdentity" ? [params.rows] : method === "dropUserRelations" ? [params.names] : [];
+    const args = method === "execute" || method === "executeStreamed" ? [params.request] : method === "importIdentity" ? [params.rows] : method === "dropUserRelations" ? [params.names] : [];
     return named(s, cx.host.bindContext(cx.ctx), "session", [cx.target, method, ...args]);
   };
 }
@@ -8054,7 +8125,11 @@ var METHODS = {
     })
   },
   AdapterDatabaseSession: {
-    capabilities: session("capabilities", AdapterDatabaseSessionCapabilitiesParamsCodec, AdapterDatabaseSessionCapabilitiesResultsCodec, (value) => okValue(value)),
+    // An isolate adapter's streamed frames travel inside one invoke reply,
+    // so a streamed budget above one scalar could not be delivered; the
+    // advertisement is clamped so the host's budget is one the adapter can
+    // honour before it commits.
+    capabilities: session("capabilities", AdapterDatabaseSessionCapabilitiesParamsCodec, AdapterDatabaseSessionCapabilitiesResultsCodec, (value) => okValue(clampIsolateStreamedCaps(value))),
     execute: session("execute", AdapterDatabaseSessionExecuteParamsCodec, AdapterDatabaseSessionExecuteResultsCodec, (value) => okValue(value)),
     close: session("close", AdapterDatabaseSessionCloseParamsCodec, AdapterDatabaseSessionCloseResultsCodec, okEmpty),
     bootstrap: session("bootstrap", AdapterDatabaseSessionBootstrapParamsCodec, AdapterDatabaseSessionBootstrapResultsCodec, (value) => okValue(value)),
@@ -8063,7 +8138,12 @@ var METHODS = {
     listUserRelations: session("listUserRelations", AdapterDatabaseSessionListUserRelationsParamsCodec, AdapterDatabaseSessionListUserRelationsResultsCodec, (value) => okValue(asList(value).map((n) => String(n)))),
     prepareUnitRestore: session("prepareUnitRestore", AdapterDatabaseSessionPrepareUnitRestoreParamsCodec, AdapterDatabaseSessionPrepareUnitRestoreResultsCodec, okEmpty),
     dropUserRelations: session("dropUserRelations", AdapterDatabaseSessionDropUserRelationsParamsCodec, AdapterDatabaseSessionDropUserRelationsResultsCodec, okEmpty),
-    assertRestoreConstraints: session("assertRestoreConstraints", AdapterDatabaseSessionAssertRestoreConstraintsParamsCodec, AdapterDatabaseSessionAssertRestoreConstraintsResultsCodec, okEmpty)
+    assertRestoreConstraints: session("assertRestoreConstraints", AdapterDatabaseSessionAssertRestoreConstraintsParamsCodec, AdapterDatabaseSessionAssertRestoreConstraintsResultsCodec, okEmpty),
+    // An isolate adapter answers with the frames in memory, which travel as
+    // the `inline` member of the invoke reply; frames past one scalar cannot
+    // cross that reply, so they become a typed limit error instead of a
+    // transport failure.
+    executeStreamed: session("executeStreamed", AdapterDatabaseSessionExecuteStreamedParamsCodec, AdapterDatabaseSessionExecuteStreamedResultsCodec, (value) => inlineStreamReply(value))
   }
 };
 var CAP_KINDS = /* @__PURE__ */ new Set([
@@ -8112,6 +8192,29 @@ function replyCapTable(caps) {
       throw new InvokeError(500, "internal", "reply message cannot import capabilities");
     }
   };
+}
+function clampIsolateStreamedCaps(caps) {
+  const bytes = caps.maxStreamedResultBytes ?? 0;
+  if (bytes <= MAX_SCALAR_BYTES) {
+    return caps;
+  }
+  return { ...caps, maxStreamedResultBytes: MAX_SCALAR_BYTES };
+}
+function inlineStreamReply(frames) {
+  if (!(frames instanceof Uint8Array)) {
+    throw new InvokeError(500, "internal", "executeStreamed must return a Uint8Array of frames");
+  }
+  if (frames.byteLength > MAX_SCALAR_BYTES) {
+    return {
+      kind: "err",
+      value: wireError(PluginError.limitExceeded({
+        limit: "maxScalarBytes",
+        cap: MAX_SCALAR_BYTES,
+        used: frames.byteLength
+      }))
+    };
+  }
+  return { kind: "inline", value: frames };
 }
 function wireError(err) {
   const e = err;
@@ -8372,6 +8475,21 @@ var AdapterDatabaseSession = class extends RpcTarget {
    */
   execute(_request) {
     return Promise.reject(unsupported("execute"));
+  }
+  /**
+   * The same atomic batch as {@link AdapterDatabaseSession.execute}, answered
+   * as concatenated `ExecuteStreamFrame` messages counted against the
+   * advertised `maxStreamedResultBytes` / `maxStreamedResultRows`; optional.
+   * Adapters that advertise `0` for both leave the default, which answers
+   * `unsupported`. An isolate adapter's frames travel inside one invoke
+   * reply, so its streamed budget is clamped to `MAX_SCALAR_BYTES` (256 KiB)
+   * and larger frames are a `limit_exceeded` (`maxScalarBytes`) error.
+   *
+   * @param _request - Proven statements plus isolation and receipt.
+   * @returns Every frame of the committed reply, concatenated.
+   */
+  executeStreamed(_request) {
+    return Promise.reject(unsupported("executeStreamed"));
   }
   /**
    * Close the adapter session.
@@ -9476,7 +9594,8 @@ var ADAPTER_SESSION_METHODS = /* @__PURE__ */ new Set([
   "listUserRelations",
   "prepareUnitRestore",
   "dropUserRelations",
-  "assertRestoreConstraints"
+  "assertRestoreConstraints",
+  "executeStreamed"
 ]);
 function freshSessionId() {
   const c = globalThis.crypto;

@@ -1,5 +1,5 @@
-//! Replays the checked-in `sql_parse`, `abi_decode` and `abi_roundtrip` fuzz
-//! corpora in PR CI
+//! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
+//! `cover_sink_key` and `db_stream` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -648,4 +648,105 @@ fn oversized_standalone_replies_stay_single_segment() {
         .expect("encode reply err");
     let decoded = decode_execute_result_reply_bytes(&reply).expect_err("err member");
     assert_eq!(decoded.message, message);
+}
+
+#[path = "../../../fuzz/oracles/db_stream.rs"]
+mod db_stream_oracle;
+
+#[test]
+fn fuzz_corpus_db_stream_holds_invariants() {
+    for path in corpus_files("db_stream") {
+        let data = std::fs::read(&path).expect("read");
+        db_stream_oracle::check(&data);
+    }
+}
+
+/// The raw byte ceiling lies past the fuzz input cap, so it is checked here
+/// for every budget the oracle knows.
+#[test]
+fn db_stream_raw_ceiling_is_enforced_for_every_budget() {
+    for selector in 0..db_stream_oracle::BUDGETS {
+        db_stream_oracle::check_raw_ceiling(selector);
+    }
+}
+
+/// Builds the `db_stream` seeds from the encoder and keeps them current.
+///
+/// Each seed is a budget byte, a chunk-size byte and a stream: a reply that
+/// fits, an adapter error, a reply over the tiny row cap, a stream cut
+/// before its final frame, and bytes after the final frame.
+#[test]
+fn db_stream_seeds_are_current() {
+    use bookclerk_plugin_abi::{
+        encode_execute_stream, encode_execute_stream_error, DbColumn, DbRow, DbTiming, DbType,
+        DbValue, ExecuteReply, PluginError, StatementResult,
+    };
+
+    let reply = |rows: usize| ExecuteReply {
+        operation_id: "op-stream".into(),
+        statements: vec![
+            StatementResult::from_rows(
+                vec![
+                    DbColumn {
+                        name: "id".into(),
+                        db_type: DbType::Int64,
+                    },
+                    DbColumn {
+                        name: "title".into(),
+                        db_type: DbType::Text,
+                    },
+                ],
+                (0..rows)
+                    .map(|i| DbRow {
+                        values: vec![
+                            DbValue::Int64(i64::try_from(i).expect("small index")),
+                            DbValue::Text(format!("Title {i:03}")),
+                        ],
+                    })
+                    .collect(),
+            )
+            .expect("well-formed rows"),
+            StatementResult {
+                rows: Vec::new(),
+                columns: Vec::new(),
+                rows_affected: 2,
+            },
+        ],
+        timing: DbTiming {
+            attempt_elapsed_us: 11,
+            db_execution_us: 7,
+            db_timing_source: "sqlite_txn".into(),
+        },
+    };
+    let fits = encode_execute_stream(&reply(3)).expect("encode reply");
+    let error = encode_execute_stream_error(&PluginError::unavailable("database is locked"))
+        .expect("encode error");
+    let too_many_rows = encode_execute_stream(&reply(9)).expect("encode reply");
+    let truncated = fits[..fits.len() / 2].to_vec();
+    let mut trailing = fits.clone();
+    trailing.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/db_stream");
+    for (name, budget, chunk, bytes) in [
+        ("reply_fits.bin", 1u8, 255u8, &fits),
+        ("reply_fits_tiny_chunks.bin", 1, 2, &fits),
+        ("adapter_error.bin", 1, 16, &error),
+        ("rows_over_tiny_cap.bin", 0, 64, &too_many_rows),
+        ("inline_caps.bin", 2, 32, &fits),
+        ("truncated.bin", 1, 8, &truncated),
+        ("bytes_after_end.bin", 1, 8, &trailing),
+    ] {
+        let path = corpus.join(name);
+        let mut seed = vec![budget, chunk];
+        seed.extend_from_slice(bytes);
+        if std::env::var_os("UPDATE_FUZZ_SEEDS").is_some() {
+            std::fs::write(&path, &seed).expect("write seed");
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("read seed"),
+            seed,
+            "{} is stale; rerun with UPDATE_FUZZ_SEEDS=1",
+            path.display()
+        );
+    }
 }

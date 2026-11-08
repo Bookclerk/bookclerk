@@ -523,6 +523,8 @@ const caps = {
   maxCellBytes: 65536,
   maxRequestBytes: 131072,
   maxAtomicResultBytes: 524288,
+  maxStreamedResultBytes: 67108864,
+  maxStreamedResultRows: 250001,
   pluginDatabases: true,
   maxFunctionArgs: 32,
   maxSchemaColumns: 99,
