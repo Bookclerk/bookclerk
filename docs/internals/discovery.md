@@ -72,8 +72,8 @@ operator, a household user, or a portal identity) has a **subject key**
    each as large as the database plugin's `maxStatements` and
    `maxRequestBytes` allow, not one statement per row and not an interactive
    transaction, which the external database plugins refuse. The delete
-   rides in the last batch, so a reader can briefly see a store's new rows
-   beside its old ones. Each answer in the storefront call cache is stored
+   rides in the last batch, so a reader can briefly see part of a store's
+   new rows beside its old ones. Each answer in the storefront call cache is stored
    with one upsert. A store whose calls all fail or come back empty keeps its
    previous rows, since a plugin adapter can report a guest failure as an
    empty answer. The
@@ -216,14 +216,29 @@ Discover shelves rank with a **local-hash** 384-d embedder by default
 negligible RAM. AI-assisted recommendations are not designed yet, so ONNX
 scoring is off unless an operator turns it on.
 
-When enabled, discovery uses **quantized MiniLM-L6-v2** via `fastembed` / ONNX Runtime
+The ONNX embedder is not in the default build. Build the hosts with the
+`onnx-embeddings` feature to link it:
+
+```bash
+cargo build --release -p bookclerkd -p bookclerk-cli --features bookclerkd/onnx-embeddings,bookclerk-cli/onnx-embeddings
+```
+
+The feature pulls `fastembed`, `hf-hub` and `tokenizers` and, through them,
+`onig`, `esaxx`, `ort`, OpenSSL (`native-tls`) and a second `reqwest`: about
+45 crates, two of them C/C++ builds, that every cold build would otherwise
+compile for an experiment that is off by default. A host built without it
+treats `discovery.embeddings_enabled = true` like an ONNX load failure: it
+warns once and ranks with local-hash. CI tests `bookclerk-discover` with its
+`onnx` feature whenever that crate is selected, so the path keeps compiling.
+
+When enabled and built in, discovery uses **quantized MiniLM-L6-v2** via `fastembed` / ONNX Runtime
 (~22 MB model under `models/` plus the ORT shared library, ~50 MB RAM, 1
 intra-thread by default). ORT is **loaded dynamically** (not statically linked)
 so hosts with glibc < 2.38 still build; on first successful load the runtime
 and model are cached under the Bookclerk files dir.
 
-If ONNX cannot load (offline host, unsupported glibc for the ORT dylib, corrupt
-cache, …), Bookclerk **warns and falls back** to local-hash so recommend still
+If ONNX cannot load (built without `onnx-embeddings`, offline host, unsupported
+glibc for the ORT dylib, corrupt cache, …), Bookclerk **warns and falls back** to local-hash so recommend still
 works. A failed load is tried once per process: later ranking runs use
 local-hash straight away until the daemon restarts, so a missing runtime
 never holds up Discover again.
@@ -233,8 +248,10 @@ paths that pass `prefer_onnx = false`) skips ONNX and uses local-hash directly.
 
 ### OSV / `paste`
 
-`fastembed` → `tokenizers` (and related crates) pull crates.io `paste` 1.0.15
-as a **compile-time proc-macro**. That crate is **unmaintained**
+With the `onnx-embeddings` feature, `fastembed` → `tokenizers` (and related
+crates) pull crates.io `paste` 1.0.15 as a **compile-time proc-macro**. The
+default build does not compile it, but it stays in `Cargo.lock`, which OSV
+scans. That crate is **unmaintained**
 ([RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436.html):
 INFO, no CVE, no patched release). There is no crates.io drop-in under the same
 name; renaming to maintained [`pastey`](https://crates.io/crates/pastey) would

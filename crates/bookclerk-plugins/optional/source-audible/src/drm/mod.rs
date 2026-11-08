@@ -1,7 +1,7 @@
 //! Audible-owned Adrm aaxc + Widevine CENC decrypt.
 //!
 //! Host acquire never sees ciphertext keys — [`ContentSource::fetch_title`]
-//! decrypts here and returns [`bookclerk_source::PlainFetch`].
+//! decrypts here and returns [`bookclerk_storefront::PlainFetch`].
 
 mod crypto;
 mod decrypt;

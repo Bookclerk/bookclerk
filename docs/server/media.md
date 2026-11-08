@@ -288,10 +288,11 @@ Two reasons keep it there:
 ### Brand trimming follows the same line
 
 Where Audible's brand intro and outro sit is arithmetic on
-`chapter_info`. `bookclerk_media::brand_trim_range` computes the window,
-and the plugin applies it during the decryption pass it already makes. So
-the branding never reaches the disk, and no second copy of the file is
-made. Chapter splitting works on clear media, so it is an ordinary
+`chapter_info`. `bookclerk_mp4::brand_trim_range` computes the window
+(`bookclerk-mp4` holds it so the Audible guest need not link
+`bookclerk-media`), and the plugin applies it during the decryption pass it
+already makes. So the branding never reaches the disk, and no second copy
+of the file is made. Chapter splitting works on clear media, so it is an ordinary
 `remux_trimmed` job in the pool.
 
 ### The shared MP4 code
@@ -330,11 +331,12 @@ path.
 ### The plugin jail covers decryption
 
 Confining the store plugin's process covers the decryption parser, and
-everything else a store does. First-party stores ship as plugin binaries
-as well as in-process adapters, so one jail reaches Audible, Libro.fm,
-Chirp and GraphicAudio together. Hosts load those stores as jailed
-external plugins by default, so decryption runs in the plugin's jail, not
-in `bookclerkd`. See [The guest jail](../internals/guest-jail.md#the-guest-jail).
+everything else a store does. First-party stores ship only as plugin
+binaries, so one jail reaches Audible, Libro.fm, Chirp and GraphicAudio
+together. Hosts always run them as external plugin processes, never
+inside `bookclerkd`, so decryption stays out of the host. With the default
+`plugins.isolation = "required"`, a store whose jail cannot be applied is
+not loaded at all. See [The guest jail](../internals/guest-jail.md#the-guest-jail).
 
 ## Next steps
 

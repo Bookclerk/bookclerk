@@ -1,5 +1,6 @@
 //! Talk to the local `bookclerkd` HTTP API from the tray thread.
 
+use bookclerk_tls::ureq;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

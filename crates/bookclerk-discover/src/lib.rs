@@ -41,9 +41,11 @@ pub use catalog_search::{
     catalog_search, catalog_search_page, catalog_search_with_field, CatalogSearchFilters,
     CatalogSearchHit, CatalogSearchPage, CatalogSearchPageOpts,
 };
+#[cfg(feature = "onnx")]
+pub use embed::OnnxEmbedder;
 pub use embed::{
     default_embedding_model_id, embed_dirty_works, embedding_model_id, open_embedder,
-    text_for_work, CosineHit, Embedder, HashEmbedder, OnnxEmbedder, MODEL_ALL_MINILM_L6_V2_Q,
+    text_for_work, CosineHit, Embedder, HashEmbedder, MODEL_ALL_MINILM_L6_V2_Q,
     MODEL_LOCAL_HASH_V1,
 };
 pub use identity::{

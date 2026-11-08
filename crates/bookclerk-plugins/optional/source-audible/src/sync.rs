@@ -1,150 +1,17 @@
-//! Library scan: fetch Audible library via audible-rs and upsert into bookclerk-library.
+//! Library scan: fetch the Audible library via audible-rs into structured scan rows.
 
 use audible_rs::api::client::Client;
 use audible_rs::api::paginator;
 use audible_rs::library_sync::DEFAULT_RESPONSE_GROUPS;
 use audible_rs::models::library as lib_model;
-use bookclerk_library::SourceScope;
 use bookclerk_plugin_sdk::http::Method;
 use bookclerk_plugin_sdk::{Abridgement, ScanBook, SeriesEntry};
-use bookclerk_source::abi::{rfc3339, scanned_title};
-use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
-use bookclerk_source::{ScanOptions, ScanSummary};
+use bookclerk_storefront::abi::rfc3339;
+use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
 use chrono::{DateTime, NaiveDate, Utc};
 use futures::TryStreamExt;
 
-use crate::db::{list_audible_accounts_from_db, load_authenticator_from_db};
 use crate::error::{AudibleError, Result};
-
-/// Sync Audible library for configured accounts into `library`.
-///
-/// Accounts are resolved from the `encrypted_secrets` table (DB-backed); no
-/// `Accounts/*.audible.auth` files are read.
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn scan_library(scope: &SourceScope, options: ScanOptions) -> Result<ScanSummary> {
-    let explicit = !options.accounts.is_empty();
-    let all = list_audible_accounts_from_db(scope).await?;
-
-    let targets: Vec<String> = if explicit {
-        options
-            .accounts
-            .iter()
-            .filter(|needle| {
-                all.iter().any(|(id, name)| {
-                    id.eq_ignore_ascii_case(needle) || name.eq_ignore_ascii_case(needle)
-                }) || {
-                    // Allow requesting accounts not yet in DB; will surface as "no credentials".
-                    true
-                }
-            })
-            .cloned()
-            .collect()
-    } else {
-        all.into_iter().map(|(id, _name)| id).collect()
-    };
-
-    if targets.is_empty() {
-        return Err(AudibleError::NoAccounts(
-            "no Audible accounts configured — connect a store in the Bookclerk Accounts UI".into(),
-        ));
-    }
-
-    let mut summary = ScanSummary::default();
-
-    for account_id in targets {
-        let Some(auth) = load_authenticator_from_db(scope, &account_id).await? else {
-            tracing::warn!(account = %account_id, "no Audible credentials in DB — skipping");
-            continue;
-        };
-
-        let marketplace = auth.locale().country_code.to_string();
-        let resolved_id = auth
-            .customer_id()
-            .map(str::to_string)
-            .unwrap_or_else(|| account_id.clone());
-
-        // Honor per-account scan_enabled unless specific accounts were requested.
-        if !explicit {
-            if let Some(acct) = scope.get_account(&resolved_id).await? {
-                if !acct.scan_enabled {
-                    tracing::info!(
-                        account = %resolved_id,
-                        "skipping account — scan_enabled=false"
-                    );
-                    summary.skipped_disabled += 1;
-                    continue;
-                }
-            }
-        }
-
-        scope
-            .ensure_account(&resolved_id, &marketplace, Some(&account_id))
-            .await?;
-
-        let client = Client::new(auth).map_err(AudibleError::from)?;
-        let (books, pages) = scan_account_into_library(
-            scope,
-            &client,
-            &resolved_id,
-            &marketplace,
-            options.page_size,
-            options.import_episodes,
-            options.import_plus_titles,
-        )
-        .await?;
-        summary.accounts += 1;
-        summary.books_upserted += books;
-        summary.pages += pages;
-
-        tracing::info!(
-            account = %resolved_id,
-            marketplace = %marketplace,
-            books,
-            pages,
-            "library scan finished for account"
-        );
-    }
-
-    Ok(summary)
-}
-
-/// Fetch library pages for one authenticated client and upsert into `library`.
-///
-/// Exposed for wiremock CI tests (inject a [`Client`] with `api_base_override`).
-///
-/// # Errors
-///
-/// Returns an error when the operation fails.
-pub async fn scan_account_into_library(
-    scope: &SourceScope,
-    client: &Client,
-    account_id: &str,
-    marketplace: &str,
-    page_size: u32,
-    import_episodes: bool,
-    import_plus_titles: bool,
-) -> Result<(usize, u32)> {
-    let (books, pages) = collect_account_books(
-        client,
-        account_id,
-        marketplace,
-        page_size,
-        import_episodes,
-        import_plus_titles,
-    )
-    .await?;
-    let count = books.len();
-    for new in books
-        .into_iter()
-        .filter_map(|book| scanned_title("audible", book))
-    {
-        scope.upsert_scanned_title(&new).await?;
-    }
-    Ok((count, pages))
-}
 
 /// Fetch library pages for one account without touching the library DB.
 ///

@@ -1,5 +1,6 @@
 //! crates.io adapter — search via API; hydrate via inert `.crate` download.
 
+use bookclerk_tls::ureq;
 use std::io::Read;
 
 use flate2::read::GzDecoder;

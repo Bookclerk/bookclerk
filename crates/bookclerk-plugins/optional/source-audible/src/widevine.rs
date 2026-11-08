@@ -11,6 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::error::{AudibleError, Result};
+use crate::options::Bitrate;
 use audible_rs::api::client::Client;
 use audible_rs::auth::Authenticator;
 use audible_rs::downloader::{
@@ -18,11 +20,6 @@ use audible_rs::downloader::{
     WidevineGrant,
 };
 use audible_rs::widevine::{mpd, provider, Cdm, Device};
-use bookclerk_config::AudioQuality;
-use bookclerk_library::SourceScope;
-
-use crate::db::{load_widevine_cdm_from_db, save_widevine_cdm_to_db};
-use crate::error::{AudibleError, Result};
 
 /// Amazon Android device type id required for Widevine drmlicense grants.
 const ANDROID_DEVICE_TYPE: &str = "A10KISP2GWF0E4";
@@ -81,101 +78,64 @@ pub fn load_widevine_cdm(
     }
     Err(last_err.unwrap_or_else(|| {
         AudibleError::Widevine(
-            "no Widevine CDM (.wvd) found — set output.widevine_cdm or place \
-             widevine.wvd under BOOKCLERK_FILES_DIR"
+            "no Widevine CDM (.wvd) found — set output.widevine_cdm in \
+             Settings → Output"
                 .into(),
         )
     }))
 }
 
-/// Load an account's Widevine CDM, or auto-provision one via the classic
-/// Libation AudibleCdm provider. CDMs are stored in the `encrypted_secrets` DB
-/// table only — nothing is written under `Accounts/`.
+/// Load a bring-your-own Widevine CDM, or provision one from the classic
+/// Libation AudibleCdm provider.
 ///
 /// Resolution order:
-/// 1. `encrypted_secrets` (DB) for `account_stem`
-/// 2. BYO `.wvd` file (`output.widevine_cdm` / `{files_dir}/widevine.wvd`),
-///    imported into the DB when possible
-/// 3. Provision a fresh L3 CDM from the provider (auth material from the DB) and
-///    persist it to the DB
+/// 1. BYO `.wvd` file (`widevine_cdm` / `{files_dir}/widevine.wvd`)
+/// 2. A fresh L3 CDM from the provider, when `auth` is given and the
+///    provider is not disabled; nothing is persisted
 ///
-/// Widevine drmlicense requires an **Android**-registered account
-/// (`bookclerk auth login` always registers as Android). Spatial/Atmos (L1) remains unavailable.
+/// Widevine drmlicense requires an **Android**-registered account. Spatial /
+/// Atmos (L1) remains unavailable.
+///
+/// # Arguments
+///
+/// * `files_dir` - Directory searched for `widevine.wvd`.
+/// * `configured` - Explicit `.wvd` path (absolute, or relative to `files_dir`).
+/// * `auth` - Account credentials for provisioning; `None` skips step 2.
+/// * `provider_url` - Provider override (`None` = default; empty / `off` = disabled).
+///
+/// # Returns
+///
+/// The loaded CDM and the path (or provider label) it came from.
 ///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
+/// Returns [`AudibleError::Widevine`] when no BYO file loads and provisioning
+/// is disabled, not possible without `auth`, or fails.
 pub async fn ensure_widevine_cdm(
     files_dir: &Path,
     configured: Option<&Path>,
-    account_stem: Option<&str>,
+    auth: Option<&Authenticator>,
     provider_url: Option<&str>,
-    scope: Option<&SourceScope>,
 ) -> Result<(WidevineCdm, PathBuf)> {
-    // 1. Try DB when available.
-    if let (Some(lib), Some(stem)) = (scope, account_stem) {
-        match load_widevine_cdm_from_db(lib, stem).await {
-            Ok(Some(bytes)) => {
-                tracing::debug!(account = %stem, "loaded Widevine CDM from encrypted_secrets");
-                return load_cdm_from_bytes(&bytes, stem);
-            }
-            Ok(None) => {}
-            Err(err) => {
-                tracing::warn!(error = %err, "DB CDM lookup failed; trying BYO file");
-            }
-        }
-    }
-
-    // 2. Try a bring-your-own local file; import it into the DB for next time.
-    match load_widevine_cdm(files_dir, configured) {
-        Ok((cdm, path)) => {
-            if let (Some(lib), Some(stem)) = (scope, account_stem) {
-                if let Ok(bytes) = std::fs::read(&path) {
-                    if let Err(e) = save_widevine_cdm_to_db(lib, stem, &bytes).await {
-                        tracing::warn!(error = %e, "failed to import BYO Widevine CDM into DB");
-                    }
-                }
-            }
-            return Ok((cdm, path));
-        }
-        Err(err) => {
-            if effective_cdm_provider(provider_url).is_none() {
-                return Err(err);
-            }
-            tracing::debug!(error = %err, "no BYO Widevine CDM; provisioning via provider");
-        }
-    }
-
-    let Some(endpoint) = effective_cdm_provider(provider_url) else {
-        unreachable!("checked above");
+    let byo_err = match load_widevine_cdm(files_dir, configured) {
+        Ok(found) => return Ok(found),
+        Err(err) => err,
     };
-
-    // 3. Provision — requires a DB-backed account (auth material + CDM storage).
-    let (Some(lib), Some(stem)) = (scope, account_stem) else {
+    let Some(endpoint) = effective_cdm_provider(provider_url) else {
+        return Err(byo_err);
+    };
+    tracing::debug!(error = %byo_err, "no BYO Widevine CDM; provisioning via provider");
+    let Some(auth) = auth else {
         return Err(AudibleError::Widevine(
-            "Widevine CDM provisioning requires a DB-backed Audible account".into(),
+            "no Widevine CDM (.wvd) was supplied, and provisioning one needs the \
+             account's Audible credentials"
+                .into(),
         ));
     };
-    let auth = crate::db::load_authenticator_from_db(lib, stem)
-        .await?
-        .ok_or_else(|| {
-            AudibleError::Widevine(format!(
-                "no Audible credentials in encrypted_secrets for `{stem}` \
-                 (needed to provision a Widevine CDM)"
-            ))
-        })?;
-
-    let wvd = provision_cdm_bytes_from_provider(&auth, endpoint).await?;
-
-    if let Err(e) = save_widevine_cdm_to_db(lib, stem, &wvd).await {
-        tracing::warn!(error = %e, "failed to persist provisioned Widevine CDM to DB");
-    }
-    tracing::info!(
-        account = %stem,
-        bytes = wvd.len(),
-        "Widevine L3 CDM provisioned and stored in encrypted_secrets"
-    );
-    load_cdm_from_bytes(&wvd, stem)
+    let wvd = provision_cdm_bytes_from_provider(auth, endpoint).await?;
+    let label = auth.customer_id().unwrap_or("audible");
+    tracing::info!(bytes = wvd.len(), "Widevine L3 CDM provisioned");
+    load_cdm_from_bytes(&wvd, label)
 }
 
 /// Provision a CDM from the remote AudibleCdm provider and return the raw `.wvd` bytes.
@@ -264,14 +224,6 @@ fn load_cdm_at(path: &Path) -> Result<WidevineCdm> {
     })
 }
 
-/// Maps Bookclerk [`AudioQuality`] onto audible-rs `Quality` for license requests.
-fn to_quality(q: AudioQuality) -> Quality {
-    match q {
-        AudioQuality::High => Quality::High,
-        AudioQuality::Normal => Quality::Normal,
-    }
-}
-
 /// Lowercase hex encoding of a KID or content key.
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -313,7 +265,7 @@ pub async fn fetch_widevine_download(
     client: &Client,
     marketplace: &str,
     asin: &str,
-    quality: AudioQuality,
+    quality: Bitrate,
     xhe: bool,
     spatial: bool,
     cdm: &WidevineCdm,
@@ -330,10 +282,16 @@ pub async fn fetch_widevine_download(
         spatial
     };
 
-    let grant =
-        request_widevine_license(client, marketplace, asin, to_quality(quality), spatial, xhe)
-            .await
-            .map_err(AudibleError::from)?;
+    let grant = request_widevine_license(
+        client,
+        marketplace,
+        asin,
+        Quality::from(quality),
+        spatial,
+        xhe,
+    )
+    .await
+    .map_err(AudibleError::from)?;
 
     match grant {
         WidevineGrant::Mpeg(mpeg) => {
@@ -516,6 +474,28 @@ async fn fetch_text(url: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn no_cdm_and_provider_off_returns_the_byo_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let Err(err) = ensure_widevine_cdm(dir.path(), None, None, Some("off")).await else {
+            panic!("expected an error without a CDM");
+        };
+        assert!(
+            err.to_string().contains("no Widevine CDM (.wvd) found"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn provisioning_without_credentials_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let Err(err) = ensure_widevine_cdm(dir.path(), None, None, None).await else {
+            panic!("expected an error without credentials");
+        };
+        assert!(matches!(err, AudibleError::Widevine(_)), "{err}");
+        assert!(err.to_string().contains("credentials"), "{err}");
+    }
 
     #[test]
     fn cdm_candidates_prefer_configured() {

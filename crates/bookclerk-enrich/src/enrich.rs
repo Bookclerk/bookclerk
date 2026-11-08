@@ -18,7 +18,7 @@ use crate::match_score::{
     ScoreInput,
 };
 use crate::providers::{asin_identifier, record_identifier, MetadataProviders};
-use crate::public_meta::{
+use bookclerk_audible_catalog::{
     normalize_region, public_http_client, search_catalog_asins, search_catalog_keywords,
 };
 

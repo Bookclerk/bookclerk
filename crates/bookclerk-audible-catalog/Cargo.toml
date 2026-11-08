@@ -1,0 +1,23 @@
+[package]
+name = "bookclerk-audible-catalog"
+description = "Unauthenticated Audible catalog HTTP (search, genres, ratings, reviews) shared by the Audible guest and host enrichment"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# The Audible storefront guest links this crate, so keep it free of the host
+# stack: no `bookclerk-library` / `bookclerk-config`, no ORM or SQL driver.
+# `bookclerk-enrich` re-exports it for host code.
+[dependencies]
+bookclerk-plugin-sdk = { workspace = true, features = ["http"] }
+bookclerk-storefront.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

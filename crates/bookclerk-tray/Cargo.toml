@@ -15,7 +15,7 @@ open = "5"
 png = "0.18"
 serde = { workspace = true }
 tracing.workspace = true
-ureq.workspace = true
+bookclerk-tls.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # default = tokio (required by zbus); blocking exposes the sync TrayMethods API.

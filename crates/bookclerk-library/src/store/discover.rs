@@ -41,6 +41,11 @@ const DISCOVER_READ_PAGE: u64 = 200;
 /// the margin covers the framing that summing leaves out.
 const CANDIDATE_BATCH_BYTES_EIGHTHS: usize = 7;
 
+/// Bytes of the plugin's `maxRequestBytes` a request holding one candidate
+/// statement leaves free. That request is sized whole, so only the request
+/// hash and deadline, which are empty while sizing, still need room.
+const SINGLE_STATEMENT_HEADROOM: usize = 256;
+
 /// The two statements that upsert one candidate row.
 ///
 /// `UPDATE` first, then `INSERT OR IGNORE`: an existing row is rewritten
@@ -88,7 +93,9 @@ fn candidate_upsert(
 /// Splits candidate writes into atomic batches the database plugin accepts.
 ///
 /// A batch closes before it would pass the plugin's `maxStatements`, or
-/// [`CANDIDATE_BATCH_BYTES_EIGHTHS`] of its `maxRequestBytes`.
+/// [`CANDIDATE_BATCH_BYTES_EIGHTHS`] of its `maxRequestBytes`. A statement
+/// too large to share a batch still goes alone while it fits the plugin's
+/// limit less [`SINGLE_STATEMENT_HEADROOM`].
 struct CandidateBatches {
     /// Statements waiting for the next batch.
     pending: Vec<TypedDbStatement>,
@@ -98,8 +105,10 @@ struct CandidateBatches {
     empty_bytes: usize,
     /// Most statements one batch may hold.
     max_statements: usize,
-    /// Most encoded bytes one batch may hold.
+    /// Most encoded bytes one batch of several statements may hold.
     max_bytes: usize,
+    /// Most encoded bytes a request holding one statement may hold.
+    max_single_bytes: usize,
 }
 
 impl CandidateBatches {
@@ -115,6 +124,7 @@ impl CandidateBatches {
                 .unwrap_or(usize::MAX)
                 .max(1),
             max_bytes: request_cap / 8 * CANDIDATE_BATCH_BYTES_EIGHTHS,
+            max_single_bytes: request_cap.saturating_sub(SINGLE_STATEMENT_HEADROOM),
         }
     }
 
@@ -126,11 +136,11 @@ impl CandidateBatches {
     ///
     /// # Errors
     ///
-    /// Returns an error when the statement alone is larger than one batch
+    /// Returns an error when the statement alone is larger than one request
     /// may carry, or cannot be encoded.
     fn push(&mut self, stmt: TypedDbStatement) -> Result<Option<Vec<TypedDbStatement>>> {
         let size = encoded_len(std::slice::from_ref(&stmt))?.saturating_sub(self.empty_bytes);
-        if self.empty_bytes.saturating_add(size) > self.max_bytes {
+        if self.empty_bytes.saturating_add(size) > self.max_single_bytes {
             return Err(LibraryError::Other(anyhow::anyhow!(
                 "a discover candidate write is {size} bytes, over the database plugin's request limit"
             )));
@@ -291,8 +301,8 @@ impl LibraryStore {
     /// interactive transaction is used: the external database adapters only
     /// take single statements and atomic batches, so `begin` is refused
     /// there. The delete rides in the last batch. A reader between two
-    /// batches can see the store's new rows next to its old ones, never
-    /// fewer than either set.
+    /// batches can see part of the new set next to old rows that are not
+    /// deleted yet.
     ///
     /// # Arguments
     ///
@@ -1049,6 +1059,76 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(sizes.lock().unwrap().is_empty(), "nothing was sent");
+    }
+
+    /// A replace that fails after a batch has committed keeps the store's
+    /// old rows: the stale-row delete only rides in the last batch.
+    #[tokio::test]
+    async fn a_failed_replace_keeps_the_old_rows() {
+        let mut caps = DbCapabilities::advertised_sqlite();
+        caps.max_statements = bookclerk_plugin_abi::HOST_MIN_STATEMENTS;
+        caps.max_request_bytes = 64 * 1024;
+        let (store, sizes) = batch_store(caps).await;
+        let alice = DiscoverSubject::User(1);
+        store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &rows(&["old"]))
+            .await
+            .unwrap();
+        sizes.lock().unwrap().clear();
+
+        let mut fresh: Vec<(String, String)> = (0..30)
+            .map(|i| (format!("n{i:02}"), format!("{{\"n\":{i}}}")))
+            .collect();
+        fresh.push((
+            String::from("huge"),
+            format!("{{\"pad\":\"{}\"}}", "x".repeat(80 * 1024)),
+        ));
+        let result = store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &fresh)
+            .await;
+        assert!(result.is_err());
+
+        assert_eq!(*sizes.lock().unwrap(), vec![40], "one batch committed");
+        let keys: Vec<String> = store
+            .list_discover_candidates(&alice)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.candidate_key)
+            .collect();
+        assert!(keys.iter().any(|k| k == "old"), "{keys:?}");
+        assert!(keys.iter().any(|k| k == "n00"), "{keys:?}");
+        assert!(!keys.iter().any(|k| k == "huge"), "{keys:?}");
+    }
+
+    /// A candidate too large to share a batch, but within the plugin's
+    /// request limit, is sent in a request of its own.
+    #[tokio::test]
+    async fn a_large_candidate_goes_alone() {
+        let mut caps = DbCapabilities::advertised_sqlite();
+        caps.max_request_bytes = 64 * 1024;
+        let (store, sizes) = batch_store(caps).await;
+        let alice = DiscoverSubject::User(1);
+        let mut fresh = rows(&["a", "b"]);
+        fresh.insert(
+            1,
+            (
+                String::from("large"),
+                format!("{{\"pad\":\"{}\"}}", "x".repeat(60 * 1024)),
+            ),
+        );
+        store
+            .replace_discover_candidates(&alice, "libro", SeedScope::Own, &fresh)
+            .await
+            .unwrap();
+
+        let sent = sizes.lock().unwrap().clone();
+        assert_eq!(sent.iter().sum::<usize>(), 7, "{sent:?}");
+        assert!(sent.contains(&1), "the large row went alone: {sent:?}");
+        assert_eq!(
+            store.list_discover_candidates(&alice).await.unwrap().len(),
+            3
+        );
     }
 
     /// A full read page of real-sized candidates is larger than the sqlite

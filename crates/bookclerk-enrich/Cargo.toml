@@ -11,6 +11,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+bookclerk-audible-catalog.workspace = true
 chrono.workspace = true
 bookclerk-library.workspace = true
 bookclerk-plugin-sdk = { workspace = true, features = ["http"] }

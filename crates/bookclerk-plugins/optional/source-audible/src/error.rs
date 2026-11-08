@@ -1,4 +1,4 @@
-//! Error types for the Audible content source.
+//! Error types for the Audible storefront guest.
 
 use thiserror::Error;
 
@@ -12,17 +12,9 @@ pub enum AudibleError {
     #[error("authentication error: {0}")]
     Auth(String),
 
-    /// No Audible accounts are configured (safe to skip in multi-source scan).
+    /// The host passed no credentials, or none matching the requested accounts.
     #[error("no accounts configured: {0}")]
     NoAccounts(String),
-
-    /// Requested account id is not present in `encrypted_secrets`.
-    #[error("account not found: {0}")]
-    AccountNotFound(String),
-
-    /// Import of an external auth / Libation / mkb79 file failed.
-    #[error("import error: {0}")]
-    Import(String),
 
     /// Library listing or metadata sync against Audible APIs failed.
     #[error("library sync error: {0}")]
@@ -55,7 +47,7 @@ pub enum AudibleError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Unexpected failure wrapped from `anyhow` / library layers.
+    /// Unexpected failure wrapped from `anyhow`.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -102,11 +94,5 @@ impl From<audible_rs::api::client::ApiError> for AudibleError {
             ApiError::LicenseDenied(message) => Self::License(format!("license denied: {message}")),
             other => Self::Sync(other.to_string()),
         }
-    }
-}
-
-impl From<bookclerk_library::LibraryError> for AudibleError {
-    fn from(err: bookclerk_library::LibraryError) -> Self {
-        Self::Other(err.into())
     }
 }

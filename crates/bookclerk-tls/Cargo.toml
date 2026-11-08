@@ -1,0 +1,16 @@
+[package]
+name = "bookclerk-tls"
+description = "The one rustls crypto provider and HTTP client TLS settings for the Bookclerk hosts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+rustls.workspace = true
+ureq.workspace = true
+
+[lints]
+workspace = true
