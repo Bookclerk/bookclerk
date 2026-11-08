@@ -20,7 +20,9 @@ use crate::error::{LibraryError, Result};
 /// result selection shape does not match the request, and
 /// [`LibraryError::LimitExceeded`] when a statement result or the whole
 /// reply exceeds a negotiated cap (`maxResultRows`, `maxCellBytes`,
-/// `maxResultBytes`, `maxAtomicResultBytes`).
+/// `maxResultBytes`, `maxAtomicResultBytes`). A reply read as a stream is
+/// validated against [`DbCapabilities::streamed`] and reports the whole-reply
+/// budget as `maxStreamedResultBytes`.
 pub fn validate_execute_reply(
     req: &ExecuteRequest,
     reply: &ExecuteReply,
@@ -55,7 +57,7 @@ pub fn validate_execute_reply(
             .len();
         if bytes > cap {
             return Err(LibraryError::LimitExceeded(LimitExceeded::new(
-                "maxAtomicResultBytes",
+                whole_reply_limit_name(caps),
                 u64::try_from(cap).unwrap_or(u64::MAX),
                 u64::try_from(bytes).unwrap_or(u64::MAX),
             )));
@@ -138,7 +140,7 @@ fn validate_statement_result(
         let cap = usize::try_from(caps.max_result_bytes).unwrap_or(usize::MAX);
         if bytes > cap {
             return Err(LibraryError::LimitExceeded(LimitExceeded::new(
-                "maxResultBytes",
+                statement_bytes_limit_name(caps),
                 u64::from(caps.max_result_bytes),
                 u64::try_from(bytes).unwrap_or(u64::MAX),
             )));
@@ -159,17 +161,43 @@ fn effective_row_cap(stmt_max_rows: u32, caps_max_result_rows: u32) -> Option<u3
 }
 
 /// Encoded whole-reply byte budget from negotiated caps (`None` = unlimited).
+///
+/// Inline caps are admitted at or below [`bookclerk_plugin_abi::MAX_SCALAR_BYTES`]
+/// (an inline reply is one RPC scalar), so the budget is not clamped here:
+/// the caps of a streamed read ([`DbCapabilities::streamed`]) carry the
+/// larger streamed budget, which a reassembled reply may legitimately reach.
 fn atomic_result_cap_bytes(caps: &DbCapabilities) -> Option<usize> {
     if caps.max_atomic_result_bytes == 0 {
         return None;
     }
-    Some(
-        usize::try_from(
-            caps.max_atomic_result_bytes
-                .min(bookclerk_plugin_abi::MAX_SCALAR_BYTES),
-        )
-        .unwrap_or(usize::MAX),
-    )
+    Some(usize::try_from(caps.max_atomic_result_bytes).unwrap_or(usize::MAX))
+}
+
+/// Name of the whole-reply budget a reply exceeded.
+///
+/// A budget above one RPC scalar can only be the streamed budget, which
+/// [`DbCapabilities::streamed`] copies into `max_atomic_result_bytes`, so
+/// the error names `maxStreamedResultBytes` and no caller retries it in
+/// smaller inline pieces.
+fn whole_reply_limit_name(caps: &DbCapabilities) -> &'static str {
+    if caps.max_atomic_result_bytes > bookclerk_plugin_abi::MAX_SCALAR_BYTES {
+        "maxStreamedResultBytes"
+    } else {
+        "maxAtomicResultBytes"
+    }
+}
+
+/// Name of the per-statement byte budget a statement result exceeded.
+///
+/// Same rule as [`whole_reply_limit_name`]: [`DbCapabilities::streamed`]
+/// copies the streamed budget into `max_result_bytes`, and only that budget
+/// can exceed one RPC scalar.
+fn statement_bytes_limit_name(caps: &DbCapabilities) -> &'static str {
+    if caps.max_result_bytes > bookclerk_plugin_abi::MAX_SCALAR_BYTES {
+        "maxStreamedResultBytes"
+    } else {
+        "maxResultBytes"
+    }
 }
 
 /// UTF-8 / byte length counted toward `maxCellBytes` for text and blob cells.
@@ -343,6 +371,54 @@ mod tests {
         assert_eq!(limit.cap, 160);
         assert!(limit.used > 160, "{limit:?}");
         assert!(err.to_string().contains("maxAtomicResultBytes"), "{err}");
+    }
+
+    /// `rows` rows of one `cell_bytes` text cell each: large results that
+    /// stay under the 256 KiB cell cap.
+    fn wide_reply(rows: usize, cell_bytes: usize) -> ExecuteReply {
+        let mut reply = rows_reply("op-1", rows);
+        for row in &mut reply.statements[0].rows {
+            row.values[0] = DbValue::Text("x".repeat(cell_bytes));
+        }
+        reply.statements[0].columns[0].db_type = DbType::Text;
+        reply
+    }
+
+    /// A reply reassembled from a stream may be larger than one RPC scalar;
+    /// the streamed caps must accept it up to the streamed budget.
+    #[test]
+    fn validate_execute_reply_accepts_a_streamed_reply_above_one_scalar() {
+        let scalar = usize::try_from(bookclerk_plugin_abi::MAX_SCALAR_BYTES).unwrap();
+        let req = rows_request(0);
+        let reply = wide_reply(64, scalar / 32);
+        let inline = DbCapabilities::advertised_sqlite();
+        let err = validate_execute_reply(&req, &reply, &inline).unwrap_err();
+        let limit = err.limit().expect("typed limit");
+        assert_eq!(limit.limit, "maxResultBytes");
+        assert_eq!(limit.cap, u64::from(inline.max_result_bytes));
+        let streamed = inline.streamed().expect("first-party sqlite streams");
+        validate_execute_reply(&req, &reply, &streamed)
+            .unwrap_or_else(|err| panic!("streamed reply above one scalar: {err}"));
+    }
+
+    /// Past the streamed budget the reply is still refused, under the
+    /// streamed limit's name so no caller retries it in inline pieces.
+    #[test]
+    fn validate_execute_reply_names_the_streamed_budget_when_exceeded() {
+        let scalar = usize::try_from(bookclerk_plugin_abi::MAX_SCALAR_BYTES).unwrap();
+        let req = rows_request(0);
+        let reply = wide_reply(64, scalar / 32);
+        let mut caps = DbCapabilities::advertised_sqlite();
+        caps.max_streamed_result_bytes = bookclerk_plugin_abi::MAX_SCALAR_BYTES + 1;
+        let streamed = caps.streamed().expect("streams");
+        let err = validate_execute_reply(&req, &reply, &streamed).unwrap_err();
+        let limit = err.limit().expect("typed limit");
+        assert_eq!(limit.limit, "maxStreamedResultBytes");
+        assert_eq!(
+            limit.cap,
+            u64::from(bookclerk_plugin_abi::MAX_SCALAR_BYTES) + 1
+        );
+        assert!(limit.used > limit.cap, "{limit:?}");
     }
 
     #[test]
