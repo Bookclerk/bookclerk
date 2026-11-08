@@ -836,11 +836,14 @@ async fn parse_d1_response(
 
 /// Incrementally reads `response` and errors if the body would exceed `max`.
 ///
-/// The error carries the canonical `maxAtomicResultBytes` limit text (the
-/// ceiling as the limit, the bytes seen so far as the use), so a host page
-/// reader recognises a reply whose JSON encoding outgrew the ceiling and
-/// reads the page in smaller pieces; after a successful status the error
-/// stays ambiguous, because a write in the batch may have committed.
+/// After a successful status the body is a result, so the error carries the
+/// canonical `maxAtomicResultBytes` limit text (the ceiling as the limit, the
+/// bytes seen so far as the use) for a host page reader to recognise a reply
+/// whose JSON encoding outgrew the ceiling and read the page in smaller
+/// pieces; it stays ambiguous, because a write in the batch may have
+/// committed. An oversized body after an error status is only that status's
+/// failure (retryable statuses ambiguous, the rest permanent), never a
+/// result limit.
 async fn read_body_capped(
     mut response: Response,
     max: usize,
@@ -849,7 +852,8 @@ async fn read_body_capped(
         if len > max as u64 {
             return Err(body_cap_error(
                 response.status(),
-                body_cap_message(max, usize::try_from(len).unwrap_or(usize::MAX)),
+                max,
+                usize::try_from(len).unwrap_or(usize::MAX),
             ));
         }
     }
@@ -864,29 +868,31 @@ async fn read_body_capped(
         };
         let seen = buf.len().saturating_add(chunk.len());
         if seen > max {
-            return Err(body_cap_error(
-                response.status(),
-                body_cap_message(max, seen),
-            ));
+            return Err(body_cap_error(response.status(), max, seen));
         }
         buf.extend_from_slice(&chunk);
     }
     Ok(buf)
 }
 
-/// Error text for a D1 body of at least `seen` bytes past the `max` ceiling.
-fn body_cap_message(max: usize, seen: usize) -> String {
-    let limit = bookclerk_plugin_abi::LimitExceeded::new(
-        "maxAtomicResultBytes",
-        u64::try_from(max).unwrap_or(u64::MAX),
-        u64::try_from(seen).unwrap_or(u64::MAX),
-    );
-    format!("D1 body exceeds {max}: {}", limit.to_message())
-}
-
-/// Oversized bodies after a successful or retryable HTTP status are ambiguous.
-fn body_cap_error(status: StatusCode, message: String) -> D1Error {
-    if status.is_success() || retryable_http_status(status) {
+/// Error for a D1 body of at least `seen` bytes past the `max` ceiling.
+///
+/// A successful status makes the body a result, so the message names the
+/// `maxAtomicResultBytes` limit and the error is ambiguous (the batch may
+/// have committed). An error status's body is not a result: the message
+/// states only the overrun, so the error maps as that status would, ambiguous
+/// for a retryable status and permanent otherwise.
+fn body_cap_error(status: StatusCode, max: usize, seen: usize) -> D1Error {
+    if status.is_success() {
+        let limit = bookclerk_plugin_abi::LimitExceeded::new(
+            "maxAtomicResultBytes",
+            u64::try_from(max).unwrap_or(u64::MAX),
+            u64::try_from(seen).unwrap_or(u64::MAX),
+        );
+        return D1Error::ambiguous(format!("D1 body exceeds {max}: {}", limit.to_message()));
+    }
+    let message = format!("D1 body exceeds {max} (HTTP {status}, at least {seen} bytes)");
+    if retryable_http_status(status) {
         D1Error::ambiguous(message)
     } else {
         D1Error::Permanent {
@@ -3005,6 +3011,10 @@ mod tests {
     async fn executing_mock_oversized_400_body_after_commit_is_permanent() {
         let err = oversized_after_commit(400).await;
         assert!(!crate::atomic::is_ambiguous_d1(&err), "{err}");
+        assert!(
+            bookclerk_plugin_abi::LimitExceeded::from_message(&err.to_string()).is_none(),
+            "an error status's oversized body is not a result limit: {err}"
+        );
         let mapped = crate::atomic::plugin_error_from_d1(err);
         assert_eq!(
             mapped.code,
