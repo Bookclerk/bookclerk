@@ -13,7 +13,7 @@
 import { MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES } from "./abi.js";
 import type { ExecuteReply, StatementResult } from "./db-execute.js";
 import { PluginError } from "./errors.js";
-import type { DbCapabilities, DbColumn, ExecuteStreamFrame } from "./generated.js";
+import type { DbCapabilities, DbColumn, DbValue, ExecuteStreamFrame } from "./generated.js";
 import { CapnpReader, NO_CAPS } from "./db-capnp.js";
 import { ExecuteStreamFrameCodec } from "./generated-wire.js";
 
@@ -144,6 +144,27 @@ export class ExecuteStreamDecoder {
    *   sequence or bytes follow the final frame.
    */
   push(bytes: Uint8Array): ExecuteStreamFrame[] {
+    try {
+      return this.#push(bytes);
+    } catch (err) {
+      // A refused stream stays refused: `finish()` after a failed push
+      // reports the failure, never a reply the earlier frames described.
+      if (err instanceof PluginError) {
+        this.#columns = [];
+        this.#state = { kind: "finished", outcome: { err } };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * `push` before its failure is latched.
+   *
+   * @param bytes - Any slice of the frame sequence.
+   * @returns The frames completed by these bytes, in order.
+   * @throws See {@link ExecuteStreamDecoder.push}.
+   */
+  #push(bytes: Uint8Array): ExecuteStreamFrame[] {
     const frames: ExecuteStreamFrame[] = [];
     if (bytes.byteLength === 0) {
       return frames;
@@ -179,7 +200,9 @@ export class ExecuteStreamDecoder {
       if (this.#buf.byteLength - at < frameLen) {
         break;
       }
-      const frame = decodeFrame(this.#buf.subarray(at, at + frameLen), ceiling);
+      // Each frame is decoded from its own copy, so a BYTES cell an author
+      // keeps does not pin the rest of the stream in memory.
+      const frame = decodeFrame(this.#buf.slice(at, at + frameLen), ceiling);
       at += frameLen;
       this.#apply(frame);
       frames.push(frame);
@@ -215,6 +238,12 @@ export class ExecuteStreamDecoder {
     return outcome.ok;
   }
 
+  /**
+   * The typed error for a stream over its byte budget.
+   *
+   * @param used - Bytes seen or declared.
+   * @returns `limit_exceeded` naming the budget's capability field.
+   */
   #bytesExceeded(used: number): PluginError {
     return PluginError.limitExceeded({
       limit: this.#limits.bytesLimit,
@@ -223,10 +252,25 @@ export class ExecuteStreamDecoder {
     });
   }
 
+  /**
+   * The error for a frame out of sequence.
+   *
+   * @param message - What the stream did, completing "streamed reply …".
+   * @returns `invalid_params`.
+   */
   #sequence(message: string): PluginError {
     return PluginError.fromWire("invalid_params", `streamed reply ${message}`);
   }
 
+  /**
+   * Advances the sequence by one decoded frame: opens the reply on `head`,
+   * a statement on `statement`, counts (and keeps, when retained) `rows`,
+   * and closes the reply on `end` or `err`.
+   *
+   * @param frame - The frame just decoded.
+   * @throws `PluginError` `invalid_params` when the frame is out of sequence
+   *   or a cell is not a valid `DbValue`, `limit_exceeded` past the row cap.
+   */
   #apply(frame: ExecuteStreamFrame): void {
     const state = this.#state;
     if (frame.kind === "err") {
@@ -286,6 +330,11 @@ export class ExecuteStreamDecoder {
         const open = state.open;
         if (!open) {
           throw this.#sequence("carries rows before a statement frame");
+        }
+        for (const row of frame.value) {
+          for (const cell of row.values) {
+            validateCell(cell);
+          }
         }
         state.openRows += frame.value.length;
         if (this.#limits.maxRows > 0 && state.openRows > this.#limits.maxRows) {
@@ -374,10 +423,12 @@ export async function* streamChunks(
     return;
   }
   const reader = body.getReader();
+  let drained = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) {
+        drained = true;
         return;
       }
       if (value) {
@@ -385,7 +436,29 @@ export async function* streamChunks(
       }
     }
   } finally {
+    // A consumer that stops early (an `iterate()` loop that breaks, a
+    // decoder that refused a frame) releases the unread body instead of
+    // leaving the transfer parked behind the lock.
+    if (!drained) {
+      await reader.cancel().catch(() => undefined);
+    }
     reader.releaseLock();
+  }
+}
+
+/**
+ * Checks a streamed cell the way the inline reader does: a `float64` must
+ * be finite and TEXT must not contain U+0000.
+ *
+ * @param cell - A decoded cell.
+ * @throws `PluginError` `invalid_params` when the cell is not a valid `DbValue`.
+ */
+function validateCell(cell: DbValue): void {
+  if (cell.kind === "float64" && !Number.isFinite(cell.value)) {
+    throw PluginError.fromWire("invalid_params", "streamed reply float64 cell is not finite");
+  }
+  if (cell.kind === "text" && cell.value.includes("\u0000")) {
+    throw PluginError.fromWire("invalid_params", "streamed reply TEXT cell contains U+0000");
   }
 }
 
@@ -420,6 +493,13 @@ function decodeFrame(bytes: Uint8Array, ceiling: number): ExecuteStreamFrame {
   }
 }
 
+/**
+ * Joins two byte runs, reusing `b` when `a` is empty.
+ *
+ * @param a - Bytes carried over from the previous push.
+ * @param b - Bytes just pushed.
+ * @returns `a` followed by `b`.
+ */
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   if (a.byteLength === 0) {
     return b;

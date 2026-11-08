@@ -313,6 +313,10 @@ class _CapnpReader:
         if len(data) < WORD:
             raise ValueError("truncated Cap'n message")
         self._max_words = max_words
+        # Every struct and list reached is charged its size, so a message
+        # whose pointers alias one large value many times over cannot
+        # materialize more than the budget (the Cap'n Proto traversal limit).
+        self._remaining = max_words
         nseg_minus, size0 = struct.unpack_from("<II", data, 0)
         if nseg_minus + 1 != 1:
             raise ValueError("multi-segment Cap'n messages are not supported")
@@ -340,7 +344,7 @@ class _CapnpReader:
         dw = (word >> 32) & 0xFFFF
         pw = (word >> 48) & 0xFFFF
         target = ptr_word + 1 + offset
-        self._check_range(target, dw + pw)
+        self._visit(target, dw + pw)
         return _StructReader(self, target, dw, pw)
 
     def read_word(self, word: int) -> int:
@@ -350,6 +354,13 @@ class _CapnpReader:
     def _check_range(self, word: int, n_words: int) -> None:
         if word < 0 or n_words < 0 or word + n_words > self._size0:
             raise ValueError("Cap'n pointer out of segment")
+
+    def _visit(self, word: int, n_words: int) -> None:
+        """Check a struct or list range and charge it to the traversal budget."""
+        self._check_range(word, n_words)
+        self._remaining -= n_words
+        if self._remaining < 0:
+            raise ValueError("Cap'n message exceeds traversal budget")
 
     def _list_pointer(self, ptr_word: int, expect_size: int) -> _ListPointer | None:
         word = self.read_word(ptr_word)
@@ -399,7 +410,7 @@ class _CapnpReader:
         if lp is None:
             return b""
         n_words = (lp.length + WORD - 1) // WORD if lp.length else 0
-        self._check_range(lp.target, n_words)
+        self._visit(lp.target, n_words)
         start = self._seg + lp.target * WORD
         end = start + lp.length
         if end > len(self._data):
@@ -426,7 +437,7 @@ class _CapnpReader:
             return []
         if lp.length > self._max_words:
             raise ValueError("pointer list exceeds traversal budget")
-        self._check_range(lp.target, lp.length)
+        self._visit(lp.target, lp.length)
         return [lp.target + i for i in range(lp.length)]
 
     def read_text_list(self, ptr_word: int) -> list[str]:
@@ -441,7 +452,7 @@ class _CapnpReader:
         if lp is None or lp.length == 0:
             return []
         n_words = (lp.length * byte_width + WORD - 1) // WORD
-        self._check_range(lp.target, n_words)
+        self._visit(lp.target, n_words)
         base = self._seg + lp.target * WORD
         return [
             int.from_bytes(
@@ -457,7 +468,7 @@ class _CapnpReader:
         if lp is None or lp.length == 0:
             return []
         n_words = (lp.length + 63) // 64
-        self._check_range(lp.target, n_words)
+        self._visit(lp.target, n_words)
         base = self._seg + lp.target * WORD
         return [(self._data[base + (i >> 3)] >> (i & 7)) & 1 == 1 for i in range(lp.length)]
 
@@ -478,7 +489,7 @@ class _CapnpReader:
             raise ValueError("composite list count exceeds payload")
         if count > self._max_words:
             raise ValueError("composite list count exceeds traversal budget")
-        self._check_range(tag_word, 1 + count * elem_words)
+        self._visit(tag_word, 1 + count * elem_words)
         return [_StructReader(self, tag_word + 1 + i * elem_words, dw, pw) for i in range(count)]
 
 

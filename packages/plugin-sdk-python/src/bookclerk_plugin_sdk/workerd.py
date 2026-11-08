@@ -2146,7 +2146,8 @@ class _TransportGuestDatabase(GuestDatabase):
             Every ``ExecuteStreamFrame``, as a byte stream or concatenated.
 
         Raises:
-            PluginError: ``internal`` when the reply carries no body.
+            PluginError: ``internal`` when the reply carries no body;
+                ``unsupported`` when the transport offers no streamed read.
         """
         from bookclerk_plugin_sdk.db_value import encode_execute_request
 
@@ -2155,8 +2156,14 @@ class _TransportGuestDatabase(GuestDatabase):
             raw = await self._transport.openStreamedBytes(js(body))
             if hasattr(raw, "getReader"):
                 return _reader_chunks(raw)
-        else:
+        elif hasattr(self._transport, "executeStreamedBytes"):
             raw = await self._transport.executeStreamedBytes(js(body))
+        else:
+            # A transport that predates the streamed read: the binding falls
+            # back to its inline read.
+            raise PluginError.from_wire(
+                "unsupported", "GuestDatabase.executeStreamed is not offered by this transport"
+            )
         data = _bytes(raw)
         if not data:
             raise PluginError.from_wire("internal", "granted executeStreamed reply missing body")

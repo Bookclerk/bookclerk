@@ -22,7 +22,8 @@ binding's `limits()` returns them. The ones that shape plugin code:
 | `maxStatements` | Statements in one request (`batch()` or `exec()`) |
 | `maxBinds` | Bind parameters in one statement |
 | `maxCellBytes` | One TEXT or BYTES cell in a reply |
-| `maxResultRows` / `maxResultBytes` | A reply read inline: rows per statement and bytes for the whole reply |
+| `maxResultRows` / `maxResultBytes` | A reply read inline: rows and encoded bytes per statement |
+| `maxAtomicResultBytes` | A reply read inline: encoded bytes for the whole reply |
 | `maxStreamedResultBytes` / `maxStreamedResultRows` | A reply read as a stream: bytes for the whole reply and rows per statement. `0` on both means the session does not stream |
 
 First-party sqlite and Postgres stream up to 64 MiB and 250 000 rows; D1 up
@@ -126,10 +127,14 @@ for batch in db.chunk(inserts, None).await? {
 Each batch is atomic; the loop is not. If a later batch fails, the earlier
 ones stay committed, and the plugin decides whether to retry or to record
 how far it got (a job checkpoint is the usual place). `chunk()` uses the
-session's `maxStatements` and `maxRequestBytes`; pass explicit caps to split
-smaller, or when the host predates `limits()`. A single statement that is
-larger than the request cap is yielded on its own, so `batch()` reports the
-typed error for that statement instead of the split hiding it.
+session's `maxStatements` and `maxRequestBytes` (the binding's own request
+cap, when it has one, tightens the latter); pass explicit caps to split
+smaller, or when the host predates `limits()`, and explicit zeros to get one
+batch. A single statement that is larger than the request cap is yielded on
+its own, so `batch()` reports the typed error for that statement instead of
+the split hiding it. Batches are sized with the UUID-shaped retry id the
+binding mints, so a caller-chosen retry id that is longer leaves that much
+less room.
 
 > [!NOTE]
 > There is no guest-side transaction API. A plugin that needs several
@@ -142,9 +147,10 @@ typed error for that statement instead of the split hiding it.
 `limits()` returns the session's `DbCapabilities`, cached for the
 invocation, so a plugin can size its own work: how many binds a statement
 may carry, how many statements a request holds, how large a cell may be.
-The SDK already checks the encoded request against `maxRequestBytes` before
-sending it, so an oversized request fails locally with the same typed
-error.
+Once the session's limits are known (or the binding was created with a
+request cap of its own), the SDK checks the encoded request against
+`maxRequestBytes` before sending it, so an oversized request fails locally
+with the same typed error the host would raise.
 
 ```ts
 const caps = await env.DB.limits();

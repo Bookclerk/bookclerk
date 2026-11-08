@@ -414,6 +414,13 @@ export class CapnpReader {
 
   /** Largest segment, pointer list or composite list, in words. */
   private readonly maxWords: number;
+  /**
+   * Words the reader may still visit. Every struct and list reached is
+   * charged its size, so a message whose pointers alias one large value
+   * many times over cannot materialize more than the budget, as the Cap'n
+   * Proto traversal limit does.
+   */
+  private remaining: number;
 
   /**
    * @param bytes - Unpacked single-segment message.
@@ -423,6 +430,7 @@ export class CapnpReader {
    */
   constructor(bytes: Uint8Array, maxWords: number = MAX_TRAVERSAL_WORDS) {
     this.maxWords = maxWords;
+    this.remaining = maxWords;
     if (bytes.byteLength < WORD) {
       throw new Error("truncated Cap'n message");
     }
@@ -464,7 +472,7 @@ export class CapnpReader {
     const dw = Number((word >> 32n) & 0xffffn);
     const pw = Number((word >> 48n) & 0xffffn);
     const target = ptrWord + 1 + offset;
-    this.checkRange(target, dw + pw);
+    this.visit(target, dw + pw);
     return new StructReader(this, target, dw, pw);
   }
 
@@ -476,6 +484,22 @@ export class CapnpReader {
   private checkRange(word: number, nWords: number): void {
     if (word < 0 || nWords < 0 || word + nWords > this.size0) {
       throw new Error("Cap'n pointer out of segment");
+    }
+  }
+
+  /**
+   * Checks that `nWords` from `word` lie in the segment and charges them to
+   * the traversal budget.
+   *
+   * @param word - First word of the struct or list reached.
+   * @param nWords - Its size in words.
+   * @throws When the range leaves the segment or exhausts the budget.
+   */
+  private visit(word: number, nWords: number): void {
+    this.checkRange(word, nWords);
+    this.remaining -= nWords;
+    if (this.remaining < 0) {
+      throw new Error("Cap'n message exceeds traversal budget");
     }
   }
 
@@ -539,7 +563,7 @@ export class CapnpReader {
       return new Uint8Array(0);
     }
     const nWords = lp.length === 0 ? 0 : Math.ceil(lp.length / WORD);
-    this.checkRange(lp.target, nWords);
+    this.visit(lp.target, nWords);
     const start = this.segOff + lp.target * WORD;
     if (start + lp.length > this.view.byteLength) {
       throw new Error("truncated Cap'n byte list");
@@ -572,7 +596,7 @@ export class CapnpReader {
     if (lp.length > this.maxWords) {
       throw new Error("pointer list exceeds traversal budget");
     }
-    this.checkRange(lp.target, lp.length);
+    this.visit(lp.target, lp.length);
     const out: number[] = [];
     for (let i = 0; i < lp.length; i++) {
       out.push(lp.target + i);
@@ -600,7 +624,7 @@ export class CapnpReader {
     if (lp === null || lp.length === 0) {
       return [];
     }
-    this.checkRange(lp.target, Math.ceil((lp.length * byteWidth) / WORD));
+    this.visit(lp.target, Math.ceil((lp.length * byteWidth) / WORD));
     const base = this.segOff + lp.target * WORD;
     const out: number[] = [];
     for (let i = 0; i < lp.length; i++) {
@@ -618,7 +642,7 @@ export class CapnpReader {
     if (lp === null || lp.length === 0) {
       return [];
     }
-    this.checkRange(lp.target, Math.ceil(lp.length / 64));
+    this.visit(lp.target, Math.ceil(lp.length / 64));
     const base = this.segOff + lp.target * WORD;
     const out: boolean[] = [];
     for (let i = 0; i < lp.length; i++) {
@@ -647,7 +671,7 @@ export class CapnpReader {
     if (count > this.maxWords) {
       throw new Error("composite list count exceeds traversal budget");
     }
-    this.checkRange(tagWord, 1 + count * elemWords);
+    this.visit(tagWord, 1 + count * elemWords);
     const out: StructReader[] = [];
     for (let i = 0; i < count; i++) {
       out.push(new StructReader(this, tagWord + 1 + i * elemWords, dw, pw));

@@ -326,13 +326,17 @@ export interface DatabaseBinding {
   execute(batch: TypedDbStatement[], options?: { retry?: RetryToken }): Promise<ExecuteReply>;
   /**
    * Splits `statements` into batches that each fit one request
-   * (`maxStatements` and `maxRequestBytes` of the session, or the caps in
-   * `options`): `for await (const b of db.chunk(stmts)) await db.batch(b)`.
-   * Each batch is atomic; the loop is not. A single statement larger than
-   * the request cap is yielded alone, so `batch()` reports the typed error.
+   * (`maxStatements` of the session and the tighter of the session's and
+   * the binding's `maxRequestBytes`, or the caps in `options`):
+   * `for await (const b of db.chunk(stmts)) await db.batch(b)`. Each batch
+   * is atomic; the loop is not. A single statement larger than the request
+   * cap is yielded alone, so `batch()` reports the typed error. Batches are
+   * sized with the UUID-shaped retry id the binding mints; a caller-chosen
+   * retry id that is longer leaves that much less room.
    *
    * @param statements Prepared statements (binds and intent already applied).
-   * @param options Caps to split by when the session's limits are not available.
+   * @param options Caps to split by instead of the session's limits; `0`
+   *   given explicitly means no cap (one batch when both are `0`).
    */
   chunk(
     statements: PreparedStatement[],
@@ -650,7 +654,9 @@ export function createDatabaseBinding(
     }
     const request = await executeRequestFromBatch(batch, options, retry);
     const encoded = encodeExecuteRequest(request);
-    const cap = options.maxRequestBytes ?? 0;
+    // The binding's configured cap, else the session's, so an oversized
+    // request fails locally with the typed error the host would raise.
+    const cap = options.maxRequestBytes || ((await sessionLimits())?.maxRequestBytes ?? 0);
     if (cap > 0 && encoded.byteLength > cap) {
       throw PluginError.limitExceeded({
         limit: "maxRequestBytes",
@@ -700,27 +706,29 @@ export function createDatabaseBinding(
     const request = await requestFor(batch, retry);
     const streamed = await openStreamed(request);
     if (streamed === undefined) {
-      return transport.execute(request);
+      return replyFor(request, await transport.execute(request));
     }
     const decoder = new ExecuteStreamDecoder(executeStreamLimits(streamed.caps));
     for await (const chunk of streamed.chunks) {
       decoder.push(chunk);
     }
+    let reply: ExecuteReply;
     try {
-      return decoder.finish();
+      reply = decoder.finish();
     } catch (err) {
       if (err instanceof PluginError && err.wireCode === "unsupported") {
-        return transport.execute(request);
+        return replyFor(request, await transport.execute(request));
       }
       throw err;
     }
+    return replyFor(request, reply);
   };
 
   // Rows of a single-statement request read inline, from one `execute`.
   const inlineRows = async function* (
     request: ExecuteRequest,
   ): AsyncIterable<Record<string, DbValue>> {
-    const reply = await transport.execute(request);
+    const reply = replyFor(request, await transport.execute(request));
     const result = reply.statements[0];
     if (result) {
       for (const row of result.rows) {
@@ -764,7 +772,9 @@ export function createDatabaseBinding(
         throw err;
       }
       for (const frame of frames) {
-        if (frame.kind === "statement") {
+        if (frame.kind === "head") {
+          checkReplyIdentity(request, frame.value.operationId, frame.value.statementCount);
+        } else if (frame.kind === "statement") {
           columns = frame.value.columns;
         } else if (frame.kind === "rows") {
           for (const row of frame.value) {
@@ -813,19 +823,28 @@ export function createDatabaseBinding(
           PluginError.fromWire("unsupported", "GuestDatabase.limits is not available on this host"),
         );
       }
-      return sessionLimits().then((caps) =>
-        caps === null ? (transport.limits as () => Promise<DbCapabilities>)() : caps,
-      );
+      return sessionLimits().then(async (caps) => {
+        if (caps !== null) {
+          return caps;
+        }
+        // The cached fetch failed: let the host's own error surface, and
+        // keep a later success so reads use the session's budget.
+        const fetched = await (transport.limits as () => Promise<DbCapabilities>)();
+        cachedLimits = Promise.resolve(fetched);
+        return fetched;
+      });
     },
     async *chunk(statements, opts) {
-      const caps =
-        opts?.maxStatements === undefined || opts.maxRequestBytes === undefined
-          ? await sessionLimits()
-          : null;
+      const explicit = opts?.maxStatements !== undefined && opts.maxRequestBytes !== undefined;
+      const caps = explicit ? null : await sessionLimits();
       const maxStatements = opts?.maxStatements ?? caps?.maxStatements ?? 0;
+      // The session's request cap and the binding's own both apply to
+      // `batch()`, so a batch is sized to the tighter one.
       const maxRequestBytes =
-        opts?.maxRequestBytes ?? caps?.maxRequestBytes ?? options.maxRequestBytes ?? 0;
-      if (maxStatements <= 0 && maxRequestBytes <= 0) {
+        opts?.maxRequestBytes ??
+        tighterCap(caps?.maxRequestBytes ?? 0, options.maxRequestBytes ?? 0);
+      // Explicit zero caps mean "one batch"; only missing caps are an error.
+      if (!explicit && maxStatements <= 0 && maxRequestBytes <= 0) {
         throw PluginError.fromWire(
           "unsupported",
           "chunk needs the session limits (GuestDatabase.limits) or explicit maxStatements / maxRequestBytes",
@@ -848,6 +867,61 @@ interface BindingInternal extends DatabaseBinding {
     batch: TypedDbStatement[],
     retry?: RetryToken,
   ): AsyncIterable<Record<string, DbValue>>;
+}
+
+/**
+ * The smaller of two caps where `0` means "no cap".
+ *
+ * @param a - One cap.
+ * @param b - Another cap.
+ * @returns The tighter cap, or the one that is set, or `0`.
+ */
+function tighterCap(a: number, b: number): number {
+  if (a > 0 && b > 0) {
+    return Math.min(a, b);
+  }
+  return a > 0 ? a : b;
+}
+
+/**
+ * Checks that a reply answers `request`: the same `operationId` and one
+ * result per statement.
+ *
+ * @param request - The request sent.
+ * @param operationId - The reply's operation id.
+ * @param statementCount - Results the reply carries or announces.
+ * @throws `PluginError` `invalid_params` when the reply is for another request.
+ */
+function checkReplyIdentity(
+  request: ExecuteRequest,
+  operationId: string,
+  statementCount: number,
+): void {
+  if (operationId !== request.operationId) {
+    throw PluginError.fromWire(
+      "invalid_params",
+      `reply answers operation ${operationId}, not ${request.operationId}`,
+    );
+  }
+  if (statementCount !== request.statements.length) {
+    throw PluginError.fromWire(
+      "invalid_params",
+      `reply carries ${statementCount} results for ${request.statements.length} statements`,
+    );
+  }
+}
+
+/**
+ * `reply` once it is checked against `request`.
+ *
+ * @param request - The request sent.
+ * @param reply - The reply received.
+ * @returns `reply`.
+ * @throws See {@link checkReplyIdentity}.
+ */
+function replyFor(request: ExecuteRequest, reply: ExecuteReply): ExecuteReply {
+  checkReplyIdentity(request, reply.operationId, reply.statements.length);
+  return reply;
 }
 
 function rowMap(columns: DbColumn[], row: DbRow): Record<string, DbValue> {

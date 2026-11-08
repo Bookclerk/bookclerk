@@ -748,11 +748,21 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
         if (entry.database) {
           merged[entry.name] = entry.database;
         } else if (entry.transport) {
-          const transport = entry.transport;
+          // A transport that predates `limits` or `executeStreamed` reads
+          // inline; the binding only calls what the transport offers.
+          const transport: Partial<GrantedDatabaseTransport> &
+            Pick<GrantedDatabaseTransport, "execute"> = entry.transport;
+          const limits = transport.limits;
+          const executeStreamed = transport.executeStreamed;
           merged[entry.name] = createDatabaseBinding({
             execute: (request) => transport.execute(request),
-            limits: () => transport.limits(),
-            executeStreamed: (request) => transport.executeStreamed(request),
+            ...(typeof limits === "function" ? { limits: () => limits.call(transport) } : {}),
+            ...(typeof executeStreamed === "function"
+              ? {
+                  executeStreamed: (request: ExecuteRequest) =>
+                    executeStreamed.call(transport, request),
+                }
+              : {}),
           });
         }
       }

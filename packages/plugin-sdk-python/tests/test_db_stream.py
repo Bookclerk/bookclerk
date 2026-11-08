@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import math
 import random
+import struct
 import unittest
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from bookclerk_plugin_sdk._abi import MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES
+from bookclerk_plugin_sdk._capnp import _CapnpReader
 from bookclerk_plugin_sdk._wire import (
     _decode_message,
     _encode_message,
@@ -109,7 +114,7 @@ def _err_stream(operation_id: str, code: str, message: str) -> bytes:
     )
 
 
-async def _chunked(data: bytes, size: int):
+async def _chunked(data: bytes, size: int) -> AsyncIterator[bytes]:
     for at in range(0, len(data), size):
         yield data[at : at + size]
 
@@ -442,6 +447,59 @@ class DecoderTests(unittest.TestCase):
         self.assertEqual(sum(1 for f in frames if f["kind"] == "rows"), 3000)
         self.assertTrue(decoder.finished)
 
+    def test_the_traversal_budget_is_cumulative(self) -> None:
+        # Two pointers alias one 1000-word text: reading it twice exceeds a
+        # budget that holds the message once, so aliasing cannot amplify a frame.
+        text_bytes = 8000
+        words = 3 + text_bytes // 8 + 1
+        list_ptr = lambda offset: 1 | (offset << 2) | (2 << 32) | ((text_bytes + 1) << 35)  # noqa: E731
+        data = struct.pack("<II", 0, words)
+        data += struct.pack("<QQQ", 2 << 48, list_ptr(1), list_ptr(0))
+        data += b"a" * text_bytes + bytes(8)
+        self.assertEqual(len(data), 8 + words * 8)
+        once = _CapnpReader(data, words + 16).root(0, 2)
+        self.assertEqual(len(once.get_text(0)), text_bytes)
+        twice = _CapnpReader(data, words + 16).root(0, 2)
+        twice.get_text(0)
+        with self.assertRaisesRegex(ValueError, "traversal budget"):
+            twice.get_text(1)
+        roomy = _CapnpReader(data, words * 2 + 16).root(0, 2)
+        self.assertEqual(len(roomy.get_text(1)), text_bytes)
+
+    def test_a_failed_push_is_latched(self) -> None:
+        decoder = ExecuteStreamDecoder(execute_stream_limits(SQLITE_CAPS))
+        with self.assertRaises(PluginError) as ctx:
+            decoder.push(_stream("op-latch", [_row(0)]) + b"\x00")
+        self.assertEqual(ctx.exception.code, "invalid_params")
+        self.assertTrue(decoder.finished)
+        with self.assertRaises(PluginError) as ctx:
+            decoder.finish()
+        self.assertEqual(ctx.exception.code, "invalid_params")
+
+    def test_streamed_cells_are_validated_like_inline_ones(self) -> None:
+        for cell, text in [
+            ({"kind": "float64", "value": math.nan}, "not finite"),
+            ({"kind": "text", "value": "a\x00b"}, "U\\+0000"),
+        ]:
+            stream = b"".join(
+                [
+                    _frame("head", {"operationId": "op-cell", "statementCount": 1}),
+                    _frame(
+                        "statement",
+                        {
+                            "index": 0,
+                            "columns": [{"name": "v", "dbType": "text"}],
+                            "rowsAffected": 0,
+                        },
+                    ),
+                    _frame("rows", [{"values": [cell]}]),
+                    _frame("end", TIMING),
+                ]
+            )
+            with self.assertRaisesRegex(PluginError, text) as ctx:
+                decode_execute_stream(stream, execute_stream_limits(SQLITE_CAPS))
+            self.assertEqual(ctx.exception.code, "invalid_params")
+
     def test_finish_before_the_end_is_unavailable(self) -> None:
         decoder = ExecuteStreamDecoder(TINY_LIMITS)
         decoder.push(_frame("head", {"operationId": "op", "statementCount": 1}))
@@ -644,6 +702,106 @@ class BindingStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.code, "unavailable")
         self.assertEqual(unavailable.calls["inline"], 0)
 
+    async def test_replies_must_answer_the_request(self) -> None:
+        other = create_database_binding(
+            lambda r: _reply_async({**_inline_reply(r), "operationId": "someone-else"})
+        )
+        with self.assertRaises(PluginError) as ctx:
+            await other.prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "invalid_params")
+        short = create_database_binding(
+            lambda r: _reply_async({**_inline_reply(r), "statements": []})
+        )
+        with self.assertRaises(PluginError) as ctx:
+            await short.prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "invalid_params")
+        streamed = _Transport(caps=SQLITE_CAPS, body=lambda _r: _stream("someone-else", [_row(0)]))
+        with self.assertRaises(PluginError) as ctx:
+            await streamed.binding().prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "invalid_params")
+        with self.assertRaises(PluginError) as ctx:
+            async for _ in streamed.binding().prepare("SELECT 1").iterate():
+                pass
+        self.assertEqual(ctx.exception.code, "invalid_params")
+
+    async def test_a_later_limits_success_replaces_the_cached_failure(self) -> None:
+        attempts = {"n": 0}
+        rows = [_row(0), _row(1)]
+
+        async def limits() -> Any:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise PluginError.from_wire("unavailable", "limits are down")
+            return SQLITE_CAPS
+
+        async def streamed(request: dict[str, Any]) -> bytes:
+            return _stream(request["operationId"], rows[:1])
+
+        db = create_database_binding(
+            lambda r: _reply_async(_inline_reply(r, rows)), limits=limits, execute_streamed=streamed
+        )
+        self.assertEqual(len((await db.prepare("SELECT 1").all())["results"]), 2)
+        self.assertEqual(await db.limits(), SQLITE_CAPS)
+        self.assertEqual(len((await db.prepare("SELECT 1").all())["results"]), 1)
+        self.assertEqual(attempts["n"], 2)
+
+    async def test_overlapping_first_reads_share_one_limits_fetch(self) -> None:
+        transport = _Transport(caps=SQLITE_CAPS, body=lambda r: _stream(r["operationId"], []))
+        db = transport.binding()
+        await asyncio.gather(db.prepare("SELECT 1").all(), db.prepare("SELECT 2").all())
+        self.assertEqual(transport.calls["limits"], 1)
+
+    async def test_the_sessions_request_cap_applies_locally_and_chunk_caps_compose(self) -> None:
+        transport = _Transport(caps={**SQLITE_CAPS, "maxRequestBytes": 200}, inline=_inline_reply)
+        db = transport.binding()
+        with self.assertRaises(PluginError) as ctx:
+            await (
+                db.prepare("INSERT INTO t VALUES (?)")
+                .bind({"kind": "text", "value": "x" * 400})
+                .run()
+            )
+        limit = ctx.exception.limit
+        assert limit is not None
+        self.assertEqual((limit.limit, limit.cap), ("maxRequestBytes", 200))
+        self.assertEqual(transport.calls["inline"], 0, "refused before it was sent")
+
+        stmts = [
+            db.prepare("INSERT INTO t VALUES (?)").bind({"kind": "int64", "value": i})
+            for i in range(5)
+        ]
+        one = [len(b) async for b in db.chunk(stmts, max_statements=0, max_request_bytes=0)]
+        self.assertEqual(one, [5], "explicit zero caps mean one batch")
+
+        bound = create_database_binding(
+            _inline_reply_async,
+            limits=_Transport(caps=SQLITE_CAPS).limits,
+            max_request_bytes=220,
+        )
+        sizes = []
+        async for batch in bound.chunk(stmts):
+            sizes.append(len(batch))
+            await bound.batch(batch)
+        self.assertGreater(len(sizes), 1, "the binding's cap tightens the session's")
+
+    async def test_iterate_yields_before_the_body_is_read_to_its_end(self) -> None:
+        rows = [_row(i) for i in range(40)]
+        pulls = {"n": 0}
+
+        async def body(request: dict[str, Any]) -> AsyncIterator[bytes]:
+            data = _stream(request["operationId"], rows, rows_per_frame=1)
+            for at in range(0, len(data), 64):
+                pulls["n"] += 1
+                yield data[at : at + 64]
+
+        total = -(-len(_stream("x", rows, rows_per_frame=1)) // 64)
+        transport = _Transport(caps=SQLITE_CAPS, body=body)
+        first = True
+        async for _ in transport.binding().prepare("SELECT id").iterate():
+            if first:
+                self.assertLess(pulls["n"], total / 2, "the first row arrives early")
+                first = False
+        self.assertEqual(pulls["n"], total)
+
     async def test_chunk_splits_to_the_session_caps(self) -> None:
         transport = _Transport(caps={**SQLITE_CAPS, "maxStatements": 2}, inline=_inline_reply)
         db = transport.binding()
@@ -670,6 +828,10 @@ class BindingStreamTests(unittest.IsolatedAsyncioTestCase):
 
 async def _inline_reply_async(request: dict[str, Any]) -> Any:
     return _inline_reply(request)
+
+
+async def _reply_async(reply: Any) -> Any:
+    return reply
 
 
 class ChunkIndexesTests(unittest.TestCase):

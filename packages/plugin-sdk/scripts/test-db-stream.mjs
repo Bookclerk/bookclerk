@@ -13,6 +13,7 @@ const {
   decodeExecuteStream,
   executeStreamLimits,
   rawStreamCeiling,
+  streamChunks,
   streamsResults,
 } = await import(join(dist, "db-stream.js"));
 const { createDatabaseBinding, chunkIndexes, encodeExecuteRequest } = await import(
@@ -22,6 +23,8 @@ const { ExecuteStreamFrameCodec, decodeMessage, encodeMessage } = await import(
   join(dist, "generated-wire.js")
 );
 const { MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES } = await import(join(dist, "abi.js"));
+const { CapnpReader } = await import(join(dist, "db-capnp.js"));
+const { PluginError } = await import(join(dist, "errors.js"));
 
 // The first-party sqlite advertisement as the host reads it (every value
 // mirrors `DbCapabilities::advertised_sqlite()`).
@@ -668,6 +671,220 @@ for (const setup of [
     })(),
     (err) => err.code === "unavailable",
   );
+}
+
+// --- Reader and decoder hardening ------------------------------------------
+// The traversal budget is cumulative: a message whose two pointers alias
+// one large text charges it twice, so aliasing cannot amplify a frame.
+{
+  const textBytes = 8000; // 1000 words
+  const words = 3 + textBytes / 8 + 1;
+  const buf = new Uint8Array(8 + words * 8);
+  const view = new DataView(buf.buffer);
+  view.setUint32(4, words, true);
+  const word = (i, v) => view.setBigUint64(8 + i * 8, v, true);
+  word(0, 2n << 48n); // root struct at w1: 0 data words, 2 pointers
+  const listPtr = (offset) =>
+    1n | (BigInt(offset) << 2n) | (2n << 32n) | (BigInt(textBytes + 1) << 35n);
+  word(1, listPtr(1)); // -> w3
+  word(2, listPtr(0)); // -> w3 (the same text)
+  buf.fill(0x61, 8 + 3 * 8, 8 + 3 * 8 + textBytes);
+  const once = new CapnpReader(buf, words + 16).root(0, 2);
+  assert.equal(once.getText(0).length, textBytes);
+  const twice = new CapnpReader(buf, words + 16).root(0, 2);
+  twice.getText(0);
+  assert.throws(() => twice.getText(1), /traversal budget/);
+  const roomy = new CapnpReader(buf, words * 2 + 16).root(0, 2);
+  assert.equal(roomy.getText(1).length, textBytes);
+}
+
+// A failed push is latched: `finish()` reports the failure, not the reply
+// the earlier frames described.
+{
+  const rows = [row(0)];
+  const bytes = concat([streamOf("op-latch", rows), Uint8Array.of(0)]);
+  const decoder = new ExecuteStreamDecoder(executeStreamLimits(sqliteCaps));
+  assert.throws(
+    () => decoder.push(bytes),
+    (err) => err.wireCode === "invalid_params",
+  );
+  assert.ok(decoder.finished);
+  assert.throws(
+    () => decoder.finish(),
+    (err) => err.wireCode === "invalid_params",
+  );
+}
+
+// Streamed cells are validated like inline ones.
+{
+  for (const [cell, text] of [
+    [{ kind: "float64", value: Number.NaN }, /not finite/],
+    [{ kind: "text", value: "a\u0000b" }, /U\+0000/],
+  ]) {
+    const bytes = concat([
+      frame("head", { operationId: "op-cell", statementCount: 1 }),
+      frame("statement", { index: 0, columns: [{ name: "v", dbType: "text" }], rowsAffected: 0 }),
+      frame("rows", [{ values: [cell] }]),
+      frame("end", timing),
+    ]);
+    assert.throws(
+      () => decodeExecuteStream(bytes, executeStreamLimits(sqliteCaps)),
+      (err) => err.wireCode === "invalid_params" && text.test(err.message),
+    );
+  }
+}
+
+// `streamChunks` cancels a body its consumer leaves unread.
+{
+  let cancelled = false;
+  const body = new ReadableStream({
+    pull(controller) {
+      controller.enqueue(Uint8Array.of(1, 2, 3));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  for await (const chunk of streamChunks(body)) {
+    assert.equal(chunk.byteLength, 3);
+    break;
+  }
+  assert.ok(cancelled, "an early exit cancels the body");
+}
+
+// --- Binding hardening -----------------------------------------------------
+// A reply for another operation, or with the wrong number of results, is
+// refused on both paths.
+{
+  const other = createDatabaseBinding({
+    async execute(req) {
+      return { ...inlineReply(req), operationId: "someone-else" };
+    },
+  });
+  await assert.rejects(other.prepare("SELECT 1").all(), (err) => err.code === "invalid_params");
+  const short = createDatabaseBinding({
+    async execute(req) {
+      return { ...inlineReply(req), statements: [] };
+    },
+  });
+  await assert.rejects(short.prepare("SELECT 1").all(), (err) => err.code === "invalid_params");
+  const streamedOther = createDatabaseBinding(
+    transportOf({ caps: sqliteCaps, body: () => streamOf("someone-else", [row(0)]) }).transport,
+  );
+  await assert.rejects(
+    streamedOther.prepare("SELECT 1").all(),
+    (err) => err.code === "invalid_params",
+  );
+  await assert.rejects(
+    (async () => {
+      for await (const _ of streamedOther.prepare("SELECT 1").iterate()) {
+        // unreachable
+      }
+    })(),
+    (err) => err.code === "invalid_params",
+  );
+}
+
+// A failed first limits lookup is replaced by a later success, so reads
+// then use the session's budget.
+{
+  let attempts = 0;
+  const rows = [row(0), row(1)];
+  const transport = {
+    async execute(req) {
+      return inlineReply(req, rows);
+    },
+    async limits() {
+      attempts += 1;
+      if (attempts === 1) {
+        throw PluginError.fromWire("unavailable", "limits are down");
+      }
+      return sqliteCaps;
+    },
+    async executeStreamed(req) {
+      return streamOf(req.operationId, rows.slice(0, 1));
+    },
+  };
+  const db = createDatabaseBinding(transport);
+  assert.equal((await db.prepare("SELECT 1").all()).results.length, 2, "inline while unknown");
+  assert.deepEqual(await db.limits(), sqliteCaps);
+  assert.equal((await db.prepare("SELECT 1").all()).results.length, 1, "streamed once known");
+  assert.equal(attempts, 2);
+}
+
+// The session's request cap applies locally even without a binding cap, and
+// `chunk()` honours explicit zero caps and the tighter of two caps.
+{
+  const tinyRequest = { ...sqliteCaps, maxRequestBytes: 200 };
+  const { transport, calls } = transportOf({
+    caps: tinyRequest,
+    onInline: (req) => inlineReply(req),
+  });
+  const db = createDatabaseBinding(transport);
+  await assert.rejects(
+    db
+      .prepare("INSERT INTO t VALUES (?)")
+      .bind({ kind: "text", value: "x".repeat(400) })
+      .run(),
+    (err) =>
+      err.code === "limit_exceeded" &&
+      err.limit.limit === "maxRequestBytes" &&
+      err.limit.cap === 200,
+  );
+  assert.equal(calls.inline, 0, "refused before it was sent");
+
+  const stmts = Array.from({ length: 5 }, (_, i) =>
+    db.prepare("INSERT INTO t VALUES (?)").bind({ kind: "int64", value: BigInt(i) }),
+  );
+  const one = [];
+  for await (const batch of db.chunk(stmts, { maxStatements: 0, maxRequestBytes: 0 })) {
+    one.push(batch.length);
+  }
+  assert.deepEqual(one, [5], "explicit zero caps mean one batch");
+
+  const bound = createDatabaseBinding(
+    transportOf({ caps: sqliteCaps, onInline: (req) => inlineReply(req) }).transport,
+    { maxRequestBytes: 220 },
+  );
+  const tightened = [];
+  for await (const batch of bound.chunk(stmts)) {
+    tightened.push(batch.length);
+    await bound.batch(batch);
+  }
+  assert.ok(tightened.length > 1, "the binding's cap tightens the session's");
+}
+
+// `iterate()` hands out rows before the body has been read to its end.
+{
+  const rows = Array.from({ length: 40 }, (_, i) => row(i));
+  let pulls = 0;
+  const { transport } = transportOf({
+    caps: sqliteCaps,
+    body: (req) => {
+      const bytes = streamOf(req.operationId, rows, { rowsPerFrame: 1 });
+      let at = 0;
+      return new ReadableStream({
+        pull(controller) {
+          pulls += 1;
+          if (at >= bytes.byteLength) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(bytes.slice(at, Math.min(at + 64, bytes.byteLength)));
+          at += 64;
+        },
+      });
+    },
+  });
+  const totalChunks = Math.ceil(streamOf("x", rows, { rowsPerFrame: 1 }).byteLength / 64);
+  let first = true;
+  for await (const _ of createDatabaseBinding(transport).prepare("SELECT id").iterate()) {
+    if (first) {
+      assert.ok(pulls < totalChunks / 2, `first row after ${pulls} of ${totalChunks} chunks`);
+      first = false;
+    }
+  }
+  assert.ok(pulls >= totalChunks);
 }
 
 // --- `chunk()` splits a batch to the request caps ------------------------

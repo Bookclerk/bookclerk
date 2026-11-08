@@ -346,6 +346,13 @@ var CapnpReader = class {
   /** Largest segment, pointer list or composite list, in words. */
   maxWords;
   /**
+   * Words the reader may still visit. Every struct and list reached is
+   * charged its size, so a message whose pointers alias one large value
+   * many times over cannot materialize more than the budget, as the Cap'n
+   * Proto traversal limit does.
+   */
+  remaining;
+  /**
    * @param bytes - Unpacked single-segment message.
    * @param maxWords - Traversal budget in words; the default suits control
    *   messages, a streamed result frame passes the budget its stream
@@ -353,6 +360,7 @@ var CapnpReader = class {
    */
   constructor(bytes, maxWords = MAX_TRAVERSAL_WORDS) {
     this.maxWords = maxWords;
+    this.remaining = maxWords;
     if (bytes.byteLength < WORD) {
       throw new Error("truncated Cap'n message");
     }
@@ -392,7 +400,7 @@ var CapnpReader = class {
     const dw = Number(word >> 32n & 0xffffn);
     const pw = Number(word >> 48n & 0xffffn);
     const target = ptrWord + 1 + offset;
-    this.checkRange(target, dw + pw);
+    this.visit(target, dw + pw);
     return new StructReader(this, target, dw, pw);
   }
   readWord(word) {
@@ -402,6 +410,21 @@ var CapnpReader = class {
   checkRange(word, nWords) {
     if (word < 0 || nWords < 0 || word + nWords > this.size0) {
       throw new Error("Cap'n pointer out of segment");
+    }
+  }
+  /**
+   * Checks that `nWords` from `word` lie in the segment and charges them to
+   * the traversal budget.
+   *
+   * @param word - First word of the struct or list reached.
+   * @param nWords - Its size in words.
+   * @throws When the range leaves the segment or exhausts the budget.
+   */
+  visit(word, nWords) {
+    this.checkRange(word, nWords);
+    this.remaining -= nWords;
+    if (this.remaining < 0) {
+      throw new Error("Cap'n message exceeds traversal budget");
     }
   }
   listPointer(ptrWord, expectSize) {
@@ -455,7 +478,7 @@ var CapnpReader = class {
       return new Uint8Array(0);
     }
     const nWords = lp.length === 0 ? 0 : Math.ceil(lp.length / WORD);
-    this.checkRange(lp.target, nWords);
+    this.visit(lp.target, nWords);
     const start = this.segOff + lp.target * WORD;
     if (start + lp.length > this.view.byteLength) {
       throw new Error("truncated Cap'n byte list");
@@ -485,7 +508,7 @@ var CapnpReader = class {
     if (lp.length > this.maxWords) {
       throw new Error("pointer list exceeds traversal budget");
     }
-    this.checkRange(lp.target, lp.length);
+    this.visit(lp.target, lp.length);
     const out = [];
     for (let i = 0; i < lp.length; i++) {
       out.push(lp.target + i);
@@ -510,7 +533,7 @@ var CapnpReader = class {
     if (lp === null || lp.length === 0) {
       return [];
     }
-    this.checkRange(lp.target, Math.ceil(lp.length * byteWidth / WORD));
+    this.visit(lp.target, Math.ceil(lp.length * byteWidth / WORD));
     const base = this.segOff + lp.target * WORD;
     const out = [];
     for (let i = 0; i < lp.length; i++) {
@@ -523,7 +546,7 @@ var CapnpReader = class {
     if (lp === null || lp.length === 0) {
       return [];
     }
-    this.checkRange(lp.target, Math.ceil(lp.length / 64));
+    this.visit(lp.target, Math.ceil(lp.length / 64));
     const base = this.segOff + lp.target * WORD;
     const out = [];
     for (let i = 0; i < lp.length; i++) {
@@ -551,7 +574,7 @@ var CapnpReader = class {
     if (count > this.maxWords) {
       throw new Error("composite list count exceeds traversal budget");
     }
-    this.checkRange(tagWord, 1 + count * elemWords);
+    this.visit(tagWord, 1 + count * elemWords);
     const out = [];
     for (let i = 0; i < count; i++) {
       out.push(new StructReader(this, tagWord + 1 + i * elemWords, dw, pw));
@@ -7287,6 +7310,24 @@ var ExecuteStreamDecoder = class {
    *   sequence or bytes follow the final frame.
    */
   push(bytes) {
+    try {
+      return this.#push(bytes);
+    } catch (err) {
+      if (err instanceof PluginError) {
+        this.#columns = [];
+        this.#state = { kind: "finished", outcome: { err } };
+      }
+      throw err;
+    }
+  }
+  /**
+   * `push` before its failure is latched.
+   *
+   * @param bytes - Any slice of the frame sequence.
+   * @returns The frames completed by these bytes, in order.
+   * @throws See {@link ExecuteStreamDecoder.push}.
+   */
+  #push(bytes) {
     const frames = [];
     if (bytes.byteLength === 0) {
       return frames;
@@ -7313,7 +7354,7 @@ var ExecuteStreamDecoder = class {
       if (this.#buf.byteLength - at < frameLen) {
         break;
       }
-      const frame = decodeFrame(this.#buf.subarray(at, at + frameLen), ceiling);
+      const frame = decodeFrame(this.#buf.slice(at, at + frameLen), ceiling);
       at += frameLen;
       this.#apply(frame);
       frames.push(frame);
@@ -7344,6 +7385,12 @@ var ExecuteStreamDecoder = class {
     }
     return outcome.ok;
   }
+  /**
+   * The typed error for a stream over its byte budget.
+   *
+   * @param used - Bytes seen or declared.
+   * @returns `limit_exceeded` naming the budget's capability field.
+   */
   #bytesExceeded(used) {
     return PluginError.limitExceeded({
       limit: this.#limits.bytesLimit,
@@ -7351,9 +7398,24 @@ var ExecuteStreamDecoder = class {
       used
     });
   }
+  /**
+   * The error for a frame out of sequence.
+   *
+   * @param message - What the stream did, completing "streamed reply …".
+   * @returns `invalid_params`.
+   */
   #sequence(message) {
     return PluginError.fromWire("invalid_params", `streamed reply ${message}`);
   }
+  /**
+   * Advances the sequence by one decoded frame: opens the reply on `head`,
+   * a statement on `statement`, counts (and keeps, when retained) `rows`,
+   * and closes the reply on `end` or `err`.
+   *
+   * @param frame - The frame just decoded.
+   * @throws `PluginError` `invalid_params` when the frame is out of sequence
+   *   or a cell is not a valid `DbValue`, `limit_exceeded` past the row cap.
+   */
   #apply(frame) {
     const state = this.#state;
     if (frame.kind === "err") {
@@ -7412,6 +7474,11 @@ var ExecuteStreamDecoder = class {
         if (!open) {
           throw this.#sequence("carries rows before a statement frame");
         }
+        for (const row of frame.value) {
+          for (const cell of row.values) {
+            validateCell(cell);
+          }
+        }
         state.openRows += frame.value.length;
         if (this.#limits.maxRows > 0 && state.openRows > this.#limits.maxRows) {
           throw PluginError.limitExceeded({
@@ -7468,10 +7535,12 @@ async function* streamChunks(body) {
     return;
   }
   const reader = body.getReader();
+  let drained = false;
   try {
     for (; ; ) {
       const { done, value } = await reader.read();
       if (done) {
+        drained = true;
         return;
       }
       if (value) {
@@ -7479,7 +7548,18 @@ async function* streamChunks(body) {
       }
     }
   } finally {
+    if (!drained) {
+      await reader.cancel().catch(() => void 0);
+    }
     reader.releaseLock();
+  }
+}
+function validateCell(cell) {
+  if (cell.kind === "float64" && !Number.isFinite(cell.value)) {
+    throw PluginError.fromWire("invalid_params", "streamed reply float64 cell is not finite");
+  }
+  if (cell.kind === "text" && cell.value.includes("\0")) {
+    throw PluginError.fromWire("invalid_params", "streamed reply TEXT cell contains U+0000");
   }
 }
 function decodeFrame(bytes, ceiling) {
@@ -7969,7 +8049,7 @@ function createDatabaseBinding(transport, options = {}) {
     }
     const request = await executeRequestFromBatch(batch, options, retry);
     const encoded = encodeExecuteRequest(request);
-    const cap = options.maxRequestBytes ?? 0;
+    const cap = options.maxRequestBytes || ((await sessionLimits())?.maxRequestBytes ?? 0);
     if (cap > 0 && encoded.byteLength > cap) {
       throw PluginError.limitExceeded({
         limit: "maxRequestBytes",
@@ -8005,23 +8085,25 @@ function createDatabaseBinding(transport, options = {}) {
     const request = await requestFor(batch, retry);
     const streamed = await openStreamed(request);
     if (streamed === void 0) {
-      return transport.execute(request);
+      return replyFor(request, await transport.execute(request));
     }
     const decoder = new ExecuteStreamDecoder(executeStreamLimits(streamed.caps));
     for await (const chunk of streamed.chunks) {
       decoder.push(chunk);
     }
+    let reply;
     try {
-      return decoder.finish();
+      reply = decoder.finish();
     } catch (err) {
       if (err instanceof PluginError && err.wireCode === "unsupported") {
-        return transport.execute(request);
+        return replyFor(request, await transport.execute(request));
       }
       throw err;
     }
+    return replyFor(request, reply);
   };
   const inlineRows = async function* (request) {
-    const reply = await transport.execute(request);
+    const reply = replyFor(request, await transport.execute(request));
     const result = reply.statements[0];
     if (result) {
       for (const row of result.rows) {
@@ -8054,7 +8136,9 @@ function createDatabaseBinding(transport, options = {}) {
         throw err;
       }
       for (const frame of frames) {
-        if (frame.kind === "statement") {
+        if (frame.kind === "head") {
+          checkReplyIdentity(request, frame.value.operationId, frame.value.statementCount);
+        } else if (frame.kind === "statement") {
           columns = frame.value.columns;
         } else if (frame.kind === "rows") {
           for (const row of frame.value) {
@@ -8100,13 +8184,21 @@ function createDatabaseBinding(transport, options = {}) {
       if (transport.limits === void 0) {
         return Promise.reject(PluginError.fromWire("unsupported", "GuestDatabase.limits is not available on this host"));
       }
-      return sessionLimits().then((caps) => caps === null ? transport.limits() : caps);
+      return sessionLimits().then(async (caps) => {
+        if (caps !== null) {
+          return caps;
+        }
+        const fetched = await transport.limits();
+        cachedLimits = Promise.resolve(fetched);
+        return fetched;
+      });
     },
     async *chunk(statements, opts) {
-      const caps = opts?.maxStatements === void 0 || opts.maxRequestBytes === void 0 ? await sessionLimits() : null;
+      const explicit = opts?.maxStatements !== void 0 && opts.maxRequestBytes !== void 0;
+      const caps = explicit ? null : await sessionLimits();
       const maxStatements = opts?.maxStatements ?? caps?.maxStatements ?? 0;
-      const maxRequestBytes = opts?.maxRequestBytes ?? caps?.maxRequestBytes ?? options.maxRequestBytes ?? 0;
-      if (maxStatements <= 0 && maxRequestBytes <= 0) {
+      const maxRequestBytes = opts?.maxRequestBytes ?? tighterCap(caps?.maxRequestBytes ?? 0, options.maxRequestBytes ?? 0);
+      if (!explicit && maxStatements <= 0 && maxRequestBytes <= 0) {
         throw PluginError.fromWire("unsupported", "chunk needs the session limits (GuestDatabase.limits) or explicit maxStatements / maxRequestBytes");
       }
       const typed = statements.map((stmt) => stmt._asTyped());
@@ -8117,6 +8209,24 @@ function createDatabaseBinding(transport, options = {}) {
   };
   binding._iterateRows = iterateRows;
   return binding;
+}
+function tighterCap(a, b) {
+  if (a > 0 && b > 0) {
+    return Math.min(a, b);
+  }
+  return a > 0 ? a : b;
+}
+function checkReplyIdentity(request, operationId, statementCount) {
+  if (operationId !== request.operationId) {
+    throw PluginError.fromWire("invalid_params", `reply answers operation ${operationId}, not ${request.operationId}`);
+  }
+  if (statementCount !== request.statements.length) {
+    throw PluginError.fromWire("invalid_params", `reply carries ${statementCount} results for ${request.statements.length} statements`);
+  }
+}
+function replyFor(request, reply) {
+  checkReplyIdentity(request, reply.operationId, reply.statements.length);
+  return reply;
 }
 function rowMap(columns, row) {
   const out = {};
@@ -9220,10 +9330,14 @@ function invocationEnv(rawEnv, context) {
           merged[entry.name] = entry.database;
         } else if (entry.transport) {
           const transport = entry.transport;
+          const limits = transport.limits;
+          const executeStreamed = transport.executeStreamed;
           merged[entry.name] = createDatabaseBinding({
             execute: (request) => transport.execute(request),
-            limits: () => transport.limits(),
-            executeStreamed: (request) => transport.executeStreamed(request)
+            ...typeof limits === "function" ? { limits: () => limits.call(transport) } : {},
+            ...typeof executeStreamed === "function" ? {
+              executeStreamed: (request) => executeStreamed.call(transport, request)
+            } : {}
           });
         }
       }

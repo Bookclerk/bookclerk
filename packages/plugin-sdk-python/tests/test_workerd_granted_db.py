@@ -96,9 +96,11 @@ class _MockFetcher:
                     from bookclerk_plugin_sdk.db_value import decode_execute_request
 
                     return _frames(decode_execute_request(bytes(kwargs["body"]))["operationId"])
+                from bookclerk_plugin_sdk.db_value import decode_execute_request
+
                 return encode_execute_result_reply(
                     {
-                        "operationId": "op",
+                        "operationId": decode_execute_request(bytes(kwargs["body"]))["operationId"],
                         "statements": [
                             {
                                 "rows": [{"values": [{"kind": "int64", "value": 1}]}],
@@ -319,20 +321,20 @@ class _MockTransport:
         self.requests: list[bytes] = []
         self.methods: list[tuple[str, bytes | None]] = []
 
-    async def limitsBytes(self):  # noqa: N802  (Workers RPC method name)
+    async def limitsBytes(self) -> bytes:  # noqa: N802  (Workers RPC method name)
         from bookclerk_plugin_sdk.db_value import encode_db_capabilities_reply
 
         self.methods.append(("limitsBytes", None))
         return encode_db_capabilities_reply(_CAPS)
 
-    async def executeStreamedBytes(self, body):  # noqa: N802  (Workers RPC method name)
+    async def executeStreamedBytes(self, body: bytes) -> bytes:  # noqa: N802  (Workers RPC name)
         from bookclerk_plugin_sdk.db_value import decode_execute_request
 
         self.requests.append(bytes(body))
         self.methods.append(("executeStreamedBytes", bytes(body)))
         return _frames(decode_execute_request(bytes(body))["operationId"])
 
-    async def executeBytes(self, body):  # noqa: N802  (Workers RPC method name)
+    async def executeBytes(self, body: bytes) -> bytes:  # noqa: N802  (Workers RPC method name)
         from bookclerk_plugin_sdk.db_value import (
             decode_execute_request,
             encode_execute_result_reply,
@@ -437,6 +439,22 @@ class WorkerdTransportDbTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PluginError) as ctx:
             await env.DB.prepare("SELECT 1").all()
         self.assertEqual(ctx.exception.code, "internal")
+
+    async def test_transport_without_a_streamed_method_reads_inline(self) -> None:
+        from bookclerk_plugin_sdk.workerd import _invocation_env
+
+        class _Legacy:
+            """The mock's inline methods only: no streamed read at all."""
+
+            __init__ = _MockTransport.__init__
+            limitsBytes = _MockTransport.limitsBytes  # noqa: N815  (Workers RPC method name)
+            executeBytes = _MockTransport.executeBytes  # noqa: N815  (Workers RPC method name)
+
+        legacy = _Legacy()
+        env = _invocation_env({}, {"databases": [{"name": "DB", "transport": legacy}]})
+        row = await env.DB.prepare("SELECT 1").first()
+        self.assertEqual(row["n"]["value"], 7)
+        self.assertEqual([name for name, _ in legacy.methods], ["limitsBytes"])
 
     async def test_transport_entry_becomes_env_binding(self) -> None:
         from bookclerk_plugin_sdk.workerd import _invocation_env

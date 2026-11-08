@@ -13,7 +13,7 @@ use bookclerk_plugin_abi::{
     LimitExceeded, PluginError, PluginErrorCode, Result, StatementResult, TypedDbStatement,
 };
 use bookclerk_plugin_abi::{Bindings, GuestDatabase};
-use tokio::sync::OnceCell;
+use tokio::sync::Mutex;
 
 static OP_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -102,9 +102,21 @@ pub struct ChunkCaps {
 pub struct DatabaseBinding {
     session: Arc<dyn GuestDatabase>,
     options: DatabaseBindingOptions,
-    /// The session's limits, fetched once; `None` inside when the host
-    /// predates `GuestDatabase.limits` or the call failed (read inline).
-    limits: Arc<OnceCell<Option<DbCapabilities>>>,
+    /// The session's limits, fetched once per binding; the lock is held
+    /// across the fetch so overlapping first reads share it.
+    limits: Arc<Mutex<LimitsCache>>,
+}
+
+/// What the binding knows about the session's limits.
+#[derive(Debug, Clone)]
+enum LimitsCache {
+    /// `GuestDatabase.limits` has not been called yet.
+    Unfetched,
+    /// The call failed or the host predates it: reads go inline until an
+    /// explicit [`DatabaseBinding::limits`] succeeds.
+    Failed,
+    /// The session's advertised capabilities.
+    Ready(DbCapabilities),
 }
 
 impl DatabaseBinding {
@@ -123,7 +135,7 @@ impl DatabaseBinding {
         Self {
             session,
             options,
-            limits: Arc::new(OnceCell::new()),
+            limits: Arc::new(Mutex::new(LimitsCache::Unfetched)),
         }
     }
 
@@ -152,28 +164,43 @@ impl DatabaseBinding {
     /// Returns `unsupported` when the host session predates
     /// `GuestDatabase.limits`.
     pub async fn limits(&self) -> Result<DbCapabilities> {
-        match self.session_limits().await {
-            Some(caps) => Ok(caps.clone()),
-            // The cached fetch failed: let the host's own error surface.
-            None => self.session.limits().await,
+        if let Some(caps) = self.session_limits().await {
+            return Ok(caps);
         }
+        // The cached fetch failed: let the host's own error surface, and
+        // keep a later success so reads use the session's budget.
+        let caps = self.session.limits().await?;
+        *self.limits.lock().await = LimitsCache::Ready(caps.clone());
+        Ok(caps)
     }
 
-    /// The session's limits, fetched once per binding.
-    async fn session_limits(&self) -> Option<&DbCapabilities> {
-        self.limits
-            .get_or_init(|| async { self.session.limits().await.ok() })
-            .await
-            .as_ref()
+    /// The session's limits, fetched once per binding; `None` when the host
+    /// predates `GuestDatabase.limits` or the call failed (read inline).
+    async fn session_limits(&self) -> Option<DbCapabilities> {
+        let mut cache = self.limits.lock().await;
+        if matches!(*cache, LimitsCache::Unfetched) {
+            *cache = match self.session.limits().await {
+                Ok(caps) => LimitsCache::Ready(caps),
+                Err(_) => LimitsCache::Failed,
+            };
+        }
+        match &*cache {
+            LimitsCache::Ready(caps) => Some(caps.clone()),
+            LimitsCache::Unfetched | LimitsCache::Failed => None,
+        }
     }
 
     /// Splits `statements` into batches that each fit one request.
     ///
     /// `for batch in db.chunk(stmts, None).await? { db.batch(batch, None).await?; }`.
     /// Each batch is atomic; the loop is not. The caps come from the
-    /// session's limits (`max_statements` / `max_request_bytes`) unless
-    /// `caps` is given. A single statement larger than the request cap is
-    /// yielded alone, so [`Self::batch`] reports the typed error.
+    /// session's limits (`max_statements`, and the tighter of the session's
+    /// and the binding's `max_request_bytes`) unless `caps` is given; zero
+    /// caps given explicitly mean one batch. A single statement larger than
+    /// the request cap is yielded alone, so [`Self::batch`] reports the
+    /// typed error. Batches are sized with the UUID-shaped retry id the
+    /// binding mints; a caller-chosen retry id that is longer leaves that
+    /// much less room.
     ///
     /// # Errors
     ///
@@ -185,12 +212,18 @@ impl DatabaseBinding {
         statements: Vec<PreparedStatement>,
         caps: Option<ChunkCaps>,
     ) -> Result<Vec<Vec<PreparedStatement>>> {
+        let explicit = caps.is_some();
         let caps = match caps {
             Some(caps) => caps,
+            // The session's request cap and the binding's own both apply to
+            // `batch()`, so a batch is sized to the tighter one.
             None => match self.session_limits().await {
                 Some(limits) => ChunkCaps {
                     max_statements: limits.max_statements,
-                    max_request_bytes: limits.max_request_bytes,
+                    max_request_bytes: tighter_cap(
+                        limits.max_request_bytes,
+                        self.options.max_request_bytes,
+                    ),
                 },
                 None => ChunkCaps {
                     max_statements: 0,
@@ -198,7 +231,8 @@ impl DatabaseBinding {
                 },
             },
         };
-        if caps.max_statements == 0 && caps.max_request_bytes == 0 {
+        // Explicit zero caps mean "one batch"; only missing caps are an error.
+        if !explicit && caps.max_statements == 0 && caps.max_request_bytes == 0 {
             return Err(PluginError::unsupported(
                 "chunk needs the session limits (GuestDatabase.limits) or explicit caps",
             ));
@@ -304,7 +338,15 @@ impl DatabaseBinding {
             deadline_unix_ms: self.options.deadline_unix_ms,
         };
         let encoded = encoded_execute_request_bytes(&request)?;
-        let cap = self.options.max_request_bytes;
+        let session_caps = self.session_limits().await;
+        // The binding's configured cap, else the session's, so an oversized
+        // request fails locally with the typed error the host would raise.
+        let cap = match self.options.max_request_bytes {
+            0 => session_caps
+                .as_ref()
+                .map_or(0, |caps| caps.max_request_bytes),
+            cap => cap,
+        };
         if cap > 0 && encoded.len() > cap as usize {
             return Err(PluginError::limit_exceeded(LimitExceeded::new(
                 "maxRequestBytes",
@@ -312,28 +354,24 @@ impl DatabaseBinding {
                 u64::try_from(encoded.len()).unwrap_or(u64::MAX),
             )));
         }
-        let Some(caps) = self
-            .session_limits()
-            .await
-            .filter(|caps| caps.streams_results())
-        else {
-            return self.session.execute(request).await;
+        let Some(caps) = session_caps.filter(DbCapabilities::streams_results) else {
+            return reply_for(&request, self.session.execute(request.clone()).await?);
         };
         // An `unsupported` answer (an older host, or a session that advertised
         // streaming it cannot serve) falls back to the inline read.
         let streamed = match self.session.execute_streamed(request.clone()).await {
             Ok(stream) => {
                 stream
-                    .collect(ExecuteStreamLimits::from_capabilities(caps))
+                    .collect(ExecuteStreamLimits::from_capabilities(&caps))
                     .await
             }
             Err(err) => Err(err),
         };
         match streamed {
             Err(err) if err.code == PluginErrorCode::Unsupported => {
-                self.session.execute(request).await
+                reply_for(&request, self.session.execute(request.clone()).await?)
             }
-            other => other,
+            other => reply_for(&request, other?),
         }
     }
 
@@ -540,6 +578,39 @@ fn request_bytes(
     .len())
 }
 
+/// The smaller of two caps where `0` means "no cap".
+fn tighter_cap(a: u32, b: u32) -> u32 {
+    match (a, b) {
+        (0, b) => b,
+        (a, 0) => a,
+        (a, b) => a.min(b),
+    }
+}
+
+/// `reply` once it is checked to answer `request`: the same operation id
+/// and one result per statement.
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] when the reply is for another
+/// request.
+fn reply_for(request: &ExecuteRequest, reply: ExecuteReply) -> Result<ExecuteReply> {
+    if reply.operation_id != request.operation_id {
+        return Err(PluginError::invalid_params(format!(
+            "reply answers operation {}, not {}",
+            reply.operation_id, request.operation_id
+        )));
+    }
+    if reply.statements.len() != request.statements.len() {
+        return Err(PluginError::invalid_params(format!(
+            "reply carries {} results for {} statements",
+            reply.statements.len(),
+            request.statements.len()
+        )));
+    }
+    Ok(reply)
+}
+
 /// Greedy split of `typed` into index runs that each fit one request.
 ///
 /// Sizes are estimated per statement against one probe statement and each
@@ -733,9 +804,10 @@ mod tests {
     impl GuestDatabase for RecordingSession {
         async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply> {
             let n = request.statements.len();
+            let operation_id = request.operation_id.clone();
             *self.last.lock().expect("lock") = Some(request);
             Ok(ExecuteReply {
-                operation_id: "op".into(),
+                operation_id,
                 statements: (0..n)
                     .map(|_| bookclerk_plugin_abi::StatementResult {
                         rows: vec![bookclerk_plugin_abi::DbRow {
@@ -810,30 +882,35 @@ mod tests {
         }
     }
 
-    fn reply_with_rows(operation_id: &str, rows: usize) -> ExecuteReply {
+    /// A reply with one result per requested statement: statement `s` has
+    /// `rows` rows whose ids start at `s * 100`, so a dropped or reordered
+    /// result is visible.
+    fn reply_with_rows(request: &ExecuteRequest, rows: usize) -> ExecuteReply {
         ExecuteReply {
-            operation_id: operation_id.into(),
-            statements: vec![bookclerk_plugin_abi::StatementResult {
-                rows: (0..rows)
-                    .map(|i| bookclerk_plugin_abi::DbRow {
-                        values: vec![
-                            DbValue::Int64(i64::try_from(i).expect("small")),
-                            DbValue::Text(format!("Title {i}")),
-                        ],
-                    })
-                    .collect(),
-                columns: vec![
-                    bookclerk_plugin_abi::DbColumn {
-                        name: "id".into(),
-                        db_type: bookclerk_plugin_abi::DbType::Int64,
-                    },
-                    bookclerk_plugin_abi::DbColumn {
-                        name: "title".into(),
-                        db_type: bookclerk_plugin_abi::DbType::Text,
-                    },
-                ],
-                rows_affected: 0,
-            }],
+            operation_id: request.operation_id.clone(),
+            statements: (0..request.statements.len())
+                .map(|s| bookclerk_plugin_abi::StatementResult {
+                    rows: (0..rows)
+                        .map(|i| bookclerk_plugin_abi::DbRow {
+                            values: vec![
+                                DbValue::Int64(i64::try_from(s * 100 + i).expect("small")),
+                                DbValue::Text(format!("Title {i}")),
+                            ],
+                        })
+                        .collect(),
+                    columns: vec![
+                        bookclerk_plugin_abi::DbColumn {
+                            name: "id".into(),
+                            db_type: bookclerk_plugin_abi::DbType::Int64,
+                        },
+                        bookclerk_plugin_abi::DbColumn {
+                            name: "title".into(),
+                            db_type: bookclerk_plugin_abi::DbType::Text,
+                        },
+                    ],
+                    rows_affected: 0,
+                })
+                .collect(),
             timing: bookclerk_plugin_abi::DbTiming {
                 attempt_elapsed_us: 1,
                 db_execution_us: 1,
@@ -846,7 +923,7 @@ mod tests {
     impl GuestDatabase for StreamingSession {
         async fn execute(&self, request: ExecuteRequest) -> Result<ExecuteReply> {
             self.inline.fetch_add(1, Ordering::SeqCst);
-            Ok(reply_with_rows(&request.operation_id, 1))
+            Ok(reply_with_rows(&request, 1))
         }
 
         async fn limits(&self) -> Result<DbCapabilities> {
@@ -861,7 +938,7 @@ mod tests {
             self.streamed.fetch_add(1, Ordering::SeqCst);
             match &self.answer {
                 StreamAnswer::Rows(rows) => bookclerk_plugin_abi::ExecuteStream::from_reply(
-                    &reply_with_rows(&request.operation_id, *rows),
+                    &reply_with_rows(&request, *rows),
                 ),
                 StreamAnswer::Err(code) => Err(PluginError::new(*code, "streamed answer")),
                 StreamAnswer::UnsupportedFrame => {
@@ -982,7 +1059,50 @@ mod tests {
             vec![2, 2, 1]
         );
         for batch in batches {
-            binding.batch(batch, None).await.expect("each batch runs");
+            let n = batch.len();
+            let results = binding.batch(batch, None).await.expect("each batch runs");
+            assert_eq!(results.len(), n, "one result per statement");
+        }
+        // A streamed batch answers each statement in order.
+        let reader = DatabaseBinding::from_session(StreamingSession::new(
+            DbCapabilities::advertised_sqlite(),
+            StreamAnswer::Rows(2),
+        ));
+        let reads = reader
+            .batch(
+                vec![
+                    reader.prepare("SELECT id FROM a"),
+                    reader.prepare("SELECT id FROM b"),
+                ],
+                None,
+            )
+            .await
+            .expect("two reads");
+        assert_eq!(reads.len(), 2);
+        let first = |r: &crate::db_binding::D1Result| {
+            r.results.as_ref().expect("rows")[0].get("id").cloned()
+        };
+        assert_eq!(first(&reads[0]), Some(DbValue::Int64(0)));
+        assert_eq!(first(&reads[1]), Some(DbValue::Int64(100)));
+
+        // Explicit zero caps mean one batch; the binding's own request cap
+        // tightens the session's.
+        let one = binding
+            .chunk(stmts.clone(), Some(ChunkCaps::default()))
+            .await
+            .expect("explicit zero caps");
+        assert_eq!(one.len(), 1);
+        let tight = DatabaseBinding::from_session_with(
+            StreamingSession::new(DbCapabilities::advertised_sqlite(), StreamAnswer::Rows(0)),
+            DatabaseBindingOptions {
+                max_request_bytes: 220,
+                ..DatabaseBindingOptions::default()
+            },
+        );
+        let tightened = tight.chunk(stmts.clone(), None).await.expect("chunk");
+        assert!(tightened.len() > 1, "the binding cap splits the batch");
+        for batch in tightened {
+            tight.batch(batch, None).await.expect("each batch fits");
         }
 
         let legacy = DatabaseBinding::from_session(Arc::new(RecordingSession {
