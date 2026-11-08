@@ -521,9 +521,9 @@ class DbValueGoldens(unittest.TestCase):
             "maxAtomicResultBytes": 524_288,
             "pluginDatabases": True,
             "maxFunctionArgs": 32,
-            "maxSchemaColumns": 100,
+            "maxSchemaColumns": 99,
             "maxPatternBytes": 16,
-            "maxLoweredStatementBytes": 100_000,
+            "maxLoweredStatementBytes": 100_001,
             "consistentBackupRead": True,
             "atomicUnitRestore": True,
         }

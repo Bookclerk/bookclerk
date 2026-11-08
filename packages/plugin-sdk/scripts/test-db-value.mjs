@@ -525,9 +525,9 @@ const caps = {
   maxAtomicResultBytes: 524288,
   pluginDatabases: true,
   maxFunctionArgs: 32,
-  maxSchemaColumns: 100,
+  maxSchemaColumns: 99,
   maxPatternBytes: 16,
-  maxLoweredStatementBytes: 100000,
+  maxLoweredStatementBytes: 100001,
   consistentBackupRead: true,
   atomicUnitRestore: true,
 };
