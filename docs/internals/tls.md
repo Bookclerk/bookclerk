@@ -40,9 +40,10 @@ Other clients pick aws-lc-rs through their features:
   off because it selects sqlx's `ring` provider.
 
 > [!NOTE]
-> The embeddings stack (`fastembed` and `hf-hub` in `bookclerk-discover`)
-> still brings `native-tls` and `ring` until it leaves the default host
-> build.
+> The ONNX embeddings stack (`fastembed` and `hf-hub` in
+> `bookclerk-discover`) still brings `native-tls`, OpenSSL and `ring`. It is
+> built only with the opt-in `onnx-embeddings` feature of `bookclerkd` and
+> `bookclerk-cli`, never in a default host build.
 
 ## Checking the tree
 
@@ -53,10 +54,10 @@ cargo tree --workspace -e normal,build -i ring
 cargo tree --workspace -e normal,build -i openssl-sys
 ```
 
-`ring` should come only from the embeddings stack named above. `openssl-sys`
-also comes from `webauthn-rs` 0.5 (passkeys in `bookclerkd`), which uses
-OpenSSL to verify passkey signatures and attestation certificates, not for any
-TLS connection.
+Both should print nothing for a default build. With `--features
+onnx-embeddings` they list only the embeddings stack named above. Passkeys
+(`webauthn-rs` 0.6 in `bookclerkd`) verify signatures and attestation
+certificates with pure-Rust RustCrypto crates, not OpenSSL.
 
 When a new dependency brings either one, turn on its aws-lc-rs or
 "no provider" feature instead, and hand it `bookclerk_tls::crypto_provider()`

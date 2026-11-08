@@ -128,7 +128,7 @@ for everything else.
 | uv (from its image, the version in [`.tool-versions`](../../.tool-versions), as in CI) | Python plugin SDK development and docs tools |
 | `cargo-nextest` | The version in [`.tool-versions`](../../.tool-versions), as in CI; `rust_test` runs under it |
 | Python 3 + a virtualenv with `scripts/tests/requirements.txt` | First on `PATH`, so `python3` has PyYAML for the CI planner tests |
-| `pkg-config` + `libssl-dev` | Fixes the local OpenSSL / `openssl-sys` failure |
+| `pkg-config` + `libssl-dev` | `openssl-sys`, which only the opt-in `onnx-embeddings` host feature builds |
 | `capnproto` | Compiles `schema/plugin.capnp` (the plugin ABI's native RPC) |
 | `libdbus-1-dev` + `xdg-utils` | The Linux tray (`ksni` / zbus), and `xdg-open` for "Open Bookclerk" |
 | `openssh-client` | SSH commit signing in the Dev Container |
