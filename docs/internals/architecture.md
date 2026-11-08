@@ -79,8 +79,9 @@ PostgreSQL 16+, or Cloudflare D1
 | Concern | Crates |
 | --- | --- |
 | Config / paths / logging | `bookclerk-config` |
-| Source trait + registry | `bookclerk-source` |
-| Store adapters (plugins) | `bookclerk-plugins/optional/source-{audible,libro,chirp,graphicaudio}` (lib + guest bin) |
+| Source trait + registry (host side) | `bookclerk-source` (re-exports `bookclerk-storefront`) |
+| Storefront guest types | `bookclerk-storefront` (DTOs, ABI conversions, listing helpers; no database, ORM, config or OpenAPI) |
+| Store adapters (plugins) | `bookclerk-plugins/optional/source-{audible,libro,chirp,graphicaudio}` (lib + guest bin; Libro.fm, Chirp and GraphicAudio link only the SDK and `bookclerk-storefront`) |
 | ABS integration (plugin) | `bookclerk-plugins/integration-audiobookshelf` (lib + guest bin) |
 | Clear-media packaging | `bookclerk-media` (remux / fixup / MP3; no DRM) |
 | MP4 container plumbing | `bookclerk-mp4` (shared with store plugins; no cryptography) |

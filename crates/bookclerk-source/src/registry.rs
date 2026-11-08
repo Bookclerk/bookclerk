@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use bookclerk_library::{LibraryStore, SourceScope};
 
-use crate::{Result, SourceError};
 use crate::traits::ContentSource;
+use crate::{Result, SourceError};
 use crate::{ScanOptions, ScanSummary, SourceAccount};
 
 /// Maps a registry address to an installed [`ContentSource`].
@@ -275,9 +275,7 @@ impl SourceRegistry {
         let mut any = false;
         for source in sources {
             if opts.is_cancelled() {
-                return Err(crate::SourceError::Other(anyhow::anyhow!(
-                    "cancelled"
-                )));
+                return Err(crate::SourceError::Other(anyhow::anyhow!("cancelled")));
             }
             let scope = crate::traits::source_scope(library, source.as_ref());
             let source_opts =
@@ -366,10 +364,10 @@ mod tests {
     use async_trait::async_trait;
 
     use super::{account_needle_matches, SourceRegistry};
-    use crate::SourceBrand;
     use crate::traits::{ContentSource, PortalAuthMode};
-    use crate::SourceAccount;
     use crate::Result;
+    use crate::SourceAccount;
+    use crate::SourceBrand;
 
     const BRAND: SourceBrand = SourceBrand {
         id: "stub",

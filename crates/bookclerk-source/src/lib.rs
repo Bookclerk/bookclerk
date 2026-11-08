@@ -19,12 +19,12 @@ mod registry;
 mod traits;
 
 pub use bookclerk_storefront::{
-    audio_extension, default_preferred_language, extension_from_bytes,
-    extension_from_content_type, extension_from_url, language_rank, listing, normalize_language,
-    records, CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, CatalogSortDir,
-    ConfigOptionValue, ExpandSeed, ImportCredentialsOptions, LoginOptions, OAuthProgress,
-    PlainAudioPart, PlainFetch, PurchaseHintOpts, Result, ScanOptions, ScanSummary, SourceAccount,
-    SourceBrand, SourceConfigOption, SourceError, SourceFetch, SourcePurchaseHint,
+    audio_extension, default_preferred_language, extension_from_bytes, extension_from_content_type,
+    extension_from_url, language_rank, listing, normalize_language, records, CatalogHit,
+    CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, CatalogSortDir, ConfigOptionValue,
+    ExpandSeed, ImportCredentialsOptions, LoginOptions, OAuthProgress, PlainAudioPart, PlainFetch,
+    PurchaseHintOpts, Result, ScanOptions, ScanSummary, SourceAccount, SourceBrand,
+    SourceConfigOption, SourceError, SourceFetch, SourcePurchaseHint,
 };
 pub use fetch::FetchOptions;
 pub use options::DownloadOptions;

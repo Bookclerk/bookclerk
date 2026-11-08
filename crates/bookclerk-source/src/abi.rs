@@ -92,10 +92,7 @@ impl DownloadOptions {
 /// * `plugin_id` - The plugin that produced the record; it owns the listing.
 /// * `book` - The scan record as the guest returned it.
 #[must_use]
-pub fn scanned_title(
-    plugin_id: &str,
-    book: abi::ScanBook,
-) -> Option<ScannedTitle> {
+pub fn scanned_title(plugin_id: &str, book: abi::ScanBook) -> Option<ScannedTitle> {
     let mut draft = bookclerk_storefront::listing::scan_book_draft(&book);
     draft.plugin_key = plugin_id.to_string();
     let listing = match bookclerk_resolve::Listing::from_draft(&draft) {
@@ -183,7 +180,6 @@ pub fn scan_book_to_new(plugin_id: &str, book: abi::ScanBook) -> Option<NewBook>
         product_id: book.product_id,
     })
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -350,7 +346,6 @@ mod tests {
         assert_eq!(new.asin.as_deref(), Some("B0UK"));
     }
 
-
     #[test]
     fn fetch_options_carry_cdm_provider_tri_state() {
         let mut download = DownloadOptions {
@@ -368,5 +363,4 @@ mod tests {
         let rebuilt = DownloadOptions::from_fetch_options(&fetch);
         assert_eq!(rebuilt.cover_size, "1215");
     }
-
 }

@@ -33,7 +33,6 @@ pub enum ChirpError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-
     /// Unexpected failure wrapped from `anyhow`.
     #[error(transparent)]
     Other(#[from] anyhow::Error),

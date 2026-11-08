@@ -12,7 +12,6 @@
 mod auth;
 mod catalog;
 mod client;
-pub mod db;
 mod download;
 mod error;
 pub mod guest;
@@ -32,7 +31,6 @@ pub use client::{
     DownloadLinks, GraphicAudioClient, Product, DEFAULT_BASE_URL, LOGIN_PATH, PRODUCTS_PATH,
     REMOVE_PATH,
 };
-pub use db::{delete_auth_from_db, list_auth_from_db, load_auth_from_db, save_auth_to_db};
 pub use download::{
     fetch_title_materials, fetch_title_with_mode, TitleFetchRequest, GA_ACCESS_ENV, GA_FETCH_ENV,
 };
@@ -45,6 +43,4 @@ pub use guest::{
 pub use magento::{DownloadableProduct, LibraryItem, MagentoClient, DEFAULT_STORE_URL};
 pub use options::{GraphicAudioAccess, GraphicAudioBitrate, GraphicAudioContainer};
 pub use source::{GraphicAudioSource, ID as GRAPHICAUDIO_SOURCE_ID};
-pub use sync::{
-    collect_account_books, product_to_scan_book, scan_library, ScanContext, ScanOptions,
-};
+pub use sync::{collect_account_books, product_to_scan_book};

@@ -30,7 +30,13 @@ mod tests {
 
     #[test]
     fn podcast_parent_accepts_every_alias() {
-        for label in ["podcast", "Parent", "PodcastParent", "podcast_parent", "season"] {
+        for label in [
+            "podcast",
+            "Parent",
+            "PodcastParent",
+            "podcast_parent",
+            "season",
+        ] {
             assert!(is_podcast_parent(label), "{label}");
         }
         assert!(!is_podcast_parent("episode"));

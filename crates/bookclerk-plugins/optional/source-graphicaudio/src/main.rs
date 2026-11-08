@@ -11,8 +11,8 @@ use bookclerk_plugin_sdk::{
     PurchaseHint, PurchaseHintParams, ScalarLimits, ScanParams, ScanSummary, SearchCatalogParams,
     FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
-use bookclerk_source::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
-use bookclerk_source::{CatalogSearchOpts, ContentSource, PurchaseHintOpts};
+use bookclerk_storefront::abi::expand_seed_from_params;
+use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
 use serde_json::Value;
 
 /// GraphicAudio source guest; password login through Accounts.
@@ -67,7 +67,7 @@ fn internal(err: impl std::fmt::Display) -> PluginError {
     PluginError::internal(err.to_string())
 }
 
-fn hits(hits: Vec<bookclerk_source::CatalogHit>) -> Vec<CatalogHit> {
+fn hits(hits: Vec<bookclerk_storefront::CatalogHit>) -> Vec<CatalogHit> {
     hits.into_iter().map(Into::into).collect()
 }
 
@@ -172,14 +172,10 @@ impl ContentSourceRole for GraphicAudioContentSource {
             .map_err(internal)
     }
 
+    /// GraphicAudio has no public deals feed, so the shelf is always empty.
     async fn list_deals(&self, params: ListDealsParams) -> Result<Vec<CatalogHit>, PluginError> {
-        let limit = params.limit.unwrap_or(DEFAULT_LIST_DEALS_LIMIT);
-        let source = bookclerk_plugin_source_graphicaudio::GraphicAudioSource::new();
-        source
-            .list_deals(usize::try_from(limit).unwrap_or(usize::MAX))
-            .await
-            .map(hits)
-            .map_err(internal)
+        let _ = params;
+        Ok(Vec::new())
     }
 }
 

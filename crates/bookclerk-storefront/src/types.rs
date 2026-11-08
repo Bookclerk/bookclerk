@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-
 /// One allowed value for a [`SourceConfigOption`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigOptionValue {
@@ -177,7 +176,6 @@ impl ScanSummary {
         self.warnings.extend(other.warnings.iter().cloned());
     }
 }
-
 
 /// One DRM-free audio part (chapter file or single book).
 #[derive(Debug, Clone)]

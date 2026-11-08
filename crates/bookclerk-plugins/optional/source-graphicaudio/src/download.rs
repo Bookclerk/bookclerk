@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use bookclerk_source::{PlainAudioPart, PlainFetch};
+use bookclerk_storefront::{PlainAudioPart, PlainFetch};
 
 use crate::client::{GraphicAudioClient, Product};
 use crate::error::{GraphicAudioError, Result};

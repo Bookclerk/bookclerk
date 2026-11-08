@@ -70,6 +70,10 @@ pub use backup::{
 };
 pub use binding_schema::{apply_binding_bootstrap, binding_bootstrap_plan};
 pub use bookclerk_plugin_abi::{AdapterBackupOps, GuestSqlPolicy, SharedAdapterBackupOps};
+pub use bookclerk_storefront::text::{
+    decode_html_entities, decode_html_entities_cow, decode_html_entities_in_place,
+    decode_html_entities_opt, decode_html_entities_opt_in_place, str_maybe_html_entity,
+};
 pub use db_atomic::{
     db_atomic_operation_id, db_atomic_request_hash, execute_db_atomic, execute_named_atomic,
 };
@@ -163,10 +167,6 @@ pub use store::{
     NewBook, NewListeningProgress, NewTitleRequest, NewTitleRequestSource, SavedFilterRecord,
     ScannedTitle, SeedScope, StoredCandidate, StoredFeed, UserBookFields, WishlistIdentity,
     ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
-};
-pub use bookclerk_storefront::text::{
-    decode_html_entities, decode_html_entities_cow, decode_html_entities_in_place,
-    decode_html_entities_opt, decode_html_entities_opt_in_place, str_maybe_html_entity,
 };
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

@@ -10,12 +10,12 @@ use async_trait::async_trait;
 use bookclerk_library::{secret_kind, LibraryStore, SourceScope};
 
 use crate::SourceBrand;
-use crate::{Result, SourceError};
 use crate::{
     CatalogHit, CatalogSearchOpts, ExpandSeed, FetchOptions, ImportCredentialsOptions,
     LoginOptions, OAuthProgress, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount,
     SourceConfigOption, SourceFetch, SourcePurchaseHint,
 };
+use crate::{Result, SourceError};
 
 /// How the connect portal authenticates this source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

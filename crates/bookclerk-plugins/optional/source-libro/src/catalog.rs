@@ -542,7 +542,10 @@ async fn libro_search_hits(
 /// # Errors
 ///
 /// Returns an error when `body` is not JSON shaped like the search envelope.
-pub fn parse_search_page(body: &[u8], limit: usize) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
+pub fn parse_search_page(
+    body: &[u8],
+    limit: usize,
+) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
     let parsed: LibroExploreSearch = serde_json::from_slice(body)
         .map_err(|e| bookclerk_storefront::SourceError::api(format!("libro search parse: {e}")))?;
     Ok(parsed

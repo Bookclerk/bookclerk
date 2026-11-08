@@ -2,7 +2,7 @@
 //!
 //! These APIs do **not** open the library DB — the host seals credentials and
 //! upserts scan rows via `bookclerk_plugin_host::ExternalSource`. Conversions
-//! between storefront types and the typed ABI live in [`bookclerk_source::abi`].
+//! between storefront types and the typed ABI live in [`bookclerk_storefront::abi`].
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -12,10 +12,10 @@ use bookclerk_plugin_sdk::{
     FetchTitleParams, LoginParams, LoginResult, PlainFetch as AbiPlainFetch, ScanParams,
     ScanSummary, SourceAccount,
 };
-use bookclerk_source::abi::{
+use bookclerk_storefront::abi::{
     account_credentials_json, credentials_from_bytes, credentials_to_bytes, scan_summary,
 };
-use bookclerk_source::{LoginOptions, PlainFetch};
+use bookclerk_storefront::{LoginOptions, PlainFetch};
 use serde_json::Value;
 
 use crate::auth::GraphicAudioAuthFile;
@@ -71,7 +71,7 @@ pub async fn guest_login(
         GraphicAudioAccess::Web | GraphicAudioAccess::Zip => {
             let store = MagentoClient::new(store_base_url)?;
             store.login(email, password).await?;
-            // Magento-only: empty Access App token (same as in-process source).
+            // Magento-only: empty Access App token until a device login.
             (String::new(), client_id)
         }
     };

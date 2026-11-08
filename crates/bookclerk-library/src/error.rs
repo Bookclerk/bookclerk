@@ -144,6 +144,13 @@ impl LibraryError {
     }
 }
 
+impl From<LibraryError> for bookclerk_storefront::SourceError {
+    /// Wraps a store failure so content-source code can use `?` on library calls.
+    fn from(err: LibraryError) -> Self {
+        Self::Library(Box::new(err))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::LibraryError;
@@ -185,12 +192,5 @@ mod tests {
         let other = LibraryError::from_abi_err(PluginError::invalid_params("bad SQL"));
         assert!(matches!(other, LibraryError::Other(_)), "{other}");
         assert!(other.to_string().contains("bad SQL"));
-    }
-}
-
-impl From<LibraryError> for bookclerk_storefront::SourceError {
-    /// Wraps a store failure so content-source code can use `?` on library calls.
-    fn from(err: LibraryError) -> Self {
-        Self::Library(Box::new(err))
     }
 }

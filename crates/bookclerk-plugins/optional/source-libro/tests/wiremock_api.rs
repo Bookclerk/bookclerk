@@ -412,9 +412,7 @@ async fn guest_scan_and_fetch_title_use_host_credentials() {
     let mut by_account = BTreeMap::new();
     by_account.insert("scan@example.com".to_string(), credentials.clone());
 
-    let (books, accounts, pages) = guest_scan(&server.uri(), &by_account, &[])
-        .await
-        .unwrap();
+    let (books, accounts, pages) = guest_scan(&server.uri(), &by_account, &[]).await.unwrap();
     assert_eq!(accounts, 1);
     assert_eq!(pages, 1);
     assert_eq!(books.len(), 1);
