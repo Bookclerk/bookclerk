@@ -481,7 +481,12 @@ mod tests {
             let secrets = crate::secrets::list_secrets(store.db(), secret_kind::CLUSTER_JOIN)
                 .await
                 .unwrap();
-            assert!(secrets.is_empty(), "{}: {secrets:?}", profile.name());
+            assert_eq!(
+                secrets.len(),
+                0,
+                "{}: sealed material left behind",
+                profile.name()
+            );
         }
     }
 
