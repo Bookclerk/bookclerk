@@ -421,6 +421,29 @@ mod tests {
         assert!(limit.used > limit.cap, "{limit:?}");
     }
 
+    /// Each statement fits its own streamed budget but together they pass
+    /// the whole-reply budget, which is named as the streamed budget too.
+    #[test]
+    fn validate_execute_reply_names_the_streamed_budget_for_the_whole_reply() {
+        let scalar = usize::try_from(bookclerk_plugin_abi::MAX_SCALAR_BYTES).unwrap();
+        let mut req = rows_request(0);
+        req.statements.push(req.statements[0].clone());
+        let half = wide_reply(16, scalar / 32);
+        let mut reply = half.clone();
+        reply.statements.push(half.statements[0].clone());
+        let mut caps = DbCapabilities::advertised_sqlite();
+        caps.max_streamed_result_bytes = bookclerk_plugin_abi::MAX_SCALAR_BYTES + 1;
+        let streamed = caps.streamed().expect("streams");
+        let err = validate_execute_reply(&req, &reply, &streamed).unwrap_err();
+        let limit = err.limit().expect("typed limit");
+        assert_eq!(limit.limit, "maxStreamedResultBytes");
+        assert_eq!(
+            limit.cap,
+            u64::from(bookclerk_plugin_abi::MAX_SCALAR_BYTES) + 1
+        );
+        assert!(limit.used > limit.cap, "{limit:?}");
+    }
+
     #[test]
     fn validate_execute_reply_rejects_oversized_statement_result() {
         let req = rows_request(1);

@@ -5616,6 +5616,99 @@ mod tests {
         adapter.open_session().await.expect("open_session")
     }
 
+    /// An adapter session built before `executeStreamed` existed: every
+    /// method keeps the generated default, which answers `unimplemented`.
+    struct BareAdapterSession;
+
+    impl adapter_database_session_capnp::Server for BareAdapterSession {}
+
+    /// An adapter session whose `executeStreamed` fails in transport.
+    struct FailingAdapterSession;
+
+    impl adapter_database_session_capnp::Server for FailingAdapterSession {
+        async fn execute_streamed(
+            self: Rc<Self>,
+            _params: adapter_database_session_capnp::ExecuteStreamedParams,
+            _results: adapter_database_session_capnp::ExecuteStreamedResults,
+        ) -> capnp::Result<()> {
+            Err(capnp::Error::failed("adapter exploded".into()))
+        }
+    }
+
+    /// A host database built before `executeStreamed` existed.
+    struct BareGuestDatabase;
+
+    impl guest_database_capnp::Server for BareGuestDatabase {}
+
+    /// A host database whose `executeStreamed` fails in transport.
+    struct FailingGuestDatabase;
+
+    impl guest_database_capnp::Server for FailingGuestDatabase {
+        async fn execute_streamed(
+            self: Rc<Self>,
+            _params: guest_database_capnp::ExecuteStreamedParams,
+            _results: guest_database_capnp::ExecuteStreamedResults,
+        ) -> capnp::Result<()> {
+            Err(capnp::Error::failed("host exploded".into()))
+        }
+    }
+
+    /// A peer that answers `executeStreamed` with `unimplemented` is reported
+    /// as `unsupported`, so callers fall back to inline reads; any other
+    /// transport failure stays `unavailable`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn execute_streamed_clients_map_unimplemented_to_unsupported() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let bare = AdapterDatabaseSessionClient {
+                    client: capnp_rpc::new_client(BareAdapterSession),
+                };
+                let err = bare
+                    .execute_streamed(adapter_streamed_request("old-adapter"))
+                    .await
+                    .expect_err("an unimplemented method");
+                assert_eq!(err.code, PluginErrorCode::Unsupported, "{err}");
+                assert!(
+                    err.message
+                        .contains("AdapterDatabaseSession.executeStreamed"),
+                    "{err}"
+                );
+                let failing = AdapterDatabaseSessionClient {
+                    client: capnp_rpc::new_client(FailingAdapterSession),
+                };
+                let err = failing
+                    .execute_streamed(adapter_streamed_request("broken-adapter"))
+                    .await
+                    .expect_err("a failed call");
+                assert_eq!(err.code, PluginErrorCode::Unavailable, "{err}");
+                assert!(err.message.contains("adapter exploded"), "{err}");
+
+                let bare = GuestDatabaseClient {
+                    client: capnp_rpc::new_client(BareGuestDatabase),
+                };
+                let err = bare
+                    .execute_streamed(streamed_probe_request("old-host"))
+                    .await
+                    .expect_err("an unimplemented method");
+                assert_eq!(err.code, PluginErrorCode::Unsupported, "{err}");
+                assert!(
+                    err.message.contains("GuestDatabase.executeStreamed"),
+                    "{err}"
+                );
+                let failing = GuestDatabaseClient {
+                    client: capnp_rpc::new_client(FailingGuestDatabase),
+                };
+                let err = failing
+                    .execute_streamed(streamed_probe_request("broken-host"))
+                    .await
+                    .expect_err("a failed call");
+                assert_eq!(err.code, PluginErrorCode::Unavailable, "{err}");
+                assert!(err.message.contains("host exploded"), "{err}");
+            })
+            .await;
+    }
+
     fn adapter_streamed_request(operation_id: &str) -> crate::host_envelope::AdapterExecuteRequest {
         crate::host_envelope::AdapterExecuteRequest::new(
             streamed_probe_request(operation_id),

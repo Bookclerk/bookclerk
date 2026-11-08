@@ -2222,6 +2222,58 @@ mod tests {
         assert!(out.ends_with(&[7, 8, 9]), "{text}");
     }
 
+    /// `POST /db/execute` dispatches the plain execute command and relays
+    /// the dispatcher's reply the same way.
+    #[tokio::test]
+    async fn execute_route_dispatches_execute_over_http() {
+        let (cmds_tx, mut cmds_rx) = mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(cmd) = cmds_rx.recv().await {
+                match cmd {
+                    GrantedCmd::AtomicBudget { resp, .. } => {
+                        let _ = resp.send(Ok(4096));
+                    }
+                    GrantedCmd::Execute {
+                        invocation,
+                        request_bytes,
+                        resp,
+                    } => {
+                        assert_eq!(invocation, "grant-1");
+                        assert_eq!(request_bytes, b"request-bytes");
+                        let _ = resp.send(Ok(vec![1, 2]));
+                    }
+                    GrantedCmd::ExecuteStreamed { .. } => {
+                        panic!("the execute route never dispatches the streamed command")
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let (client, server) = tokio::io::duplex(4096);
+        let serve = tokio::spawn(async move { handle_conn(server, "bridge", cmds_tx).await });
+        let body = "request-bytes";
+        let req = format!(
+            "POST /db/execute HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (mut reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(req.as_bytes())
+            .await
+            .expect("write request");
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), reader.read_to_end(&mut out))
+            .await
+            .expect("http response")
+            .expect("read response");
+        drop(writer);
+        serve.await.expect("serve task").expect("handled");
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
+        assert!(text.contains("content-length: 2\r\n"), "{text}");
+        assert!(out.ends_with(&[1, 2]), "{text}");
+    }
+
     #[test]
     fn declared_content_length_over_cap_is_rejected_before_read() {
         assert!(declared_content_length_over_cap(

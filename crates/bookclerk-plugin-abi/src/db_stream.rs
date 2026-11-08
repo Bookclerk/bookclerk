@@ -937,6 +937,50 @@ mod tests {
         assert_eq!(decoder.finish().expect_err("finish after failure"), first);
     }
 
+    /// The next statement frame closes the open one, so a row wider than
+    /// the open statement's columns is caught when the next statement opens.
+    #[test]
+    fn the_next_statement_closes_and_validates_the_open_one() {
+        let mut decoder = ExecuteStreamDecoder::new(limits());
+        decoder.push(&head(2)).unwrap_or_else(|err| panic!("{err}"));
+        decoder
+            .push(&statement(0))
+            .unwrap_or_else(|err| panic!("{err}"));
+        let wide = frame(&ExecuteStreamFrame::Rows(vec![DbRow {
+            values: vec![DbValue::Int64(1)],
+        }]));
+        decoder.push(&wide).unwrap_or_else(|err| panic!("{err}"));
+        let err = decoder
+            .push(&statement(1))
+            .expect_err("a row wider than its columns");
+        assert_eq!(err.code, PluginErrorCode::InvalidParams, "{err}");
+        assert!(err.message.contains("row 0 has 1 values"), "{err}");
+        assert!(decoder.is_finished(), "the failure is final");
+    }
+
+    /// `push` refuses bytes after the final frame before decoding them, and
+    /// the state machine refuses a frame after its final one as well.
+    #[test]
+    fn a_frame_after_the_final_frame_is_rejected_by_the_state_machine() {
+        let mut decoder = ExecuteStreamDecoder::new(limits());
+        let bytes = [
+            head(0),
+            frame(&ExecuteStreamFrame::End(DbTiming::default())),
+        ]
+        .concat();
+        decoder.push(&bytes).unwrap_or_else(|err| panic!("{err}"));
+        assert!(
+            decoder.is_finished(),
+            "an empty reply ends at its end frame"
+        );
+        let err = decoder
+            .apply(ExecuteStreamFrame::End(DbTiming::default()))
+            .expect_err("a frame after the final frame");
+        assert_eq!(err.code, PluginErrorCode::InvalidParams, "{err}");
+        assert!(err.message.contains("after its final frame"), "{err}");
+        assert_eq!(decoder.finish().expect_err("the rejection is final"), err);
+    }
+
     #[test]
     fn an_error_frame_after_the_head_is_the_adapter_error() {
         let mut bytes = head(1);
