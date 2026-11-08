@@ -1634,6 +1634,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn json_numbers_clamp_into_i64() {
+        assert_eq!(json_i64(&serde_json::json!(42)), Some(42));
+        assert_eq!(json_i64(&serde_json::json!(u64::MAX)), Some(i64::MAX));
+        assert_eq!(json_i64(&serde_json::json!(-7.9)), Some(-7));
+        assert_eq!(json_i64(&serde_json::json!(1e300)), Some(i64::MAX));
+        assert_eq!(saturating_i64(f64::NAN), 0);
+    }
+
+    #[test]
+    fn float_runtime_and_price_round_to_whole_units() {
+        let product = parse_catalog_product(&serde_json::json!({
+            "asin": "B0BOOK0001",
+            "title": "Float Fields",
+            "runtime_length_min": 61.6,
+            "price": {"lowest_price": {"base": 14.995, "currency_code": "GBP"}}
+        }))
+        .unwrap();
+        assert_eq!(product.length_minutes, Some(62));
+        let (cents, currency, _label) = price_from_catalog_product(&serde_json::json!({
+            "price": {"list_price": {"base": 0.004, "currency_code": "USD"}}
+        }));
+        assert_eq!((cents, currency.as_deref()), (Some(0), Some("USD")));
+    }
+
+    #[test]
     fn region_tld_map() {
         assert_eq!(region_tld("us"), ".com");
         assert_eq!(region_tld("uk"), ".co.uk");

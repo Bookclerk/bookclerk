@@ -81,3 +81,46 @@ pub(crate) fn export_authfile_plain_bytes(auth: &Authenticator) -> Result<Vec<u8
     .map_err(|e| AudibleError::Auth(e.to_string()))?;
     Ok(plain.into_bytes())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synthetic_auth() -> Authenticator {
+        Authenticator::from_value(serde_json::json!({
+            "country_code": "uk",
+            "identity": {"customer_id": "amzn1.account.TEST"},
+            "bearer": {
+                "access_token": "Atna|synthetic",
+                "refresh_token": "Atnr|synthetic",
+                "expires": 9999999999.0
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn login_registers_an_android_device_with_a_plain_authfile() {
+        let defaults = login_defaults("de");
+        assert_eq!(defaults.country_code.as_deref(), Some("de"));
+        assert!(matches!(defaults.device, DeviceKind::Android));
+        assert!(defaults.plain);
+        assert!(!defaults.username);
+        assert!(defaults.name.is_none());
+    }
+
+    #[test]
+    fn session_is_keyed_by_customer_id() {
+        let session = session_from_authenticator(&synthetic_auth(), Some("Main".into()));
+        assert_eq!(session.account_id, "amzn1.account.TEST");
+        assert_eq!(session.marketplace, "uk");
+        assert_eq!(session.label.as_deref(), Some("Main"));
+    }
+
+    #[test]
+    fn plain_authfile_round_trips() {
+        let bytes = export_authfile_plain_bytes(&synthetic_auth()).unwrap();
+        let back = Authenticator::load_from_bytes(&bytes, None).unwrap();
+        assert_eq!(back.customer_id(), Some("amzn1.account.TEST"));
+    }
+}

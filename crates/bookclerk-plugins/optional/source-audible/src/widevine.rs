@@ -475,6 +475,28 @@ async fn fetch_text(url: &str) -> Result<String> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn no_cdm_and_provider_off_returns_the_byo_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let Err(err) = ensure_widevine_cdm(dir.path(), None, None, Some("off")).await else {
+            panic!("expected an error without a CDM");
+        };
+        assert!(
+            err.to_string().contains("no Widevine CDM (.wvd) found"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn provisioning_without_credentials_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let Err(err) = ensure_widevine_cdm(dir.path(), None, None, None).await else {
+            panic!("expected an error without credentials");
+        };
+        assert!(matches!(err, AudibleError::Widevine(_)), "{err}");
+        assert!(err.to_string().contains("credentials"), "{err}");
+    }
+
     #[test]
     fn cdm_candidates_prefer_configured() {
         let files = PathBuf::from("/data");

@@ -706,6 +706,30 @@ fn format_money_label(cents: i64, currency: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Empty requests answer without any catalog HTTP.
+    #[tokio::test]
+    async fn empty_requests_answer_without_calling_the_store() {
+        let search = super::CatalogSearchOpts {
+            query: "   ".into(),
+            limit: 10,
+            ..super::CatalogSearchOpts::default()
+        };
+        assert!(super::search_catalog(&search).await.unwrap().is_empty());
+        let seed = super::ExpandSeed {
+            source: "audible".into(),
+            product_id: "B0BOOK0001".into(),
+            title: "Seed".into(),
+            authors: Some("Author".into()),
+            narrators: None,
+            series: None,
+            series_asin: None,
+            asin: Some("B0BOOK0001".into()),
+            isbn: None,
+            region: "us".into(),
+        };
+        assert!(super::expand_candidates(&seed, 0).await.unwrap().is_empty());
+    }
+
     /// Loose keyword matches from another (or no) series are not stamped
     /// into the searched series.
     #[test]

@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -24,7 +24,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use bookclerk_mp4::{
     brand_durations_from_chapter_info, brand_trim_range, parse_mp4,
-    runtime_length_ms_from_chapter_info, track_duration_ms,
+    runtime_length_ms_from_chapter_info, track_duration_ms, TrimRange,
 };
 use bookclerk_plugin_sdk::{
     FetchOptions, LoginParams, LoginResult, PlainFetch, PlainPart, ScanSummary, SourceAccount,
@@ -359,76 +359,18 @@ pub async fn guest_fetch_title(
         fetch_and_download_with_client(account_client, cache_dir, title_id, &options, cache_dir)
             .await?;
 
-    // The host re-tags the plain audio, so chapters and the cover are always
-    // fetched (a failure only drops them from the result).
-    let chapter_info = match fetch_chapter_info(
-        &account.client,
-        &account.marketplace,
-        title_id,
-        options.quality,
-        &options.chapter_layout,
-    )
-    .await
-    {
-        Ok(info) => Some(info),
-        Err(err) => {
-            tracing::warn!(asin = %title_id, error = %err, "guest chapter metadata fetch failed");
-            None
-        }
-    };
-
     let work_dir = join_cache_component(cache_dir, title_id)
         .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
     tokio::fs::create_dir_all(&work_dir).await?;
-    let cover_dest = join_cache_component(&work_dir, &format!("{title_id}.cover.jpg"))
-        .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
-    let cover_path = match download_cover_jpeg(
-        &account.client,
-        &account.marketplace,
-        title_id,
-        &options.cover_size,
-        &cover_dest,
-    )
-    .await
-    {
-        Ok(path) => path,
-        Err(err) => {
-            tracing::warn!(asin = %title_id, error = %err, "guest cover download failed");
-            None
-        }
-    };
+    let (chapter_info, cover_path) =
+        fetch_companions(&account, title_id, &options, &work_dir).await?;
 
     let m4b_name = format!("{title_id}.m4b");
     let m4b_path = join_cache_component(&work_dir, &m4b_name)
         .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
 
     let trim = if options.strip_audible_brand_audio {
-        let brand = chapter_info
-            .as_ref()
-            .map(brand_durations_from_chapter_info)
-            .unwrap_or_default();
-        let mut runtime_ms = chapter_info
-            .as_ref()
-            .and_then(runtime_length_ms_from_chapter_info);
-        if brand.outro_ms > 0 && runtime_ms.is_none() {
-            if let Ok(mp4) = parse_mp4(&downloaded.path) {
-                let probed = track_duration_ms(&mp4.audio);
-                if probed > 0 {
-                    runtime_ms = Some(probed);
-                }
-            }
-        }
-        let trim = brand_trim_range(brand, runtime_ms);
-        if trim.is_none() && !brand.is_empty() {
-            tracing::warn!(
-                asin = %title_id,
-                intro_ms = brand.intro_ms,
-                outro_ms = brand.outro_ms,
-                "brand outro set but the runtime is unknown; not trimming, so the \
-                 outro branding is not left on while only the intro is cut"
-            );
-        }
-        trim
+        brand_trim(chapter_info.as_ref(), &downloaded.path, title_id)
     } else {
         None
     };
@@ -507,6 +449,108 @@ pub async fn guest_fetch_title(
     })
 }
 
+/// Fetches the chapter metadata and the cover for `title_id`.
+///
+/// The host re-tags the plain audio, so both are fetched on every fetch. A
+/// failed lookup is logged and leaves that piece out rather than failing the
+/// fetch.
+///
+/// # Arguments
+///
+/// * `account` - Client for the account that owns the title.
+/// * `title_id` - Audible ASIN.
+/// * `options` - Supplies the bitrate, chapter layout and cover size.
+/// * `work_dir` - The title's cache directory; the cover lands here.
+///
+/// # Returns
+///
+/// `(chapter_info, cover_path)`, each `None` when its lookup failed or Audible
+/// has none.
+///
+/// # Errors
+///
+/// Returns an error only when the cover file name cannot be joined to
+/// `work_dir` (an invalid `title_id`).
+async fn fetch_companions(
+    account: &AccountClient,
+    title_id: &str,
+    options: &DownloadOptions,
+    work_dir: &Path,
+) -> Result<(Option<Value>, Option<PathBuf>)> {
+    let chapter_info = match fetch_chapter_info(
+        &account.client,
+        &account.marketplace,
+        title_id,
+        options.quality,
+        &options.chapter_layout,
+    )
+    .await
+    {
+        Ok(info) => Some(info),
+        Err(err) => {
+            tracing::warn!(asin = %title_id, error = %err, "guest chapter metadata fetch failed");
+            None
+        }
+    };
+    let cover_dest = join_cache_component(work_dir, &format!("{title_id}.cover.jpg"))
+        .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
+    let cover_path = match download_cover_jpeg(
+        &account.client,
+        &account.marketplace,
+        title_id,
+        &options.cover_size,
+        &cover_dest,
+    )
+    .await
+    {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::warn!(asin = %title_id, error = %err, "guest cover download failed");
+            None
+        }
+    };
+    Ok((chapter_info, cover_path))
+}
+
+/// The remux window that drops Audible's brand intro and outro.
+///
+/// Durations come from `chapter_info`; when an outro is set but the runtime
+/// is not, the runtime is probed from the downloaded media.
+///
+/// # Arguments
+///
+/// * `chapter_info` - Audible chapter metadata, when it was fetched.
+/// * `media` - The downloaded (possibly still encrypted) MP4.
+/// * `title_id` - Audible ASIN, for the log line.
+///
+/// # Returns
+///
+/// The trim window, or `None` when there is no branding or the runtime stays
+/// unknown (trimming only the intro would leave the outro in).
+fn brand_trim(chapter_info: Option<&Value>, media: &Path, title_id: &str) -> Option<TrimRange> {
+    let brand = chapter_info
+        .map(brand_durations_from_chapter_info)
+        .unwrap_or_default();
+    let mut runtime_ms = chapter_info.and_then(runtime_length_ms_from_chapter_info);
+    if brand.outro_ms > 0 && runtime_ms.is_none() {
+        runtime_ms = parse_mp4(media)
+            .ok()
+            .map(|mp4| track_duration_ms(&mp4.audio))
+            .filter(|probed| *probed > 0);
+    }
+    let trim = brand_trim_range(brand, runtime_ms);
+    if trim.is_none() && !brand.is_empty() {
+        tracing::warn!(
+            asin = %title_id,
+            intro_ms = brand.intro_ms,
+            outro_ms = brand.outro_ms,
+            "brand outro set but the runtime is unknown; not trimming, so the \
+             outro branding is not left on while only the intro is cut"
+        );
+    }
+    trim
+}
+
 /// Build credential JSON from an authenticator (optional Widevine CDM bytes).
 ///
 /// # Errors
@@ -579,5 +623,124 @@ fn flatten_chapter_nodes(nodes: &[Value], out: &mut Vec<(String, u64)>) {
         if !title.trim().is_empty() {
             out.push((title.trim().to_string(), start_ms));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn account_for(server: &MockServer) -> AccountClient {
+        let auth = Authenticator::from_value(json!({
+            "country_code": "us",
+            "identity": {"customer_id": "amzn1.account.TEST"},
+            "bearer": {
+                "access_token": "Atna|synthetic",
+                "refresh_token": "Atnr|synthetic",
+                "expires": 9999999999.0
+            }
+        }))
+        .unwrap();
+        let url = url::Url::parse(&server.uri()).unwrap();
+        let client = Client::builder(auth)
+            .api_base_override(url.clone())
+            .auth_base_override(url)
+            .build()
+            .unwrap();
+        AccountClient {
+            client: std::sync::Arc::new(client),
+            account_id: "amzn1.account.TEST".into(),
+            marketplace: "us".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn companions_keep_the_chapters_when_the_cover_fails() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/1.0/content/B0BOOK0001/metadata"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content_metadata": {"chapter_info": {
+                    "brandIntroDurationMs": 2000,
+                    "chapters": [{"title": "One", "start_offset_ms": 0}]
+                }}
+            })))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let (chapters, cover) = fetch_companions(
+            &account_for(&server),
+            "B0BOOK0001",
+            &DownloadOptions::default(),
+            dir.path(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            flatten_chapters(&chapters.unwrap()),
+            [("One".to_string(), 0)]
+        );
+        assert!(cover.is_none());
+    }
+
+    #[tokio::test]
+    async fn companions_are_dropped_when_audible_has_none() {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (chapters, cover) = fetch_companions(
+            &account_for(&server),
+            "B0BOOK0001",
+            &DownloadOptions::default(),
+            dir.path(),
+        )
+        .await
+        .unwrap();
+        assert!(chapters.is_none());
+        assert!(cover.is_none());
+    }
+
+    #[test]
+    fn brand_trim_cuts_the_intro_and_needs_a_runtime_for_the_outro() {
+        let missing = Path::new("/nonexistent/download.aaxc");
+        let window = |info: Option<&Value>| {
+            brand_trim(info, missing, "B0BOOK0001").map(|t| (t.start_ms, t.end_ms))
+        };
+        assert_eq!(window(None), None);
+        assert_eq!(
+            window(Some(&json!({"brand_intro_duration_ms": 4000}))),
+            Some((4000, None))
+        );
+        let outro = json!({"brand_intro_duration_ms": 4000, "brand_outro_duration_ms": 3000});
+        assert_eq!(window(Some(&outro)), None);
+        let with_runtime = json!({
+            "brand_intro_duration_ms": 4000,
+            "brand_outro_duration_ms": 3000,
+            "runtime_length_ms": 60000
+        });
+        assert_eq!(window(Some(&with_runtime)), Some((4000, Some(57000))));
+    }
+
+    #[tokio::test]
+    async fn login_start_serves_a_local_landing_page_and_tracks_the_session() {
+        let params = LoginParams {
+            marketplace: " UK ".into(),
+            label: Some("Main".into()),
+            callback_bind: Some("127.0.0.1:0".into()),
+            timeout_secs: Some(5),
+            ..LoginParams::default()
+        };
+        let (session_id, url) = guest_login_start(&params).await.unwrap();
+        assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+        let pending = pending_logins()
+            .lock()
+            .unwrap()
+            .remove(&session_id)
+            .unwrap();
+        assert_eq!(pending.label.as_deref(), Some("Main"));
+        pending.handle.abort();
+        assert!(guest_login_complete(&session_id).await.is_err());
     }
 }
