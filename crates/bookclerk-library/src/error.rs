@@ -193,4 +193,15 @@ mod tests {
         assert!(matches!(other, LibraryError::Other(_)), "{other}");
         assert!(other.to_string().contains("bad SQL"));
     }
+
+    #[test]
+    fn library_errors_become_chained_source_errors() {
+        let err = bookclerk_storefront::SourceError::from(LibraryError::Conflict("busy".into()));
+        assert!(matches!(err, bookclerk_storefront::SourceError::Library(_)));
+        let source = std::error::Error::source(&err).map(ToString::to_string);
+        assert_eq!(
+            source,
+            Some(LibraryError::Conflict("busy".into()).to_string())
+        );
+    }
 }

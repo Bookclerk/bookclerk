@@ -77,3 +77,57 @@ fn sync_dir_size(path: &Path) -> u64 {
     }
     total
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fetch options over `cache_dir` with an optional budget and cancel flag.
+    fn options(
+        cache_dir: &Path,
+        max: Option<u64>,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> FetchOptions {
+        FetchOptions {
+            download: DownloadOptions::default(),
+            cache_dir: cache_dir.to_path_buf(),
+            files_dir: cache_dir.to_path_buf(),
+            max_cache_bytes: max,
+            cancel,
+        }
+    }
+
+    #[test]
+    fn budget_counts_nested_files_and_fails_over_quota() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("part")).expect("mkdir");
+        std::fs::write(dir.path().join("a.bin"), [0u8; 10]).expect("write");
+        std::fs::write(dir.path().join("part").join("b.bin"), [0u8; 6]).expect("write");
+
+        assert_eq!(sync_dir_size(dir.path()), 16);
+        assert!(options(dir.path(), Some(16), None)
+            .enforce_cache_budget()
+            .is_ok());
+        assert!(options(dir.path(), None, None)
+            .enforce_cache_budget()
+            .is_ok());
+        let err = options(dir.path(), Some(15), None)
+            .enforce_cache_budget()
+            .expect_err("over quota");
+        assert!(err.to_string().contains("16 > 15"), "{err}");
+    }
+
+    #[test]
+    fn budget_fails_once_cancelled_and_missing_dirs_are_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("missing");
+        assert_eq!(sync_dir_size(&missing), 0);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let opts = options(&missing, Some(0), Some(Arc::clone(&cancel)));
+        assert!(opts.enforce_cache_budget().is_ok());
+        cancel.store(true, Ordering::SeqCst);
+        let err = opts.enforce_cache_budget().expect_err("cancelled");
+        assert!(err.to_string().contains("cancelled"), "{err}");
+    }
+}

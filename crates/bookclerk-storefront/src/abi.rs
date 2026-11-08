@@ -518,6 +518,99 @@ mod tests {
     use super::*;
 
     #[test]
+    fn source_account_roundtrips_through_wire() {
+        let account = SourceAccount {
+            account_id: "acct-1".into(),
+            source: "libro".into(),
+            marketplace: "us".into(),
+            label: Some("Main".into()),
+            scan_enabled: true,
+        };
+        let back = SourceAccount::from(abi::SourceAccount::from(account.clone()));
+        assert_eq!(format!("{back:?}"), format!("{account:?}"));
+    }
+
+    #[test]
+    fn purchase_hint_roundtrips_and_decodes_entities() {
+        let hint = SourcePurchaseHint {
+            product_id: "p-9".into(),
+            title: Some("Tom &amp; Jerry".into()),
+            url: Some("https://example.test/p-9".into()),
+            price_cents: Some(1499),
+            currency: Some("USD".into()),
+            price_label: Some("&#36;14.99".into()),
+            list_price_cents: Some(1999),
+            list_price_label: Some("&#36;19.99".into()),
+            member_price_cents: Some(999),
+            member_price_label: Some("&#36;9.99".into()),
+        };
+        let back = SourcePurchaseHint::from(abi::PurchaseHint::from(hint.clone()));
+        assert_eq!(format!("{back:?}"), format!("{hint:?}"));
+
+        let decoded = back.decode_html_entities();
+        assert_eq!(decoded.title.as_deref(), Some("Tom & Jerry"));
+        assert_eq!(decoded.price_label.as_deref(), Some("$14.99"));
+        assert_eq!(decoded.list_price_label.as_deref(), Some("$19.99"));
+        assert_eq!(decoded.member_price_label.as_deref(), Some("$9.99"));
+    }
+
+    #[test]
+    fn catalog_sort_and_field_map_both_ways() {
+        for sort in [
+            abi::CatalogSort::Relevance,
+            abi::CatalogSort::Popularity,
+            abi::CatalogSort::Rating,
+            abi::CatalogSort::Title,
+            abi::CatalogSort::Author,
+        ] {
+            assert_eq!(abi::CatalogSort::from(CatalogSearchSort::from(sort)), sort);
+        }
+        for field in [
+            abi::CatalogField::Any,
+            abi::CatalogField::Author,
+            abi::CatalogField::Narrator,
+            abi::CatalogField::Series,
+            abi::CatalogField::Genre,
+        ] {
+            assert_eq!(catalog_field_to_abi(catalog_field_from_abi(field)), field);
+        }
+    }
+
+    #[test]
+    fn expand_params_roundtrip_seed_and_limit() {
+        let seed = ExpandSeed {
+            source: "chirp".into(),
+            product_id: "42".into(),
+            title: "Dune".into(),
+            authors: Some("Frank Herbert".into()),
+            narrators: Some("Scott Brick".into()),
+            series: Some("Dune".into()),
+            series_asin: Some("B000".into()),
+            asin: Some("B001".into()),
+            isbn: Some("9780000000000".into()),
+            region: "us".into(),
+        };
+        let (back, limit) = expand_seed_from_params(expand_candidates_params(&seed, 7));
+        assert_eq!(limit, 7);
+        assert_eq!(format!("{back:?}"), format!("{seed:?}"));
+    }
+
+    #[test]
+    fn purchase_hint_params_roundtrip() {
+        let opts = PurchaseHintOpts {
+            product_id: Some("p-1".into()),
+            title: Some("Dune".into()),
+            authors: Some("Frank Herbert".into()),
+            asin: Some("B001".into()),
+            isbn: Some("9780000000000".into()),
+            region: "uk".into(),
+            with_price: true,
+        };
+        let back = PurchaseHintOpts::from(abi::PurchaseHintParams::from(&opts));
+        assert_eq!(format!("{back:?}"), format!("{opts:?}"));
+    }
+
+    #[test]
     fn plain_fetch_roundtrips_through_wire() {
         let plain = PlainFetch {
             parts: vec![PlainAudioPart {

@@ -2376,6 +2376,7 @@ dependencies = [
  "bookclerk-storefront",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]
