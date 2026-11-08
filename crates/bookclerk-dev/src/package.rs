@@ -520,6 +520,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn package_platform_refuses_a_root_without_the_ui() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let out = root.path().join("dist");
+        let extras = vec!["bookclerk-demo-seed".to_owned()];
+        let err =
+            package_platform(root.path(), &out, "0.0.0", &extras).expect_err("no ui/package.json");
+        assert!(err.to_string().contains("ui/package.json missing"));
+        assert!(!out.exists());
+    }
+
+    #[test]
     fn archive_names_prefer_bookclerk_target() {
         let path = archive_path(
             Path::new("/out"),
