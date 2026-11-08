@@ -1,12 +1,15 @@
 # Hosted demo image: the production image plus the four storefront plugins
-# and the covers plugin, minus everything that could acquire a book. Built by
-# .github/workflows/demo-deploy.yml (through `wrangler deploy`) on top of two
-# images it builds first from the same commit with
-# packaging/docker/Dockerfile, so every crate and plugin in the demo is the
-# version production ships:
+# and the covers plugin, minus everything that could acquire a book. Built on
+# the production builder and runtime stages of packaging/docker/Dockerfile
+# from the same commit, so every crate and plugin in the demo is the version
+# production ships, in one BuildKit build that never exports the builder:
 #
-#   docker build -f packaging/docker/Dockerfile --target builder -t bookclerk-builder:demo .
-#   docker build -f packaging/docker/Dockerfile -t bookclerk:demo .
+#   docker buildx bake -f packaging/demo/docker-bake.hcl --load demo
+#
+# (from the repository root; the result is tagged bookclerk-demo:local).
+# images-publish.yml and demo-deploy.yml both build it this way. The bake
+# file builds the demo's binaries with thin LTO and parallel codegen units
+# rather than the fat LTO shipped images use, which links far faster.
 #
 # The build context is this directory; the workflow writes version.txt (the
 # commit) into it.
@@ -38,17 +41,31 @@
 #     of this commit, never raw SQL. If it fails, bookclerkd still starts,
 #     with an empty library.
 
+# The bake file points these at the production Dockerfile's stages.
 ARG BUILDER=bookclerk-builder:demo
 ARG RUNTIME=bookclerk:demo
 
 FROM ${BUILDER} AS storefronts
 WORKDIR /src
-# Reuses the release build the production image already made.
-RUN cargo stage-plugins --release --plugin audible --plugin libro --plugin chirp --plugin graphicaudio --plugin covers \
+# The link settings the builder stage got (see docker-bake.hcl).
+ARG RELEASE_LTO=true
+ARG RELEASE_CODEGEN_UNITS=1
+# Reuses the release build the production image already made. The
+# storefronts and the seed build in one cargo invocation, so the dependencies
+# they share compile once, with one feature set; stage-plugins then only lays
+# out what was built.
+RUN CARGO_PROFILE_RELEASE_LTO="$RELEASE_LTO" \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$RELEASE_CODEGEN_UNITS" \
+    cargo build --release \
+      -p bookclerk-plugin-source-audible \
+      -p bookclerk-plugin-source-libro \
+      -p bookclerk-plugin-source-chirp \
+      -p bookclerk-plugin-source-graphicaudio \
+      -p bookclerk-demo-seed \
+    && cargo stage-plugins --release --skip-build --plugin audible --plugin libro --plugin chirp --plugin graphicaudio --plugin covers \
     && mkdir -p /out \
     && cp -a target/plugin-artifacts/. /out/ \
     && test "$(find /out -mindepth 2 -maxdepth 2 -name plugin.toml | wc -l)" -eq 5 \
-    && cargo build --release -p bookclerk-demo-seed \
     && install -m 0755 target/release/bookclerk-demo-seed /bookclerk-demo-seed
 
 FROM ${RUNTIME}

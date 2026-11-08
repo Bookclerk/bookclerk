@@ -44,11 +44,19 @@ COPY . .
 # Built in the ui stage, so package-platform finds a current ui/dist and does
 # not need Node here.
 COPY --from=ui /src/ui/dist ui/dist
+# The release profile's link-time optimization. The defaults are
+# Cargo.toml's (fat LTO, one codegen unit), what every shipped image uses.
+# Only the hosted demo's build (packaging/demo/docker-bake.hcl) passes
+# thin LTO and parallel codegen units, which links in a fraction of the time.
+ARG RELEASE_LTO=true
+ARG RELEASE_CODEGEN_UNITS=1
 # Release hosts + helpers + pinned workerd + sqlite/local, stamped and laid
 # out exactly as the release archive. The bundle-local ledger is dropped: the
 # host stamps its own ledger in BOOKCLERK_FILES_DIR when it installs the
 # plugins.
-RUN cargo package-platform --out /dist \
+RUN CARGO_PROFILE_RELEASE_LTO="$RELEASE_LTO" \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$RELEASE_CODEGEN_UNITS" \
+    cargo package-platform --out /dist \
     && bundle=$(find /dist -mindepth 1 -maxdepth 1 -type d -name 'bookclerk-*') \
     && test -n "$bundle" \
     && mv "$bundle" /opt/bookclerk \

@@ -42,8 +42,9 @@ directory = "./public"
 crons = ["*/5 * * * *"]
 
 # One container per visitor. basic is 1/4 vCPU and 1 GiB: the spike measured
-# about 530 MB with all plugins running. The image is built by the deploy
-# workflow from images it built first (see packaging/demo/Dockerfile).
+# about 530 MB with all plugins running. The deploy workflow points these
+# two lines at a one-line Dockerfile on the demo image it verified or built
+# (packaging/demo/docker-bake.hcl), so wrangler compiles nothing.
 [[containers]]
 class_name = "DemoSession"
 image = "../../packaging/demo/Dockerfile"
