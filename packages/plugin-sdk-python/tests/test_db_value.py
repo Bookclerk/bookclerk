@@ -485,6 +485,23 @@ class DbValueGoldens(unittest.TestCase):
         self.assertIsNone(PluginError.from_wire("internal", "x", "{nope").details)
         # A limit code whose details are missing still parses the message.
         self.assertEqual(PluginError.from_wire("limit_exceeded", str(err)).limit, limit)
+        # `details` is measured in UTF-8 bytes, as the wire carries it.
+        from bookclerk_plugin_sdk._abi import MAX_SCALAR_BYTES
+
+        wide = '{"pad":"' + "\u00e9" * (MAX_SCALAR_BYTES // 2 + 8) + '"}'
+        self.assertLessEqual(len(wide), MAX_SCALAR_BYTES)
+        self.assertIsNone(PluginError.from_wire("unavailable", "wide", wide).details)
+        # Mistyped limit fields never become a limit; the message decides.
+        from bookclerk_plugin_sdk.limits import limit_from_details
+
+        for bad in (
+            {"limit": "max result bytes", "cap": 1, "used": 2},
+            {"limit": "maxResultBytes", "cap": -1, "used": 2},
+            {"limit": "maxResultBytes", "cap": 1.5, "used": 2},
+            {"limit": "maxResultBytes", "cap": True, "used": 2},
+        ):
+            self.assertIsNone(limit_from_details(bad), bad)
+            self.assertIsNone(PluginError("limit_exceeded", "not canonical", bad).limit, bad)
 
         caps = {
             "sqlContractVersion": 1,
@@ -495,13 +512,13 @@ class DbValueGoldens(unittest.TestCase):
             "cancellation": True,
             "timing": True,
             "maxBinds": 100,
-            "maxStatements": 100,
+            "maxStatements": 50,
             "maxResultRows": 1000,
             "maxPayloadBytes": 100_000,
             "maxResultBytes": 262_144,
             "maxCellBytes": 65_536,
-            "maxRequestBytes": 262_144,
-            "maxAtomicResultBytes": 262_144,
+            "maxRequestBytes": 131_072,
+            "maxAtomicResultBytes": 524_288,
             "pluginDatabases": True,
             "maxFunctionArgs": 32,
             "maxSchemaColumns": 100,

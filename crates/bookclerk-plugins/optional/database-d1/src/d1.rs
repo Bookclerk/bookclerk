@@ -2373,10 +2373,7 @@ mod tests {
     #[tokio::test]
     async fn plugin_error_from_d1_maps_cap_failures_to_limit_exceeded() {
         let limit = bookclerk_plugin_abi::LimitExceeded::new("maxResultBytes", 262_144, 300_000);
-        let err = DbErr::Custom(format!(
-            "D1 ambiguous response: D1 statement 0: {}",
-            limit.to_message()
-        ));
+        let err = DbErr::Custom(format!("D1 statement 0: {}", limit.to_message()));
         let mapped = crate::atomic::plugin_error_from_d1(err);
         assert_eq!(
             mapped.code,
@@ -2384,9 +2381,29 @@ mod tests {
             "{mapped}"
         );
         assert_eq!(mapped.limit(), Some(limit));
+    }
+
+    #[tokio::test]
+    async fn plugin_error_from_d1_keeps_an_ambiguous_cap_failure_unavailable() {
+        let limit = bookclerk_plugin_abi::LimitExceeded::new("maxResultBytes", 262_144, 300_000);
+        let err = DbErr::Custom(format!(
+            "D1 ambiguous response: D1 statement 0: {}",
+            limit.to_message()
+        ));
+        let mapped = crate::atomic::plugin_error_from_d1(err);
+        assert_eq!(
+            mapped.code,
+            bookclerk_plugin_sdk::PluginErrorCode::Unavailable,
+            "a possibly committed mutation is not a terminal limit error: {mapped}"
+        );
         assert!(
             mapped.message.contains("D1 ambiguous response"),
             "the ambiguous-commit marker stays in the message: {mapped}"
+        );
+        assert_eq!(
+            bookclerk_plugin_abi::LimitExceeded::from_message(&mapped.message),
+            Some(limit),
+            "the canonical limit text stays readable: {mapped}"
         );
     }
 

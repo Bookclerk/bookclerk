@@ -96,7 +96,8 @@ Granted bindings arrive on `self.env` per invocation: `CONFIG`,
 binding. A binding's `await limits()` returns the `DbCapabilities` its
 session negotiated; a request or result over one of them raises a
 `PluginError` whose `code` is `limit_exceeded` and whose `limit` names
-the cap. Generate a typed `Env` protocol from `plugin.toml`:
+the cap. On a host that predates `limits()` the call raises
+`unsupported`. Generate a typed `Env` protocol from `plugin.toml`:
 
 ```bash
 python -m bookclerk_plugin_sdk types .   # writes bookclerk_configuration.py

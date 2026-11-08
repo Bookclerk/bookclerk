@@ -3000,7 +3000,7 @@ class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
       method: "GET",
       headers: { ...this.#auth },
     });
-    return grantedDatabaseBody(resp);
+    return grantedDatabaseBody(resp, "limits");
   }
 }
 
@@ -3008,13 +3008,15 @@ class GrantedDatabase extends RpcTarget implements GrantedDatabaseTransport {
  * Reads a granted `/db/*` response body, mapping a non-2xx status onto the
  * `PluginError` the channel implies: `401` is `unauthorized`, `413` is
  * `limit_exceeded` (the request was over the grant's `maxRequestBytes`; the
- * body is the canonical limit message, parsed back into `details`),
- * anything else is `unavailable`.
+ * body is the canonical limit message, parsed back into `details`), `404`
+ * and `405` are `unsupported` (an older host without the route), anything
+ * else is `unavailable`.
  *
  * @param resp - Granted channel response.
+ * @param method - `GuestDatabase` method name for the error text.
  * @returns Response body bytes.
  */
-async function grantedDatabaseBody(resp: Response): Promise<Uint8Array> {
+async function grantedDatabaseBody(resp: Response, method = "execute"): Promise<Uint8Array> {
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
     const message = `database grant: ${resp.status} ${text}`.trim();
@@ -3023,6 +3025,12 @@ async function grantedDatabaseBody(resp: Response): Promise<Uint8Array> {
       throw limit === undefined
         ? PluginError.fromWire("limit_exceeded", message)
         : new PluginError("limit_exceeded", message, { ...limit });
+    }
+    if (resp.status === 404 || resp.status === 405) {
+      throw PluginError.fromWire(
+        "unsupported",
+        `GuestDatabase.${method} is not served by this host (${message})`,
+      );
     }
     throw PluginError.fromWire(resp.status === 401 ? "unauthorized" : "unavailable", message);
   }

@@ -14,6 +14,7 @@ from typing import Any
 
 _PREFIX = "limit exceeded: "
 _BODY = re.compile(r"^([A-Za-z0-9_]+) is (\d+); used (\d+)")
+_NAME = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 @dataclass(frozen=True)
@@ -81,16 +82,21 @@ def limit_from_details(details: dict[str, Any] | None) -> LimitExceeded | None:
         details: Parsed ``details`` JSON object, or ``None``.
 
     Returns:
-        The record, or ``None`` when a field is missing or mistyped.
+        The record, or ``None`` when a field is missing or mistyped: the name
+        must match the message grammar (ASCII letters, digits, ``_``) and the
+        counts must be non-negative integers, as :func:`parse_limit_exceeded`
+        would produce.
     """
     if not details:
         return None
     limit = details.get("limit")
     cap = details.get("cap")
     used = details.get("used")
-    if not isinstance(limit, str) or isinstance(cap, bool) or isinstance(used, bool):
+    if not isinstance(limit, str) or _NAME.match(limit) is None:
         return None
-    if not isinstance(cap, int) or not isinstance(used, int):
+    if isinstance(cap, bool) or isinstance(used, bool):
+        return None
+    if not isinstance(cap, int) or not isinstance(used, int) or cap < 0 or used < 0:
         return None
     return LimitExceeded(limit, cap, used)
 

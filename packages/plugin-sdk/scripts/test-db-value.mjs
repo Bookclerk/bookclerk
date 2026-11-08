@@ -22,6 +22,7 @@ const { PluginError, parseLimitExceeded, limitExceededMessage } = await import(
 );
 const { guestStatementKind } = await import(join(dist, "guest-sql.js"));
 const { CapnpMessage } = await import(join(dist, "db-capnp.js"));
+const { MAX_SCALAR_BYTES } = await import(join(dist, "abi.js"));
 
 function hex(bytes) {
   return Buffer.from(bytes).toString("hex");
@@ -459,6 +460,23 @@ try {
   assert.deepEqual(err.details, limit);
   assert.deepEqual(err.limit, limit);
 }
+// `details` round-trips as UTF-8 bytes: text within the scalar ceiling in
+// characters but over it in bytes is dropped, and mistyped or malformed
+// limit fields do not become a limit.
+const wideDetails = `{"pad":"${"\u00e9".repeat(MAX_SCALAR_BYTES / 2 + 8)}"}`;
+assert.ok(wideDetails.length <= MAX_SCALAR_BYTES);
+assert.equal(PluginError.fromWire("unavailable", "wide", wideDetails).details, undefined);
+for (const bad of [
+  { limit: "max result bytes", cap: 1, used: 2 },
+  { limit: "maxResultBytes", cap: -1, used: 2 },
+  { limit: "maxResultBytes", cap: 1.5, used: 2 },
+  { limit: "maxResultBytes", cap: 1, used: Number.MAX_SAFE_INTEGER + 2 },
+]) {
+  assert.equal(new PluginError("limit_exceeded", "not canonical", bad).limit, undefined, bad);
+}
+const cyclic = { self: undefined };
+cyclic.self = cyclic;
+assert.equal(new PluginError("unavailable", "cycle", cyclic).detailsText, "");
 // A reply from a pre-`details` encoder (a two-pointer `PluginError`) still
 // decodes, with no details.
 const twoPointerErr = (() => {
@@ -496,14 +514,15 @@ const caps = {
   schemaMigrations: true,
   cancellation: true,
   timing: true,
+  // Every field distinct, so a swapped slot in the codec fails the test.
   maxBinds: 100,
-  maxStatements: 100,
+  maxStatements: 50,
   maxResultRows: 1000,
   maxPayloadBytes: 100000,
   maxResultBytes: 262144,
   maxCellBytes: 65536,
-  maxRequestBytes: 262144,
-  maxAtomicResultBytes: 262144,
+  maxRequestBytes: 131072,
+  maxAtomicResultBytes: 524288,
   pluginDatabases: true,
   maxFunctionArgs: 32,
   maxSchemaColumns: 100,

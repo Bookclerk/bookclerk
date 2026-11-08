@@ -649,6 +649,11 @@ var StructReader = class _StructReader {
 // dist/errors.js
 var KNOWN_ERROR_CODES = new Set(PLUGIN_ERROR_CODES);
 var MAX_DETAILS_BYTES = MAX_SCALAR_BYTES;
+var LIMIT_NAME = /^[A-Za-z0-9_]+$/;
+var UTF8 = new TextEncoder();
+function isCount(n) {
+  return typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+}
 var LIMIT_MESSAGE_PREFIX = "limit exceeded: ";
 function limitExceededMessage(limit) {
   return `${LIMIT_MESSAGE_PREFIX}${limit.limit} is ${limit.cap}; used ${limit.used}`;
@@ -668,13 +673,13 @@ function parseLimitExceeded(message) {
 }
 function limitFromDetails(details) {
   const { limit, cap, used } = details;
-  if (typeof limit !== "string" || typeof cap !== "number" || typeof used !== "number") {
+  if (typeof limit !== "string" || !LIMIT_NAME.test(limit) || !isCount(cap) || !isCount(used)) {
     return void 0;
   }
   return { limit, cap, used };
 }
 function parseDetails(text) {
-  if (text === "" || text.length > MAX_DETAILS_BYTES)
+  if (text === "" || UTF8.encode(text).byteLength > MAX_DETAILS_BYTES)
     return void 0;
   try {
     const parsed = JSON.parse(text);
@@ -745,7 +750,13 @@ var PluginError = class _PluginError extends Error {
    * @returns JSON object text, or an empty string when the error has none.
    */
   get detailsText() {
-    return this.details === void 0 ? "" : JSON.stringify(this.details);
+    if (this.details === void 0)
+      return "";
+    try {
+      return JSON.stringify(this.details) ?? "";
+    } catch {
+      return "";
+    }
   }
 };
 
@@ -8106,8 +8117,19 @@ function wireError(err) {
   const e = err;
   const code = e && typeof e === "object" ? typeof e.wireCode === "string" ? e.wireCode : typeof e.code === "string" ? e.code : "internal" : "internal";
   const message = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
-  const details = err instanceof PluginError ? err.detailsText : "";
-  return { code, message, details };
+  return { code, message, details: wireDetails(err) };
+}
+function wireDetails(err) {
+  if (err instanceof PluginError)
+    return err.detailsText;
+  const details = err?.details;
+  if (details === null || typeof details !== "object" || Array.isArray(details))
+    return "";
+  try {
+    return JSON.stringify(details) ?? "";
+  } catch {
+    return "";
+  }
 }
 function resolveStub(entry, host) {
   if (entry.stub === "author") {
@@ -10091,16 +10113,19 @@ var GrantedDatabase = class extends RpcTarget {
       method: "GET",
       headers: { ...this.#auth }
     });
-    return grantedDatabaseBody(resp);
+    return grantedDatabaseBody(resp, "limits");
   }
 };
-async function grantedDatabaseBody(resp) {
+async function grantedDatabaseBody(resp, method = "execute") {
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
     const message = `database grant: ${resp.status} ${text}`.trim();
     if (resp.status === 413) {
       const limit = parseLimitExceeded(text);
       throw limit === void 0 ? PluginError.fromWire("limit_exceeded", message) : new PluginError("limit_exceeded", message, { ...limit });
+    }
+    if (resp.status === 404 || resp.status === 405) {
+      throw PluginError.fromWire("unsupported", `GuestDatabase.${method} is not served by this host (${message})`);
     }
     throw PluginError.fromWire(resp.status === 401 ? "unauthorized" : "unavailable", message);
   }

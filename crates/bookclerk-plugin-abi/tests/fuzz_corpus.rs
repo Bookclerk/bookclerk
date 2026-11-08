@@ -613,3 +613,39 @@ fn limit_error_envelope_seeds_are_current() {
         );
     }
 }
+
+/// A standalone reply larger than the default first Cap'n segment still
+/// decodes: the encoders resize to one segment instead of spilling into a
+/// second one that no SDK decoder accepts.
+#[test]
+fn oversized_standalone_replies_stay_single_segment() {
+    use bookclerk_plugin_abi::{
+        decode_db_capabilities_reply_bytes, decode_execute_result_reply_bytes,
+        encoded_db_capabilities_reply_bytes, encoded_execute_result_reply_bytes, PluginError,
+        PluginErrorCode,
+    };
+
+    // 1024 words is the default first segment; this message alone is bigger.
+    let message = "x".repeat(16 * 1024);
+    for bytes in [
+        encoded_db_capabilities_reply_bytes(Err(PluginError::unavailable(message.clone())))
+            .expect("encode caps err"),
+        encoded_execute_result_reply_bytes(Err(PluginError::unavailable(message.clone())))
+            .expect("encode reply err"),
+    ] {
+        assert_eq!(
+            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            0,
+            "segment count minus one"
+        );
+    }
+    let caps = encoded_db_capabilities_reply_bytes(Err(PluginError::unavailable(message.clone())))
+        .expect("encode caps err");
+    let decoded = decode_db_capabilities_reply_bytes(&caps).expect_err("err member");
+    assert_eq!(decoded.code, PluginErrorCode::Unavailable);
+    assert_eq!(decoded.message, message);
+    let reply = encoded_execute_result_reply_bytes(Err(PluginError::unavailable(message.clone())))
+        .expect("encode reply err");
+    let decoded = decode_execute_result_reply_bytes(&reply).expect_err("err member");
+    assert_eq!(decoded.message, message);
+}

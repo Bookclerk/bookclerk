@@ -93,7 +93,13 @@ class WorkerdGrantedDbTests(unittest.IsolatedAsyncioTestCase):
         from bookclerk_plugin_sdk.limits import LimitExceeded
         from bookclerk_plugin_sdk.workerd import PluginError
 
-        for status, code in ((401, "unauthorized"), (413, "limit_exceeded"), (503, "unavailable")):
+        for status, code in (
+            (401, "unauthorized"),
+            (404, "unsupported"),
+            (405, "unsupported"),
+            (413, "limit_exceeded"),
+            (503, "unavailable"),
+        ):
             databases = granted_databases(_MockFetcher(status), {"DB": "t"})
             with self.assertRaises(PluginError) as ctx:
                 await databases["DB"].limits()
@@ -108,6 +114,10 @@ class WorkerdGrantedDbTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("database grant: 413", str(ctx.exception))
             else:
                 self.assertIsNone(ctx.exception.limit)
+            if status in (404, 405):
+                # An older host without the route: the author can tell
+                # "not served here" from "try again later".
+                self.assertIn("GuestDatabase.limits is not served", str(ctx.exception))
 
     async def test_binding_without_limits_transport_is_unsupported(self) -> None:
         from bookclerk_plugin_sdk.db_value import create_database_binding

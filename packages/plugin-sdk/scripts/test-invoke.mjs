@@ -73,6 +73,9 @@ class Plugin extends BookclerkEntrypoint {
     calls.kvText = await kv.get("cursor");
     calls.kvJson = await kv.getWithMetadata("cursor", "json").catch((err) => String(err));
     calls.kvBytes = new TextDecoder().decode(await kv.get("cursor", "arrayBuffer"));
+    // `env.DB.limits()` on a host without the route is `unsupported`, not
+    // `unavailable`: the author can tell "older host" from "try later".
+    calls.dbLimits = await this.env.DB.limits().catch((err) => err);
     calls.kvList = await kv.list({ prefix: "cur" });
     await kv.delete("cursor");
     calls.kvAfterDelete = await kv.get("cursor");
@@ -309,6 +312,9 @@ const granted = {
           return new Response("nope", { status: 404 });
       }
     }
+    if (u.pathname === "/db/limits") {
+      return new Response("not found", { status: 404 });
+    }
     if (u.pathname === "/queues/send") {
       const sent = JSON.parse(init.body);
       return Response.json(
@@ -363,6 +369,7 @@ const contextJson = JSON.stringify(
     secrets: jsonPayload({ token: "s3cr3t" }),
     queues: { NOTIFY: "qtok" },
     kv: { KV: "ktok" },
+    databases: { DB: "dtok" },
   }),
 );
 
@@ -692,6 +699,13 @@ function decodeReply(reply, resultsCodec, caps) {
   assert.equal(body.messages[0].contentType, "json");
   assert.equal(body.messages[0].delaySeconds, 3);
   assert.equal(Buffer.from(body.messages[0].body, "base64").toString(), '{"seen":"jobs"}');
+
+  const limits = granted.requests.slice(before).find((r) => r.path === "/db/limits");
+  assert.ok(limits, "env.DB.limits went through the granted channel");
+  assert.equal(limits.headers.Authorization, "Bearer dtok");
+  assert.ok(calls.dbLimits instanceof PluginError, String(calls.dbLimits));
+  assert.equal(calls.dbLimits.code, "unsupported", calls.dbLimits.message);
+  assert.match(calls.dbLimits.message, /GuestDatabase\.limits is not served by this host/);
 
   // env.KV: Workers KVNamespace shape over `/kv/*` with the kv-only token.
   assert.equal(calls.kvMissing, null, "absent key reads as null");

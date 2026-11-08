@@ -112,7 +112,8 @@ plus operator settings), `SECRETS` (`[secrets]`), `EVENTS`
 A binding's `limits()` returns the `DbCapabilities` its session negotiated
 (`maxRequestBytes`, `maxStatements`, `maxResultBytes`, `maxResultRows`,
 …); a request or result over one of them rejects with a `PluginError`
-whose `code` is `limit_exceeded` and whose `limit` names the cap.
+whose `code` is `limit_exceeded` and whose `limit` names the cap. On a
+host that predates `limits()` the call rejects with `unsupported`.
 Generate the `Env` type from `plugin.toml`:
 
 ```bash

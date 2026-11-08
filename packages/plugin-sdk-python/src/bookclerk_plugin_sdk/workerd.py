@@ -239,9 +239,15 @@ def _await_maybe(value: Any) -> Any:
 def _parse_details(text: str) -> dict[str, Any] | None:
     """Parse the wire ``details`` JSON object text; anything else is dropped.
 
-    Text past ``MAX_SCALAR_BYTES`` (the ABI scalar ceiling) is dropped too.
+    Text past ``MAX_SCALAR_BYTES`` (the ABI scalar ceiling, in UTF-8 bytes)
+    is dropped too.
     """
-    if not text or len(text) > MAX_SCALAR_BYTES:
+    if not text:
+        return None
+    try:
+        if len(text.encode("utf-8")) > MAX_SCALAR_BYTES:
+            return None
+    except UnicodeEncodeError:
         return None
     try:
         parsed = json.loads(text)
@@ -1905,7 +1911,9 @@ async def _granted_database_body(resp: Any, method: str) -> bytes:
     A non-2xx status maps onto the ``PluginError`` the channel implies:
     ``401`` is ``unauthorized``, ``413`` is ``limit_exceeded`` (the request was
     over the grant's ``maxRequestBytes``; the body is the canonical limit
-    message, parsed back into ``details``) and anything else ``unavailable``.
+    message, parsed back into ``details``), ``404`` and ``405`` are
+    ``unsupported`` (an older host without the route) and anything else
+    ``unavailable``.
 
     Args:
         resp: Granted-channel response.
@@ -1926,6 +1934,11 @@ async def _granted_database_body(resp: Any, method: str) -> bytes:
             if limit is None:
                 raise PluginError.from_wire("limit_exceeded", message)
             raise PluginError("limit_exceeded", message, limit_exceeded_details(limit))
+        if int(status) in (404, 405):
+            raise PluginError.from_wire(
+                "unsupported",
+                f"GuestDatabase.{method} is not served by this host ({message})",
+            )
         code = "unauthorized" if int(status) == 401 else "unavailable"
         raise PluginError.from_wire(code, message)
     if hasattr(resp, "arrayBuffer"):

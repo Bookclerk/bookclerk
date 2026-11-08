@@ -927,8 +927,25 @@ function wireError(err: unknown): WirePluginError {
           : "internal"
       : "internal";
   const message = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
-  const details = err instanceof PluginError ? err.detailsText : "";
-  return { code, message, details };
+  return { code, message, details: wireDetails(err) };
+}
+
+/**
+ * Reads `details` structurally, so a `PluginError` from another copy of the
+ * SDK (a bundled dependency, another realm) keeps its details on the wire.
+ *
+ * @param err - Thrown value.
+ * @returns `details` as JSON object text, or `""` when there is none.
+ */
+function wireDetails(err: unknown): string {
+  if (err instanceof PluginError) return err.detailsText;
+  const details = (err as { details?: unknown } | null)?.details;
+  if (details === null || typeof details !== "object" || Array.isArray(details)) return "";
+  try {
+    return JSON.stringify(details) ?? "";
+  } catch {
+    return "";
+  }
 }
 
 function resolveStub(entry: AnySpec, host: InvokeHost): Stub {

@@ -697,8 +697,9 @@ fn count_call_args(sql: &str, open: usize) -> Result<Option<(usize, usize)>> {
 ///
 /// # Errors
 ///
-/// Returns [`PluginError::invalid_params`] when a non-chunkable call exceeds
-/// the cap or the cap is unspecified.
+/// Returns a typed `limit_exceeded` error (see [`crate::LimitExceeded`]) when
+/// a non-chunkable call exceeds the cap, and [`PluginError::invalid_params`]
+/// when the cap is unspecified.
 pub fn require_function_args_within(sql: &str, max_function_args: u32) -> Result<()> {
     if max_function_args == 0 {
         return Err(PluginError::invalid_params(
@@ -711,9 +712,10 @@ pub fn require_function_args_within(sql: &str, max_function_args: u32) -> Result
             continue;
         }
         if call.arg_count > cap {
-            return Err(PluginError::invalid_params(format!(
-                "function {} has {} arguments; guest maxFunctionArgs is {max_function_args}",
-                call.name, call.arg_count
+            return Err(PluginError::limit_exceeded(crate::LimitExceeded::new(
+                "maxFunctionArgs",
+                u64::from(max_function_args),
+                u64::try_from(call.arg_count).unwrap_or(u64::MAX),
             )));
         }
     }
@@ -724,8 +726,10 @@ pub fn require_function_args_within(sql: &str, max_function_args: u32) -> Result
 ///
 /// # Errors
 ///
-/// Returns [`PluginError::invalid_params`] when a proven pattern exceeds the
-/// cap or a LIKE pattern length cannot be proven.
+/// Returns a typed `limit_exceeded` error (see [`crate::LimitExceeded`]) when
+/// a literal or TEXT-bound pattern exceeds the cap, and
+/// [`PluginError::invalid_params`] when the cap is unspecified, a LIKE bind
+/// is not TEXT or missing, or a pattern length cannot be proven.
 pub fn require_like_patterns_within(
     sql: &str,
     parameters: &[crate::DbValue],
@@ -742,20 +746,14 @@ pub fn require_like_patterns_within(
             LikePatternSrc::Literal(pat) => {
                 require_portable_text(&pat)?;
                 if pat.len() > cap {
-                    return Err(PluginError::invalid_params(format!(
-                        "LIKE pattern is {} bytes; guest maxPatternBytes is {max_pattern_bytes}",
-                        pat.len()
-                    )));
+                    return Err(pattern_limit_exceeded(max_pattern_bytes, pat.len()));
                 }
             }
             LikePatternSrc::Bind(idx) => match parameters.get(idx) {
                 Some(crate::DbValue::Text(pat)) => {
                     require_portable_text(pat)?;
                     if pat.len() > cap {
-                        return Err(PluginError::invalid_params(format!(
-                            "LIKE bind {idx} is {} bytes; guest maxPatternBytes is {max_pattern_bytes}",
-                            pat.len()
-                        )));
+                        return Err(pattern_limit_exceeded(max_pattern_bytes, pat.len()));
                     }
                 }
                 Some(crate::DbValue::Null(_)) => {}
@@ -779,6 +777,15 @@ pub fn require_like_patterns_within(
         }
     }
     Ok(())
+}
+
+/// Typed `maxPatternBytes` failure for a LIKE pattern of `used` bytes.
+fn pattern_limit_exceeded(max_pattern_bytes: u32, used: usize) -> PluginError {
+    PluginError::limit_exceeded(crate::LimitExceeded::new(
+        "maxPatternBytes",
+        u64::from(max_pattern_bytes),
+        u64::try_from(used).unwrap_or(u64::MAX),
+    ))
 }
 
 /// Grammar-aware BookclerkSQL samples for fuzz corpora and differential tests.
@@ -1041,7 +1048,11 @@ mod tests {
         );
         require_function_args_within("SELECT replace(a, 'x', 'y')", 3).expect("N");
         let err = require_function_args_within("SELECT replace(a, 'x', 'y')", 2).unwrap_err();
-        assert!(err.to_string().contains("maxFunctionArgs"), "{err}");
+        assert_eq!(err.code, crate::PluginErrorCode::LimitExceeded, "{err}");
+        assert_eq!(
+            err.limit(),
+            Some(crate::LimitExceeded::new("maxFunctionArgs", 2, 3))
+        );
         let err =
             require_function_args_within("SELECT json_object('a', 1, 'b', 2, 'c', 3, 'd', 4)", 2)
                 .unwrap_err();

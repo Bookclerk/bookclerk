@@ -161,7 +161,8 @@ Native plugins must be rebuilt against this SDK.
   an error carries none) holds `{ "limit", "cap", "used" }`, and the
   message reads `limit exceeded: <cap> is <n>; used <m>`; the SDKs expose
   both as `err.limit`. `GuestDatabase.limits` returns the caps of the
-  session so a guest can stay under them.
+  session so a guest can stay under them; on a host that predates the
+  method it fails with `unsupported`.
 - Integrity metadata (etag, sha256) rides on `PutResult` and
   `ReadResult`.
 - Optional facilities *within* the ABI are feature flags (`rpc.streams`,

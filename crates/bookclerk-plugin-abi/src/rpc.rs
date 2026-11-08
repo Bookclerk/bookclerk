@@ -4727,7 +4727,13 @@ impl GuestDatabase for GuestDatabaseClient {
 
     async fn limits(&self) -> Result<crate::DbCapabilities> {
         let req = self.client.limits_request();
-        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(|err| {
+            if err.kind == capnp::ErrorKind::Unimplemented {
+                PluginError::unsupported("GuestDatabase.limits is not implemented by this host")
+            } else {
+                from_capnp(err)
+            }
+        })?;
         crate::db_rpc::read_db_capabilities_reply(
             reply
                 .get()

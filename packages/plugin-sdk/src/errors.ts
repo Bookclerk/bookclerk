@@ -10,8 +10,24 @@ import { MAX_SCALAR_BYTES, PLUGIN_ERROR_CODES } from "./abi.js";
 
 const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set<string>(PLUGIN_ERROR_CODES);
 
-/** Longest `details` text the SDK parses (the ABI scalar ceiling). */
+/** Longest `details` text the SDK parses (the ABI scalar ceiling), in UTF-8 bytes. */
 const MAX_DETAILS_BYTES: number = MAX_SCALAR_BYTES;
+
+/** Name grammar every `LimitExceeded.limit` satisfies (shared with the host). */
+const LIMIT_NAME = /^[A-Za-z0-9_]+$/;
+
+/** Measures text the way the wire does: in UTF-8 bytes. */
+const UTF8 = new TextEncoder();
+
+/**
+ * Whether `n` is a count the wire can carry: a non-negative safe integer.
+ *
+ * @param n - Candidate `cap` or `used` value.
+ * @returns `true` for a non-negative safe integer.
+ */
+function isCount(n: unknown): n is number {
+  return typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+}
 
 /**
  * A negotiated SQL-v1 cap that a request or its result exceeded
@@ -61,14 +77,14 @@ export function parseLimitExceeded(message: string): LimitExceeded | undefined {
 
 function limitFromDetails(details: Readonly<Record<string, unknown>>): LimitExceeded | undefined {
   const { limit, cap, used } = details;
-  if (typeof limit !== "string" || typeof cap !== "number" || typeof used !== "number") {
+  if (typeof limit !== "string" || !LIMIT_NAME.test(limit) || !isCount(cap) || !isCount(used)) {
     return undefined;
   }
   return { limit, cap, used };
 }
 
 function parseDetails(text: string): Readonly<Record<string, unknown>> | undefined {
-  if (text === "" || text.length > MAX_DETAILS_BYTES) return undefined;
+  if (text === "" || UTF8.encode(text).byteLength > MAX_DETAILS_BYTES) return undefined;
   try {
     const parsed: unknown = JSON.parse(text);
     if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -150,6 +166,13 @@ export class PluginError extends Error {
    * @returns JSON object text, or an empty string when the error has none.
    */
   get detailsText(): string {
-    return this.details === undefined ? "" : JSON.stringify(this.details);
+    if (this.details === undefined) return "";
+    try {
+      return JSON.stringify(this.details) ?? "";
+    } catch {
+      // A detail object that cannot be serialized (a cycle, a throwing
+      // `toJSON`) travels as no details; the code and message still stand.
+      return "";
+    }
   }
 }

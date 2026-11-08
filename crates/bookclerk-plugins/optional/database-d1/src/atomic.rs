@@ -941,13 +941,18 @@ pub fn is_ambiguous_d1(err: &DbErr) -> bool {
     err.to_string().contains("D1 ambiguous")
 }
 
-/// Maps a D1 [`DbErr`] onto the guest ABI: a cap failure → `limit_exceeded`
-/// (the message keeps its ambiguous-commit marker), retryable/ambiguous →
-/// `unavailable`, client 4xx → `invalid_params`, engine codes via the shared
-/// mapper.
+/// Maps a D1 [`DbErr`] onto the guest ABI.
+///
+/// Ambiguity wins: a receipt-lost or `D1 ambiguous` failure is `unavailable`
+/// even when it wraps a cap failure, because the mutation may have committed
+/// and a terminal `limit_exceeded` would tell the caller it did not. The
+/// canonical limit text stays in the message so the host still reads the cap
+/// back. A cap failure without the marker is `limit_exceeded` with `details`;
+/// other retryable failures are `unavailable`, client 4xx is
+/// `invalid_params`, and engine codes go through the shared mapper.
 #[must_use]
 pub fn plugin_error_from_d1(err: DbErr) -> PluginError {
-    if bookclerk_db_exec::is_guest_receipt_result_lost(&err) {
+    if bookclerk_db_exec::is_guest_receipt_result_lost(&err) || is_ambiguous_d1(&err) {
         return PluginError::unavailable(err.to_string());
     }
     let message = err.to_string();
@@ -958,9 +963,6 @@ pub fn plugin_error_from_d1(err: DbErr) -> PluginError {
         );
         typed.details = Some(limit.details());
         return typed;
-    }
-    if is_ambiguous_d1(&err) {
-        return PluginError::unavailable(err.to_string());
     }
     if is_post_commit_unavailable(&err) {
         return PluginError::unavailable(err.to_string());
