@@ -325,11 +325,7 @@ impl LimitExceeded {
         let used_end = rest
             .find(|c: char| !c.is_ascii_digit())
             .unwrap_or(rest.len());
-        let limit_ok = !limit.is_empty()
-            && limit
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_');
-        if !limit_ok {
+        if !is_limit_name(limit) {
             return None;
         }
         Some(Self {
@@ -350,15 +346,28 @@ impl LimitExceeded {
     }
 
     /// Reads the record back from a `details` object; `None` when any field
-    /// is missing or not of the expected type.
+    /// is missing or not of the expected type, or when `limit` is not a
+    /// name [`Self::from_message`] would accept, so a record read from
+    /// `details` always round-trips through its canonical message.
     #[must_use]
     pub fn from_details(details: &serde_json::Map<String, serde_json::Value>) -> Option<Self> {
+        let limit = details.get("limit")?.as_str()?;
+        if !is_limit_name(limit) {
+            return None;
+        }
         Some(Self {
-            limit: details.get("limit")?.as_str()?.to_string(),
+            limit: limit.to_string(),
             cap: details.get("cap")?.as_u64()?,
             used: details.get("used")?.as_u64()?,
         })
     }
+}
+
+/// True when `name` is a cap name both limit parsers accept: non-empty ASCII
+/// letters, digits and `_` (the SQL-v1 `maxResultBytes` style), so it cannot
+/// contain the `" is "` and `"; used "` separators of the canonical message.
+fn is_limit_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 impl std::fmt::Display for LimitExceeded {
@@ -450,6 +459,35 @@ mod tests {
         assert_eq!(
             PluginError::conflict("limit exceeded: maxBinds is 1; used 2").limit(),
             None
+        );
+    }
+
+    #[test]
+    fn details_with_a_name_the_message_grammar_rejects_fall_back_to_the_message() {
+        // Both parsers accept the same names, so a record read from
+        // `details` always round-trips through its canonical message.
+        let mut details = serde_json::Map::new();
+        details.insert("limit".into(), serde_json::Value::from("maxResult-Bytes"));
+        details.insert("cap".into(), serde_json::Value::from(1u64));
+        details.insert("used".into(), serde_json::Value::from(2u64));
+        assert_eq!(LimitExceeded::from_details(&details), None);
+        let mut err = PluginError::from_wire(
+            "limit_exceeded",
+            LimitExceeded::new("maxResultBytes", 1, 2).to_message(),
+        );
+        err.details = Some(details.clone());
+        assert_eq!(
+            err.limit(),
+            Some(LimitExceeded::new("maxResultBytes", 1, 2))
+        );
+
+        details.insert("limit".into(), serde_json::Value::from(""));
+        assert_eq!(LimitExceeded::from_details(&details), None);
+        details.insert("limit".into(), serde_json::Value::from("max_cell_bytes2"));
+        let parsed = LimitExceeded::from_details(&details).expect("valid name");
+        assert_eq!(
+            LimitExceeded::from_message(&parsed.to_message()),
+            Some(parsed)
         );
     }
 
