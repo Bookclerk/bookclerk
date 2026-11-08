@@ -1118,6 +1118,51 @@ mod tests {
     }
 
     #[test]
+    fn streamed_budgets_are_validated_together_and_above_the_inline_caps() {
+        let caps = DbCapabilities::advertised_sqlite();
+        assert!(caps.streams_results());
+        let streamed = caps.streamed().expect("streamed caps");
+        assert_eq!(streamed.max_result_rows, caps.max_streamed_result_rows);
+        assert_eq!(streamed.max_result_bytes, caps.max_streamed_result_bytes);
+        assert_eq!(
+            streamed.max_atomic_result_bytes,
+            caps.max_streamed_result_bytes
+        );
+
+        let mut half = caps.clone();
+        half.max_streamed_result_rows = 0;
+        assert!(!half.meets_host_minimums());
+        assert!(half
+            .capability_failure_reason()
+            .contains("must both be set or both be 0"));
+
+        let mut inline_only = caps.clone();
+        inline_only.max_streamed_result_bytes = 0;
+        inline_only.max_streamed_result_rows = 0;
+        assert!(!inline_only.streams_results());
+        assert!(inline_only.streamed().is_none());
+        assert!(inline_only.meets_host_minimums());
+
+        let mut low_bytes = caps.clone();
+        low_bytes.max_streamed_result_bytes = caps.max_atomic_result_bytes - 1;
+        assert!(low_bytes
+            .capability_failure_reason()
+            .contains("maxStreamedResultBytes"));
+        assert!(low_bytes
+            .capability_failure_reason()
+            .contains("is below maxAtomicResultBytes"));
+
+        let mut low_rows = caps;
+        low_rows.max_streamed_result_rows = low_rows.max_result_rows - 1;
+        assert!(low_rows
+            .capability_failure_reason()
+            .contains("maxStreamedResultRows"));
+        assert!(low_rows
+            .capability_failure_reason()
+            .contains("is below maxResultRows"));
+    }
+
+    #[test]
     fn admit_statement_enforces_pattern_and_column_n_plus_one() {
         let mut caps = DbCapabilities::advertised_d1();
         let n = caps.max_pattern_bytes as usize;

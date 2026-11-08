@@ -2141,6 +2141,110 @@ mod tests {
         assert_eq!(rows[0]["values"]["x"], "DELETE");
     }
 
+    fn typed_select(op: &str, sql: &str) -> ExecuteRequest {
+        use bookclerk_plugin_abi::{DbPlanStatementKind, DbResultSelection, TypedDbStatement};
+        ExecuteRequest {
+            operation_id: op.into(),
+            request_hash: String::new(),
+            statements: vec![TypedDbStatement {
+                sql: sql.into(),
+                parameters: vec![],
+                kind: DbPlanStatementKind::Select,
+                max_rows: 10,
+                result_selection: DbResultSelection::Rows,
+            }],
+            deadline_unix_ms: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn guest_execute_streamed_frames_the_same_reply_as_inline() {
+        use bookclerk_plugin_abi::{DbCapabilities, ExecuteStreamLimits};
+        let _lock = SESSION_LOCK.lock().await;
+        set_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+        .await;
+        execute_stamped(typed_exec(
+            "seed-stream",
+            &[
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('stream-a', 1)",
+                "INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('stream-b', 2)",
+            ],
+        ))
+        .await
+        .unwrap();
+        let select = || {
+            typed_select(
+                "read-stream",
+                "SELECT slot_key, bump FROM bookclerk_slots \
+                 WHERE slot_key IN ('stream-a', 'stream-b') ORDER BY slot_key",
+            )
+        };
+        let inline = execute_stamped(select()).await.unwrap();
+        let limits = ExecuteStreamLimits::from_capabilities(&DbCapabilities::advertised_sqlite());
+        let streamed = guest_execute_streamed_request(stamp_req(select()).unwrap())
+            .await
+            .unwrap()
+            .collect(limits)
+            .await
+            .unwrap();
+        assert_eq!(streamed.operation_id, "read-stream");
+        assert_eq!(streamed.statements, inline.statements);
+        assert_eq!(streamed.statements[0].rows.len(), 2);
+
+        let unproven = AdapterExecuteRequest::new(
+            select(),
+            bookclerk_plugin_abi::GuestReceiptPersist::default(),
+        );
+        let err = guest_execute_streamed_request(unproven).await.unwrap_err();
+        assert_eq!(
+            err.code,
+            bookclerk_plugin_abi::PluginErrorCode::Internal,
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn guest_execute_streamed_on_an_explicit_connection_reads_rows() {
+        use bookclerk_plugin_abi::{DbCapabilities, ExecuteStreamLimits};
+        let db = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .unwrap();
+        guest_execute_request_on(
+            &db,
+            stamp_req(typed_exec(
+                "seed-on",
+                &["INSERT INTO bookclerk_slots (slot_key, bump) VALUES ('on-a', 7)"],
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let limits = ExecuteStreamLimits::from_capabilities(&DbCapabilities::advertised_sqlite());
+        let reply = guest_execute_streamed_request_on(
+            &db,
+            stamp_req(typed_select(
+                "read-on",
+                "SELECT bump FROM bookclerk_slots WHERE slot_key = 'on-a'",
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+        .collect(limits)
+        .await
+        .unwrap();
+        assert_eq!(reply.statements.len(), 1);
+        assert_eq!(reply.statements[0].rows.len(), 1);
+        assert_eq!(
+            reply.statements[0].rows[0].values[0],
+            bookclerk_plugin_abi::DbValue::Int64(7)
+        );
+    }
+
     #[tokio::test]
     async fn guest_execute_unique_is_conflict_and_commit_is_unavailable() {
         use bookclerk_plugin_abi::PluginErrorCode;

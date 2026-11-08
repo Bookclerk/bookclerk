@@ -832,6 +832,187 @@ mod tests {
         );
     }
 
+    fn frame(frame: &ExecuteStreamFrame) -> Vec<u8> {
+        encoded_execute_stream_frame_bytes(frame).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn head(statement_count: u32) -> Vec<u8> {
+        frame(&ExecuteStreamFrame::Head {
+            operation_id: "op-seq".into(),
+            statement_count,
+        })
+    }
+
+    fn statement(index: u32) -> Vec<u8> {
+        frame(&ExecuteStreamFrame::Statement {
+            index,
+            columns: Vec::new(),
+            rows_affected: 1,
+        })
+    }
+
+    fn invalid(frames: &[&[u8]]) -> PluginError {
+        let bytes = frames.concat();
+        let err = decode_execute_stream(&bytes, limits()).expect_err("out-of-sequence frames");
+        assert_eq!(err.code, PluginErrorCode::InvalidParams, "{err}");
+        err
+    }
+
+    #[test]
+    fn every_out_of_sequence_frame_is_invalid_params() {
+        let end = frame(&ExecuteStreamFrame::End(DbTiming::default()));
+        let rows = frame(&ExecuteStreamFrame::Rows(vec![DbRow {
+            values: Vec::new(),
+        }]));
+        assert!(invalid(&[&head(1), &head(1)])
+            .message
+            .contains("second head"));
+        assert!(invalid(&[&head(2), &statement(1)])
+            .message
+            .contains("expected 0"));
+        assert!(invalid(&[&head(1), &statement(0), &statement(1)])
+            .message
+            .contains("exceeds the announced count"));
+        assert!(invalid(&[&head(1), &rows])
+            .message
+            .contains("rows outside a statement"));
+        assert!(invalid(&[&head(2), &statement(0), &end])
+            .message
+            .contains("ended with 1 statements"));
+    }
+
+    #[test]
+    fn an_error_frame_after_the_head_is_the_adapter_error() {
+        let mut bytes = head(1);
+        bytes.extend_from_slice(&statement(0));
+        bytes.extend_from_slice(
+            &encode_execute_stream_error(&PluginError::conflict("unique"))
+                .unwrap_or_else(|err| panic!("{err}")),
+        );
+        let err = decode_execute_stream(&bytes, limits()).expect_err("err frame");
+        assert_eq!(err.code, PluginErrorCode::Conflict);
+        assert_eq!(err.message, "unique");
+    }
+
+    #[test]
+    fn malformed_frame_headers_fail_before_decoding() {
+        let mut decoder = ExecuteStreamDecoder::new(limits());
+        decoder.push(&[]).unwrap_or_else(|err| panic!("{err}"));
+        let err = decoder
+            .push(&[1, 0, 0, 0, 1, 0, 0, 0])
+            .expect_err("segment count");
+        assert_eq!(err.code, PluginErrorCode::InvalidParams);
+        assert!(err.message.contains("single-segment"), "{err}");
+
+        let mut decoder = ExecuteStreamDecoder::new(limits());
+        let err = decoder
+            .push(&[0, 0, 0, 0, 0xff, 0xff, 0xff, 0x7f])
+            .expect_err("frame length");
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+        assert_eq!(
+            err.limit().map(|limit| limit.limit),
+            Some("maxStreamedResultBytes".to_string())
+        );
+    }
+
+    #[test]
+    fn bytes_after_the_final_frame_are_rejected() {
+        let frames = encode_execute_stream(&reply(1, 1)).unwrap_or_else(|err| panic!("{err}"));
+        let mut decoder = ExecuteStreamDecoder::new(limits());
+        decoder.push(&frames).unwrap_or_else(|err| panic!("{err}"));
+        assert!(decoder.is_finished());
+        let err = decoder.push(&[0]).expect_err("trailing bytes");
+        assert_eq!(err.code, PluginErrorCode::InvalidParams);
+        assert!(err.message.contains("after its final frame"), "{err}");
+    }
+
+    #[test]
+    fn blob_cells_round_trip_through_the_frames() {
+        let mut reply = reply(3, 2);
+        reply.statements[0].columns[1].db_type = DbType::Bytes;
+        for (i, row) in reply.statements[0].rows.iter_mut().enumerate() {
+            row.values[1] = DbValue::Bytes(vec![u8::try_from(i).unwrap_or(0); 300]);
+        }
+        let frames = encode_execute_stream(&reply).unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            decode_execute_stream(&frames, limits()).unwrap_or_else(|err| panic!("{err}")),
+            reply
+        );
+    }
+
+    /// A reader whose first read fails.
+    struct FailingReader;
+
+    impl AsyncRead for FailingReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("pipe closed")))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failing_reader_is_unavailable() {
+        let err = ExecuteStream::reader(Box::pin(FailingReader))
+            .collect(limits())
+            .await
+            .expect_err("read failure");
+        assert_eq!(err.code, PluginErrorCode::Unavailable);
+        assert!(err.message.contains("pipe closed"), "{err}");
+        let err = ExecuteStream::reader(Box::pin(FailingReader))
+            .into_bytes(limits())
+            .await
+            .expect_err("read failure");
+        assert_eq!(err.code, PluginErrorCode::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn into_bytes_relays_both_bodies_under_the_raw_ceiling() {
+        let large = reply(2_000, 300);
+        let frames = encode_execute_stream(&large).unwrap_or_else(|err| panic!("{err}"));
+        let stream = ExecuteStream::from_frames(frames.clone());
+        assert_eq!(format!("{stream:?}"), "ExecuteStream { body: Reader }");
+        assert_eq!(
+            stream
+                .into_bytes(limits())
+                .await
+                .unwrap_or_else(|err| panic!("{err}")),
+            frames
+        );
+
+        let small = encode_execute_stream(&reply(1, 1)).unwrap_or_else(|err| panic!("{err}"));
+        let stream = ExecuteStream::inline(small.clone());
+        assert_eq!(
+            format!("{stream:?}"),
+            format!("ExecuteStream {{ body: Inline({}) }}", small.len())
+        );
+        match stream.into_body() {
+            ExecuteStreamBody::Inline(bytes) => assert_eq!(bytes, small),
+            ExecuteStreamBody::Reader(_) => panic!("inline body expected"),
+        }
+
+        let mut caps = DbCapabilities::advertised_sqlite();
+        caps.max_streamed_result_bytes = caps.max_atomic_result_bytes;
+        let tight = ExecuteStreamLimits::from_capabilities(&caps);
+        let over = usize::try_from(tight.raw_ceiling()).unwrap_or(usize::MAX) + 1;
+        let err = ExecuteStream::inline(vec![0u8; over])
+            .into_bytes(tight)
+            .await
+            .expect_err("inline over the ceiling");
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+        let err = ExecuteStream::reader(Box::pin(std::io::Cursor::new(vec![0u8; over])))
+            .into_bytes(tight)
+            .await
+            .expect_err("reader over the ceiling");
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+        assert_eq!(
+            err.limit().map(|limit| limit.limit),
+            Some("maxStreamedResultBytes".to_string())
+        );
+    }
+
     #[test]
     fn limits_follow_the_advertisement() {
         let streamed = limits();
