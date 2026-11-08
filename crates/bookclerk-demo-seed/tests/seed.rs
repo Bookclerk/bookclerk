@@ -8,8 +8,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bookclerk_demo_seed::{
-    best_match, committed_records, distinct_records, lookups, merge_records, parse_mode,
-    parse_records, records_json, search_query, seed, Lookup, Mode, SeedReport, Seeded,
+    best_match, clear_install_files, committed_records, distinct_records, lookups, merge_records,
+    parse_mode, parse_records, records_json, search_query, seed, Lookup, Mode, SeedReport, Seeded,
     StoreRecords, SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
 };
 use bookclerk_library::control_plane::branch_title_counts;
@@ -483,4 +483,68 @@ fn now() -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339("2026-11-06T00:00:00Z")
         .unwrap()
         .to_utc()
+}
+
+/// A seeded files dir as bookclerkd leaves it, with every per-install file
+/// in place; returns the files and cache dirs.
+fn baked_dir(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let files = root.join("files");
+    let cache = files.join("cache");
+    for dir in [
+        files.join("logs"),
+        files.join("plugin-state/libro/data"),
+        files.join("plugin-state/libro/session-1/tmp"),
+        files.join("plugin-state/covers/session-2"),
+        cache.join("covers"),
+    ] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(bookclerk_library::master_key_path(&files), b"key").unwrap();
+    std::fs::write(cache.join("covers/token.key"), b"signing").unwrap();
+    std::fs::write(files.join("logs/bookclerkd.log"), b"line").unwrap();
+    std::fs::write(files.join("plugin-state/libro/session-1/tmp/x"), b"x").unwrap();
+    std::fs::write(files.join("library.db"), b"db").unwrap();
+    std::fs::write(files.join("library.db-shm"), b"").unwrap();
+    (files, cache)
+}
+
+#[test]
+fn finishing_a_bake_clears_the_per_install_files() {
+    let root = tempfile::tempdir().unwrap();
+    let (files, cache) = baked_dir(root.path());
+
+    clear_install_files(&files, &cache).unwrap();
+
+    assert!(!bookclerk_library::master_key_path(&files).exists());
+    assert!(!cache.join("covers/token.key").exists());
+    assert!(!files.join("logs").exists());
+    assert!(!files.join("plugin-state/libro/session-1").exists());
+    assert!(!files.join("plugin-state/covers/session-2").exists());
+    assert!(!files.join("library.db-shm").exists());
+    // The library and each plugin's own state stay.
+    assert!(files.join("library.db").exists());
+    assert!(files.join("plugin-state/libro/data").is_dir());
+    // A second pass finds nothing to remove.
+    clear_install_files(&files, &cache).unwrap();
+}
+
+#[test]
+fn finishing_a_bake_refuses_a_side_file_with_data() {
+    let root = tempfile::tempdir().unwrap();
+    let (files, cache) = baked_dir(root.path());
+    std::fs::write(files.join("library.db-wal"), b"pending").unwrap();
+
+    let err = clear_install_files(&files, &cache).unwrap_err();
+    assert!(err.to_string().contains("library.db-wal"), "{err}");
+    assert!(files.join("library.db-wal").exists());
+}
+
+#[test]
+fn finishing_a_bake_reports_a_file_it_cannot_remove() {
+    let root = tempfile::tempdir().unwrap();
+    let files = root.path().join("files");
+    // A directory where master.key belongs cannot be removed as a file.
+    std::fs::create_dir_all(bookclerk_library::master_key_path(&files)).unwrap();
+    let err = clear_install_files(&files, &files.join("cache")).unwrap_err();
+    assert!(err.to_string().contains("remove"), "{err}");
 }

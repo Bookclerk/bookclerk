@@ -67,14 +67,9 @@ pub async fn strip_install_state(store: &LibraryStore) -> Result<TemplateStrip> 
             .cloned();
         match rows {
             Some(DbValue::Int64(0)) => {}
-            Some(DbValue::Int64(_)) => {
-                return Err(LibraryError::Other(anyhow::anyhow!(
-                    "refusing to make a template: {table} has rows"
-                )))
-            }
             other => {
                 return Err(LibraryError::Other(anyhow::anyhow!(
-                    "unexpected row count for {table}: {other:?}"
+                    "refusing to make a template: {table} has rows ({other:?})"
                 )))
             }
         }

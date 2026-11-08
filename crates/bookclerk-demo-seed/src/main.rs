@@ -21,9 +21,9 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use bookclerk_config::Config;
 use bookclerk_demo_seed::{
-    best_match, committed_records, distinct_records, lookups, merge_records, parse_mode,
-    records_json, search_query, seed, Lookup, Mode, Seeded, StoreRecords, EXTRA_PLUGINS,
-    STOREFRONTS,
+    best_match, clear_install_files, committed_records, distinct_records, lookups, merge_records,
+    parse_mode, records_json, search_query, seed, Lookup, Mode, Seeded, StoreRecords,
+    EXTRA_PLUGINS, STOREFRONTS,
 };
 use bookclerk_library::control_plane::{
     default_instance_for_key, ensure_hand_managed, ensure_plugin_deployment,
@@ -312,10 +312,8 @@ async fn enable_demo_plugins(host: &HostControlPlane) -> anyhow::Result<()> {
 ///
 /// Strips the install's own state from the library
 /// ([`strip_install_state`]: it refuses a library holding any sealed secret
-/// or session), then deletes what every container must make for itself:
-/// `master.key` (the first daemon of each container mints and wraps its
-/// own), the covers cache's URL-signing key, plugin session dirs and logs.
-/// Run it after bookclerkd has stopped.
+/// or session), then deletes what every container must make for itself
+/// ([`clear_install_files`]). Run it after bookclerkd has stopped.
 ///
 /// # Errors
 ///
@@ -336,61 +334,7 @@ async fn bake_finish(config: &Config) -> anyhow::Result<()> {
             stripped.identity_rows, stripped.leases, stripped.node_status
         );
     }
-    let files = &paths.files_dir;
-    remove_file_if_present(&bookclerk_library::master_key_path(files))?;
-    remove_file_if_present(&paths.cache_dir.join("covers").join("token.key"))?;
-    remove_dir_if_present(&files.join("logs"))?;
-    let state = files.join("plugin-state");
-    if state.is_dir() {
-        for plugin in std::fs::read_dir(&state)? {
-            for entry in std::fs::read_dir(plugin?.path())? {
-                let entry = entry?;
-                let transient = entry.file_name().to_string_lossy().starts_with("session-");
-                if transient {
-                    std::fs::remove_dir_all(entry.path())?;
-                }
-            }
-        }
-    }
-    for side in ["library.db-journal", "library.db-wal", "library.db-shm"] {
-        let path = files.join(side);
-        match std::fs::metadata(&path) {
-            Ok(meta) if meta.len() > 0 => {
-                bail!("{side} still holds data; stop bookclerkd before finishing the bake")
-            }
-            Ok(_) => std::fs::remove_file(&path)?,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err).with_context(|| format!("stat {side}")),
-        }
-    }
+    clear_install_files(&paths.files_dir, &paths.cache_dir)?;
     eprintln!("bookclerk-demo-seed: the files dir is ready to bake");
     Ok(())
-}
-
-/// Removes a file, treating an absent one as removed.
-///
-/// # Errors
-///
-/// Returns any other I/O error.
-fn remove_file_if_present(path: &std::path::Path) -> anyhow::Result<()> {
-    match std::fs::remove_file(path) {
-        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
-            Err(err).with_context(|| format!("remove {}", path.display()))
-        }
-        _ => Ok(()),
-    }
-}
-
-/// Removes a directory tree, treating an absent one as removed.
-///
-/// # Errors
-///
-/// Returns any other I/O error.
-fn remove_dir_if_present(path: &std::path::Path) -> anyhow::Result<()> {
-    match std::fs::remove_dir_all(path) {
-        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
-            Err(err).with_context(|| format!("remove {}", path.display()))
-        }
-        _ => Ok(()),
-    }
 }

@@ -40,6 +40,7 @@ use bookclerk_library::{
 use bookclerk_node_proto::{CatalogFile, CatalogMetadata, CatalogTitle};
 use bookclerk_source::CatalogHit;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
@@ -1002,5 +1003,82 @@ pub fn parse_mode(mut args: impl Iterator<Item = String>) -> anyhow::Result<Mode
     match args.next() {
         None => Ok(mode),
         Some(extra) => bail!("unexpected argument `{extra}`"),
+    }
+}
+
+/// SQLite side files next to `library.db` that a finished bake must not
+/// carry with data in them.
+const SQLITE_SIDE_FILES: [&str; 3] = ["library.db-journal", "library.db-wal", "library.db-shm"];
+
+/// Deletes the files a seeded files dir holds that every demo container
+/// must make for itself, so the dir can be baked into the image.
+///
+/// Removes `master.key` (the first daemon of each container mints and wraps
+/// its own), the covers cache's URL-signing key (`covers/token.key` under
+/// the cache dir), `logs/`, each plugin's `session-*` dirs under
+/// `plugin-state/`, and empty SQLite side files. Anything already absent
+/// counts as removed.
+///
+/// # Arguments
+///
+/// * `files_dir` - The seeded `$BOOKCLERK_FILES_DIR`.
+/// * `cache_dir` - Its cache dir (`paths.cache_dir`).
+///
+/// # Errors
+///
+/// Returns an error when a file cannot be removed, or when a SQLite side
+/// file still holds data: it would carry writes the copied `library.db`
+/// cannot see, so bookclerkd must stop first.
+pub fn clear_install_files(files_dir: &Path, cache_dir: &Path) -> anyhow::Result<()> {
+    remove_file_if_present(&bookclerk_library::master_key_path(files_dir))?;
+    remove_file_if_present(&cache_dir.join("covers").join("token.key"))?;
+    remove_dir_if_present(&files_dir.join("logs"))?;
+    let state = files_dir.join("plugin-state");
+    if state.is_dir() {
+        for plugin in std::fs::read_dir(&state).context("list plugin-state")? {
+            for entry in std::fs::read_dir(plugin?.path()).context("list a plugin's state")? {
+                let entry = entry?;
+                if entry.file_name().to_string_lossy().starts_with("session-") {
+                    remove_dir_if_present(&entry.path())?;
+                }
+            }
+        }
+    }
+    for side in SQLITE_SIDE_FILES {
+        let path = files_dir.join(side);
+        let holds_data = std::fs::metadata(&path).is_ok_and(|meta| meta.len() > 0);
+        if holds_data {
+            bail!("{side} still holds data; stop bookclerkd before finishing the bake");
+        }
+        remove_file_if_present(&path)?;
+    }
+    Ok(())
+}
+
+/// Removes a file, treating an absent one as removed.
+///
+/// # Errors
+///
+/// Returns any other I/O error.
+fn remove_file_if_present(path: &Path) -> anyhow::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            Err(err).with_context(|| format!("remove {}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Removes a directory tree, treating an absent one as removed.
+///
+/// # Errors
+///
+/// Returns any other I/O error.
+fn remove_dir_if_present(path: &Path) -> anyhow::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            Err(err).with_context(|| format!("remove {}", path.display()))
+        }
+        _ => Ok(()),
     }
 }
