@@ -522,6 +522,10 @@ fn probe_statement() -> TypedDbStatement {
 const RETRY_ID_PLACEHOLDER: &str = "00000000-0000-4000-8000-000000000000";
 
 /// Encoded bytes of a request carrying `statements`.
+///
+/// # Errors
+///
+/// Returns when the request cannot be encoded, such as TEXT holding U+0000.
 fn request_bytes(
     operation_id: &str,
     request_hash: &str,
