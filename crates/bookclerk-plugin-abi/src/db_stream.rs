@@ -266,7 +266,9 @@ impl ExecuteStreamDecoder {
                 "streamed reply carries bytes after its final frame",
             ));
         }
-        self.seen = self.seen.saturating_add(bytes.len() as u64);
+        self.seen = self
+            .seen
+            .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
         if self.seen > self.limits.raw_ceiling() {
             return Err(self.bytes_exceeded(self.seen));
         }
@@ -330,6 +332,17 @@ impl ExecuteStreamDecoder {
         ))
     }
 
+    /// Records `err` as the stream's outcome, so every later push and the
+    /// final `finish` report the same failure, and returns it.
+    ///
+    /// # Errors
+    ///
+    /// Always returns `err`.
+    fn fail(&mut self, err: PluginError) -> Result<()> {
+        self.state = DecoderState::Finished(Err(err.clone()));
+        Err(err)
+    }
+
     /// Advances the sequence by one decoded frame.
     ///
     /// # Errors
@@ -360,12 +373,12 @@ impl ExecuteStreamDecoder {
                 DecoderState::Finished(Err(err))
             }
             (DecoderState::AwaitingHead, _) => {
-                return Err(PluginError::invalid_params(
+                return self.fail(PluginError::invalid_params(
                     "streamed reply does not start with a head frame",
                 ));
             }
             (DecoderState::InReply { .. }, ExecuteStreamFrame::Head { .. }) => {
-                return Err(PluginError::invalid_params(
+                return self.fail(PluginError::invalid_params(
                     "streamed reply carries a second head frame",
                 ));
             }
@@ -387,12 +400,12 @@ impl ExecuteStreamDecoder {
                     close_statement(&mut statements, done)?;
                 }
                 if index != next_index {
-                    return Err(PluginError::invalid_params(format!(
+                    return self.fail(PluginError::invalid_params(format!(
                         "streamed reply statement {index} arrived; expected {next_index}"
                     )));
                 }
                 if index >= statement_count {
-                    return Err(PluginError::invalid_params(format!(
+                    return self.fail(PluginError::invalid_params(format!(
                         "streamed reply statement {index} exceeds the announced count {statement_count}"
                     )));
                 }
@@ -421,7 +434,7 @@ impl ExecuteStreamDecoder {
                 let total = open.rows.len().saturating_add(rows.len());
                 let cap = usize::try_from(self.limits.max_rows).unwrap_or(usize::MAX);
                 if self.limits.max_rows != 0 && total > cap {
-                    return Err(PluginError::limit_exceeded(LimitExceeded::new(
+                    return self.fail(PluginError::limit_exceeded(LimitExceeded::new(
                         self.limits.rows_limit,
                         u64::from(self.limits.max_rows),
                         u64::try_from(total).unwrap_or(u64::MAX),
@@ -437,7 +450,7 @@ impl ExecuteStreamDecoder {
                 }
             }
             (DecoderState::InReply { open: None, .. }, ExecuteStreamFrame::Rows(_)) => {
-                return Err(PluginError::invalid_params(
+                return self.fail(PluginError::invalid_params(
                     "streamed reply carries rows outside a statement",
                 ));
             }
@@ -456,7 +469,7 @@ impl ExecuteStreamDecoder {
                 }
                 let count = u32::try_from(statements.len()).unwrap_or(u32::MAX);
                 if count != statement_count {
-                    return Err(PluginError::invalid_params(format!(
+                    return self.fail(PluginError::invalid_params(format!(
                         "streamed reply ended with {count} statements; its head announced {statement_count}"
                     )));
                 }
@@ -470,7 +483,7 @@ impl ExecuteStreamDecoder {
                 DecoderState::Finished(Err(err))
             }
             (DecoderState::Finished(_), _) => {
-                return Err(PluginError::invalid_params(
+                return self.fail(PluginError::invalid_params(
                     "streamed reply carries a frame after its final frame",
                 ));
             }
@@ -610,11 +623,12 @@ impl ExecuteStream {
         let ceiling = limits.raw_ceiling();
         match self.body {
             ExecuteStreamBody::Inline(bytes) => {
-                if bytes.len() as u64 > ceiling {
+                let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                if len > ceiling {
                     return Err(PluginError::limit_exceeded(LimitExceeded::new(
                         limits.bytes_limit,
                         u64::from(limits.max_bytes),
-                        bytes.len() as u64,
+                        len,
                     )));
                 }
                 Ok(bytes)
@@ -629,11 +643,12 @@ impl ExecuteStream {
                     if n == 0 {
                         break;
                     }
-                    if (out.len() + n) as u64 > ceiling {
+                    let total = u64::try_from(out.len().saturating_add(n)).unwrap_or(u64::MAX);
+                    if total > ceiling {
                         return Err(PluginError::limit_exceeded(LimitExceeded::new(
                             limits.bytes_limit,
                             u64::from(limits.max_bytes),
-                            (out.len() + n) as u64,
+                            total,
                         )));
                     }
                     out.extend_from_slice(&buf[..n]);
@@ -879,6 +894,18 @@ mod tests {
         assert!(invalid(&[&head(2), &statement(0), &end])
             .message
             .contains("ended with 1 statements"));
+    }
+
+    #[test]
+    fn a_rejected_frame_ends_the_stream_for_good() {
+        let mut decoder = ExecuteStreamDecoder::new(limits());
+        decoder.push(&head(1)).unwrap_or_else(|err| panic!("{err}"));
+        let first = decoder.push(&head(1)).expect_err("second head");
+        assert!(decoder.is_finished());
+        let again = decoder.push(&statement(0)).expect_err("sticky failure");
+        assert_eq!(again.code, PluginErrorCode::InvalidParams);
+        assert!(again.message.contains("after its final frame"), "{again}");
+        assert_eq!(decoder.finish().expect_err("finish after failure"), first);
     }
 
     #[test]

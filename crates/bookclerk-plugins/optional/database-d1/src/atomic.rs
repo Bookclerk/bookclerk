@@ -248,7 +248,7 @@ impl D1Proxy {
                 )?;
                 let timeout = d1_http_timeout(deadline)?;
                 match self
-                    .claim_guest_receipt_stub(req, &statements, timeout, deadline, started)
+                    .claim_guest_receipt_stub(req, &statements, timeout, deadline, started, caps)
                     .await
                 {
                     Ok(c) => {
@@ -282,6 +282,7 @@ impl D1Proxy {
                             &companion_groups,
                             &guest_receipt,
                             cap,
+                            caps,
                         )
                         .await;
                 }
@@ -304,6 +305,7 @@ impl D1Proxy {
                             &companion_groups,
                             &guest_receipt,
                             cap,
+                            caps,
                         )
                         .await;
                 }
@@ -388,6 +390,7 @@ impl D1Proxy {
         timeout: Duration,
         deadline: Option<u64>,
         started: std::time::Instant,
+        caps: &DbCapabilities,
     ) -> std::result::Result<GuestReceiptClaim, DbErr> {
         #[cfg(test)]
         self.maybe_pause_claim().await;
@@ -411,7 +414,7 @@ impl D1Proxy {
             statements: vec![req.statements[stub_idx].clone()],
             deadline_unix_ms: req.deadline_unix_ms,
         };
-        match parse_typed_batch(&claim_req, &raw, started, &DbCapabilities::advertised_d1()) {
+        match parse_typed_batch(&claim_req, &raw, started, caps) {
             Ok(reply) => {
                 let won = reply
                     .statements
@@ -450,6 +453,7 @@ impl D1Proxy {
         companion_groups: &[usize],
         guest_receipt: &bookclerk_plugin_abi::GuestReceiptPersist,
         cap: u32,
+        caps: &DbCapabilities,
     ) -> std::result::Result<ExecuteReply, DbErr> {
         let peek_idx = 1;
         let raw = match self
@@ -471,7 +475,7 @@ impl D1Proxy {
             statements: vec![req.statements[peek_idx].clone()],
             deadline_unix_ms: req.deadline_unix_ms,
         };
-        let peek = parse_typed_batch(&peek_req, &raw, started, &DbCapabilities::advertised_d1())?;
+        let peek = parse_typed_batch(&peek_req, &raw, started, caps)?;
         if let Some(prior) = peek.statements.first() {
             if bookclerk_db_exec::prior_receipt_should_resume_guest(
                 prior,
@@ -488,6 +492,7 @@ impl D1Proxy {
                         companion_groups,
                         guest_receipt,
                         cap,
+                        caps,
                     )
                     .await;
             }
@@ -520,6 +525,7 @@ impl D1Proxy {
         companion_groups: &[usize],
         guest_receipt: &bookclerk_plugin_abi::GuestReceiptPersist,
         cap: u32,
+        caps: &DbCapabilities,
     ) -> std::result::Result<ExecuteReply, DbErr> {
         let stub_idx = statements.len().saturating_sub(1);
         let prefix = bookclerk_db_exec::GUEST_RECEIPT_WRAP_PREFIX;
@@ -555,8 +561,7 @@ impl D1Proxy {
             bookclerk_db_exec::AtomicInterruptPhase::AroundCommit,
             deadline,
         )?;
-        let mut reply =
-            parse_typed_batch(&rest_req, &raw, started, &DbCapabilities::advertised_d1())?;
+        let mut reply = parse_typed_batch(&rest_req, &raw, started, caps)?;
         // Applied-mark is adapter-private; unwrap still sees prune + guest + stub.
         let _applied = reply.statements.pop();
         let mut assembled = Vec::with_capacity(req.statements.len());

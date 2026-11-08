@@ -217,6 +217,14 @@ pub const FIRST_PARTY_MAX_STREAMED_RESULT_BYTES: u32 = 64 * 1024 * 1024;
 /// `executeStreamed`.
 pub const FIRST_PARTY_MAX_STREAMED_RESULT_ROWS: u32 = 250_000;
 
+/// Largest streamed result byte budget the host accepts from an adapter
+/// (the first-party budget): the host holds a streamed reply in memory while
+/// it reassembles it, so the ceiling is the host's, not the adapter's.
+pub const HOST_MAX_STREAMED_RESULT_BYTES: u32 = FIRST_PARTY_MAX_STREAMED_RESULT_BYTES;
+
+/// Largest streamed per-statement row budget the host accepts from an adapter.
+pub const HOST_MAX_STREAMED_RESULT_ROWS: u32 = FIRST_PARTY_MAX_STREAMED_RESULT_ROWS;
+
 /// Cloudflare D1 budget for one `executeStreamed` reply: 8 MiB. D1 answers
 /// one HTTP request with the whole result, so the adapter stays well under
 /// what one REST reply carries.
@@ -678,6 +686,18 @@ impl DbCapabilities {
             return Some(format!(
                 "database guest maxStreamedResultRows {} is below maxResultRows {}",
                 self.max_streamed_result_rows, self.max_result_rows
+            ));
+        }
+        if self.max_streamed_result_bytes > HOST_MAX_STREAMED_RESULT_BYTES {
+            return Some(format!(
+                "database guest maxStreamedResultBytes {} exceeds host maximum {HOST_MAX_STREAMED_RESULT_BYTES}",
+                self.max_streamed_result_bytes
+            ));
+        }
+        if self.max_streamed_result_rows > HOST_MAX_STREAMED_RESULT_ROWS {
+            return Some(format!(
+                "database guest maxStreamedResultRows {} exceeds host maximum {HOST_MAX_STREAMED_RESULT_ROWS}",
+                self.max_streamed_result_rows
             ));
         }
         if self.sql_contract_version < SQL_CONTRACT_VERSION {
@@ -1151,6 +1171,24 @@ mod tests {
         assert!(low_bytes
             .capability_failure_reason()
             .contains("is below maxAtomicResultBytes"));
+
+        let mut huge_bytes = caps.clone();
+        huge_bytes.max_streamed_result_bytes = HOST_MAX_STREAMED_RESULT_BYTES + 1;
+        assert!(huge_bytes
+            .capability_failure_reason()
+            .contains("maxStreamedResultBytes"));
+        assert!(huge_bytes
+            .capability_failure_reason()
+            .contains("exceeds host maximum"));
+
+        let mut huge_rows = caps.clone();
+        huge_rows.max_streamed_result_rows = HOST_MAX_STREAMED_RESULT_ROWS + 1;
+        assert!(huge_rows
+            .capability_failure_reason()
+            .contains("maxStreamedResultRows"));
+        assert!(huge_rows
+            .capability_failure_reason()
+            .contains("exceeds host maximum"));
 
         let mut low_rows = caps;
         low_rows.max_streamed_result_rows = low_rows.max_result_rows - 1;

@@ -8135,9 +8135,11 @@ var METHODS = {
     prepareUnitRestore: session("prepareUnitRestore", AdapterDatabaseSessionPrepareUnitRestoreParamsCodec, AdapterDatabaseSessionPrepareUnitRestoreResultsCodec, okEmpty),
     dropUserRelations: session("dropUserRelations", AdapterDatabaseSessionDropUserRelationsParamsCodec, AdapterDatabaseSessionDropUserRelationsResultsCodec, okEmpty),
     assertRestoreConstraints: session("assertRestoreConstraints", AdapterDatabaseSessionAssertRestoreConstraintsParamsCodec, AdapterDatabaseSessionAssertRestoreConstraintsResultsCodec, okEmpty),
-    // An isolate adapter answers with the frames in memory, so the reply is
-    // always the `inline` member; the launcher relays them as a stream.
-    executeStreamed: session("executeStreamed", AdapterDatabaseSessionExecuteStreamedParamsCodec, AdapterDatabaseSessionExecuteStreamedResultsCodec, (value) => ({ kind: "inline", value }))
+    // An isolate adapter answers with the frames in memory, which travel as
+    // the `inline` member of the invoke reply; frames past one scalar cannot
+    // cross that reply, so they become a typed limit error instead of a
+    // transport failure.
+    executeStreamed: session("executeStreamed", AdapterDatabaseSessionExecuteStreamedParamsCodec, AdapterDatabaseSessionExecuteStreamedResultsCodec, (value) => inlineStreamReply(value))
   }
 };
 var CAP_KINDS = /* @__PURE__ */ new Set([
@@ -8186,6 +8188,19 @@ function replyCapTable(caps) {
       throw new InvokeError(500, "internal", "reply message cannot import capabilities");
     }
   };
+}
+function inlineStreamReply(frames) {
+  if (frames.byteLength > MAX_SCALAR_BYTES) {
+    return {
+      kind: "err",
+      value: wireError(PluginError.limitExceeded({
+        limit: "maxScalarBytes",
+        cap: MAX_SCALAR_BYTES,
+        used: frames.byteLength
+      }))
+    };
+  }
+  return { kind: "inline", value: frames };
 }
 function wireError(err) {
   const e = err;

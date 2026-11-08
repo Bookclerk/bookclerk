@@ -1461,15 +1461,21 @@ pub(super) fn write_execute_stream_frame(
             let mut stmt = b.init_statement();
             stmt.set_index(*index);
             stmt.set_rows_affected(*rows_affected);
-            let mut cols = stmt.reborrow().init_columns(columns.len() as u32);
+            // `encoded_execute_stream_frame_bytes` refused lists past `u32::MAX`.
+            let mut cols = stmt
+                .reborrow()
+                .init_columns(u32::try_from(columns.len()).unwrap_or(u32::MAX));
             for (i, col) in columns.iter().enumerate() {
                 write_column(cols.reborrow().get(i as u32), col);
             }
         }
         Frame::Rows(rows) => {
-            let mut list = b.init_rows(rows.len() as u32);
+            let mut list = b.init_rows(u32::try_from(rows.len()).unwrap_or(u32::MAX));
             for (i, row) in rows.iter().enumerate() {
-                write_row(list.reborrow().get(i as u32), row);
+                write_row(
+                    list.reborrow().get(u32::try_from(i).unwrap_or(u32::MAX)),
+                    row,
+                );
             }
         }
         Frame::End(timing) => write_timing(b.init_end(), timing),
@@ -1539,6 +1545,18 @@ pub fn encoded_execute_stream_frame_bytes(
                 require_portable_value(value)?;
             }
         }
+    }
+    let list_len = match frame {
+        crate::db_stream::ExecuteStreamFrame::Statement { columns, .. } => columns.len(),
+        crate::db_stream::ExecuteStreamFrame::Rows(rows) => rows.len(),
+        crate::db_stream::ExecuteStreamFrame::Head { .. }
+        | crate::db_stream::ExecuteStreamFrame::End(_)
+        | crate::db_stream::ExecuteStreamFrame::Err(_) => 0,
+    };
+    if u32::try_from(list_len).is_err() {
+        return Err(PluginError::internal(
+            "execute stream frame holds more than u32::MAX list items",
+        ));
     }
     encode_single_segment(|message| write_execute_stream_frame(message.init_root(), frame))
 }

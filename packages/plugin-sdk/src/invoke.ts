@@ -13,6 +13,7 @@
  */
 
 import type { CapTable } from "./db-capnp.js";
+import { MAX_SCALAR_BYTES } from "./abi.js";
 import { PluginError } from "./errors.js";
 import type {
   AdapterDatabaseSession as WireAdapterDatabaseSession,
@@ -858,13 +859,15 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.AdapterDatabaseSessionAssertRestoreConstraintsResultsCodec,
       okEmpty,
     ),
-    // An isolate adapter answers with the frames in memory, so the reply is
-    // always the `inline` member; the launcher relays them as a stream.
+    // An isolate adapter answers with the frames in memory, which travel as
+    // the `inline` member of the invoke reply; frames past one scalar cannot
+    // cross that reply, so they become a typed limit error instead of a
+    // transport failure.
     executeStreamed: session(
       "executeStreamed",
       W.AdapterDatabaseSessionExecuteStreamedParamsCodec,
       W.AdapterDatabaseSessionExecuteStreamedResultsCodec,
-      (value) => ({ kind: "inline", value: value as Uint8Array }) as ExecuteStreamReply,
+      (value) => inlineStreamReply(value as Uint8Array),
     ),
   },
 };
@@ -923,6 +926,29 @@ function replyCapTable(caps: CapDescriptor[]): CapTable {
       throw new InvokeError(500, "internal", "reply message cannot import capabilities");
     },
   };
+}
+
+/**
+ * Wraps an isolate adapter's streamed frames as the invoke reply's `inline`
+ * member, or as a `limit_exceeded` error when they do not fit one scalar.
+ *
+ * @param frames - Every `ExecuteStreamFrame` the adapter produced, concatenated.
+ * @returns The `ExecuteStreamReply` the launcher relays to the host.
+ */
+function inlineStreamReply(frames: Uint8Array): ExecuteStreamReply {
+  if (frames.byteLength > MAX_SCALAR_BYTES) {
+    return {
+      kind: "err",
+      value: wireError(
+        PluginError.limitExceeded({
+          limit: "maxScalarBytes",
+          cap: MAX_SCALAR_BYTES,
+          used: frames.byteLength,
+        }),
+      ),
+    };
+  }
+  return { kind: "inline", value: frames };
 }
 
 function wireError(err: unknown): WirePluginError {
