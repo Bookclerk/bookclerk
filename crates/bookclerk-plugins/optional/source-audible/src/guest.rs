@@ -370,7 +370,7 @@ pub async fn guest_fetch_title(
         .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
 
     let trim = if options.strip_audible_brand_audio {
-        brand_trim(chapter_info.as_ref(), &downloaded.path, title_id)
+        brand_trim(chapter_info.as_ref(), &downloaded.path, title_id).await
     } else {
         None
     };
@@ -515,7 +515,8 @@ async fn fetch_companions(
 /// The remux window that drops Audible's brand intro and outro.
 ///
 /// Durations come from `chapter_info`; when an outro is set but the runtime
-/// is not, the runtime is probed from the downloaded media.
+/// is missing or zero, the runtime is probed from the downloaded media on a
+/// blocking thread (the parse reads the whole sample table).
 ///
 /// # Arguments
 ///
@@ -527,16 +528,28 @@ async fn fetch_companions(
 ///
 /// The trim window, or `None` when there is no branding or the runtime stays
 /// unknown (trimming only the intro would leave the outro in).
-fn brand_trim(chapter_info: Option<&Value>, media: &Path, title_id: &str) -> Option<TrimRange> {
+async fn brand_trim(
+    chapter_info: Option<&Value>,
+    media: &Path,
+    title_id: &str,
+) -> Option<TrimRange> {
     let brand = chapter_info
         .map(brand_durations_from_chapter_info)
         .unwrap_or_default();
-    let mut runtime_ms = chapter_info.and_then(runtime_length_ms_from_chapter_info);
+    let mut runtime_ms = chapter_info
+        .and_then(runtime_length_ms_from_chapter_info)
+        .filter(|ms| *ms > 0);
     if brand.outro_ms > 0 && runtime_ms.is_none() {
-        runtime_ms = parse_mp4(media)
-            .ok()
-            .map(|mp4| track_duration_ms(&mp4.audio))
-            .filter(|probed| *probed > 0);
+        let media = media.to_path_buf();
+        runtime_ms = tokio::task::spawn_blocking(move || {
+            parse_mp4(&media)
+                .ok()
+                .map(|mp4| track_duration_ms(&mp4.audio))
+        })
+        .await
+        .ok()
+        .flatten()
+        .filter(|probed| *probed > 0);
     }
     let trim = brand_trim_range(brand, runtime_ms);
     if trim.is_none() && !brand.is_empty() {
@@ -687,6 +700,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn companions_keep_the_cover_when_the_chapters_fail() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/1.0/catalog/products/B0BOOK0001"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "product": {"product_images": {
+                    "500": format!("{}/images/B0BOOK0001._SL500_.jpg", server.uri())
+                }}
+            })))
+            .mount(&server)
+            .await;
+        let jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
+        Mock::given(method("GET"))
+            .and(path("/images/B0BOOK0001._SL500_.jpg"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "image/jpeg")
+                    .set_body_bytes(jpeg.clone()),
+            )
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let (chapters, cover) = fetch_companions(
+            &account_for(&server),
+            "B0BOOK0001",
+            &DownloadOptions::default(),
+            dir.path(),
+        )
+        .await
+        .unwrap();
+        assert!(chapters.is_none());
+        let cover = cover.expect("cover downloaded");
+        assert_eq!(cover, dir.path().join("B0BOOK0001.cover.jpg"));
+        assert_eq!(std::fs::read(&cover).unwrap(), jpeg);
+    }
+
+    #[tokio::test]
     async fn companions_are_dropped_when_audible_has_none() {
         let server = MockServer::start().await;
         let dir = tempfile::tempdir().unwrap();
@@ -702,25 +752,64 @@ mod tests {
         assert!(cover.is_none());
     }
 
-    #[test]
-    fn brand_trim_cuts_the_intro_and_needs_a_runtime_for_the_outro() {
+    /// The trim window as `(start, end)` for `info` against `media`.
+    async fn window(info: Option<&Value>, media: &Path) -> Option<(u64, Option<u64>)> {
+        brand_trim(info, media, "B0BOOK0001")
+            .await
+            .map(|t| (t.start_ms, t.end_ms))
+    }
+
+    #[tokio::test]
+    async fn brand_trim_cuts_the_intro_and_needs_a_runtime_for_the_outro() {
         let missing = Path::new("/nonexistent/download.aaxc");
-        let window = |info: Option<&Value>| {
-            brand_trim(info, missing, "B0BOOK0001").map(|t| (t.start_ms, t.end_ms))
-        };
-        assert_eq!(window(None), None);
+        assert_eq!(window(None, missing).await, None);
         assert_eq!(
-            window(Some(&json!({"brand_intro_duration_ms": 4000}))),
+            window(Some(&json!({"brand_intro_duration_ms": 4000})), missing).await,
             Some((4000, None))
         );
         let outro = json!({"brand_intro_duration_ms": 4000, "brand_outro_duration_ms": 3000});
-        assert_eq!(window(Some(&outro)), None);
+        assert_eq!(window(Some(&outro), missing).await, None);
         let with_runtime = json!({
             "brand_intro_duration_ms": 4000,
             "brand_outro_duration_ms": 3000,
             "runtime_length_ms": 60000
         });
-        assert_eq!(window(Some(&with_runtime)), Some((4000, Some(57000))));
+        assert_eq!(
+            window(Some(&with_runtime), missing).await,
+            Some((4000, Some(57000)))
+        );
+    }
+
+    #[tokio::test]
+    async fn brand_trim_probes_the_media_when_the_runtime_is_missing_or_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let media = dir.path().join("download.m4b");
+        let fixture = bookclerk_mp4::fixture::ProgressiveFixture::with_generated_samples(87);
+        fixture.write(&media).unwrap();
+        let runtime = fixture.duration_ms();
+        assert!(runtime > 500, "fixture runtime {runtime} ms");
+        let expected = Some((0, Some(runtime - 500)));
+        let no_runtime = json!({"brand_outro_duration_ms": 500});
+        assert_eq!(window(Some(&no_runtime), &media).await, expected);
+        let zero_runtime = json!({"brand_outro_duration_ms": 500, "runtime_length_ms": 0});
+        assert_eq!(window(Some(&zero_runtime), &media).await, expected);
+    }
+
+    /// GET `url` over a bare HTTP/1.1 connection and return the raw response.
+    async fn http_get(url: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let url = url::Url::parse(url).unwrap();
+        let addr = format!("{}:{}", url.host_str().unwrap(), url.port().unwrap());
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            url.path(),
+            url.host_str().unwrap()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        String::from_utf8_lossy(&response).into_owned()
     }
 
     #[tokio::test]
@@ -734,6 +823,9 @@ mod tests {
         };
         let (session_id, url) = guest_login_start(&params).await.unwrap();
         assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+        let page = http_get(&url).await;
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(page.contains("/__start"), "{page}");
         let pending = pending_logins()
             .lock()
             .unwrap()

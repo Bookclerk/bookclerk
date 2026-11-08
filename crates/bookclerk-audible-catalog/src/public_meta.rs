@@ -1648,10 +1648,12 @@ mod tests {
             "asin": "B0BOOK0001",
             "title": "Float Fields",
             "runtime_length_min": 61.6,
-            "price": {"lowest_price": {"base": 14.995, "currency_code": "GBP"}}
+            "price": {"lowest_price": {"base": 14.996, "currency_code": "GBP"}}
         }))
         .unwrap();
         assert_eq!(product.length_minutes, Some(62));
+        assert_eq!(product.price_cents, Some(1500));
+        assert_eq!(product.currency.as_deref(), Some("GBP"));
         let (cents, currency, _label) = price_from_catalog_product(&serde_json::json!({
             "price": {"list_price": {"base": 0.004, "currency_code": "USD"}}
         }));

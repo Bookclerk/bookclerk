@@ -35,7 +35,7 @@ pub async fn search_catalog(
     let http =
         public_http_client().map_err(|e| bookclerk_storefront::SourceError::api(e.to_string()))?;
     let region = normalize_region(&opts.region);
-    let fetch_limit = (opts.limit.saturating_mul(2)).clamp(opts.limit, 50);
+    let fetch_limit = catalog_fetch_limit(opts.limit);
     let page = opts.page.max(1);
     let products_sort = opts.sort.audible_products_sort_by();
     let storefront_sort = opts.sort.audible_catalog_search_sort();
@@ -507,6 +507,18 @@ fn same_series(product_series: Option<&str>, searched: &str) -> bool {
     !a.is_empty() && a == series_core(searched)
 }
 
+/// Most results Audible's catalog endpoints return for one page.
+const CATALOG_PAGE_MAX: usize = 50;
+
+/// How many catalog rows to request for a search that wants `limit` hits.
+///
+/// Over-fetches twice the limit so language filtering on the host still
+/// fills the page, capped at Audible's page size. A limit above the cap gets
+/// the cap rather than an inverted range.
+fn catalog_fetch_limit(limit: usize) -> usize {
+    limit.saturating_mul(2).min(CATALOG_PAGE_MAX)
+}
+
 /// Generic trailing words a storefront appends to a series name, which do
 /// not tell two series apart ("The Dune Sequence" is the "Dune" series).
 const SERIES_SUFFIXES: &[&str] = &[
@@ -728,6 +740,17 @@ mod tests {
             region: "us".into(),
         };
         assert!(super::expand_candidates(&seed, 0).await.unwrap().is_empty());
+    }
+
+    /// Searches over-fetch twice the limit, capped at Audible's page size,
+    /// and a limit above the cap gets the cap instead of panicking.
+    #[test]
+    fn fetch_limit_doubles_up_to_the_page_size() {
+        assert_eq!(super::catalog_fetch_limit(10), 20);
+        assert_eq!(super::catalog_fetch_limit(25), 50);
+        assert_eq!(super::catalog_fetch_limit(30), 50);
+        assert_eq!(super::catalog_fetch_limit(60), 50);
+        assert_eq!(super::catalog_fetch_limit(usize::MAX), 50);
     }
 
     /// Loose keyword matches from another (or no) series are not stamped

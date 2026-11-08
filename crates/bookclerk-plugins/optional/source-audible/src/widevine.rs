@@ -78,8 +78,8 @@ pub fn load_widevine_cdm(
     }
     Err(last_err.unwrap_or_else(|| {
         AudibleError::Widevine(
-            "no Widevine CDM (.wvd) found — set output.widevine_cdm or place \
-             widevine.wvd under BOOKCLERK_FILES_DIR"
+            "no Widevine CDM (.wvd) found — set output.widevine_cdm in \
+             Settings → Output"
                 .into(),
         )
     }))

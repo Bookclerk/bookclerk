@@ -10,7 +10,9 @@ use bookclerk_plugin_source_audible::{
     summarize_license, Bitrate,
 };
 use url::Url;
-use wiremock::matchers::{body_json, body_string_contains, header, method, path, query_param};
+use wiremock::matchers::{
+    body_json, body_partial_json, body_string_contains, header, method, path, query_param,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn synthetic_client(server: &MockServer) -> Client {
@@ -83,6 +85,7 @@ async fn license_denial_surfaces_message() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/1.0/content/B00DENIED01/licenserequest"))
+        .and(body_partial_json(serde_json::json!({"quality": "Normal"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "content_license": {
                 "status_code": "Denied",
