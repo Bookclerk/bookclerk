@@ -552,7 +552,8 @@ fn finishing_a_bake_reports_a_file_it_cannot_remove() {
 #[tokio::test]
 async fn deploys_a_default_instance_on_the_node_once() {
     use bookclerk_library::control_plane::{
-        ensure_plugin_instance, load_deployment_for_node, ConfigActor, DesiredState,
+        ensure_plugin_deployment, ensure_plugin_instance, load_deployment_for_node, ConfigActor,
+        DesiredState,
     };
     let dir = tempfile::tempdir().unwrap();
     let store = fresh(dir.path()).await;
@@ -577,4 +578,22 @@ async fn deploys_a_default_instance_on_the_node_once() {
         .unwrap()
         .unwrap();
     assert_eq!(again.revision, first.revision);
+
+    // A deployment an operator set to absent is turned back on.
+    let operator = ConfigActor::Operator { id: "test".into() };
+    ensure_plugin_deployment(
+        &store,
+        &operator,
+        &instance.id,
+        "node-b",
+        DesiredState::operator(false),
+    )
+    .await
+    .unwrap();
+    deploy_on_node(&store, "node-b", key).await.unwrap();
+    let flipped = load_deployment_for_node(&store, &instance.id, "node-b")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(flipped.desired, DesiredState::operator(true));
 }
