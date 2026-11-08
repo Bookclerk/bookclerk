@@ -20,6 +20,7 @@ use sea_orm::{
 use uuid::Uuid;
 
 use crate::atomic_txn::AtomicTxnBackend;
+use crate::control_plane::batch;
 use crate::entities::{
     account_links, accounts, books, claim_tickets, embeddings, encrypted_secrets, ignored_titles,
     listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
@@ -3033,25 +3034,27 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::NotFound`] when the user does not exist.
     pub async fn set_user_totp_enabled(&self, user_id: i64, enabled: bool) -> Result<()> {
-        let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
-        match Self::set_user_totp_enabled_on(&txn, user_id, enabled).await {
-            Ok(()) => {
-                txn.commit().await.map_err(LibraryError::Orm)?;
-                if let Some(fault) = crate::take_txn_fault() {
-                    return Err(LibraryError::Orm(sea_orm::DbErr::Custom(fault)));
-                }
-                Ok(())
-            }
-            Err(err) => {
-                let _ = txn.rollback().await;
-                let _ = crate::take_txn_fault();
-                Err(err)
-            }
+        let operation_id = format!("user-totp-enabled-{}", Uuid::new_v4());
+        let reply = self
+            .execute_host_batch(batch::request(
+                &operation_id,
+                vec![batch::exec(
+                    "UPDATE users SET totp_enabled = ?, updated_at = ? WHERE id = ?",
+                    vec![
+                        batch::int(i64::from(enabled)),
+                        batch::text(&now_str()),
+                        batch::int(user_id),
+                    ],
+                )],
+            ))
+            .await?;
+        if batch::rows_affected(&reply, 0) == 0 {
+            return Err(LibraryError::NotFound("user".into()));
         }
+        Ok(())
     }
 
     /// Sets `users.totp_enabled` inside an open transaction.
-    #[allow(dead_code)]
     pub(crate) async fn set_user_totp_enabled_on<C: ConnectionTrait>(
         txn: &C,
         user_id: i64,
@@ -4560,6 +4563,10 @@ impl LibraryStore {
                 .set_acquire_status(&model.uuid, status, storage_key, error_message, event)
                 .await;
         }
+        // In-process fallback for a store opened without an atomic backend
+        // (local tools and tests). Hosts attach the database plugin's named
+        // atomic operation above; an external adapter refuses this `begin()`.
+        #[allow(clippy::disallowed_methods)]
         let txn = self.db.begin().await.map_err(LibraryError::Orm)?;
         match event_outbox::set_acquire_status_on(&txn, model, status, storage_key, error_message)
             .await

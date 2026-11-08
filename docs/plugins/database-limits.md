@@ -158,6 +158,68 @@ const caps = await env.DB.limits();
 const perStatement = Math.floor(caps.maxBinds / COLUMNS);
 ```
 
+## Interactive transactions
+
+External database adapters refuse `begin()`: the adapter session answers
+`unsupported: interactive adapter transactions`, and the hosted demo runs
+on such an adapter. Host code writes the way a plugin does, as one atomic
+batch (`LibraryStore::execute_host_batch`) or a named atomic operation.
+`crates/bookclerk-library/clippy.toml` disallows
+`sea_orm::TransactionTrait::begin` in the library crate, so a new
+interactive transaction fails Clippy; the native-connection tools (backend
+migration, backup restore) and the in-process fallbacks a store without an
+atomic backend takes carry a narrow allow with the reason beside it.
+
+## Testing against the limits
+
+A plain in-memory SQLite connection accepts `begin()` and never hits a cap,
+so a test that passes on one can still fail on an external adapter. The
+`bookclerk-db-testkit` crate opens an in-memory library that behaves like
+the adapter instead:
+
+```rust
+use bookclerk_db_testkit::{fixtures, Profile, TestDatabase};
+
+let db = TestDatabase::open(Profile::Minimum).await?;
+let store = db.store(); // a LibraryStore: begin() is refused, batches are checked
+// ... run the code under test ...
+assert_eq!(db.refused_begins(), 0);
+```
+
+- **Profiles.** `Profile::FirstParty` is the shipped sqlite and Postgres
+  advertisement, `Profile::D1` the D1 one, and `Profile::Minimum` the
+  smallest advertisement the host connects to
+  (`DbCapabilities::host_minimum()`: 4,096-byte results, 1,024-byte cells,
+  one row per statement, no streamed reads). Run host and plugin database
+  code under all three (`Profile::ALL`): what works on the shipped adapters
+  has to work when a plugin advertises only the minimums.
+- **Refused `begin()`.** The connection's `begin()` is refused the way the
+  adapter refuses it, and `refused_begins()` counts the attempts. A host
+  write that works on an external adapter leaves the count at zero.
+- **Every cap applied.** Each host batch is admitted against the profile
+  (`maxStatements`, `maxBinds`, `maxPayloadBytes`, `maxRequestBytes`), run
+  as one transaction under its result caps and its reply checked, so a
+  test sees the same typed `limit_exceeded` error the adapter answers.
+  `batch_sizes()` lists the statement count of every batch sent.
+- **Faults.** `lose_next_replies(n)` applies the next `n` batches but loses
+  their replies, so the caller sees `unavailable` and a retry has to be
+  idempotent; `lock_next_requests(n)` refuses the next `n` batches with
+  SQLite lock contention before anything is applied.
+- **Fixtures.** `fixtures::description_near_cell_cap`,
+  `fixtures::multibyte_text` and `fixtures::rows_over_result_cap` build
+  rows sized from the advertisement (multibyte text so byte and character
+  counts differ, wide JSON so a listing exceeds `maxResultBytes`), and
+  `paging::assert_pages_match_full` checks that a paged listing returns
+  what the unpaged one does.
+- **Plugin batches.** `execute_batch(request)` runs one host-authored
+  `ExecuteRequest` through the profile, for tests that drive the adapter
+  contract directly.
+
+Inside `bookclerk-library` the same kit is `test_support::ProfileStore`,
+which the store tests open their fixtures from. Ordinary SeaORM reads
+through the connection are held to the engine proxy's first-party caps, as
+on the shipped sqlite adapter.
+
 ## Checklist
 
 - Read with `all()`; the SDK streams when it can, and the result is still
@@ -168,3 +230,5 @@ const perStatement = Math.floor(caps.maxBinds / COLUMNS);
 - Handle `limit_exceeded` by its `limit`, not by matching the message.
 - Prefer narrower queries over larger budgets: the caps are the adapter's,
   and D1's are smaller than sqlite's.
+- Test under every `bookclerk-db-testkit` profile, and keep
+  `refused_begins()` at zero.

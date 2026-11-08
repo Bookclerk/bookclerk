@@ -9,7 +9,13 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[features]
+# Test-only helpers shared with test kits: the begin-refusing proxy gate.
+# Never enabled by product binaries.
+test-support = []
+
 [dependencies]
+async-trait.workspace = true
 base64.workspace = true
 bookclerk-plugin-abi = { workspace = true, features = ["host"] }
 chrono.workspace = true

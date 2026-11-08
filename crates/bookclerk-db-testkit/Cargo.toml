@@ -1,0 +1,24 @@
+[package]
+name = "bookclerk-db-testkit"
+description = "Contract conformance test kit: capability profiles, begin refusal and fault injection for database tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+bookclerk-library = { workspace = true, features = ["test-support"] }
+bookclerk-plugin-abi = { workspace = true, features = ["host"] }
+bookclerk-plugin-database-sqlite.workspace = true
+rusqlite.workspace = true
+sea-orm.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

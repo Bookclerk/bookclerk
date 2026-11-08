@@ -46,6 +46,8 @@ mod session_client;
 /// Host-owned generic SQL atomic plans for database adapters.
 pub mod sql_plan;
 mod store;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 mod token_hash;
 mod wishlist_merge;
 
