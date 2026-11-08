@@ -18,6 +18,12 @@ import { CapnpReader, NO_CAPS } from "./db-capnp.js";
 import { ExecuteStreamFrameCodec } from "./generated-wire.js";
 
 /**
+ * Discriminant of the `rows` variant of `ExecuteStreamFrame`, read from a
+ * frame's first data word before the frame decodes.
+ */
+const ROWS_FRAME = 2;
+
+/**
  * What a receiver lets a streamed reply grow to.
  */
 export interface ExecuteStreamLimits {
@@ -202,7 +208,9 @@ export class ExecuteStreamDecoder {
       }
       // Each frame is decoded from its own copy, so a BYTES cell an author
       // keeps does not pin the rest of the stream in memory.
-      const frame = decodeFrame(this.#buf.slice(at, at + frameLen), ceiling);
+      const frame = decodeFrame(this.#buf.slice(at, at + frameLen), ceiling, (count) =>
+        this.#admitRows(count),
+      );
       at += frameLen;
       this.#apply(frame);
       frames.push(frame);
@@ -260,6 +268,30 @@ export class ExecuteStreamDecoder {
    */
   #sequence(message: string): PluginError {
     return PluginError.fromWire("invalid_params", `streamed reply ${message}`);
+  }
+
+  /**
+   * Admits a rows frame by its row count before any of its cells decode, so
+   * a frame past the row cap (or out of sequence) is refused without
+   * materializing the rows it carries.
+   *
+   * @param count - Rows the frame announces.
+   * @throws `PluginError` `invalid_params` when no statement is open,
+   *   `limit_exceeded` when the rows would pass the statement's row cap.
+   */
+  #admitRows(count: number): void {
+    const state = this.#state;
+    if (state.kind !== "inReply" || !state.open) {
+      throw this.#sequence("carries rows before a statement frame");
+    }
+    const used = state.openRows + count;
+    if (this.#limits.maxRows > 0 && used > this.#limits.maxRows) {
+      throw PluginError.limitExceeded({
+        limit: this.#limits.rowsLimit,
+        cap: this.#limits.maxRows,
+        used,
+      });
+    }
   }
 
   /**
@@ -469,23 +501,40 @@ function validateCell(cell: DbValue): void {
  * control messages, so the reader's budget follows the frame's own size,
  * clamped to the stream's raw ceiling, as the host's decoder does.
  *
+ * A rows frame is announced to `admitRows` by its row count before any cell
+ * decodes, so the decoder can refuse it against its row budget first.
+ *
  * @param bytes - One complete single-segment frame.
  * @param ceiling - Raw byte ceiling of the stream (`rawStreamCeiling`).
+ * @param admitRows - Called with the row count of a rows frame before its
+ *   cells decode; throws to refuse the frame.
  * @returns The decoded frame.
- * @throws `PluginError` `invalid_params` when the frame does not decode.
+ * @throws `PluginError` `invalid_params` when the frame does not decode, or
+ *   whatever `admitRows` threw.
  */
-function decodeFrame(bytes: Uint8Array, ceiling: number): ExecuteStreamFrame {
+function decodeFrame(
+  bytes: Uint8Array,
+  ceiling: number,
+  admitRows: (count: number) => void,
+): ExecuteStreamFrame {
   const words = Math.min(
     Math.floor(bytes.byteLength / 8) + 16,
     Math.floor(Math.max(ceiling, MAX_SCALAR_BYTES) / 8),
   );
   try {
     const reader = new CapnpReader(bytes, words);
-    return ExecuteStreamFrameCodec.read(
-      reader.root(ExecuteStreamFrameCodec.dataWords, ExecuteStreamFrameCodec.pointerCount),
-      NO_CAPS,
+    const root = reader.root(
+      ExecuteStreamFrameCodec.dataWords,
+      ExecuteStreamFrameCodec.pointerCount,
     );
+    if (root.getUint16(0) === ROWS_FRAME) {
+      admitRows(root.getStructListLength(0));
+    }
+    return ExecuteStreamFrameCodec.read(root, NO_CAPS);
   } catch (err) {
+    if (err instanceof PluginError) {
+      throw err;
+    }
     throw PluginError.fromWire(
       "invalid_params",
       `streamed reply frame does not decode: ${err instanceof Error ? err.message : String(err)}`,

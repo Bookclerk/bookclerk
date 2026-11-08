@@ -476,6 +476,40 @@ class DecoderTests(unittest.TestCase):
             decoder.finish()
         self.assertEqual(ctx.exception.code, "invalid_params")
 
+    def test_row_cap_is_checked_before_cells_decode(self) -> None:
+        # A frame past the cap whose cells would not even validate is refused
+        # as `limit_exceeded`, and a rows frame ahead of any statement as out
+        # of sequence: neither materializes its cells.
+        bad = {"kind": "text", "value": "a\x00b"}
+        head = _frame("head", {"operationId": "op-order", "statementCount": 1})
+        statement = _frame(
+            "statement",
+            {"index": 0, "columns": [{"name": "v", "dbType": "text"}], "rowsAffected": 0},
+        )
+        over_cap = head + statement + _frame("rows", [{"values": [bad]}] * 5)
+        with self.assertRaises(PluginError) as ctx:
+            ExecuteStreamDecoder(TINY_LIMITS).push(over_cap)
+        limit = ctx.exception.limit
+        assert limit is not None
+        self.assertEqual((limit.limit, limit.cap, limit.used), ("maxStreamedResultRows", 4, 5))
+        with self.assertRaisesRegex(PluginError, "before a statement frame"):
+            ExecuteStreamDecoder(TINY_LIMITS).push(head + _frame("rows", [{"values": [bad]}]))
+        # The count comes from the list tag alone, and a tag that announces
+        # more elements than the list holds is refused.
+        rows = _frame("rows", [_row(0), _row(1), _row(2)])
+        self.assertEqual(_CapnpReader(rows).root(1, 1).get_struct_list_length(0), 3)
+        self.assertEqual(_CapnpReader(_frame("rows", [])).root(1, 1).get_struct_list_length(0), 0)
+        words = [
+            1 << 48,  # root: struct, 0 data words, 1 pointer
+            1 | (7 << 32) | (1 << 35),  # composite list of one word (its tag)
+            (3 << 2) | (1 << 32),  # tag: 3 elements of one word each
+        ]
+        lying = struct.pack("<II", 0, len(words)) + b"".join(struct.pack("<Q", w) for w in words)
+        with self.assertRaisesRegex(ValueError, "exceeds payload"):
+            _CapnpReader(lying).root(0, 1).get_struct_list_length(0)
+        with self.assertRaisesRegex(PluginError, "does not decode"):
+            ExecuteStreamDecoder(TINY_LIMITS).push(head + lying)
+
     def test_streamed_cells_are_validated_like_inline_ones(self) -> None:
         for cell, text in [
             ({"kind": "float64", "value": math.nan}, "not finite"),
@@ -611,6 +645,37 @@ class BindingStreamTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PluginError) as ctx:
             await db.limits()
         self.assertEqual(ctx.exception.code, "unavailable")
+
+    async def test_iterate_closes_the_chunk_source_when_the_consumer_stops(self) -> None:
+        rows = [_row(i) for i in range(25)]
+        closed: list[bool] = []
+
+        async def source(data: bytes) -> AsyncIterator[bytes]:
+            try:
+                async for c in _chunked(data, 50):
+                    yield c
+            finally:
+                closed.append(True)
+
+        transport = _Transport(
+            caps=SQLITE_CAPS,
+            body=lambda req: source(_stream(req["operationId"], rows, rows_per_frame=4)),
+        )
+        it = transport.binding().prepare("SELECT id FROM books").iterate()
+        self.assertEqual((await it.__anext__())["id"]["value"], 0)
+        self.assertEqual(closed, [])
+        await it.aclose()
+        self.assertEqual(closed, [True])
+
+        # A refused frame closes the source too.
+        closed.clear()
+        over = _Transport(
+            caps=TINY_CAPS, body=lambda req: source(_stream(req["operationId"], rows))
+        )
+        with self.assertRaises(PluginError):
+            async for _ in over.binding().prepare("SELECT id FROM books").iterate():
+                pass
+        self.assertEqual(closed, [True])
 
     async def test_iterate_yields_rows_as_frames_arrive(self) -> None:
         rows = [_row(i) for i in range(25)]

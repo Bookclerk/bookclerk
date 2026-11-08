@@ -362,6 +362,75 @@ class _MockTransport:
 
 
 class WorkerdTransportDbTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reader_chunks_release_the_reader_when_the_consumer_stops(self) -> None:
+        from bookclerk_plugin_sdk.workerd import _reader_chunks
+
+        class _Reader:
+            def __init__(self, cancel: str) -> None:
+                self.events: list[str] = []
+                self._chunks = [b"ab", b"cd"]
+                self._cancel = cancel
+
+            async def read(self) -> SimpleNamespace:
+                if not self._chunks:
+                    return SimpleNamespace(done=True, value=None)
+                return SimpleNamespace(done=False, value=self._chunks.pop(0))
+
+            def cancel(self) -> object:
+                self.events.append("cancel")
+                if self._cancel == "refused":
+                    raise RuntimeError("body already gone")
+                if self._cancel == "sync":
+                    return None
+
+                async def _done() -> None:
+                    return None
+
+                return _done()
+
+            def releaseLock(self) -> None:  # noqa: N802  (Streams API method name)
+                self.events.append("release")
+
+        class _Stream:
+            def __init__(self, reader: _Reader) -> None:
+                self.reader = reader
+
+            def getReader(self) -> _Reader:  # noqa: N802  (Streams API method name)
+                return self.reader
+
+        # Stopping early cancels the unread body, whether `cancel()` answers
+        # a promise, a plain value or an error, then releases the reader.
+        for mode in ("promise", "sync", "refused"):
+            reader = _Reader(mode)
+            chunks = _reader_chunks(_Stream(reader))
+            self.assertEqual(await chunks.__anext__(), b"ab")
+            self.assertEqual(reader.events, [])
+            await chunks.aclose()
+            self.assertEqual(reader.events, ["cancel", "release"], mode)
+
+        # A drained body is only released.
+        reader = _Reader("promise")
+        self.assertEqual([c async for c in _reader_chunks(_Stream(reader))], [b"ab", b"cd"])
+        self.assertEqual(reader.events, ["release"])
+
+        # A reader without either method (an older transport double) is fine.
+        class _Bare:
+            def __init__(self) -> None:
+                self._chunks = [b"x"]
+
+            async def read(self) -> SimpleNamespace:
+                if not self._chunks:
+                    return SimpleNamespace(done=True, value=None)
+                return SimpleNamespace(done=False, value=self._chunks.pop(0))
+
+        class _BareStream:
+            def getReader(self) -> _Bare:  # noqa: N802
+                return _Bare()
+
+        chunks = _reader_chunks(_BareStream())
+        self.assertEqual(await chunks.__anext__(), b"x")
+        await chunks.aclose()
+
     async def test_transport_streamed_reply_without_a_body_is_internal(self) -> None:
         from bookclerk_plugin_sdk.workerd import PluginError, _invocation_env
 

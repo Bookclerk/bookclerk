@@ -678,6 +678,32 @@ export class CapnpReader {
     }
     return out;
   }
+
+  /**
+   * Element count of a composite list without visiting its elements, so a
+   * caller can refuse a list that is too long before any element decodes.
+   *
+   * @param ptrWord - Word holding the list pointer.
+   * @returns The number of elements the list's tag announces, `0` for a
+   *   null or empty list.
+   * @throws `Error` when the pointer is not a composite list pointer or the
+   *   count exceeds the list's payload.
+   */
+  readStructListLength(ptrWord: number): number {
+    const lp = this.listPointer(ptrWord, 7);
+    if (lp === null || lp.length === 0) {
+      return 0;
+    }
+    const tagWord = lp.target;
+    this.checkRange(tagWord, 1);
+    const tag = this.readWord(tagWord);
+    const count = Number((tag >> 2n) & 0x3fffffffn);
+    const elemWords = Number((tag >> 32n) & 0xffffn) + Number((tag >> 48n) & 0xffffn);
+    if (elemWords > 0 && count > Math.floor(lp.length / elemWords)) {
+      throw new Error("composite list count exceeds payload");
+    }
+    return count;
+  }
 }
 
 function signExtend30(n: number): number {
@@ -789,6 +815,18 @@ export class StructReader {
   getStructList(pointerIndex: number, dataWords: number, pointerWords: number): StructReader[] {
     const ptr = this.pointerWord(pointerIndex);
     return ptr === null ? [] : this.reader.readStructList(ptr, dataWords, pointerWords);
+  }
+
+  /**
+   * Element count of the composite list at `pointerIndex`, read from its tag
+   * alone (see {@link CapnpReader.readStructListLength}).
+   *
+   * @param pointerIndex - Pointer field index.
+   * @returns The announced element count, `0` for a null or empty list.
+   */
+  getStructListLength(pointerIndex: number): number {
+    const ptr = this.pointerWord(pointerIndex);
+    return ptr === null ? 0 : this.reader.readStructListLength(ptr);
   }
 
   getStruct(pointerIndex: number, dataWords: number, pointerWords: number): StructReader {

@@ -581,6 +581,31 @@ var CapnpReader = class {
     }
     return out;
   }
+  /**
+   * Element count of a composite list without visiting its elements, so a
+   * caller can refuse a list that is too long before any element decodes.
+   *
+   * @param ptrWord - Word holding the list pointer.
+   * @returns The number of elements the list's tag announces, `0` for a
+   *   null or empty list.
+   * @throws `Error` when the pointer is not a composite list pointer or the
+   *   count exceeds the list's payload.
+   */
+  readStructListLength(ptrWord) {
+    const lp = this.listPointer(ptrWord, 7);
+    if (lp === null || lp.length === 0) {
+      return 0;
+    }
+    const tagWord = lp.target;
+    this.checkRange(tagWord, 1);
+    const tag = this.readWord(tagWord);
+    const count = Number(tag >> 2n & 0x3fffffffn);
+    const elemWords = Number(tag >> 32n & 0xffffn) + Number(tag >> 48n & 0xffffn);
+    if (elemWords > 0 && count > Math.floor(lp.length / elemWords)) {
+      throw new Error("composite list count exceeds payload");
+    }
+    return count;
+  }
 };
 function signExtend30(n) {
   const v = n & 1073741823;
@@ -668,6 +693,17 @@ var StructReader = class _StructReader {
   getStructList(pointerIndex, dataWords, pointerWords) {
     const ptr = this.pointerWord(pointerIndex);
     return ptr === null ? [] : this.reader.readStructList(ptr, dataWords, pointerWords);
+  }
+  /**
+   * Element count of the composite list at `pointerIndex`, read from its tag
+   * alone (see {@link CapnpReader.readStructListLength}).
+   *
+   * @param pointerIndex - Pointer field index.
+   * @returns The announced element count, `0` for a null or empty list.
+   */
+  getStructListLength(pointerIndex) {
+    const ptr = this.pointerWord(pointerIndex);
+    return ptr === null ? 0 : this.reader.readStructListLength(ptr);
   }
   getStruct(pointerIndex, dataWords, pointerWords) {
     const ptr = this.pointerWord(pointerIndex);
@@ -7246,6 +7282,7 @@ function decodeBase64(b64) {
 }
 
 // dist/db-stream.js
+var ROWS_FRAME = 2;
 function streamsResults(caps) {
   return caps.maxStreamedResultBytes > 0 && caps.maxStreamedResultRows > 0;
 }
@@ -7354,7 +7391,7 @@ var ExecuteStreamDecoder = class {
       if (this.#buf.byteLength - at < frameLen) {
         break;
       }
-      const frame = decodeFrame(this.#buf.slice(at, at + frameLen), ceiling);
+      const frame = decodeFrame(this.#buf.slice(at, at + frameLen), ceiling, (count) => this.#admitRows(count));
       at += frameLen;
       this.#apply(frame);
       frames.push(frame);
@@ -7406,6 +7443,29 @@ var ExecuteStreamDecoder = class {
    */
   #sequence(message) {
     return PluginError.fromWire("invalid_params", `streamed reply ${message}`);
+  }
+  /**
+   * Admits a rows frame by its row count before any of its cells decode, so
+   * a frame past the row cap (or out of sequence) is refused without
+   * materializing the rows it carries.
+   *
+   * @param count - Rows the frame announces.
+   * @throws `PluginError` `invalid_params` when no statement is open,
+   *   `limit_exceeded` when the rows would pass the statement's row cap.
+   */
+  #admitRows(count) {
+    const state = this.#state;
+    if (state.kind !== "inReply" || !state.open) {
+      throw this.#sequence("carries rows before a statement frame");
+    }
+    const used = state.openRows + count;
+    if (this.#limits.maxRows > 0 && used > this.#limits.maxRows) {
+      throw PluginError.limitExceeded({
+        limit: this.#limits.rowsLimit,
+        cap: this.#limits.maxRows,
+        used
+      });
+    }
   }
   /**
    * Advances the sequence by one decoded frame: opens the reply on `head`,
@@ -7562,12 +7622,19 @@ function validateCell(cell) {
     throw PluginError.fromWire("invalid_params", "streamed reply TEXT cell contains U+0000");
   }
 }
-function decodeFrame(bytes, ceiling) {
+function decodeFrame(bytes, ceiling, admitRows) {
   const words = Math.min(Math.floor(bytes.byteLength / 8) + 16, Math.floor(Math.max(ceiling, MAX_SCALAR_BYTES) / 8));
   try {
     const reader = new CapnpReader(bytes, words);
-    return ExecuteStreamFrameCodec.read(reader.root(ExecuteStreamFrameCodec.dataWords, ExecuteStreamFrameCodec.pointerCount), NO_CAPS);
+    const root = reader.root(ExecuteStreamFrameCodec.dataWords, ExecuteStreamFrameCodec.pointerCount);
+    if (root.getUint16(0) === ROWS_FRAME) {
+      admitRows(root.getStructListLength(0));
+    }
+    return ExecuteStreamFrameCodec.read(root, NO_CAPS);
   } catch (err) {
+    if (err instanceof PluginError) {
+      throw err;
+    }
     throw PluginError.fromWire("invalid_params", `streamed reply frame does not decode: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

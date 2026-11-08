@@ -853,26 +853,33 @@ class DatabaseBinding:
         # once, so the columns come from the frames rather than the decoder.
         columns: list[dict[str, Any]] = []
         yielded = False
-        async for chunk in chunks:
-            try:
-                frames = decoder.push(bytes(chunk))
-            except _plugin_error() as err:
-                if falls_back_inline(err, yielded):
-                    async for row in self._inline_rows(request):
-                        yield row
-                    return
-                raise
-            for frame in frames:
-                if frame["kind"] == "head":
-                    _check_reply_identity(
-                        request, frame["value"]["operationId"], frame["value"]["statementCount"]
-                    )
-                elif frame["kind"] == "statement":
-                    columns = frame["value"]["columns"]
-                elif frame["kind"] == "rows":
-                    for row in frame["value"]:
-                        yielded = True
-                        yield _row_map(columns, row)
+        try:
+            async for chunk in chunks:
+                try:
+                    frames = decoder.push(bytes(chunk))
+                except _plugin_error() as err:
+                    if falls_back_inline(err, yielded):
+                        async for row in self._inline_rows(request):
+                            yield row
+                        return
+                    raise
+                for frame in frames:
+                    if frame["kind"] == "head":
+                        _check_reply_identity(
+                            request,
+                            frame["value"]["operationId"],
+                            frame["value"]["statementCount"],
+                        )
+                    elif frame["kind"] == "statement":
+                        columns = frame["value"]["columns"]
+                    elif frame["kind"] == "rows":
+                        for row in frame["value"]:
+                            yielded = True
+                            yield _row_map(columns, row)
+        finally:
+            # A consumer that stops early (or a refused frame) closes the chunk
+            # source, which releases the unread transport body.
+            await _aclose(chunks)
         try:
             decoder.finish()
         except _plugin_error() as err:
@@ -881,6 +888,13 @@ class DatabaseBinding:
                     yield row
                 return
             raise
+
+
+async def _aclose(source: AsyncIterable[bytes]) -> None:
+    """Close an async chunk source that offers ``aclose()``; a plain iterable is left alone."""
+    aclose = getattr(source, "aclose", None)
+    if aclose is not None:
+        await aclose()
 
 
 def _tighter_cap(a: int, b: int) -> int:
@@ -1230,28 +1244,42 @@ def _validate_cell(cell: dict[str, Any]) -> None:
         )
 
 
-def _decode_frame(data: bytes, ceiling: int) -> dict[str, Any]:
+_ROWS_FRAME = 2
+"""Discriminant of the ``rows`` variant of ``ExecuteStreamFrame``."""
+
+
+def _decode_frame(data: bytes, ceiling: int, admit_rows: Callable[[int], None]) -> dict[str, Any]:
     """Decode one frame under the traversal budget its stream negotiated.
 
     A frame carrying one wide row can be larger than the budget that suits
     control messages, so the reader's budget follows the frame's own size,
-    clamped to the stream's raw ceiling, as the host's decoder does.
+    clamped to the stream's raw ceiling, as the host's decoder does. A rows
+    frame is announced to ``admit_rows`` by its row count before any cell
+    decodes, so the decoder can refuse it against its row budget first.
 
     Args:
         data: One complete single-segment frame.
         ceiling: Raw byte ceiling of the stream (:func:`raw_stream_ceiling`).
+        admit_rows: Called with the row count of a rows frame before its
+            cells decode; raises to refuse the frame.
 
     Returns:
         The ``ExecuteStreamFrame`` dict.
 
     Raises:
-        PluginError: ``invalid_params`` when the frame does not decode.
+        PluginError: ``invalid_params`` when the frame does not decode, or
+            whatever ``admit_rows`` raised.
     """
     words = min(len(data) // 8 + 16, max(ceiling, MAX_SCALAR_BYTES) // 8)
     try:
         reader = _CapnpReader(data, words)
         codec = _execute_stream_frame_codec
-        return codec.read(reader.root(codec.data_words, codec.pointer_count), NO_CAPS)
+        root = reader.root(codec.data_words, codec.pointer_count)
+        if root.get_u16(0) == _ROWS_FRAME:
+            admit_rows(root.get_struct_list_length(0))
+        return codec.read(root, NO_CAPS)
+    except _plugin_error():
+        raise
     except Exception as err:
         raise _plugin_error().from_wire(
             "invalid_params", f"streamed reply frame does not decode: {err}"
@@ -1360,7 +1388,7 @@ class ExecuteStreamDecoder:
                 raise self._bytes_exceeded(frame_len)
             if len(buf) - at < frame_len:
                 break
-            frame = _decode_frame(bytes(buf[at : at + frame_len]), ceiling)
+            frame = _decode_frame(bytes(buf[at : at + frame_len]), ceiling, self._admit_rows)
             at += frame_len
             self._apply(frame)
             frames.append(frame)
@@ -1400,6 +1428,21 @@ class ExecuteStreamDecoder:
 
     def _sequence(self, message: str) -> PluginError:
         return _plugin_error().from_wire("invalid_params", f"streamed reply {message}")
+
+    def _admit_rows(self, count: int) -> None:
+        """Admit a rows frame by its row count before any of its cells decode.
+
+        Raises:
+            PluginError: ``invalid_params`` when no statement is open,
+                ``limit_exceeded`` when the rows would pass the row cap.
+        """
+        if self._open is None:
+            raise self._sequence("carries rows before a statement frame")
+        used = self._open_rows + count
+        if 0 < self._limits.max_rows < used:
+            raise _plugin_error().limit_exceeded(
+                LimitExceeded(self._limits.rows_limit, self._limits.max_rows, used)
+            )
 
     def _apply(self, frame: dict[str, Any]) -> None:
         kind = frame["kind"]

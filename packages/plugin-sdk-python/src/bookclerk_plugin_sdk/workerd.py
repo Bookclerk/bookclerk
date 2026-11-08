@@ -2016,13 +2016,42 @@ async def _reader_chunks(stream: Any) -> AsyncIterator[bytes]:
         Each non-empty window as ``bytes``, in order.
     """
     reader = stream.getReader()
-    while True:
-        result = await reader.read()
-        if bool(getattr(result, "done", False)):
-            return
-        value = getattr(result, "value", None)
-        if value is not None:
-            yield _bytes(value)
+    drained = False
+    try:
+        while True:
+            result = await reader.read()
+            if bool(getattr(result, "done", False)):
+                drained = True
+                return
+            value = getattr(result, "value", None)
+            if value is not None:
+                yield _bytes(value)
+    finally:
+        # A consumer that stops early (an `iterate()` loop that breaks, a
+        # decoder that refused a frame) cancels the unread body and releases
+        # the reader instead of leaving the transfer parked behind the lock.
+        if not drained:
+            await _cancel_reader(reader)
+        release = getattr(reader, "releaseLock", None)
+        if release is not None:
+            release()
+
+
+async def _cancel_reader(reader: Any) -> None:
+    """Cancel a web ``ReadableStreamDefaultReader``, ignoring a transport that refuses.
+
+    Args:
+        reader: The reader to cancel; one without ``cancel()`` is left as is.
+    """
+    cancel = getattr(reader, "cancel", None)
+    if cancel is None:
+        return
+    try:
+        result = cancel()
+        if inspect.isawaitable(result):
+            await result
+    except Exception:  # noqa: BLE001  (best effort; the body is abandoned either way)
+        return
 
 
 async def _granted_body_chunks(resp: Any, method: str) -> AsyncIterator[bytes]:

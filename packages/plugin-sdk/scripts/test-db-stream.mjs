@@ -734,6 +734,61 @@ for (const setup of [
   }
 }
 
+// The row cap is checked from a rows frame's count before its cells decode:
+// a frame past the cap whose cells would not even validate is refused as
+// `limit_exceeded`, and a rows frame ahead of any statement is refused as
+// out of sequence, without materializing either.
+{
+  const bad = { kind: "text", value: "a\u0000b" };
+  const overCap = concat([
+    frame("head", { operationId: "op-order", statementCount: 1 }),
+    frame("statement", { index: 0, columns: [{ name: "v", dbType: "text" }], rowsAffected: 0 }),
+    frame(
+      "rows",
+      Array.from({ length: 5 }, () => ({ values: [bad] })),
+    ),
+  ]);
+  assert.throws(
+    () => new ExecuteStreamDecoder(tinyLimits).push(overCap),
+    (err) =>
+      err.wireCode === "limit_exceeded" &&
+      err.limit.limit === "maxStreamedResultRows" &&
+      err.limit.used === 5,
+  );
+  const early = concat([
+    frame("head", { operationId: "op-order", statementCount: 1 }),
+    frame("rows", [{ values: [bad] }]),
+  ]);
+  assert.throws(
+    () => new ExecuteStreamDecoder(tinyLimits).push(early),
+    (err) => err.wireCode === "invalid_params" && /before a statement frame/.test(err.message),
+  );
+  // The count comes from the list tag alone, and a tag that announces more
+  // elements than the list holds is refused.
+  assert.equal(
+    new CapnpReader(frame("rows", [row(0), row(1), row(2)])).root(1, 1).getStructListLength(0),
+    3,
+  );
+  assert.equal(new CapnpReader(frame("rows", [])).root(1, 1).getStructListLength(0), 0);
+  const words = [
+    (0n << 32n) | (1n << 48n), // root: struct, 0 data words, 1 pointer
+    1n | (7n << 32n) | (1n << 35n), // composite list of one word (its tag)
+    (3n << 2n) | (1n << 32n), // tag: 3 elements of one word each
+  ];
+  const lying = new Uint8Array(8 + words.length * 8);
+  const view = new DataView(lying.buffer);
+  view.setUint32(4, words.length, true);
+  words.forEach((w, i) => view.setBigUint64(8 + i * 8, w, true));
+  assert.throws(() => new CapnpReader(lying).root(0, 1).getStructListLength(0), /exceeds payload/);
+  assert.throws(
+    () =>
+      new ExecuteStreamDecoder(tinyLimits).push(
+        concat([frame("head", { operationId: "op-order", statementCount: 1 }), lying]),
+      ),
+    (err) => err.wireCode === "invalid_params" && /does not decode/.test(err.message),
+  );
+}
+
 // `streamChunks` cancels a body its consumer leaves unread.
 {
   let cancelled = false;

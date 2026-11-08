@@ -492,6 +492,34 @@ class _CapnpReader:
         self._visit(tag_word, 1 + count * elem_words)
         return [_StructReader(self, tag_word + 1 + i * elem_words, dw, pw) for i in range(count)]
 
+    def read_struct_list_length(self, ptr_word: int) -> int:
+        """Element count of a composite list, read from its tag alone.
+
+        The elements are not visited, so a caller can refuse a list that is
+        too long before any element decodes.
+
+        Args:
+            ptr_word: Word holding the list pointer.
+
+        Returns:
+            The count the list's tag announces; ``0`` for a null or empty list.
+
+        Raises:
+            ValueError: The pointer is not a composite list pointer, or the
+                count exceeds the list's payload.
+        """
+        lp = self._list_pointer(ptr_word, 7)
+        if lp is None or lp.length == 0:
+            return 0
+        tag_word = lp.target
+        self._check_range(tag_word, 1)
+        tag = self.read_word(tag_word)
+        count = (tag >> 2) & 0x3FFFFFFF
+        elem_words = ((tag >> 32) & 0xFFFF) + ((tag >> 48) & 0xFFFF)
+        if elem_words and count > lp.length // elem_words:
+            raise ValueError("composite list count exceeds payload")
+        return count
+
 
 class _StructReader:
     """Struct cursor on a :class:`_CapnpReader`.
@@ -592,6 +620,11 @@ class _StructReader:
         if ptr is None:
             return _StructReader(self.reader, 0, 0, 0)
         return self.reader.struct_at(ptr, data_words, pointer_words)
+
+    def get_struct_list_length(self, pointer_index: int) -> int:
+        """Element count of the composite list at ``pointer_index``, from its tag alone."""
+        ptr = self.pointer_word(pointer_index)
+        return 0 if ptr is None else self.reader.read_struct_list_length(ptr)
 
 
 __all__ = [
