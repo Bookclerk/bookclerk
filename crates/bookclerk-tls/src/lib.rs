@@ -77,10 +77,13 @@ pub fn http_agent() -> ureq::Agent {
 }
 
 /// The `ureq` crate with the hosts' TLS: everything `ureq` exports, except
-/// that the request functions (`get`, `post`, …) use [`http_agent`].
+/// that the request functions (`get`, `post`, …), `run` and `agent` use
+/// [`http_agent`].
 ///
 /// Import it in place of the crate (`use bookclerk_tls::ureq;`); call sites
-/// then read like plain `ureq`.
+/// then read like plain `ureq`. Build any other agent from
+/// `Agent::config_builder()` with [`ureq_tls_config`], never from
+/// `Agent::new_with_defaults()`, which has no provider.
 pub mod ureq {
     pub use ::ureq::*;
 
@@ -107,6 +110,37 @@ pub mod ureq {
                 super::http_agent().$name(uri)
             }
         };
+    }
+
+    /// The shared agent, in place of `ureq::agent()`, whose fresh default
+    /// agent has no crypto provider.
+    ///
+    /// # Returns
+    ///
+    /// A clone of [`super::http_agent`].
+    #[must_use]
+    pub fn agent() -> Agent {
+        super::http_agent()
+    }
+
+    /// Sends a prebuilt `http::Request` on the shared agent, in place of
+    /// `ureq::run`, which uses a fresh default agent.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - The request to send.
+    ///
+    /// # Returns
+    ///
+    /// The response.
+    ///
+    /// # Errors
+    ///
+    /// Any [`Error`] the transfer raises.
+    pub fn run(
+        request: ::ureq::http::Request<impl AsSendBody>,
+    ) -> Result<::ureq::http::Response<Body>, Error> {
+        super::http_agent().run(request)
     }
 
     request_fn!(/// Starts a `GET` request.
@@ -185,6 +219,26 @@ mod tests {
         for (got, want) in methods {
             assert_eq!(got, Some(want));
         }
+    }
+
+    #[test]
+    fn the_facade_agent_and_run_use_the_shared_agent() {
+        let agent = super::ureq::agent();
+        let configured = agent
+            .config()
+            .tls_config()
+            .unversioned_rustls_crypto_provider()
+            .as_ref()
+            .map(Arc::clone);
+        assert!(configured.is_some_and(|p| Arc::ptr_eq(&p, &crypto_provider())));
+
+        // An unroutable request fails in the transport, not on a missing
+        // crypto provider (which would panic).
+        let request = ::ureq::http::Request::get("http://127.0.0.1:9/")
+            .body(())
+            .map_err(|err| err.to_string());
+        let outcome = request.map(|req| super::ureq::run(req).is_err());
+        assert_eq!(outcome, Ok(true));
     }
 
     #[test]

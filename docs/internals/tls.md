@@ -2,8 +2,8 @@
 
 Every TLS connection Bookclerk makes or accepts uses
 [rustls](https://github.com/rustls/rustls) with the **aws-lc-rs** crypto
-provider. No first-party code uses OpenSSL, `native-tls` or rustls's `ring`
-provider.
+provider. No first-party TLS connection uses OpenSSL, `native-tls` or
+rustls's `ring` provider.
 
 aws-lc-rs is the provider rustls enables by default, and the only one that
 offers the hybrid post-quantum key exchange (`X25519MLKEM768`), which rustls
@@ -46,13 +46,17 @@ Other clients pick aws-lc-rs through their features:
 
 ## Checking the tree
 
-These commands list who brings a second crypto library into the build. Each
-should print nothing but the embeddings stack named above:
+These commands list who brings a second crypto library into the build:
 
 ```sh
 cargo tree --workspace -e normal,build -i ring
 cargo tree --workspace -e normal,build -i openssl-sys
 ```
+
+`ring` should come only from the embeddings stack named above. `openssl-sys`
+also comes from `webauthn-rs` 0.5 (passkeys in `bookclerkd`), which uses
+OpenSSL to verify passkey signatures and attestation certificates, not for any
+TLS connection.
 
 When a new dependency brings either one, turn on its aws-lc-rs or
 "no provider" feature instead, and hand it `bookclerk_tls::crypto_provider()`
