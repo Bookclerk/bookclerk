@@ -40,9 +40,11 @@ const FILE_DIGEST_CACHE_CAP: usize = 4096;
 /// timestamp a content change moves.
 ///
 /// Rewriting a file moves its `ctime` even when `utimes` puts the `mtime`
-/// back, and replacing it by rename changes the inode, so any change to the
-/// bytes changes this key. Only Unix exposes `ctime`; elsewhere every file is
-/// hashed each time.
+/// back, and replacing it by rename changes the inode, so a write through the
+/// file system changes this key. A write through a shared memory mapping
+/// moves the timestamps only on its first dirtying of a page, so the key
+/// relies on installed trees staying read-only once materialized. Only Unix
+/// exposes `ctime`; elsewhere every file is hashed each time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileStat {
     /// Device the file lives on.
@@ -129,6 +131,8 @@ fn payload_file_sha256_within(path: &Path, meta: &fs::Metadata, racy: Duration) 
         }
     }
     let now = SystemTime::now();
+    #[cfg(test)]
+    tests::FILE_READS.with(|reads| reads.set(reads.get() + 1));
     let digest = sha256_file(path)?;
     let after = FileStat::of(&fs::symlink_metadata(path)?);
     if after.as_ref() == Some(&before) && !before.is_racy(now, racy) {
@@ -336,9 +340,29 @@ mod tests {
         (digest, held)
     }
 
-    /// Lets the next write land on a later timestamp tick.
-    fn next_tick() {
-        std::thread::sleep(Duration::from_millis(20));
+    std::thread_local! {
+        /// Payload files this test thread has read through the digest cache.
+        pub(super) static FILE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Change time of `path`, in nanoseconds since the Unix epoch.
+    #[cfg(unix)]
+    fn ctime_ns(path: &Path) -> i128 {
+        FileStat::of(&fs::metadata(path).unwrap()).unwrap().ctime_ns
+    }
+
+    /// Writes `bytes` to `path` until the write lands on a later change-time
+    /// tick than `before`, so a coarse-timestamp file system still shows it.
+    #[cfg(unix)]
+    fn rewrite_on_a_later_tick(path: &Path, bytes: &[u8], before: i128) {
+        for _ in 0..300 {
+            write_file(path, bytes).unwrap();
+            if ctime_ns(path) != before {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the change time of {} never moved", path.display());
     }
 
     #[cfg(unix)]
@@ -349,10 +373,15 @@ mod tests {
         write_file(&file, b"one").unwrap();
         let (first, held) = cached_digest(&file);
         assert!(held, "a still file is cached");
+        let reads = FILE_READS.with(std::cell::Cell::get);
         assert_eq!(cached_digest(&file).0, first);
+        assert_eq!(
+            FILE_READS.with(std::cell::Cell::get),
+            reads,
+            "a cache hit reads nothing"
+        );
 
-        next_tick();
-        write_file(&file, b"two").unwrap();
+        rewrite_on_a_later_tick(&file, b"two", ctime_ns(&file));
         let (second, _) = cached_digest(&file);
         assert_ne!(first, second);
         assert_eq!(second, sha256_file(&file).unwrap());
@@ -368,8 +397,7 @@ mod tests {
         let (first, held) = cached_digest(&file);
         assert!(held);
 
-        next_tick();
-        write_file(&file, b"two").unwrap();
+        rewrite_on_a_later_tick(&file, b"two", ctime_ns(&file));
         fs::File::options()
             .write(true)
             .open(&file)
