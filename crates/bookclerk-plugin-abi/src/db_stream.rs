@@ -67,6 +67,11 @@ fn row_size_estimate(row: &DbRow) -> usize {
 
 /// Encodes `rows` as one or more `Rows` frames, splitting a slice whose
 /// encoding exceeds the scalar ceiling until each frame fits or holds one row.
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] when a TEXT cell contains U+0000,
+/// or [`PluginError::internal`] when a frame cannot be serialized.
 fn push_rows_frames(out: &mut Vec<u8>, rows: &[DbRow]) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
@@ -326,6 +331,15 @@ impl ExecuteStreamDecoder {
     }
 
     /// Advances the sequence by one decoded frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::invalid_params`] when the frame is out of order
+    /// (a frame before `Head`, a statement index that skips ahead, rows
+    /// outside a statement, or any frame after the final one) or when a row's
+    /// width or column names disagree with its statement, and
+    /// [`PluginError::limit_exceeded`] when the rows received so far pass
+    /// the row budget.
     fn apply(&mut self, frame: ExecuteStreamFrame) -> Result<()> {
         let state = std::mem::replace(&mut self.state, DecoderState::AwaitingHead);
         self.state = match (state, frame) {
@@ -466,6 +480,11 @@ impl ExecuteStreamDecoder {
 }
 
 /// Appends a completed statement after checking its row widths and names.
+///
+/// # Errors
+///
+/// Returns [`PluginError::invalid_params`] when a row's width or the column
+/// names disagree with the statement's declared columns.
 fn close_statement(statements: &mut Vec<StatementResult>, done: StatementResult) -> Result<()> {
     done.validate_positional()
         .map_err(PluginError::invalid_params)?;
@@ -626,6 +645,7 @@ impl ExecuteStream {
 }
 
 #[cfg(test)]
+#[allow(clippy::missing_panics_doc)]
 mod tests {
     use super::*;
     use crate::db_value::{DbType, DbValue};

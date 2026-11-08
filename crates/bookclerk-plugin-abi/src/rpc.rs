@@ -839,6 +839,11 @@ fn write_execute_stream_reply(
 
 /// Reads an `ExecuteStreamReply` into an [`crate::db_stream::ExecuteStream`]
 /// (`err` is returned as the adapter's error).
+///
+/// # Errors
+///
+/// Returns the adapter's error when the reply is its `err` member, or
+/// [`PluginError`] when the union or its payload cannot be read.
 fn read_execute_stream_reply(
     result: execute_stream_reply::Reader<'_>,
 ) -> Result<crate::db_stream::ExecuteStream> {
