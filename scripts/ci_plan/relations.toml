@@ -227,6 +227,12 @@ build = ["bookclerk-media-worker", "bookclerk-jail"]
 package = "bookclerk-plugin-database-sqlite"
 features = ["host-helpers"]
 
+# The opt-in ONNX embedder (hosts' `onnx-embeddings`); nothing in the default
+# build enables it, so this keeps it compiling and tested.
+[[feature_tests]]
+package = "bookclerk-discover"
+features = ["onnx"]
+
 # PostgreSQL contract steps (commands live in scripts/ci_plan/execute.py).
 # Each runs on every supported major when its owner's tests are selected.
 [postgres.steps]

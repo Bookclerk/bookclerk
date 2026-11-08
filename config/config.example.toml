@@ -221,6 +221,7 @@ json_logs = true
 # discovery path; local embeddings score those unowned hits.
 [discovery]
 # ONNX MiniLM scoring is off by default; shelves rank with local-hash-v1.
+# Turning it on needs a host built with the `onnx-embeddings` feature.
 embeddings_enabled = false
 # Model id used when embeddings are on; runtime falls back to local-hash-v1
 # if ONNX cannot load.
