@@ -591,7 +591,8 @@ impl DbCapabilities {
     }
 
     /// Failure reason, or `None` when the guest meets host minima.
-    fn capability_failure_reason_opt(&self) -> Option<String> {
+    #[must_use]
+    pub fn capability_failure_reason_opt(&self) -> Option<String> {
         if !self.affected_rows {
             return Some("database guest does not advertise affectedRows".into());
         }
@@ -1015,11 +1016,7 @@ mod tests {
     #[test]
     fn host_minimum_meets_the_host_minimums_and_nothing_more() {
         let caps = DbCapabilities::host_minimum();
-        assert!(
-            caps.meets_host_minimums(),
-            "{}",
-            caps.capability_failure_reason()
-        );
+        assert_eq!(caps.capability_failure_reason_opt(), None);
         assert_eq!(caps.max_result_bytes, HOST_MIN_RESULT_BYTES);
         assert_eq!(caps.max_cell_bytes, HOST_MIN_CELL_BYTES);
         assert_eq!(caps.max_result_rows, HOST_MIN_RESULT_ROWS);

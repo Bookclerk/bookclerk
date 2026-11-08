@@ -11,7 +11,6 @@
 //! This module is the engine-neutral core; the `bookclerk-db-testkit` crate
 //! opens it on in-memory SQLite and adds fixtures.
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -95,9 +94,9 @@ pub struct ProfileExec {
     /// Statement count of every batch, in arrival order.
     sizes: Mutex<Vec<usize>>,
     /// Batches whose reply is still to be lost after they are applied.
-    lose_replies: AtomicU32,
+    lose_replies: Mutex<u32>,
     /// Batches still to be refused as lock contention.
-    lock_requests: AtomicU32,
+    lock_requests: Mutex<u32>,
 }
 
 impl ProfileExec {
@@ -108,8 +107,8 @@ impl ProfileExec {
             db,
             caps,
             sizes: Mutex::new(Vec::new()),
-            lose_replies: AtomicU32::new(0),
-            lock_requests: AtomicU32::new(0),
+            lose_replies: Mutex::new(0),
+            lock_requests: Mutex::new(0),
         }
     }
 
@@ -117,33 +116,41 @@ impl ProfileExec {
     /// turned away.
     #[must_use]
     pub fn batch_sizes(&self) -> Vec<usize> {
-        self.sizes.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.sizes().clone()
     }
 
     /// Arms `n` lost replies: the batch is applied, the caller sees
     /// `unavailable`.
     pub fn lose_next_replies(&self, n: u32) {
-        self.lose_replies.store(n, Ordering::SeqCst);
+        *Self::counter(&self.lose_replies) = n;
     }
 
     /// Arms `n` lock-contention refusals: nothing is applied, the caller
     /// sees `unavailable` naming `SQLITE_BUSY`.
     pub fn lock_next_requests(&self, n: u32) {
-        self.lock_requests.store(n, Ordering::SeqCst);
+        *Self::counter(&self.lock_requests) = n;
     }
 
     /// Takes one armed fault from `counter`, if any remain.
-    fn take(counter: &AtomicU32) -> bool {
-        let mut current = counter.load(Ordering::SeqCst);
-        loop {
-            let Some(next) = current.checked_sub(1) else {
-                return false;
-            };
-            match counter.compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst) {
-                Ok(_) => return true,
-                Err(seen) => current = seen,
-            }
+    fn take(counter: &Mutex<u32>) -> bool {
+        let mut remaining = Self::counter(counter);
+        if *remaining == 0 {
+            return false;
         }
+        *remaining -= 1;
+        true
+    }
+
+    /// A fault counter's guard, readable even after a panicking test
+    /// poisoned the lock.
+    fn counter(counter: &Mutex<u32>) -> std::sync::MutexGuard<'_, u32> {
+        counter.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The recorded batch sizes, readable even after a panicking test
+    /// poisoned the lock.
+    fn sizes(&self) -> std::sync::MutexGuard<'_, Vec<usize>> {
+        self.sizes.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -174,10 +181,7 @@ impl TypedAtomicExec for ProfileExec {
         &self,
         envelope: AdapterExecuteRequest,
     ) -> std::result::Result<ExecuteReply, PluginError> {
-        self.sizes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(envelope.request.statements.len());
+        self.sizes().push(envelope.request.statements.len());
         validate_execute_request(&envelope.request, &self.caps).map_err(to_plugin_error)?;
         if Self::take(&self.lock_requests) {
             return Err(PluginError::unavailable(
@@ -232,11 +236,7 @@ impl ProfileStore {
         profile: Profile,
     ) -> Result<Self> {
         let caps = profile.capabilities();
-        debug_assert!(
-            caps.meets_host_minimums(),
-            "{}",
-            caps.capability_failure_reason()
-        );
+        debug_assert_eq!(caps.capability_failure_reason_opt(), None);
         let (gate, handle) = BeginGate::new(engine);
         let db = Database::connect_proxy(backend, Arc::new(Box::new(gate)))
             .await
@@ -362,5 +362,68 @@ pub(crate) mod sqlite {
     /// tightest of the first-party adapters.
     pub(crate) async fn store() -> crate::LibraryStore {
         memory(Profile::D1).await.into_store()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bookclerk_plugin_abi::{LimitExceeded, PluginErrorCode};
+    use sea_orm::DbErr;
+
+    use super::*;
+
+    #[test]
+    fn admission_errors_map_to_the_guest_error_codes() {
+        let limit = LimitExceeded::new("maxStatements", 8, 9);
+        let err = to_plugin_error(LibraryError::LimitExceeded(limit.clone()));
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+        assert_eq!(err.limit(), Some(limit));
+        let err = to_plugin_error(LibraryError::Other(anyhow::anyhow!(
+            "statements must be non-empty"
+        )));
+        assert_eq!(err.code, PluginErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn engine_errors_map_to_the_guest_error_codes() {
+        let limit = LimitExceeded::new("maxResultRows", 1, 2);
+        let err = engine_error(DbErr::Custom(limit.to_string()));
+        assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+        assert_eq!(err.limit(), Some(limit));
+        let err = engine_error(DbErr::Custom(
+            "SQLITE_CONSTRAINT: UNIQUE constraint failed: t.id".into(),
+        ));
+        assert_eq!(err.code, PluginErrorCode::Conflict);
+        let err = engine_error(DbErr::Custom("database is locked (SQLITE_BUSY)".into()));
+        assert_eq!(err.code, PluginErrorCode::Unavailable);
+        let err = engine_error(DbErr::Custom("no such table: missing".into()));
+        assert_eq!(err.code, PluginErrorCode::Internal);
+    }
+
+    #[test]
+    fn fault_counters_are_consumed_once_each() {
+        let counter = Mutex::new(2);
+        assert!(ProfileExec::take(&counter));
+        assert!(ProfileExec::take(&counter));
+        assert!(!ProfileExec::take(&counter));
+        assert_eq!(*ProfileExec::counter(&counter), 0);
+    }
+
+    #[tokio::test]
+    async fn batch_sizes_survive_a_poisoned_lock() {
+        let exec = Arc::new(ProfileExec::new(
+            bookclerk_plugin_database_sqlite::open_memory_unmigrated()
+                .await
+                .expect("sqlite"),
+            Profile::D1.capabilities(),
+        ));
+        exec.sizes().push(3);
+        let poisoner = Arc::clone(&exec);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.sizes.lock().expect("fresh lock");
+            panic!("poison the sizes lock");
+        })
+        .join();
+        assert_eq!(exec.batch_sizes(), [3]);
     }
 }

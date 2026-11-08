@@ -96,7 +96,7 @@ async fn every_profile_opens_and_meets_the_host_minimums() {
 async fn begin_is_refused_and_the_connection_recovers() {
     let db = TestDatabase::open(Profile::FirstParty).await.unwrap();
     let probe = || Statement::from_string(sea_orm::DbBackend::Sqlite, "SELECT 1 AS one");
-    let txn = db.connection().begin().await.unwrap();
+    let txn = db.store().db().begin().await.unwrap();
     let err = txn
         .query_one_raw(probe())
         .await
@@ -286,4 +286,32 @@ async fn a_result_over_the_byte_cap_is_a_typed_limit_error() {
     assert_eq!(limit.limit, "maxResultBytes", "{err}");
     assert_eq!(limit.cap, u64::from(caps.max_result_bytes));
     assert_eq!(candidate_keys(&db).await.len(), 8);
+}
+
+#[tokio::test]
+async fn an_empty_batch_is_refused_before_it_reaches_the_engine() {
+    let db = TestDatabase::open(Profile::D1).await.unwrap();
+    let err = db
+        .execute_batch(request("empty", Vec::new()))
+        .await
+        .expect_err("an empty batch is invalid");
+    assert_eq!(err.code, PluginErrorCode::InvalidParams, "{err}");
+    assert_eq!(db.batch_sizes(), [0]);
+}
+
+#[tokio::test]
+async fn a_duplicate_row_in_one_batch_is_a_conflict_and_nothing_is_applied() {
+    let db = TestDatabase::open(Profile::FirstParty).await.unwrap();
+    let err = db
+        .execute_batch(request(
+            "dup",
+            vec![insert_candidate("k1", "{}"), insert_candidate("k1", "{}")],
+        ))
+        .await
+        .expect_err("the second insert violates the key");
+    assert_eq!(err.code, PluginErrorCode::Conflict, "{err}");
+    assert!(
+        candidate_keys(&db).await.is_empty(),
+        "the batch rolled back"
+    );
 }

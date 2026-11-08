@@ -203,6 +203,11 @@ mod tests {
         fn start_rollback(&self) {
             self.0.lock().unwrap().push("start_rollback");
         }
+
+        async fn ping(&self) -> Result<(), DbErr> {
+            self.0.lock().unwrap().push("ping");
+            Ok(())
+        }
     }
 
     fn gate() -> (BeginGate, BeginGateHandle, Log) {
@@ -223,6 +228,18 @@ mod tests {
             *engine.lock().unwrap(),
             ["begin", "commit", "begin", "rollback", "start_rollback"]
         );
+    }
+
+    #[tokio::test]
+    async fn statements_and_pings_reach_the_engine_whatever_the_gate_does() {
+        let (gate, handle, engine) = gate();
+        let probe = || Statement::from_string(sea_orm::DbBackend::Sqlite, "SELECT 1");
+        gate.query(probe()).await.unwrap();
+        handle.refuse(true);
+        gate.execute(probe()).await.unwrap();
+        gate.ping().await.unwrap();
+        assert_eq!(*engine.lock().unwrap(), ["query", "execute", "ping"]);
+        assert_eq!(handle.refused(), 0, "statements are not begin() calls");
     }
 
     #[tokio::test]

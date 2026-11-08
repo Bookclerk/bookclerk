@@ -184,12 +184,7 @@ pub async fn create_pending_join(
     // The secret and its row land together as one batch to the database
     // plugin: a secret without a row would never be purged. The secret is
     // replaced the way `crate::secrets::upsert_secret_on` replaces it, by its
-    // unique key.
-    let secret_created_at = if record.created_at.is_empty() {
-        stamp(now)
-    } else {
-        record.created_at.clone()
-    };
+    // unique key, and keeps the stamp `build_sealed_record` gave it.
     let operation_id = format!("pending-join-create-{}", uuid::Uuid::new_v4());
     store
         .execute_host_batch(batch::request(
@@ -228,7 +223,7 @@ pub async fn create_pending_join(
                         batch::int_opt(record.kdf_p_cost.map(i64::from)),
                         batch::text_opt(record.cipher_algorithm.as_deref()),
                         batch::blob_opt(record.cipher_nonce.as_deref()),
-                        batch::text(&secret_created_at),
+                        batch::text(&record.created_at),
                         batch::text(&stamp(now)),
                     ],
                 ),
