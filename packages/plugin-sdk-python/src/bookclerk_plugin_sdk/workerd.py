@@ -2005,6 +2005,26 @@ async def _granted_database_body(resp: Any, method: str) -> bytes:
     raise PluginError.from_wire("internal", f"granted {method} response missing body")
 
 
+async def _reader_chunks(stream: Any) -> AsyncIterator[bytes]:
+    """Read a web ``ReadableStream`` window by window.
+
+    Args:
+        stream: Object with a ``getReader()`` whose reader answers ``read()``
+            with ``done`` / ``value`` records.
+
+    Yields:
+        Each non-empty window as ``bytes``, in order.
+    """
+    reader = stream.getReader()
+    while True:
+        result = await reader.read()
+        if bool(getattr(result, "done", False)):
+            return
+        value = getattr(result, "value", None)
+        if value is not None:
+            yield _bytes(value)
+
+
 async def _granted_body_chunks(resp: Any, method: str) -> AsyncIterator[bytes]:
     """Read a successful granted response body in chunks.
 
@@ -2023,14 +2043,8 @@ async def _granted_body_chunks(resp: Any, method: str) -> AsyncIterator[bytes]:
     """
     stream = getattr(resp, "body", None)
     if stream is not None and hasattr(stream, "getReader"):
-        reader = stream.getReader()
-        while True:
-            result = await reader.read()
-            if bool(getattr(result, "done", False)):
-                return
-            value = getattr(result, "value", None)
-            if value is not None:
-                yield _bytes(value)
+        async for chunk in _reader_chunks(stream):
+            yield chunk
         return
     if hasattr(resp, "arrayBuffer"):
         yield bytes(await resp.arrayBuffer())
@@ -2119,18 +2133,30 @@ class _TransportGuestDatabase(GuestDatabase):
             raise PluginError.from_wire("internal", str(err)) from err
 
     async def execute_streamed(self, request: ExecuteRequest) -> bytes | AsyncIterable[bytes]:
-        """The same batch through the transport's ``executeStreamedBytes``.
+        """The same batch through the transport's streamed methods.
+
+        A transport that offers ``openStreamedBytes`` hands the frames over as
+        the channel delivers them, so ``iterate()`` decodes them chunk by
+        chunk; an older transport's ``executeStreamedBytes`` answers whole.
 
         Args:
             request: Statements, binds and deadline.
 
         Returns:
-            Every ``ExecuteStreamFrame``, concatenated.
+            Every ``ExecuteStreamFrame``, as a byte stream or concatenated.
+
+        Raises:
+            PluginError: ``internal`` when the reply carries no body.
         """
         from bookclerk_plugin_sdk.db_value import encode_execute_request
 
         body = encode_execute_request(request)
-        raw = await self._transport.executeStreamedBytes(js(body))
+        if hasattr(self._transport, "openStreamedBytes"):
+            raw = await self._transport.openStreamedBytes(js(body))
+            if hasattr(raw, "getReader"):
+                return _reader_chunks(raw)
+        else:
+            raw = await self._transport.executeStreamedBytes(js(body))
         data = _bytes(raw)
         if not data:
             raise PluginError.from_wire("internal", "granted executeStreamed reply missing body")

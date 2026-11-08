@@ -96,7 +96,11 @@ only that. The others check:
   any size agree (both the same reply, or both refused), an accepted
   reply has no statement over the row cap, and it re-encodes to frames
   that decode to the same reply. The shared oracle is
-  `fuzz/oracles/db_stream.rs`, replayed from `bookclerk-plugin-abi`.
+  `fuzz/oracles/db_stream.rs`, replayed from `bookclerk-plugin-abi`. The
+  TypeScript and Python SDK decoders replay the same seeds and, on every
+  run, a fixed set of mutants derived from them with a seeded generator
+  (a flipped byte, a truncation, an inserted byte, a duplicated slice),
+  holding the first two invariants and typing every refusal.
 - **`cover_sink_key`**: a key names a slot exactly when it is the
   canonical decimal spelling of an index below the URL count, read digit
   by digit without `str::parse`, so no two keys name one slot. The shared

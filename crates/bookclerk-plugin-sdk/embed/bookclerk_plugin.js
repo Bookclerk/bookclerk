@@ -8005,35 +8005,59 @@ function createDatabaseBinding(transport, options = {}) {
       throw err;
     }
   };
+  const inlineRows = async function* (request) {
+    const reply = await transport.execute(request);
+    const result = reply.statements[0];
+    if (result) {
+      for (const row of result.rows) {
+        yield rowMap(result.columns, row);
+      }
+    }
+  };
   const iterateRows = async function* (batch, retry) {
     const request = await requestFor(batch, retry);
     const streamed = await openStreamed(request);
     if (streamed === void 0) {
-      const reply = await transport.execute(request);
-      const result = reply.statements[0];
-      if (result) {
-        for (const row of result.rows) {
-          yield rowMap(result.columns, row);
-        }
-      }
+      yield* inlineRows(request);
       return;
     }
     const decoder = new ExecuteStreamDecoder(executeStreamLimits(streamed.caps), {
       retainRows: false
     });
+    const fallsBackInline = (err, yielded2) => !yielded2 && err instanceof PluginError && err.wireCode === "unsupported";
     let columns = [];
+    let yielded = false;
     for await (const chunk of streamed.chunks) {
-      for (const frame of decoder.push(chunk)) {
+      let frames;
+      try {
+        frames = decoder.push(chunk);
+      } catch (err) {
+        if (fallsBackInline(err, yielded)) {
+          yield* inlineRows(request);
+          return;
+        }
+        throw err;
+      }
+      for (const frame of frames) {
         if (frame.kind === "statement") {
           columns = frame.value.columns;
         } else if (frame.kind === "rows") {
           for (const row of frame.value) {
+            yielded = true;
             yield rowMap(columns, row);
           }
         }
       }
     }
-    decoder.finish();
+    try {
+      decoder.finish();
+    } catch (err) {
+      if (fallsBackInline(err, yielded)) {
+        yield* inlineRows(request);
+        return;
+      }
+      throw err;
+    }
   };
   const binding = {
     prepare(sql) {
@@ -10807,6 +10831,25 @@ var GrantedDatabase = class extends RpcTarget {
       body: bytes
     });
     return grantedDatabaseBody(resp, "executeStreamed");
+  }
+  /**
+   * Same frames, as the channel delivers them (a `ReadableStream` when it
+   * streams), from Cap'n request bytes, so a Python `iterate()` decodes
+   * frames as they arrive.
+   *
+   * @param bytes - Unpacked `ExecuteRequest` message.
+   * @returns The response body: the frame sequence.
+   */
+  async openStreamedBytes(bytes) {
+    const resp = await this.#granted.fetch("http://granted/db/execute-streamed", {
+      method: "POST",
+      headers: { ...this.#auth, "content-type": "application/octet-stream" },
+      body: bytes
+    });
+    if (!resp.ok) {
+      await grantedDatabaseBody(resp, "executeStreamed");
+    }
+    return resp.body ?? new Uint8Array(0);
   }
   /**
    * Negotiated limits of the granted session (`GET /db/limits`).

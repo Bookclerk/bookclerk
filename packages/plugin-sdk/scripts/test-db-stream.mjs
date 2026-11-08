@@ -278,6 +278,82 @@ function readable(bytes, size) {
   );
 }
 
+// --- Deterministic mutation sweep over the same seeds ---------------------
+//
+// The fuzzer runs against the Rust decoder; this sweep derives mutants of
+// every seed with a fixed PRNG so each SDK decoder meets the same shapes on
+// every run: a flipped byte, a truncation, an inserted byte and a duplicated
+// slice. The invariants are the corpus invariants, not expected outcomes.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function mutate(stream, rand) {
+  const below = (n) => Math.floor(rand() * n);
+  const at = stream.byteLength === 0 ? 0 : below(stream.byteLength);
+  switch (below(4)) {
+    case 0: {
+      const out = Uint8Array.from(stream);
+      if (out.byteLength > 0) {
+        out[at] ^= 1 << below(8);
+      }
+      return { kind: "flip", out };
+    }
+    case 1:
+      return { kind: "truncate", out: stream.slice(0, at) };
+    case 2:
+      return {
+        kind: "insert",
+        out: concat([stream.slice(0, at), Uint8Array.of(below(256)), stream.slice(at)]),
+      };
+    default: {
+      const end = at + below(Math.max(1, stream.byteLength - at) + 1);
+      return {
+        kind: "duplicate",
+        out: concat([stream.slice(0, end), stream.slice(at, end), stream.slice(end)]),
+      };
+    }
+  }
+}
+{
+  const rand = mulberry32(0x5eed_d8);
+  let mutants = 0;
+  let accepted = 0;
+  for (const name of seeds) {
+    const data = new Uint8Array(readFileSync(join(corpusDir, name)));
+    const limits = limitsFor(data[0]);
+    for (let i = 0; i < 24; i += 1) {
+      const { kind, out } = mutate(data.subarray(2), rand);
+      const chunk = 1 + Math.floor(rand() * 64);
+      const label = `${name} ${kind} #${i} (chunks of ${chunk})`;
+      const whole = decodeOutcome(() => decodeExecuteStream(out, limits));
+      const split = decodeOutcome(() => decodeChunked(out, chunk, limits));
+      mutants += 1;
+      if ("ok" in whole) {
+        accepted += 1;
+        assert.ok("ok" in split, `${label}: chunked decode refused what one push accepted`);
+        assert.deepEqual(split.ok, whole.ok, `${label}: chunked decode must agree with one push`);
+        if (limits.maxRows > 0) {
+          for (const stmt of whole.ok.statements) {
+            assert.ok(stmt.rows.length <= limits.maxRows, `${label}: rows over the cap`);
+          }
+        }
+      } else {
+        assert.ok("err" in split, `${label}: chunked decode accepted what one push refused`);
+        assert.equal(split.err.wireCode, whole.err.wireCode, `${label}: error codes differ`);
+      }
+    }
+  }
+  assert.ok(mutants >= 24 * Object.keys(EXPECTED).length);
+  assert.ok(accepted > 0, "some mutants still decode (the sweep is not all noise)");
+}
+
 // --- The binding reads through `executeStreamed` --------------------------
 function transportOf({ caps, body, onInline, onStreamed }) {
   const calls = { inline: 0, streamed: 0, limits: 0 };
@@ -479,6 +555,84 @@ for (const setup of [
     inlineSeen.push(r.id.value);
   }
   assert.deepEqual(inlineSeen, [0n, 1n, 2n]);
+}
+
+// `iterate()` falls back to the inline read when the stream answers
+// `unsupported` before any row; after a row it surfaces the error as is.
+{
+  const rows = [row(0), row(1), row(2)];
+  const fell = transportOf({
+    caps: sqliteCaps,
+    body: (req) =>
+      errStreamOf(req.operationId, { code: "unsupported", message: "no stream", details: "" }),
+    onInline: (req) => inlineReply(req, rows),
+  });
+  const seen = [];
+  for await (const r of createDatabaseBinding(fell.transport).prepare("SELECT id").iterate()) {
+    seen.push(r.id.value);
+  }
+  assert.deepEqual(seen, [0n, 1n, 2n]);
+  assert.deepEqual(fell.calls, { inline: 1, streamed: 1, limits: 1 });
+
+  // Chunked delivery takes the same path through `finish()`.
+  const late = transportOf({
+    caps: sqliteCaps,
+    body: (req) =>
+      readable(
+        errStreamOf(req.operationId, { code: "unsupported", message: "no stream", details: "" }),
+        3,
+      ),
+    onInline: (req) => inlineReply(req, rows.slice(0, 1)),
+  });
+  const lateSeen = [];
+  for await (const r of createDatabaseBinding(late.transport).prepare("SELECT id").iterate()) {
+    lateSeen.push(r.id.value);
+  }
+  assert.deepEqual(lateSeen, [0n]);
+  assert.deepEqual(late.calls, { inline: 1, streamed: 1, limits: 1 });
+
+  const afterRows = transportOf({
+    caps: sqliteCaps,
+    body: (req) =>
+      concat([
+        frame("head", { operationId: req.operationId, statementCount: 1 }),
+        frame("statement", { index: 0, columns, rowsAffected: 0 }),
+        frame("rows", rows),
+        frame("err", { code: "unsupported", message: "gave up", details: "" }),
+      ]),
+    onInline: () => assert.fail("no inline fallback after rows were yielded"),
+  });
+  let count = 0;
+  await assert.rejects(
+    (async () => {
+      for await (const _ of createDatabaseBinding(afterRows.transport)
+        .prepare("SELECT id")
+        .iterate()) {
+        count += 1;
+      }
+    })(),
+    (err) => err.code === "unsupported",
+  );
+  assert.equal(count, 3);
+  assert.equal(afterRows.calls.inline, 0);
+
+  // Other errors never fall back.
+  const unavailable = transportOf({
+    caps: sqliteCaps,
+    body: (req) =>
+      errStreamOf(req.operationId, { code: "unavailable", message: "down", details: "" }),
+    onInline: () => assert.fail("only unsupported falls back"),
+  });
+  await assert.rejects(
+    (async () => {
+      for await (const _ of createDatabaseBinding(unavailable.transport)
+        .prepare("SELECT id")
+        .iterate()) {
+        // unreachable
+      }
+    })(),
+    (err) => err.code === "unavailable",
+  );
 }
 
 // --- `chunk()` splits a batch to the request caps ------------------------

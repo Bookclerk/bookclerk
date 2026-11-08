@@ -15,7 +15,7 @@ import {
 } from "./abi.js";
 import { CapnpMessage, CapnpReader, type CapnpStruct, type StructReader } from "./db-capnp.js";
 import { PluginError } from "./errors.js";
-import type { DbCapabilities } from "./generated.js";
+import type { DbCapabilities, ExecuteStreamFrame } from "./generated.js";
 import { DbCapabilitiesReplyCodec, decodeMessage, encodeMessage } from "./generated-wire.js";
 import { readDbValue, writeDbValue, type DbType, type DbValue } from "./db-value.js";
 import {
@@ -716,7 +716,23 @@ export function createDatabaseBinding(
     }
   };
 
+  // Rows of a single-statement request read inline, from one `execute`.
+  const inlineRows = async function* (
+    request: ExecuteRequest,
+  ): AsyncIterable<Record<string, DbValue>> {
+    const reply = await transport.execute(request);
+    const result = reply.statements[0];
+    if (result) {
+      for (const row of result.rows) {
+        yield rowMap(result.columns, row);
+      }
+    }
+  };
+
   // Rows of a single-statement request as they arrive, without keeping them.
+  // A stream that answers `unsupported` before any row arrived falls back to
+  // the inline read like `all()`; once rows were handed out the error is the
+  // caller's, since the read cannot restart behind them.
   const iterateRows = async function* (
     batch: TypedDbStatement[],
     retry?: RetryToken,
@@ -724,33 +740,49 @@ export function createDatabaseBinding(
     const request = await requestFor(batch, retry);
     const streamed = await openStreamed(request);
     if (streamed === undefined) {
-      const reply = await transport.execute(request);
-      const result = reply.statements[0];
-      if (result) {
-        for (const row of result.rows) {
-          yield rowMap(result.columns, row);
-        }
-      }
+      yield* inlineRows(request);
       return;
     }
     const decoder = new ExecuteStreamDecoder(executeStreamLimits(streamed.caps), {
       retainRows: false,
     });
+    const fallsBackInline = (err: unknown, yielded: boolean): boolean =>
+      !yielded && err instanceof PluginError && err.wireCode === "unsupported";
     // One push can complete the statement, its rows and the end frame at
     // once, so the columns come from the frames rather than the decoder.
     let columns: DbColumn[] = [];
+    let yielded = false;
     for await (const chunk of streamed.chunks) {
-      for (const frame of decoder.push(chunk)) {
+      let frames: ExecuteStreamFrame[];
+      try {
+        frames = decoder.push(chunk);
+      } catch (err) {
+        if (fallsBackInline(err, yielded)) {
+          yield* inlineRows(request);
+          return;
+        }
+        throw err;
+      }
+      for (const frame of frames) {
         if (frame.kind === "statement") {
           columns = frame.value.columns;
         } else if (frame.kind === "rows") {
           for (const row of frame.value) {
+            yielded = true;
             yield rowMap(columns, row);
           }
         }
       }
     }
-    decoder.finish();
+    try {
+      decoder.finish();
+    } catch (err) {
+      if (fallsBackInline(err, yielded)) {
+        yield* inlineRows(request);
+        return;
+      }
+      throw err;
+    }
   };
 
   const binding: DatabaseBinding = {

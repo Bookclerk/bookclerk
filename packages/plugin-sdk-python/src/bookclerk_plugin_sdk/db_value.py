@@ -789,34 +789,65 @@ class DatabaseBinding:
                 return await self._execute(request)
             raise
 
+    async def _inline_rows(self, request: ExecuteRequest) -> AsyncIterator[dict[str, Any]]:
+        """Rows of a single-statement request read inline, from one ``execute``."""
+        reply = await self._execute(request)
+        if reply["statements"]:
+            result = reply["statements"][0]
+            for row in result.get("rows") or []:
+                yield _row_map(result.get("columns") or [], row)
+
     async def _iterate_rows(
         self,
         batch: list[TypedDbStatement],
         retry: RetryToken | None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Rows of a single-statement request as they arrive, kept by no one."""
+        """Rows of a single-statement request as they arrive, kept by no one.
+
+        A stream that answers ``unsupported`` before any row arrived falls back
+        to the inline read like ``all()``; once rows were handed out the error
+        is the caller's, since the read cannot restart behind them.
+        """
         request = self._request_for(batch, retry)
         streamed = await self._open_streamed(request)
         if streamed is None:
-            reply = await self._execute(request)
-            if reply["statements"]:
-                result = reply["statements"][0]
-                for row in result.get("rows") or []:
-                    yield _row_map(result.get("columns") or [], row)
+            async for row in self._inline_rows(request):
+                yield row
             return
         chunks, caps = streamed
         decoder = ExecuteStreamDecoder(execute_stream_limits(caps), retain_rows=False)
+
+        def falls_back_inline(err: Any, yielded: bool) -> bool:
+            return not yielded and err.wire_code == "unsupported"
+
         # One push can complete the statement, its rows and the end frame at
         # once, so the columns come from the frames rather than the decoder.
         columns: list[dict[str, Any]] = []
+        yielded = False
         async for chunk in chunks:
-            for frame in decoder.push(bytes(chunk)):
+            try:
+                frames = decoder.push(bytes(chunk))
+            except _plugin_error() as err:
+                if falls_back_inline(err, yielded):
+                    async for row in self._inline_rows(request):
+                        yield row
+                    return
+                raise
+            for frame in frames:
                 if frame["kind"] == "statement":
                     columns = frame["value"]["columns"]
                 elif frame["kind"] == "rows":
                     for row in frame["value"]:
+                        yielded = True
                         yield _row_map(columns, row)
-        decoder.finish()
+        try:
+            decoder.finish()
+        except _plugin_error() as err:
+            if falls_back_inline(err, yielded):
+                async for row in self._inline_rows(request):
+                    yield row
+                return
+            raise
 
 
 async def _one_chunk(body: bytes) -> AsyncIterator[bytes]:

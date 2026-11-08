@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import unittest
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,22 @@ def _err_stream(operation_id: str, code: str, message: str) -> bytes:
 async def _chunked(data: bytes, size: int):
     for at in range(0, len(data), size):
         yield data[at : at + size]
+
+
+def _mutate(stream: bytes, rand: random.Random) -> tuple[str, bytes]:
+    at = rand.randrange(len(stream)) if stream else 0
+    choice = rand.randrange(4)
+    if choice == 0:
+        out = bytearray(stream)
+        if out:
+            out[at] ^= 1 << rand.randrange(8)
+        return "flip", bytes(out)
+    if choice == 1:
+        return "truncate", stream[:at]
+    if choice == 2:
+        return "insert", stream[:at] + bytes([rand.randrange(256)]) + stream[at:]
+    end = at + rand.randrange(max(1, len(stream) - at) + 1)
+    return "duplicate", stream[:end] + stream[at:end] + stream[end:]
 
 
 def _inline_reply(request: dict[str, Any], rows: list[dict[str, Any]] | None = None) -> Any:
@@ -248,6 +265,38 @@ class CorpusVectorTests(unittest.TestCase):
                     assert limit is not None
                     self.assertEqual((limit.limit, limit.cap), (expected["limit"], limits.max_rows))
 
+    def test_derived_mutants_hold_the_oracle_invariants(self) -> None:
+        """A fixed PRNG derives mutants of every seed so this decoder meets the
+        shapes the fuzzer finds, on every run: a flipped byte, a truncation, an
+        inserted byte and a duplicated slice."""
+        rand = random.Random(0x5EEDD8)
+        seeds = sorted(p for p in CORPUS.iterdir() if p.suffix == ".bin")
+        mutants = 0
+        accepted = 0
+        for path in seeds:
+            data = path.read_bytes()
+            limits = _limits_for(data[0])
+            for i in range(24):
+                kind, stream = _mutate(data[2:], rand)
+                chunk = rand.randint(1, 64)
+                label = f"{path.name} {kind} #{i} (chunks of {chunk})"
+                whole, whole_err = self._whole(stream, limits)
+                split_reply, split_err = self._split(stream, chunk, limits)
+                mutants += 1
+                if whole_err is None:
+                    accepted += 1
+                    self.assertIsNone(split_err, f"{label}: chunked decode refused the stream")
+                    self.assertEqual(split_reply, whole, f"{label}: chunked decode differs")
+                    if limits.max_rows > 0:
+                        for stmt in whole["statements"]:
+                            self.assertLessEqual(len(stmt["rows"]), limits.max_rows, label)
+                else:
+                    self.assertIsNotNone(split_err, f"{label}: chunks accepted a refused stream")
+                    assert split_err is not None
+                    self.assertEqual(split_err.wire_code, whole_err.wire_code, label)
+        self.assertGreaterEqual(mutants, 24 * len(EXPECTED))
+        self.assertGreater(accepted, 0, "some mutants still decode")
+
 
 class DecoderTests(unittest.TestCase):
     def test_declared_frame_length_past_the_ceiling_fails_closed(self) -> None:
@@ -303,6 +352,56 @@ class DecoderTests(unittest.TestCase):
         limit = ctx.exception.limit
         assert limit is not None
         self.assertEqual((limit.limit, limit.cap, limit.used), ("maxStreamedResultRows", 4, 5))
+
+    def test_empty_pushes_finished_streams_and_undecodable_frames(self) -> None:
+        decoder = ExecuteStreamDecoder(TINY_LIMITS)
+        self.assertEqual(decoder.push(b""), [])
+        decoder.push(_frame("head", {"operationId": "op", "statementCount": 1}))
+        decoder.push(_frame("statement", {"index": 0, "columns": COLUMNS, "rowsAffected": 0}))
+        self.assertEqual(decoder.columns, COLUMNS)
+        decoder.push(_frame("end", TIMING))
+        self.assertTrue(decoder.finished)
+        self.assertEqual(decoder.columns, [])
+        with self.assertRaises(PluginError) as ctx:
+            decoder.push(b"\x00")
+        self.assertEqual(ctx.exception.code, "invalid_params")
+        self.assertIn("bytes after its final frame", str(ctx.exception))
+
+        garbage = ExecuteStreamDecoder(TINY_LIMITS)
+        framed = (0).to_bytes(4, "little") + (2).to_bytes(4, "little") + b"\xff" * 16
+        with self.assertRaises(PluginError) as ctx:
+            garbage.push(framed)
+        self.assertEqual(ctx.exception.code, "invalid_params")
+        self.assertIn("does not decode", str(ctx.exception))
+
+    def test_total_bytes_past_the_ceiling_fail_before_parsing(self) -> None:
+        from bookclerk_plugin_sdk.db_value import raw_stream_ceiling
+
+        decoder = ExecuteStreamDecoder(TINY_LIMITS)
+        ceiling = raw_stream_ceiling(TINY_LIMITS)
+        with self.assertRaises(PluginError) as ctx:
+            decoder.push(bytes(ceiling + 1))
+        limit = ctx.exception.limit
+        assert limit is not None
+        self.assertEqual((limit.limit, limit.used), ("maxStreamedResultBytes", ceiling + 1))
+
+    def test_repeated_heads_and_extra_statements_are_invalid(self) -> None:
+        head = _frame("head", {"operationId": "op", "statementCount": 1})
+        for frames, text in (
+            ([head, head], "second head frame"),
+            (
+                [
+                    head,
+                    _frame("statement", {"index": 0, "columns": COLUMNS, "rowsAffected": 0}),
+                    _frame("statement", {"index": 1, "columns": COLUMNS, "rowsAffected": 0}),
+                ],
+                "more statements than its head announced",
+            ),
+        ):
+            with self.assertRaises(PluginError) as ctx:
+                decode_execute_stream(b"".join(frames), TINY_LIMITS)
+            self.assertEqual(ctx.exception.code, "invalid_params")
+            self.assertIn(text, str(ctx.exception))
 
     def test_finish_before_the_end_is_unavailable(self) -> None:
         decoder = ExecuteStreamDecoder(TINY_LIMITS)
@@ -453,6 +552,58 @@ class BindingStreamTests(unittest.IsolatedAsyncioTestCase):
             async for r in inline.binding().prepare("SELECT id FROM books").iterate()
         ]
         self.assertEqual(seen, [0, 1, 2])
+
+    async def test_iterate_falls_back_inline_only_before_the_first_row(self) -> None:
+        rows = [_row(i) for i in range(3)]
+        fell = _Transport(
+            caps=SQLITE_CAPS,
+            body=lambda req: _err_stream(req["operationId"], "unsupported", "no stream"),
+            inline=lambda r: _inline_reply(r, rows),
+        )
+        seen = [r["id"]["value"] async for r in fell.binding().prepare("SELECT id").iterate()]
+        self.assertEqual(seen, [0, 1, 2])
+        self.assertEqual(fell.calls, {"inline": 1, "streamed": 1, "limits": 1})
+
+        # Chunked delivery takes the same path through `finish()`.
+        late = _Transport(
+            caps=SQLITE_CAPS,
+            body=lambda req: _chunked(
+                _err_stream(req["operationId"], "unsupported", "no stream"), 3
+            ),
+            inline=lambda r: _inline_reply(r, rows[:1]),
+        )
+        seen = [r["id"]["value"] async for r in late.binding().prepare("SELECT id").iterate()]
+        self.assertEqual(seen, [0])
+        self.assertEqual(late.calls, {"inline": 1, "streamed": 1, "limits": 1})
+
+        after_rows = _Transport(
+            caps=SQLITE_CAPS,
+            body=lambda req: b"".join(
+                [
+                    _frame("head", {"operationId": req["operationId"], "statementCount": 1}),
+                    _frame("statement", {"index": 0, "columns": COLUMNS, "rowsAffected": 0}),
+                    _frame("rows", rows),
+                    _frame("err", {"code": "unsupported", "message": "gave up", "details": ""}),
+                ]
+            ),
+        )
+        count = 0
+        with self.assertRaises(PluginError) as ctx:
+            async for _ in after_rows.binding().prepare("SELECT id").iterate():
+                count += 1
+        self.assertEqual(ctx.exception.code, "unsupported")
+        self.assertEqual(count, 3)
+        self.assertEqual(after_rows.calls["inline"], 0)
+
+        unavailable = _Transport(
+            caps=SQLITE_CAPS,
+            body=lambda req: _err_stream(req["operationId"], "unavailable", "down"),
+        )
+        with self.assertRaises(PluginError) as ctx:
+            async for _ in unavailable.binding().prepare("SELECT id").iterate():
+                pass
+        self.assertEqual(ctx.exception.code, "unavailable")
+        self.assertEqual(unavailable.calls["inline"], 0)
 
     async def test_chunk_splits_to_the_session_caps(self) -> None:
         transport = _Transport(caps={**SQLITE_CAPS, "maxStatements": 2}, inline=_inline_reply)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from bookclerk_plugin_sdk.workerd import granted_databases
 
@@ -245,6 +246,67 @@ class WorkerdGrantedDbTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.code, "unavailable")
         self.assertEqual(len(fetcher.calls), 2)
 
+    async def test_signal_rides_every_granted_request(self) -> None:
+        fetcher = _MockFetcher()
+        signal = object()
+        databases = granted_databases(fetcher, {"DB": "grant-token"}, signal=signal)
+        await databases["DB"].prepare("SELECT 1").all()
+        self.assertEqual(
+            [url for url, _ in fetcher.calls],
+            ["http://granted/db/limits", "http://granted/db/execute-streamed"],
+        )
+        for _, kwargs in fetcher.calls:
+            self.assertIs(kwargs["signal"], signal)
+
+    async def test_granted_bodies_are_read_as_streams_whole_or_rejected(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError, _granted_body_chunks
+
+        class _Reader:
+            def __init__(self) -> None:
+                self._chunks = [b"ab", None, b"c"]
+
+            async def read(self):
+                if not self._chunks:
+                    return type("Done", (), {"done": True, "value": None})()
+                value = self._chunks.pop(0)
+                return type("Chunk", (), {"done": False, "value": value})()
+
+        class _Stream:
+            def getReader(self):  # noqa: N802  (Streams API method name)
+                return _Reader()
+
+        class _Streaming:
+            status = 200
+            body = _Stream()
+
+        chunks = [c async for c in _granted_body_chunks(_Streaming(), "executeStreamed")]
+        self.assertEqual(chunks, [b"ab", b"c"])
+
+        async def _whole() -> bytes:
+            return b"whole"
+
+        class _Awaitable:
+            status = 200
+            body = _whole()
+
+        chunks = [c async for c in _granted_body_chunks(_Awaitable(), "executeStreamed")]
+        self.assertEqual(chunks, [b"whole"])
+
+        class _Empty:
+            status = 200
+
+        with self.assertRaises(PluginError) as ctx:
+            [c async for c in _granted_body_chunks(_Empty(), "executeStreamed")]
+        self.assertEqual(ctx.exception.code, "internal")
+        self.assertIn("missing body", str(ctx.exception))
+
+    async def test_guest_database_default_streamed_read_is_unsupported(self) -> None:
+        from bookclerk_plugin_sdk.workerd import GuestDatabase, PluginError
+
+        with self.assertRaises(PluginError) as ctx:
+            await GuestDatabase().execute_streamed({})  # type: ignore[arg-type]
+        self.assertEqual(ctx.exception.code, "unsupported")
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -298,6 +360,84 @@ class _MockTransport:
 
 
 class WorkerdTransportDbTests(unittest.IsolatedAsyncioTestCase):
+    async def test_transport_streamed_reply_without_a_body_is_internal(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError, _invocation_env
+
+        class _Silent(_MockTransport):
+            async def executeStreamedBytes(self, body):  # noqa: N802  (Workers RPC method name)
+                self.methods.append(("executeStreamedBytes", bytes(body)))
+                return b""
+
+        env = _invocation_env({}, {"databases": [{"name": "DB", "transport": _Silent()}]})
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "internal")
+        self.assertIn("missing body", str(ctx.exception))
+
+    async def test_transport_open_streamed_bytes_is_read_chunk_by_chunk(self) -> None:
+        from bookclerk_plugin_sdk.workerd import PluginError, _invocation_env
+
+        class _Reader:
+            def __init__(self, data: bytes, size: int) -> None:
+                self.windows = [data[at : at + size] for at in range(0, len(data), size)]
+                self.reads = 0
+
+            async def read(self):
+                self.reads += 1
+                if not self.windows:
+                    return SimpleNamespace(done=True, value=None)
+                return SimpleNamespace(done=False, value=self.windows.pop(0))
+
+        class _Stream:
+            def __init__(self, data: bytes) -> None:
+                self.reader = _Reader(data, 5)
+
+            def getReader(self):  # noqa: N802  (web ReadableStream method name)
+                return self.reader
+
+        class _Streaming(_MockTransport):
+            def __init__(self) -> None:
+                super().__init__()
+                self.streams: list[_Stream] = []
+
+            async def openStreamedBytes(self, body):  # noqa: N802  (Workers RPC method name)
+                from bookclerk_plugin_sdk.db_value import decode_execute_request
+
+                self.methods.append(("openStreamedBytes", bytes(body)))
+                stream = _Stream(_frames(decode_execute_request(bytes(body))["operationId"]))
+                self.streams.append(stream)
+                return stream
+
+            async def executeStreamedBytes(self, body):  # noqa: N802
+                raise AssertionError("openStreamedBytes wins when the transport offers it")
+
+        transport = _Streaming()
+        env = _invocation_env({}, {"databases": [{"name": "DB", "transport": transport}]})
+        seen = [row["n"]["value"] async for row in env.DB.prepare("SELECT 1").iterate()]
+        self.assertEqual(seen, [1])
+        self.assertEqual(
+            [name for name, _ in transport.methods], ["limitsBytes", "openStreamedBytes"]
+        )
+        self.assertGreater(transport.streams[0].reader.reads, 2, "frames crossed in windows")
+
+        # A whole-body answer from `openStreamedBytes` is accepted too, and an
+        # empty one is the `internal` error.
+        class _Whole(_MockTransport):
+            async def openStreamedBytes(self, body):  # noqa: N802
+                return await self.executeStreamedBytes(body)
+
+        env = _invocation_env({}, {"databases": [{"name": "DB", "transport": _Whole()}]})
+        self.assertEqual((await env.DB.prepare("SELECT 1").first())["n"]["value"], 1)
+
+        class _Empty(_MockTransport):
+            async def openStreamedBytes(self, body):  # noqa: N802
+                return b""
+
+        env = _invocation_env({}, {"databases": [{"name": "DB", "transport": _Empty()}]})
+        with self.assertRaises(PluginError) as ctx:
+            await env.DB.prepare("SELECT 1").all()
+        self.assertEqual(ctx.exception.code, "internal")
+
     async def test_transport_entry_becomes_env_binding(self) -> None:
         from bookclerk_plugin_sdk.workerd import _invocation_env
 
