@@ -47,8 +47,9 @@ pub struct TemplateStrip {
 ///
 /// # Errors
 ///
-/// Returns an error, and changes nothing, when any of [`MUST_BE_EMPTY`]
-/// holds a row: a template must never carry sealed secrets or sessions.
+/// Returns an error, and changes nothing, when `encrypted_secrets`,
+/// `operator_sessions`, `portal_sessions` or `claim_tickets` holds a row: a
+/// template must never carry sealed secrets or sessions.
 /// Returns the database error when a statement fails.
 pub async fn strip_install_state(store: &LibraryStore) -> Result<TemplateStrip> {
     let counts = MUST_BE_EMPTY
