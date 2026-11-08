@@ -217,8 +217,9 @@ pub async fn expand_candidates(
 /// # Errors
 ///
 /// Currently never: a failed ISBN lookup or title search is logged and
-/// treated as no match. The `Result` matches the guest `purchaseHint`
-/// entrypoint, which can fail for other storefronts.
+/// treated as no match, so `Ok(None)` can also mean the lookup failed. The
+/// `Result` matches the guest `purchaseHint` entrypoint, which can fail for
+/// other storefronts.
 pub async fn purchase_hint(
     base_url: &str,
     opts: &PurchaseHintOpts,

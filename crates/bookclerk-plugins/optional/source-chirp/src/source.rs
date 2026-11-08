@@ -51,7 +51,9 @@ impl ChirpSource {
     ///
     /// # Errors
     ///
-    /// Returns an error when the storefront request or its parse fails.
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Some lookups fail soft and only yield fewer
+    /// results (or none), so an empty result does not prove the store has none.
     pub async fn search_catalog(
         &self,
         opts: &CatalogSearchOpts,
@@ -66,11 +68,7 @@ impl ChirpSource {
             .and_then(bookclerk_storefront::normalize_language);
         // Slight over-fetch when filtering by language so dropped Spanish
         // (etc.) rows don't starve the page — keep this modest for latency.
-        let fetch_limit = if preferred_lang.is_some() {
-            (opts.limit + 8).clamp(opts.limit, 40)
-        } else {
-            opts.limit
-        };
+        let fetch_limit = language_fetch_limit(opts.limit, preferred_lang.is_some());
         let client = ChirpClient::new(&self.graphql_url);
         if opts.field == Some(CatalogSearchField::Series) {
             if let Ok(Some(catalog)) = client.resolve_series_catalog(q).await {
@@ -113,7 +111,9 @@ impl ChirpSource {
     ///
     /// # Errors
     ///
-    /// Returns an error when the storefront request or its parse fails.
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Some lookups fail soft and only yield fewer
+    /// results (or none), so an empty result does not prove the store has none.
     pub async fn expand_candidates(
         &self,
         seed: &ExpandSeed,
@@ -259,7 +259,9 @@ impl ChirpSource {
     ///
     /// # Errors
     ///
-    /// Returns an error when the storefront request or its parse fails.
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Failed lookups are soft, so `Ok(None)` can also
+    /// mean the store could not be reached, not only that the title is not sold.
     pub async fn purchase_hint(
         &self,
         opts: &PurchaseHintOpts,
@@ -337,7 +339,9 @@ impl ChirpSource {
     ///
     /// # Errors
     ///
-    /// Returns an error when the storefront request or its parse fails.
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Some lookups fail soft and only yield fewer
+    /// results (or none), so an empty result does not prove the store has none.
     pub async fn list_deals(&self, limit: usize) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -579,6 +583,18 @@ fn parse_money_label_to_cents(raw: &str) -> Option<i64> {
     Some((amount * 100.0).round() as i64)
 }
 
+/// Rows to request for a page of `limit` hits.
+///
+/// A language filter drops rows after the fetch, so it asks for up to 8 more
+/// (capped at 40 for latency), but never fewer than `limit` itself.
+fn language_fetch_limit(limit: usize, filtered: bool) -> usize {
+    if filtered {
+        limit.saturating_add(8).min(limit.max(40))
+    } else {
+        limit
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,9 +629,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn language_over_fetch_never_drops_below_the_page() {
+        assert_eq!(language_fetch_limit(10, false), 10);
+        assert_eq!(language_fetch_limit(10, true), 18);
+        assert_eq!(language_fetch_limit(35, true), 40);
+        assert_eq!(language_fetch_limit(50, true), 50);
+        assert_eq!(language_fetch_limit(usize::MAX, true), usize::MAX);
+    }
+
     #[tokio::test]
     async fn empty_requests_answer_without_calling_the_store() {
-        // An unroutable GraphQL URL proves no request is made.
+        // These inputs return before any request; the unroutable URL keeps
+        // the test offline if that ever regresses.
         let source = ChirpSource::with_graphql_url("http://127.0.0.1:9/graphql");
         assert!(source
             .search_catalog(&search("  ", 10))

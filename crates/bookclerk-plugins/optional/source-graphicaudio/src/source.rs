@@ -51,7 +51,9 @@ impl GraphicAudioSource {
     ///
     /// # Errors
     ///
-    /// Returns an error when the storefront request or its parse fails.
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Some lookups fail soft and only yield fewer
+    /// results (or none), so an empty result does not prove the store has none.
     pub async fn search_catalog(
         &self,
         opts: &CatalogSearchOpts,
@@ -85,7 +87,9 @@ impl GraphicAudioSource {
     ///
     /// # Errors
     ///
-    /// Returns an error when the storefront request or its parse fails.
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Some lookups fail soft and only yield fewer
+    /// results (or none), so an empty result does not prove the store has none.
     pub async fn expand_candidates(
         &self,
         seed: &ExpandSeed,
@@ -159,7 +163,9 @@ impl GraphicAudioSource {
     ///
     /// # Errors
     ///
-    /// Returns an error when the storefront request or its parse fails.
+    /// Returns an error when a storefront request or its parse fails and the
+    /// method cannot fall back. Failed lookups are soft, so `Ok(None)` can also
+    /// mean the store could not be reached, not only that the title is not sold.
     pub async fn purchase_hint(
         &self,
         opts: &PurchaseHintOpts,
@@ -448,7 +454,8 @@ mod tests {
 
     #[tokio::test]
     async fn empty_requests_answer_without_calling_the_store() {
-        // An unroutable store URL proves no request is made.
+        // These inputs return before any request; the unroutable URL keeps
+        // the test offline if that ever regresses.
         let source = GraphicAudioSource::new().with_store_url("http://127.0.0.1:9");
         assert!(source
             .search_catalog(&search("  ", 10))

@@ -86,7 +86,8 @@ impl LibroSource {
     ///
     /// # Errors
     ///
-    /// Returns an error when the storefront request or its parse fails.
+    /// Currently never: a failed lookup is treated as no match, so `Ok(None)`
+    /// can also mean the store could not be reached.
     pub async fn purchase_hint(
         &self,
         opts: &PurchaseHintOpts,

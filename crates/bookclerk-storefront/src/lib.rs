@@ -13,7 +13,9 @@
 //! stays small. The host-only half (the `ContentSource` trait, the source
 //! registry, `DownloadOptions`, `FetchOptions` and the
 //! conversions to library rows) lives in `bookclerk-source`, which
-//! re-exports everything here.
+//! re-exports the storefront DTOs, ABI conversions and listing / record
+//! helpers. Host code gets the text and content-kind helpers from
+//! `bookclerk-library`, which re-exports them from here.
 //!
 //! Product narrative: `docs/plugins/README.md`. Style: `docs/contributing/code-documentation.md`.
 
