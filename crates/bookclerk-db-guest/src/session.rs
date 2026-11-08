@@ -2392,6 +2392,54 @@ mod tests {
     /// the rows are still arriving, not after the whole result is retained:
     /// 600 rows of 128 KiB pass the streamed row budget and would take
     /// 75 MiB against the 64 MiB streamed byte budget.
+    /// A batch whose statements each fit `maxResultBytes` still fails with
+    /// `maxAtomicResultBytes` as soon as the admitted results exceed the
+    /// whole-batch budget, before the remaining statements run.
+    #[tokio::test]
+    async fn a_batch_of_admissible_statements_stops_at_the_whole_batch_budget() {
+        let _lock = SESSION_LOCK.lock().await;
+        set_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        )
+        .await;
+        let ddl = "CREATE TABLE wide_batch (id INTEGER PRIMARY KEY, v TEXT NOT NULL)";
+        typed_create_table(ddl).await;
+        let row_bytes = 50 * 1024;
+        guest_execute(stmt(&format!(
+            "INSERT INTO wide_batch (id, v) VALUES (1, '{}')",
+            "x".repeat(row_bytes)
+        )))
+        .await
+        .unwrap();
+        let mut req = typed_select("wide-batch", "SELECT v FROM wide_batch WHERE id = 1");
+        let one = req.statements[0].clone();
+        req.statements = vec![one; 12];
+        let mut env = bookclerk_library::migrations::host_sql_type_env();
+        env.merge(&bookclerk_plugin_abi::sql_type_env_from_canonical_ddl(ddl));
+        let stamped = stamp_req_env(req, &env).expect("stamp proofs");
+        let conn = connection().await.unwrap();
+        let caps = bookclerk_db_exec::ExecCaps {
+            max_result_rows: 10,
+            max_result_bytes: 128 * 1024,
+            max_cell_bytes: 0,
+            max_atomic_result_bytes: 192 * 1024,
+        };
+        let err = guest_execute_typed(&conn, stamped, library_typed_session(None), caps)
+            .await
+            .expect_err("twelve 50 KiB results exceed the 192 KiB whole-batch budget");
+        let limit = err
+            .limit()
+            .unwrap_or_else(|| panic!("a typed result limit: {err}"));
+        assert_eq!(limit.limit, "maxAtomicResultBytes", "{err}");
+        assert_eq!(limit.cap, 192 * 1024);
+        assert!(
+            limit.used > limit.cap && limit.used < 2 * limit.cap,
+            "an early statement tripped the budget, not the encoded twelve-result reply: {err}"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
     async fn postgres_wide_streamed_read_stops_at_the_byte_budget() {
