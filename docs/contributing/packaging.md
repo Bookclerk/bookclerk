@@ -165,7 +165,12 @@ the production builder and runtime, all three in one build from
 [`packaging/demo/docker-bake.hcl`](../../packaging/demo/docker-bake.hcl).
 That build links with thin LTO and parallel codegen units. Shipped images
 keep `Cargo.toml`'s fat LTO: `packaging/docker/Dockerfile` takes the
-settings as build arguments that default to it. The hosted demo's deploy pulls the
+settings as build arguments that default to it. The demo's sample-data
+seed links the host's library crates, so it builds with exactly the
+package set `cargo package-platform` built (`cargo build-app --platform
+--print`), where those crates are already compiled. The storefronts build
+in a separate Cargo invocation, because building them beside the seed
+would change those crates' features and recompile them. The hosted demo's deploy pulls the
 published demo image without signing in, so the package must be public.
 When the image for the deployed commit exists and its attestation
 verifies, the deploy uses it instead of building it again. Otherwise a
