@@ -2388,6 +2388,48 @@ mod tests {
             .unwrap_or_else(|err| panic!("postgres setup `{sql}` failed: {err}"));
     }
 
+    /// A streamed Postgres read of wide rows fails on the byte budget while
+    /// the rows are still arriving, not after the whole result is retained:
+    /// 600 rows of 128 KiB pass the streamed row budget and would take
+    /// 75 MiB against the 64 MiB streamed byte budget.
+    #[tokio::test]
+    #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+    async fn postgres_wide_streamed_read_stops_at_the_byte_budget() {
+        let _lock = SESSION_LOCK.lock().await;
+        let db = postgres_test_pool().await;
+        let ddl = "CREATE TABLE wide_rows (id INTEGER PRIMARY KEY, v TEXT NOT NULL)";
+        postgres_exec(&db, ddl).await;
+        postgres_exec(
+            &db,
+            "INSERT INTO wide_rows (id, v) \
+             SELECT g, repeat('x', 131072) FROM generate_series(1, 600) AS g",
+        )
+        .await;
+        let mut req = typed_select("pg-wide", "SELECT v FROM wide_rows");
+        req.statements[0].max_rows = 600;
+        let mut env = bookclerk_library::migrations::host_sql_type_env();
+        env.merge(&bookclerk_plugin_abi::sql_type_env_from_canonical_ddl(ddl));
+        let stamped = stamp_req_env(req, &env).expect("stamp proofs");
+        let err = guest_execute_streamed_request_on(&db, stamped)
+            .await
+            .expect_err("75 MiB of rows exceed the 64 MiB streamed budget");
+        let limit = err
+            .limit()
+            .unwrap_or_else(|| panic!("a typed result limit: {err}"));
+        assert!(
+            matches!(
+                limit.limit.as_str(),
+                "maxResultBytes" | "maxStreamedResultBytes"
+            ),
+            "{err}"
+        );
+        let seen = bookclerk_db_exec::query_rows_seen();
+        assert!(
+            seen < 600,
+            "the stream stopped at the budget after {seen} rows, not at the end"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
     async fn postgres_page_pins_one_session_with_busy_pool() {

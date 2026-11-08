@@ -2142,7 +2142,9 @@ where
                     reject_statement_result_bytes(&result, caps.max_result_bytes)?;
                     result
                 } else {
-                    let engine_rows = collect_capped_query_results(txn, sea_stmt, row_cap).await?;
+                    let engine_rows =
+                        collect_capped_query_results(txn, sea_stmt, row_cap, caps.max_result_bytes)
+                            .await?;
                     if engine_rows.is_empty()
                         && backend == sea_orm::DatabaseBackend::Postgres
                         && stmt.kind.wrap_select_limit()
@@ -2401,15 +2403,21 @@ where
                     }
                     result
                 } else {
-                    let engine_rows =
-                        match collect_capped_query_results(&txn, sea_stmt, row_cap).await {
-                            Ok(rows) => rows,
-                            Err(err) => {
-                                let _ = txn.rollback().await;
-                                let _ = take_txn_fault();
-                                return Err(err);
-                            }
-                        };
+                    let engine_rows = match collect_capped_query_results(
+                        &txn,
+                        sea_stmt,
+                        row_cap,
+                        caps.max_result_bytes,
+                    )
+                    .await
+                    {
+                        Ok(rows) => rows,
+                        Err(err) => {
+                            let _ = txn.rollback().await;
+                            let _ = take_txn_fault();
+                            return Err(err);
+                        }
+                    };
                     if engine_rows.is_empty()
                         && backend == sea_orm::DatabaseBackend::Postgres
                         && stmt.kind.wrap_select_limit()

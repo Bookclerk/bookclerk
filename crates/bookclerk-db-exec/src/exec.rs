@@ -265,18 +265,28 @@ pub fn cap_query_sql(sql: &str, max_result_rows: u32) -> String {
     format!("SELECT * FROM ({inner}) AS _bc_cap LIMIT {n}")
 }
 
-/// Collects at most `max_result_rows + 1` engine rows (no JSON conversion).
+/// Collects at most `max_result_rows + 1` engine rows (no JSON conversion),
+/// holding the cells retained so far under `max_result_bytes` (`0` =
+/// unlimited).
 ///
-/// PostgreSQL is streamed. SQLite goes through the rusqlite proxy, which stops
-/// the cursor at the same cap (and records positional column metadata).
+/// PostgreSQL is streamed, and each row's wire bytes count toward the byte
+/// budget as it arrives, so a result of wide rows fails on `maxResultBytes`
+/// before the adapter retains it whole; the row budget alone (250 000 rows
+/// under the streamed caps) would let 256 KiB cells reach tens of GiB. The
+/// wire bytes are a lower bound of the encoded result, so a result that
+/// passes here is still checked once encoded. SQLite goes through the
+/// rusqlite proxy, which stops the cursor at the same caps (and records
+/// positional column metadata).
 ///
 /// # Errors
 ///
-/// Returns when the engine stream/query fails.
+/// Returns when the engine stream/query fails or the rows seen so far
+/// exceed `max_result_bytes`.
 pub(crate) async fn collect_capped_query_results<C>(
     conn: &C,
     stmt: Statement,
     max_result_rows: u32,
+    max_result_bytes: u32,
 ) -> Result<Vec<QueryResult>, DbErr>
 where
     C: ConnectionTrait + StreamTrait,
@@ -286,8 +296,10 @@ where
         let stream = conn.stream_raw(stmt).await?;
         futures::pin_mut!(stream);
         let mut rows = Vec::new();
+        let mut payload = 0usize;
         while let Some(row) = stream.try_next().await? {
             let _ = note_query_row();
+            note_encoded_result_bytes(&mut payload, pg_row_payload_len(&row), max_result_bytes)?;
             rows.push(row);
             if rows.len() >= stop_after {
                 break;
@@ -297,6 +309,26 @@ where
     }
     let rows = conn.query_all_raw(stmt).await?;
     Ok(rows.into_iter().take(stop_after).collect())
+}
+
+/// Wire bytes of one PostgreSQL row's cells (`0` for a non-Postgres row).
+///
+/// Text and `bytea` cells arrive as their own bytes and numbers as a few,
+/// so the sum is a lower bound of the row's encoded size: enough to stop a
+/// wide result early, never enough to reject one the encoded check accepts.
+fn pg_row_payload_len(row: &QueryResult) -> usize {
+    use sea_orm::sqlx::Row as _;
+    let Some(pg) = row.try_as_pg_row() else {
+        return 0;
+    };
+    (0..pg.len())
+        .map(|i| {
+            pg.try_get_raw(i)
+                .ok()
+                .and_then(|cell| cell.as_bytes().ok().map(<[u8]>::len))
+                .unwrap_or(0)
+        })
+        .sum()
 }
 
 /// Uniform `rowsAffected` by host-authored kind.
