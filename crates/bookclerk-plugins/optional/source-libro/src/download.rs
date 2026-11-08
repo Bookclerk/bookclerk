@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{copy, Cursor, Write};
 use std::path::{Path, PathBuf};
 
-use bookclerk_source::{PlainAudioPart, PlainFetch};
+use bookclerk_storefront::{PlainAudioPart, PlainFetch};
 
 use crate::container::LibroContainer;
 use zip::ZipArchive;
@@ -261,7 +261,7 @@ fn is_audio_filename(name: &str) -> bool {
 
 /// Magic-byte audio extension without the leading dot, or `None` if unknown.
 fn sniff_audio_ext(bytes: &[u8]) -> Option<&'static str> {
-    bookclerk_source::extension_from_bytes(bytes).map(|ext| ext.trim_start_matches('.'))
+    bookclerk_storefront::extension_from_bytes(bytes).map(|ext| ext.trim_start_matches('.'))
 }
 
 /// Filename from `response-content-disposition` or the last path segment.

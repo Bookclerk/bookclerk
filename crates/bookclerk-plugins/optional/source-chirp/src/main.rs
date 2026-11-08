@@ -11,8 +11,8 @@ use bookclerk_plugin_sdk::{
     PurchaseHint, PurchaseHintParams, ScalarLimits, ScanParams, ScanSummary, SearchCatalogParams,
     FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
-use bookclerk_source::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
-use bookclerk_source::{CatalogSearchOpts, ContentSource, PurchaseHintOpts};
+use bookclerk_storefront::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
+use bookclerk_storefront::{CatalogSearchOpts, PurchaseHintOpts};
 use serde_json::Value;
 
 /// External Chirp storefront guest (`storefront` entrypoint, password portal auth).
@@ -62,7 +62,7 @@ fn internal(err: impl std::fmt::Display) -> PluginError {
     PluginError::internal(err.to_string())
 }
 
-fn hits(hits: Vec<bookclerk_source::CatalogHit>) -> Vec<CatalogHit> {
+fn hits(hits: Vec<bookclerk_storefront::CatalogHit>) -> Vec<CatalogHit> {
     hits.into_iter().map(Into::into).collect()
 }
 

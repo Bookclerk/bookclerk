@@ -5,7 +5,7 @@ use serde::Serialize;
 /// Visual identity for a content source in the connect portal.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub struct SourceBrand {
-    /// Stable plugin id matching [`crate::ContentSource::id`] (`audible`, …).
+    /// Stable plugin id matching the host's `ContentSource::id` (`audible`, …).
     pub id: &'static str,
     /// Human-facing store name shown on the connect button.
     pub name: &'static str,

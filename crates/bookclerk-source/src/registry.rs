@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use bookclerk_library::{LibraryStore, SourceScope};
 
-use crate::error::{Result, SourceError};
+use crate::{Result, SourceError};
 use crate::traits::ContentSource;
-use crate::types::{ScanOptions, ScanSummary, SourceAccount};
+use crate::{ScanOptions, ScanSummary, SourceAccount};
 
 /// Maps a registry address to an installed [`ContentSource`].
 ///
@@ -275,7 +275,7 @@ impl SourceRegistry {
         let mut any = false;
         for source in sources {
             if opts.is_cancelled() {
-                return Err(crate::error::SourceError::Other(anyhow::anyhow!(
+                return Err(crate::SourceError::Other(anyhow::anyhow!(
                     "cancelled"
                 )));
             }
@@ -366,9 +366,9 @@ mod tests {
     use async_trait::async_trait;
 
     use super::{account_needle_matches, SourceRegistry};
-    use crate::brand::SourceBrand;
+    use crate::SourceBrand;
     use crate::traits::{ContentSource, PortalAuthMode};
-    use crate::types::SourceAccount;
+    use crate::SourceAccount;
     use crate::Result;
 
     const BRAND: SourceBrand = SourceBrand {
@@ -416,23 +416,23 @@ mod tests {
         async fn login(
             &self,
             _scope: &bookclerk_library::SourceScope,
-            _opts: crate::types::LoginOptions,
-        ) -> Result<crate::types::SourceAccount> {
+            _opts: crate::LoginOptions,
+        ) -> Result<crate::SourceAccount> {
             unimplemented!("lookup stub")
         }
 
         async fn list_accounts(
             &self,
             _scope: &bookclerk_library::SourceScope,
-        ) -> Result<Vec<crate::types::SourceAccount>> {
+        ) -> Result<Vec<crate::SourceAccount>> {
             unimplemented!("lookup stub")
         }
 
         async fn scan(
             &self,
             _scope: &bookclerk_library::SourceScope,
-            _opts: crate::types::ScanOptions,
-        ) -> Result<crate::types::ScanSummary> {
+            _opts: crate::ScanOptions,
+        ) -> Result<crate::ScanSummary> {
             unimplemented!("lookup stub")
         }
 
@@ -441,8 +441,8 @@ mod tests {
             _scope: &bookclerk_library::SourceScope,
             _account_id: &str,
             _title_id: &str,
-            _opts: &crate::types::FetchOptions,
-        ) -> Result<crate::types::SourceFetch> {
+            _opts: &crate::FetchOptions,
+        ) -> Result<crate::SourceFetch> {
             unimplemented!("lookup stub")
         }
     }
@@ -497,27 +497,27 @@ mod tests {
         async fn login(
             &self,
             _scope: &bookclerk_library::SourceScope,
-            _opts: crate::types::LoginOptions,
-        ) -> Result<crate::types::SourceAccount> {
+            _opts: crate::LoginOptions,
+        ) -> Result<crate::SourceAccount> {
             unimplemented!("scan stub")
         }
 
         async fn list_accounts(
             &self,
             _scope: &bookclerk_library::SourceScope,
-        ) -> Result<Vec<crate::types::SourceAccount>> {
+        ) -> Result<Vec<crate::SourceAccount>> {
             Ok(Vec::new())
         }
 
         async fn scan(
             &self,
             _scope: &bookclerk_library::SourceScope,
-            _opts: crate::types::ScanOptions,
-        ) -> Result<crate::types::ScanSummary> {
+            _opts: crate::ScanOptions,
+        ) -> Result<crate::ScanSummary> {
             self.scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(crate::types::ScanSummary {
+            Ok(crate::ScanSummary {
                 accounts: 1,
-                ..crate::types::ScanSummary::default()
+                ..crate::ScanSummary::default()
             })
         }
 
@@ -526,8 +526,8 @@ mod tests {
             _scope: &bookclerk_library::SourceScope,
             _account_id: &str,
             _title_id: &str,
-            _opts: &crate::types::FetchOptions,
-        ) -> Result<crate::types::SourceFetch> {
+            _opts: &crate::FetchOptions,
+        ) -> Result<crate::SourceFetch> {
             unimplemented!("scan stub")
         }
     }
@@ -712,7 +712,7 @@ mod tests {
         ));
         registry.set_default_instance("local/graphicaudio", "instance-b");
         let summary = registry
-            .scan_all(&store, crate::types::ScanOptions::default())
+            .scan_all(&store, crate::ScanOptions::default())
             .await
             .expect("scan");
         assert_eq!(audible.load(Ordering::SeqCst), 1);

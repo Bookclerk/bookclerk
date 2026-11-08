@@ -46,7 +46,6 @@ mod session_client;
 /// Host-owned generic SQL atomic plans for database adapters.
 pub mod sql_plan;
 mod store;
-mod text;
 mod token_hash;
 mod wishlist_merge;
 
@@ -165,7 +164,7 @@ pub use store::{
     ScannedTitle, SeedScope, StoredCandidate, StoredFeed, UserBookFields, WishlistIdentity,
     ACQUIRE_WRITER, BOOK_PAGE_DEFAULT_LIMIT, BOOK_PAGE_MAX_LIMIT,
 };
-pub use text::{
+pub use bookclerk_storefront::text::{
     decode_html_entities, decode_html_entities_cow, decode_html_entities_in_place,
     decode_html_entities_opt, decode_html_entities_opt_in_place, str_maybe_html_entity,
 };

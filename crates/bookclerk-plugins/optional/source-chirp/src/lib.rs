@@ -8,7 +8,6 @@
 
 mod auth;
 mod client;
-pub mod db;
 mod download;
 mod error;
 pub mod guest;
@@ -21,7 +20,6 @@ pub use client::{
     CatalogSeries, ChirpClient, ChirpProductPricing, LibraryItem, RelatedCatalog, SeriesCatalog,
     Track, TypeaheadCatalog, DEFAULT_GRAPHQL_URL,
 };
-pub use db::{delete_auth_from_db, list_auth_from_db, load_auth_from_db, save_auth_to_db};
 pub use download::fetch_title_materials;
 pub use error::{ChirpError, Result};
 pub use guest::{
@@ -29,7 +27,4 @@ pub use guest::{
     guest_scan_rpc, resolve_graphql_url,
 };
 pub use source::{ChirpSource, ID as CHIRP_SOURCE_ID};
-pub use sync::{
-    audiobook_to_scan_book, collect_account_books, scan_account_into_library, scan_library,
-    ScanOptions,
-};
+pub use sync::{audiobook_to_scan_book, collect_account_books};

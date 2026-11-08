@@ -96,7 +96,7 @@ pub fn credit_level(level: abi::CreditLevel) -> Option<resolve::Level> {
 /// it on write, so the listing must too or its match keys would differ
 /// from the ones derived from the flat row.
 fn decode(raw: &str) -> String {
-    bookclerk_library::decode_html_entities(raw)
+    crate::text::decode_html_entities(raw)
 }
 
 /// The listing draft a storefront's scan record describes.

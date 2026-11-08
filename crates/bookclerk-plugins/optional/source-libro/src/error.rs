@@ -33,10 +33,6 @@ pub enum LibroError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Library database upsert / secret storage failure.
-    #[error(transparent)]
-    Library(#[from] bookclerk_library::LibraryError),
-
     /// Unexpected failure wrapped from `anyhow`.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -80,14 +76,13 @@ impl From<serde_json::Error> for LibroError {
     }
 }
 
-impl From<LibroError> for bookclerk_source::SourceError {
+impl From<LibroError> for bookclerk_storefront::SourceError {
     fn from(err: LibroError) -> Self {
         match err {
             LibroError::NoAccounts(m) => Self::NoAccounts(m),
             LibroError::Auth(m) | LibroError::AccountNotFound(m) => Self::Auth(m),
             LibroError::Api(m) | LibroError::Download(m) => Self::Api(m),
             LibroError::Io(e) => Self::Io(e),
-            LibroError::Library(e) => Self::Library(e),
             LibroError::Other(e) => Self::Other(e),
         }
     }

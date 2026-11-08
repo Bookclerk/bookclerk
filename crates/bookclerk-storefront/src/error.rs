@@ -2,7 +2,7 @@
 //!
 //! # Audience
 //!
-//! Host job runners and [`crate::ContentSource`] implementors.
+//! Storefront guests and host job runners.
 
 use thiserror::Error;
 
@@ -24,9 +24,12 @@ pub enum SourceError {
     /// Local filesystem failure while caching or writing downloads.
     #[error("{0}")]
     Io(#[from] std::io::Error),
-    /// Library database / secret-store failure.
+    /// Library database / secret-store failure on the host.
+    ///
+    /// Guests never open the library; the host converts its store errors
+    /// into this variant (`bookclerk-library` implements the `From`).
     #[error("{0}")]
-    Library(#[from] bookclerk_library::LibraryError),
+    Library(Box<dyn std::error::Error + Send + Sync + 'static>),
     /// Catch-all for plugin-internal failures wrapped as [`anyhow::Error`].
     #[error("{0}")]
     Other(#[from] anyhow::Error),

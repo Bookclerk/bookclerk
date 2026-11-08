@@ -187,3 +187,10 @@ mod tests {
         assert!(other.to_string().contains("bad SQL"));
     }
 }
+
+impl From<LibraryError> for bookclerk_storefront::SourceError {
+    /// Wraps a store failure so content-source code can use `?` on library calls.
+    fn from(err: LibraryError) -> Self {
+        Self::Library(Box::new(err))
+    }
+}

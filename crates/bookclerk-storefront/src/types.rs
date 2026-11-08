@@ -2,16 +2,15 @@
 //!
 //! # Audience
 //!
-//! Host job runners and [`crate::ContentSource`] implementors.
+//! Storefront guests and the host, which share these types across the plugin
+//! ABI (see [`crate::abi`]).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::SourceError;
-use crate::options::DownloadOptions;
 
 /// One allowed value for a [`SourceConfigOption`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +75,7 @@ pub struct LoginOptions {
     pub extra: serde_json::Value,
 }
 
-/// Options for [`crate::ContentSource::import_credentials`].
+/// Options for the host's `ContentSource::import_credentials`.
 #[derive(Debug, Clone, Default)]
 pub struct ImportCredentialsOptions {
     /// Treat input as classic Libation `AccountsSettings.json`.
@@ -179,72 +178,6 @@ impl ScanSummary {
     }
 }
 
-/// Options passed to [`crate::ContentSource::fetch_title`].
-#[derive(Debug, Clone)]
-pub struct FetchOptions {
-    /// Packaging / naming knobs for this acquire (from `[output]` + destination).
-    pub download: DownloadOptions,
-    /// Absolute directory for scratch downloads for this fetch.
-    pub cache_dir: PathBuf,
-    /// Root files directory (`BOOKCLERK_FILES_DIR`). Used for CDM / Widevine path
-    /// resolution by Audible. Non-auth operations only; auth is loaded from the
-    /// [`bookclerk_library::LibraryStore`] passed directly to the trait method.
-    pub files_dir: PathBuf,
-    /// Optional on-disk budget for `cache_dir` (bytes). Sources should call
-    /// [`Self::enforce_cache_budget`] between chunks.
-    pub max_cache_bytes: Option<u64>,
-    /// Cooperative cancel for mid-fetch quota or a lost job fence.
-    pub cancel: Option<Arc<AtomicBool>>,
-}
-
-impl FetchOptions {
-    /// Fails when cancel is set or `cache_dir` exceeds [`Self::max_cache_bytes`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SourceError::Other`] when the fetch was cancelled or the
-    /// cache directory is over the remaining scratch quota.
-    pub fn enforce_cache_budget(&self) -> crate::error::Result<()> {
-        if self
-            .cancel
-            .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::SeqCst))
-        {
-            return Err(SourceError::Other(anyhow::anyhow!("cancelled")));
-        }
-        if let Some(max) = self.max_cache_bytes {
-            let used = sync_dir_size(&self.cache_dir);
-            if used > max {
-                return Err(SourceError::Other(anyhow::anyhow!(
-                    "acquire scratch quota exceeded ({used} > {max} bytes)"
-                )));
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Recursive directory size; missing paths count as zero.
-fn sync_dir_size(path: &Path) -> u64 {
-    let mut total = 0u64;
-    let mut stack = vec![path.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in rd.flatten() {
-            let Ok(meta) = entry.metadata() else {
-                continue;
-            };
-            if meta.is_dir() {
-                stack.push(entry.path());
-            } else {
-                total = total.saturating_add(meta.len());
-            }
-        }
-    }
-    total
-}
 
 /// One DRM-free audio part (chapter file or single book).
 #[derive(Debug, Clone)]
@@ -370,14 +303,14 @@ impl CatalogHit {
     /// No-op (no allocations) when no field contains `&`.
     #[must_use]
     pub fn decode_html_entities(mut self) -> Self {
-        bookclerk_library::decode_html_entities_in_place(&mut self.title);
+        crate::text::decode_html_entities_in_place(&mut self.title);
         crate::records::decode_html_entities(&mut self.credits, &mut self.series_entries);
-        bookclerk_library::decode_html_entities_opt_in_place(&mut self.subtitle);
-        bookclerk_library::decode_html_entities_opt_in_place(&mut self.description);
-        bookclerk_library::decode_html_entities_opt_in_place(&mut self.publisher);
-        bookclerk_library::decode_html_entities_opt_in_place(&mut self.categories);
-        bookclerk_library::decode_html_entities_in_place(&mut self.origin);
-        bookclerk_library::decode_html_entities_opt_in_place(&mut self.price_label);
+        crate::text::decode_html_entities_opt_in_place(&mut self.subtitle);
+        crate::text::decode_html_entities_opt_in_place(&mut self.description);
+        crate::text::decode_html_entities_opt_in_place(&mut self.publisher);
+        crate::text::decode_html_entities_opt_in_place(&mut self.categories);
+        crate::text::decode_html_entities_in_place(&mut self.origin);
+        crate::text::decode_html_entities_opt_in_place(&mut self.price_label);
         // Identifiers / URLs are left alone (must stay wire-exact).
         self
     }
@@ -486,15 +419,15 @@ impl SourcePurchaseHint {
     /// Decode HTML entities in human-readable fields (no-op when no `&`).
     #[must_use]
     pub fn decode_html_entities(mut self) -> Self {
-        bookclerk_library::decode_html_entities_opt_in_place(&mut self.title);
-        bookclerk_library::decode_html_entities_opt_in_place(&mut self.price_label);
-        bookclerk_library::decode_html_entities_opt_in_place(&mut self.list_price_label);
-        bookclerk_library::decode_html_entities_opt_in_place(&mut self.member_price_label);
+        crate::text::decode_html_entities_opt_in_place(&mut self.title);
+        crate::text::decode_html_entities_opt_in_place(&mut self.price_label);
+        crate::text::decode_html_entities_opt_in_place(&mut self.list_price_label);
+        crate::text::decode_html_entities_opt_in_place(&mut self.member_price_label);
         self
     }
 }
 
-/// Optional role / facet for [`crate::ContentSource::search_catalog`].
+/// Optional role / facet for the host's `ContentSource::search_catalog`.
 ///
 /// Free-text Discover typeahead leaves this unset. Meta links (author, narrator,
 /// series, genre) set it so storefronts that support scoped params (e.g. Audible
@@ -537,7 +470,7 @@ impl CatalogSearchField {
     }
 }
 
-/// Sort mode for [`crate::ContentSource::search_catalog`].
+/// Sort mode for the host's `ContentSource::search_catalog`.
 ///
 /// Storefronts that lack a matching upstream sort ignore this (caller merges).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -662,7 +595,7 @@ impl CatalogSearchSort {
     }
 }
 
-/// Options for [`crate::ContentSource::search_catalog`].
+/// Options for the host's `ContentSource::search_catalog`.
 #[derive(Debug, Clone)]
 pub struct CatalogSearchOpts {
     /// Free-text or facet search string.
@@ -695,7 +628,7 @@ impl Default for CatalogSearchOpts {
     }
 }
 
-/// Options for [`crate::ContentSource::purchase_hint`].
+/// Options for the host's `ContentSource::purchase_hint`.
 #[derive(Debug, Clone, Default)]
 pub struct PurchaseHintOpts {
     /// Preferred store-native product id when already known.

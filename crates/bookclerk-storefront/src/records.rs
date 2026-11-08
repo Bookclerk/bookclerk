@@ -72,7 +72,7 @@ pub fn credits_from_display(display: Option<&str>, role: CreditRole) -> Vec<Cred
 #[must_use]
 pub fn split_display_names(display: &str) -> Vec<String> {
     let mut decoded = display.to_string();
-    bookclerk_library::decode_html_entities_in_place(&mut decoded);
+    crate::text::decode_html_entities_in_place(&mut decoded);
     bookclerk_resolve::names::split_display_names(&decoded)
 }
 
@@ -206,9 +206,9 @@ pub fn content_kind(kind: WorkKind) -> &'static str {
 /// else is a book.
 #[must_use]
 pub fn work_kind_from_label(label: &str) -> WorkKind {
-    if bookclerk_library::is_episode(label) {
+    if crate::content_kind::is_episode(label) {
         WorkKind::PodcastEpisode
-    } else if bookclerk_library::is_podcast_parent(label) {
+    } else if crate::content_kind::is_podcast_parent(label) {
         WorkKind::PodcastShow
     } else {
         WorkKind::Book
@@ -244,10 +244,10 @@ pub fn fill_identifiers(base: &mut Vec<Identifier>, fill: Vec<Identifier>) {
 /// Decodes HTML entities in credit and series names in place.
 pub(crate) fn decode_html_entities(credits: &mut [Credit], series: &mut [SeriesEntry]) {
     for credit in credits {
-        bookclerk_library::decode_html_entities_in_place(&mut credit.name);
+        crate::text::decode_html_entities_in_place(&mut credit.name);
     }
     for entry in series {
-        bookclerk_library::decode_html_entities_in_place(&mut entry.name);
+        crate::text::decode_html_entities_in_place(&mut entry.name);
     }
 }
 

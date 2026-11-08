@@ -69,20 +69,7 @@ impl AcquireStatus {
     }
 }
 
-/// True when `content_kind` is a podcast episode.
-#[must_use]
-pub fn is_episode(content_kind: &str) -> bool {
-    content_kind.eq_ignore_ascii_case("episode")
-}
-
-/// True when `content_kind` is a podcast parent / show (no audio to acquire).
-#[must_use]
-pub fn is_podcast_parent(content_kind: &str) -> bool {
-    matches!(
-        content_kind.to_ascii_lowercase().as_str(),
-        "podcast" | "parent" | "podcastparent" | "podcast_parent" | "season"
-    )
-}
+pub use bookclerk_storefront::content_kind::{is_episode, is_podcast_parent};
 
 /// True when the title can be downloaded (classic `WithoutParents`).
 #[must_use]

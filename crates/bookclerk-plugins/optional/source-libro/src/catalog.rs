@@ -16,8 +16,8 @@
 //! This crate intentionally does **not** depend on `bookclerk-enrich`.
 
 use bookclerk_plugin_sdk::http::{Client as HttpClient, RequestBuilder};
-use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
-use bookclerk_source::{
+use bookclerk_storefront::records::{self, CreditRole, IdentifierScheme};
+use bookclerk_storefront::{
     CatalogHit, CatalogSearchOpts, ExpandSeed, PurchaseHintOpts, SourcePurchaseHint,
 };
 use serde::Deserialize;
@@ -74,7 +74,7 @@ fn catalog_get(http: &HttpClient, base_url: &str, path_and_query: &str) -> Reque
 pub async fn search_catalog(
     base_url: &str,
     opts: &CatalogSearchOpts,
-) -> bookclerk_source::Result<Vec<CatalogHit>> {
+) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
     let q = opts.query.trim();
     if q.is_empty() || opts.limit == 0 {
         return Ok(Vec::new());
@@ -108,7 +108,7 @@ pub async fn search_catalog(
 pub async fn catalog_detail(
     base_url: &str,
     product_id: &str,
-) -> bookclerk_source::Result<Option<CatalogHit>> {
+) -> bookclerk_storefront::Result<Option<CatalogHit>> {
     let Some(isbn) = isbn_or_slug(product_id).and_then(isbn_digits) else {
         return Ok(None);
     };
@@ -144,7 +144,7 @@ pub async fn expand_candidates(
     base_url: &str,
     seed: &ExpandSeed,
     limit: usize,
-) -> bookclerk_source::Result<Vec<CatalogHit>> {
+) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -221,7 +221,7 @@ pub async fn expand_candidates(
 pub async fn purchase_hint(
     base_url: &str,
     opts: &PurchaseHintOpts,
-) -> bookclerk_source::Result<Option<SourcePurchaseHint>> {
+) -> bookclerk_storefront::Result<Option<SourcePurchaseHint>> {
     let title = opts
         .title
         .as_deref()
@@ -376,9 +376,9 @@ struct LibroDetailsData {
 /// # Errors
 ///
 /// Returns an error when `body` is not JSON shaped like the details envelope.
-pub fn parse_details(body: &[u8]) -> bookclerk_source::Result<LibroDetails> {
+pub fn parse_details(body: &[u8]) -> bookclerk_storefront::Result<LibroDetails> {
     let parsed: LibroDetailsResponse = serde_json::from_slice(body)
-        .map_err(|e| bookclerk_source::SourceError::api(format!("libro details parse: {e}")))?;
+        .map_err(|e| bookclerk_storefront::SourceError::api(format!("libro details parse: {e}")))?;
     let Some(data) = parsed.data else {
         return Ok(LibroDetails {
             for_sale: true,
@@ -426,17 +426,17 @@ async fn libro_details(
     http: &HttpClient,
     base_url: &str,
     isbn: &str,
-) -> bookclerk_source::Result<Option<LibroDetails>> {
+) -> bookclerk_storefront::Result<Option<LibroDetails>> {
     let path = format!("{}explore/audiobook_details/{isbn}", api_prefix());
     let resp = catalog_get(http, base_url, &path)
         .send()
         .await
-        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        .map_err(|e| bookclerk_storefront::SourceError::api(e.to_string()))?;
     if resp.status().as_u16() == 404 {
         return Ok(None);
     }
     if !resp.status().is_success() {
-        return Err(bookclerk_source::SourceError::api(format!(
+        return Err(bookclerk_storefront::SourceError::api(format!(
             "libro audiobook details HTTP {}",
             resp.status()
         )));
@@ -444,7 +444,7 @@ async fn libro_details(
     let body = resp
         .bytes()
         .await
-        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        .map_err(|e| bookclerk_storefront::SourceError::api(e.to_string()))?;
     parse_details(&body).map(Some)
 }
 
@@ -468,7 +468,7 @@ async fn libro_isbn_hit(
     http: &HttpClient,
     base_url: &str,
     isbn: &str,
-) -> bookclerk_source::Result<Option<CatalogHit>> {
+) -> bookclerk_storefront::Result<Option<CatalogHit>> {
     let hits = libro_search_hits(http, base_url, isbn, 24, 1).await?;
     Ok(hits
         .into_iter()
@@ -507,7 +507,7 @@ async fn libro_search_hits(
     query: &str,
     limit: usize,
     page: u32,
-) -> bookclerk_source::Result<Vec<CatalogHit>> {
+) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -520,9 +520,9 @@ async fn libro_search_hits(
     let resp = catalog_get(http, base_url, &path)
         .send()
         .await
-        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        .map_err(|e| bookclerk_storefront::SourceError::api(e.to_string()))?;
     if !resp.status().is_success() {
-        return Err(bookclerk_source::SourceError::api(format!(
+        return Err(bookclerk_storefront::SourceError::api(format!(
             "libro catalog search HTTP {}",
             resp.status()
         )));
@@ -530,7 +530,7 @@ async fn libro_search_hits(
     let body = resp
         .bytes()
         .await
-        .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
+        .map_err(|e| bookclerk_storefront::SourceError::api(e.to_string()))?;
     parse_search_page(&body, limit)
 }
 
@@ -542,9 +542,9 @@ async fn libro_search_hits(
 /// # Errors
 ///
 /// Returns an error when `body` is not JSON shaped like the search envelope.
-pub fn parse_search_page(body: &[u8], limit: usize) -> bookclerk_source::Result<Vec<CatalogHit>> {
+pub fn parse_search_page(body: &[u8], limit: usize) -> bookclerk_storefront::Result<Vec<CatalogHit>> {
     let parsed: LibroExploreSearch = serde_json::from_slice(body)
-        .map_err(|e| bookclerk_source::SourceError::api(format!("libro search parse: {e}")))?;
+        .map_err(|e| bookclerk_storefront::SourceError::api(format!("libro search parse: {e}")))?;
     Ok(parsed
         .audiobook_collection
         .map(|c| c.audiobooks)

@@ -17,7 +17,6 @@ mod auth;
 pub mod catalog;
 mod client;
 mod container;
-pub mod db;
 mod download;
 mod error;
 pub mod guest;
@@ -37,7 +36,6 @@ pub use client::{
     DOWNLOAD_MANIFEST_PATH, LIBRARY_PATH, OAUTH_TOKEN_PATH, PACKAGED_M4B_PATH, USER_AGENT_VALUE,
 };
 pub use container::LibroContainer;
-pub use db::{delete_auth_from_db, list_auth_from_db, load_auth_from_db, save_auth_to_db};
 pub use download::{chapters_from_tracks, fetch_title_materials};
 pub use error::{LibroError, Result};
 pub use guest::{
@@ -45,7 +43,4 @@ pub use guest::{
     guest_scan_rpc, resolve_base_url, resolve_container,
 };
 pub use source::{LibroSource, ID as LIBRO_SOURCE_ID};
-pub use sync::{
-    audiobook_to_scan_book, collect_account_books, scan_account_into_library, scan_library,
-    ScanOptions,
-};
+pub use sync::{audiobook_to_scan_book, collect_account_books};

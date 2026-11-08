@@ -27,7 +27,7 @@ bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
 bookclerk-config = { path = "../crates/bookclerk-config" }
 bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
-bookclerk-source = { path = "../crates/bookclerk-source" }
+bookclerk-storefront = { path = "../crates/bookclerk-storefront" }
 # Independent re-signing oracle for cover_token.
 base64 = "0.23"
 hmac = "0.13"
